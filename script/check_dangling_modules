@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Fail when a `mod foo;` declaration has no corresponding file.
+
+WHY THIS EXISTS
+---------------
+On 2026-08-11 `main` was pushed in a state that could not compile:
+`app/src/code_review/git_dialog/mod.rs` declared `pub(crate) mod pull;` and
+`pull.rs` existed nowhere in git history. The file had been created by an agent
+that left its work UNCOMMITTED in a worktree, and the recovery built a patch
+with `git diff` -- which reports only TRACKED files. Every modified file came
+through; the one NEW file was silently dropped.
+
+The failure is invisible without a build: the patch applied cleanly, every
+other guard passed, and the only symptom was a module declaration pointing at
+nothing. This guard needs no toolchain, so it catches that class in seconds
+under any build freeze -- which is exactly when agent work is being harvested
+and the mistake is most likely.
+
+MODULE RESOLUTION (the part the first version of this script got wrong)
+----------------------------------------------------------------------
+Where a submodule lives depends on the DECLARING file:
+
+  mod.rs / lib.rs / main.rs   ->  <dir>/<name>.rs      or <dir>/<name>/mod.rs
+  any other foo.rs            ->  <dir>/foo/<name>.rs  or <dir>/foo/<name>/mod.rs
+
+The first version resolved everything against the parent directory and
+reported 301 false positives on a healthy tree. A guard that cries wolf is
+worse than no guard, so the rule is spelled out here rather than inferred.
+
+`#[path = "..."]` overrides all of the above and is resolved relative to the
+declaring file's directory.
+
+USAGE
+    script/check_dangling_modules
+"""
+
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+MOD_RE = re.compile(r'^\s*(?:pub\s*(?:\([^)]*\)\s*)?)?mod\s+([A-Za-z_][A-Za-z0-9_]*)\s*;')
+# Matches both `#[path = "x.rs"]` and `#[cfg_attr(cond, path = "x.rs")]`.
+PATH_RE = re.compile(r'path\s*=\s*"([^"]+)"')
+ROOT_FILES = {"mod.rs", "lib.rs", "main.rs"}
+# Vendored trees carry their own conventions. test_data/ holds Rust FIXTURES
+# that are never compiled, and *_test.rs files sometimes embed Rust source in
+# string literals (e.g. diff_validation/mod_test.rs builds a `mod proxy;`
+# fixture inside a &str), which a line scanner cannot distinguish from a real
+# declaration without parsing.
+SKIP_PREFIXES = ("lib/rust-genai/", "vendor/")
+SKIP_SUBSTRINGS = ("/test_data/",)
+
+
+def tracked_rust_files():
+    out = subprocess.run(
+        ["git", "ls-files", "*.rs"], capture_output=True, text=True, check=True
+    ).stdout.splitlines()
+    return [
+        f
+        for f in out
+        if not f.startswith(SKIP_PREFIXES)
+        and not any(sub in f for sub in SKIP_SUBSTRINGS)
+    ]
+
+
+def search_dir(path: Path) -> Path:
+    """Directory a file's submodules resolve into."""
+    return path.parent if path.name in ROOT_FILES else path.parent / path.stem
+
+
+def main() -> int:
+    failures = []
+    checked = 0
+
+    for rel in tracked_rust_files():
+        path = Path(rel)
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+
+        base = search_dir(path)
+        pending_paths = []
+
+        for line in lines:
+            stripped = line.strip()
+            m_path = PATH_RE.search(line)
+            if m_path and "mod " not in line:
+                # A module can carry SEVERAL cfg_attr paths (one per platform),
+                # interleaved with comments. Collect them all; only one needs to
+                # resolve on any given platform.
+                pending_paths.append(m_path.group(1))
+                continue
+
+            m = MOD_RE.match(line)
+            if not m:
+                # Attributes, comments and blank lines sit between a #[path]
+                # and its `mod`; anything else ends the run.
+                if stripped and not stripped.startswith(("#[", "//", "/*", "*")):
+                    pending_paths = []
+                continue
+
+            name = m.group(1)
+            checked += 1
+            inline_path = PATH_RE.search(line)
+            overrides = list(pending_paths)
+            if inline_path:
+                overrides.append(inline_path.group(1))
+            pending_paths = []
+
+            if overrides:
+                if not any((path.parent / o).is_file() for o in overrides):
+                    failures.append(
+                        f"{rel}: `mod {name};` with #[path] -> none of "
+                        + ", ".join(str(path.parent / o) for o in overrides)
+                        + " exist"
+                    )
+                continue
+
+            # Accept EITHER layout. A module reached through `#[path]` inherits
+            # its parent's directory context, so a `foo.rs` loaded as some other
+            # module name can legitimately resolve children against <dir> rather
+            # than <dir>/foo. Modelling that exactly means reimplementing rustc's
+            # resolver; tolerating both costs a little precision and buys zero
+            # false positives, which is the right trade for a guard nobody will
+            # trust after it cries wolf once.
+            candidates = [
+                base / f"{name}.rs",
+                base / name / "mod.rs",
+                path.parent / f"{name}.rs",
+                path.parent / name / "mod.rs",
+            ]
+            # A `mod x;` inside a string literal in a *_test.rs fixture is not
+            # a declaration. Skip when the declaring file is a test module and
+            # nothing resembling the module exists anywhere in its crate.
+            if path.name.endswith(("_test.rs", "_tests.rs")) and not any(
+                c.is_file() for c in candidates
+            ):
+                continue
+
+            if not any(c.is_file() for c in candidates):
+                failures.append(
+                    f"{rel}: `mod {name};` -> no file found at any of "
+                    + ", ".join(str(c) for c in candidates[:2])
+                )
+
+    if failures:
+        for f in failures:
+            print(f"error: {f}", file=sys.stderr)
+        print(
+            "\nA module declaration points at a file that does not exist, so this\n"
+            "tree cannot compile. If you are harvesting an agent's worktree, note\n"
+            "that `git diff` omits UNTRACKED files -- run `git add -A` there first,\n"
+            "or check `git status --porcelain | grep '^??'`.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"dangling modules: ok ({checked} module declarations checked)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Refuse to build when the shared checkout is not a tree anyone authored.
+#
+# WHY THIS EXISTS
+# ----------------
+# On 2026-08-11 a build agent spent roughly an hour compiling and testing the
+# shared checkout while it sat on ANOTHER agent's branch, holding three
+# different authors' uncommitted work at once. The result described a tree
+# nobody wrote: a green run would have proved nothing and a red one would have
+# blamed the wrong change. A maintainer commit also landed on a sweep branch
+# instead of `main`, because the checkout had been switched underneath it.
+#
+# Parallel agents were told in prose to "branch from local main". That is
+# satisfiable by `git checkout -b` INSIDE the shared checkout -- the compliant
+# reading was the broken one. Prose cannot enforce this; a check can.
+#
+# WHAT IT CHECKS (in the shared checkout only)
+#   1. HEAD is on an expected branch (default: main or working)
+#   2. No uncommitted changes to tracked files
+#   3. No untracked .rs files -- the shape that silently loses new modules
+#      when an agent's work is harvested with `git diff`
+#
+# USAGE
+#     script/check_workspace_clean                 # expect main or working
+#     script/check_workspace_clean --branch main   # require exactly main
+#     ALLOW_DIRTY=1 script/check_workspace_clean   # skip the dirty-tree check
+#
+# This is advisory by design for docs-only work: pass ALLOW_DIRTY=1 when you
+# knowingly have edits in flight. It is NOT advisory before a build -- that is
+# the case it exists for.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+expected=""
+[[ "${1:-}" == "--branch" && -n "${2:-}" ]] && expected="$2"
+
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)"
+fail=0
+
+if [[ -n "$expected" ]]; then
+    if [[ "$branch" != "$expected" ]]; then
+        echo "error: shared checkout is on '$branch', expected '$expected'" >&2
+        fail=1
+    fi
+elif [[ "$branch" != "main" && "$branch" != "working" ]]; then
+    echo "error: shared checkout is on '$branch', expected 'main' or 'working'" >&2
+    echo "note: agent branches belong in their own worktree -- see script/agent-worktree" >&2
+    fail=1
+fi
+
+if [[ -z "${ALLOW_DIRTY:-}" ]]; then
+    dirty="$(git status --porcelain --untracked-files=no | wc -l)"
+    if (( dirty > 0 )); then
+        echo "error: $dirty uncommitted change(s) in the shared checkout" >&2
+        git status --short --untracked-files=no | head -10 >&2
+        echo "note: a build here describes a tree nobody authored. Commit, stash," >&2
+        echo "      or set ALLOW_DIRTY=1 if you accept that." >&2
+        fail=1
+    fi
+fi
+
+# Untracked .rs files are the specific shape that gets lost: `git diff` does not
+# report them, so harvesting an agent worktree with a patch silently drops new
+# modules and leaves a `mod foo;` pointing at nothing.
+untracked_rs="$(git status --porcelain | grep '^??' | grep -c '\.rs$' || true)"
+if (( untracked_rs > 0 )); then
+    echo "warning: $untracked_rs untracked .rs file(s) present" >&2
+    git status --porcelain | grep '^??' | grep '\.rs$' | head -5 >&2
+    echo "note: \`git diff\` will NOT include these. Use \`git add -A\` before" >&2
+    echo "      building a patch from this tree." >&2
+fi
+
+if (( fail )); then
+    exit 1
+fi
+
+echo "workspace clean: ok (on '$branch', no uncommitted tracked changes)"
