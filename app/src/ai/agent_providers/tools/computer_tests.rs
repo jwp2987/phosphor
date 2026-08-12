@@ -132,6 +132,84 @@ fn descriptions_admit_that_screenshots_are_not_returned() {
 }
 
 // ---------------------------------------------------------------------------
+// action_summary / task_summary are optional in the parser
+//
+// Same shape as `apply_file_diffs`'s `summary` (see `edit_tests.rs`): a purely human-facing
+// field must never be able to sink the whole tool call just because a smaller BYOP model
+// dropped it.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn use_computer_missing_action_summary_still_parses_and_gets_a_fallback() {
+    let uc = use_computer_tool(r#"{"actions": [{"action": "type_text", "text": "hi"}]}"#);
+    assert_eq!(uc.action_summary, "Type text");
+}
+
+#[test]
+fn use_computer_blank_action_summary_is_treated_the_same_as_absent() {
+    let uc = use_computer_tool(
+        r#"{"action_summary": "  ", "actions": [{"action": "wait", "seconds": 1}]}"#,
+    );
+    assert_eq!(uc.action_summary, "Wait");
+}
+
+#[test]
+fn use_computer_fallback_action_summary_for_a_multi_action_batch_is_generic() {
+    let uc = use_computer_tool(
+        r#"{
+            "actions": [
+                {"action": "mouse_move", "to": {"x": 1, "y": 1}},
+                {"action": "click", "at": {"x": 1, "y": 1}}
+            ]
+        }"#,
+    );
+    assert_eq!(uc.action_summary, "Perform 2 computer actions");
+}
+
+#[test]
+fn use_computer_provided_action_summary_is_kept_verbatim() {
+    let uc = use_computer_tool(
+        r#"{"action_summary": "Open the file menu", "actions": [{"action": "wait", "seconds": 0}]}"#,
+    );
+    assert_eq!(uc.action_summary, "Open the file menu");
+}
+
+/// `actions` is still required — omitting it (or sending garbage) must still fail loudly
+/// rather than silently produce an empty-looking call.
+#[test]
+fn use_computer_missing_actions_still_fails_to_parse() {
+    use_computer_err(r#"{"action_summary": "do something"}"#);
+}
+
+#[test]
+fn request_computer_use_missing_task_summary_still_parses_with_a_fallback() {
+    let tool = (REQUEST_COMPUTER_USE.from_args)(r#"{}"#).expect("from_args should accept this");
+    let api::message::tool_call::Tool::RequestComputerUse(rcu) = tool else {
+        panic!("expected Tool::RequestComputerUse");
+    };
+    assert!(
+        !rcu.task_summary.trim().is_empty(),
+        "an absent task_summary must not leave the approval prompt blank"
+    );
+}
+
+#[test]
+fn request_computer_use_provided_task_summary_is_kept_verbatim() {
+    let tool = (REQUEST_COMPUTER_USE.from_args)(r#"{"task_summary": "look at the browser"}"#)
+        .expect("from_args");
+    let api::message::tool_call::Tool::RequestComputerUse(rcu) = tool else {
+        panic!("expected Tool::RequestComputerUse");
+    };
+    assert_eq!(rcu.task_summary, "look at the browser");
+}
+
+#[test]
+fn request_computer_use_completely_malformed_json_still_fails_to_parse() {
+    (REQUEST_COMPUTER_USE.from_args)("not json at all")
+        .expect_err("garbage input must not silently produce a tool call");
+}
+
+// ---------------------------------------------------------------------------
 // use_computer round trips
 // ---------------------------------------------------------------------------
 

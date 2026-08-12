@@ -185,3 +185,132 @@ fn transfer_control_tool_call_converts_to_action_message() {
         }
     }
 }
+
+fn tool_call_result_message(server_message_data: &str) -> api::Message {
+    api::Message {
+        fetched_memories: vec![],
+        id: "message".to_string(),
+        task_id: "task".to_string(),
+        server_message_data: server_message_data.to_string(),
+        citations: vec![],
+        message: Some(api::message::Message::ToolCallResult(
+            api::message::ToolCallResult {
+                tool_call_id: "tool_call".to_string(),
+                context: None,
+                result: None,
+            },
+        )),
+        request_id: "req".to_string(),
+        timestamp: None,
+    }
+}
+
+fn extract_text(output: MaybeAIAgentOutputMessage) -> String {
+    let MaybeAIAgentOutputMessage::Message(output_message) = output else {
+        panic!("expected an output message, got NoClientRepresentation");
+    };
+    let text = match output_message.message {
+        AIAgentOutputMessageType::Text(text) => text,
+        other => panic!("expected a Text output message, got {other:?}"),
+    };
+    text.sections
+        .iter()
+        .filter_map(|section| match section {
+            crate::ai::agent::AIAgentTextSection::PlainText { text } => {
+                Some(text.text().to_owned())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A `from_args` parse failure previously vanished with no trace: `chat_stream` emitted a
+/// carrier `ToolCall(tool: None)` plus this synthetic `ToolCallResult(result: None)` — both of
+/// which mapped to `NoClientRepresentation`, so the model got the retry signal but the user saw
+/// nothing at all (the same silent-failure class as `edit.rs`'s `summary` bug). This is the
+/// fix: the synthetic `invalid_arguments` marker must now produce a visible message.
+#[test]
+fn invalid_arguments_tool_call_result_becomes_a_visible_error_message() {
+    let task_id = TaskId::new("task".to_string());
+    // Mirrors the payload chat_stream::parse_incoming_tool_call's `Err` arm builds when
+    // `from_args` rejects a malformed call.
+    let payload = serde_json::json!({
+        "error": "invalid_arguments",
+        "detail": "missing field `operations`",
+        "tool": "apply_file_diffs",
+        "received_args": "{}",
+        "hint": "Re-emit the tool call with corrected types / required fields.",
+    })
+    .to_string();
+    let message = tool_call_result_message(&payload);
+
+    let converted = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+            skill_path_origin: &SkillPathOrigin::Local,
+        })
+        .expect("conversion should succeed");
+
+    let text = extract_text(converted);
+    assert!(text.contains("apply_file_diffs"), "{text}");
+    assert!(text.contains("missing field `operations`"), "{text}");
+    assert!(
+        text.to_lowercase().contains("rejected"),
+        "the message must say the call was rejected, not just relay the raw detail: {text}"
+    );
+}
+
+/// A genuinely different `result: None` payload — the cancellation marker
+/// `BlocklistAIController::byop_synthetic_cancellation_message` writes for a
+/// user-interrupted command — must keep falling through to `NoClientRepresentation`. Only the
+/// specific `invalid_arguments` marker should ever render.
+#[test]
+fn unrelated_result_none_payload_stays_invisible() {
+    let task_id = TaskId::new("task".to_string());
+    let payload = serde_json::json!({
+        "status": "cancelled",
+        "reason": "interrupted_by_user",
+    })
+    .to_string();
+    let message = tool_call_result_message(&payload);
+
+    let converted = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+            skill_path_origin: &SkillPathOrigin::Local,
+        })
+        .expect("conversion should succeed");
+
+    assert!(
+        matches!(converted, MaybeAIAgentOutputMessage::NoClientRepresentation),
+        "an unrelated result:None payload must not spuriously render"
+    );
+}
+
+/// Genuinely malformed `server_message_data` (not JSON at all) must not panic the conversion
+/// pipeline — it should just fall back to no client representation, same as any other
+/// `ToolCallResult` the client doesn't need to render.
+#[test]
+fn non_json_server_message_data_does_not_panic_and_stays_invisible() {
+    let task_id = TaskId::new("task".to_string());
+    let message = tool_call_result_message("not json at all");
+
+    let converted = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+            skill_path_origin: &SkillPathOrigin::Local,
+        })
+        .expect("conversion should succeed");
+
+    assert!(matches!(
+        converted,
+        MaybeAIAgentOutputMessage::NoClientRepresentation
+    ));
+}

@@ -19,7 +19,15 @@ use super::OpenAiTool;
 
 #[derive(Debug, Deserialize)]
 struct Args {
-    summary: String,
+    /// Purely human-facing (shown to the user for approval) — it must never be able to sink
+    /// the whole file operation. `parameters()` below still marks it `required`, so a
+    /// well-behaved model sends a good one; the parser is deliberately more forgiving than the
+    /// advertised schema, because smaller local BYOP models drop purely descriptive fields far
+    /// more often than they drop operational ones (a missing `summary` used to make the entire
+    /// call fail `serde_json::from_str` before any file logic ever ran — no file, no error, no
+    /// prompt). When absent, `from_args` derives a fallback from `operations`.
+    #[serde(default)]
+    summary: Option<String>,
     operations: Vec<Operation>,
 }
 
@@ -85,13 +93,67 @@ fn parameters() -> Value {
                 }
             }
         },
+        // `summary` is `required` here so a well-behaved model still sends one — but the
+        // parser (`Args::summary`, above) accepts its absence and synthesizes a fallback.
+        // The schema is guidance for good models; the parser must be forgiving of bad ones.
         "required": ["summary", "operations"],
         "additionalProperties": false
     })
 }
 
+/// Fallback used when the model omits (or blanks out) `summary`. Derived purely from the
+/// operation list, so the user still gets a meaningful one-line description — e.g. "Create
+/// hi.txt" or "Edit 2 files, delete 1 file" — instead of losing the whole batch to a field
+/// that only ever mattered for display.
+fn fallback_summary(operations: &[Operation]) -> String {
+    if let [only] = operations {
+        return match only {
+            Operation::Edit { file_path, .. } => format!("Edit {file_path}"),
+            Operation::Create { file_path, .. } => format!("Create {file_path}"),
+            Operation::Delete { file_path } => format!("Delete {file_path}"),
+        };
+    }
+    let (mut edits, mut creates, mut deletes) = (0usize, 0usize, 0usize);
+    for op in operations {
+        match op {
+            Operation::Edit { .. } => edits += 1,
+            Operation::Create { .. } => creates += 1,
+            Operation::Delete { .. } => deletes += 1,
+        }
+    }
+    let plural = |n: usize, noun: &str| format!("{n} {noun}{}", if n == 1 { "" } else { "s" });
+    let mut parts = Vec::new();
+    if creates > 0 {
+        parts.push(format!("create {}", plural(creates, "file")));
+    }
+    if edits > 0 {
+        parts.push(format!("edit {}", plural(edits, "file")));
+    }
+    if deletes > 0 {
+        parts.push(format!("delete {}", plural(deletes, "file")));
+    }
+    let Some((first, rest)) = parts.split_first() else {
+        return "Apply file changes".to_owned();
+    };
+    let mut summary = first.clone();
+    for part in rest {
+        summary.push_str(", ");
+        summary.push_str(part);
+    }
+    // Capitalize the leading verb ("create"/"edit"/"delete") for a sentence-like summary.
+    let mut chars = summary.chars();
+    match chars.next() {
+        Some(first_char) => first_char.to_uppercase().collect::<String>() + chars.as_str(),
+        None => summary,
+    }
+}
+
 fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     let parsed: Args = serde_json::from_str(args)?;
+    let summary = parsed
+        .summary
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| fallback_summary(&parsed.operations));
     let mut diffs = Vec::new();
     let mut new_files = Vec::new();
     let mut deleted_files = Vec::new();
@@ -114,7 +176,7 @@ fn from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     }
     Ok(api::message::tool_call::Tool::ApplyFileDiffs(
         api::message::tool_call::ApplyFileDiffs {
-            summary: parsed.summary,
+            summary,
             diffs,
             v4a_updates: vec![],
             new_files,
@@ -161,3 +223,7 @@ pub static APPLY_FILE_DIFFS: OpenAiTool = OpenAiTool {
     from_args,
     result_to_json,
 };
+
+#[cfg(test)]
+#[path = "edit_tests.rs"]
+mod tests;

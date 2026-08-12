@@ -589,10 +589,45 @@ fn key_spec_schema(description: &str) -> Value {
 
 #[derive(Debug, Deserialize)]
 struct UseComputerArgs {
-    action_summary: String,
+    /// Purely human-facing (shown to the user describing what the batch does) — same shape
+    /// as `apply_file_diffs`'s `summary` (see `edit.rs`), so it gets the same treatment: the
+    /// advertised schema keeps it `required` for well-behaved models, but the parser accepts
+    /// its absence rather than losing a whole batch of mouse/keyboard actions to a display-only
+    /// field. When absent, `from_args` derives a fallback from `actions`.
+    #[serde(default)]
+    action_summary: Option<String>,
     actions: Vec<ActionArg>,
     #[serde(default)]
     screenshot: Option<ScreenshotArgs>,
+}
+
+/// Fallback used when the model omits `action_summary`. Mirrors `edit.rs`'s
+/// `fallback_summary`: a short, generic description derived from the action kinds, so the
+/// user still sees something meaningful instead of losing the whole action batch.
+fn fallback_action_summary(actions: &[ActionArg]) -> String {
+    if let [only] = actions {
+        return action_kind_label(only).to_owned();
+    }
+    format!(
+        "Perform {} computer action{}",
+        actions.len(),
+        if actions.len() == 1 { "" } else { "s" }
+    )
+}
+
+fn action_kind_label(action: &ActionArg) -> &'static str {
+    match action {
+        ActionArg::MouseMove { .. } => "Move the mouse",
+        ActionArg::MouseDown { .. } => "Press the mouse button",
+        ActionArg::MouseUp { .. } => "Release the mouse button",
+        ActionArg::Click { .. } => "Click",
+        ActionArg::MouseWheel { .. } => "Scroll",
+        ActionArg::Wait { .. } => "Wait",
+        ActionArg::TypeText { .. } => "Type text",
+        ActionArg::KeyDown { .. } => "Press a key",
+        ActionArg::KeyUp { .. } => "Release a key",
+        ActionArg::KeyPress { .. } => "Press a key",
+    }
 }
 
 /// One entry of the `actions` array.
@@ -880,6 +915,10 @@ fn use_computer_parameters() -> Value {
                  which happened."
             )
         },
+        // `action_summary` is `required` here so a well-behaved model still sends one — but
+        // the parser (`UseComputerArgs::action_summary`, above) accepts its absence and
+        // synthesizes a fallback. The schema is guidance for good models; the parser must be
+        // forgiving of bad ones.
         "required": ["action_summary", "actions"],
         "additionalProperties": false
     })
@@ -890,6 +929,10 @@ fn use_computer_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     if parsed.actions.is_empty() {
         bail!("actions must contain at least one action");
     }
+    let action_summary = parsed
+        .action_summary
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| fallback_action_summary(&parsed.actions));
     let mut actions = Vec::with_capacity(parsed.actions.len());
     for arg in &parsed.actions {
         let target = to_api_target(arg.target())?;
@@ -906,7 +949,7 @@ fn use_computer_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
             // Always `Some`. Warp's server always requests a post-action capture, the restored
             // block render displays it to the user, and it is what refreshes `windows`.
             post_actions_screenshot_params: Some(parsed.screenshot.unwrap_or_default().to_api()?),
-            action_summary: parsed.action_summary,
+            action_summary,
         },
     ))
 }
@@ -1360,10 +1403,20 @@ pub fn image_capable_description(name: &str) -> Option<&'static str> {
 
 #[derive(Debug, Deserialize)]
 struct RequestComputerUseArgs {
-    task_summary: String,
+    /// Purely human-facing — same shape as `apply_file_diffs`'s `summary` and `use_computer`'s
+    /// `action_summary` (see `edit.rs`). Unlike those two, there is no operation list to derive
+    /// a fallback from, so an absent value falls back to a fixed generic sentence; the request
+    /// (and the approval prompt it drives) must never be lost just because this field is missing.
+    #[serde(default)]
+    task_summary: Option<String>,
     #[serde(default)]
     screenshot: Option<ScreenshotArgs>,
 }
+
+/// Fallback used when the model omits `task_summary`. There is no action list to summarize
+/// (that only exists once `use_computer` is called), so this is a fixed sentence — still
+/// enough for the user to make an approve/reject decision, which is the point of the field.
+const FALLBACK_TASK_SUMMARY: &str = "Requesting control of your computer to complete the task.";
 
 fn request_computer_use_parameters() -> Value {
     json!({
@@ -1379,6 +1432,10 @@ fn request_computer_use_parameters() -> Value {
                  `screenshot.delivery` field says which happened."
             )
         },
+        // `task_summary` is `required` here so a well-behaved model still sends one — but the
+        // parser (`RequestComputerUseArgs::task_summary`, above) accepts its absence and falls
+        // back to `FALLBACK_TASK_SUMMARY`. The schema is guidance for good models; the parser
+        // must be forgiving of bad ones.
         "required": ["task_summary"],
         "additionalProperties": false
     })
@@ -1386,9 +1443,13 @@ fn request_computer_use_parameters() -> Value {
 
 fn request_computer_use_from_args(args: &str) -> Result<api::message::tool_call::Tool> {
     let parsed: RequestComputerUseArgs = serde_json::from_str(args)?;
+    let task_summary = parsed
+        .task_summary
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| FALLBACK_TASK_SUMMARY.to_owned());
     Ok(api::message::tool_call::Tool::RequestComputerUse(
         api::message::tool_call::RequestComputerUse {
-            task_summary: parsed.task_summary,
+            task_summary,
             // Never `None`. `RequestComputerUseExecutor` maps a result with no screenshot to
             // `Error("Failed to capture initial screenshot")`, so an absent params message
             // makes the call fail every single time.
