@@ -94,7 +94,33 @@ nextest's own PASS/FAIL lines.
       So session-ID registration WORKS on Windows; this is a separate, older
       problem that had simply never been exercised.
 
-      **Second signal:** PowerShell **CLIXML** envelopes (`#< CLIXML`, `<Objs …>`)
+      **MECHANISM ESTABLISHED 2026-08-12** by a CI diagnostic (run `31555886629`),
+      not by inference:
+      ```
+      PSVersion: 7.6.4      Host name: ConsoleHost
+      stdout redirected: True      stdin  redirected: True
+      child-alive
+      PS D:\a\phosphor\phosphor>          <- the REPL DID start
+      RESULT: child EXITED early with code 0 -- -NoExit did NOT keep it alive
+      ```
+      A child launched with the same `-NoExit -EncodedCommand` shape **prints
+      its prompt** — so `-NoExit` works and the REPL genuinely starts — and then
+      exits 0 at once because **stdin is redirected and reads EOF on the first
+      read**. The `#< CLIXML` comes from the same redirection.
+
+      So the sequence is: run encoded init → emit InitShell hook → enter REPL →
+      stdin EOF → exit 0. The terminal waits forever for a bootstrap that has
+      already been and gone.
+
+      **The fix is therefore NOT a PowerShell flag.** `-NoExit` is doing its
+      job. The child needs a stdin that is the ConPTY, not a redirected pipe.
+      Next step is to establish whether the app's ConPTY child actually
+      inherits console stdin — the spawn looks textbook
+      (`set_pty_connection`, `EXTENDED_STARTUPINFO_PRESENT`, no
+      `STARTF_USESTDHANDLES`), so the discrepancy is between that code and what
+      the child observes. Do not start by changing `shell.rs` args.
+
+      **Original second signal:** PowerShell **CLIXML** envelopes (`#< CLIXML`, `<Objs …>`)
       are interleaved with the DCS payloads in the captured stream. pwsh emits
       CLIXML when its non-stdout streams are redirected. Worth establishing
       whether that redirection is also what denies it a REPL.
