@@ -100,6 +100,35 @@ jobs:
         with:
           tool: nextest
 
+      # DIAGNOSTIC (Windows only, 2026-08-12). Every GUI scenario fails there
+      # at bootstrap: pwsh emits its InitShell hook and then exits cleanly with
+      # code 0, and the captured stream carries PowerShell CLIXML envelopes.
+      # CLIXML means pwsh believes its output is REDIRECTED rather than
+      # console-attached, which would also explain an immediate REPL exit
+      # (stdin at EOF). This isolates "can pwsh stay alive under -NoExit
+      # -EncodedCommand on this runner at all" from "does the app's bootstrap
+      # work" -- without it we would be guessing at fixes across 20-minute CI
+      # cycles. Remove once the Windows GUI bootstrap is understood.
+      - name: Diagnose pwsh interactivity (Windows only)
+        if: matrix.os == 'windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Write-Host "PSVersion: $($PSVersionTable.PSVersion)"
+          Write-Host "Host name: $($Host.Name)"
+          Write-Host "stdout redirected: $([Console]::IsOutputRedirected)"
+          Write-Host "stdin  redirected: $([Console]::IsInputRedirected)"
+          $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('Write-Host "child-alive"'))
+          Write-Host "--- child with -NoExit -EncodedCommand (expect it to hang until timeout if interactive) ---"
+          $p = Start-Process pwsh -PassThru -NoNewWindow -ArgumentList @("-NoLogo","-NoProfile","-NoExit","-EncodedCommand",$enc)
+          Start-Sleep -Seconds 5
+          if ($p.HasExited) {
+            Write-Host "RESULT: child EXITED early with code $($p.ExitCode) -- -NoExit did NOT keep it alive"
+          } else {
+            Write-Host "RESULT: child still running after 5s -- -NoExit works here"
+            $p | Stop-Process -Force
+          }
+
       - name: Usage suite — TUI + reliable-here GUI
         shell: bash
         run: ${{ matrix.display_wrapper }}./script/usage-test --surface both
