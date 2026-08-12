@@ -383,10 +383,29 @@ fn run_tui_scenarios(scenarios: &[&Scenario], args: &Args) -> Vec<ScenarioReport
     }
 
     let start = Instant::now();
-    let run_result = if nextest_available {
-        run_tui_tests_nextest()
+    // Per-test attribution when nextest is available. Previously ONE batch
+    // outcome was stamped onto every scenario, so a run where 2 passed and 1
+    // failed reported all 6 as failed. That is not cosmetic: on the first
+    // Windows run (2026-08-11) it turned a partial result into "0/13", which
+    // reads as "the platform is entirely broken" and hides which scenarios
+    // actually work.
+    let (batch_ok, captured) = if nextest_available {
+        run_tui_tests_nextest_capturing()
     } else {
-        run_tui_tests_cargo_test()
+        match run_tui_tests_cargo_test() {
+            Ok(()) => (true, String::new()),
+            Err(detail) => (false, detail),
+        }
+    };
+    let per_test = if nextest_available {
+        parse_nextest_outcomes(&captured)
+    } else {
+        std::collections::HashMap::new()
+    };
+    let run_result: std::result::Result<(), String> = if batch_ok {
+        Ok(())
+    } else {
+        Err(captured.clone())
     };
     let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -412,15 +431,23 @@ fn run_tui_scenarios(scenarios: &[&Scenario], args: &Args) -> Vec<ScenarioReport
         }
         Err(detail) => {
             for scenario in &to_run {
+                // Trust the parsed per-test verdict when we have one; fall
+                // back to the batch outcome only for tests nextest never
+                // reported (e.g. the run died before reaching them).
+                let passed = per_test.get(scenario.name).copied().unwrap_or(false);
                 reports.push(ScenarioReport {
                     surface: scenario.surface,
                     scenario: scenario.name.into(),
-                    status: Status::Fail,
+                    status: if passed { Status::Pass } else { Status::Fail },
                     duration_ms: Some(duration_ms),
                     tags: scenario.tag_strs(),
                     reason: None,
                     retries: None,
-                    failure_detail: Some(tail(&detail, FAILURE_DETAIL_MAX_BYTES)),
+                    failure_detail: if passed {
+                        None
+                    } else {
+                        Some(tail(&detail, FAILURE_DETAIL_MAX_BYTES))
+                    },
                 });
             }
         }
@@ -521,10 +548,11 @@ fn discover_tui_tests_cargo_test() -> Result<Vec<String>> {
     Ok(names)
 }
 
-fn run_tui_tests_nextest() -> std::result::Result<(), String> {
-    run_and_capture(
-        "cargo",
-        &[
+/// Like [`run_tui_tests_nextest`] but returns the combined output whether or
+/// not the batch succeeded, so per-test outcomes can be attributed.
+fn run_tui_tests_nextest_capturing() -> (bool, String) {
+    match Command::new("cargo")
+        .args([
             "nextest",
             "run",
             "-p",
@@ -532,8 +560,21 @@ fn run_tui_tests_nextest() -> std::result::Result<(), String> {
             "-E",
             "test(/(^|::)usage_tui_/)",
             "--no-fail-fast",
-        ],
-    )
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(o) => {
+            let combined = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr)
+            );
+            (o.status.success(), combined)
+        }
+        Err(err) => (false, format!("failed to spawn `cargo`: {err}")),
+    }
 }
 
 fn run_tui_tests_cargo_test() -> std::result::Result<(), String> {
@@ -541,6 +582,65 @@ fn run_tui_tests_cargo_test() -> std::result::Result<(), String> {
         "cargo",
         &["test", "-p", "warp_tui", "--lib", "usage_tui_"],
     )
+}
+
+/// Strips ANSI SGR escapes so nextest's coloured output can be parsed.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // Consume through the final byte of a CSI sequence.
+            for c2 in chars.by_ref() {
+                if c2.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Extracts per-test outcomes from nextest's human output.
+///
+/// nextest prints one line per test result, e.g.
+///   `        PASS [   0.106s] warp_tui usage_smoke_tests::usage_tui_foo`
+///   `  TRY 1 FAIL [   0.120s] warp_tui usage_smoke_tests::usage_tui_bar`
+///
+/// Returns a map keyed on the FINAL `::` segment (the bare test-fn name the
+/// manifest uses). A test appearing both FAIL-then-PASS across retries ends up
+/// `true`, which matches nextest's own final verdict.
+///
+/// Parsing the human output rather than nextest's experimental
+/// `libtest-json` stream: the latter needs an unstable opt-in env var and
+/// changes shape between releases, while these two words have been stable for
+/// years and a miss is safe — unmatched scenarios fall back to the batch
+/// outcome.
+fn parse_nextest_outcomes(output: &str) -> std::collections::HashMap<String, bool> {
+    let mut map = std::collections::HashMap::new();
+    for raw in strip_ansi(output).lines() {
+        let line = raw.trim();
+        let passed = if line.starts_with("PASS ") || line.contains(" PASS ") {
+            true
+        } else if line.contains("FAIL ") {
+            false
+        } else {
+            continue;
+        };
+        let Some(last) = line.split_whitespace().last() else {
+            continue;
+        };
+        if !last.contains("usage_tui_") {
+            continue;
+        }
+        let name = last.rsplit("::").next().unwrap_or(last).to_string();
+        map.entry(name)
+            .and_modify(|v| *v = *v || passed)
+            .or_insert(passed);
+    }
+    map
 }
 
 /// Runs a command to completion, capturing stdout+stderr.
@@ -580,4 +680,53 @@ fn tail(s: &str, max_bytes: usize) -> String {
         .find(|&i| s.is_char_boundary(i))
         .unwrap_or(s.len());
     format!("...{}", &s[boundary..])
+}
+
+#[cfg(test)]
+mod parse_tests {
+    use super::{parse_nextest_outcomes, strip_ansi};
+
+    /// Real nextest output shape, including the ANSI colouring it emits in CI
+    /// and the `TRY n FAIL` prefix it uses for retried tests.
+    const SAMPLE: &str = concat!(
+        "        \u{1b}[32;1mPASS\u{1b}[0m [   0.106s] \u{1b}[35;1mwarp_tui\u{1b}[0m ",
+        "usage_smoke_tests::usage_tui_completions_menu\n",
+        "        PASS [   0.182s] warp_tui usage_smoke_tests::usage_tui_slash_command_palette\n",
+        "  TRY 1 FAIL [   0.120s] warp_tui usage_smoke_tests::usage_tui_transcript_render\n",
+        "     Summary [   0.3s] 3 tests run: 2 passed, 1 failed\n",
+    );
+
+    #[test]
+    fn strip_ansi_removes_sgr_sequences() {
+        assert_eq!(strip_ansi("\u{1b}[32;1mPASS\u{1b}[0m x"), "PASS x");
+    }
+
+    #[test]
+    fn parses_per_test_pass_and_fail() {
+        let got = parse_nextest_outcomes(SAMPLE);
+        assert_eq!(got.get("usage_tui_completions_menu"), Some(&true));
+        assert_eq!(got.get("usage_tui_slash_command_palette"), Some(&true));
+        assert_eq!(
+            got.get("usage_tui_transcript_render"),
+            Some(&false),
+            "a failing test must not be reported as passing"
+        );
+    }
+
+    #[test]
+    fn summary_line_is_not_mistaken_for_a_test_result() {
+        // "2 passed, 1 failed" contains neither a usage_tui_ name nor a
+        // PASS/FAIL token in test-result position; it must not add entries.
+        let got = parse_nextest_outcomes(SAMPLE);
+        assert_eq!(got.len(), 3, "expected exactly the 3 real tests, got {got:?}");
+    }
+
+    #[test]
+    fn a_retried_test_that_eventually_passes_counts_as_passing() {
+        let retried = concat!(
+            "  TRY 1 FAIL [ 0.1s] warp_tui usage_smoke_tests::usage_tui_flaky\n",
+            "        PASS [ 0.1s] warp_tui usage_smoke_tests::usage_tui_flaky\n",
+        );
+        assert_eq!(parse_nextest_outcomes(retried).get("usage_tui_flaky"), Some(&true));
+    }
 }
