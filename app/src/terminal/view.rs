@@ -13614,7 +13614,7 @@ impl TerminalView {
     /// opencode's agentic tool behavior) — as soon as the chip is displayed, the
     /// oneshot is **immediately** completed (feeding Accepted{query: prompt} back
     /// to the model), without waiting for the user to click. This way:
-    /// 1. The conversation status bar's "Burning in..." disappears immediately, and the
+    /// 1. The conversation status bar's "Phosphorizing..." disappears immediately, and the
     ///    model naturally wraps up with end_turn on its next turn
     /// 2. The chip still hangs around in the UI; if the user clicks it →
     ///    `resolve_prompt_suggestion` → `enter_agent_view(Some(prompt))` submits the
@@ -13652,7 +13652,7 @@ impl TerminalView {
                 // detecting an Accepted/non-Cancelled result would force a new round
                 // of BYOP LLM call, the model would see "the user accepted the chip"
                 // with no new user message, return an empty response, and the UX
-                // would get stuck on "Burning in..." yet again. Cancelled makes the
+                // would get stuck on "Phosphorizing..." yet again. Cancelled makes the
                 // controller not trigger a follow-up request, and the current turn
                 // ends naturally.
                 //

@@ -47,7 +47,7 @@ fn renders_the_indicator_row_and_requests_a_repaint() {
         });
         app.read(|app_ctx| {
             let element = render_warping_indicator_row(
-                "Burning in",
+                "Phosphorizing",
                 Duration::ZERO,
                 TuiText::new("▶▶ Auto approve off")
                     .with_style(TuiUiBuilder::from_app(app_ctx).muted_text_style())
@@ -69,7 +69,7 @@ fn renders_the_indicator_row_and_requests_a_repaint() {
                 "unexpected spinner glyph in row: {line:?}"
             );
             assert!(
-                line.contains(" Burning in... (0s)"),
+                line.contains(" Phosphorizing... (0s)"),
                 "unexpected indicator row: {line:?}"
             );
             assert!(line.ends_with("▶▶ Auto approve off  Ctrl + C to stop"));
@@ -89,7 +89,7 @@ fn shimmer_only_applies_to_the_warping_label_and_groups_its_ellipsis() {
         app.read(|app_ctx| {
             let config = ShimmerConfig::default();
             let element = render_warping_indicator_row(
-                "Burning in",
+                "Phosphorizing",
                 config.period / 2,
                 TuiText::new("▶▶ Auto approve off").finish(),
                 app_ctx,

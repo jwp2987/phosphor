@@ -565,7 +565,7 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
             // is the content actually meant to be shown to the user.
             // Returning MissingTool would cause the whole conversation update to be
             // rejected (`UpdateTask(ConversionError)`), and the following ToolCallResult
-            // couldn't be applied either → the exchange would be stuck at "Burning in..."
+            // couldn't be applied either → the exchange would be stuck at "Phosphorizing..."
             // forever. So this returns NoClientRepresentation instead: the UI doesn't
             // render this empty ToolCall, task.messages is still persisted
             // (server_message_data intact), and the upstream resend chain on the next

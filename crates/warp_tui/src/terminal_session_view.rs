@@ -5026,7 +5026,7 @@ impl TuiView for TuiTerminalSessionView {
                     let label = if conversation.is_summarizing() {
                         "Summarizing conversation"
                     } else {
-                        "Burning in"
+                        "Phosphorizing"
                     };
                     content = content.child(
                         TuiContainer::new(self.render_warping_indicator(
