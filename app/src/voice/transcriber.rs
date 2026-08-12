@@ -75,3 +75,29 @@ impl Entity for VoiceTranscriber {
 }
 
 impl SingletonEntity for VoiceTranscriber {}
+
+/// Whether a real [`Transcriber`] implementation exists in this build.
+///
+/// This is hard-coded `false`: the only implementation Warp ships,
+/// `ServerVoiceTranscriber`, calls `server_api.transcribe` to send audio to
+/// Warp's cloud Wispr speech-to-text service, which this fork does not have
+/// (the BYOP genai protocol cannot carry audio). `app/src/lib.rs` constructs
+/// `VoiceTranscriber::disabled()` accordingly, so `git grep 'impl Transcriber
+/// for'` returns nothing in this tree. Audio capture itself
+/// (`crates/voice_input`) is real and unaffected -- only the step that turns
+/// captured audio into text has no backend.
+///
+/// This becomes `true` only once a local/BYOP transcription engine (e.g. a
+/// bundled Whisper-class model) is wired up as a real `Transcriber` impl and
+/// injected in place of `VoiceTranscriber::disabled()`. Until then, settings
+/// UI that depends on this should stay hidden rather than offer a control
+/// that can never do anything -- see `AppAnalyticsWidget::should_render` in
+/// `app/src/settings_view/privacy_page.rs` for the identical pattern applied
+/// to telemetry.
+pub fn voice_transcription_available() -> bool {
+    false
+}
+
+#[cfg(test)]
+#[path = "transcriber_tests.rs"]
+mod tests;

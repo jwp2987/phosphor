@@ -38,6 +38,7 @@ use crate::view_components::{
     action_button::{ActionButton, ButtonSize, SecondaryTheme},
     DismissibleToast, FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
 };
+use crate::voice::transcriber::voice_transcription_available;
 use crate::workspace::ToastStack;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
 use ::ai::api_keys::ApiKeyManager;
@@ -6245,7 +6246,18 @@ impl SettingsWidget for VoiceWidget {
     }
 
     fn should_render(&self, app: &AppContext) -> bool {
-        cfg!(feature = "voice_input") && UserWorkspaces::as_ref(app).is_voice_enabled()
+        // `voice_transcription_available()` is hard-coded `false`: no
+        // `Transcriber` impl exists in this fork (the Wispr cloud backend was
+        // dropped, see DECLINED.md "Voice input"), so the enable toggle and
+        // the toggle-key dropdown this widget renders would both be no-ops.
+        // Hide the whole widget rather than delete it -- `VoiceInputEnabled`,
+        // `VoiceInputToggleKey`, and the footer states they drive stay wired
+        // up so the control reappears automatically once a local/BYOP
+        // transcriber lands. Same pattern as `AppAnalyticsWidget` in
+        // `privacy_page.rs` for telemetry.
+        voice_transcription_available()
+            && cfg!(feature = "voice_input")
+            && UserWorkspaces::as_ref(app).is_voice_enabled()
     }
 
     fn render(
