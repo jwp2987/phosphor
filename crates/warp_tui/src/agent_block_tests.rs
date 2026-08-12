@@ -127,9 +127,11 @@ fn agent_block_renders_rejected_tool_call_as_a_failure_section() {
                 rejected_tool_call_text(Some("apply_file_diffs"), "missing field `operations`");
             assert_eq!(
                 block.as_ref(ctx).sections(ctx),
-                vec![TuiAIBlockSection::Failure(
-                    FailedOutputPresentation::Message(expected_text)
-                )]
+                vec![
+                    // The fixture's user query renders first, as it does for any exchange.
+                    TuiAIBlockSection::Input("please edit hi.txt".to_owned()),
+                    TuiAIBlockSection::Failure(FailedOutputPresentation::Message(expected_text)),
+                ]
             );
 
             // Visible assertion: it actually renders, says "rejected", names the tool, and

@@ -8027,6 +8027,12 @@ fn copy_selected_text_from_ai_block() {
 fn ai_block_copy_output_does_not_clobber_clipboard_when_nothing_streamed() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // The empty-copy path reports through the workspace toast stack, which `run_internal`
+        // registers in production (`lib.rs`) but the headless harness does not. Without this the
+        // test panics on the singleton lookup rather than exercising the behaviour.
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| crate::ToastStack);
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 

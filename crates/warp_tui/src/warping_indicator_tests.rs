@@ -88,22 +88,29 @@ fn shimmer_only_applies_to_the_warping_label_and_groups_its_ellipsis() {
         });
         app.read(|app_ctx| {
             let config = ShimmerConfig::default();
+            // The row is spinner + " " + label + the grouped "..." suffix, so the ellipsis
+            // begins immediately after the label. Derive those columns instead of hardcoding
+            // them: the previous fixed indices were tuned for "Burning in" and silently
+            // pointed into the middle of the label once it became "Phosphorizing".
+            const LABEL: &str = "Phosphorizing";
+            const LABEL_START_COL: u16 = 2;
+            let first_dot_col = LABEL_START_COL + LABEL.chars().count() as u16;
             let element = render_warping_indicator_row(
-                "Phosphorizing",
+                LABEL,
                 config.period / 2,
                 TuiText::new("▶▶ Auto approve off").finish(),
                 app_ctx,
             );
             let mut presenter = TuiPresenter::new();
-            let frame = presenter.present_element(element, TuiRect::new(0, 0, 20, 1), app_ctx);
+            let frame = presenter.present_element(element, TuiRect::new(0, 0, 40, 1), app_ctx);
 
             let base = TuiUiBuilder::from_app(app_ctx).warping_base_color();
             let base = Color::Rgb(base.r, base.g, base.b);
             assert_eq!(frame.buffer[(0, 0)].fg, base);
             assert_ne!(frame.buffer[(5, 0)].fg, base);
-            let first_dot_color = frame.buffer[(12, 0)].fg;
-            assert_eq!(frame.buffer[(13, 0)].fg, first_dot_color);
-            assert_eq!(frame.buffer[(14, 0)].fg, first_dot_color);
+            let first_dot_color = frame.buffer[(first_dot_col, 0)].fg;
+            assert_eq!(frame.buffer[(first_dot_col + 1, 0)].fg, first_dot_color);
+            assert_eq!(frame.buffer[(first_dot_col + 2, 0)].fg, first_dot_color);
         });
     });
 }
