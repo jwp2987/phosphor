@@ -1,16 +1,42 @@
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::Arc;
 
+use chrono::Local;
 use warp_multi_agent_api::{FileContent, FileContentLineRange};
 
 use crate::ai::agent::{
-    AIAgentContext, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentText,
-    AIAgentTextSection, AgentOutputImage, AgentOutputImageLayout, AgentOutputMermaidDiagram,
-    AnyFileContent, FileContext, FormattedTextWrapper, MessageId, ProgrammingLanguage,
-    RenderableAIError, TransientNetworkErrorKind,
+    AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentOutput, AIAgentOutputMessage,
+    AIAgentOutputMessageType, AIAgentOutputStatus, AIAgentText, AIAgentTextSection,
+    AgentOutputImage, AgentOutputImageLayout, AgentOutputMermaidDiagram, AnyFileContent,
+    CancellationReason, FileContext, FinishedAIAgentOutput, FormattedTextWrapper, MessageId,
+    ProgrammingLanguage, RenderableAIError, Shared, TransientNetworkErrorKind,
 };
+use crate::ai::llms::LLMId;
 use crate::terminal::shell::ShellType;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
+
+/// Builds a minimal exchange with no input and the given `output_status`, for testing
+/// `AIAgentExchange::format_output_for_copy`. Mirrors `create_test_exchange` in
+/// `task_store_tests.rs`.
+fn exchange_with_output_status(output_status: AIAgentOutputStatus) -> AIAgentExchange {
+    AIAgentExchange {
+        id: AIAgentExchangeId::new(),
+        input: vec![],
+        output_status,
+        added_message_ids: HashSet::new(),
+        start_time: Local::now(),
+        finish_time: None,
+        time_to_first_token_ms: None,
+        working_directory: None,
+        model_id: LLMId::from("test-model"),
+        request_cost: None,
+        coding_model_id: LLMId::from("test-coding-model"),
+        cli_agent_model_id: LLMId::from("test-cli-agent-model"),
+        computer_use_model_id: LLMId::from("test-computer-use-model"),
+        response_initiator: None,
+    }
+}
 
 fn to_range(range: Range<u32>) -> Option<FileContentLineRange> {
     Some(FileContentLineRange {
@@ -270,6 +296,131 @@ fn format_for_copy_preserves_visual_markdown_sections() {
     assert_eq!(
         output.format_for_copy(None),
         "Intro\n![Diagram](./diagram.png)\n```mermaid\ngraph TD\nA --> B\n```"
+    );
+}
+
+// Regression tests for the "Copy output as Markdown" silent-empty-clipboard bug: an exchange
+// that ended in `Error` (or was `Cancelled` before any output streamed) used to make
+// `format_output_for_copy` return `""` via `AIAgentOutputStatus::output() == None`, which is
+// indistinguishable from "nothing happened yet". For a copy action, the error/cancellation is
+// exactly the information the user wants, so it must be included.
+
+#[test]
+fn format_output_for_copy_surfaces_error_message_for_errored_exchange_with_no_partial_output() {
+    let exchange = exchange_with_output_status(AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Error {
+            output: None,
+            error: RenderableAIError::Other {
+                error_message: "the provider returned a 500".to_string(),
+                will_attempt_resume: false,
+                waiting_for_network: false,
+            },
+        },
+    });
+
+    let copied = exchange.format_output_for_copy(None);
+
+    assert!(
+        !copied.trim().is_empty(),
+        "an errored exchange must contribute non-empty copy text, got {copied:?}"
+    );
+    assert!(
+        copied.contains("the provider returned a 500"),
+        "copy text should surface the actual error message, got {copied:?}"
+    );
+
+    // `AIAgentOutputStatus::output()` must still report `None` for this exchange — other
+    // callers (rendering, status checks) rely on that meaning "nothing was streamed", and
+    // this fix must not repurpose it.
+    assert!(exchange.output_status.output().is_none());
+}
+
+#[test]
+fn format_output_for_copy_includes_partial_output_alongside_the_error() {
+    let partial_output = Shared::new(AIAgentOutput {
+        messages: vec![AIAgentOutputMessage {
+            id: MessageId::new("message-1".to_string()),
+            message: AIAgentOutputMessageType::Text(AIAgentText {
+                sections: vec![AIAgentTextSection::PlainText {
+                    text: "partial progress before the failure".to_string().into(),
+                }],
+            }),
+            citations: Vec::new(),
+        }],
+        ..Default::default()
+    });
+
+    let exchange = exchange_with_output_status(AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Error {
+            output: Some(partial_output),
+            error: RenderableAIError::Other {
+                error_message: "stream cut off".to_string(),
+                will_attempt_resume: false,
+                waiting_for_network: false,
+            },
+        },
+    });
+
+    let copied = exchange.format_output_for_copy(None);
+
+    assert!(
+        copied.contains("partial progress before the failure"),
+        "partial output streamed before the error must still be included, got {copied:?}"
+    );
+    assert!(
+        copied.contains("stream cut off"),
+        "the error must be appended alongside the partial output, got {copied:?}"
+    );
+}
+
+#[test]
+fn format_output_for_copy_notes_cancellation_when_no_output_was_ever_streamed() {
+    let exchange = exchange_with_output_status(AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Cancelled {
+            output: None,
+            reason: CancellationReason::ManuallyCancelled,
+        },
+    });
+
+    let copied = exchange.format_output_for_copy(None);
+
+    assert!(
+        !copied.trim().is_empty(),
+        "a cancelled exchange with no output must still contribute copy text, got {copied:?}"
+    );
+    assert!(
+        copied.contains("manual cancellation"),
+        "copy text should say why the exchange has no output, got {copied:?}"
+    );
+}
+
+#[test]
+fn format_output_for_copy_ignores_cancellation_reason_when_output_was_streamed() {
+    // A cancellation that *did* produce output before stopping already has real content to
+    // copy, so it must not be decorated with a redundant cancellation annotation.
+    let partial_output = Shared::new(AIAgentOutput {
+        messages: vec![AIAgentOutputMessage {
+            id: MessageId::new("message-1".to_string()),
+            message: AIAgentOutputMessageType::Text(AIAgentText {
+                sections: vec![AIAgentTextSection::PlainText {
+                    text: "here is what I found".to_string().into(),
+                }],
+            }),
+            citations: Vec::new(),
+        }],
+        ..Default::default()
+    });
+
+    let exchange = exchange_with_output_status(AIAgentOutputStatus::Finished {
+        finished_output: FinishedAIAgentOutput::Cancelled {
+            output: Some(partial_output),
+            reason: CancellationReason::ManuallyCancelled,
+        },
+    });
+
+    assert_eq!(
+        exchange.format_output_for_copy(None),
+        "here is what I found"
     );
 }
 

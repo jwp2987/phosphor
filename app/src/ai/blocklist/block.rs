@@ -5119,6 +5119,29 @@ impl AIBlock {
         }
     }
 
+    /// Writes `text` to the clipboard, unless it's empty (after trimming), in which case it shows
+    /// a toast instead of clobbering the clipboard.
+    ///
+    /// Without this, an AI block copy action (`CopyQuery`, `CopyOutput`, `Copy`,
+    /// `CopyConversation`) that extracts nothing — e.g. every exchange in range errored before
+    /// producing output — silently overwrites the clipboard with `""`. That looks visually
+    /// identical to a successful copy: no error, no toast, no log line, but the user's previous
+    /// clipboard contents are gone.
+    fn write_copied_text_or_toast_if_empty(&self, text: String, ctx: &mut ViewContext<Self>) {
+        if text.trim().is_empty() {
+            let window_id = ctx.window_id();
+            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                toast_stack.add_ephemeral_toast(
+                    DismissibleToast::default(crate::t!("menu-ai-block-nothing-to-copy")),
+                    window_id,
+                    ctx,
+                );
+            });
+            return;
+        }
+        ctx.clipboard().write(ClipboardContent::plain_text(text));
+    }
+
     fn has_accepted_file_edits_since_last_query(&self, app: &AppContext) -> bool {
         let Some(conversation) =
             BlocklistAIHistoryModel::as_ref(app).conversation(&self.conversation_id())
@@ -6009,22 +6032,19 @@ impl TypedActionView for AIBlock {
             AIBlockAction::CopyQuery => {
                 // Copy the prompt from the preceding user query (where overflow menu would appear)
                 let prompt_text = self.get_preceding_user_query(ctx);
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(prompt_text));
+                self.write_copied_text_or_toast_if_empty(prompt_text, ctx);
             }
             AIBlockAction::CopyOutput => {
                 // Copy all AI output from preceding user query until the next user query
                 let output_text = self.get_output_text_since_preceding_user_query(ctx);
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(output_text));
+                self.write_copied_text_or_toast_if_empty(output_text, ctx);
             }
             AIBlockAction::Copy => {
                 // Copy the preceding user query and all AI output until the next user query
                 let prompt_text = self.get_preceding_user_query(ctx);
                 let output_text = self.get_output_text_since_preceding_user_query(ctx);
                 let combined_text = format!("{prompt_text}\n\n{output_text}");
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(combined_text));
+                self.write_copied_text_or_toast_if_empty(combined_text, ctx);
             }
             AIBlockAction::CopyConversation => {
                 let conversation_text = {
@@ -6051,8 +6071,7 @@ impl TypedActionView for AIBlock {
 
                     result.join("\n\n")
                 };
-                ctx.clipboard()
-                    .write(ClipboardContent::plain_text(conversation_text));
+                self.write_copied_text_or_toast_if_empty(conversation_text, ctx);
             }
             AIBlockAction::CopyCommand => {
                 let command_text = if let Some(stored_command) = &self.last_right_clicked_command {

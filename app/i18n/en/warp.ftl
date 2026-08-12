@@ -2487,6 +2487,7 @@ menu-ai-block-copy-command = Copy command
 menu-ai-block-copy-git-branch = Copy git branch
 menu-ai-block-save-as-prompt = Save as prompt
 menu-ai-block-copy-conversation-text = Copy conversation text
+menu-ai-block-nothing-to-copy = Nothing to copy
 menu-ai-block-fork-from-here = Fork from here
 menu-ai-block-rewind-to-before-here = Rewind to before here
 menu-ai-block-fork-from-last-query = Fork from last query

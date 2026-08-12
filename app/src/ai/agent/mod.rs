@@ -3035,13 +3035,48 @@ impl AIAgentExchange {
     }
 
     /// Format the output part of this exchange for copying to clipboard.
+    ///
+    /// `AIAgentOutputStatus::output()` returns `None` for an errored exchange — even when the
+    /// `Error` variant is carrying partial output received before the failure — and for a
+    /// cancelled exchange that produced no output before it stopped. That's the right behavior
+    /// for callers asking "was anything actually streamed" (rendering, status checks, etc.), so
+    /// this does not change `output()`'s semantics or signature. But for a copy-to-clipboard
+    /// action, `None` should not mean "contribute nothing": the error text is frequently the
+    /// exact thing the user wants to paste (e.g. to report a bug or retry elsewhere), and any
+    /// partial output the agent produced before failing/cancelling is still worth keeping. So
+    /// this reads `output_status` directly (rather than through `output()`) to recover that
+    /// partial output, and appends a bracketed annotation describing the error/cancellation.
     pub fn format_output_for_copy(
         &self,
         action_model: Option<&crate::ai::blocklist::BlocklistAIActionModel>,
     ) -> String {
-        match self.output_status.output() {
-            Some(output) => output.get().format_for_copy(action_model),
-            None => String::new(),
+        let (streamed_output, annotation): (Option<&Shared<AIAgentOutput>>, Option<String>) =
+            match &self.output_status {
+                AIAgentOutputStatus::Streaming { output } => (output.as_ref(), None),
+                AIAgentOutputStatus::Finished { finished_output } => match finished_output {
+                    FinishedAIAgentOutput::Success { output } => (Some(output), None),
+                    FinishedAIAgentOutput::Error { output, error } => {
+                        (output.as_ref(), Some(format!("[Error: {error}]")))
+                    }
+                    FinishedAIAgentOutput::Cancelled {
+                        output: None,
+                        reason,
+                    } => (None, Some(format!("[Cancelled: {reason}]"))),
+                    FinishedAIAgentOutput::Cancelled {
+                        output: output @ Some(_),
+                        ..
+                    } => (output.as_ref(), None),
+                },
+            };
+
+        let streamed_text = streamed_output
+            .map(|output| output.get().format_for_copy(action_model))
+            .unwrap_or_default();
+
+        match annotation {
+            Some(annotation) if streamed_text.is_empty() => annotation,
+            Some(annotation) => format!("{streamed_text}\n\n{annotation}"),
+            None => streamed_text,
         }
     }
 

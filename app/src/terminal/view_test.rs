@@ -8019,6 +8019,69 @@ fn copy_selected_text_from_ai_block() {
     })
 }
 
+// Regression test for the "Copy output as Markdown" silent-empty-clipboard bug: extracting
+// nothing (e.g. `CopyOutput` before the exchange has streamed anything) used to still call
+// `ctx.clipboard().write(...)` with an empty string, silently clobbering whatever the user had
+// copied before, with no error/toast/log line to reveal it happened.
+#[test]
+fn ai_block_copy_output_does_not_clobber_clipboard_when_nothing_streamed() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // Insert an AI block for a query whose exchange has not produced any output yet
+        // (`output_status` stays `Streaming { output: None }`, the default from
+        // `exchange_with_inputs`/`append_exchange_and_handle_event`).
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(
+                view,
+                AIAgentInput::UserQuery {
+                    query: "what is the meaning of life".to_owned(),
+                    context: Default::default(),
+                    static_query_type: None,
+                    referenced_attachments: Default::default(),
+                    user_query_mode: UserQueryMode::Normal,
+                    running_command: None,
+                    intended_agent: None,
+                },
+                ctx,
+            );
+        });
+
+        let ai_block = terminal.read(&app, |view, _| {
+            view.rich_content_views
+                .iter()
+                .find_map(|rich_content| {
+                    rich_content
+                        .ai_block_metadata()
+                        .map(|metadata| metadata.ai_block_handle.clone())
+                })
+                .expect("an AI block should have been inserted")
+        });
+
+        // Pre-populate the clipboard with a sentinel value so a silent overwrite with an empty
+        // string is detectable.
+        ai_block.update(&mut app, |_block, ctx| {
+            ctx.clipboard()
+                .write(ClipboardContent::plain_text("sentinel".to_owned()));
+        });
+
+        ai_block.update(&mut app, |block, ctx| {
+            block.handle_action(&AIBlockAction::CopyOutput, ctx);
+        });
+
+        ai_block.update(&mut app, |_block, ctx| {
+            assert_eq!(
+                ctx.clipboard().read().plain_text,
+                "sentinel",
+                "copying output before anything has streamed must not overwrite the clipboard \
+                 with an empty string"
+            );
+        });
+    })
+}
+
 #[test]
 fn codex_status_change_does_not_auto_open_rich_input() {
     App::test((), |mut app| async move {
