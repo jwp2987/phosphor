@@ -643,7 +643,10 @@ impl AgentProvidersWidget {
             let appearance = Appearance::handle(ctx).as_ref(ctx);
             let options = single_line_editor_options(appearance, false);
             let mut editor = EditorView::single_line(options, ctx);
-            editor.set_placeholder_text("x-portkey-provider", ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-header-key-placeholder"),
+                ctx,
+            );
             if !initial_key.is_empty() {
                 editor.set_buffer_text(&initial_key, ctx);
             }
@@ -655,7 +658,10 @@ impl AgentProvidersWidget {
             let appearance = Appearance::handle(ctx).as_ref(ctx);
             let options = single_line_editor_options(appearance, false);
             let mut editor = EditorView::single_line(options, ctx);
-            editor.set_placeholder_text("openai", ctx);
+            editor.set_placeholder_text(
+                crate::t!("settings-agent-providers-header-value-placeholder"),
+                ctx,
+            );
             if !initial_value.is_empty() {
                 editor.set_buffer_text(&initial_value, ctx);
             }
@@ -1374,7 +1380,7 @@ impl AgentProvidersWidget {
 
         let headers_label = Container::new(
             Text::new(
-                "Extra Headers".to_string(),
+                crate::t!("settings-agent-providers-headers-label"),
                 appearance.ui_font_family(),
                 appearance.ui_font_size(),
             )
@@ -1388,6 +1394,16 @@ impl AgentProvidersWidget {
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .with_child(headers_label);
 
+        // Rows and the trailing "+ Add Header" button share one vertical rhythm: a uniform
+        // MODEL_ROW_GAP between every pair of siblings (row-to-row, and last row to the
+        // button) via `with_spacing`, the same gap size the model list below uses between its
+        // rows. This replaces the old per-row `margin_bottom`, which left the button's
+        // gap-above an accident of whichever element happened to precede it (MODEL_ROW_GAP if
+        // there was a last row, but only FIELD_LABEL_MARGIN_BOTTOM if there were zero rows).
+        let mut header_rows_and_actions = Flex::column()
+            .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+            .with_spacing(MODEL_ROW_GAP);
+
         for (idx, h_row) in row.header_rows.iter().enumerate() {
             let remove_header_button = Self::render_card_button_preserving_draft(
                 "×",
@@ -1399,37 +1415,25 @@ impl AgentProvidersWidget {
                 },
                 appearance,
             );
+            // Key/value editors split the row evenly (flex 1/1) and align with the Name /
+            // Base URL / API key editors above: same left edge, and the row as a whole
+            // stretches to the same right edge as those editors (the × button included, since
+            // it sits inside the same full-width row). The MODEL_ROW_GAP gaps between key
+            // editor / value editor / button come from the row's own `with_spacing`, not a
+            // trailing margin baked into whichever cell happens to be last -- so the gap rule
+            // doesn't depend on the × button always being present.
             let header_row = Flex::row()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                .with_child(
-                    Expanded::new(
-                        1.,
-                        Container::new(ChildView::new(&h_row.key_editor).finish())
-                            .with_margin_right(MODEL_ROW_GAP)
-                            .finish(),
-                    )
-                    .finish(),
-                )
-                .with_child(
-                    Expanded::new(
-                        1.,
-                        Container::new(ChildView::new(&h_row.val_editor).finish())
-                            .with_margin_right(MODEL_ROW_GAP)
-                            .finish(),
-                    )
-                    .finish(),
-                )
+                .with_spacing(MODEL_ROW_GAP)
+                .with_child(Expanded::new(1., ChildView::new(&h_row.key_editor).finish()).finish())
+                .with_child(Expanded::new(1., ChildView::new(&h_row.val_editor).finish()).finish())
                 .with_child(remove_header_button)
                 .finish();
-            headers_column.add_child(
-                Container::new(header_row)
-                    .with_margin_bottom(MODEL_ROW_GAP)
-                    .finish(),
-            );
+            header_rows_and_actions.add_child(header_row);
         }
 
         let add_header_button = Self::render_card_button_preserving_draft(
-            "+ Add Header",
+            crate::t!("settings-agent-providers-add-header"),
             row.add_header_button_state.clone(),
             draft_editors.clone(),
             AISettingsPageAction::AddAgentProviderHeader {
@@ -1437,7 +1441,8 @@ impl AgentProvidersWidget {
             },
             appearance,
         );
-        headers_column.add_child(add_header_button);
+        header_rows_and_actions.add_child(add_header_button);
+        headers_column.add_child(header_rows_and_actions.finish());
 
         // ---- Model list section ----
         let models_label = Container::new(
