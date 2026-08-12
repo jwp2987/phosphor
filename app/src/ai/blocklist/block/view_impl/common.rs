@@ -3701,6 +3701,14 @@ pub fn render_query_text(props: UserQueryProps<'_>, app: &AppContext) -> Text {
 /// Renders a scrollable collapsible content area with auto-scroll-to-bottom
 /// during streaming. Returns `None` if the state is collapsed.
 ///
+/// While streaming, the content is capped at `max_height` inside a nested
+/// scroll pane that auto-pins to the bottom, so in-progress generation
+/// cannot shove the rest of the conversation off-screen. Once streaming has
+/// finished, the cap (and the nested scroll pane it lives in) is dropped
+/// entirely: a block the user has deliberately expanded to read flows
+/// inline and is scrolled by the conversation's own scroll view like any
+/// other message, instead of sitting in a fixed-height porthole.
+///
 /// Shared by reasoning/summarization blocks and structured event blocks.
 pub(crate) fn render_scrollable_collapsible_content(
     message_id: &MessageId,
@@ -3717,6 +3725,14 @@ pub(crate) fn render_scrollable_collapsible_content(
         return None;
     };
 
+    if !is_streaming {
+        // No cap, no nested scrollable: the outer conversation scroll is the
+        // only scroll now. The pin-to-bottom anchor and the unpin-on-wheel
+        // handler below exist only to keep pace with in-progress streaming,
+        // so they are simply not constructed here.
+        return Some(body);
+    }
+
     let message_id_str: &str = message_id;
     let bottom_id = format!("ai_collapsible_bottom_{message_id_str}");
     let content_with_anchor = Flex::column()
@@ -3732,7 +3748,7 @@ pub(crate) fn render_scrollable_collapsible_content(
         )
         .finish();
 
-    if is_streaming && scroll_pinned_to_bottom {
+    if scroll_pinned_to_bottom {
         state.scroll_state.scroll_to_position(ScrollTarget {
             position_id: bottom_id.clone(),
             mode: ScrollToPositionMode::FullyIntoView,

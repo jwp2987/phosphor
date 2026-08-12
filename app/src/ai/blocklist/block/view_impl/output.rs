@@ -3273,10 +3273,14 @@ fn render_collapsible_text_block_section(
         .with_agent_output_item_spacing(app)
         .finish();
 
-    // Use a larger height more amenable to reading once streaming is complete.
-    // When thinking_display_mode is AlwaysShow, always use the larger height so the
-    // viewport doesn't jump when streaming finishes.
-    let max_height = if props.thinking_display_mode.should_keep_expanded() || !is_streaming {
+    // This height only applies while streaming: render_scrollable_collapsible_content
+    // caps the block in a nested, auto-pinned scroll pane so in-progress reasoning
+    // can't shove the answer off-screen, and drops the cap entirely once streaming
+    // finishes so a deliberately expanded, completed block flows inline and is
+    // scrolled by the conversation like any other message. AlwaysShow keeps the
+    // larger height during streaming too, so a mode that always keeps thinking
+    // expanded isn't squeezed into the small in-progress porthole.
+    let max_height = if props.thinking_display_mode.should_keep_expanded() {
         360.
     } else {
         120.

@@ -260,7 +260,13 @@ fn compute_visual_section_width_rejects_non_finite_dimensions() {
 }
 
 #[test]
-fn render_scrollable_collapsible_content_returns_body_when_expanded() {
+fn render_scrollable_collapsible_content_returns_body_when_expanded_and_finished() {
+    // Not streaming: the finished-and-expanded path returns the body
+    // directly, with no max-height cap and no nested scrollable — the
+    // outer conversation scroll is the only scroll here. This test can
+    // only assert `is_some()` (the harness has no way to inspect whether a
+    // `ConstrainedBox`/`NewScrollable` wraps the result), but it does
+    // exercise the early-return branch that drops them.
     let message_id = MessageId::new("message-2".to_string());
     let state = CollapsibleElementState::default();
     let content = render_scrollable_collapsible_content(
@@ -274,6 +280,27 @@ fn render_scrollable_collapsible_content_returns_body_when_expanded() {
     assert!(
         content.is_some(),
         "Expected rendered content when collapsible state is expanded",
+    );
+}
+
+#[test]
+fn render_scrollable_collapsible_content_returns_body_when_expanded_and_streaming() {
+    // Streaming: still builds the capped, auto-pinned nested scrollable and
+    // returns Some — the cap is only dropped once streaming finishes (see
+    // the test above).
+    let message_id = MessageId::new("message-3".to_string());
+    let state = CollapsibleElementState::default();
+    let content = render_scrollable_collapsible_content(
+        &message_id,
+        &state,
+        Empty::new().finish(),
+        true,
+        200.,
+    );
+
+    assert!(
+        content.is_some(),
+        "Expected rendered content when collapsible state is expanded and streaming",
     );
 }
 
