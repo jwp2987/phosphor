@@ -1026,6 +1026,44 @@ fn model_legacy_plain_string_format_still_deserializes() {
     assert!(!parsed.models[0].disabled);
 }
 
+// The model id is sent verbatim as the wire `model` field, so surrounding whitespace in
+// `settings.toml` reaches the provider: a stray trailing space produced
+// `"model":"gpt-oss:20b "` on every request, visible only in the request log.
+
+#[test]
+fn model_id_is_trimmed_in_the_plain_string_format() {
+    #[derive(serde::Deserialize)]
+    struct Wrapper {
+        models: Vec<AgentProviderModel>,
+    }
+    let parsed: Wrapper = toml::from_str(r#"models = ["gpt-oss:20b "]"#).expect("should parse");
+    assert_eq!(parsed.models[0].id, "gpt-oss:20b");
+    assert_eq!(parsed.models[0].name, "gpt-oss:20b");
+}
+
+#[test]
+fn model_id_and_name_are_trimmed_in_the_full_format() {
+    let model: AgentProviderModel =
+        toml::from_str("id = \"gpt-oss:20b \"\nname = \"  GPT-OSS 20B \"").expect("should parse");
+    assert_eq!(model.id, "gpt-oss:20b");
+    assert_eq!(model.name, "GPT-OSS 20B");
+}
+
+#[test]
+fn a_whitespace_only_model_name_falls_back_to_the_id() {
+    // An empty `name` already fell back to the id; whitespace is the same absence.
+    let model: AgentProviderModel =
+        toml::from_str("id = \"gpt-oss:20b\"\nname = \"   \"").expect("should parse");
+    assert_eq!(model.name, "gpt-oss:20b");
+}
+
+#[test]
+fn model_from_id_trims() {
+    // The settings UI's "add model" path constructs through `from_id`, so it needs the same
+    // normalization as the config-load path.
+    assert_eq!(AgentProviderModel::from_id("gpt-oss:20b ".to_string()).id, "gpt-oss:20b");
+}
+
 // --- `/cost` token prices (fork-authored: Warp has no client-side price table) ---
 
 #[test]

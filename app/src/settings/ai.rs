@@ -1542,6 +1542,12 @@ fn default_true() -> bool {
 
 impl AgentProviderModel {
     pub fn from_id(id: String) -> Self {
+        // Trimmed because the id is sent verbatim as the wire `model` field: a stray space
+        // in `settings.toml` (or typed into the settings UI, which reaches here through
+        // `AddAgentProviderModel`) produced `"model":"gpt-oss:20b "` on every request. It
+        // happened to work against Ollama; endpoints that match the model id exactly reject
+        // it, and the cause is invisible in any UI that renders the name with padding.
+        let id = id.trim().to_owned();
         Self {
             name: id.clone(),
             id,
@@ -1612,7 +1618,17 @@ impl<'de> Deserialize<'de> for AgentProviderModel {
                 disabled,
                 token_price,
             } => {
-                let name = if name.is_empty() { id.clone() } else { name };
+                // Same normalization as `from_id` (which the `Plain` arm above goes
+                // through): the id reaches the provider as the wire `model` field, so
+                // surrounding whitespace in the config must not survive loading. A
+                // whitespace-only `name` counts as absent, as an empty one already did.
+                let id = id.trim().to_owned();
+                let name = name.trim();
+                let name = if name.is_empty() {
+                    id.clone()
+                } else {
+                    name.to_owned()
+                };
                 Ok(AgentProviderModel {
                     name,
                     id,
