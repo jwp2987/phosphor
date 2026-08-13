@@ -110,6 +110,40 @@ fn error_json_carries_sentinel_and_tool_name() {
     assert!(v["message"].as_str().unwrap().contains("boom"));
 }
 
+/// `chat_stream::dispatch_byop_codebase_tool` wraps a `serde_json::from_str::
+/// <SearchCodebaseArgs>` failure as `anyhow::anyhow!("invalid_arguments: {e}")` before handing
+/// it to `error_to_json` -- this is the exact shape a malformed model tool call produces.
+/// Previously that always came out as a plain `{"status":"error",...}` payload, which
+/// `convert_from::invalid_arguments_rejected_tool_call` doesn't recognize, so the UI rendered
+/// nothing at all: the user saw the agent silently do nothing. This locks the fix: the
+/// synthesized error must carry the same `error: "invalid_arguments"` marker
+/// `todowrite::invalid_arguments_result_to_json` uses, so the UI shows a real rejected-tool-call
+/// message instead.
+#[test]
+fn malformed_args_error_is_recognizable_as_invalid_arguments() {
+    let serde_err = serde_json::from_str::<SearchCodebaseArgs>("{}").unwrap_err();
+    let v = error_to_json(&anyhow::anyhow!("invalid_arguments: {serde_err}"));
+    assert_eq!(v["_byop_intercepted"], true);
+    assert_eq!(v["error"], "invalid_arguments");
+    assert_eq!(v["tool"], "search_codebase");
+    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v["detail"].as_str().unwrap().contains("query"),
+        "detail should surface the underlying parse error, got {v:?}"
+    );
+}
+
+/// A genuine runtime/gate error (as opposed to a parse failure) must keep the original
+/// `{"status":"error"}` shape -- only the `invalid_arguments:`-prefixed message is special-
+/// cased. This guards against the prefix sniff in `error_to_json` over-firing.
+#[test]
+fn non_parse_error_keeps_status_error_shape() {
+    let v = error_to_json(&anyhow::anyhow!("codebase_context_enabled is disabled for this profile"));
+    assert_eq!(v["_byop_intercepted"], true);
+    assert_eq!(v["status"], "error");
+    assert!(v.get("error").is_none());
+}
+
 /// A default (no `max_results`) query defaults to `DEFAULT_MAX_RESULTS`.
 #[test]
 fn default_max_results_applies() {

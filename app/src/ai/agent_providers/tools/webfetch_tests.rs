@@ -539,3 +539,63 @@ fn fetch_output_carries_byop_sentinel() {
     assert_eq!(err["_byop_intercepted"], true);
     assert_eq!(err["status"], "error");
 }
+
+/// `chat_stream::dispatch_byop_web_tool` wraps a `serde_json::from_str::<FetchArgs>` /
+/// `::<SearchToolArgs>` failure as `anyhow::anyhow!(format!("invalid arguments: {e}"))` (note:
+/// space-separated, not the `invalid_arguments:` underscore form the codebase/get_relevant_files
+/// dispatchers use) before handing it to `error_to_json` -- this is the exact shape a malformed
+/// model tool call to webfetch/websearch produces. Previously that always came out as a plain
+/// `{"status":"error",...}` payload, which `convert_from::invalid_arguments_rejected_tool_call`
+/// doesn't recognize, so the UI rendered nothing at all: the user saw the agent silently do
+/// nothing. This locks the fix: the synthesized error must carry the same
+/// `error: "invalid_arguments"` marker `todowrite::invalid_arguments_result_to_json` uses, so
+/// the UI shows a real rejected-tool-call message instead.
+#[test]
+fn malformed_fetch_args_error_is_recognizable_as_invalid_arguments() {
+    let serde_err = serde_json::from_str::<FetchArgs>("{}").unwrap_err();
+    let v = error_to_json(
+        "webfetch",
+        &anyhow::anyhow!(format!("invalid arguments: {serde_err}")),
+    );
+    assert_eq!(v["_byop_intercepted"], true);
+    assert_eq!(v["error"], "invalid_arguments");
+    assert_eq!(v["tool"], "webfetch");
+    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v["detail"].as_str().unwrap().contains("url"),
+        "detail should surface the underlying parse error, got {v:?}"
+    );
+}
+
+/// Same as above, for `websearch`'s `SearchToolArgs`.
+#[test]
+fn malformed_search_args_error_is_recognizable_as_invalid_arguments() {
+    let serde_err = serde_json::from_str::<SearchToolArgs>("{}").unwrap_err();
+    let v = error_to_json(
+        "websearch",
+        &anyhow::anyhow!(format!("invalid arguments: {serde_err}")),
+    );
+    assert_eq!(v["_byop_intercepted"], true);
+    assert_eq!(v["error"], "invalid_arguments");
+    assert_eq!(v["tool"], "websearch");
+    assert!(v.get("status").is_none(), "must not also carry the old status:error shape");
+    assert!(
+        v["detail"].as_str().unwrap().contains("query"),
+        "detail should surface the underlying parse error, got {v:?}"
+    );
+}
+
+/// A genuine runtime/gate error (as opposed to a parse failure) must keep the original
+/// `{"status":"error"}` shape -- only the `invalid arguments:` / `invalid_arguments:`-prefixed
+/// message is special-cased. This guards against the prefix sniff in `error_to_json`
+/// over-firing.
+#[test]
+fn non_parse_error_keeps_status_error_shape() {
+    let v = error_to_json(
+        "webfetch",
+        &anyhow::anyhow!("web_search_enabled is disabled for this profile"),
+    );
+    assert_eq!(v["_byop_intercepted"], true);
+    assert_eq!(v["status"], "error");
+    assert!(v.get("error").is_none());
+}
