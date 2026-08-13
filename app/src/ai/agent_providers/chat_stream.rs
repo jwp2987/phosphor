@@ -243,8 +243,13 @@ fn render_ssh_session_block(
          All shell commands you run via `run_shell_command` execute on the REMOTE host, not on the local client.</fact>\n  \
          <warning>The [Environment] block (OS / shell / working directory) above describes the LOCAL client and may not match the remote host. \
          If you need precise remote info, probe it directly (e.g. `uname -a`, `cat /etc/os-release`, `pwd`).</warning>\n  \
+         <unavailable_tools>The file tools cannot reach this host: `read_files`, `apply_file_diffs` and bundled `read_skill` all require the \
+         Phosphor remote-server extension, which is NOT installed here. They will refuse every call. Do not call them, and do not \
+         interpret their refusal as a file being missing or empty.</unavailable_tools>\n  \
          <rules>\n    \
          - Run commands DIRECTLY (e.g. `uname -a`, `ls /`). Do NOT prepend `ssh {host} ...` — that opens a NESTED ssh session inside the current one.\n    \
+         - For FILE operations on this host, use `run_shell_command` — read with `cat path` (or `sed -n '1,200p' path` for a slice), write with a heredoc (`cat > path <<'EOF' ... EOF`), search with `grep -rn` / `find`. This overrides `run_shell_command`'s usual instruction to prefer the specialised file tools; that instruction assumes those tools work, and here they do not.\n    \
+         - `grep` and `file_glob` DO work here — they run over this same remote shell — so prefer them over hand-rolled `grep`/`find` commands for searching.\n    \
          - Treat the working directory and home directory shown above with skepticism; they may reflect the local client.\n    \
          - When LRC tag-in mode is active (an `<attached_running_command>` block is present), prefer `write_to_long_running_shell_command` with that command_id to inject keystrokes into this same remote PTY. Spawning a new shell would create a separate local-side ssh client, not interact with the remote process the user is watching.\n  \
          </rules>\n\
