@@ -4,6 +4,14 @@ All commands run in the current working directory by default. The command will b
 
 IMPORTANT: This tool is for terminal operations like git, npm, docker, build/test scripts, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) — use the specialized tools (`read_files`, `apply_file_diffs`, `grep`, `file_glob`) instead.
 
+**Exception — remote sessions without the remote-server extension.** On an SSH session where the Phosphor remote-server extension is not installed, the file tools cannot reach the filesystem and will refuse every call; their error says so explicitly. There is no other file tool to fall back to, so in that case the rule above is suspended and this tool IS the correct way to read and write files:
+
+- read: `cat path`, or `sed -n '1,200p' path` for a slice
+- write: a heredoc, e.g. `cat > path <<'EOF' ... EOF`
+- search: `grep -rn pattern path`, `find path -name '*.rs'`
+
+Use this route only after a file tool has actually refused for that reason. When the file tools work — any local session, or a remote host with the extension installed — they remain strictly preferred: they render diffs for approval, and a heredoc does not.
+
 # Long-running commands (CRITICAL)
 
 For dev servers, watchers, `tail -f`, interactive REPLs, or any process that does **not exit on its own**, you MUST set `wait_until_complete=false`. Otherwise the current turn will hang forever waiting for the command to terminate.

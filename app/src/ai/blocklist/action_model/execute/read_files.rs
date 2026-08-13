@@ -131,8 +131,17 @@ impl ReadFilesExecutor {
         {
             return ActionExecution::Sync(AIAgentActionResultType::ReadFiles(
                 ReadFilesResult::Error(
-                    "The file read/edit tool is not available on this remote session. \
-                     Try using a different tool."
+                    // Names the route that actually works instead of the pin's
+                    // "Try using a different tool." — see the longer rationale on the
+                    // matching message in
+                    // `request_file_edits/diff_application.rs`. The read side gets
+                    // `cat`/`sed -n` rather than the write side's heredoc.
+                    "File read/edit tools need the Phosphor remote-server extension, \
+                     which is not installed on this host, so nothing was read — do NOT \
+                     treat this as an empty or missing file. Until it is installed, read \
+                     files here with `run_shell_command` (`cat path`, or `sed -n \
+                     '1,200p' path` for a slice) — that is the supported route on this \
+                     session and overrides the general advice to prefer the file tools."
                         .to_string(),
                 ),
             ));

@@ -137,7 +137,25 @@ impl DiffApplicationError {
             }
             DiffApplicationError::EmptyDiff => "No diffs could be applied.".to_string(),
             DiffApplicationError::RemoteFileOperationsUnsupported => {
-                "The file read/edit tool is not available on this remote session. Try using a different tool.".to_string()
+                // Deliberate divergence from the pin, which words this identically in both
+                // this file and `read_files.rs`: "Try using a different tool." There is no
+                // other file-writing tool, so the pin's phrasing is a dead end — and worse,
+                // `run_shell_command`'s own description tells the model NOT to use it for
+                // file operations, so the only route that actually works is one the model
+                // has been forbidden to take. A 20B local model reads that as "no path" and
+                // stops; the shell exception is now stated in run_shell_command.md so the
+                // two descriptions agree.
+                //
+                // Nothing to port here: Warp builds its tool descriptions server-side
+                // (`app/src/ai/agent_providers` is 404 at the pin), so whatever guidance
+                // upstream's agent gets is not in its source tree. This text is
+                // fork-authored by necessity.
+                "File read/edit tools need the Phosphor remote-server extension, which is \
+                 not installed on this host, so this edit was NOT applied. Until it is \
+                 installed, write files here with `run_shell_command` (for example a \
+                 heredoc: `cat > path <<'EOF' ... EOF`) — that is the supported route on \
+                 this session and overrides the general advice to prefer the file tools."
+                    .to_string()
             }
         }
     }
