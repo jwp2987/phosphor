@@ -147,13 +147,48 @@ pub fn search_output_to_json(out: &SearchCodebaseOutput) -> Value {
     v
 }
 
+/// Recognizes the `"invalid_arguments: "` prefix that `chat_stream::dispatch_byop_codebase_tool`
+/// puts on the message it hands to [`error_to_json`] specifically when
+/// `serde_json::from_str::<SearchCodebaseArgs>` failed to parse the model's arguments — as
+/// opposed to a disabled-profile gate rejection (`codebase_context_enabled=false`). See
+/// `web_runtime::strip_invalid_arguments_prefix` for why message-prefix sniffing is the only
+/// signal available: `error_to_json`'s signature is fixed by its caller in `chat_stream.rs`,
+/// which this module does not own and cannot extend with an extra "this was a parse failure"
+/// flag.
+fn strip_invalid_arguments_prefix(message: &str) -> Option<&str> {
+    message.strip_prefix("invalid_arguments:").map(str::trim)
+}
+
 /// Error result carrying the `_byop_intercepted` sentinel (mirrors `web_runtime::error_to_json`).
+///
+/// When the wrapped message carries the `invalid_arguments:` prefix (see
+/// `strip_invalid_arguments_prefix`), emits the same synthetic-rejection shape
+/// `todowrite::invalid_arguments_result_to_json` uses, recognized by
+/// `convert_from::invalid_arguments_rejected_tool_call` so the UI renders a real
+/// `RejectedToolCall` instead of silently dropping the message. A gate rejection or any other
+/// genuine error keeps the original `{"status":"error"}` shape unchanged.
+///
+/// `received_args` isn't included: the raw argument string never reaches this function (only
+/// the already-formatted `anyhow::Error` does), and the recognizer in `convert_from.rs` only
+/// reads `error`/`tool`/`detail` — `received_args` is cosmetic parity with `todowrite`, not a
+/// functional requirement.
 pub fn error_to_json(e: &anyhow::Error) -> Value {
+    let message = format!("{e:#}");
+    let tool = crate::ai::agent_providers::tools::codebase::TOOL_NAME;
+    if let Some(detail) = strip_invalid_arguments_prefix(&message) {
+        return json!({
+            "_byop_intercepted": true,
+            "error": "invalid_arguments",
+            "detail": detail,
+            "tool": tool,
+            "hint": "Arguments did not match the tool's expected format.",
+        });
+    }
     json!({
         "_byop_intercepted": true,
         "status": "error",
-        "tool": crate::ai::agent_providers::tools::codebase::TOOL_NAME,
-        "message": format!("{e:#}"),
+        "tool": tool,
+        "message": message,
     })
 }
 

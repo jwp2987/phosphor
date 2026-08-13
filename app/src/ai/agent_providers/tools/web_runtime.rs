@@ -703,12 +703,50 @@ pub fn search_output_to_json(out: &SearchOutput) -> Value {
     }
     v
 }
+/// Recognizes the `"invalid_arguments: "` / `"invalid arguments: "` prefix that
+/// `chat_stream::dispatch_byop_web_tool` puts on the message it hands to [`error_to_json`]
+/// specifically when `serde_json::from_str::<FetchArgs|SearchToolArgs>` failed to parse the
+/// model's arguments — as opposed to a disabled-profile gate rejection or a genuine runtime
+/// error (failed HTTP call, blocked SSRF target, etc). `dispatch_byop_web_tool` builds the
+/// error via `anyhow::anyhow!(format!("invalid arguments: {e}"))`, so the prefix (and thus
+/// this function) is the only signal available here: `error_to_json`'s signature is fixed by
+/// its caller in `chat_stream.rs`, which this module does not own and cannot extend with an
+/// extra "this was a parse failure" flag.
+fn strip_invalid_arguments_prefix(message: &str) -> Option<&str> {
+    message
+        .strip_prefix("invalid_arguments:")
+        .or_else(|| message.strip_prefix("invalid arguments:"))
+        .map(str::trim)
+}
+
+/// Builds the same synthetic-rejection shape `todowrite::invalid_arguments_result_to_json`
+/// uses, recognized by `convert_from::invalid_arguments_rejected_tool_call` so the UI renders
+/// a real `RejectedToolCall` instead of silently dropping the message. See
+/// `strip_invalid_arguments_prefix` for why this only fires on the parse-failure path and not
+/// on a gate rejection or a genuine runtime error (those keep the original `{"status":"error"}`
+/// shape, since `result_to_json`-style errors are answers from a call that ran, not answers to
+/// a call whose arguments never parsed).
+///
+/// `received_args` isn't included: the raw argument string never reaches this function (only
+/// the already-formatted `anyhow::Error` does), and the recognizer in `convert_from.rs` only
+/// reads `error`/`tool`/`detail` — `received_args` is cosmetic parity with `todowrite`, not a
+/// functional requirement.
 pub fn error_to_json(tool: &str, e: &anyhow::Error) -> Value {
+    let message = format!("{e:#}");
+    if let Some(detail) = strip_invalid_arguments_prefix(&message) {
+        return json!({
+            "_byop_intercepted": true,
+            "error": "invalid_arguments",
+            "detail": detail,
+            "tool": tool,
+            "hint": "Arguments did not match the tool's expected format.",
+        });
+    }
     json!({
         "_byop_intercepted": true,
         "status": "error",
         "tool": tool,
-        "message": format!("{e:#}"),
+        "message": message,
     })
 }
 
