@@ -3608,17 +3608,45 @@ impl TypedActionView for AISettingsPageView {
                     .map(str::to_owned);
                 let client = http_client::Client::new();
                 let provider_id_for_handler = provider_id.clone();
+                // Only Ollama gets the extra `/api/show` enrichment pass below -- every other
+                // api_type falls through with an empty context_map, which the merge step
+                // treats as a no-op, so their models list is populated exactly as before.
+                let should_fetch_ollama_context =
+                    should_enrich_with_ollama_metadata(provider.api_type);
+                let ollama_base_url = provider.base_url.clone();
+                let ollama_api_key = api_key.clone();
                 ctx.spawn(
                     async move {
-                        crate::ai::agent_providers::fetch_openai_compatible_models(
+                        let fetched = crate::ai::agent_providers::fetch_openai_compatible_models(
                             client,
                             &provider.base_url,
                             api_key.as_deref(),
                         )
-                        .await
+                        .await?;
+
+                        let context_map = if should_fetch_ollama_context {
+                            let show_client = http_client::Client::new();
+                            let model_ids: Vec<String> =
+                                fetched.iter().map(|m| m.id.clone()).collect();
+                            crate::ai::agent_providers::openai_compatible::fetch_ollama_context_map(
+                                &show_client,
+                                &ollama_base_url,
+                                ollama_api_key.as_deref(),
+                                model_ids,
+                            )
+                            .await
+                        } else {
+                            std::collections::HashMap::new()
+                        };
+
+                        let result: Result<
+                            _,
+                            crate::ai::agent_providers::openai_compatible::OpenAiCompatibleError,
+                        > = Ok((fetched, context_map));
+                        result
                     },
                     move |view, result, ctx| match result {
-                        Ok(fetched) => {
+                        Ok((fetched, context_map)) => {
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                                 let mut providers = settings.agent_providers.value().clone();
                                 if let Some(p) = providers
@@ -3635,6 +3663,16 @@ impl TypedActionView for AISettingsPageView {
                                             p.models.push(
                                                 crate::settings::AgentProviderModel::from_id(m.id),
                                             );
+                                        }
+                                    }
+                                    // Ollama only (context_map is empty for every other
+                                    // api_type): backfill context_window/max_output_tokens on
+                                    // both newly-added and already-present models, but never
+                                    // clobber a value the user set by hand -- see
+                                    // apply_ollama_context_info.
+                                    for model in p.models.iter_mut() {
+                                        if let Some(info) = context_map.get(&model.id) {
+                                            apply_ollama_context_info(model, info);
                                         }
                                     }
                                 }
@@ -7589,5 +7627,121 @@ mod styles {
         } else {
             appearance.theme().disabled_ui_text_color()
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// "Fetch from API" model enrichment for Ollama providers
+// ---------------------------------------------------------------------------
+//
+// The OpenAI-compatible `/models` endpoint used by `FetchAgentProviderModels` has no
+// context-length field, so Ollama providers get an extra `/api/show`-based enrichment
+// pass (see `openai_compatible::fetch_ollama_context_map`). Every other api_type is
+// unaffected: `should_enrich_with_ollama_metadata` gates the extra pass, and
+// `apply_ollama_context_info` is only ever invoked with entries from a context_map that
+// stays empty for non-Ollama providers.
+
+/// Whether `FetchAgentProviderModels` should run the extra Ollama `/api/show`
+/// enrichment pass for this provider's api_type. Only [`crate::settings::AgentProviderApiType::Ollama`]
+/// does; every other variant keeps the plain `/models`-only behavior unchanged.
+fn should_enrich_with_ollama_metadata(api_type: crate::settings::AgentProviderApiType) -> bool {
+    matches!(api_type, crate::settings::AgentProviderApiType::Ollama)
+}
+
+/// Backfills `model`'s `context_window` / `max_output_tokens` from a fetched Ollama
+/// `/api/show` result -- but only when the existing value is still the "unspecified" `0`
+/// sentinel (see `AgentProviderModel::context_window` doc / `is_zero_u32` in
+/// `settings/ai.rs`). A value the user set by hand -- including a deliberately small
+/// window -- must never be overwritten.
+fn apply_ollama_context_info(
+    model: &mut crate::settings::AgentProviderModel,
+    info: &crate::ai::agent_providers::openai_compatible::OllamaContextInfo,
+) {
+    if model.context_window == 0
+        && let Some(context_window) = info.context_window
+    {
+        model.context_window = context_window;
+    }
+    if model.max_output_tokens == 0
+        && let Some(max_output_tokens) = info.max_output_tokens
+    {
+        model.max_output_tokens = max_output_tokens;
+    }
+}
+
+#[cfg(test)]
+mod ollama_fetch_enrichment_tests {
+    use super::*;
+    use crate::ai::agent_providers::openai_compatible::OllamaContextInfo;
+    use crate::settings::{AgentProviderApiType, AgentProviderModel};
+
+    #[test]
+    fn only_ollama_gets_the_metadata_enrichment_pass() {
+        assert!(should_enrich_with_ollama_metadata(
+            AgentProviderApiType::Ollama
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::OpenAi
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::OpenAiResp
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::Gemini
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::Anthropic
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::DeepSeek
+        ));
+        assert!(!should_enrich_with_ollama_metadata(
+            AgentProviderApiType::Vertex
+        ));
+    }
+
+    #[test]
+    fn fills_a_zero_context_window_from_fetched_info() {
+        let mut model = AgentProviderModel::from_id("gpt-oss:20b".to_string());
+        assert_eq!(model.context_window, 0);
+        let info = OllamaContextInfo {
+            context_window: Some(131072),
+            max_output_tokens: None,
+        };
+        apply_ollama_context_info(&mut model, &info);
+        assert_eq!(model.context_window, 131072);
+        assert_eq!(model.max_output_tokens, 0);
+    }
+
+    #[test]
+    fn never_clobbers_a_user_set_non_zero_value() {
+        let mut model = AgentProviderModel::from_id("gpt-oss:20b".to_string());
+        model.context_window = 8192; // user deliberately set a smaller window
+        model.max_output_tokens = 1024;
+        let info = OllamaContextInfo {
+            context_window: Some(131072),
+            max_output_tokens: Some(4096),
+        };
+        apply_ollama_context_info(&mut model, &info);
+        assert_eq!(
+            model.context_window, 8192,
+            "a user-set non-zero context_window must not be overwritten"
+        );
+        assert_eq!(
+            model.max_output_tokens, 1024,
+            "a user-set non-zero max_output_tokens must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn nothing_usable_leaves_fields_at_zero() {
+        let mut model = AgentProviderModel::from_id("gpt-oss:20b".to_string());
+        let info = OllamaContextInfo {
+            context_window: None,
+            max_output_tokens: None,
+        };
+        apply_ollama_context_info(&mut model, &info);
+        assert_eq!(model.context_window, 0);
+        assert_eq!(model.max_output_tokens, 0);
     }
 }
