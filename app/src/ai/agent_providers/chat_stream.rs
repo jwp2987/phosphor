@@ -197,19 +197,30 @@ fn render_lrc_request_context(params: &RequestParams) -> Option<String> {
 /// Zap: renders the SSH session status block, appended to the end of the system prompt.
 ///
 /// Trigger condition: `SessionContext.is_legacy_ssh()` is true (the user typed
-/// `ssh xx@xx` by hand in the local PTY to get into a remote host that doesn't have the
-/// warp shell hook installed). In this kind of session:
-/// - `session_type` is still `Local`
+/// `ssh xx@xx` by hand in the local PTY rather than going through the remote-server
+/// extension). In this kind of session:
 /// - the whole system prompt's [Environment] block describes the **local client's** OS/shell,
-///   while the PTY is actually currently running on the **remote host**
+///   while the PTY is actually currently running on the **remote host** — which is the entire
+///   reason this block exists
+/// - **Corrected 2026-08-13:** this previously said "`session_type` is still `Local`". It is
+///   not. The legacy-SSH executor arm is
+///   `BootstrapSessionType::WarpifiedRemote if is_legacy_ssh_session`
+///   (`terminal/model/session/command_executor.rs:316`), so a legacy-SSH session is
+///   `WarpifiedRemote` with `host_id: None` — verified at runtime by such a session logging
+///   "creating a legacy ssh executor!" while its file edits fail with
+///   `RemoteFileOperationsUnsupported`, which only `is_remote()` reaches.
 ///
 /// Without proactively telling the model this, the LLM will infer from the local OS in the
 /// system prompt that "the target is remote, I need to ssh there first," and will output a
 /// doubly-nested command like `ssh xx@xx uname -a`.
 ///
-/// Note: warpified SSH (`SessionType::WarpifiedRemote`) is not handled here — on that path
-/// the remote shell hook has already re-bootstrapped, so host_info / shell are already the
-/// remote's true values and the prompt is already correct as-is.
+/// Note: a *fully* warpified SSH session is not handled here — on that path the remote shell
+/// hook has re-bootstrapped, so host_info / shell are already the remote's true values and the
+/// prompt is correct as-is.
+///
+/// The discriminator is `is_legacy_ssh()`, NOT `session_type` — see the correction above.
+/// Both kinds are `SessionType::WarpifiedRemote`, so testing the session type here would
+/// match both and render this block for a session that does not need it.
 fn render_ssh_session_block(
     session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<String> {

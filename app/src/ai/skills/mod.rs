@@ -62,7 +62,21 @@ impl SkillInventoryItem {
 /// Ported from the pin's `ai/skills/mod.rs::ActiveSkillLookupError` (`02b53fcd8`).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ActiveSkillLookupError {
-    #[error("Bundled skills are not available on this remote session")]
+    // Deliberately does NOT point at `run_shell_command`, unlike the `read_files` /
+    // `apply_file_diffs` remote refusals: those fall back to the shell because the target
+    // file exists on the remote host. A bundled skill does not — it ships inside the client
+    // app, so there is nothing on that host for `cat` to read, and suggesting the shell
+    // would send the model chasing a file that cannot be there. The remote-server extension
+    // is what puts bundled resources on the host (`crates/remote_server/src/setup.rs`'s
+    // `remote_server_bundled_resources_dir`), so installing it is the actual remedy; until
+    // then the honest instruction is to carry on without the skill.
+    #[error(
+        "Bundled skills are not available on this remote session: they ship inside the \
+         Phosphor client, and this host does not have the remote-server extension \
+         installed to receive them. The skill was NOT loaded — do not assume it is empty \
+         or that its instructions do not apply. Proceed using your own judgement, or ask \
+         the user to install the remote-server extension on this host."
+    )]
     BundledSkillsUnavailable,
     #[error("Skill not found: {reference}")]
     NotFound { reference: SkillReference },

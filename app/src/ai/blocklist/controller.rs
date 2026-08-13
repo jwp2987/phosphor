@@ -96,10 +96,24 @@ pub struct SessionContext {
     shell: Option<ShellLaunchData>,
     current_working_directory: Option<String>,
     /// Zap: connection info for a legacy SSH session (the user typed `ssh xxx@yyy`
-    /// directly into a local PTY, and the remote has no warp shell hook installed).
-    /// `session_type` is still `Local`, but the PTY is actually running remotely, and
-    /// this needs to be told to the LLM in the prompt, otherwise the model assumes
-    /// it's on the local OS by default.
+    /// directly into a local PTY, rather than going through the remote-server
+    /// extension).
+    ///
+    /// The PTY is running remotely and this needs to be told to the LLM in the prompt,
+    /// otherwise the model assumes it's on the local OS by default.
+    ///
+    /// **Corrected 2026-08-13: this said "`session_type` is still `Local`". It is not.**
+    /// The legacy-SSH executor arm is
+    /// `BootstrapSessionType::WarpifiedRemote if is_legacy_ssh_session`
+    /// (`terminal/model/session/command_executor.rs:316`), so the two co-occur by
+    /// construction — a legacy-SSH session is `WarpifiedRemote` with `host_id: None`.
+    /// Confirmed at runtime: such a session logs "creating a legacy ssh executor!" and
+    /// its file-edit attempts return `RemoteFileOperationsUnsupported`, which is only
+    /// reachable when `SessionContext::is_remote()` is true.
+    ///
+    /// The distinction matters: if `session_type` really were `Local`, `apply_diff_model`
+    /// would take the LOCAL branch and write the *client's* filesystem while the model
+    /// believed it was editing the remote host.
     ssh_connection_info: Option<InteractiveSshCommand>,
     /// Whether this is a legacy SSH session (`IsLegacySSHSession::Yes`).
     is_legacy_ssh: bool,
