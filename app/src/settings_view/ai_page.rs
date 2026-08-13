@@ -2259,8 +2259,8 @@ impl AISettingsPageView {
                 // may briefly disagree mid-rebuild).
                 for model_fields in &fields.models {
                     if let Some(m) = p.models.get_mut(model_fields.model_index) {
-                        m.name = model_fields.name.clone();
-                        m.id = model_fields.id.clone();
+                        (m.id, m.name) =
+                            trimmed_model_id_and_name(&model_fields.id, &model_fields.name);
                         m.context_window = model_fields.context_window;
                         m.max_output_tokens = model_fields.max_output_tokens;
                         // The form only surfaces the input/output rates; the optional
@@ -2302,6 +2302,59 @@ impl AISettingsPageView {
                 toast_stack.add_ephemeral_toast(DismissibleToast::error(message), window_id, ctx);
             });
         }
+    }
+}
+
+/// Trims a model id/name pair the way the provider-edit form's "Save" button writes them,
+/// matching what `settings/ai.rs` already does on config load and in
+/// `AgentProviderModel::from_id` -- the two paths must agree on what "no name" means.
+///
+/// The id is trimmed unconditionally: an untrimmed id used to reach the wire verbatim as the
+/// `model` field of the chat request (observed as `"model":"gpt-oss:20b "` on 35 logged
+/// requests) because nothing trimmed it again between the edit form and the network call. A
+/// name that is empty after trimming is treated as absent and falls back to the (trimmed) id,
+/// rather than saving a blank display name.
+fn trimmed_model_id_and_name(id: &str, name: &str) -> (String, String) {
+    let id = id.trim().to_owned();
+    let name = name.trim();
+    let name = if name.is_empty() {
+        id.clone()
+    } else {
+        name.to_owned()
+    };
+    (id, name)
+}
+
+#[cfg(test)]
+mod trimmed_model_id_and_name_tests {
+    use super::*;
+
+    #[test]
+    fn trims_a_trailing_space_off_the_id() {
+        let (id, name) = trimmed_model_id_and_name("gpt-oss:20b ", "gpt-oss:20b ");
+        assert_eq!(id, "gpt-oss:20b");
+        assert_eq!(name, "gpt-oss:20b");
+    }
+
+    #[test]
+    fn trims_leading_and_trailing_whitespace_off_both_fields() {
+        let (id, name) = trimmed_model_id_and_name("  gpt-oss:20b\t", "  My Model\n");
+        assert_eq!(id, "gpt-oss:20b");
+        assert_eq!(name, "My Model");
+    }
+
+    #[test]
+    fn a_whitespace_only_name_falls_back_to_the_trimmed_id() {
+        let (id, name) = trimmed_model_id_and_name("gpt-oss:20b", "   ");
+        assert_eq!(id, "gpt-oss:20b");
+        assert_eq!(name, "gpt-oss:20b");
+    }
+
+    #[test]
+    fn an_already_clean_pair_is_unchanged() {
+        let (id, name) = trimmed_model_id_and_name("gpt-oss:20b", "My Model");
+        assert_eq!(id, "gpt-oss:20b");
+        assert_eq!(name, "My Model");
     }
 }
 
