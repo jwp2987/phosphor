@@ -568,7 +568,14 @@ fn invalid_arguments_rejected_tool_call(
     server_message_data: &str,
 ) -> Option<(Option<String>, String)> {
     let payload: serde_json::Value = serde_json::from_str(server_message_data).ok()?;
-    if payload.get("error").and_then(serde_json::Value::as_str) != Some("invalid_arguments") {
+    // `unknown_tool` is the same class of event — a tool call rejected before it ran — split
+    // out of `invalid_arguments` so the model is told to fix the NAME rather than the
+    // arguments. It must stay recognized here or splitting it would have silently undone
+    // this function's whole purpose for that case.
+    if !matches!(
+        payload.get("error").and_then(serde_json::Value::as_str),
+        Some("invalid_arguments" | "unknown_tool")
+    ) {
         return None;
     }
     let tool = payload

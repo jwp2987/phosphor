@@ -6288,15 +6288,50 @@ pub async fn generate_byop_output(
                         call.fn_name,
                         call.call_id
                     );
-                    let error_payload = serde_json::json!({
-                        "error": "invalid_arguments",
-                        "detail": e.to_string(),
-                        "tool": call.fn_name,
-                        "received_args": &args_str,
-                        "hint": "Arguments did not match the tool's JSON Schema. \
-                                 Re-emit the tool call with corrected types / required fields, \
-                                 or pick a different tool.",
-                    });
+                    // Both payloads state `executed: false` outright. Without it a model
+                    // reads a structured reply to "search for compose files" as having
+                    // searched: gpt-oss:20b took a REJECTED call and reported "no
+                    // docker-compose.yml-style files were present", then created one on the
+                    // strength of that. It had looked at nothing. In a directory that did
+                    // contain a compose file, that sequence clobbers it — so the payload has
+                    // to say "this produced no result" and not merely "this was an error".
+                    let error_payload = match e.downcast_ref::<UnknownToolName>() {
+                        // The name is wrong, so telling the model to fix its ARGUMENTS
+                        // (the old shared hint) sends it round the loop described on
+                        // `UnknownToolName`. Name the real problem and hand it the menu:
+                        // the valid names are right here, and the model has no other way
+                        // to discover them mid-turn.
+                        Some(_) => serde_json::json!({
+                            "error": "unknown_tool",
+                            "detail": e.to_string(),
+                            "tool": call.fn_name,
+                            "received_args": &args_str,
+                            "executed": false,
+                            "available_tools": tools::REGISTRY
+                                .iter()
+                                .map(|t| t.name)
+                                .collect::<Vec<_>>(),
+                            "hint": "No tool with that name exists, so NOTHING RAN and you \
+                                     have no result — do not draw any conclusion from this, \
+                                     and in particular do not treat it as an empty or \
+                                     negative result. Your ARGUMENTS were not the problem; \
+                                     re-issue the call using one of the names in \
+                                     `available_tools`.",
+                        }),
+                        None => serde_json::json!({
+                            "error": "invalid_arguments",
+                            "detail": e.to_string(),
+                            "tool": call.fn_name,
+                            "received_args": &args_str,
+                            "executed": false,
+                            "hint": "The tool exists but the call was REJECTED before it ran, \
+                                     so you have no result — do not draw any conclusion from \
+                                     this, and in particular do not treat it as an empty or \
+                                     negative result. Arguments did not match the tool's JSON \
+                                     Schema. Re-emit the tool call with corrected types / \
+                                     required fields, or pick a different tool.",
+                        }),
+                    };
                     let error_content = serde_json::to_string(&error_payload)
                         .unwrap_or_else(|_| r#"{"error":"invalid_arguments"}"#.to_owned());
                     final_messages.push(make_tool_call_carrier_message(
@@ -6865,6 +6900,29 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
     }
 }
 
+/// The model named a tool that does not exist. Carried as a distinct TYPE, not as a
+/// recognizable message prefix, so the emit site can branch on it via `downcast_ref` — the
+/// two failure modes need different remedies, and the retry a model makes is only as good as
+/// the one it is told to make.
+///
+/// Observed: `gpt-oss:20b` called a nonexistent `search` (it meant `file_glob`), was handed
+/// the generic `invalid_arguments` payload telling it to correct its *arguments*, and
+/// dutifully re-sent the same nonexistent name 8 seconds later with the query reworded from
+/// "seafile docker" to "seafile docker-compose". It changed the one thing that was fine and
+/// kept the one thing that was wrong, because that is what the hint asked for.
+#[derive(Debug)]
+struct UnknownToolName {
+    name: String,
+}
+
+impl std::fmt::Display for UnknownToolName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown tool name: {}", self.name)
+    }
+}
+
+impl std::error::Error for UnknownToolName {}
+
 fn parse_incoming_tool_call(
     call: &ToolCall,
     mcp_ctx: Option<&crate::ai::agent::MCPContext>,
@@ -6881,7 +6939,9 @@ fn parse_incoming_tool_call(
         return tools::mcp::parse_mcp_tool_call(&call.fn_name, &args_str, mcp_ctx);
     }
     let Some(tool) = tools::lookup(&call.fn_name) else {
-        anyhow::bail!("unknown tool name: {}", call.fn_name);
+        return Err(anyhow::Error::new(UnknownToolName {
+            name: call.fn_name.clone(),
+        }));
     };
     match (tool.from_args)(&args_str) {
         Ok(t) => Ok(t),
