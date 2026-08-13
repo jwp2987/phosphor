@@ -5,7 +5,7 @@ Depends: fontconfig, libegl1, libwayland-client0, libwayland-egl1, libx11-6, lib
 Recommends: libgl1-mesa-dri, yaru-icon-theme | adwaita-icon-theme-full
 Priority: optional
 Architecture: @@ARCH@@
-Maintainer: Phosphor Maintainers <zap-maintainers@localhost>
+Maintainer: Phosphor Maintainers <phosphor-maintainers@localhost>
 Homepage: https://github.com/jwp2987/phosphor
 Description: Phosphor, a community fork of the Rust-based Warp terminal
  Phosphor strips the mandatory cloud dependency from Warp, opens up the AI

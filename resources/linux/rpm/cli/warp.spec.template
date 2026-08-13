@@ -2,13 +2,13 @@
 # Package Spec
 ###############################################################################
 
-Summary:     Zap CLI — community fork of Warp's local orchestration platform
+Summary:     Phosphor CLI — community fork of Warp's local orchestration platform
 Name:        @@PACKAGE_NAME@@
 Version:     @@VERSION@@
 Release:     @@RELEASE@@
-Vendor:      Zap Maintainers
-Url:         https://github.com/zerx-lab/warp
-Packager:    Zap Maintainers <zap-maintainers@localhost>
+Vendor:      Phosphor Maintainers
+Url:         https://github.com/jwp2987/phosphor
+Packager:    Phosphor Maintainers <phosphor-maintainers@localhost>
 License:     AGPL-3.0-only AND MIT
 Obsoletes:   warp-cli < %{version}
 
@@ -26,8 +26,8 @@ prefix:      /opt
 ###############################################################################
 
 %description
-Zap CLI is a tool for running, managing, and orchestrating coding agents
-locally. It is the CLI half of the Zap community fork of Warp.
+Phosphor CLI is a tool for running, managing, and orchestrating coding agents
+locally. It is the CLI half of the Phosphor community fork of Warp.
 
 ###############################################################################
 # Build rule - how does the package get built?
