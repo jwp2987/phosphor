@@ -232,9 +232,29 @@ struct CreateArgs {
     new_documents: Vec<NewDoc>,
 }
 
+/// `content`'s alias below is not speculative: `apply_file_diffs::Operation::Create` (in
+/// `edit.rs`) has the identical field name and role (full document/file body), and
+/// `~/.local/state/zap/zap.log*` records the same model (`gpt-oss:20b`) sending it as
+/// `contents` there twice in one session --
+/// `2026-08-12T17:06:49Z ... err=missing field \`content\` ... args_str={"operations":[{"contents":"version: '3'\n...`
+/// and `2026-08-12T18:17:10Z ... err=missing field \`content\` ... args_str={"summary":"Create
+/// hi.txt","operations":[{"contents":"Hello world!\n",...` -- taking down the whole call in
+/// `serde_json::from_str` before any logic ever ran. `NewDoc` fails the same way on the same
+/// synonym, so the alias is applied here by analogy to that observed payload (grep the log
+/// yourself for `apply_file_diffs` + `contents` to reproduce) rather than a fresh log line for
+/// this specific tool -- no `create_documents`/`new_documents` failure appears in the log.
+///
+/// `title` has no observed synonym — nothing like `name` appears in the log for this tool —
+/// so none is added here. Per the maintainer's standing rule: aliases come from observed
+/// payloads, not guesswork; an unobserved alias is an untested code path, and a wrong guess
+/// silently accepts a field that means something else.
+///
+/// `create_parameters()` below still advertises only the canonical names, so well-behaved
+/// models are unaffected.
 #[derive(Debug, Deserialize)]
 struct NewDoc {
     title: String,
+    #[serde(alias = "contents")]
     content: String,
 }
 
@@ -308,3 +328,7 @@ pub static CREATE_DOCUMENTS: OpenAiTool = OpenAiTool {
     from_args: create_from_args,
     result_to_json: create_result_to_json,
 };
+
+#[cfg(test)]
+#[path = "documents_tests.rs"]
+mod tests;
