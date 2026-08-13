@@ -71,7 +71,8 @@ use crate::terminal::session_settings::{
     SessionSettingsChangedEvent,
 };
 use crate::terminal::settings::{
-    MaximumGridSize, ShowTerminalZeroStateBlock, TerminalSettings, UseAudibleBell,
+    MaximumGridSize, Osc52ClipboardAccess, Osc52ClipboardAccessSetting, ShowTerminalZeroStateBlock,
+    TerminalSettings, UseAudibleBell,
 };
 use crate::terminal::{BlockListSettings, SnackbarEnabled};
 use crate::undo_close::UndoCloseSettings;
@@ -646,6 +647,7 @@ pub enum FeaturesPageAction {
     ToggleShowInputHintText,
     ToggleUseAudibleBell,
     ToggleShowTerminalZeroStateBlock,
+    SetOsc52ClipboardAccess(Osc52ClipboardAccess),
     TogglePreferLowPowerGPU,
     ToggleVimMode,
     ToggleVimUnnamedSystemClipboard,
@@ -1068,6 +1070,12 @@ impl FeaturesPageAction {
                     value: to_string(*terminal_settings.use_audible_bell),
                 }
             }
+            Self::SetOsc52ClipboardAccess(osc52_clipboard_access) => {
+                TelemetryEvent::FeaturesPageAction {
+                    action: "SetOsc52ClipboardAccess".to_string(),
+                    value: format!("{osc52_clipboard_access:?}"),
+                }
+            }
             Self::ToggleVimMode => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleVimMode".to_string(),
                 value: to_string(*AppEditorSettings::as_ref(ctx).vim_mode.value()),
@@ -1239,6 +1247,7 @@ pub struct FeaturesPageView {
 
     button_mouse_states: MouseStateHandles,
     ctrl_tab_behavior_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
+    osc52_clipboard_access_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
 
     global_hotkey_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
     activation_hotkey_keybinding_editor_state: KeybindingEditorState,
@@ -1310,6 +1319,13 @@ impl TypedActionView for FeaturesPageView {
                     report_if_error!(keys_settings
                         .ctrl_tab_behavior
                         .set_value(*ctrl_tab_behavior, ctx));
+                });
+            }
+            SetOsc52ClipboardAccess(osc52_clipboard_access) => {
+                TerminalSettings::handle(ctx).update(ctx, |terminal_settings, ctx| {
+                    report_if_error!(terminal_settings
+                        .osc52_clipboard_access
+                        .set_value(*osc52_clipboard_access, ctx));
                 });
             }
             ToggleCopyOnSelect => {
@@ -2078,6 +2094,15 @@ impl FeaturesPageView {
                         );
                     });
                 }
+                if matches!(
+                    event,
+                    TerminalSettingsChangedEvent::Osc52ClipboardAccessSetting { .. }
+                ) {
+                    Self::update_osc52_clipboard_access_dropdown(
+                        me.osc52_clipboard_access_dropdown.clone(),
+                        ctx,
+                    );
+                }
                 ctx.notify()
             },
         );
@@ -2195,6 +2220,9 @@ impl FeaturesPageView {
 
         let ctrl_tab_behavior_dropdown = ctx.add_typed_action_view(Dropdown::new);
         Self::update_ctrl_tab_behavior_dropdown(ctrl_tab_behavior_dropdown.clone(), ctx);
+
+        let osc52_clipboard_access_dropdown = ctx.add_typed_action_view(Dropdown::new);
+        Self::update_osc52_clipboard_access_dropdown(osc52_clipboard_access_dropdown.clone(), ctx);
 
         ctx.subscribe_to_model(&KeysSettings::handle(ctx), |me, _, event, ctx| {
             if matches!(
@@ -2433,6 +2461,7 @@ impl FeaturesPageView {
 
             tab_behavior_dropdown,
             ctrl_tab_behavior_dropdown,
+            osc52_clipboard_access_dropdown,
             graphics_backend_dropdown,
             new_tab_placement_dropdown,
             default_session_mode_dropdown,
@@ -2715,6 +2744,14 @@ impl FeaturesPageView {
 
         terminal_widgets.push(Box::new(SmartSelectWidget::default()));
         terminal_widgets.push(Box::new(CopyOnSelectWidget::default()));
+
+        if terminal_settings
+            .osc52_clipboard_access
+            .is_supported_on_current_platform()
+        {
+            terminal_widgets.push(Box::new(Osc52ClipboardAccessWidget::default()));
+        }
+
         terminal_widgets.push(Box::new(NewTabPlacementWidget::default()));
 
         let mut system_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![];
@@ -2821,6 +2858,45 @@ impl FeaturesPageView {
                         DropdownItem::new(
                             val.as_dropdown_label(),
                             FeaturesPageAction::SetCtrlTabBehavior(val),
+                        )
+                    })
+                    .collect(),
+                ctx,
+            );
+            dropdown.set_selected_by_index(selected_index, ctx);
+        });
+    }
+
+    fn update_osc52_clipboard_access_dropdown(
+        dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        dropdown.update(ctx, |dropdown, ctx| {
+            let values = vec![
+                Osc52ClipboardAccess::Deny,
+                Osc52ClipboardAccess::WriteOnly,
+                Osc52ClipboardAccess::ReadWrite,
+            ];
+
+            let current_value = *TerminalSettings::as_ref(ctx).osc52_clipboard_access;
+
+            let selected_index = values
+                .iter()
+                .position(|val| *val == current_value)
+                .unwrap_or_else(|| {
+                    log::error!(
+                        "Could not find current OSC 52 clipboard access value in dropdown option list"
+                    );
+                    0
+                });
+
+            dropdown.set_items(
+                values
+                    .into_iter()
+                    .map(|val| {
+                        DropdownItem::new(
+                            val.as_dropdown_label(),
+                            FeaturesPageAction::SetOsc52ClipboardAccess(val),
                         )
                     })
                     .collect(),
@@ -6750,6 +6826,52 @@ impl SettingsWidget for CopyOnSelectWidget {
 }
 
 #[derive(Default)]
+struct Osc52ClipboardAccessWidget {}
+
+impl SettingsWidget for Osc52ClipboardAccessWidget {
+    type View = FeaturesPageView;
+
+    fn search_terms(&self) -> &str {
+        "osc52 osc 52 clipboard remote ssh tmux paste copy security"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let mut column = Flex::column();
+        let label = crate::t!("settings-features-osc52-clipboard-access-label");
+        let description = crate::t!("settings-features-osc52-clipboard-access-description");
+        add_setting(
+            &mut column,
+            &TerminalSettings::as_ref(app).osc52_clipboard_access,
+            || {
+                render_dropdown_item(
+                    appearance,
+                    &label,
+                    Some(&description),
+                    None,
+                    LocalOnlyIconState::for_setting(
+                        Osc52ClipboardAccessSetting::storage_key(),
+                        Osc52ClipboardAccessSetting::sync_to_cloud(),
+                        &mut view
+                            .button_mouse_states
+                            .local_only_icon_tooltip_states
+                            .borrow_mut(),
+                        app,
+                    ),
+                    None,
+                    &view.osc52_clipboard_access_dropdown,
+                )
+            },
+        );
+        column.finish()
+    }
+}
+
+#[derive(Default)]
 struct NewTabPlacementWidget {}
 
 impl SettingsWidget for NewTabPlacementWidget {
@@ -7171,3 +7293,7 @@ impl SettingsWidget for GraphicsBackendWidget {
         col.finish()
     }
 }
+
+#[cfg(test)]
+#[path = "features_page_tests.rs"]
+mod tests;
