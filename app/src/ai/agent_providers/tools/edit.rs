@@ -31,22 +31,49 @@ struct Args {
     operations: Vec<Operation>,
 }
 
+/// The aliases below are not speculative — each is a spelling a BYOP model actually sent,
+/// taken from `from_args failed` lines in the app log:
+///
+/// ```text
+/// missing field `file_path` … args_str={"operations":[{"content":…,"op":"create",
+///                                        "path":"docker-compose.yml",…}]}
+/// missing field `content`   … args_str={"operations":[{"contents":"Hello world!\n",…}]}
+/// ```
+///
+/// A synonym costs the entire call: `serde_json::from_str` fails before any file logic runs,
+/// so the user gets no file and (before `ce097bad`) no error either. Accepting the synonym is
+/// strictly better than losing the operation, and it cannot introduce ambiguity — serde
+/// rejects an alias that collides with another field in the same struct.
+///
+/// `parameters()` still advertises only the canonical names, so well-behaved models are
+/// unaffected. Add to this list only from observed payloads, never from guesswork: an
+/// unobserved alias is an untested code path, and a *wrong* guess silently accepts a field
+/// that means something else.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op")]
 enum Operation {
     /// String search-and-replace (most common, good for one or two changes).
     #[serde(rename = "edit")]
     Edit {
+        #[serde(alias = "path")]
         file_path: String,
         search: String,
         replace: String,
     },
     /// Create a new file.
     #[serde(rename = "create")]
-    Create { file_path: String, content: String },
+    Create {
+        #[serde(alias = "path")]
+        file_path: String,
+        #[serde(alias = "contents")]
+        content: String,
+    },
     /// Delete an existing file.
     #[serde(rename = "delete")]
-    Delete { file_path: String },
+    Delete {
+        #[serde(alias = "path")]
+        file_path: String,
+    },
 }
 
 fn parameters() -> Value {
