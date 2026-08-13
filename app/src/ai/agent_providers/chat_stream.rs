@@ -4029,9 +4029,27 @@ fn effective_adapter_kind_for(
 ///    leave the path alone.
 /// 3. Left empty — use [`AgentProviderApiType::default_base_url`].
 ///
-/// Extra tolerance for Anthropic: if the user pastes the full endpoint (`…/v1/messages`),
-/// strip the trailing `messages` segment so genai doesn't append it again, producing
-/// `…/messages/messages`.
+/// Extra tolerance for a pasted **full** endpoint (the user copied the whole URL —
+/// including the service path the adapter itself appends — out of the provider's docs,
+/// instead of just the base). Each branch below strips exactly the literal trailing
+/// segment(s) the corresponding genai adapter would otherwise append a second time:
+/// - Anthropic: trailing `messages` (`…/v1/messages` → `…/v1/`).
+/// - `OpenAi` / `OpenAiResp` / `DeepSeek`: trailing `chat/completions` or `responses`
+///   (`…/v1/chat/completions` → `…/v1/`). `DeepSeek` only strips `chat/completions` — it
+///   delegates to genai's OpenAI adapter (`chat/completions` only; see `DeepSeekAdapter` in
+///   `lib/rust-genai/src/adapter/adapters/all_adapters.rs`) and never goes through the
+///   Responses API. `OpenAi` also strips `responses` because `effective_adapter_kind_for`
+///   silently upgrades `OpenAi` + the official host + a gpt-5/codex model to the Responses
+///   adapter, so a pasted `.../v1/responses` URL is legitimate under the `OpenAi` api_type
+///   too.
+/// - Gemini: trailing `models/<model>:generateContent` or
+///   `models/<model>:streamGenerateContent` (matched by the literal `:generateContent` /
+///   `:streamGenerateContent` action suffix on the last path segment — the pasted URL's
+///   model id does not need to match the model actually selected in Settings).
+///
+/// Deliberately narrow: only these exact well-known suffixes are stripped, so a
+/// legitimately unusual base URL (e.g. one that happens to end in a path segment that
+/// merely resembles a service name for an unrelated reason) is left alone.
 fn normalize_endpoint_url(api_type: AgentProviderApiType, base_url: &str) -> String {
     let trimmed = base_url.trim();
 
@@ -4067,6 +4085,58 @@ fn normalize_endpoint_url(api_type: AgentProviderApiType, base_url: &str) -> Str
         if let Some(prefix) = path.strip_suffix("/messages") {
             let new_path = if prefix.is_empty() { "/" } else { prefix };
             parsed.set_path(&format!("{new_path}/"));
+        }
+    }
+
+    // Same tolerance as the Anthropic branch above, for the OpenAI-family adapters. See
+    // the function doc comment for exactly which suffix is stripped for which api_type
+    // and why.
+    if matches!(
+        api_type,
+        AgentProviderApiType::OpenAi
+            | AgentProviderApiType::OpenAiResp
+            | AgentProviderApiType::DeepSeek
+    ) {
+        let path = parsed.path().trim_end_matches('/');
+        let stripped = if api_type == AgentProviderApiType::DeepSeek {
+            path.strip_suffix("/chat/completions")
+        } else {
+            path.strip_suffix("/chat/completions")
+                .or_else(|| path.strip_suffix("/responses"))
+        };
+        if let Some(prefix) = stripped {
+            let new_path = if prefix.is_empty() { "/" } else { prefix };
+            parsed.set_path(&format!("{new_path}/"));
+        }
+    }
+
+    // Same tolerance again, for Gemini: strips a pasted `models/<model>:generateContent` /
+    // `models/<model>:streamGenerateContent` tail. See the function doc comment.
+    //
+    // Unlike the two branches above, this one also clears the query string when it fires.
+    // Google's own docs/console show the example endpoint with the API key as a `?key=...`
+    // query param, which a user is likely to copy verbatim; genai's Gemini adapter builds
+    // the final URL with a plain `format!("{base_url}models/{m}:generateContent")` (see
+    // `lib/rust-genai/src/adapter/adapters/gemini/adapter_impl.rs`), which has no notion of
+    // an existing query string on `base_url` — left in place, it would corrupt the request
+    // path (`.../v1beta/?key=XXXmodels/gemini:generateContent`). genai sends the key itself
+    // via the `x-goog-api-key` header, so the query param is redundant here anyway.
+    if api_type == AgentProviderApiType::Gemini {
+        let path = parsed.path().trim_end_matches('/');
+        if let Some((prefix, last_seg)) = path.rsplit_once('/') {
+            let is_generate_action = last_seg.ends_with(":generateContent")
+                || last_seg.ends_with(":streamGenerateContent");
+            if is_generate_action {
+                if let Some(before_models) = prefix.strip_suffix("/models") {
+                    let new_path = if before_models.is_empty() {
+                        "/"
+                    } else {
+                        before_models
+                    };
+                    parsed.set_path(&format!("{new_path}/"));
+                    parsed.set_query(None);
+                }
+            }
         }
     }
 
@@ -4447,6 +4517,11 @@ fn build_chat_options(
     effort_setting: crate::settings::ReasoningEffortSetting,
     extra_headers: Vec<(String, String)>,
     conversation_id: Option<&str>,
+    // `AgentProviderModel::max_output_tokens` (`app/src/settings/ai.rs`), passed through
+    // verbatim. **`0` means "unspecified"** — same convention as the settings field itself
+    // (see `is_zero_u32` there) — and must NOT be forwarded to genai as a literal cap of
+    // zero output tokens, which would break every request.
+    max_output_tokens: u32,
 ) -> ChatOptions {
     let mut opts = ChatOptions::default()
         .with_capture_content(true)
@@ -4457,6 +4532,11 @@ fn build_chat_options(
         // embed in content and fold it into a reasoning chunk, so the UI displays more
         // cleanly. Only takes effect on adapters that support this format.
         .with_normalize_reasoning_content(true);
+
+    // 0 = unspecified (never sent); any nonzero value is the user's configured cap.
+    if max_output_tokens != 0 {
+        opts = opts.with_max_tokens(max_output_tokens);
+    }
 
     // Prompt caching (1:1 aligned with the `options()` function in opencode's
     // `packages/opencode/src/provider/transform.ts`). Key points:
@@ -4655,6 +4735,15 @@ pub struct ByopOutputInput {
     pub lrc_command_id: Option<String>,
     pub lrc_should_spawn_subagent: bool,
     pub context_window: Option<u32>,
+    /// `AgentProviderModel::max_output_tokens` (`app/src/settings/ai.rs`) for the selected
+    /// model. `0` = unspecified, same convention as the settings field — forwarded verbatim
+    /// to [`build_chat_options`], which is responsible for not sending it as a literal cap
+    /// of zero.
+    ///
+    /// NOTE for whoever wires this call site (in `response_stream.rs`, outside this file's
+    /// ownership): source it the same way `context_window` above is sourced — from the
+    /// resolved `AgentProviderModel` for `model_id`, e.g. `model.max_output_tokens`.
+    pub max_output_tokens: u32,
     pub cancellation_rx: futures::channel::oneshot::Receiver<()>,
     /// Attachment caps with the user's settings (the three-state image/pdf/audio
     /// Override) already applied. Computed by `resolve_for_model`, keeping UI display and
@@ -4791,6 +4880,7 @@ pub async fn generate_byop_output(
         lrc_command_id,
         lrc_should_spawn_subagent,
         context_window,
+        max_output_tokens,
         cancellation_rx: _cancellation_rx,
         attachment_caps,
     } = input;
@@ -4835,6 +4925,7 @@ pub async fn generate_byop_output(
         } else {
             Some(conversation_id.as_str())
         },
+        max_output_tokens,
     );
     let client = build_client(api_type, &base_url, api_key);
     let request_id = Uuid::new_v4().to_string();
@@ -7531,6 +7622,7 @@ mod build_chat_options_off_tests {
             effort,
             vec![],
             None,
+            0,
         )
     }
 
@@ -7654,6 +7746,79 @@ mod build_chat_options_off_tests {
     }
 }
 
+/// `AgentProviderModel::max_output_tokens` → `ChatOptions::max_tokens` wiring.
+///
+/// **The `0` case is the most important one to get right**: `0` means "unspecified" in
+/// `AgentProviderModel` (see `is_zero_u32` in `app/src/settings/ai.rs`), and must never be
+/// forwarded to genai as `with_max_tokens(0)` — a literal zero-token cap would break every
+/// request, since no provider can generate a response in zero tokens.
+#[cfg(test)]
+mod build_chat_options_max_tokens_tests {
+    use super::*;
+    use crate::settings::ReasoningEffortSetting as R;
+
+    fn opts_with_cap(max_output_tokens: u32) -> genai::chat::ChatOptions {
+        build_chat_options(
+            AgentProviderApiType::OpenAi,
+            "https://api.openai.com/v1/",
+            "gpt-5-mini",
+            R::Auto,
+            vec![],
+            None,
+            max_output_tokens,
+        )
+    }
+
+    #[test]
+    fn zero_means_unspecified_and_is_never_sent() {
+        let o = opts_with_cap(0);
+        assert_eq!(
+            o.max_tokens, None,
+            "max_output_tokens=0 (unspecified) must not become a literal 0-token cap"
+        );
+    }
+
+    #[test]
+    fn nonzero_is_forwarded_verbatim() {
+        let o = opts_with_cap(4096);
+        assert_eq!(o.max_tokens, Some(4096));
+    }
+
+    #[test]
+    fn small_nonzero_value_is_still_forwarded() {
+        // 1 is a legitimate (if unusual) user-configured cap, distinct from the 0 sentinel.
+        let o = opts_with_cap(1);
+        assert_eq!(o.max_tokens, Some(1));
+    }
+
+    #[test]
+    fn applies_across_api_types() {
+        for api_type in [
+            AgentProviderApiType::OpenAi,
+            AgentProviderApiType::OpenAiResp,
+            AgentProviderApiType::Anthropic,
+            AgentProviderApiType::Gemini,
+            AgentProviderApiType::Ollama,
+            AgentProviderApiType::DeepSeek,
+        ] {
+            let o = build_chat_options(
+                api_type,
+                "https://example.com/v1/",
+                "some-model",
+                R::Auto,
+                vec![],
+                None,
+                8000,
+            );
+            assert_eq!(
+                o.max_tokens,
+                Some(8000),
+                "{api_type:?} should forward the cap"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod adapter_routing_tests {
     use super::*;
@@ -7766,6 +7931,172 @@ mod anthropic_endpoint_tests {
                 "https://api.anthropic.com/v1/messages"
             ),
             "https://api.anthropic.com/v1/"
+        );
+    }
+}
+
+/// Fix for a defect in `normalize_endpoint_url`: the tolerance branch for a pasted full
+/// endpoint used to only exist for Anthropic. A user pasting the full OpenAI-compatible
+/// completions URL (or a `gpt-5`/codex Responses URL) got it double-concatenated with
+/// genai's own appended service path, producing a broken request URL.
+#[cfg(test)]
+mod openai_family_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn openai_strips_trailing_chat_completions() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::OpenAi,
+                "https://api.openai.com/v1/chat/completions"
+            ),
+            "https://api.openai.com/v1/"
+        );
+    }
+
+    #[test]
+    fn openai_strips_trailing_responses() {
+        // `OpenAi` api_type + gpt-5/codex on the official host is silently upgraded to the
+        // Responses adapter by `effective_adapter_kind_for`, so a pasted `.../v1/responses`
+        // URL is legitimate under the `OpenAi` api_type too.
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::OpenAi,
+                "https://api.openai.com/v1/responses"
+            ),
+            "https://api.openai.com/v1/"
+        );
+    }
+
+    #[test]
+    fn openai_resp_strips_trailing_responses() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::OpenAiResp,
+                "https://api.openai.com/v1/responses"
+            ),
+            "https://api.openai.com/v1/"
+        );
+    }
+
+    #[test]
+    fn openai_compatible_relay_strips_trailing_chat_completions() {
+        // OpenAI-compatible relays (one-api / LiteLLM / vLLM / etc.) at a custom path.
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::OpenAi,
+                "https://relay.example.com/openai/v1/chat/completions"
+            ),
+            "https://relay.example.com/openai/v1/"
+        );
+    }
+
+    #[test]
+    fn deepseek_strips_trailing_chat_completions() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::DeepSeek,
+                "https://api.deepseek.com/v1/chat/completions"
+            ),
+            "https://api.deepseek.com/v1/"
+        );
+    }
+
+    #[test]
+    fn deepseek_does_not_strip_responses() {
+        // DeepSeek always delegates to genai's OpenAI adapter (`chat/completions` only) and
+        // never goes through the Responses API, so a literal `.../responses` path segment
+        // is left alone — it's presumably a legitimately unusual custom path, not a pasted
+        // service suffix.
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::DeepSeek,
+                "https://api.deepseek.com/v1/responses"
+            ),
+            "https://api.deepseek.com/v1/responses/"
+        );
+    }
+
+    #[test]
+    fn openai_unrelated_trailing_path_is_untouched() {
+        // A legitimately unusual base URL that doesn't end in a known service suffix is
+        // left alone (beyond the standard trailing-slash normalization).
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::OpenAi,
+                "https://relay.example.com/v1/custom"
+            ),
+            "https://relay.example.com/v1/custom/"
+        );
+    }
+}
+
+/// Same defect as `openai_family_endpoint_tests`, for Gemini: a user pasting the full
+/// `:generateContent` / `:streamGenerateContent` endpoint (as shown verbatim in Google's own
+/// docs, `?key=...` and all) got it double-concatenated with genai's own
+/// `models/{model}:generateContent` suffix.
+#[cfg(test)]
+mod gemini_endpoint_tests {
+    use super::*;
+
+    #[test]
+    fn strips_trailing_generate_content() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+    }
+
+    #[test]
+    fn strips_trailing_stream_generate_content() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+    }
+
+    #[test]
+    fn strips_trailing_generate_content_and_drops_api_key_query_param() {
+        // Google's own docs show the endpoint with `?key=YOUR_API_KEY`; genai sends the key
+        // via the `x-goog-api-key` header instead, and a leftover query string on base_url
+        // would corrupt the plain `format!()`-built request URL, so it must be dropped.
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=YOUR_API_KEY"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+    }
+
+    #[test]
+    fn model_id_in_pasted_url_need_not_match_selected_model() {
+        // Matched purely by the literal `:generateContent` action suffix — the model
+        // segment in the pasted URL doesn't have to be the model actually selected in
+        // Settings.
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::Gemini,
+                "https://generativelanguage.googleapis.com/v1beta/models/some-other-model:generateContent"
+            ),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+    }
+
+    #[test]
+    fn unrelated_trailing_path_is_untouched() {
+        assert_eq!(
+            normalize_endpoint_url(
+                AgentProviderApiType::Gemini,
+                "https://relay.example.com/v1beta/custom"
+            ),
+            "https://relay.example.com/v1beta/custom/"
         );
     }
 }
@@ -7955,6 +8286,7 @@ mod cache_boundary_stability_tests {
                 R::Auto,
                 vec![],
                 Some("conv-abc-123"),
+                0,
             )
         };
         let a = make();
@@ -7987,6 +8319,7 @@ mod cache_boundary_stability_tests {
                 R::Auto,
                 vec![],
                 Some("conv-1"),
+                0,
             );
             assert_eq!(
                 opts.prompt_cache_key.as_deref(),
@@ -8032,6 +8365,7 @@ mod cache_boundary_stability_tests {
                 R::Auto,
                 vec![],
                 Some("conv-byop"),
+                0,
             );
             assert!(
                 opts.cache_control.is_none(),
@@ -8057,6 +8391,7 @@ mod cache_boundary_stability_tests {
             R::Auto,
             vec![],
             Some("conv-resp"),
+            0,
         );
         assert_eq!(on_whitelist.prompt_cache_key.as_deref(), Some("conv-resp"));
         assert!(on_whitelist.cache_control.is_none());
@@ -8068,6 +8403,7 @@ mod cache_boundary_stability_tests {
             R::Auto,
             vec![],
             Some("conv-resp"),
+            0,
         );
         assert!(off_whitelist.prompt_cache_key.is_none());
         assert!(off_whitelist.cache_control.is_none());
@@ -8085,6 +8421,7 @@ mod cache_boundary_stability_tests {
             R::Auto,
             vec![],
             Some(""),
+            0,
         );
         assert!(
             opts.prompt_cache_key.is_none(),
@@ -8105,6 +8442,7 @@ mod cache_boundary_stability_tests {
             R::Auto,
             vec![],
             Some("conv-3"),
+            0,
         );
         assert!(
             opts.cache_control.is_none(),
@@ -8133,6 +8471,7 @@ mod cache_boundary_stability_tests {
                 R::Auto,
                 vec![],
                 Some("conv"),
+                0,
             );
             assert!(
                 opts.cache_control.is_none(),
