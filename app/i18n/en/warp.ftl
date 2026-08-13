@@ -1644,6 +1644,29 @@ settings-agent-providers-disabled-models-collapse = ▾ Disabled models ({$count
 settings-agent-providers-save = Save
 settings-agent-providers-saved-toast = Saved
 
+# Hover tooltips (settings_view/agent_providers_widget.rs) -- icon-only controls and
+# ambiguous/destructive buttons in the custom Agent Provider settings panel.
+settings-agent-providers-model-expand-tooltip = Show modalities and capabilities for this model
+settings-agent-providers-model-collapse-tooltip = Hide modalities and capabilities for this model
+settings-agent-providers-quick-remove-model-tooltip = Remove this model
+settings-agent-providers-model-enable-tooltip = Show this model in the picker again
+settings-agent-providers-model-disable-tooltip = Hide this model from the picker without deleting it
+settings-agent-providers-remove-header-tooltip = Remove this header
+settings-agent-providers-hide-catalog-provider-tooltip = Hide this provider from the quick-add list
+settings-agent-providers-unhide-catalog-provider-tooltip = Show this provider in the quick-add list again
+settings-agent-providers-fetch-from-api-tooltip = Fetch model IDs from this provider's API — no other metadata
+settings-agent-providers-sync-models-dev-tooltip = Fill in context window, pricing, and capabilities from models.dev — only for models it recognizes
+settings-agent-providers-remove-provider-tooltip = Delete this provider and its saved API key — cannot be undone
+settings-agent-providers-disable-provider-tooltip = Hide this provider's models from the picker without deleting its config or API key
+settings-agent-providers-enable-provider-tooltip = Show this provider's models in the picker again
+settings-agent-providers-modality-chip-tooltip = Cycles Auto (inferred from the model catalog) → On → Off
+settings-agent-providers-reasoning-chip-tooltip = Toggle whether this model exposes reasoning output
+settings-agent-providers-tool-call-chip-tooltip = Toggle whether this model supports tool calls
+settings-agent-providers-base-url-tooltip = The API endpoint requests are sent to — usually ends in /v1
+settings-agent-providers-api-type-tooltip = Which API protocol this provider speaks — sets how requests and responses are formatted
+settings-agent-providers-context-header-tooltip = Max input tokens this model accepts — blank means unspecified
+settings-agent-providers-output-header-tooltip = Max tokens the model can generate per response, not the context window — blank means unspecified
+
 # ---- AI page (settings_view/ai_page.rs) ----
 settings-ai-title = AI
 settings-ai-active-ai = Active AI

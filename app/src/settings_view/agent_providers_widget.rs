@@ -282,6 +282,14 @@ struct ProviderRow {
     disable_shown_button_state: MouseStateHandle,
     enable_shown_button_state: MouseStateHandle,
     disabled_models_toggle_button_state: MouseStateHandle,
+    /// Mouse state for the (ⓘ) info icon next to the "Base URL" field label.
+    base_url_info_state: MouseStateHandle,
+    /// Mouse state for the (ⓘ) info icon next to the "API Type" field label.
+    api_type_info_state: MouseStateHandle,
+    /// Mouse state for the (ⓘ) info icon next to the models table's "Context (tok)" header.
+    context_header_info_state: MouseStateHandle,
+    /// Mouse state for the (ⓘ) info icon next to the models table's "Output (tok)" header.
+    output_header_info_state: MouseStateHandle,
 }
 
 /// `(model_index, name, id, context_window, max_output_tokens, input_price, output_price)`.
@@ -856,6 +864,10 @@ impl AgentProvidersWidget {
             disable_shown_button_state: MouseStateHandle::default(),
             enable_shown_button_state: MouseStateHandle::default(),
             disabled_models_toggle_button_state: MouseStateHandle::default(),
+            base_url_info_state: MouseStateHandle::default(),
+            api_type_info_state: MouseStateHandle::default(),
+            context_header_info_state: MouseStateHandle::default(),
+            output_header_info_state: MouseStateHandle::default(),
         }
     }
 
@@ -872,13 +884,23 @@ impl AgentProvidersWidget {
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let label_text = Container::new(
-            Text::new(
-                crate::t!("settings-agent-providers-field-api-type"),
-                appearance.ui_font_family(),
-                appearance.ui_font_size(),
-            )
-            .with_color(label_color.into())
-            .finish(),
+            Flex::row()
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_child(
+                    Text::new(
+                        crate::t!("settings-agent-providers-field-api-type"),
+                        appearance.ui_font_family(),
+                        appearance.ui_font_size(),
+                    )
+                    .with_color(label_color.into())
+                    .finish(),
+                )
+                .with_child(render_field_info_icon(
+                    crate::t!("settings-agent-providers-api-type-tooltip"),
+                    row.api_type_info_state.clone(),
+                    appearance,
+                ))
+                .finish(),
         )
         .with_margin_top(FIELD_LABEL_MARGIN_TOP)
         .with_margin_bottom(FIELD_LABEL_MARGIN_BOTTOM)
@@ -978,6 +1000,63 @@ impl AgentProvidersWidget {
             .finish()
     }
 
+    /// Same as [`Self::render_card_button`], plus a hover tooltip. Kept as a separate function
+    /// (rather than an `Option<String>` param on the original) so the ~15 existing call sites
+    /// that don't need a tooltip stay untouched.
+    fn render_card_button_with_tooltip(
+        label: impl Into<String>,
+        mouse_state: MouseStateHandle,
+        action: AISettingsPageAction,
+        tooltip: String,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let ui_builder = appearance.ui_builder().clone();
+        appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, mouse_state)
+            .with_style(UiComponentStyles {
+                font_size: Some(appearance.ui_font_body()),
+                padding: Some(Coords::uniform(CARD_BUTTON_PADDING)),
+                ..Default::default()
+            })
+            .with_centered_text_label(label.into())
+            .with_tooltip(move || ui_builder.tool_tip(tooltip).build().finish())
+            .build()
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(action.clone());
+            })
+            .finish()
+    }
+
+    /// Same as [`Self::render_card_button_preserving_draft`], plus a hover tooltip. See
+    /// [`Self::render_card_button_with_tooltip`] for why this is a separate function rather than
+    /// a parameter on the original.
+    fn render_card_button_preserving_draft_with_tooltip(
+        label: impl Into<String>,
+        mouse_state: MouseStateHandle,
+        draft_editors: ProviderDraftEditors,
+        action: AISettingsPageAction,
+        tooltip: String,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let ui_builder = appearance.ui_builder().clone();
+        appearance
+            .ui_builder()
+            .button(ButtonVariant::Secondary, mouse_state)
+            .with_style(UiComponentStyles {
+                font_size: Some(appearance.ui_font_body()),
+                padding: Some(Coords::uniform(CARD_BUTTON_PADDING)),
+                ..Default::default()
+            })
+            .with_centered_text_label(label.into())
+            .with_tooltip(move || ui_builder.tool_tip(tooltip).build().finish())
+            .build()
+            .on_click(move |ctx, app, _| {
+                ctx.dispatch_typed_action(draft_editors.to_save_then_action(app, action.clone()));
+            })
+            .finish()
+    }
+
     fn render_model_row(
         provider: &AgentProvider,
         index: usize,
@@ -991,7 +1070,12 @@ impl AgentProvidersWidget {
 
         // chevron: expanded ▾ / collapsed ▸. Reuses render_card_button's visual style.
         let chevron_label = if is_expanded { "▾" } else { "▸" };
-        let chevron_button = Self::render_card_button_preserving_draft(
+        let chevron_tooltip = if is_expanded {
+            crate::t!("settings-agent-providers-model-collapse-tooltip")
+        } else {
+            crate::t!("settings-agent-providers-model-expand-tooltip")
+        };
+        let chevron_button = Self::render_card_button_preserving_draft_with_tooltip(
             chevron_label,
             row.expand_button_state.clone(),
             draft_editors.clone(),
@@ -999,9 +1083,10 @@ impl AgentProvidersWidget {
                 provider_id: provider.id.clone(),
                 model_index: index,
             },
+            chevron_tooltip,
             appearance,
         );
-        let quick_remove_button = Self::render_card_button_preserving_draft(
+        let quick_remove_button = Self::render_card_button_preserving_draft_with_tooltip(
             "×",
             row.quick_remove_button_state.clone(),
             draft_editors.clone(),
@@ -1009,13 +1094,19 @@ impl AgentProvidersWidget {
                 provider_id: provider.id.clone(),
                 model_index: index,
             },
+            crate::t!("settings-agent-providers-quick-remove-model-tooltip"),
             appearance,
         );
         // Compact enable/disable toggle: excludes this one model from the picker without
         // removing it from the list. Follows the same ●/○ filled/hollow convention as the
         // tri-state capability chips in the detail panel below.
         let disable_toggle_label = if model.disabled { "○" } else { "●" };
-        let disable_toggle_button = Self::render_card_button_preserving_draft(
+        let disable_toggle_tooltip = if model.disabled {
+            crate::t!("settings-agent-providers-model-enable-tooltip")
+        } else {
+            crate::t!("settings-agent-providers-model-disable-tooltip")
+        };
+        let disable_toggle_button = Self::render_card_button_preserving_draft_with_tooltip(
             disable_toggle_label,
             row.disable_toggle_button_state.clone(),
             draft_editors.clone(),
@@ -1023,6 +1114,7 @@ impl AgentProvidersWidget {
                 provider_id: provider.id.clone(),
                 model_index: index,
             },
+            disable_toggle_tooltip,
             appearance,
         );
         let row_controls = Flex::row()
@@ -1124,7 +1216,7 @@ impl AgentProvidersWidget {
                 Some(true) => format!("● {label}"),
                 Some(false) => format!("○ {label}"),
             };
-            Self::render_card_button_preserving_draft(
+            Self::render_card_button_preserving_draft_with_tooltip(
                 chip_label,
                 state,
                 draft_editors.clone(),
@@ -1133,6 +1225,7 @@ impl AgentProvidersWidget {
                     model_index: index,
                     kind,
                 },
+                crate::t!("settings-agent-providers-modality-chip-tooltip"),
                 appearance,
             )
         };
@@ -1178,18 +1271,20 @@ impl AgentProvidersWidget {
         let bool_chip = |label: &str,
                          on: bool,
                          state: MouseStateHandle,
-                         action: AISettingsPageAction|
+                         action: AISettingsPageAction,
+                         tooltip: String|
          -> Box<dyn Element> {
             let chip_label = if on {
                 format!("● {label}")
             } else {
                 format!("○ {label}")
             };
-            Self::render_card_button_preserving_draft(
+            Self::render_card_button_preserving_draft_with_tooltip(
                 chip_label,
                 state,
                 draft_editors.clone(),
                 action,
+                tooltip,
                 appearance,
             )
         };
@@ -1206,6 +1301,7 @@ impl AgentProvidersWidget {
                     provider_id: provider.id.clone(),
                     model_index: index,
                 },
+                crate::t!("settings-agent-providers-reasoning-chip-tooltip"),
             ))
             .with_child(bool_chip(
                 "Tool Calling",
@@ -1215,6 +1311,7 @@ impl AgentProvidersWidget {
                     provider_id: provider.id.clone(),
                     model_index: index,
                 },
+                crate::t!("settings-agent-providers-tool-call-chip-tooltip"),
             ))
             .finish();
 
@@ -1332,8 +1429,10 @@ impl AgentProvidersWidget {
                 ))
                 .finish()
         } else {
-            field_block(
+            field_block_with_info(
                 &crate::t!("settings-agent-providers-field-base-url"),
+                crate::t!("settings-agent-providers-base-url-tooltip"),
+                row.base_url_info_state.clone(),
                 ChildView::new(&row.base_url_editor).finish(),
                 label_color,
                 appearance,
@@ -1405,7 +1504,7 @@ impl AgentProvidersWidget {
             .with_spacing(MODEL_ROW_GAP);
 
         for (idx, h_row) in row.header_rows.iter().enumerate() {
-            let remove_header_button = Self::render_card_button_preserving_draft(
+            let remove_header_button = Self::render_card_button_preserving_draft_with_tooltip(
                 "×",
                 h_row.remove_button_state.clone(),
                 draft_editors.clone(),
@@ -1413,6 +1512,7 @@ impl AgentProvidersWidget {
                     provider_id: provider.id.clone(),
                     header_index: idx,
                 },
+                crate::t!("settings-agent-providers-remove-header-tooltip"),
                 appearance,
             );
             // Key/value editors split the row evenly (flex 1/1) and align with the Name /
@@ -1508,6 +1608,33 @@ impl AgentProvidersWidget {
                 )
                 .finish()
             };
+            let header_cell_with_info = |flex: f32,
+                                          label: &str,
+                                          tooltip: String,
+                                          info_state: MouseStateHandle|
+             -> Box<dyn Element> {
+                Expanded::new(
+                    flex,
+                    Container::new(
+                        Flex::row()
+                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                            .with_child(
+                                Text::new(
+                                    label.to_string(),
+                                    appearance.ui_font_family(),
+                                    appearance.ui_font_size(),
+                                )
+                                .with_color(dim.into())
+                                .finish(),
+                            )
+                            .with_child(render_field_info_icon(tooltip, info_state, appearance))
+                            .finish(),
+                    )
+                    .with_margin_right(MODEL_ROW_GAP)
+                    .finish(),
+                )
+                .finish()
+            };
             let header = Container::new(
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1519,13 +1646,17 @@ impl AgentProvidersWidget {
                         2.,
                         &crate::t!("settings-agent-providers-models-header-id"),
                     ))
-                    .with_child(header_cell(
+                    .with_child(header_cell_with_info(
                         1.,
                         &crate::t!("settings-agent-providers-models-header-context"),
+                        crate::t!("settings-agent-providers-context-header-tooltip"),
+                        row.context_header_info_state.clone(),
                     ))
-                    .with_child(header_cell(
+                    .with_child(header_cell_with_info(
                         1.,
                         &crate::t!("settings-agent-providers-models-header-output"),
+                        crate::t!("settings-agent-providers-output-header-tooltip"),
+                        row.output_header_info_state.clone(),
                     ))
                     .with_child(header_cell(
                         1.,
@@ -1737,30 +1868,33 @@ impl AgentProvidersWidget {
             },
             appearance,
         );
-        let fetch_button = Self::render_card_button_preserving_draft(
+        let fetch_button = Self::render_card_button_preserving_draft_with_tooltip(
             crate::t!("settings-agent-providers-fetch-from-api"),
             row.fetch_button_state.clone(),
             draft_editors.clone(),
             AISettingsPageAction::FetchAgentProviderModels {
                 provider_id: provider.id.clone(),
             },
+            crate::t!("settings-agent-providers-fetch-from-api-tooltip"),
             appearance,
         );
-        let sync_models_dev_button = Self::render_card_button_preserving_draft(
+        let sync_models_dev_button = Self::render_card_button_preserving_draft_with_tooltip(
             crate::t!("settings-agent-providers-sync-models-dev"),
             row.sync_models_dev_button_state.clone(),
             draft_editors.clone(),
             AISettingsPageAction::SyncProviderModelsFromModelsDev {
                 provider_id: provider.id.clone(),
             },
+            crate::t!("settings-agent-providers-sync-models-dev-tooltip"),
             appearance,
         );
-        let remove_button = Self::render_card_button(
+        let remove_button = Self::render_card_button_with_tooltip(
             crate::t!("settings-agent-providers-remove"),
             row.remove_button_state.clone(),
             AISettingsPageAction::RemoveAgentProvider {
                 provider_id: provider.id.clone(),
             },
+            crate::t!("settings-agent-providers-remove-provider-tooltip"),
             appearance,
         );
         // Hides the provider's models from the picker without touching its saved config or
@@ -1772,12 +1906,18 @@ impl AgentProvidersWidget {
         } else {
             crate::t!("settings-agent-providers-disable")
         };
-        let disable_toggle_button = Self::render_card_button(
+        let disable_toggle_tooltip = if provider.disabled {
+            crate::t!("settings-agent-providers-enable-provider-tooltip")
+        } else {
+            crate::t!("settings-agent-providers-disable-provider-tooltip")
+        };
+        let disable_toggle_button = Self::render_card_button_with_tooltip(
             disable_toggle_label,
             row.disable_toggle_button_state.clone(),
             AISettingsPageAction::ToggleAgentProviderDisabled {
                 provider_id: provider.id.clone(),
             },
+            disable_toggle_tooltip,
             appearance,
         );
 
@@ -2009,6 +2149,63 @@ fn field_block(
         .finish()
 }
 
+/// Same as [`field_block`], but with a hover-tooltip (ⓘ) info icon next to the label -- for
+/// fields whose meaning isn't obvious from the label text alone (e.g. `Base URL`).
+/// Mirrors `settings_page::render_local_only_icon`'s icon + tooltip construction.
+fn field_block_with_info(
+    label: &str,
+    tooltip: String,
+    info_state: MouseStateHandle,
+    editor_element: Box<dyn Element>,
+    label_color: warp_core::ui::theme::Fill,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let label_row = Container::new(
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_child(
+                Text::new(
+                    label.to_string(),
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(label_color.into())
+                .finish(),
+            )
+            .with_child(render_field_info_icon(tooltip, info_state, appearance))
+            .finish(),
+    )
+    .with_margin_top(FIELD_LABEL_MARGIN_TOP)
+    .with_margin_bottom(FIELD_LABEL_MARGIN_BOTTOM)
+    .finish();
+
+    Flex::column()
+        .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
+        .with_child(label_row)
+        .with_child(editor_element)
+        .finish()
+}
+
+/// A small (ⓘ) info icon that shows `tooltip` on hover. Used next to a field label or a models
+/// table column header whose meaning isn't self-evident from the text alone. Mirrors
+/// `settings_page::render_local_only_icon`'s icon + tooltip construction and margins.
+fn render_field_info_icon(
+    tooltip: String,
+    info_state: MouseStateHandle,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let info_icon = appearance
+        .ui_builder()
+        .info_button_with_tooltip(13., tooltip, info_state)
+        .finish();
+
+    Container::new(info_icon)
+        .with_margin_left(4.)
+        // The icon is smaller than the font it sits next to; nudge it down to align.
+        .with_margin_top(1.5)
+        .finish()
+}
+
 impl AgentProvidersWidget {
     /// Renders the "quick-add known providers from models.dev" section:
     /// - Title + "Refresh catalog" button
@@ -2154,12 +2351,13 @@ impl AgentProvidersWidget {
                             appearance,
                         );
                         let hide_state = hide_states.entry(cat_id.clone()).or_default().clone();
-                        let hide_button = Self::render_card_button(
+                        let hide_button = Self::render_card_button_with_tooltip(
                             "×",
                             hide_state,
                             AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
                                 catalog_provider_id: cat_id.clone(),
                             },
+                            crate::t!("settings-agent-providers-hide-catalog-provider-tooltip"),
                             appearance,
                         );
                         wrap = wrap.with_child(
@@ -2268,12 +2466,13 @@ impl AgentProvidersWidget {
                                 cat_provider.name.clone()
                             };
                             let state = hide_states.entry(cat_id.clone()).or_default().clone();
-                            let unhide_button = Self::render_card_button(
+                            let unhide_button = Self::render_card_button_with_tooltip(
                                 format!("↺ {label}"),
                                 state,
                                 AISettingsPageAction::ToggleCatalogProviderVisibilityOverride {
                                     catalog_provider_id: cat_id.clone(),
                                 },
+                                crate::t!("settings-agent-providers-unhide-catalog-provider-tooltip"),
                                 appearance,
                             );
                             unhide_wrap = unhide_wrap.with_child(unhide_button);
