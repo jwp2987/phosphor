@@ -105,6 +105,12 @@ struct ByopDispatch {
     /// the catalog filled it in, so chat_stream skips the context_window_usage
     /// calculation and the UI stays at a 100% placeholder.
     context_window: Option<u32>,
+    /// The selected model's per-request output cap (tokens). `0` means unspecified —
+    /// `build_chat_options` skips `with_max_tokens` entirely in that case rather than
+    /// sending a literal zero, which every provider would reject. Kept as a plain `u32`
+    /// (not `Option`) to match that sentinel, which is the same convention the setting
+    /// itself uses (`is_zero_u32` / `skip_serializing_if` on `AgentProviderModel`).
+    max_output_tokens: u32,
     /// Attachment caps that already reflect the user's settings (the three-way
     /// image/pdf/audio Override). Computed by `resolve_for_model`. The UI display
     /// and runtime behavior reference the same caps.
@@ -144,6 +150,15 @@ fn byop_dispatch_info(
         .find(|m| m.id == model_id)
         .map(|m| m.context_window)
         .filter(|n| *n > 0);
+    // Same lookup for the output cap. Unlike context_window this keeps 0 rather than
+    // mapping it to None: 0 IS the "unspecified" sentinel downstream, and
+    // `build_chat_options` tests it directly.
+    let max_output_tokens = provider
+        .models
+        .iter()
+        .find(|m| m.id == model_id)
+        .map(|m| m.max_output_tokens)
+        .unwrap_or(0);
     let conversation_id = ai_identifiers.client_conversation_id.as_ref()?;
     let history = BlocklistAIHistoryModel::as_ref(ctx);
     let conversation = history.conversation(conversation_id)?;
@@ -230,6 +245,7 @@ fn byop_dispatch_info(
         lrc_command_id: params.lrc_command_id.clone(),
         lrc_should_spawn_subagent: params.lrc_should_spawn_subagent,
         context_window,
+        max_output_tokens,
         attachment_caps,
     })
 }
@@ -391,6 +407,7 @@ impl ResponseStream {
                             lrc_command_id: byop.lrc_command_id,
                             lrc_should_spawn_subagent: byop.lrc_should_spawn_subagent,
                             context_window: byop.context_window,
+                            max_output_tokens: byop.max_output_tokens,
                             cancellation_rx,
                             attachment_caps: byop.attachment_caps,
                         },
@@ -522,6 +539,7 @@ impl ResponseStream {
                             lrc_command_id: byop.lrc_command_id,
                             lrc_should_spawn_subagent: byop.lrc_should_spawn_subagent,
                             context_window: byop.context_window,
+                            max_output_tokens: byop.max_output_tokens,
                             cancellation_rx,
                             attachment_caps: byop.attachment_caps,
                         },
