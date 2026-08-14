@@ -405,7 +405,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). No CLI build runs in this
@@ -555,7 +555,7 @@ jobs:
           # runner versions.
           APPIMAGE_EXTRACT_AND_RUN: 1
 
-      # RPM package: reuses the already-stripped `target/release-lto/zap-oss`
+      # RPM package: reuses the already-stripped `target/release-lto/phosphor-oss`
       # from the release-lto step above, no `cargo build` again. `--skip-build`
       # makes `script/bundle` skip compiling and stripping, and go straight
       # to staging (`bundle_install` → copy the binary + resources) + rpmbuild.
@@ -571,7 +571,7 @@ jobs:
         env:
           GIT_RELEASE_TAG: ${{ needs.prepare_metadata.outputs.release_tag }}
 
-      # Arch package: reuses the already-stripped `target/release-lto/zap-oss`
+      # Arch package: reuses the already-stripped `target/release-lto/phosphor-oss`
       # from the release-lto step above, not rebuilding the main binary via
       # `cargo build` — `--skip-build` makes `script/bundle` skip compiling
       # and stripping, going straight to staging (`bundle_install` → copy the
@@ -790,9 +790,9 @@ jobs:
 
       - name: Package CLI tarball
         run: |
-          cp "${{ steps.bundle_cli.outputs.executable_path }}" zap-oss
+          cp "${{ steps.bundle_cli.outputs.executable_path }}" phosphor-oss
           tar czf phosphor-cli-linux-x86_64.tar.gz \
-            zap-oss \
+            phosphor-oss \
             -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
         shell: bash
 
@@ -805,7 +805,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). Reuses the same
@@ -872,9 +872,9 @@ jobs:
 
       - name: Package CLI tarball
         run: |
-          cp "${{ steps.bundle_cli.outputs.binary_path }}" zap-oss
+          cp "${{ steps.bundle_cli.outputs.binary_path }}" phosphor-oss
           tar czf phosphor-cli-macos-${{ matrix.arch }}.tar.gz \
-            zap-oss \
+            phosphor-oss \
             -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
         shell: bash
 
@@ -887,7 +887,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). Reuses the same
