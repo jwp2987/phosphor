@@ -6389,19 +6389,26 @@ pub async fn generate_byop_output(
                                      re-issue the call using one of the names in \
                                      `available_tools`.",
                         }),
-                        None => serde_json::json!({
-                            "error": "invalid_arguments",
-                            "detail": e.to_string(),
-                            "tool": call.fn_name,
-                            "received_args": &args_str,
-                            "executed": false,
-                            "hint": "The tool exists but the call was REJECTED before it ran, \
-                                     so you have no result — do not draw any conclusion from \
-                                     this, and in particular do not treat it as an empty or \
-                                     negative result. Arguments did not match the tool's JSON \
-                                     Schema. Re-emit the tool call with corrected types / \
-                                     required fields, or pick a different tool.",
-                        }),
+                        None => {
+                            let detail = e.to_string();
+                            let hint = format!(
+                                "The tool exists but the call was REJECTED before it ran, \
+                                 so you have no result — do not draw any conclusion from \
+                                 this, and in particular do not treat it as an empty or \
+                                 negative result. Arguments did not match the tool's JSON \
+                                 Schema. Re-emit the tool call with corrected types / \
+                                 required fields, or pick a different tool.{}",
+                                double_encoded_container_hint(&detail).unwrap_or("")
+                            );
+                            serde_json::json!({
+                                "error": "invalid_arguments",
+                                "detail": detail,
+                                "tool": call.fn_name,
+                                "received_args": &args_str,
+                                "executed": false,
+                                "hint": hint,
+                            })
+                        }
                     };
                     let error_content = serde_json::to_string(&error_payload)
                         .unwrap_or_else(|_| r#"{"error":"invalid_arguments"}"#.to_owned());
@@ -6993,6 +7000,40 @@ impl std::fmt::Display for UnknownToolName {
 }
 
 impl std::error::Error for UnknownToolName {}
+
+/// Extra `invalid_arguments` guidance for a *double-encoded* container argument.
+///
+/// The generic hint says the arguments "did not match the tool's JSON Schema", which is true
+/// but not actionable, and this is the argument defect most likely to survive to that point on
+/// a capable model. Observed 2026-08-14 from `claude-opus-5` over Vertex, on
+/// `apply_file_diffs` (zap.log, `from_args failed`):
+///
+/// ```text
+/// invalid type: string "[{\"op\":\"create\",…\n</content>},{…}]", expected a sequence
+/// ```
+///
+/// `operations` arrived as a JSON *string* holding the array instead of the array itself, and
+/// that string was not valid JSON either — a `</content>` tag sat where the closing quote
+/// belonged, an XML-style edit format leaking into JSON.
+///
+/// `tools::coerce` already rescues the well-formed version of this shape (`coerce.rs`, the
+/// `"array"` arm re-parses a stringified array), so anything reaching here has a broken inner
+/// payload. Repairing it would mean guessing at file *content*, which `edit.rs` rules out —
+/// a wrong guess writes a corrupted file. Naming the mistake is the half that is safe: the
+/// model can re-encode correctly, where the generic hint left recovery to chance (the observed
+/// call went through only on a manual retry).
+fn double_encoded_container_hint(detail: &str) -> Option<&'static str> {
+    let stringified = detail.contains("invalid type: string");
+    let wanted_container = detail.contains("expected a sequence")
+        || detail.contains("expected a map")
+        || detail.contains("expected struct");
+    (stringified && wanted_container).then_some(
+        " One or more arguments were DOUBLE-ENCODED: a field that must be a JSON array or \
+         object was sent as a string containing JSON. Emit the real array/object, not a quoted \
+         string of one, and do not terminate values with XML-style tags such as `</content>` — \
+         a file body belongs directly in its JSON string value.",
+    )
+}
 
 fn parse_incoming_tool_call(
     call: &ToolCall,
