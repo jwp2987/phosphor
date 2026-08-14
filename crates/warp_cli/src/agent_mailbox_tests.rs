@@ -102,10 +102,6 @@ fn run_id_with_path_separators_does_not_escape_the_mailbox_root() {
     )
     .unwrap();
 
-    // The sanitized inbox directory must stay inside `root`.
-    let escaped_path = root.path().parent().unwrap().parent().unwrap().join("etc");
-    assert!(!escaped_path.exists());
-
     let entries: Vec<_> = std::fs::read_dir(root.path())
         .unwrap()
         .filter_map(|entry| entry.ok())
@@ -114,6 +110,22 @@ fn run_id_with_path_separators_does_not_escape_the_mailbox_root() {
         entries.len(),
         1,
         "expected exactly one sanitized inbox directory"
+    );
+
+    // The sanitized inbox directory must stay inside `root`. Asserted by canonicalising the
+    // directory that was actually created and checking containment.
+    //
+    // This previously read `root/../../etc` and asserted it did not exist. That is
+    // `/tmp/<tempdir>/../../etc` = `/etc` whenever TMPDIR is `/tmp` -- so it asserted `/etc`
+    // does not exist and failed on any normal machine, while passing only when the temp
+    // directory happened to be nested deeper. It also could not have detected a real escape:
+    // the path it probed pre-exists, so "created by us" and "already there" were
+    // indistinguishable.
+    let created = entries[0].path().canonicalize().unwrap();
+    let root_canonical = root.path().canonicalize().unwrap();
+    assert!(
+        created.starts_with(&root_canonical),
+        "sanitized inbox escaped the mailbox root: {created:?} is outside {root_canonical:?}"
     );
 }
 

@@ -51,8 +51,14 @@ fn osc52_clipboard_access_strings_resolve_to_real_text() {
 
     // The whole point of the description is to spell out that read access is
     // the riskier direction (it exposes whatever the user last copied).
+    //
+    // Case-folded deliberately: the copy leads with "Write access lets them set your
+    // clipboard", so a case-sensitive `contains("write")` failed on a description that
+    // states the tradeoff perfectly well. The property worth pinning is that both
+    // directions are named, not how the sentence happens to be capitalised.
+    let description_lower = description.to_lowercase();
     assert!(
-        description.contains("read") && description.contains("write"),
+        description_lower.contains("read") && description_lower.contains("write"),
         "expected the description to explain the read vs. write security tradeoff, got: {description}"
     );
     assert_ne!(

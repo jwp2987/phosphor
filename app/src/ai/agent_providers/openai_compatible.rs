@@ -518,20 +518,51 @@ mod ollama_context_tests {
 mod tests {
     use super::*;
 
-    /// Caps a fetch attempt so a regression that starts making a real network call (instead
-    /// of failing fast, either via our own guard or a loopback connection refusal) fails the
-    /// test in a few seconds rather than hanging the suite.
+    /// Caps a fetch attempt so a hung network call cannot hang the suite.
+    ///
+    /// Returns `None` on timeout. For a loopback target that is a real failure (loopback
+    /// refuses instantly), but for a non-loopback target it is a legitimate outcome and the
+    /// callers below treat it as such -- see `assert_got_past_the_guard`.
     async fn fetch_bounded(
         client: Client,
         base_url: &str,
         api_key: Option<&str>,
-    ) -> Result<Vec<OpenAiCompatibleModel>, OpenAiCompatibleError> {
+    ) -> Option<Result<Vec<OpenAiCompatibleModel>, OpenAiCompatibleError>> {
         tokio::time::timeout(
             std::time::Duration::from_secs(5),
             fetch_openai_compatible_models(client, base_url, api_key),
         )
         .await
-        .expect("fetch must not hang — either our guard or a loopback connection refusal should return promptly")
+        .ok()
+    }
+
+    /// Asserts the fetch got PAST the plaintext-key guard rather than being refused by it.
+    ///
+    /// Both outcomes prove that: a transport error means the request was actually attempted,
+    /// and a timeout means it is still in flight. What would fail is a prompt
+    /// `InsecureEndpoint`, which is the pre-2026-08-13 behaviour this replaced.
+    ///
+    /// Accepting the timeout is what makes these tests network-independent. Whether an
+    /// arbitrary non-loopback address refuses quickly or silently drops packets is a property
+    /// of whatever LAN the test happens to run on -- `192.168.1.50` was refused fast on one
+    /// network and black-holed for >5s on the maintainer's, which is exactly how this test
+    /// started failing. The *security* property (the key is never attached to a plaintext
+    /// non-loopback URL) is pinned deterministically and without network by
+    /// `agent_providers::plaintext_bearer_risk_tests::http_non_loopback_is_a_risk`, which
+    /// asserts on this same IP. These tests only pin the wiring: that the fetch path consults
+    /// that guard and no longer aborts on it.
+    fn assert_got_past_the_guard(
+        outcome: Option<Result<Vec<OpenAiCompatibleModel>, OpenAiCompatibleError>>,
+        what: &str,
+    ) {
+        match outcome {
+            None => {} // still in flight past the guard
+            Some(Ok(_)) => panic!("{what}: something actually answered; the test target must be unreachable"),
+            Some(Err(err)) => assert!(
+                !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+                "{what}: the fetch must no longer abort on a plaintext non-loopback endpoint: {err}"
+            ),
+        }
     }
 
     // The two tests below asserted `InsecureEndpoint` — i.e. that a plaintext non-loopback
@@ -547,36 +578,24 @@ mod tests {
 
     #[tokio::test]
     async fn does_not_send_bearer_over_plaintext_http_to_non_loopback_host() {
-        let err = fetch_bounded(
+        let outcome = fetch_bounded(
             Client::new_for_test(),
             "http://example.com",
             Some("super-secret-key"),
         )
-        .await
-        .expect_err("no server is listening, so the request itself must fail");
-
-        // The point: we got far enough to attempt a request (a transport/status failure)
-        // rather than refusing up front. The key was dropped, not sent.
-        assert!(
-            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
-            "the fetch must no longer abort on a plaintext non-loopback endpoint: {err}"
-        );
+        .await;
+        assert_got_past_the_guard(outcome, "plaintext non-loopback host");
     }
 
     #[tokio::test]
     async fn does_not_send_bearer_over_plaintext_http_to_non_loopback_ip() {
-        let err = fetch_bounded(
+        let outcome = fetch_bounded(
             Client::new_for_test(),
             "http://192.168.1.50:11434",
             Some("super-secret-key"),
         )
-        .await
-        .expect_err("nothing is listening on that LAN IP in tests");
-
-        assert!(
-            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
-            "a LAN IP must now be fetched unauthenticated, not refused: {err}"
-        );
+        .await;
+        assert_got_past_the_guard(outcome, "plaintext non-loopback LAN IP");
     }
 
     #[tokio::test]
@@ -590,6 +609,9 @@ mod tests {
             Some("some-local-key"),
         )
         .await
+        // Unlike the non-loopback cases above, a timeout here IS a failure: loopback refuses
+        // a closed port immediately, so hanging would mean something is badly wrong.
+        .expect("loopback must fail fast, not hang")
         .expect_err("nothing should be listening on port 1");
 
         assert!(
@@ -606,6 +628,8 @@ mod tests {
             Some("some-key"),
         )
         .await
+        // Loopback: a timeout would itself be a bug, so unwrap it rather than tolerate it.
+        .expect("loopback must fail fast, not hang")
         .expect_err("nothing should be listening on port 1");
 
         assert!(
@@ -622,6 +646,8 @@ mod tests {
         // loopback address so the test never makes a real network call either way.
         let err = fetch_bounded(Client::new_for_test(), "http://127.0.0.1:1", None)
             .await
+            // Loopback: a timeout would itself be a bug, so unwrap it rather than tolerate it.
+            .expect("loopback must fail fast, not hang")
             .expect_err("nothing should be listening on port 1");
 
         assert!(
