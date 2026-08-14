@@ -27,11 +27,19 @@
 > [AI-assisted development](#ai-assisted-development) for how the code is
 > written and verified.
 >
-> Development is driven by real use against local models — currently
-> **FastFlowLM (FLM)** and **Ollama** endpoints. Several design choices exist
-> specifically to serve that case, notably the prompt-cache and
-> environment-context work, which is tuned for FLM's text-only partial-prefill
-> (KV-cache) behaviour and assumes a model that can partial-prefill at all.
+> Development is driven by real day-to-day use across both ends of the BYOP
+> range: **FastFlowLM (FLM)** and **Ollama** running locally, and **Google
+> Vertex AI** (Gemini and Claude, authenticated through `gcloud` — no static
+> key) as the hosted case. Testing against both matters, because they fail
+> differently — small local models expose context-window and tool-schema
+> problems a frontier model papers over, while Vertex exercises the
+> auth-refresh, streaming and attachment paths that a localhost endpoint never
+> touches.
+>
+> Some work serves one end specifically. The prompt-cache and
+> environment-context design is tuned for FLM's text-only partial-prefill
+> (KV-cache) behaviour and assumes a model that can partial-prefill at all;
+> VL/MoE engines gain nothing from it.
 
 Phosphor is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, work over SSH with the agent's tools following you onto the remote host — with keys, history and agent state staying on your machine by default.
 
