@@ -249,6 +249,15 @@ jobs:
     name: cargo nextest (Linux)
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      # This is the heaviest build in the workflow -- the warp + warp_tui test
+      # binaries. agent-cargo defaults to 5 parallel jobs, sized for a 24-core/45GB
+      # host; a standard runner has 4 cores and ~16GB, and 5 concurrent rustc
+      # processes on the `warp` crate got the runner killed mid-compile ("The runner
+      # has received a shutdown signal", exit 143) after ~12 minutes, nowhere near
+      # this job's timeout. Trading build time for headroom is the right way round:
+      # a slower job costs minutes, a reaped runner costs the whole run.
+      PHOSPHOR_BUILD_JOBS: 2
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 

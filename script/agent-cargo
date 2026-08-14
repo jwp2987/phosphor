@@ -71,19 +71,31 @@ shift
 # jobs that looked like a test gate and never executed a single test. Locally it made
 # `script/precheck`'s whole suite section unusable for the same reason.
 #
-# So: when the scratch base cannot be created, fall through to plain `cargo`. Losing the
-# governor is correct in exactly the situations where this fails -- a CI runner or a
-# laptop running one build -- because there are no competing agents to arbitrate. It also
-# keeps `CARGO_TARGET_DIR` at the default `./target`, which is what CI's build cache is
-# keyed on; redirecting it to an unshared path would make every run compile cold.
+# So: when the scratch base cannot be created, run cargo anyway with slot arbitration
+# DISABLED but every other protection intact. Losing arbitration is correct exactly where
+# this fails -- a CI runner or a laptop running one build -- because there are no
+# competing agents to arbitrate between. It also leaves `CARGO_TARGET_DIR` at the default
+# `./target`, which CI's build cache is keyed on; redirecting it to an unshared path
+# would make every run compile cold.
+GOVERNOR=1
 if ! mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR" 2>/dev/null; then
-  echo "[agent-cargo] scratch base unavailable (tried $TARGET_ROOT); running plain cargo" >&2
-  echo "[agent-cargo] no slot limiting -- fine for a single build, NOT for parallel agents." >&2
+  GOVERNOR=0
+  echo "[agent-cargo] scratch base unavailable (tried $TARGET_ROOT); slot limiting OFF" >&2
   echo "[agent-cargo] set PHOSPHOR_TARGET_ROOT/PHOSPHOR_LOCK_DIR/PHOSPHOR_LOG_DIR to restore it." >&2
-  exec cargo "$@"
 fi
 
-export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
+# Only the ISOLATION is skipped when the scratch base is missing -- the job/thread
+# caps, the fd limit and the toolchain pin below still apply.
+#
+# An earlier version of this fallback did `exec cargo "$@"` right here, which also
+# dropped CARGO_BUILD_JOBS / NEXTEST_TEST_THREADS and the pin check. On a GitHub
+# runner that let the `warp` + `warp_tui` test build run at full parallelism and the
+# runner was killed mid-compile ("The runner has received a shutdown signal", exit
+# 143) after ~12 minutes -- nowhere near its 120-minute timeout. The caps are the
+# entire point of this script; only the shared-host arbitration is situational.
+if [[ "$GOVERNOR" == 1 ]]; then
+  export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
+fi
 export CARGO_BUILD_JOBS="$JOBS"
 # CARGO_BUILD_JOBS bounds COMPILATION only. nextest defaults its test-execution
 # parallelism to the CPU count, so a test run spawns up to `nproc` concurrent
@@ -177,6 +189,21 @@ slot_count() {
   fi
   echo "$SLOTS"
 }
+
+# No lock directory means no slots to hand out. Run under the caps set above rather
+# than spinning forever on a `flock` target that cannot be created.
+if [[ "$GOVERNOR" == 0 ]]; then
+  set +e
+  cargo "$@"
+  status=$?
+  set -e
+  if [[ $status -eq 0 ]]; then
+    echo "[agent-cargo] RESULT agent=$agent exit=0 OK (ungoverned)" >&2
+  else
+    echo "[agent-cargo] RESULT agent=$agent exit=$status FAILED (ungoverned)" >&2
+  fi
+  exit $status
+fi
 
 while :; do
   live_slots="$(slot_count)"
