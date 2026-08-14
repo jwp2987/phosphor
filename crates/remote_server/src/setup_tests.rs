@@ -730,3 +730,256 @@ fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String,
     );
     (home, script, install_dir)
 }
+
+// ---------------------------------------------------------------------------
+// Remote-server tarball integrity verification
+//
+// The install script runs on a remote host and fetches the CLI tarball from GitHub over the
+// public internet. The digest it checks against is compiled into this client and delivered
+// inside the script text over the user's authenticated SSH connection, so a tampered release
+// cannot install even if GitHub's copy is replaced. These tests cover the three outcomes that
+// matter: the digest reaches the script, a good artifact installs, and a bad one does not.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn install_script_substitutes_every_platform_digest_placeholder() {
+    let script = install_script(None);
+    for placeholder in [
+        "{sha256_linux_x86_64}",
+        "{sha256_linux_aarch64}",
+        "{sha256_macos_x86_64}",
+        "{sha256_macos_aarch64}",
+    ] {
+        assert!(
+            !script.contains(placeholder),
+            "{placeholder} survived substitution -- install_script() is missing its \
+             .replace() for it, so the script would compare the downloaded tarball against \
+             the literal placeholder text and every install would fail",
+        );
+    }
+}
+
+#[test]
+fn expected_sha256_is_empty_for_unknown_platform() {
+    assert_eq!(expected_sha256("plan9", "x86_64"), "");
+    assert_eq!(expected_sha256("linux", "riscv64"), "");
+}
+
+/// A client built without the pinned digests must REFUSE the download path, not warn and
+/// continue. This is the fail-closed property: a misconfigured build must not quietly become
+/// a build that installs unverified binaries.
+///
+/// Test builds never set `PHOSPHOR_CLI_SHA256_*`, so this exercises the real production
+/// condition. It also proves the check runs *before* the download -- there is no network in
+/// this test, and the script still exits with the documented code.
+#[cfg(unix)]
+#[test]
+fn install_script_refuses_unverified_download_when_no_digest_is_pinned() {
+    let home = tempfile::tempdir().expect("failed to create temp HOME");
+    let script = install_script(None);
+
+    let output = Command::new(bash_path())
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", home.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn bash");
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "expected the documented fail-closed exit code; stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("refusing to install an unverified remote server"),
+        "the refusal must say why; stderr={stderr}",
+    );
+}
+
+/// A tarball whose digest matches installs normally.
+#[cfg(unix)]
+#[test]
+fn install_script_accepts_download_matching_pinned_digest() {
+    let (home, install_dir, output) = run_download_install_with_digest(DigestUnderTest::Matching);
+
+    assert!(
+        output.status.success(),
+        "a matching digest must install; stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+    assert!(binary.is_file(), "binary was not installed at {binary:?}");
+
+    drop(home);
+}
+
+/// The security property itself: a tarball that does NOT match the pinned digest is rejected,
+/// and nothing is installed or made executable.
+#[cfg(unix)]
+#[test]
+fn install_script_rejects_download_failing_pinned_digest() {
+    let (home, install_dir, output) = run_download_install_with_digest(DigestUnderTest::Mismatched);
+
+    assert_eq!(
+        output.status.code(),
+        Some(6),
+        "expected the documented integrity-failure exit code; stderr={}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed integrity check"),
+        "the rejection must name the cause; stderr={stderr}",
+    );
+
+    let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+    assert!(
+        !binary.exists(),
+        "a tarball that failed verification was installed anyway at {binary:?} -- \
+         verification must happen before the binary is moved into place",
+    );
+
+    drop(home);
+}
+
+#[cfg(unix)]
+enum DigestUnderTest {
+    Matching,
+    Mismatched,
+}
+
+/// Drives the production install script down its **download** branch without touching the
+/// network, by putting a `curl` shim ahead of the real one on PATH that copies a local
+/// tarball to the requested output path.
+///
+/// The script text itself is left intact apart from pinning a digest into the platform case
+/// arms -- the digests are a compile-time input this test cannot set, so substituting the
+/// value it would have had is the only way to exercise the comparison. The comparison logic,
+/// the ordering relative to `chmod +x`/`mv`, and the exit codes are all the real thing.
+#[cfg(unix)]
+fn run_download_install_with_digest(
+    which: DigestUnderTest,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::process::Output,
+) {
+    let home = tempfile::tempdir().expect("failed to create temp HOME");
+    let home_path = home.path().to_path_buf();
+
+    let staging = home_path.join("tarball-src");
+    std::fs::create_dir_all(&staging).unwrap();
+    std::fs::write(staging.join(binary_name()), "#!/bin/sh\nexit 0\n").unwrap();
+
+    let tarball = home_path.join("release.tar.gz");
+    let tar_status = Command::new("tar")
+        .arg("-czf")
+        .arg(&tarball)
+        .arg("-C")
+        .arg(&staging)
+        .arg(".")
+        .status()
+        .expect("failed to spawn tar");
+    assert!(tar_status.success(), "tar failed to build the test artifact");
+
+    let real_digest = sha256_of(&tarball);
+    let pinned = match which {
+        DigestUnderTest::Matching => real_digest,
+        // Same length and alphabet as a real digest, so the failure is the comparison and
+        // not some incidental parsing difference.
+        DigestUnderTest::Mismatched => "0".repeat(64),
+    };
+
+    // A `curl` that serves the local tarball. Honours `-o <path>`, which is how the script
+    // invokes it; everything else is ignored.
+    let shim_dir = home_path.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let curl_shim = shim_dir.join("curl");
+    std::fs::write(
+        &curl_shim,
+        format!(
+            "#!/bin/sh\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
+             if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\n\
+             if [ -z \"$out\" ]; then exit 1; fi\ncp {} \"$out\"\n",
+            tarball.display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&curl_shim).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&curl_shim, perms).unwrap();
+
+    // Pin the digest into every platform arm so the test does not depend on which platform
+    // it happens to run on.
+    let script = install_script(None).replace(
+        "expected_sha256=\"\"",
+        &format!("expected_sha256=\"{pinned}\""),
+    );
+    assert!(
+        script.contains(&format!("expected_sha256=\"{pinned}\"")),
+        "the test failed to pin a digest -- the script's case arms changed shape",
+    );
+
+    let path = format!(
+        "{}:{}",
+        shim_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(bash_path())
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", &home_path)
+        .env("PATH", path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn bash");
+
+    let install_dir = std::path::PathBuf::from(
+        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
+    );
+    (home, install_dir, output)
+}
+
+#[cfg(unix)]
+fn sha256_of(path: &std::path::Path) -> String {
+    let (program, args): (&str, Vec<&str>) = if which_exists("sha256sum") {
+        ("sha256sum", vec![])
+    } else {
+        ("shasum", vec!["-a", "256"])
+    };
+    let output = Command::new(program)
+        .args(args)
+        .arg(path)
+        .output()
+        .expect("failed to spawn a SHA-256 tool");
+    assert!(output.status.success(), "SHA-256 tool failed");
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .next()
+        .expect("no digest in tool output")
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn which_exists(program: &str) -> bool {
+    Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {program} >/dev/null 2>&1"))
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn bash_path() -> &'static str {
+    if std::path::Path::new("/bin/bash").exists() {
+        "/bin/bash"
+    } else {
+        "bash"
+    }
+}

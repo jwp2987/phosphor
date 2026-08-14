@@ -488,6 +488,49 @@ pub fn install_script(staging_tarball_path: Option<&str>) -> String {
         .replace("{version_suffix}", &version_suffix)
         .replace("{staging_tarball_path}", staging_tarball_path.unwrap_or(""))
         .replace("{bundled_resources_dir_name}", BUNDLED_RESOURCES_DIR_NAME)
+        // All published platforms are substituted, not just the one we think the host is:
+        // the script re-derives `uname` itself and picks the matching digest, so a host that
+        // turns out to be a different platform than the client guessed still verifies rather
+        // than silently falling through to an empty expectation.
+        .replace("{sha256_linux_x86_64}", expected_sha256("linux", "x86_64"))
+        .replace("{sha256_linux_aarch64}", expected_sha256("linux", "aarch64"))
+        .replace("{sha256_macos_x86_64}", expected_sha256("macos", "x86_64"))
+        .replace("{sha256_macos_aarch64}", expected_sha256("macos", "aarch64"))
+}
+
+/// SHA-256 of the published CLI tarball for one remote platform, embedded into this client
+/// at **build time** by the release workflow.
+///
+/// This is the integrity root for remote-server installs, and the reason it is a compile-time
+/// constant rather than something fetched at install time is the whole point:
+///
+/// The install script runs on the remote host and pulls the tarball from GitHub over plain
+/// HTTPS. Before this existed, whatever bytes came back were `chmod +x`'d and executed --
+/// GitHub's TLS and release storage were the entire trust model, and a tampered or
+/// mis-published release would install and run on every host the user SSHes into, silently.
+///
+/// A checksum published *alongside* the release would not fix that: anyone able to replace the
+/// tarball can replace a checksum file next to it. A digest compiled into the client instead
+/// reaches the remote host down the user's already-authenticated **SSH channel**, as part of
+/// the script text itself. That takes GitHub out of the integrity path entirely -- the release
+/// can only install if it matches what this client was built expecting.
+///
+/// Empty when the corresponding `PHOSPHOR_CLI_SHA256_*` env var was not set at compile time
+/// (any local build). The script treats empty as **fail-closed on the download path** and
+/// refuses to install; it does not warn and continue. That is deliberate: a silent skip would
+/// make the protection vanish exactly when a build is misconfigured. It does not affect local
+/// development, because a DEBUG build with no release tag never downloads at all -- it
+/// cross-compiles and uploads over SCP (see [`is_dev_mode_install`] and `DEV_MUSL_TARGET`),
+/// and that path is trusted because it likewise arrived over SSH.
+fn expected_sha256(os: &str, arch: &str) -> &'static str {
+    let digest = match (os, arch) {
+        ("linux", "x86_64") => option_env!("PHOSPHOR_CLI_SHA256_LINUX_X86_64"),
+        ("linux", "aarch64") => option_env!("PHOSPHOR_CLI_SHA256_LINUX_AARCH64"),
+        ("macos", "x86_64") => option_env!("PHOSPHOR_CLI_SHA256_MACOS_X86_64"),
+        ("macos", "aarch64") => option_env!("PHOSPHOR_CLI_SHA256_MACOS_AARCH64"),
+        _ => None,
+    };
+    digest.unwrap_or("").trim()
 }
 
 /// Repository the remote-server CLI tarball is downloaded from.

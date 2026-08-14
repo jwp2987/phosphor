@@ -16,8 +16,12 @@
 # - Reuses ./.github/actions/{prepare_environment,get_channel_config}
 #
 # Pipeline structure (build first, then publish, to avoid an empty Release):
-#   prepare_metadata → release_{macos,windows,linux} (uploaded as workflow artifacts)
-#                    → publish_release (downloads artifacts and creates the Release once all builds succeed)
+#   prepare_metadata → build_cli_{linux,macos} (CLI/TUI tarballs, uploaded as workflow artifacts)
+#                    → release_{macos,linux} (download + hash every build_cli_* tarball to pin
+#                      into the client; see the "CLI / TUI artifacts" comment above those jobs)
+#                      and release_windows (only needs prepare_metadata; no CLI digest to pin)
+#                    → publish_release (downloads all artifacts and creates the Release once
+#                      every build/release job above has succeeded)
 # If any build job fails → publish_release is skipped via `needs` → no
 # Release without installers is ever left behind.
 
@@ -230,7 +234,12 @@ jobs:
   release_macos:
     name: Build Release (macOS ${{ matrix.dmg_name_suffix }})
     runs-on: ${{ matrix.runner }}
-    needs: prepare_metadata
+    # Needs BOTH CLI jobs, not just its own platform's: this client pins the
+    # digest of every published CLI tarball, so all of them must already exist.
+    needs:
+      - prepare_metadata
+      - build_cli_linux
+      - build_cli_macos
     # macos-26 / macos-26-intel (Pro standard) have no sccache, so a full cargo
     # build + bundle + create-dmg takes a long time; the Intel build has
     # historically exceeded 180min, so we relax this to the 6h execution
@@ -261,6 +270,49 @@ jobs:
       - name: Ensure rust target is installed
         run: rustup target add ${{ matrix.arch }}-apple-darwin
         shell: bash
+
+      # Pin the published CLI tarballs' SHA-256 into this client before it is compiled.
+      # `remote_server::setup::expected_sha256` bakes these in with `option_env!`, and the
+      # install script verifies the remote download against them -- delivered to the host
+      # inside the script over SSH, so GitHub is not in the integrity path and a replaced
+      # release cannot install. The digests are computed from the exact artifacts
+      # publish_release later uploads, never from a rebuild: the build is not bit-reproducible,
+      # so a second build would pin a hash that does not match the published asset and fail
+      # closed on every remote install.
+      - name: Download CLI tarballs for digest pinning
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: phosphor-cli-*
+          merge-multiple: true
+          path: cli-artifacts
+
+      - name: Pin CLI tarball digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() {
+            local var="$1" file="cli-artifacts/$2"
+            if [[ ! -f "$file" ]]; then
+              echo "::error::missing CLI tarball $file -- the client would compile with no pinned"
+              echo "::error::digest and then refuse every remote-server install (fail-closed)"
+              exit 1
+            fi
+            local digest
+            if command -v sha256sum >/dev/null 2>&1; then
+              digest=$(sha256sum "$file" | cut -d' ' -f1)
+            else
+              digest=$(shasum -a 256 "$file" | cut -d' ' -f1)
+            fi
+            echo "$var=$digest" >> "$GITHUB_ENV"
+            echo "$var=$digest"
+          }
+          # No linux-aarch64 CLI is published, so PHOSPHOR_CLI_SHA256_LINUX_AARCH64 stays unset.
+          # That is deliberate: an install onto a linux-aarch64 host fails closed rather than
+          # installing something unverified.
+          pin PHOSPHOR_CLI_SHA256_LINUX_X86_64  phosphor-cli-linux-x86_64.tar.gz
+          pin PHOSPHOR_CLI_SHA256_MACOS_X86_64  phosphor-cli-macos-x86_64.tar.gz
+          pin PHOSPHOR_CLI_SHA256_MACOS_AARCH64 phosphor-cli-macos-aarch64.tar.gz
+
 
       - name: Check ${{ matrix.arch }} release compile
         run: |
@@ -312,56 +364,6 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Build CLI
-        id: bundle_cli
-        run: |
-          script/bundle --channel "$CHANNEL" --arch ${{ matrix.arch }} --artifact cli --nosign
-        shell: bash
-        env:
-          GIT_RELEASE_TAG: ${{ needs.prepare_metadata.outputs.release_tag }}
-
-      - name: Package CLI tarball
-        run: |
-          cp "${{ steps.bundle_cli.outputs.binary_path }}" zap-oss
-          tar czf phosphor-cli-macos-${{ matrix.arch }}.tar.gz \
-            zap-oss \
-            -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
-        shell: bash
-
-      - name: Upload CLI artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: phosphor-cli-macos-${{ matrix.arch }}
-          path: phosphor-cli-macos-${{ matrix.arch }}.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-
-      # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
-      # renamed to phosphor-tui below since that's what users see/download)
-      # with no packaged release artifact until now — build/run
-      # was source-only (`cargo run -p warp_tui`). Reuses the same
-      # release-cli profile + target already warmed by the CLI build above,
-      # so this doesn't pay for a second full dependency compile.
-      - name: Build TUI
-        id: bundle_tui
-        run: |
-          cargo build -p warp_tui --profile release-cli --target ${{ matrix.arch }}-apple-darwin --bin zap-tui-oss
-        shell: bash
-
-      - name: Package TUI tarball
-        run: |
-          cp "target/${{ matrix.arch }}-apple-darwin/release-cli/zap-tui-oss" phosphor-tui
-          tar czf phosphor-tui-macos-${{ matrix.arch }}.tar.gz phosphor-tui
-        shell: bash
-
-      - name: Upload TUI artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: phosphor-tui-macos-${{ matrix.arch }}
-          path: phosphor-tui-macos-${{ matrix.arch }}.tar.gz
-          if-no-files-found: error
-          retention-days: 7
 
   release_windows:
     name: Build Release (Windows x64)
@@ -436,7 +438,12 @@ jobs:
   release_linux:
     name: Build Release (Linux x86_64)
     runs-on: ubuntu-22.04
-    needs: prepare_metadata
+    # Needs BOTH CLI jobs, not just its own platform's: this client pins the
+    # digest of every published CLI tarball, so all of them must already exist.
+    needs:
+      - prepare_metadata
+      - build_cli_linux
+      - build_cli_macos
     # Use 22.04 (glibc 2.35) instead of ubuntu-latest (24.04, glibc 2.39);
     # AppImage links against the host glibc, so a 22.04 build can run on more
     # older distros (Debian 11 / Ubuntu 20.04+, etc.).
@@ -446,14 +453,14 @@ jobs:
         with:
           ref: ${{ needs.prepare_metadata.outputs.release_branch }}
 
-      # The GitHub-hosted ubuntu runner has limited free space on /, and this
-      # job produces two full targets on the same disk in sequence:
-      # release-lto (GUI/AppImage/deb/rpm/arch) and release-cli (musl CLI).
-      # Combined with the cargo registry / docker images / zig toolchain,
-      # this fills up the disk and the musl CLI step reports "No space left
-      # on device" (see run 27593938453). Remove the preinstalled toolchains
-      # unrelated to this build (Android SDK / .NET / GHC / CodeQL / Swift)
-      # first, freeing up ~25GB.
+      # The GitHub-hosted ubuntu runner has limited free space on /. This job builds only the
+      # release-lto target now (GUI/AppImage/deb/rpm/arch) -- the musl CLI/TUI build that used
+      # to run here in sequence (and needed its own "reclaim disk" step) moved to
+      # build_cli_linux, split out for the digest-pinning dependency described below. Combined
+      # with the cargo registry / docker images this build still pulls, disk has been tight
+      # enough to report "No space left on device" (see run 27593938453), so keep removing the
+      # preinstalled toolchains unrelated to this build (Android SDK / .NET / GHC / CodeQL /
+      # Swift) first, freeing up ~25GB.
       - name: Free up disk space
         shell: bash
         run: |
@@ -477,6 +484,49 @@ jobs:
       - name: Ensure rust target is installed
         run: rustup target add x86_64-unknown-linux-gnu
         shell: bash
+
+      # Pin the published CLI tarballs' SHA-256 into this client before it is compiled.
+      # `remote_server::setup::expected_sha256` bakes these in with `option_env!`, and the
+      # install script verifies the remote download against them -- delivered to the host
+      # inside the script over SSH, so GitHub is not in the integrity path and a replaced
+      # release cannot install. The digests are computed from the exact artifacts
+      # publish_release later uploads, never from a rebuild: the build is not bit-reproducible,
+      # so a second build would pin a hash that does not match the published asset and fail
+      # closed on every remote install.
+      - name: Download CLI tarballs for digest pinning
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: phosphor-cli-*
+          merge-multiple: true
+          path: cli-artifacts
+
+      - name: Pin CLI tarball digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin() {
+            local var="$1" file="cli-artifacts/$2"
+            if [[ ! -f "$file" ]]; then
+              echo "::error::missing CLI tarball $file -- the client would compile with no pinned"
+              echo "::error::digest and then refuse every remote-server install (fail-closed)"
+              exit 1
+            fi
+            local digest
+            if command -v sha256sum >/dev/null 2>&1; then
+              digest=$(sha256sum "$file" | cut -d' ' -f1)
+            else
+              digest=$(shasum -a 256 "$file" | cut -d' ' -f1)
+            fi
+            echo "$var=$digest" >> "$GITHUB_ENV"
+            echo "$var=$digest"
+          }
+          # No linux-aarch64 CLI is published, so PHOSPHOR_CLI_SHA256_LINUX_AARCH64 stays unset.
+          # That is deliberate: an install onto a linux-aarch64 host fails closed rather than
+          # installing something unverified.
+          pin PHOSPHOR_CLI_SHA256_LINUX_X86_64  phosphor-cli-linux-x86_64.tar.gz
+          pin PHOSPHOR_CLI_SHA256_MACOS_X86_64  phosphor-cli-macos-x86_64.tar.gz
+          pin PHOSPHOR_CLI_SHA256_MACOS_AARCH64 phosphor-cli-macos-aarch64.tar.gz
+
 
       - name: Check Linux release compile
         run: script/bundle --check-only --channel "$CHANNEL" --arch x86_64 --packages appimage,deb
@@ -632,22 +682,63 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      # The release-lto artifacts (GUI/deb/rpm/arch) have already been
-      # uploaded as a workflow artifact by the "Upload package artifacts"
-      # step above, so they're no longer needed locally; the musl CLI build
-      # below uses a separate release-cli profile, so remove release-lto to
-      # free up disk space and avoid "No space left on device".
-      - name: Reclaim disk before musl CLI build
+  # ---------------------------------------------------------------------------
+  # CLI / TUI artifacts, built BEFORE any GUI client.
+  #
+  # Split out of the GUI jobs for one reason: the client pins every platform's CLI
+  # tarball digest at compile time, so all of those tarballs have to exist before
+  # any client is built. While each platform built its own CLI in parallel with its
+  # own GUI, the Linux client could not know the macOS digest and vice versa.
+  #
+  # Consequence to preserve: the tarball is built ONCE here and both hashed (by the
+  # GUI jobs) and published (by publish_release) from these same bytes.
+  # ---------------------------------------------------------------------------
+  build_cli_linux:
+    name: Build CLI/TUI (Linux x86_64)
+    runs-on: ubuntu-22.04
+    needs: prepare_metadata
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare_metadata.outputs.release_branch }}
+
+      # The musl CLI build plus the cargo registry and zig toolchain fill the
+      # GitHub-hosted runner's disk; drop preinstalled toolchains this build never
+      # uses (Android SDK / .NET / GHC / CodeQL / Swift) to free ~25GB.
+      - name: Free up disk space
         shell: bash
         run: |
-          rm -rf target/release-lto
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift || true
           df -h /
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: linux
+          # Distinct from release_linux's (default, "linux"): this job builds a musl
+          # cross-compile (release-cli profile) while release_linux builds the glibc
+          # release-lto GUI profile. Before the CLI build was split out of release_linux,
+          # this was one job so there was no collision; sharing a cache key across two
+          # jobs now building different targets/profiles would make them race for the
+          # same Swatinem/rust-cache slot (mirrors the macos / macos-cli split below).
+          cache_key: linux-cli
+          is_self_hosted: false
+          install_release_deps: true
+
+      # libdbus-1-dev only: fakeroot/rpm belong to the deb/rpm packaging that stayed
+      # behind in release_linux.
+      - name: Install extra dependencies for the CLI build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev
+        shell: bash
 
       # The CLI/remote-server tarball uses static musl linking, so the
       # artifact has no dependency on the host glibc and can run on any Linux
       # x86_64 host (including older-glibc distros like CentOS 7 / Amazon
       # Linux 2, and musl distros like Alpine). The GUI AppImage/deb still
-      # goes through the glibc-linked build above, unaffected.
+      # goes through the glibc-linked build in release_linux, unaffected.
       #
       # Use `cargo zigbuild` for the musl cross-compile: zig bundles a
       # complete C/C++ musl toolchain (`zig cc` / `zig c++`), with no
@@ -742,6 +833,86 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  build_cli_macos:
+    name: Build CLI/TUI (macOS ${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    needs: prepare_metadata
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            runner: macos-26 # Pro standard arm64 (M2 Pro)
+          - arch: x86_64
+            runner: macos-26-intel # Pro standard Intel
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.prepare_metadata.outputs.release_branch }}
+
+      - uses: ./.github/actions/prepare_environment
+        with:
+          target_os: macos
+          cache_key: macos-cli-${{ matrix.arch }}
+          is_self_hosted: false
+          install_release_deps: true
+
+      - name: Ensure rust target is installed
+        run: rustup target add ${{ matrix.arch }}-apple-darwin
+        shell: bash
+
+      - name: Build CLI
+        id: bundle_cli
+        run: |
+          script/bundle --channel "$CHANNEL" --arch ${{ matrix.arch }} --artifact cli --nosign
+        shell: bash
+        env:
+          GIT_RELEASE_TAG: ${{ needs.prepare_metadata.outputs.release_tag }}
+
+      - name: Package CLI tarball
+        run: |
+          cp "${{ steps.bundle_cli.outputs.binary_path }}" zap-oss
+          tar czf phosphor-cli-macos-${{ matrix.arch }}.tar.gz \
+            zap-oss \
+            -C "$(dirname "${{ steps.bundle_cli.outputs.bundled_resources_dir }}")" resources
+        shell: bash
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phosphor-cli-macos-${{ matrix.arch }}
+          path: phosphor-cli-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      # warp_tui is a non-default workspace member (crates/warp_tui, binary
+      # zap-tui-oss — an internal binary name, like zap-oss for the GUI;
+      # renamed to phosphor-tui below since that's what users see/download)
+      # with no packaged release artifact until now — build/run
+      # was source-only (`cargo run -p warp_tui`). Reuses the same
+      # release-cli profile + target already warmed by the CLI build above,
+      # so this doesn't pay for a second full dependency compile.
+      - name: Build TUI
+        id: bundle_tui
+        run: |
+          cargo build -p warp_tui --profile release-cli --target ${{ matrix.arch }}-apple-darwin --bin zap-tui-oss
+        shell: bash
+
+      - name: Package TUI tarball
+        run: |
+          cp "target/${{ matrix.arch }}-apple-darwin/release-cli/zap-tui-oss" phosphor-tui
+          tar czf phosphor-tui-macos-${{ matrix.arch }}.tar.gz phosphor-tui
+        shell: bash
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: phosphor-tui-macos-${{ matrix.arch }}
+          path: phosphor-tui-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
   publish_release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
@@ -749,6 +920,8 @@ jobs:
     # if any fails → this job is skipped → no empty Release is ever created.
     needs:
       - prepare_metadata
+      - build_cli_linux
+      - build_cli_macos
       - release_macos
       - release_windows
       - release_linux
