@@ -3,8 +3,8 @@
 #
 # setup.rs replaces these placeholders at runtime:
 #   {download_base_url}     - e.g. https://github.com/jwp2987/phosphor/releases/latest/download
-#   {install_dir}           - e.g. ~/.zap/remote-server
-#   {binary_name}           - e.g. zap-oss (the channel COMMAND name)
+#   {install_dir}           - e.g. ~/.phosphor/remote-server
+#   {binary_name}           - e.g. phosphor-oss (the channel COMMAND name)
 #   {release_asset_prefix}  - e.g. phosphor-cli (the published ASSET name --
 #                             deliberately different from {binary_name}; they
 #                             drifted apart at the rebrand and the mismatch made
@@ -129,7 +129,10 @@ tar -xzf "$tmpdir/zap.tar.gz" -C "$tmpdir"
 
 bin="$tmpdir/{binary_name}"
 if [ ! -f "$bin" ]; then
-  bin=$(find "$tmpdir" -type f \( -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
+  # Legacy names are kept alongside the current one: an already-published
+  # tarball still carries the old binary name, and this fallback is what makes
+  # it installable.
+  bin=$(find "$tmpdir" -type f \( -name 'phosphor-oss' -o -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
 fi
 if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit 1; fi
 chmod +x "$bin"

@@ -921,7 +921,7 @@ fn dmg_name(channel: Channel) -> String {
 
     // openWarp GitHub Release asset names are fixed as `Phosphor-arm64.dmg` /
     // `Phosphor-intel.dmg` (from script/macos/bundle's WARP_APP_NAME +
-    // --dmg-name-suffix), which doesn't match `app_name_prefix("zap-oss")`.
+    // --dmg-name-suffix), which doesn't match `app_name_prefix("phosphor-oss")`.
     // This is hardcoded only for OSS and doesn't affect official channels'
     // universal naming.
     if matches!(channel, Channel::Oss) {
@@ -947,10 +947,14 @@ fn app_name_prefix(channel: Channel) -> &'static str {
         Channel::Local => "warp",
         Channel::Integration => "integration",
         Channel::Dev => "WarpDev",
-        Channel::Oss => "zap-oss",
+        Channel::Oss => "phosphor-oss",
     }
 }
 
+/// The name of the executable inside `Contents/MacOS`.
+///
+/// For OSS this is the Cargo `[[bin]]` target name (and so the bundle's
+/// `CFBundleExecutable`), not `Channel::cli_command_name()`.
 fn executable_name(channel: Channel) -> &'static str {
     match channel {
         Channel::Stable => "stable",
@@ -958,7 +962,7 @@ fn executable_name(channel: Channel) -> &'static str {
         Channel::Local => "warp",
         Channel::Integration => "integration",
         Channel::Dev => "dev",
-        Channel::Oss => "zap-oss",
+        Channel::Oss => "phosphor-oss",
     }
 }
 

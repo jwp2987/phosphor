@@ -266,14 +266,18 @@ pub fn parse_uname_output(output: &str) -> Result<RemotePlatform> {
 /// - dev:         `~/.warp-dev/remote-server`
 /// - local:       `~/.warp-local/remote-server`
 /// - integration: `~/.warp-dev/remote-server`
-/// - warp-oss:    `~/.zap/remote-server`
+/// - phosphor-oss: `~/.phosphor/remote-server`
 pub fn remote_server_dir() -> String {
+    // This path lives on the *remote* host, not the local machine. Renaming it
+    // orphans any already-installed daemon and its `bundled_resources` tree on
+    // that host, with nothing that ever cleans the old directory up. Renamed
+    // anyway because there are currently no remote installs to strand.
     let warp_dir = match ChannelState::channel() {
         Channel::Stable => ".warp",
         Channel::Preview => ".warp-preview",
         Channel::Dev | Channel::Integration => ".warp-dev",
         Channel::Local => ".warp-local",
-        Channel::Oss => ".zap",
+        Channel::Oss => ".phosphor",
     };
     format!("~/{warp_dir}/remote-server")
 }
@@ -547,7 +551,7 @@ const RELEASE_REPO: &str = "jwp2987/phosphor";
 /// `phosphor-cli-linux-x86_64.tar.gz`.
 ///
 /// Deliberately NOT `binary_name()`: that returns the channel's *command* name
-/// (`zap-oss` on the OSS channel), which is not what the release workflow names
+/// (`phosphor-oss` on the OSS channel), which is not what the release workflow names
 /// its assets. The two drifted apart at the rebrand and nothing caught it
 /// because no test asserted the URL against a real release.
 const RELEASE_ASSET_PREFIX: &str = "phosphor-cli";

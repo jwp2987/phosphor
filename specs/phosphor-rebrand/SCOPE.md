@@ -123,10 +123,17 @@ What derives from the storage identity today:
   `"Zap"` → dir `zap` (and `Zap*` → `zap-*`). This is the root of
   `~/.config/zap`, `~/.local/share/zap`, `~/.local/state/zap`, and the macOS/
   Windows equivalents (`%APPDATA%\zap\Zap\...`).
-- Secret storage service name — `app/src/app_services/linux/mod.rs:163`
-  `default_service = "dev.zap.Zap"` (and the keyring entry service on other OSes;
-  trace `AgentProviderSecrets` / keyring usage). **Renaming this orphans stored
-  API keys.**
+- Secret storage service name — `ChannelState::data_domain()`, passed straight
+  into `warpui_extras::secure_storage::register*` from `app/src/lib.rs`. It
+  becomes the Secret Service `service` attribute on Linux and the Keychain
+  service name on macOS. **Renaming this orphans stored API keys.**
+  - Corrected 2026-08-13: this bullet previously named
+    `app/src/app_services/linux/mod.rs:163` `default_service = "dev.zap.Zap"`.
+    That is the **`org.freedesktop.Application` D-Bus well-known name** used for
+    single-instance activation, not the keyring service. Both strings read as
+    the app id, so both change, but they are unrelated mechanisms with different
+    failure modes: getting the D-Bus name wrong breaks activation, getting the
+    keyring one wrong orphans every stored API key.
 - Channel / binary name — `crates/warp_core/src/channel/mod.rs:45,58`
   `Channel::Oss => "zap-oss"`; the `zap` symlink; `zap-tui-oss`.
 - Packaging identifiers — `app/channels/oss/dev.zap.Zap.desktop` (filename +

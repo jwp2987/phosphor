@@ -79,7 +79,7 @@ fn register_aumid_in_registry(app_id: &str) -> std::io::Result<()> {
     let (key, _) = hkcu.create_subkey(&subkey)?;
 
     // Derive a presentable display name from the last segment of the AUMID
-    // (e.g. dev.zap.Zap -> Zap).
+    // (e.g. dev.phosphor.Phosphor -> Phosphor).
     let display_name = app_id.rsplit('.').next().unwrap_or(app_id);
     key.set_value("DisplayName", &display_name.to_string())?;
     Ok(())

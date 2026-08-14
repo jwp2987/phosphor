@@ -1056,7 +1056,7 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     }
 
     // Unlike Finder/Dock launches (deduplicated automatically by LaunchServices), the bundled
-    // `zap-oss` shell-integration script bypasses LaunchServices by directly exec-ing the main
+    // `phosphor-oss` shell-integration script bypasses LaunchServices by directly exec-ing the main
     // binary, so it needs the same explicit single-instance check Linux/Windows already have.
     #[cfg(all(feature = "release_bundle", target_os = "macos"))]
     if let LaunchMode::App { .. } = launch_mode {
@@ -2815,7 +2815,7 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     flags.insert(FeatureFlag::ServerFileBrowser);
 
     // Issue #72: the HTTP proxy settings page. Not gated by channel — enabled by
-    // default on all channels including zap-oss, as a basic capability for
+    // default on all channels including phosphor-oss, as a basic capability for
     // corporate VPN / company proxy scenarios.
     flags.insert(FeatureFlag::HttpProxySettings);
 

@@ -39,7 +39,7 @@ fn base_warp_config_dir_name() -> String {
         // Preview shares the same directory as Stable for backward
         // compatibility — existing users already have config in `.warp`.
         Channel::Stable | Channel::Preview => WARP_CONFIG_DIR.to_owned(),
-        Channel::Oss => ".zap".to_owned(),
+        Channel::Oss => ".phosphor".to_owned(),
         Channel::Dev => format!("{WARP_CONFIG_DIR}-dev"),
         Channel::Integration => format!("{WARP_CONFIG_DIR}-integration"),
         Channel::Local => format!("{WARP_CONFIG_DIR}-local"),
@@ -73,7 +73,7 @@ pub fn warp_home_skills_dir() -> Option<PathBuf> {
 }
 
 /// Zap: recommended location for the system prompt template hot-reload
-/// directory (`~/.zap/prompts`).
+/// directory (`~/.phosphor/prompts`).
 ///
 /// This is only the **default suggested path** shown in the settings panel,
 /// not a location that takes effect implicitly — when the setting is left
@@ -114,7 +114,7 @@ fn macos_config_dir_name_for(channel: Channel, data_profile: Option<&str>) -> St
     let base_dir_name = match channel {
         Channel::Stable => WARP_CONFIG_DIR.to_owned(),
         Channel::Preview => format!("{WARP_CONFIG_DIR}-preview"),
-        Channel::Oss => ".zap".to_owned(),
+        Channel::Oss => ".phosphor".to_owned(),
         Channel::Dev => format!("{WARP_CONFIG_DIR}-dev"),
         Channel::Integration => format!("{WARP_CONFIG_DIR}-integration"),
         Channel::Local => format!("{WARP_CONFIG_DIR}-local"),
@@ -269,8 +269,18 @@ fn project_dirs_for_app_id(
     cfg_if::cfg_if! {
         if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
             // Adjust the base application name so that we end up with
-            // a directory like "zap" matching our Linux package name.
+            // a directory like "phosphor" matching our Linux package name.
+            //
+            // `directories` already lowercases the application name on Linux, so
+            // the plain arms below are belt-and-braces. The suffixed arms are
+            // not: without them `PhosphorDev` becomes the run-together
+            // `phosphordev` rather than `phosphor-dev`.
+            //
+            // The `Zap` arms are retained so the pre-rename application names
+            // still map to their historical directories if anything asks.
             let base_app_name = match app_id.application_name() {
+                "Phosphor" => "phosphor".to_owned(),
+                other if other.starts_with("Phosphor") => other.replace("Phosphor", "phosphor-"),
                 "Zap" => "zap".to_owned(),
                 other if other.starts_with("Zap") => other.replace("Zap", "zap-"),
                 _ => app_id.application_name().to_owned(),

@@ -2,7 +2,11 @@ use super::is_zap_bundle;
 
 #[test]
 fn is_zap_bundle_recognises_zap_channels() {
-    // OSS (Zap) itself.
+    // OSS (Phosphor) itself.
+    assert!(is_zap_bundle("dev.phosphor.Phosphor"));
+    // The pre-rename bundle id. Still recognised, because a user may have an
+    // older bundle installed alongside; the rename adds an identity rather
+    // than replacing one.
     assert!(is_zap_bundle("dev.zap.Zap"));
     // Upstream Warp's various channels — also considered part of this app family, allowing default-app redirection.
     // `dev.warp.Warp` is upstream stable; it is the one id the pin's

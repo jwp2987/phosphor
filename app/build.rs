@@ -127,9 +127,11 @@ fn main() -> Result<()> {
         if target_env == "msvc"
             && env::var("CARGO_FEATURE_WINDOWS_HIGH_PERFORMANCE_GPU_DEFAULT").is_ok()
         {
-            println!("cargo:rustc-link-arg-bin=zap-oss=/EXPORT:NvOptimusEnablement,DATA");
+            // The bin name here must match the `[[bin]]` target in Cargo.toml;
+            // cargo silently ignores `rustc-link-arg-bin` for an unknown target.
+            println!("cargo:rustc-link-arg-bin=phosphor-oss=/EXPORT:NvOptimusEnablement,DATA");
             println!(
-                "cargo:rustc-link-arg-bin=zap-oss=/EXPORT:AmdPowerXpressRequestHighPerformance,DATA"
+                "cargo:rustc-link-arg-bin=phosphor-oss=/EXPORT:AmdPowerXpressRequestHighPerformance,DATA"
             );
         }
 
@@ -377,20 +379,22 @@ fn embed_resource_file(target_dir: &Path) {
     use std::io::Write;
 
     let version = env::var("GIT_RELEASE_TAG").unwrap_or("v0".to_owned());
-    // The default value is set to "Zap", matching the publisher, and aligned
-    // globally with `script/windows/bundle.ps1`'s OSS branch (`$APP_NAME =
-    // 'Zap'`) + AUMID `dev.zap.Zap` + Cargo bundle metadata. Windows Task
+    // The default value is set to "Phosphor", matching the publisher, and
+    // aligned globally with `script/windows/bundle.ps1`'s OSS branch (`$APP_NAME
+    // = 'Phosphor'`) + AUMID `dev.phosphor.Phosphor` + Cargo bundle metadata.
+    // The AUMID itself is not written here: it is derived at runtime from
+    // `ChannelState::app_id()`, so it tracks the app id automatically. Windows Task
     // Manager's process grouping name is actually taken from the
     // `FileDescription` / `ProductName` in the PE resources (not the window
-    // title), so falling back to the default "Zap" here means a dev binary
-    // from a plain `cargo build` shows up as `Zap(N)` in Task Manager. The
+    // title), so falling back to the default "Phosphor" here means a dev binary
+    // from a plain `cargo build` shows up as `Phosphor(N)` in Task Manager. The
     // upstream official pipeline explicitly does `export WARP_APP_NAME=...`
     // to override this before invoking, so it's unaffected.
     let app_name = env::var("WARP_APP_NAME").unwrap_or_else(|_| "Phosphor".to_owned());
     let bin_name = env::var("CARGO_BIN_NAME").unwrap_or("oss".to_owned());
-    // Overridden via `WARP_APP_PUBLISHER`; defaults to "Zap", matching the
+    // Overridden via `WARP_APP_PUBLISHER`; defaults to "Phosphor", matching the
     // installer / AUMID. Keeps the installer's `MyAppPublisher`, the Cargo
-    // bundle metadata `copyright`, and the process AUMID `dev.zap.Zap`
+    // bundle metadata `copyright`, and the process AUMID `dev.phosphor.Phosphor`
     // globally aligned, avoiding Windows Shell missing the icon cache due to
     // a mismatched publisher / product name fingerprint.
     let publisher = env::var("WARP_APP_PUBLISHER").unwrap_or_else(|_| "Phosphor".to_owned());

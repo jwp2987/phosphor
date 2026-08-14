@@ -2462,7 +2462,7 @@ pub enum AISettingsPageAction {
     OpenMCPServerCollection,
     OpenExecutionProfileEditor(ClientProfileId),
     /// Zap: exports the built-in system prompt templates / tool descriptions to the default
-    /// directory (`~/.zap/prompts`, or the path the user has already filled in), and writes
+    /// directory (`~/.phosphor/prompts`, or the path the user has already filled in), and writes
     /// the path back to settings -- one click to enable hot-reload.
     SeedPromptTemplates,
     SetBaseModel(LLMId),
@@ -3063,7 +3063,7 @@ impl TypedActionView for AISettingsPageView {
                 ctx.emit(AISettingsPageEvent::OpenExecutionProfileEditor(*profile_id))
             }
             // Zap: one click to export the built-in templates and enable hot-reload.
-            // Target directory = the path the user has already filled in, or `~/.zap/prompts`
+            // Target directory = the path the user has already filled in, or `~/.phosphor/prompts`
             // if empty.
             // Seeding itself is "fill gaps, don't overwrite", so clicking repeatedly is safe
             // (useful for backfilling new templates after an upgrade).

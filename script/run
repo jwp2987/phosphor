@@ -27,7 +27,7 @@ if command -v warp-channel-config &>/dev/null; then
     WARP_BIN_NAME="warp"
     WARP_CHANNEL="local"
 else
-    WARP_BIN_NAME="zap-oss"
+    WARP_BIN_NAME="phosphor-oss"
     WARP_CHANNEL="oss"
 fi
 

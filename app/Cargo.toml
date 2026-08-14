@@ -1,6 +1,6 @@
 [package]
 authors = ["Zap Team"]
-default-run = "zap-oss"
+default-run = "phosphor-oss"
 description = "The local-first agentic terminal"
 edition = "2024"
 autobins = false
@@ -13,13 +13,18 @@ license.workspace = true
 name = "warp"
 path = "src/lib.rs"
 
-# Zap keeps only two bins: zap-oss for packaging, and the build-time tool
-# generate_settings_schema. The original warp multi-channel release bins
+# Phosphor keeps only two bins: phosphor-oss for packaging, and the build-time
+# tool generate_settings_schema. The original warp multi-channel release bins
 # (dev/stable/preview/local) have been removed.
+#
+# This target name is what both packaging scripts pass to `cargo build --bin`,
+# and it is the on-disk executable name (macOS `CFBundleExecutable`). It is
+# distinct from `Channel::cli_command_name()`, which happens to share the value
+# but names the command the *user* types.
 
 [[bin]]
-name = "zap-oss"
-path = "src/bin/zap_oss.rs"
+name = "phosphor-oss"
+path = "src/bin/phosphor_oss.rs"
 test = false
 
 [[bin]]
@@ -873,10 +878,13 @@ hoa_remote_control = []
 codex_notifications = []
 configurable_context_window = []
 
-[package.metadata.bundle.bin.zap-oss]
+[package.metadata.bundle.bin.phosphor-oss]
 category = "public.app-category.developer-tools"
 copyright = "© 2025-2026, Phosphor"
-identifier = "dev.zap.Zap"
+# Read back at runtime by `app_id_from_bundle()` and used as the app id, so it
+# must match `ChannelState::init`'s default and the plist embedded in
+# `src/bin/phosphor_oss.rs`.
+identifier = "dev.phosphor.Phosphor"
 name = "Phosphor"
 resources = ["assets/onboarding"]
 icon = ["channels/oss/icon/padded/512x512.png", "channels/oss/icon/padded/icon.ico"]

@@ -225,7 +225,7 @@ fi
 #
 # script/test_warpctrl_early_dispatch needs a BUILT binary and SKIPS (exit 0,
 # with a diagnostic) when there is none. That is deliberate: nothing in this
-# gate builds `zap-oss`, and a test that hard-fails in every environment
+# gate builds `phosphor-oss`, and a test that hard-fails in every environment
 # without a build would just get switched off. It reports "SKIPPED" here so a
 # skip is visible rather than silent.
 step "shell tests (packaging scripts)"
