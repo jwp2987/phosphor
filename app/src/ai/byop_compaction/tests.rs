@@ -4,7 +4,7 @@
 
 use super::algorithm::{prune_decisions, select, turns, MessageRef, Role, ToolOutputRef};
 use super::commit::commit_summarization;
-use super::config::CompactionConfig;
+use super::config::{model_limit_from_parts, CompactionConfig};
 use super::consts::*;
 use super::overflow::{is_overflow, usable, ModelLimit, TokenCounts};
 use super::prompt::{build_continue_message, build_prompt, SUMMARY_TEMPLATE};
@@ -48,6 +48,42 @@ fn usable_with_input_limit() {
     };
     // reserved = min(20_000, 8_000) = 8_000
     // usable = max(0, 180_000 - 8_000) = 172_000
+    assert_eq!(usable(&cfg, model), 172_000);
+}
+
+/// The regression this whole helper exists for: a 1M-window model must not be compacted at
+/// the hardcoded 172_000. Numbers are the ones observed in zap.log on 2026-08-14
+/// (`window=1000000`, `usable=172000`).
+#[test]
+fn model_limit_uses_configured_window_not_fallback() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(1_000_000, 64_000);
+    assert_eq!(model.context, 1_000_000);
+    assert_eq!(usable(&cfg, model), 936_000); // 1_000_000 - 64_000
+    assert_ne!(
+        usable(&cfg, model),
+        172_000,
+        "regressed to ModelLimit::FALLBACK"
+    );
+}
+
+/// `max_output_tokens: 0` means "unspecified", not "no output" — leaving it at 0 would make
+/// `usable == context`, i.e. only compact once the prompt already fills the window.
+#[test]
+fn model_limit_unspecified_max_output_keeps_headroom() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(1_000_000, 0);
+    assert_eq!(model.max_output, COMPACTION_BUFFER);
+    assert_eq!(usable(&cfg, model), 980_000);
+}
+
+/// An unknown window must fall back, not disable compaction: `usable`/`is_overflow`
+/// short-circuit on `context == 0`, so a passthrough would mean auto compaction never fires.
+#[test]
+fn model_limit_unknown_window_falls_back() {
+    let cfg = cfg_default();
+    let model = model_limit_from_parts(0, 8_000);
+    assert_eq!(model.context, ModelLimit::FALLBACK.context);
     assert_eq!(usable(&cfg, model), 172_000);
 }
 

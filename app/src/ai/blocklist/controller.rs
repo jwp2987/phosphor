@@ -4086,8 +4086,12 @@ impl BlocklistAIController {
                     let aggregate_count = aggregate_token_count;
                     if aggregate_count > 0 {
                         let cfg = crate::ai::byop_compaction::CompactionConfig::from_settings(ctx);
+                        // Sourced from the configured model, NOT ModelLimit::FALLBACK — the
+                        // hardcoded constant pinned the trigger at 172_000 tokens for every
+                        // model, compacting a 1M-window model at ~16%. See
+                        // CompactionConfig::model_limit.
                         let model_limit =
-                            crate::ai::byop_compaction::overflow::ModelLimit::FALLBACK;
+                            crate::ai::byop_compaction::CompactionConfig::model_limit(ctx);
                         let counts = crate::ai::byop_compaction::overflow::TokenCounts {
                             total: aggregate_count,
                             ..Default::default()

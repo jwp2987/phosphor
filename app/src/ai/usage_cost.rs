@@ -338,7 +338,7 @@ fn format_model_line(total: &ModelTokenTotals) -> String {
 
 /// The provider + model entry the agent would send to right now, or `None` when the active
 /// model is not a configured BYOP model.
-fn active_byop_model(ctx: &AppContext) -> Option<(AgentProvider, AgentProviderModel)> {
+pub(crate) fn active_byop_model(ctx: &AppContext) -> Option<(AgentProvider, AgentProviderModel)> {
     let active = LLMPreferences::as_ref(ctx).get_active_base_model(ctx, None);
     let providers = AISettings::as_ref(ctx).agent_providers.value().clone();
     resolve_model(&providers, active.id.as_str())
