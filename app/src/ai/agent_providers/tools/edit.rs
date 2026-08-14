@@ -38,7 +38,17 @@ struct Args {
 /// missing field `file_path` … args_str={"operations":[{"content":…,"op":"create",
 ///                                        "path":"docker-compose.yml",…}]}
 /// missing field `content`   … args_str={"operations":[{"contents":"Hello world!\n",…}]}
+/// missing field `search`    … args_str={"operations":[{"new_string":"TZ: America/Chicago",
+///                                        "old_string":"TZ: UTC","op":"edit",
+///                                        "path":"docker-compose.yml"}],…}
 /// ```
+///
+/// `old_string`/`new_string` is Anthropic's `str_replace`-style naming (and what Claude Code's
+/// own Edit tool takes), so it is one of the most heavily represented edit-tool spellings in
+/// training data — a local model reaching for it is the expected case, not an aberration. Note
+/// the observed payload got `path` right only because that alias already existed; the call
+/// still died on `search`, which is why aliases have to be added as a *set* per operation
+/// rather than one field at a time.
 ///
 /// A synonym costs the entire call: `serde_json::from_str` fails before any file logic runs,
 /// so the user gets no file and (before `ce097bad`) no error either. Accepting the synonym is
@@ -57,7 +67,9 @@ enum Operation {
     Edit {
         #[serde(alias = "path")]
         file_path: String,
+        #[serde(alias = "old_string")]
         search: String,
+        #[serde(alias = "new_string")]
         replace: String,
     },
     /// Create a new file.

@@ -170,3 +170,31 @@ fn the_canonical_names_still_win_and_are_unaffected() {
     assert_eq!(result.new_files[0].file_path, "canonical.txt");
     assert_eq!(result.new_files[0].content, "still works");
 }
+
+/// The verbatim payload from `zap.log.old.3` (2026-08-13T21:38:22Z), which failed with
+/// ``missing field `search` `` and lost the edit. `path` was already aliased, so the call got
+/// far enough to look valid and still died on the next field along.
+#[test]
+fn edit_accepts_the_old_string_new_string_synonyms() {
+    let result = apply_file_diffs(
+        r#"{"operations":[{"new_string":"TZ: America/Chicago","old_string":"TZ: UTC",
+            "op":"edit","path":"docker-compose.yml"}],
+            "summary":"Update TZ to correct IANA zone"}"#,
+    );
+    assert_eq!(result.diffs.len(), 1);
+    assert_eq!(result.diffs[0].file_path, "docker-compose.yml");
+    // Direction matters: old_string is what to find, new_string what to put there. Swapping
+    // them would still parse and would silently apply the edit backwards.
+    assert_eq!(result.diffs[0].search, "TZ: UTC");
+    assert_eq!(result.diffs[0].replace, "TZ: America/Chicago");
+}
+
+/// Canonical `search`/`replace` must keep winning now that the aliases exist.
+#[test]
+fn edit_canonical_search_replace_still_unaffected() {
+    let result = apply_file_diffs(
+        r#"{"operations":[{"op":"edit","file_path":"a.txt","search":"x","replace":"y"}]}"#,
+    );
+    assert_eq!(result.diffs[0].search, "x");
+    assert_eq!(result.diffs[0].replace, "y");
+}
