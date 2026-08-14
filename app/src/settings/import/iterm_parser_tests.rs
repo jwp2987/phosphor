@@ -171,7 +171,11 @@ fn test_import_from_file() {
 
         let config = profile.parse(&[]);
 
-        let ThemeType::Single(ref warp_theme) =
+        // No `ref`: the scrutinee is already a reference, so edition 2024's match ergonomics
+        // bind by reference implicitly and reject an explicit binding modifier here. This
+        // file is macOS-gated (iTerm import), so the Linux checks never compile it and it
+        // only fails on the macOS CI job.
+        let ThemeType::Single(warp_theme) =
             config.theme.value().as_ref().expect("Should import theme!")
         else {
             panic!("Should have read a single theme!")

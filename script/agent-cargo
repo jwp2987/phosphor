@@ -61,7 +61,27 @@ fi
 agent="$1"
 shift
 
-mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR"
+# The governor exists to stop PARALLEL agents from exhausting RAM on one shared build
+# host. Its scratch dirs default to `/cache/git/...`, which is that host's fast disk and
+# exists nowhere else -- not on a GitHub runner, not on the maintainer's laptop.
+#
+# `mkdir -p` on a missing `/cache` fails, and because this ran before any cargo
+# invocation, the caller died having run NOTHING. In CI that turned every
+# `check_test_failures` job into "THE TEST RUN ITSELF FAILED -- no tests were judged":
+# jobs that looked like a test gate and never executed a single test. Locally it made
+# `script/precheck`'s whole suite section unusable for the same reason.
+#
+# So: when the scratch base cannot be created, fall through to plain `cargo`. Losing the
+# governor is correct in exactly the situations where this fails -- a CI runner or a
+# laptop running one build -- because there are no competing agents to arbitrate. It also
+# keeps `CARGO_TARGET_DIR` at the default `./target`, which is what CI's build cache is
+# keyed on; redirecting it to an unshared path would make every run compile cold.
+if ! mkdir -p "$LOCK_DIR" "$TARGET_ROOT/$agent" "$LOG_DIR" 2>/dev/null; then
+  echo "[agent-cargo] scratch base unavailable (tried $TARGET_ROOT); running plain cargo" >&2
+  echo "[agent-cargo] no slot limiting -- fine for a single build, NOT for parallel agents." >&2
+  echo "[agent-cargo] set PHOSPHOR_TARGET_ROOT/PHOSPHOR_LOCK_DIR/PHOSPHOR_LOG_DIR to restore it." >&2
+  exec cargo "$@"
+fi
 
 export CARGO_TARGET_DIR="$TARGET_ROOT/$agent"
 export CARGO_BUILD_JOBS="$JOBS"
