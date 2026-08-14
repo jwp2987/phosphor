@@ -3864,11 +3864,11 @@ impl TypedActionView for AISettingsPageView {
                 new_provider.api_type = models_dev::infer_api_type(catalog_provider_id);
                 // Vertex has no catalog base_url (its endpoint is derived from
                 // vertex_project/vertex_location, filled in by the user after quick-add); every
-                // other type takes the catalog's base_url as before.
+                // other type takes the catalog's base_url, or the api type's default when the
+                // catalog has none.
                 if !new_provider.api_type.is_vertex() {
-                    if let Some(api) = &cat_provider.api {
-                        new_provider.base_url = api.clone();
-                    }
+                    new_provider.base_url =
+                        quick_add_base_url(new_provider.api_type, cat_provider.api.as_deref());
                 }
                 new_provider.models = cat_provider
                     .models
@@ -7695,6 +7695,32 @@ mod styles {
 /// Whether `FetchAgentProviderModels` should run the extra Ollama `/api/show`
 /// enrichment pass for this provider's api_type. Only [`crate::settings::AgentProviderApiType::Ollama`]
 /// does; every other variant keeps the plain `/models`-only behavior unchanged.
+/// The `base_url` a quick-added (models.dev catalog) provider should start with.
+///
+/// The catalog's `api` field is optional and — in the cached catalog as of 2026-08-14 — is
+/// absent for *every* provider, `google` / `openai` / `anthropic` included. The previous code
+/// only assigned `base_url` inside `if let Some(api)`, so quick-add left it empty for all of
+/// them. An empty `base_url` makes `AgentProvider::has_endpoint()` false, which makes
+/// `effectively_disabled()` true, so a freshly quick-added provider landed in the collapsed
+/// "Disabled providers" section despite having a full model list and a perfectly good default
+/// endpoint — and `validation_error()` only covers the Vertex case, so nothing said why.
+///
+/// Falling back to [`AgentProviderApiType::default_base_url`] matches what
+/// `normalize_endpoint_url` would have substituted at request time anyway, and mirrors the
+/// `SetAgentProviderApiType` arm, which already fills the default in when the field is blank.
+///
+/// Not called for Vertex: its `default_base_url()` is empty by design (the endpoint is built
+/// from `vertex_project` + `vertex_location`), so it would be a no-op.
+fn quick_add_base_url(
+    api_type: crate::settings::AgentProviderApiType,
+    catalog_api: Option<&str>,
+) -> String {
+    match catalog_api.map(str::trim) {
+        Some(api) if !api.is_empty() => api.to_owned(),
+        _ => api_type.default_base_url().to_owned(),
+    }
+}
+
 fn should_enrich_with_ollama_metadata(api_type: crate::settings::AgentProviderApiType) -> bool {
     matches!(api_type, crate::settings::AgentProviderApiType::Ollama)
 }
@@ -7725,6 +7751,51 @@ mod ollama_fetch_enrichment_tests {
     use super::*;
     use crate::ai::agent_providers::openai_compatible::OllamaContextInfo;
     use crate::settings::{AgentProviderApiType, AgentProviderModel};
+
+    /// The regression: the cached models.dev catalog carries no `api` for any provider, so
+    /// quick-add left `base_url` empty and the new provider was `effectively_disabled()` on
+    /// arrival — observed with the `google` (Gemini, 39 models) entry.
+    #[test]
+    fn quick_add_falls_back_to_the_api_type_default_when_catalog_has_no_api() {
+        assert_eq!(
+            quick_add_base_url(AgentProviderApiType::Gemini, None),
+            "https://generativelanguage.googleapis.com/v1beta/"
+        );
+        assert_eq!(
+            quick_add_base_url(AgentProviderApiType::OpenAi, None),
+            "https://api.openai.com/v1/"
+        );
+        // Blank/whitespace is the same as absent, not a valid endpoint.
+        assert_eq!(
+            quick_add_base_url(AgentProviderApiType::Anthropic, Some("   ")),
+            "https://api.anthropic.com/v1/"
+        );
+    }
+
+    /// A catalog-supplied endpoint still wins — the fallback must not override it.
+    #[test]
+    fn quick_add_prefers_the_catalog_api_over_the_default() {
+        assert_eq!(
+            quick_add_base_url(
+                AgentProviderApiType::OpenAi,
+                Some("https://proxy.example/v1/")
+            ),
+            "https://proxy.example/v1/"
+        );
+    }
+
+    /// The result must actually satisfy the gate that was rejecting these providers.
+    #[test]
+    fn quick_added_provider_is_not_effectively_disabled() {
+        let mut provider = crate::settings::AgentProvider::new_empty();
+        provider.api_type = AgentProviderApiType::Gemini;
+        provider.base_url = quick_add_base_url(AgentProviderApiType::Gemini, None);
+        provider.models = vec![AgentProviderModel::from_id("gemini-2.5-pro".to_owned())];
+        assert!(
+            !provider.effectively_disabled(),
+            "a quick-added provider with models must land enabled"
+        );
+    }
 
     #[test]
     fn only_ollama_gets_the_metadata_enrichment_pass() {
