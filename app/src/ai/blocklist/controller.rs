@@ -204,6 +204,26 @@ impl SessionContext {
             is_legacy_ssh: false,
         }
     }
+
+    /// A legacy-SSH session: the user typed `ssh host` into the PTY rather than using the
+    /// remote-server extension.
+    ///
+    /// `session_type` is set to `WarpifiedRemote { host_id: None }` alongside the flag because
+    /// the two co-occur *by construction* in production (`command_executor.rs:316`), and the
+    /// pair is what downstream code keys on — `SkillPathOrigin::Unavailable` is derived from
+    /// the `session_type` arm at line 179 of this file, not from `is_legacy_ssh`. A fixture
+    /// that set only the flag would be a session shape that cannot exist, and would quietly
+    /// under-test anything reading the session type.
+    #[cfg(test)]
+    pub fn new_legacy_ssh_for_test() -> Self {
+        SessionContext {
+            session_type: Some(SessionType::WarpifiedRemote { host_id: None }),
+            shell: None,
+            current_working_directory: None,
+            ssh_connection_info: None,
+            is_legacy_ssh: true,
+        }
+    }
 }
 
 pub enum BlocklistAIControllerEvent {

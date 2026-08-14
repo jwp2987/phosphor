@@ -243,9 +243,9 @@ fn render_ssh_session_block(
          All shell commands you run via `run_shell_command` execute on the REMOTE host, not on the local client.</fact>\n  \
          <warning>The [Environment] block (OS / shell / working directory) above describes the LOCAL client and may not match the remote host. \
          If you need precise remote info, probe it directly (e.g. `uname -a`, `cat /etc/os-release`, `pwd`).</warning>\n  \
-         <unavailable_tools>The file tools cannot reach this host: `read_files`, `apply_file_diffs` and bundled `read_skill` all require the \
-         Phosphor remote-server extension, which is NOT installed here. They will refuse every call. Do not call them, and do not \
-         interpret their refusal as a file being missing or empty.</unavailable_tools>\n  \
+         <unavailable_tools>`read_files`, `apply_file_diffs` and `read_skill` require the Phosphor remote-server extension, which is \
+         NOT installed here, so they are NOT in your tool list for this session — they have been withdrawn, not merely discouraged. \
+         Do not try to call them by name; use the shell instead, as described below.</unavailable_tools>\n  \
          <rules>\n    \
          - Run commands DIRECTLY (e.g. `uname -a`, `ls /`). Do NOT prepend `ssh {host} ...` — that opens a NESTED ssh session inside the current one.\n    \
          - For FILE operations on this host, use `run_shell_command` — read with `cat path` (or `sed -n '1,200p' path` for a slice), write with a heredoc (`cat > path <<'EOF' ... EOF`), search with `grep -rn` / `find`. This overrides `run_shell_command`'s usual instruction to prefer the specialised file tools; that instruction assumes those tools work, and here they do not.\n    \
@@ -3737,6 +3737,40 @@ const PLAN_MODE_BLOCKED_TOOLS: &[&str] = &[
     tools::computer::USE_COMPUTER_TOOL_NAME,
 ];
 
+/// Tools that cannot function **at all** on a legacy SSH session, and are therefore withdrawn
+/// from the advertised tool list rather than left to fail.
+///
+/// A legacy SSH session is the user typing `ssh host` into the PTY instead of using the
+/// remote-server extension: `SessionType::WarpifiedRemote { host_id: None }`. The PTY is on
+/// the remote host, but these three tools reach for a file layer that is only wired for a
+/// local session or a *connected* remote server, and this session is neither.
+///
+/// Each is verified dead on this path, not assumed:
+/// - `read_files` — `execute/read_files.rs` returns the "needs the remote-server extension"
+///   refusal for a remote session with no remote-server client.
+/// - `apply_file_diffs` — same refusal in
+///   `execute/request_file_edits/diff_application.rs`.
+/// - `read_skill` — `blocklist/controller.rs:179` maps `WarpifiedRemote { host_id: None }` to
+///   `SkillPathOrigin::Unavailable`, which `skills/bundled.rs:101` turns into an empty
+///   catalog. Every lookup then fails, so it is not merely bundled skills that break.
+///
+/// **Deliberately NOT blocked: `grep` and `file_glob`.** They look like file tools and are
+/// not — they execute through the session's own shell (`execute/grep.rs:389`: "whether the
+/// session is local or remote, we can run `git grep` in the session"), so on this path they
+/// correctly search the REMOTE host. Removing them would delete the only structured search
+/// the model has and push it back to hand-rolled `grep -rn`. `run_shell_command` obviously
+/// stays — it is the tool that works here.
+///
+/// Withdrawal rather than prompt guidance is the fork's own measured conclusion: see the
+/// comment on the LRC `run_shell_command` strip in [`build_tools_array`] — "neither
+/// system-prompt guidance nor the RunningCommand context prefix alone is strong enough ...
+/// The cleanest hard constraint is to remove that tool directly from the tools list." The
+/// `<unavailable_tools>` block in [`render_ssh_session_block`] told the model not to call
+/// these and it called them anyway; worse, a malformed call fails at argument-decode time in
+/// `from_args`, which is upstream of every refusal message, so the user got a serde error
+/// instead of the redirect. A tool absent from the list cannot produce either.
+const LEGACY_SSH_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
+
 /// Whether `name` is one of the two computer-use descriptors.
 ///
 /// Both are gated on `RequestParams::computer_use_enabled`, which `ai/agent/api.rs` already
@@ -3767,6 +3801,10 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
+    // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
+    // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
+    // already on `RequestParams` because `render_ssh_session_block` uses it.
+    let legacy_ssh = params.session_context.is_legacy_ssh();
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
@@ -3791,6 +3829,13 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
                 return false;
             }
             if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // Must mirror `build_tools_array`'s legacy-SSH filter. This list is the allowlist
+            // for the content→tool extraction fallback, so leaving a withdrawn tool in it
+            // would let a call the model wrote as *text* be executed anyway — reintroducing
+            // exactly the failure the withdrawal exists to prevent, by the back door.
+            if legacy_ssh && LEGACY_SSH_BLOCKED_TOOLS.contains(&t.name) {
                 return false;
             }
             true
@@ -3843,6 +3888,10 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = is_plan_mode_turn(&params.input);
+    // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
+    // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
+    // already on `RequestParams` because `render_ssh_session_block` uses it.
+    let legacy_ssh = params.session_context.is_legacy_ssh();
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
     // handle_suggest_prompt_executor_event`), so it can be exposed to the model.
@@ -3897,6 +3946,12 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             // not in the list can't trigger side effects (the provider protocol layer
             // flatly rejects an unknown function).
             if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // Legacy SSH: withdraw the tools that physically cannot reach this host. See
+            // `LEGACY_SSH_BLOCKED_TOOLS` for why these three, and why `grep` / `file_glob`
+            // are deliberately kept. Keep in step with `available_tool_names`.
+            if legacy_ssh && LEGACY_SSH_BLOCKED_TOOLS.contains(&t.name) {
                 return false;
             }
             true
@@ -10087,6 +10142,84 @@ mod serializer_readiness_tests {
         assert!(description(false).contains("never see the screen"));
         assert!(!description(true).contains("never see the screen"));
         assert!(description(true).contains("attached"));
+    }
+
+    /// On a legacy SSH session the three tools that cannot reach the host must be absent from
+    /// the advertised list, not merely discouraged in the prompt.
+    ///
+    /// Regression: guidance alone demonstrably lost. A model on such a session called
+    /// `apply_file_diffs` with `old_string`/`new_string`, which died in `from_args` -- upstream
+    /// of every refusal message, so the "use run_shell_command instead" redirect never ran.
+    #[test]
+    fn legacy_ssh_withdraws_the_tools_that_cannot_reach_the_host() {
+        let mut params = request_params(vec![], vec![]);
+        params.session_context = crate::ai::blocklist::SessionContext::new_legacy_ssh_for_test();
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        for withdrawn in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !names.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} cannot reach a legacy-SSH host and must not be advertised; got {names:?}",
+            );
+        }
+
+        // The tools that DO work over the remote shell must survive. `grep`/`file_glob` look
+        // like file tools but execute in the session, so withdrawing them would strip the
+        // model's only structured search on exactly the session that needs it most.
+        // Names as ADVERTISED, not the registry constant names: the static is `FILE_GLOB_V2`
+        // but the tool it declares is `name: "file_glob"` (search.rs:187), which is what the
+        // model and the log actually see.
+        for kept in ["run_shell_command", "grep", "file_glob"] {
+            assert!(
+                names.iter().any(|n| n.as_str() == kept),
+                "{kept} works over the remote shell and must stay advertised; got {names:?}",
+            );
+        }
+    }
+
+    /// The withdrawal must be scoped to legacy SSH -- a local session keeps its file tools.
+    #[test]
+    fn a_local_session_keeps_the_file_tools() {
+        let params = request_params(vec![], vec![]);
+        assert!(
+            !params.session_context.is_legacy_ssh(),
+            "fixture should be a local session",
+        );
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+
+        for present in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                names.iter().any(|n| n.as_str() == present),
+                "{present} must still be advertised on a local session; got {names:?}",
+            );
+        }
+    }
+
+    /// `available_tool_names` feeds the content->tool extraction fallback, so it has to apply
+    /// the same withdrawal. If it did not, a model that wrote the call as plain text would
+    /// have it scraped out and executed anyway -- the same failure, through the back door.
+    #[test]
+    fn the_extraction_allowlist_mirrors_the_legacy_ssh_withdrawal() {
+        let mut params = request_params(vec![], vec![]);
+        params.session_context = crate::ai::blocklist::SessionContext::new_legacy_ssh_for_test();
+
+        let names = available_tool_names(&params);
+
+        for withdrawn in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !names.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} must not be extractable from assistant text on a legacy-SSH \
+                 session; got {names:?}",
+            );
+        }
     }
 }
 
