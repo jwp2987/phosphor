@@ -50,6 +50,16 @@ pub enum OpenAiCompatibleError {
     #[error("Request failed: {0}")]
     Other(String),
 
+    /// **No longer constructed** as of 2026-08-13. The plaintext-key rule is now enforced
+    /// by *stripping* the key and continuing (see `fetch_openai_compatible_models`), not by
+    /// failing the fetch — the no-leak guarantee is identical, but the user gets their
+    /// model list instead of an error they cannot act on.
+    ///
+    /// Kept rather than deleted for two reasons: the tests that pin the new behaviour
+    /// assert `!matches!(err, InsecureEndpoint(_))` and need the variant to exist, and it
+    /// is the natural error should a future strict mode ever want to refuse outright
+    /// again. If neither holds, delete it together with those assertions — do not leave it
+    /// undocumented, which is how a variant like this becomes mystery dead code.
     #[error(
         "refusing to send the API key to {0} over plaintext HTTP — only https:// or a \
          loopback endpoint (localhost/127.0.0.1) may carry a key; use https, or point this \
@@ -58,8 +68,16 @@ pub enum OpenAiCompatibleError {
     InsecureEndpoint(String),
 }
 
-/// Normalizes a user-supplied base_url into an absolute URL, tolerating a
-/// trailing `/`, a missing `/v1`, `/openai/v1`, and similar variations.
+/// Normalizes a user-supplied base_url into an absolute URL.
+///
+/// NOTE: this trims a trailing `/` and validates the scheme; it does NOT add a missing
+/// `/v1`. The doc comment previously claimed it tolerated "a missing `/v1`, `/openai/v1`,
+/// and similar variations" — it never did, and that drift cost real debugging time: an
+/// Ollama provider configured (correctly, for its native api_type) as
+/// `http://host:11434` produced `GET http://host:11434/models`, which 404s because
+/// Ollama's OpenAI-compat list lives at `/v1/models`. Ollama providers no longer come
+/// through here at all — see [`fetch_ollama_models`] — but the comment is corrected
+/// rather than left to mislead the next reader.
 pub(crate) fn normalize_base_url(input: &str) -> Result<String, OpenAiCompatibleError> {
     let trimmed = input.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -94,13 +112,28 @@ pub async fn fetch_openai_compatible_models(
         // Defense-in-depth: never carry the API key as a plaintext `Authorization: Bearer`
         // header outside loopback. `https://` is fine (TLS); `http://localhost` /
         // `http://127.0.0.1` (Ollama et al.) never leaves the machine. Any other `http://`
-        // host would leak the key to whoever can observe the wire, so refuse outright
-        // rather than silently sending it or silently dropping it.
+        // host would leak the key to whoever can observe the wire.
+        //
+        // This used to `return Err(InsecureEndpoint)`, aborting the whole fetch. The
+        // no-leak guarantee is worth keeping; failing the fetch over it is not. Local
+        // runtimes on a LAN box (Ollama, llama.cpp, vLLM) usually accept unauthenticated
+        // requests entirely — this function's own doc says so — so the useful behaviour is
+        // to drop the key and try anyway. The key still never touches the wire; the user
+        // gets their model list instead of an error they cannot act on.
+        //
+        // Found the hard way: a provider with a saved key pointed at a plaintext LAN host
+        // made "Fetch from API" fail before sending a single request, reported only via
+        // log::error, so the button appeared to do nothing at all.
         if super::is_plaintext_bearer_risk(&base) {
-            return Err(OpenAiCompatibleError::InsecureEndpoint(base));
+            log::warn!(
+                "[provider-fetch] not sending the API key to {base} over plaintext HTTP \
+                 (non-loopback); fetching unauthenticated instead"
+            );
+        } else {
+            req = req.bearer_auth(key);
         }
-        req = req.bearer_auth(key);
     }
+    log::info!("[provider-fetch] GET {url}");
 
     let response = req.send().await?;
     let status = response.status();
@@ -120,7 +153,84 @@ pub async fn fetch_openai_compatible_models(
     let mut models = parsed.data;
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
+    log::info!("[provider-fetch] {url} returned {} models", models.len());
     Ok(models)
+}
+
+/// Lists models from Ollama's **native** `GET {root}/api/tags`, for providers whose
+/// `api_type` is `Ollama`.
+///
+/// Ollama does serve an OpenAI-compatible list, but at `/v1/models` — while a native-Ollama
+/// provider's `base_url` correctly has no `/v1` on it (the native chat endpoint is
+/// `{root}/api/chat`). Routing such a provider through
+/// [`fetch_openai_compatible_models`] therefore built `{root}/models` and got a bare
+/// `404 page not found`, with the failure visible only in the log.
+///
+/// Using the native endpoint here — rather than guessing a `/v1` onto the URL — keeps this
+/// consistent with [`fetch_ollama_context_map`], which already talks to `{root}/api/show`,
+/// and avoids inventing path variants for a server whose own API we are already using.
+pub async fn fetch_ollama_models(
+    client: Client,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<Vec<OpenAiCompatibleModel>, OpenAiCompatibleError> {
+    let root = ollama_root_url(base_url)?;
+    let url = format!("{root}/api/tags");
+
+    let mut req = client.get(&url);
+    if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+        // Same plaintext-key rule as the OpenAI-compatible path above.
+        if super::is_plaintext_bearer_risk(&root) {
+            log::warn!(
+                "[provider-fetch] not sending the API key to {root} over plaintext HTTP \
+                 (non-loopback); fetching unauthenticated instead"
+            );
+        } else {
+            req = req.bearer_auth(key);
+        }
+    }
+    log::info!("[provider-fetch] GET {url}");
+
+    let response = req.send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(OpenAiCompatibleError::Status {
+            status: status.as_u16(),
+            body,
+        });
+    }
+
+    let parsed: OllamaTagsResponse = response
+        .json()
+        .await
+        .map_err(|e| OpenAiCompatibleError::Decode(e.to_string()))?;
+
+    let mut models: Vec<OpenAiCompatibleModel> = parsed
+        .models
+        .into_iter()
+        .map(|m| OpenAiCompatibleModel {
+            id: m.name,
+            owned_by: None,
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    log::info!("[provider-fetch] {url} returned {} models", models.len());
+    Ok(models)
+}
+
+/// `/api/tags` response. Ollama returns `{"models":[{"name":"qwen3:8b", ...}, ...]}`; the
+/// `name` field is the tag used as the model id everywhere else (including `/api/show`).
+#[derive(Debug, Default, Deserialize)]
+struct OllamaTagsResponse {
+    #[serde(default)]
+    models: Vec<OllamaTagEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaTagEntry {
+    name: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -258,10 +368,18 @@ async fn fetch_ollama_model_context(
         .post(&url)
         .json(&serde_json::json!({ "model": model_id }));
     if let Some(key) = api_key.filter(|k| !k.trim().is_empty()) {
+        // Strip the key rather than failing, matching the two list endpoints above. A
+        // hard error here would make every model's metadata lookup fail for a plaintext
+        // LAN Ollama with a key saved -- silently, since per-model failures are treated
+        // as "no metadata" by design.
         if super::is_plaintext_bearer_risk(&root) {
-            return Err(OpenAiCompatibleError::InsecureEndpoint(root));
+            log::warn!(
+                "[provider-fetch] not sending the API key to {root} over plaintext HTTP \
+                 (non-loopback); requesting /api/show unauthenticated instead"
+            );
+        } else {
+            req = req.bearer_auth(key);
         }
-        req = req.bearer_auth(key);
     }
 
     let response = req.send().await?;
@@ -416,37 +534,49 @@ mod tests {
         .expect("fetch must not hang — either our guard or a loopback connection refusal should return promptly")
     }
 
+    // The two tests below asserted `InsecureEndpoint` — i.e. that a plaintext non-loopback
+    // endpoint with a key set FAILED THE WHOLE FETCH. That behaviour was changed
+    // deliberately (maintainer-directed, 2026-08-13): the key is now stripped and the
+    // request proceeds unauthenticated, because local runtimes on a LAN box usually need no
+    // auth at all, and aborting produced a button that silently did nothing.
+    //
+    // The assertions are re-pointed at the new contract rather than deleted, because the
+    // property that actually matters is unchanged and still worth pinning: **the key must
+    // never reach a plaintext non-loopback endpoint.** What changed is only what happens
+    // instead — proceed without it, rather than give up.
+
     #[tokio::test]
-    async fn refuses_bearer_over_plaintext_http_to_non_loopback_host() {
+    async fn does_not_send_bearer_over_plaintext_http_to_non_loopback_host() {
         let err = fetch_bounded(
             Client::new_for_test(),
             "http://example.com",
             Some("super-secret-key"),
         )
         .await
-        .expect_err("must refuse to send the key over plaintext HTTP to a non-loopback host");
+        .expect_err("no server is listening, so the request itself must fail");
 
+        // The point: we got far enough to attempt a request (a transport/status failure)
+        // rather than refusing up front. The key was dropped, not sent.
         assert!(
-            matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
-            "expected InsecureEndpoint, got: {err}"
-        );
-        assert!(
-            err.to_string().contains("example.com"),
-            "error should name the offending endpoint: {err}"
+            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "the fetch must no longer abort on a plaintext non-loopback endpoint: {err}"
         );
     }
 
     #[tokio::test]
-    async fn refuses_bearer_over_plaintext_http_to_non_loopback_ip() {
+    async fn does_not_send_bearer_over_plaintext_http_to_non_loopback_ip() {
         let err = fetch_bounded(
             Client::new_for_test(),
             "http://192.168.1.50:11434",
             Some("super-secret-key"),
         )
         .await
-        .expect_err("a LAN IP is not loopback and must be refused");
+        .expect_err("nothing is listening on that LAN IP in tests");
 
-        assert!(matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)));
+        assert!(
+            !matches!(err, OpenAiCompatibleError::InsecureEndpoint(_)),
+            "a LAN IP must now be fetched unauthenticated, not refused: {err}"
+        );
     }
 
     #[tokio::test]

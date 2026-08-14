@@ -3617,12 +3617,28 @@ impl TypedActionView for AISettingsPageView {
                 let ollama_api_key = api_key.clone();
                 ctx.spawn(
                     async move {
-                        let fetched = crate::ai::agent_providers::fetch_openai_compatible_models(
-                            client,
-                            &provider.base_url,
-                            api_key.as_deref(),
-                        )
-                        .await?;
+                        // Ollama providers list through the NATIVE `/api/tags`, not the
+                        // OpenAI-compatible `/models`. A native-Ollama base_url correctly
+                        // carries no `/v1` (its chat endpoint is `{root}/api/chat`), so the
+                        // compat path built `{root}/models` and got `404 page not found` --
+                        // the OpenAI-compat list lives at `/v1/models`. Guessing a `/v1`
+                        // onto the URL would paper over that; using the server's own API is
+                        // consistent with the `/api/show` call just below.
+                        let fetched = if should_fetch_ollama_context {
+                            crate::ai::agent_providers::openai_compatible::fetch_ollama_models(
+                                client,
+                                &provider.base_url,
+                                api_key.as_deref(),
+                            )
+                            .await?
+                        } else {
+                            crate::ai::agent_providers::fetch_openai_compatible_models(
+                                client,
+                                &provider.base_url,
+                                api_key.as_deref(),
+                            )
+                            .await?
+                        };
 
                         let context_map = if should_fetch_ollama_context {
                             let show_client = http_client::Client::new();
@@ -3647,6 +3663,29 @@ impl TypedActionView for AISettingsPageView {
                     },
                     move |view, result, ctx| match result {
                         Ok((fetched, context_map)) => {
+                            // Report the outcome. Until now this button was entirely silent
+                            // on both success and failure: a 404 and a clean fetch looked
+                            // identical, so the only way to tell them apart was to read the
+                            // log -- which is how a plaintext-key refusal and a 404 URL bug
+                            // went undiagnosed while the button was clicked eight times in
+                            // three seconds.
+                            let added = fetched.len();
+                            let enriched = context_map.len();
+                            let window_id = ctx.window_id();
+                            let message = if added == 0 {
+                                "Fetch returned no models".to_owned()
+                            } else if enriched > 0 {
+                                format!("Fetched {added} models, {enriched} with context info")
+                            } else {
+                                format!("Fetched {added} models")
+                            };
+                            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                toast_stack.add_ephemeral_toast(
+                                    DismissibleToast::default(message),
+                                    window_id,
+                                    ctx,
+                                );
+                            });
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {
                                 let mut providers = settings.agent_providers.value().clone();
                                 if let Some(p) = providers
@@ -3686,6 +3725,18 @@ impl TypedActionView for AISettingsPageView {
                             log::error!(
                                 "Failed to fetch models for provider {provider_id_for_handler}: {e}"
                             );
+                            // Surface it. The error carries the actionable detail (404 on a
+                            // wrong path, a refused endpoint, a decode failure); logging it
+                            // and showing the user nothing is what made this class of
+                            // failure look like "the button does nothing".
+                            let window_id = ctx.window_id();
+                            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                                toast_stack.add_ephemeral_toast(
+                                    DismissibleToast::error(format!("Fetch failed: {e}")),
+                                    window_id,
+                                    ctx,
+                                );
+                            });
                             ctx.notify();
                         }
                     },
