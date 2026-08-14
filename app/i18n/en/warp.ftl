@@ -1619,10 +1619,16 @@ settings-agent-providers-models-header-input-price = Input ($/1M)
 settings-agent-providers-models-header-output-price = Output ($/1M)
 settings-agent-providers-model-name-placeholder = Display name (e.g. DS-V3 General)
 settings-agent-providers-model-id-placeholder = Model ID (the `model` field sent to the API, e.g. deepseek-chat)
-settings-agent-providers-model-context-placeholder = Context (tokens)
-settings-agent-providers-model-output-placeholder = Output (tokens)
-settings-agent-providers-model-input-price-placeholder = USD per 1M input tokens (e.g. 3.00) — used by /cost
-settings-agent-providers-model-output-price-placeholder = USD per 1M output tokens (e.g. 15.00) — used by /cost
+# Kept SHORT deliberately. These four columns are flex-1 in a row where the name and ID
+# columns are flex-2, so they are the narrowest cells on the page — and each already sits
+# directly under a header that names it ("Context (tok)", "Input ($/1M)", ...). The previous
+# values repeated that header and then some ("USD per 1M input tokens (e.g. 3.00) — used by
+# /cost", ~50 chars), which clipped mid-word and ran into the neighbouring column. The
+# fuller explanation lives in the header tooltips instead, where there is room for it.
+settings-agent-providers-model-context-placeholder = unset
+settings-agent-providers-model-output-placeholder = unset
+settings-agent-providers-model-input-price-placeholder = e.g. 3.00
+settings-agent-providers-model-output-price-placeholder = e.g. 15.00
 settings-agent-providers-add-model = + Add model
 settings-agent-providers-fetch-from-api = Fetch from API
 settings-agent-providers-sync-models-dev = Sync from models.dev
