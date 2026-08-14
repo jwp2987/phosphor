@@ -70,6 +70,18 @@ pub async fn access_token(credential: &str) -> Result<String, String> {
     }
 
     if let Some(token) = cached_token(&credential) {
+        // Which credential went out is otherwise unrecoverable after the fact: a cached token
+        // is reused for up to TOKEN_TTL, so a bad one keeps failing with no record of where it
+        // came from.
+        log::info!(
+            "[byop-vertex] access token: cache=hit source={} shape={}",
+            if credential.is_empty() {
+                "active gcloud account / ADC"
+            } else {
+                "impersonated service account"
+            },
+            token_shape(&token)
+        );
         return Ok(token);
     }
 
@@ -218,11 +230,72 @@ async fn mint_via_gcloud(credential: &str) -> Result<String, String> {
         ));
     }
 
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let token = raw.trim().to_string();
     if token.is_empty() {
         return Err("gcloud returned an empty access token".to_owned());
     }
+    // An OAuth2 access token is a single opaque word. `gcloud` occasionally writes advisory
+    // lines to *stdout* alongside it (component-update notices, survey prompts), and taking
+    // all of stdout verbatim then sends that blob as the bearer. Vertex answers with a 401
+    // `ACCESS_TOKEN_TYPE_UNSUPPORTED` — "Expected OAuth 2 access token, login cookie or other
+    // valid authentication credential" — which names neither gcloud nor the extra output, so
+    // the real cause is invisible from the error alone. Observed twice on 2026-08-14 with a
+    // CLI-minted token succeeding against the same endpoint seconds later.
+    //
+    // Rejecting here converts that into a local, self-describing failure. It cannot reject a
+    // valid token: access tokens contain no whitespace.
+    if token.split_whitespace().count() != 1 {
+        return Err(format!(
+            "`gcloud auth print-access-token` wrote {} whitespace-separated words to stdout; an \
+             access token is a single word, so this output is not usable as a bearer token. \
+             gcloud most likely printed an advisory notice alongside it — run `gcloud components \
+             update` (or `gcloud config set survey/disable_prompts true`) and retry",
+            token.split_whitespace().count()
+        ));
+    }
+    log::info!(
+        "[byop-vertex] minted access token via gcloud: shape={} len={}",
+        token_shape(&token),
+        token.len()
+    );
     Ok(token)
+}
+
+/// Describes a token for logging **without ever emitting its value**.
+///
+/// The distinction matters because Vertex's 401 for a wrong-*type* credential
+/// (`ACCESS_TOKEN_TYPE_UNSUPPORTED`) reads identically whether it was handed an identity
+/// token, an API key, or a truncated string — so the log has to say which one went out.
+fn token_shape(token: &str) -> &'static str {
+    if token.starts_with("ya29.") {
+        "ya29 (oauth2 access token)"
+    } else if token.starts_with("eyJ") {
+        "JWT (identity token, NOT an access token)"
+    } else if token.starts_with("AIza") {
+        "AIza (api key, NOT an access token)"
+    } else {
+        "unrecognized"
+    }
+}
+
+#[cfg(test)]
+mod token_shape_tests {
+    use super::token_shape;
+
+    #[test]
+    fn classifies_the_credential_kinds_that_produce_indistinguishable_401s() {
+        assert_eq!(token_shape("ya29.a0AfB_abc"), "ya29 (oauth2 access token)");
+        assert_eq!(
+            token_shape("eyJhbGciOiJSUzI1NiJ9.payload.sig"),
+            "JWT (identity token, NOT an access token)"
+        );
+        assert_eq!(
+            token_shape("AIzaSyExampleKeyValue"),
+            "AIza (api key, NOT an access token)"
+        );
+        assert_eq!(token_shape("something-else"), "unrecognized");
+    }
 }
 
 #[cfg(test)]
