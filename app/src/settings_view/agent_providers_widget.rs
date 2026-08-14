@@ -28,6 +28,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use pathfinder_color::ColorU;
 use settings::Setting;
 use warpui::elements::{
     ChildView, Clipped, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex,
@@ -460,6 +461,10 @@ impl AgentProvidersWidget {
             );
             if !initial_query.is_empty() {
                 editor.set_buffer_text(&initial_query, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -502,6 +507,10 @@ impl AgentProvidersWidget {
             );
             if !initial_name.is_empty() {
                 editor.set_buffer_text(&initial_name, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -523,6 +532,10 @@ impl AgentProvidersWidget {
             );
             if !initial_id.is_empty() {
                 editor.set_buffer_text(&initial_id, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -546,6 +559,10 @@ impl AgentProvidersWidget {
             );
             if !initial_context.is_empty() {
                 editor.set_buffer_text(&initial_context, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -569,6 +586,10 @@ impl AgentProvidersWidget {
             );
             if !initial_output.is_empty() {
                 editor.set_buffer_text(&initial_output, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -594,6 +615,10 @@ impl AgentProvidersWidget {
             );
             if !initial_input_price.is_empty() {
                 editor.set_buffer_text(&initial_input_price, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -615,6 +640,10 @@ impl AgentProvidersWidget {
             );
             if !initial_output_price.is_empty() {
                 editor.set_buffer_text(&initial_output_price, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -657,6 +686,10 @@ impl AgentProvidersWidget {
             );
             if !initial_key.is_empty() {
                 editor.set_buffer_text(&initial_key, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -672,6 +705,10 @@ impl AgentProvidersWidget {
             );
             if !initial_value.is_empty() {
                 editor.set_buffer_text(&initial_value, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -712,6 +749,10 @@ impl AgentProvidersWidget {
                 .set_placeholder_text(crate::t!("settings-agent-providers-name-placeholder"), ctx);
             if !initial_name.is_empty() {
                 editor.set_buffer_text(&initial_name, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -733,6 +774,10 @@ impl AgentProvidersWidget {
             );
             if !initial_base_url.is_empty() {
                 editor.set_buffer_text(&initial_base_url, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -755,6 +800,10 @@ impl AgentProvidersWidget {
             );
             if !initial_api_key.is_empty() {
                 editor.set_buffer_text(&initial_api_key, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -774,6 +823,10 @@ impl AgentProvidersWidget {
             );
             if !initial_vertex_project.is_empty() {
                 editor.set_buffer_text(&initial_vertex_project, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -792,6 +845,10 @@ impl AgentProvidersWidget {
             );
             if !initial_vertex_location.is_empty() {
                 editor.set_buffer_text(&initial_vertex_location, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -818,6 +875,10 @@ impl AgentProvidersWidget {
             );
             if !initial_model_search.is_empty() {
                 editor.set_buffer_text(&initial_model_search, ctx);
+                // `set_buffer_text` leaves the caret at the end of the inserted text, and a
+                // single-line editor scrolls to keep the caret visible -- so an unfocused cell
+                // showed the TAIL of any value wider than it. Park it at the start.
+                editor.move_to_buffer_start(ctx);
             }
             editor
         });
@@ -1117,6 +1178,8 @@ impl AgentProvidersWidget {
             disable_toggle_tooltip,
             appearance,
         );
+        // Keep this trio in step with `render_model_controls_spacer`, which reproduces its
+        // width in the column-title row. See that function for why they must match.
         let row_controls = Flex::row()
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_child(
@@ -1181,6 +1244,54 @@ impl AgentProvidersWidget {
 
         Container::new(col.finish())
             .with_margin_bottom(MODEL_ROW_GAP)
+            .finish()
+    }
+
+    /// An invisible stand-in for `render_model_row`'s `row_controls`, so the models table's
+    /// column titles line up with the columns underneath them.
+    ///
+    /// The title row and each model row are both `Flex::row`s whose cells carry identical flex
+    /// weights (2/2/1/1/1/1), but flex only divides the space *left over* after the fixed-width
+    /// trailing element. The title row used to end in two two-space `Text`s (~11px) while every
+    /// model row ends in three `CARD_BUTTON_PADDING`-padded buttons (~96px), so the title row
+    /// had ~85px more to share out. Each title drifted right of its column by
+    /// `85 * (flex before it) / 8` -- 0px under "Display name", ~20px under "Model ID", ~74px
+    /// under "Output ($/1M)". Compounding left-to-right, which is why it read as "slightly off"
+    /// rather than obviously broken.
+    ///
+    /// This mirrors the button geometry exactly instead of guessing a width: the same glyphs, in
+    /// the same font and size, with the same uniform padding and the same `MODEL_ROW_GAP` gaps,
+    /// painted fully transparent. Matching by construction means it cannot drift if the UI font
+    /// or the padding constant changes.
+    fn render_model_controls_spacer(appearance: &Appearance) -> Box<dyn Element> {
+        let ghost = |glyph: &str| -> Box<dyn Element> {
+            Container::new(
+                Text::new(
+                    glyph.to_string(),
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(ColorU::transparent_black())
+                .finish(),
+            )
+            .with_uniform_padding(CARD_BUTTON_PADDING)
+            .finish()
+        };
+        Flex::row()
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            // Glyphs match `row_controls`: collapsed chevron, enabled dot, remove cross. The
+            // expanded chevron ("▾") and disabled dot ("○") are the same advance width.
+            .with_child(
+                Container::new(ghost("▸"))
+                    .with_margin_right(MODEL_ROW_GAP)
+                    .finish(),
+            )
+            .with_child(
+                Container::new(ghost("●"))
+                    .with_margin_right(MODEL_ROW_GAP)
+                    .finish(),
+            )
+            .with_child(ghost("×"))
             .finish()
     }
 
@@ -1677,34 +1788,7 @@ impl AgentProvidersWidget {
                         1.,
                         &crate::t!("settings-agent-providers-models-header-output-price"),
                     ))
-                    // Placeholder, aligned with the expand/delete buttons below.
-                    .with_child(
-                        Flex::row()
-                            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                            .with_child(
-                                Container::new(
-                                    Text::new(
-                                        "  ".to_string(),
-                                        appearance.ui_font_family(),
-                                        appearance.ui_font_size(),
-                                    )
-                                    .with_color(dim.into())
-                                    .finish(),
-                                )
-                                .with_margin_right(MODEL_ROW_GAP)
-                                .finish(),
-                            )
-                            .with_child(
-                                Text::new(
-                                    "  ".to_string(),
-                                    appearance.ui_font_family(),
-                                    appearance.ui_font_size(),
-                                )
-                                .with_color(dim.into())
-                                .finish(),
-                            )
-                            .finish(),
-                    )
+                    .with_child(Self::render_model_controls_spacer(appearance))
                     .finish(),
             )
             .with_margin_bottom(2.)
@@ -2109,7 +2193,14 @@ fn collapse_selection_if_blurred(
     ctx: &mut ViewContext<AISettingsPageView>,
 ) {
     if matches!(event, EditorEvent::Blurred) {
-        editor.update(ctx, |editor, ctx| editor.move_to_buffer_end(ctx));
+        // Collapse to the START, not the end. Either collapses the selection, but a single-line
+        // editor scrolls horizontally to keep the caret visible, so collapsing to the end parks
+        // a value wider than its cell showing only its TAIL -- "Gemini 3.1 Flash Lite Preview"
+        // rendered as "3.1 Flash Lite Preview" with the identifying prefix scrolled out of
+        // view. The beginning of a display name or model id is the part that identifies it, so
+        // that is what an unfocused cell must show. The full value stays reachable by clicking
+        // into the cell, which is why these are `Clipped` rather than ellipsised.
+        editor.update(ctx, |editor, ctx| editor.move_to_buffer_start(ctx));
     }
 }
 

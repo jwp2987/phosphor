@@ -1,7 +1,7 @@
 use std::{cell::RefCell, collections::HashMap};
 
 use settings::{Setting, ToggleableSetting};
-use warp_core::features::FeatureFlag;
+use warp_core::{channel::ChannelState, features::FeatureFlag};
 use warpui::{
     elements::{Flex, MouseStateHandle, ParentElement},
     ui_components::{components::UiComponent, switch::SwitchStateHandle},
@@ -155,7 +155,18 @@ impl ExternalEditorView {
 
         let mut items = vec![default_app];
 
-        items.push(DropdownItem::new("Zap", make_action(EditorChoice::Zap)));
+        // The "open in this app" choice is labelled with the live display brand rather than a
+        // hardcoded "Zap": `ChannelState::display_name()` is exactly the user-facing product
+        // name (window title, About, User-Agent), and it is deliberately independent of the
+        // storage identity (`AppId::application_name`), which stays `Zap` until the layer-3
+        // rename -- see specs/phosphor-rebrand/LAYER3-PLAN.md. Bound once because the label and
+        // the `set_selected_by_name` lookup below must agree exactly; when they were two
+        // separate literals the dropdown silently failed to preselect the saved choice.
+        let this_app_name = ChannelState::display_name();
+        items.push(DropdownItem::new(
+            this_app_name.clone(),
+            make_action(EditorChoice::Zap),
+        ));
         if FeatureFlag::AllowOpeningFileLinksUsingEditorEnv.is_enabled() {
             items.push(DropdownItem::new(
                 "$EDITOR",
@@ -177,7 +188,7 @@ impl ExternalEditorView {
             EditorChoice::ExternalEditor(editor) => {
                 dropdown.set_selected_by_name(format!("{editor}"), ctx)
             }
-            EditorChoice::Zap => dropdown.set_selected_by_name("Zap", ctx),
+            EditorChoice::Zap => dropdown.set_selected_by_name(this_app_name, ctx),
             EditorChoice::EnvEditor => dropdown.set_selected_by_name("$EDITOR", ctx),
             EditorChoice::SystemDefault => dropdown.set_selected_by_name(default_option_text, ctx),
         };
