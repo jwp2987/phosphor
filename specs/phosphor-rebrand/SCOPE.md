@@ -115,24 +115,43 @@ existing user loses data. Only touch this layer when you deliberately choose to,
 and pair it with a migration.
 
 What derives from the storage identity today:
-- `crates/warp_core/src/channel/state.rs:85` `app_id()` and
+- `crates/warp_core/src/channel/state.rs:86` `app_id()` and
   `crates/warp_core/src/app_id.rs` (`application_name` / `qualifier` /
-  `organization`).
-- `crates/warp_core/src/paths.rs:236` `project_dirs()` →
-  `directories::ProjectDirs::from(qualifier, organization, app_name)`. Linux maps
-  `"Zap"` → dir `zap` (and `Zap*` → `zap-*`). This is the root of
-  `~/.config/zap`, `~/.local/share/zap`, `~/.local/state/zap`, and the macOS/
-  Windows equivalents (`%APPDATA%\zap\Zap\...`).
-- Secret storage service name — `app/src/app_services/linux/mod.rs:163`
-  `default_service = "dev.zap.Zap"` (and the keyring entry service on other OSes;
-  trace `AgentProviderSecrets` / keyring usage). **Renaming this orphans stored
-  API keys.**
-- Channel / binary name — `crates/warp_core/src/channel/mod.rs:45,58`
-  `Channel::Oss => "zap-oss"`; the `zap` symlink; `zap-tui-oss`.
+  `organization`). Set at `state.rs:40` (`AppId::new("dev", "zap", "Zap")`) and
+  `app/src/bin/zap_oss.rs:29` (same triple, for the OSS channel config); on
+  macOS, `app_id_from_bundle()` (`state.rs:275`) overrides both from the
+  bundle's `CFBundleIdentifier` at runtime.
+- `crates/warp_core/src/paths.rs:254` `project_dirs()` →
+  `project_dirs_for_app_id()` (`paths.rs:265`) →
+  `directories::ProjectDirs::from(qualifier, organization, app_name)`
+  (`paths.rs:287`). Linux maps `"Zap"` → dir `zap` (and `Zap*` → `zap-*`,
+  `paths.rs:274`). This is the root of `~/.config/zap`, `~/.local/share/zap`,
+  `~/.local/state/zap`, and the macOS/Windows equivalents
+  (`%APPDATA%\zap\Zap\...`).
+- **Secret storage service name — `ChannelState::data_domain()`
+  (`crates/warp_core/src/channel/state.rs:122`), NOT
+  `app/src/app_services/linux/mod.rs:163`.** `data_domain()` is `app_id().to_string()`
+  (plus a `WARP_DATA_PROFILE` suffix in debug builds); `app/src/lib.rs:1278`
+  passes it into `warpui_extras::secure_storage::register*`, which becomes the
+  Secret Service `service` attribute on Linux (`secure_storage/linux.rs:26`)
+  and the macOS Keychain service name (`secure_storage/mac.rs:14`).
+  **Renaming this orphans stored API keys.**
+  `app_services/linux/mod.rs:163`'s `default_service = "dev.zap.Zap"` is a
+  **different mechanism**: it is the `org.freedesktop.Application` D-Bus
+  well-known name used for single-instance activation. Both strings happen to
+  read `dev.zap.Zap` today, so both change under a rename, but they fail
+  independently — getting the D-Bus name wrong breaks single-instance
+  activation, getting the keyring service wrong silently orphans every stored
+  API key. (Corrected 2026-08-13 — this row previously conflated the two; see
+  `LAYER3-PLAN.md` §1.)
+- Channel / binary name — `crates/warp_core/src/channel/mod.rs:45,70`
+  `Channel::Oss => "zap-oss"`; the `zap` symlink; `zap-tui-oss`
+  (`crates/warp_tui/Cargo.toml`).
 - Packaging identifiers — `app/channels/oss/dev.zap.Zap.desktop` (filename +
-  `StartupWMClass=dev.zap.Zap`, `Icon=dev.zap.Zap`, `Exec=zap`),
+  `StartupWMClass=dev.zap.Zap`, `Icon=dev.zap.Zap`, `MimeType=x-scheme-handler/zap`;
+  `Name=`/`Exec=` are already Phosphor — layer 2 landed),
   `script/windows/bundle.ps1` (`$WARP_BIN='zap-oss'`, `$BINARY_NAME`, InnoAppId),
-  `resources/linux/{debian,rpm}` package names, icon asset ids under
+  `resources/linux/{debian,rpm,arch}` package names, icon asset ids under
   `app/channels/oss/icon/`.
 
 Two ways to do layer 3 when the time comes:
@@ -146,6 +165,13 @@ Two ways to do layer 3 when the time comes:
   guarded so it runs once. Also rename the desktop file, package names, binary,
   bundle ids, and icons. This is the bulk of the risk and effort and should be
   its own milestone with real installs tested on all three OSes.
+
+**Status 2026-08-13: option B is underway**, split across four parallel
+agent branches (Rust identity/migration, Linux packaging, Windows+macOS
+packaging, and this documentation/inventory pass). See `LAYER3-PLAN.md` for
+the phasing and `RENAME-INVENTORY.md` for the completeness checklist — none
+of the four branches has been compiled yet (builds were prohibited for this
+round).
 
 ## Layer 4 — Internal code identifiers (DO NOT rename)
 
@@ -166,8 +192,24 @@ crate names under the "Zap" brand. **Explicitly out of scope.**
 
 ## Open decisions
 
-- App-id qualifier: new `sh.phosphor.Phosphor` vs. reuse `dev.phosphor.Phosphor`.
+- ~~App-id qualifier: new `sh.phosphor.Phosphor` vs. reuse `dev.phosphor.Phosphor`.~~
+  **DECIDED 2026-08-13 (maintainer): `dev.phosphor.Phosphor`** — keeps the
+  existing `dev` qualifier so nothing about signing/notarization assumptions
+  changes shape. See `LAYER3-PLAN.md` §3.
+- ~~Binary/package name for the OSS channel.~~ **DECIDED 2026-08-13 (maintainer):
+  `phosphor-oss`** (`Channel::Oss => "phosphor-oss"`). Keeping the `-oss` suffix
+  preserves the channel distinction and avoids a symlink collision: `/usr/bin/phosphor`
+  stays a symlink to the `phosphor-oss` binary exactly as it is a symlink to
+  `zap-oss` today, so the deb/rpm rename is a package rename only. See
+  `LAYER3-PLAN.md` §3.
 - Does the agent's self-identity / User-Agent become "Phosphor" now (layer 2), or
   stay "Zap" until layer 3? (Recommend: change with layer 2 — it's display, not
   storage.)
 - Ship Phosphor Green/Amber as bundled defaults, or user-installable only?
+- **Still open (layer 3 execution, see `LAYER3-PLAN.md` §3):** copy vs. move the
+  user's data during migration (recommendation: copy), and whether to keep a
+  `zap://` scheme handler alongside `phosphor://` for existing links.
+
+For the full layer-3 execution plan — migration ordering, the secure-storage
+key inventory, packaging traps, phasing, and rollback — see
+`specs/phosphor-rebrand/LAYER3-PLAN.md`.

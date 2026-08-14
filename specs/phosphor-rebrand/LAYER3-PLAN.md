@@ -5,8 +5,26 @@ Execution plan for **option B** in `SCOPE.md` (full deep rename + migration).
 crate names, module paths and `WARP_*` env vars are **explicitly out of scope**
 and must not be touched.
 
-**Status: NOT STARTED.** Nothing below has landed. Do not treat any statement
-here as describing the tree as it is.
+**Status: IN PROGRESS, 2026-08-13.** Split across four parallel agent
+branches, none merged to `main` yet:
+
+| branch | owns |
+|---|---|
+| Rust identity/migration | `AppId::new` sites, `paths.rs` (incl. the Linux directory-name special case), `channel/mod.rs`/`channel/state.rs`, `app/build.rs`, `crates/remote_server` (incl. `remote_server_dir()`), the secure-storage migration itself, and every other `.rs` file touching the app id or derived paths |
+| Linux packaging | `resources/linux/{debian,rpm,arch}/**`, `script/linux/**`, `app/channels/oss/*.desktop`, `app/channels/oss/icon/**` |
+| Windows+macOS packaging | `script/windows/**`, `script/macos/**`, `*.iss`, `*.ps1`, `app/DockTilePlugin/**`, the macOS-bundle lines of `app/Cargo.toml` |
+| Documentation + completeness inventory (this branch) | This file's status, `SCOPE.md`'s layer-3 corrections, and `specs/phosphor-rebrand/RENAME-INVENTORY.md` — an exhaustive checklist of every remaining old-identity occurrence, for verifying the other three branches' completeness once they merge |
+
+**None of this has been compiled.** Builds (`cargo check`/`build`/`test`,
+`script/precheck`) were prohibited for every agent in this round — the
+maintainer was AFK and the build host OOM-reaps under concurrent cargo
+invocations. Every plan, correction, and inventory entry below and in
+`RENAME-INVENTORY.md` is a **static-analysis / grep-verified** claim, not a
+build-verified one. The integration branch that merges all four must run
+`script/precheck` and the full suite before anything here is trusted as
+working, per `docs/FLEET-ROUND.md`'s batched-verification model. Do not treat
+any statement in this file as describing a *working* tree — only a *planned
+or landed-but-unverified* one.
 
 ## Why now, and the one number that decides it
 
