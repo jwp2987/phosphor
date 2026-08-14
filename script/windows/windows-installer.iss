@@ -17,7 +17,7 @@
   #define ReleaseChannel "dev"
 #endif
 #ifndef AppUserModelId
-  ; Defaults to following the official channel's `dev.warp.*` naming; OSS is overridden to `dev.zap.Zap` in bundle.ps1.
+  ; Defaults to following the official channel's `dev.warp.*` naming; OSS is overridden to `dev.phosphor.Phosphor` in bundle.ps1.
   #define AppUserModelId "dev.warp." + MyAppName
 #endif
 #ifndef TargetProfileDir
@@ -41,6 +41,11 @@
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
 ; bundle.ps1 passes `InnoAppId=zap-oss` for OSS; other channels use the default `warp-terminal-{ReleaseChannel}`.
+; NOTE: `zap-oss` is intentionally kept as-is through the dev.zap.Zap ->
+; dev.phosphor.Phosphor rename (dev.phosphor.Phosphor is the runtime AppId
+; triple, a separate mechanism) so upgrades over existing OSS installs are
+; still recognized as the same product. See bundle.ps1's comment above its
+; $INNO_APP_ID assignment for the full reasoning.
 #ifndef InnoAppId
   #define InnoAppId "warp-terminal-" + ReleaseChannel
 #endif
@@ -243,7 +248,7 @@ begin
 #if ReleaseChannel == "stable"
     CmdScriptName := 'oz.cmd';
 #elif ReleaseChannel == "oss"
-    CmdScriptName := 'zap-oss.cmd';
+    CmdScriptName := 'phosphor-oss.cmd';
 #else
     CmdScriptName := 'oz-{#ReleaseChannel}.cmd';
 #endif
