@@ -839,7 +839,21 @@ pub const PREVIEW_FLAGS: &[FeatureFlag] = &[
 /// NOTE: if you are promoting a feature from Preview to launch, you'll likely
 /// want to enable the feature by default in app/Cargo.toml, rather than add it to RELEASE_FLAGS.
 pub const RELEASE_FLAGS: &[FeatureFlag] = &[
-    FeatureFlag::Autoupdate,
+    // `FeatureFlag::Autoupdate` is deliberately NOT here, unlike upstream.
+    //
+    // This fork does not ship autoupdate: `autoupdate` is not in `app/Cargo.toml`'s
+    // `default` feature list, and the release workflow publishes no update feed. Upstream's
+    // list assumes a product that updates itself; carrying that assumption meant the flag
+    // was set for every release build even though the Cargo feature behind it was off, so
+    // the runtime guards (`lib.rs`, `workspace/`, `resource_center/`) would branch as if
+    // autoupdate existed.
+    //
+    // It stays reachable for anyone who wants it: `app/src/lib.rs`'s `extra_flags` still
+    // adds it under `#[cfg(feature = "autoupdate")]`, so an explicit
+    // `--features autoupdate` build behaves exactly as before.
+    //
+    // Removing it is also what makes it safe to apply this whole list to release-*profile*
+    // builds and not just release *bundles* — see `enabled_features()` in `app/src/lib.rs`.
     FeatureFlag::Changelog,
     FeatureFlag::CrashReporting,
     // winit's IME path supports marked text on both macOS and Windows.

@@ -2779,8 +2779,25 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // Enable features overridden for the given channel.
     let mut flags = ChannelState::additional_features();
 
-    // Enable flags for release builds, if appropriate.
-    if ChannelState::is_release_bundle() {
+    // Enable flags for release builds.
+    //
+    // `is_release_bundle()` is `cfg!(feature = "release_bundle")` — set by `script/bundle`,
+    // i.e. "packaged for distribution", NOT "compiled with --release". That distinction
+    // surprised the maintainer and cost a long debugging session: `script/run --release`
+    // produced a build with `debug_assertions` off (so the dev-only block below did not
+    // fire) AND no bundle feature (so this did not either), leaving
+    // `FeatureFlag::SshRemoteServer` off. SSH sessions silently fell back to the legacy
+    // path, the remote-server install prompt never appeared, and the agent's file tools
+    // refused on every remote host — with no log line saying why.
+    //
+    // A release-profile build is a build someone actually runs, so it now gets the release
+    // flags too. This is only safe because `FeatureFlag::Autoupdate` was removed from
+    // `RELEASE_FLAGS` (see its comment): a dev build that inherited autoupdate could have
+    // tried to replace the binary you just compiled. Everything left in the list is
+    // display/rendering or locally-scoped (Changelog, CrashReporting — which uploads
+    // nothing here, only installs a local panic hook — ImeMarkedText, markdown tables,
+    // SshRemoteServer).
+    if ChannelState::is_release_bundle() || !cfg!(debug_assertions) {
         flags.extend(features::RELEASE_FLAGS);
     }
 
