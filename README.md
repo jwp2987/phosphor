@@ -133,9 +133,46 @@ don't benefit from the tail-block design._
 If you used this project under an earlier name (**Zap**, or originally
 **OpenWarp**), or are coming from upstream **Warp**, see
 [docs/migrate-from-warp.md](docs/migrate-from-warp.md) to bring your settings
-across. Note: on-disk config, secrets and data still live under the `zap` app id
-for now, so existing installs keep working unchanged — the storage rename is
-intentionally deferred (only the branding has changed so far).
+across.
+
+> [!IMPORTANT]
+> **The storage identity rename landed on 2026-08-14, and there is no automatic
+> migration.** Earlier builds stored everything under a `zap` identity; this one
+> uses `phosphor`, so **a build from before that date and a build after it do not
+> see each other's data**. On first launch the app starts fresh: no settings, no
+> history, no saved API keys.
+>
+> This is deliberate — it is a beta, and writing a migration that moves OS
+> keychain entries correctly was judged not worth the risk of doing it wrong.
+> Nothing is deleted; the old directories are left untouched.
+
+| | before | after |
+|---|---|---|
+| app id | `dev.zap.Zap` | `dev.phosphor.Phosphor` |
+| binary | `zap-oss` | `phosphor-oss` |
+| config / data / state (Linux) | `~/.config/zap`, `~/.local/share/zap`, `~/.local/state/zap` | the same paths under `phosphor` |
+| skills, prompts, `.mcp.json` | `~/.zap/` | `~/.phosphor/` |
+| keyring service | `dev.zap.Zap` | `dev.phosphor.Phosphor` |
+
+To carry your files across by hand, before first launch:
+
+```bash
+cp -r ~/.config/zap ~/.config/phosphor
+cp -r ~/.zap ~/.phosphor
+```
+
+Then repoint `prompt_template_dir` in `settings.toml` — it stores an absolute
+path into the old directory, and because the copy leaves the original in place it
+will keep silently reading the old one. **API keys cannot be copied this way**:
+OS keychain entries are keyed by service name, so those are re-entered.
+
+Deliberately *not* renamed, and not bugs: the TUI binary (`zap-tui-oss`), the
+`ZAP_LOG_STDOUT` escape hatch, the `warp_*` / `zap_*` crate names, and the
+`WARP_*` build variables. Those are lineage internals with no user-visible
+surface — see `SCOPE.md` layer 4 and
+[`specs/phosphor-rebrand/MERGE-CHECKLIST.md`](specs/phosphor-rebrand/MERGE-CHECKLIST.md),
+which also lists the identifiers that must *stay* on the old name because
+renaming them would silently lose data.
 
 ## Roadmap
 
@@ -210,6 +247,43 @@ explaining what an earlier version got wrong: `check_cloud_boundary`,
 [`docs/TODO-ARCHIVE.md`](docs/TODO-ARCHIVE.md) (completed and superseded work —
 kept because much of it records *how a wrong answer was corrected*), and
 `specs/**` for per-feature design notes.
+
+## AI-assisted development
+
+**Most of the code and documentation in this fork was written with AI
+assistance** — primarily Anthropic's Claude, via Claude Code — with a human
+directing the work, making the product decisions, and reviewing what lands. Some
+changes are written almost entirely by agents working in parallel; the layer-3
+identity rename above was done that way, split across four agents and merged in
+one round.
+
+This is stated plainly because it changes how you should read the repository:
+
+- **Treat confident-sounding documentation as a claim, not a fact.** Several
+  documents here have asserted the exact opposite of the code. That is why
+  [`docs/STATE.md`](docs/STATE.md) is generated rather than written, why
+  [`TODO.md`](TODO.md) carries "verify any entry against the code before acting
+  on it", and why so many comments in this codebase explain *how an earlier
+  answer was wrong* instead of only what the code does.
+- **The process documents exist to make this workflow safe**, not as ceremony.
+  [`AGENTS.md`](AGENTS.md) §5.6 (never weaken a test to go green) and §5.10 (no
+  silent regressions) exist because agents will otherwise make a red test green
+  the easy way. [`DECLINED.md`](DECLINED.md) carries machine-checkable markers
+  because a decision recorded only in prose gets silently re-litigated.
+  [`docs/FLEET-ROUND.md`](docs/FLEET-ROUND.md) describes how a parallel round is
+  actually run.
+- **Agent output is not trusted until it compiles and the suite is green.**
+  Work regularly lands unbuilt and is verified afterwards;
+  [`docs/build/TRIAGE.md`](docs/build/TRIAGE.md) exists to score how often the
+  agents' own confidence predictions were right.
+
+Human review is the gate, but it is a real gate on a large volume of machine-
+written change — so bugs of the kind a reviewer skims past are more likely here
+than in a hand-written codebase of the same size. Weigh that before running it
+somewhere that matters. The AGPL's no-warranty terms are not a formality here.
+
+Contributions are welcome with or without AI assistance; see
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Licensing
 
