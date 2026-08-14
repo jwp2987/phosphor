@@ -129,7 +129,13 @@ tar -xzf "$tmpdir/zap.tar.gz" -C "$tmpdir"
 
 bin="$tmpdir/{binary_name}"
 if [ ! -f "$bin" ]; then
-  bin=$(find "$tmpdir" -type f \( -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
+  # Fallback for a tarball whose layout does not match {binary_name}: older release assets,
+  # and assets published either side of a binary rename. The names are every binary this
+  # project has shipped under -- `phosphor-oss` (current), `zap-oss` (pre-rename), and
+  # upstream's `warp-oss` / `oz*`. Dropping an old name here would strand hosts installing a
+  # previously published tarball; the digest check above already established the archive is
+  # the one this client expects, so a broad name match costs nothing.
+  bin=$(find "$tmpdir" -type f \( -name 'phosphor-oss' -o -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
 fi
 if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit 1; fi
 chmod +x "$bin"
