@@ -30,8 +30,8 @@ use std::collections::{HashMap, HashSet};
 
 use settings::Setting;
 use warpui::elements::{
-    ChildView, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex, MainAxisAlignment,
-    MouseStateHandle, ParentElement, Radius, Text, Wrap,
+    ChildView, Clipped, Container, CornerRadius, CrossAxisAlignment, Expanded, Flex,
+    MainAxisAlignment, MouseStateHandle, ParentElement, Radius, Text, Wrap,
 };
 use warpui::ui_components::{
     button::ButtonVariant,
@@ -1132,10 +1132,21 @@ impl AgentProvidersWidget {
             .with_child(quick_remove_button)
             .finish();
 
+        // `Expanded` sizes the cell, but a `ChildView` paints its editor at the editor's own
+        // width -- so a value longer than its column rendered straight over the neighbouring
+        // one. After a models.dev import, display names like
+        // "Cerebras-Llama-4-Maverick-17B-128E-Instruct" overprinted the Model ID column and
+        // spilled past the column start on the other side; the row became unreadable.
+        //
+        // `Clipped` bounds the paint to the cell. Deliberately NOT ellipsis: these are
+        // editable fields, and a single-line editor scrolls horizontally to follow the
+        // caret, so the full value stays reachable by clicking into the cell and moving
+        // through it. Ellipsis would truncate what the user needs to edit. Same pattern as
+        // `search_bar.rs:91`.
         let cell = |flex: f32, view: &ViewHandle<EditorView>| -> Box<dyn Element> {
             Expanded::new(
                 flex,
-                Container::new(ChildView::new(view).finish())
+                Container::new(Clipped::new(ChildView::new(view).finish()).finish())
                     .with_margin_right(MODEL_ROW_GAP)
                     .finish(),
             )
