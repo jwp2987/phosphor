@@ -8,7 +8,19 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 python3 -c "
-import tomllib, sys
+# tomllib is stdlib only from Python 3.11. The CI runner for this job is
+# ubuntu-22.04, which ships 3.10, so the bare import raised ModuleNotFoundError and
+# this gate failed for an environment reason on every run -- while cargo-deny itself,
+# the step just above it, reported 'licenses ok, sources ok'. Fall back to the tomli
+# backport, and if neither is importable say so in one line instead of a traceback.
+import sys
+try:
+    import tomllib
+except ModuleNotFoundError:
+    try:
+        import tomli as tomllib
+    except ModuleNotFoundError:
+        sys.exit('error: need Python 3.11+ (tomllib) or the tomli package to read TOML')
 
 with open('$REPO_ROOT/deny.toml', 'rb') as f:
     deny = set(tomllib.load(f)['licenses']['allow'])

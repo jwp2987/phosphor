@@ -164,6 +164,14 @@ jobs:
           cargo binstall --force -y cargo-deny
           cargo deny -L error check licenses sources
 
+      # ubuntu-22.04 ships Python 3.10, which has no stdlib `tomllib` (3.11+).
+      # check_license_config_sync parses deny.toml/about.toml with it, so without a
+      # newer interpreter this gate failed on every run with a ModuleNotFoundError --
+      # an environment failure sitting right after cargo-deny reported licences ok.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.11'
+
       - name: Check deny.toml / about.toml licence-list sync
         shell: bash
         run: ./script/check_license_config_sync
