@@ -11,35 +11,58 @@
 </div>
 
 > [!NOTE]
-> **This is a personal project, mostly for fun and tinkering.** It's a playground
-> for poking at Phosphor's BYOP (bring-your-own-provider) AI stack — prompt rendering,
-> caching behavior, and provider plumbing — not a polished product. Things here
-> are experimental and may change, break, or get thrown away. If you want the real
-> thing, go upstream: [zerx-lab/zap](https://github.com/zerx-lab/zap). Everything
-> below the upstream overview is what this fork has been messing with.
+> **Independently maintained, and in beta.** Phosphor started as a fork of
+> [Zap / OpenWarp](https://github.com/zerx-lab/zap) and now sets its own
+> direction: its own identity, release channel and BYOP feature set, tracked
+> against a *pinned* upstream Warp release rather than drifting with it. Parity
+> is measured, not assumed — see
+> [Parity with upstream Warp](#parity-with-upstream-warp-and-how-it-is-verified)
+> for the numbers and what runs on every push.
 >
-> Most of it is being tested against **FastFlowLM (FLM)** as a local BYOP
-> endpoint, and several of the changes below exist specifically to play nicer
-> with it — especially the prompt-cache / environment-context work, which is
-> tuned for FLM's text-only partial-prefill (KV-cache) behavior.
+> Beta means the surface still moves: settings, storage layout and provider
+> plumbing can change between releases, and they have — the storage identity
+> changed on 2026-08-14 with no migration (see
+> [Migrating](#migrating-from-zap-openwarp-or-warp)). Read the release notes
+> before upgrading, and see
+> [AI-assisted development](#ai-assisted-development) for how the code is
+> written and verified.
+>
+> Development is driven by real use against local models — currently
+> **FastFlowLM (FLM)** and **Ollama** endpoints. Several design choices exist
+> specifically to serve that case, notably the prompt-cache and
+> environment-context work, which is tuned for FLM's text-only partial-prefill
+> (KV-cache) behaviour and assumes a model that can partial-prefill at all.
 
-Phosphor is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, manage SSH hosts inside the terminal — with keys, history and agent state staying on your machine by default.
+Phosphor is an open, local-first terminal with first-class AI and agent support. Plug in any AI provider, bring in any CLI agent, work over SSH with the agent's tools following you onto the remote host — with keys, history and agent state staying on your machine by default.
 
 ## What Phosphor adds over upstream Warp
 
 - **No mandatory cloud** — no account, login, Drive sync or cloud agent history required.
 - **BYOP AI providers** — any OpenAI-compatible endpoint, plus native OpenAI / Anthropic / Gemini / DeepSeek / Ollama protocols, **and Google Vertex AI** (Gemini + Claude, authenticated through `gcloud` — no static key). Keys stay local.
-- **Third-party CLI agents** — DeepSeek-TUI / Codex CLI / Claude Code / Google Antigravity (`agy`) wired into Blocks and the notification center.
-- **Built-in SSH host manager** — manage hosts, configs and sessions inside the terminal, with tmux integration.
+- **Third-party CLI agents** — 17 detected and wired into Blocks and the
+  notification centre (Claude Code, Codex, Gemini, OpenCode, Copilot, Cursor,
+  Amp, Goose, DeepSeek, Antigravity and others), so a CLI agent running in a
+  pane is a first-class block rather than raw output.
+- **SSH that the agent can actually work through** — a remote-server extension
+  installs on the host so file tools, search and buffer sync operate *there*, not
+  on your laptop; a tmux warpification path covers hosts without it. Hosts, keys
+  and config stay in `~/.ssh/config` and `ssh-agent` — Phosphor deliberately does
+  not become a second source of truth for them, and never writes your ssh config
+  ([`DECLINED.md`](DECLINED.md)).
 - **Editable system prompts** — minijinja templates rendered on the client.
 - **Rendering fixes** — tuned Markdown pipeline; CJK soft-wrap caret and bold subpixel fixes.
 - **Localized UI** — English / Simplified Chinese / Japanese out of the box, community-extensible.
-- **Privacy defaults** — Cloud Agent / Computer Use / Referral / telemetry off by default.
+- **No telemetry channel at all** — not a default that can be flipped:
+  `ChannelState::is_telemetry_available()` returns `false` unconditionally, so
+  the setting never renders and nothing is sent. Crash reporting is likewise
+  never uploaded; enabling it writes a backtrace to the local log and nowhere
+  else. Cloud Agent, Computer Use and Referral default off.
 
-## What this fork is playing with
+## Built in this fork
 
-All experimental, spread across feature branches. Roughly in order of how much
-fun they were:
+The section above is the BYOP foundation inherited through the Zap lineage. This
+is work done here. Most of it exists because running agents against *local*
+models exposed problems a cloud-first design never had to solve:
 
 ### Google Vertex AI (BYOP)
 - **First-class Vertex AI provider** — pick "Vertex AI" as a provider type, enter
@@ -54,10 +77,10 @@ fun they were:
   `:streamRawPredict` (Google's streaming method) rather than the unary endpoint.
 
 ### Prompts & providers
-_Same FastFlowLM motivation as above, from the other direction: small models
-served by FLM have tight context windows, and a bloated built-in system prompt
-eats budget the actual conversation needs. Being able to hot-swap a leaner prompt
-per model — live, without a rebuild — is the whole point here._
+_Driven by the same constraint as the cache work, from the other direction:
+small local models have tight context windows, and a large built-in system
+prompt consumes budget the conversation needs. Swapping a leaner prompt per
+model, live and without a rebuild, is what this exists to allow._
 - **Per-profile, per-prompt system prompt overrides.** Every prompt slot in a
   profile can be set to **Auto** (pick a built-in by model family), a specific
   **built-in** family (`default` / `anthropic` / `lean` / `gpt` / `beast` /
@@ -83,7 +106,7 @@ per model — live, without a rebuild — is the whole point here._
 - **`troubleshooting.j2`** — a built-in example of a task-focused prompt: a
   diagnose-and-fix agent (observe the failure, one hypothesis at a time, change
   one thing, verify). Pair it with a "Troubleshooting" profile. It's opt-in per
-  slot, never auto-picked by model family — a template to copy and riff on.
+  slot, never auto-picked by model family; intended as a template to adapt.
 - **Tool-list dedup** — when structured tools are sent, the redundant
   `# Available Tools` text block is suppressed to save prompt tokens.
 
@@ -91,13 +114,13 @@ per model — live, without a rebuild — is the whole point here._
 - A **live capture window** for outbound/inbound LLM traffic: the exact system
   prompt, structured tools, the environment block, one-shots (title gen, active
   AI), and streamed responses. Filterable, pausable, copyable — opened from the
-  left panel header. Handy for seeing what actually goes over the wire.
+  left panel header. The intended use is diagnosing what a provider actually
+  received, rather than what the UI implies was sent.
 
 ### Prompt-cache & environment-context stability
-_Mostly driven by testing against FastFlowLM (FLM): it partial-prefills a stable
-prefix, so anything volatile near the front of the prompt tanks the cache. Note
-this assumes a **text-only** FLM model — VL/MoE engines that can't partial-prefill
-don't benefit from the tail-block design._
+_FLM partial-prefills a stable prefix, so anything volatile near the front of
+the prompt invalidates the cache. This assumes a **text-only** model: VL/MoE
+engines that cannot partial-prefill gain nothing from the tail-block design._
 - Volatile environment context moved **out of the system prompt into a tail
   block** (and appended as a standalone message) so upstream KV-cache breakpoints
   stay stable instead of being invalidated every turn.
@@ -119,14 +142,36 @@ don't benefit from the tail-block design._
   workspace member; the GUI build is unaffected). Agent runs go through the same
   BYOP path as the GUI (`chat_stream` / `oneshot` / the prompt-override system).
 
-### Odds and ends
-- **Title-generation language fix** (this branch's namesake) — stop Chinese-biased
-  few-shot examples leaking into tab titles.
+### Smaller fixes
+- **Title-generation language fix** — stops Chinese-biased few-shot examples
+  leaking into tab titles.
 - **English-only** BYOP tool schemas and skill wrapper.
 - **Logging** — the GUI always logs to a file now, with a `ZAP_LOG_STDOUT` escape
   hatch for stdout.
 - **Perf** — reuse HTTP clients, unblock async DNS, trim webfetch/history
   overhead, cap `file_glob` results and back off failed retries.
+
+## Not included, on purpose
+
+Phosphor drops Warp's cloud backend, and some non-cloud features have been
+removed by decision rather than by omission. Listed so nobody hunts for them or
+files them as gaps. Each has a recorded rationale in
+[`DECLINED.md`](DECLINED.md), which carries machine-checkable markers so a
+decision cannot be silently reversed.
+
+| dropped | why |
+|---|---|
+| **SSH host manager** | Hosts, keys and config belong to `~/.ssh/config` and `ssh-agent`. Phosphor does not become a second source of truth and never writes your ssh config. SSH itself is fully supported — see the remote-server extension above. |
+| **Warp Drive, cloud sync, shared sessions** | Requires Warp's backend. No account, no server-side history, no shareable session links. |
+| **Warp Environments, cloud agent runners, credits/billing** | Same. `/orchestrate` runs child agents as **local** processes instead. |
+| **Voice transcription** | The backend was Warp's hosted Wispr STT. Audio capture still works; nothing can transcribe it, so the UI is not shipped. Revisit if a local Whisper-class path lands. |
+| **Screen and session recording** | Local `ffmpeg` capture, but not something this fork is shipping. |
+| **Telemetry** | The channel is physically removed, not merely defaulted off. |
+| **Account onboarding, login, paid tiers** | No account exists to sign in to. |
+
+`DECLINED.md` also records the deliberate *behavioural* divergences — places
+this fork knowingly does something different from upstream Warp rather than
+simply less, each with the pinned test it declines to match.
 
 ## Migrating from Zap, OpenWarp, or Warp
 
