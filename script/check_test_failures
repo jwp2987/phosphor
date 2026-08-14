@@ -51,6 +51,22 @@ echo "running: ${CARGO_RUN[*]} nextest run ${*}" >&2
 "${CARGO_RUN[@]}" nextest run "$@" --no-fail-fast 2>&1 | tee "$out"
 nextest_status="${PIPESTATUS[0]}"
 
+# Strip ANSI escapes before ANYTHING parses "$out".
+#
+# pr-check.yml sets `CARGO_TERM_COLOR: always`, so nextest colourises even through a
+# pipe. Every pattern below anchors on leading whitespace (`^\s+Summary \[`,
+# `^\s+FAIL `), and a colour escape sits between the line start and that text -- so
+# none of them match.
+#
+# The visible symptom was the Summary check below rejecting a run whose summary was
+# plainly in the log ("565 tests run: 565 passed"). The dangerous symptom is the FAIL
+# parsing: colourised `FAIL` lines match nothing, the failure set comes back empty, and
+# the gate reports "no change against known_test_failures.txt" for a suite that was
+# red. That is the same false-green this script's other guards were written to stop,
+# arriving through a different door -- and it stayed hidden only because the run was
+# dying at `agent-cargo` before ever producing output to misparse.
+sed -i 's/\x1b\[[0-9;]*[mGKHF]//g' "$out"
+
 # This bit ALSO bit for real, and worse than the retry bug below.
 #
 # The pipe to `tee` discards nextest's exit status, and the only signal this
