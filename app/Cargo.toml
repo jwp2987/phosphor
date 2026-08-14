@@ -1,5 +1,5 @@
 [package]
-authors = ["Zap Team"]
+authors = ["Phosphor Maintainers"]
 default-run = "phosphor-oss"
 description = "The local-first agentic terminal"
 edition = "2024"

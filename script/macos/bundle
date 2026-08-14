@@ -80,7 +80,7 @@ cleanup_dmg_files() {
         find "$target_dir" -name "rw.*.dmg" -type f -delete
     fi
     # Also check if any volumes are mounted and unmount them
-    hdiutil info | grep "/Volumes/Zap.*" | awk '{print $1}' | while read -r disk; do
+    hdiutil info | grep -E "/Volumes/(Phosphor|Zap).*" | awk '{print $1}' | while read -r disk; do
         echo "Unmounting disk image: $disk"
         hdiutil detach "$disk" -force || true
     done
@@ -146,7 +146,7 @@ while (( "$#" )); do
       SELFSIGN=false
       shift
       ;;
-    # Sign with a local Apple Development cert instead of the official Zap cert.
+    # Sign with a local Apple Development cert instead of the official Phosphor cert.
     # Useful for local debug builds when you don't have access to the company signing key.
     # Falls back to ad-hoc signing if no Apple Development cert is found.
     --selfsign)
@@ -319,7 +319,7 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     # secure-storage service names (LAYER3-PLAN.md §6, "macOS dual identity").
     BUNDLE_ID="dev.phosphor.Phosphor"
     WARP_APP_NAME="Phosphor"
-    WARP_SCHEME_NAME="zap"
+    WARP_SCHEME_NAME="phosphor"
     # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads the DMG to Downloads, and doesn't auto-overwrite the .app.
     FEATURES="release_bundle,extern_plist,autoupdate"
 fi

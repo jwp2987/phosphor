@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # macOS-specific implementation of `./script/run`. Runs a local version of
-# Zap as a real 'app' instead of a bare executable, so macOS can treat it
+# Phosphor as a real 'app' instead of a bare executable, so macOS can treat it
 # like a real signed app (custom URL schemes, user notifications, etc.).
 #
 # This script is invoked by `./script/run`, which handles cross-platform
@@ -25,18 +25,18 @@ if [ "$WARP_CHANNEL" = "local" ]; then
     WARP_APP_PATH="target/debug/bundle/osx/WarpLocal.app"
     WARP_SCHEME_NAME="warplocal"
 else
-    WARP_APP_PATH="target/debug/bundle/osx/Zap.app"
-    WARP_SCHEME_NAME="zap"
+    WARP_APP_PATH="target/debug/bundle/osx/Phosphor.app"
+    WARP_SCHEME_NAME="phosphor"
 fi
 DONT_OPEN=false
-# Launches the binary with "open", meaning the Zap process is
+# Launches the binary with "open", meaning the Phosphor process is
 # launched by the MacOS application launcher instead of a shell session.
-# Note that since Zap isn't launched as a child process, using ctrl+c
+# Note that since Phosphor isn't launched as a child process, using ctrl+c
 # won't kill the app (but will kill the tail process displaying output).
-# tl;dr better simulates running Zap Dev/Stable
+# tl;dr better simulates running a packaged Phosphor
 OPEN_WITH_LAUNCHD=false
 
-# Arguments to pass directly Zap (specified after --)
+# Arguments to pass directly to Phosphor (specified after --)
 # This is not supported when opening with launchd, as passing CLI arguments to
 # an application doesn't make sense.
 WARP_ARGS=()
@@ -62,7 +62,7 @@ while (( "$#" )); do
       if [ "$WARP_CHANNEL" = "local" ]; then
           WARP_APP_PATH="target/release/bundle/osx/WarpLocal.app"
       else
-          WARP_APP_PATH="target/release/bundle/osx/Zap.app"
+          WARP_APP_PATH="target/release/bundle/osx/Phosphor.app"
       fi
       PARAMS="$PARAMS $1"
       shift
@@ -73,7 +73,7 @@ while (( "$#" )); do
       if [ "$WARP_CHANNEL" = "local" ]; then
           WARP_APP_PATH="target/${PROFILE}/bundle/osx/WarpLocal.app"
       else
-          WARP_APP_PATH="target/${PROFILE}/bundle/osx/Zap.app"
+          WARP_APP_PATH="target/${PROFILE}/bundle/osx/Phosphor.app"
       fi
       PARAMS="$PARAMS --profile $PROFILE"
       ;;
