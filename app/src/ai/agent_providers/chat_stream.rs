@@ -10157,7 +10157,7 @@ mod serializer_readiness_tests {
 
         let names: Vec<String> = build_tools_array(&params, false)
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|tool| tool.name.as_str().to_owned())
             .collect();
 
         for withdrawn in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
@@ -10192,7 +10192,7 @@ mod serializer_readiness_tests {
 
         let names: Vec<String> = build_tools_array(&params, false)
             .into_iter()
-            .map(|tool| tool.name)
+            .map(|tool| tool.name.as_str().to_owned())
             .collect();
 
         for present in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {

@@ -5,6 +5,24 @@
 # dependency on retained cloud scaffolding, and needs maintainer sign-off plus
 # a tracking issue (AGENTS.md 5.10).
 #
+#
+#
+# (see the agent_tips.rs / terminal/input.rs / pane_group/mod.rs entries above and
+# AgentViewConversationSelection is GUI-local, but the app harness will not start without
+# OPEN QUESTION (issue #267): should Phosphor resolve warp.dev Drive links at
+# PaletteSource enum every other OpenPalette call site already imports from here
+# Test-harness registration only (`ObjectStoreModel::mock` / `UpdateManager::mock`), the same
+# The two entries below are TEST-ONLY, and cover the same types the module under
+# all? Warp Drive is the cloud product. If the maintainer decides that path is
+# behaviour of `get_item_data_from_warp_link`, which is real fork code with a
+# below); not a new cloud dependency, just another call site of an existing one.
+# dead code, delete it AND these two lines AND the two tests together.
+# local_control's surface.command_palette.open handler reuses the same non-cloud
+# real body, not a gutted stub.
+# test already depends on above (ServerId via uri/mod.rs, cloud_object via
+# these two singletons present. Refs #316.
+# two singletons ask_user_question_tests.rs registers above. No cloud call path: #316's
+# uri/parse_url_paths.rs). They do not widen the boundary: they assert the
 app/src/ai/agent/api.rs use crate::cloud_object::StoredObject;
 app/src/ai/agent/api.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 app/src/ai/agent/api.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
@@ -23,13 +41,9 @@ app/src/ai/agent_sdk/profiles.rs use crate::server::ids::SyncId;
 app/src/ai/agent_tips.rs use crate::server::telemetry::PaletteSource;
 app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-# Test-harness registration only (`ObjectStoreModel::mock` / `UpdateManager::mock`), the same
-# two singletons ask_user_question_tests.rs registers above. No cloud call path: #316's
-# AgentViewConversationSelection is GUI-local, but the app harness will not start without
-# these two singletons present. Refs #316.
+app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs use crate::server::telemetry::PluginChipTelemetryAction;
 app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs use crate::server::telemetry::PluginChipTelemetryAction;
 app/src/ai/blocklist/block.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 app/src/ai/blocklist/block.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/ai/blocklist/block.rs use crate::server::ids::SyncId;
@@ -107,10 +121,6 @@ app/src/lib.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
 app/src/lib.rs use crate::cloud_object::update_manager::UpdateManager;
 app/src/lib.rs use crate::server::experiments::ServerExperiments;
 app/src/lib.rs use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource};
-# local_control's surface.command_palette.open handler reuses the same non-cloud
-# PaletteSource enum every other OpenPalette call site already imports from here
-# (see the agent_tips.rs / terminal/input.rs / pane_group/mod.rs entries above and
-# below); not a new cloud dependency, just another call site of an existing one.
 app/src/local_control/handlers/app_state.rs use crate::server::telemetry::PaletteSource;
 app/src/notebooks/editor/model_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/notebooks/editor/model_tests.rs use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermissions};
@@ -205,6 +215,7 @@ app/src/settings_view/ai_page.rs use crate::server::telemetry::{
 app/src/settings_view/appearance_page.rs use crate::server::telemetry::InputUXChangeOrigin;
 app/src/settings_view/execution_profile_view.rs use crate::cloud_object::model::generic_string_model::StringModel;
 app/src/settings_view/features_page.rs use crate::server::telemetry::TelemetryEvent;
+app/src/settings_view/features_page_tests.rs use crate::server::telemetry::TelemetryEvent;
 app/src/settings_view/mcp_servers/list_page.rs use crate::server::telemetry::{MCPTemplateInstallationSource, TelemetryEvent};
 app/src/settings_view/mcp_servers/mod.rs use crate::server::ids::ObjectUid;
 app/src/settings_view/mod.rs use crate::server::telemetry::MCPServerCollectionPaneEntrypoint;
@@ -255,16 +266,6 @@ app/src/tui_export.rs use crate::cloud_object::model::persistence::ObjectStoreMo
 app/src/uri/mod.rs use crate::server::ids::ServerId;
 app/src/uri/mod.rs use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
 app/src/uri/parse_url_paths.rs use crate::cloud_object::extract_server_id_and_object_type_from_warp_drive_link;
-#
-# The two entries below are TEST-ONLY, and cover the same types the module under
-# test already depends on above (ServerId via uri/mod.rs, cloud_object via
-# uri/parse_url_paths.rs). They do not widen the boundary: they assert the
-# behaviour of `get_item_data_from_warp_link`, which is real fork code with a
-# real body, not a gutted stub.
-#
-# OPEN QUESTION (issue #267): should Phosphor resolve warp.dev Drive links at
-# all? Warp Drive is the cloud product. If the maintainer decides that path is
-# dead code, delete it AND these two lines AND the two tests together.
 app/src/uri/uri_test.rs use crate::cloud_object::ObjectType;
 app/src/uri/uri_test.rs use crate::server::ids::ServerId;
 app/src/view_components/find.rs use crate::server::telemetry::{FindOption, TelemetryEvent};
