@@ -110,8 +110,8 @@ if ("$CHANNEL" -eq 'local') {
     # TODO(vorporeal): Remove this once we get tests passing with this default enabled.
     $FEATURES = "$FEATURES,nld_improvements"
 } elseif ("$CHANNEL" -eq 'oss') {
-    $WARP_BIN = 'zap-oss'
-    $BINARY_NAME = 'zap-oss.exe'
+    $WARP_BIN = 'phosphor-oss'
+    $BINARY_NAME = 'phosphor-oss.exe'
     $APP_NAME = 'Phosphor'
     # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
     # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads to Downloads, without invoking Inno Setup.
@@ -122,10 +122,10 @@ $BINARY_PATH = "$CARGO_TARGET_OUTPUT_DIR\$BINARY_NAME"
 # AUMID (Windows AppUserModel ID) — must exactly match what the process side's
 # `ChannelState::app_id()` generates, otherwise Windows ToastNotificationManager
 # silently swallows the toast when the Start Menu shortcut / process AUMID
-# mismatch. OSS (Zap) is `dev.zap.Zap` in `app/src/bin/oss.rs`; other official
-# channels are `dev.warp.<Name>`.
+# mismatch. OSS (Phosphor) is `dev.phosphor.Phosphor` (formerly `dev.zap.Zap`)
+# in `app/src/bin/zap_oss.rs`; other official channels are `dev.warp.<Name>`.
 if ("$CHANNEL" -eq 'oss') {
-    $AUMID = "dev.zap.$APP_NAME"
+    $AUMID = "dev.phosphor.$APP_NAME"
 } else {
     $AUMID = "dev.warp.$APP_NAME"
 }
@@ -215,8 +215,22 @@ if (-Not $?) {
 Write-Output 'Building Zap installer'
 # Inno Setup's `AppId` determines the registry Uninstall entry and the
 # upgrade-tracking key. Fixed to `zap-oss` under OSS, to avoid staying on the
-# default `warp-terminal-oss`. Other channels use the default
-# `warp-terminal-{ReleaseChannel}` from the .iss file.
+# default `warp-terminal-oss`.
+#
+# DELIBERATELY NOT renamed to `phosphor-oss` as part of the dev.zap.Zap ->
+# dev.phosphor.Phosphor identity rename. This value is an installer-internal
+# upgrade-tracking token, independent of the app's runtime AppId triple (which
+# already flips to dev.phosphor.Phosphor via the Rust-side change regardless
+# of what this string is). Changing it makes the new installer fail to
+# recognize an existing `zap-oss` install as the same product: the user ends
+# up with two Add/Remove Programs entries and two install trees on disk
+# (see LAYER3-PLAN.md §6, "Windows uninstall orphaning"). Keeping it fixed is
+# exactly why it was pinned to a literal in the first place rather than
+# templated from the channel/app name. Revisit only with a deliberate,
+# tested migration plan for existing OSS installs.
+#
+# Other channels use the default `warp-terminal-{ReleaseChannel}` from the
+# .iss file.
 if ("$CHANNEL" -eq 'oss') {
     $INNO_APP_ID = 'zap-oss'
 } else {
