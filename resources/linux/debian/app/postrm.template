@@ -5,6 +5,7 @@
 action="$1"
 
 rm -f /usr/bin/@@PACKAGE_NAME@@
+rm -f /usr/bin/zap
 rm -f /usr/bin/phosphor
 
 # Make sure the system forgets the newly-uninstalled desktop file.

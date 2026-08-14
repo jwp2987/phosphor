@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Builds a Zap binary and bundles it up for distribution.
+# Builds a Phosphor binary and bundles it up for distribution.
 
 set -e
 
@@ -196,9 +196,9 @@ elif [[ $RELEASE_CHANNEL = "stable" ]]; then
   BINARY_NAME="warp"
   APP_NAME="Zap"
 elif [[ $RELEASE_CHANNEL = "oss" ]]; then
-  WARP_BIN="zap-oss"
-  BINARY_NAME="zap-oss"
-  APP_NAME="Zap"
+  WARP_BIN="phosphor-oss"
+  BINARY_NAME="phosphor-oss"
+  APP_NAME="Phosphor"
   # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
   FEATURES="release_bundle"
 fi
@@ -206,7 +206,7 @@ fi
 # Artifact-specific binary naming
 if [[ "$ARTIFACT" == "cli" ]]; then
   # For CLI artifacts, use oz instead of warp as the binary name.  The OSS
-  # channel is an exception: its CLI command name is `zap-oss`, matching
+  # channel is an exception: its CLI command name is `phosphor-oss`, matching
   # `Channel::cli_command_name` in the Rust source (gated by
   # `script/check_channel_command_names`).
   if [[ $RELEASE_CHANNEL != "oss" ]]; then
@@ -222,11 +222,12 @@ elif [[ "$ARTIFACT" == "app" ]]; then
 fi
 
 if [[ $RELEASE_CHANNEL = "oss" ]]; then
-  # The OSS (Zap) bundle id is aligned with the runtime app id (`dev.zap.Zap`,
-  # see `app/src/bin/oss.rs` / Cargo bundle metadata); otherwise the Linux
-  # desktop (Wayland in particular) will associate the window by desktop-file
-  # ID rather than StartupWMClass, causing the icon to not be found.
-  BUNDLE_ID="dev.zap.Zap"
+  # The OSS (Phosphor) bundle id is aligned with the runtime app id
+  # (`dev.phosphor.Phosphor`, see `app/src/bin/oss.rs` / Cargo bundle
+  # metadata); otherwise the Linux desktop (Wayland in particular) will
+  # associate the window by desktop-file ID rather than StartupWMClass,
+  # causing the icon to not be found.
+  BUNDLE_ID="dev.phosphor.Phosphor"
 else
   BUNDLE_ID="dev.warp.$APP_NAME"
 fi
@@ -264,7 +265,7 @@ fi
 # When this variable isn't set locally, the original `cargo build` behavior
 # is preserved (the host glibc path is unaffected).
 if [[ "$BUILD" == "true" ]]; then
-  echo "Building and bundling Zap for channel $RELEASE_CHANNEL and bundle id $BUNDLE_ID"
+  echo "Building and bundling Phosphor for channel $RELEASE_CHANNEL and bundle id $BUNDLE_ID"
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then
     echo "Using cargo zigbuild (zig-backed cross toolchain)"
     cargo zigbuild -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES" "${CARGO_TARGET_ARG[@]}"

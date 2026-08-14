@@ -12,10 +12,12 @@ depends=(
 replaces=(
 	'warp-cli'
 	'warp-cli-stable'
+	'zap-cli'
 )
 conflicts=(
 	'warp-cli'
 	'warp-cli-stable'
+	'zap-cli'
 )
 optdepends=(
 	'org.freedesktop.secrets: for securely storing passwords'

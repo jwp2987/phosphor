@@ -19,11 +19,11 @@ set -e
 if [ "$RELEASE_CHANNEL" = "oss" ]; then
   CHANNEL_SUFFIX=""
   if [ "$ARTIFACT" = "app" ]; then
-    PACKAGE_NAME="zap"
+    PACKAGE_NAME="phosphor"
   else
-    PACKAGE_NAME="zap-cli"
+    PACKAGE_NAME="phosphor-cli"
   fi
-  REPO_NAME="zap"
+  REPO_NAME="phosphor"
   OPT_DIR="/opt/$PACKAGE_NAME"
 elif [ "$ARTIFACT" = "cli" ]; then
   CHANNEL_SUFFIX="${BINARY_NAME#oz}"
@@ -102,7 +102,7 @@ sed \
     < "$WORKSPACE_ROOT_DIR/resources/linux/debian/common/postinst.repo.template" \
     >> "$DEBIAN_DIR/postinst"
 sed \
-    "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g" \
+    "s#@@CHANNEL_SUFFIX@@#$CHANNEL_SUFFIX#g; s#@@BINARY_NAME@@#$BINARY_NAME#g; s#@@OPTDIR@@#$OPT_DIR#g; s#@@REPO_NAME@@#$REPO_NAME#g" \
     < "$TEMPLATE_DIR/postrm.template" \
     > "$DEBIAN_DIR/postrm"
 sed \
