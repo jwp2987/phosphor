@@ -282,10 +282,10 @@ pub fn discovery_dir() -> PathBuf {
         return PathBuf::from(path);
     }
     if let Some(path) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return PathBuf::from(path).join("zap").join("local-control");
+        return PathBuf::from(path).join("phosphor").join("local-control");
     }
     let home = std::env::var_os("HOME").unwrap_or_else(|| ".".into());
-    PathBuf::from(home).join(".zap").join("local-control")
+    PathBuf::from(home).join(".phosphor").join("local-control")
 }
 
 /// Returns compatible live instances from `channel` that pass an authenticated app ping.

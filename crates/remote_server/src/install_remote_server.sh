@@ -3,8 +3,8 @@
 #
 # setup.rs replaces these placeholders at runtime:
 #   {download_base_url}     - e.g. https://github.com/jwp2987/phosphor/releases/latest/download
-#   {install_dir}           - e.g. ~/.zap/remote-server
-#   {binary_name}           - e.g. zap-oss (the channel COMMAND name)
+#   {install_dir}           - e.g. ~/.phosphor/remote-server
+#   {binary_name}           - e.g. phosphor-oss (the channel COMMAND name)
 #   {release_asset_prefix}  - e.g. phosphor-cli (the published ASSET name --
 #                             deliberately different from {binary_name}; they
 #                             drifted apart at the rebrand and the mismatch made

@@ -37,7 +37,13 @@ pub struct ChannelState {
 impl ChannelState {
     pub fn init() -> Self {
         let channel = Channel::Oss;
-        let app_id = AppId::new("dev", "zap", "Zap");
+        // Keep in sync with the OSS binary's `ChannelConfig` and, on macOS,
+        // with every `CFBundleIdentifier` that `app_id_from_bundle()` can read
+        // (`app/Cargo.toml`, the plist embedded in the OSS binary, and
+        // `script/macos/bundle`). A bundled build takes its id from the bundle
+        // and `cargo run` takes this default; if they disagree the two use
+        // different data directories.
+        let app_id = AppId::new("dev", "phosphor", "Phosphor");
         Self {
             channel,
             additional_features: Default::default(),
@@ -260,7 +266,12 @@ impl ChannelState {
             // Dummy value--integration tests shouldn't support URL schemes.
             Channel::Integration => "warpintegration",
             Channel::Local => "warplocal",
-            Channel::Oss => "zap",
+            // Must stay in sync with what the packaging actually registers as a
+            // handler: the `.desktop` file's `MimeType=x-scheme-handler/...` on
+            // Linux and `CFBundleURLSchemes` on macOS. This is the scheme the
+            // app *claims*; if the OS registration says something else, links
+            // silently open nothing.
+            Channel::Oss => "phosphor",
         }
     }
 }

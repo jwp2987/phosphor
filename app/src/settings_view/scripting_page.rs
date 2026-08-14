@@ -19,7 +19,7 @@
 //!   The `warpctrl` command name itself is *not* renamed: it is a real,
 //!   on-disk binary name produced by
 //!   `warp_core::channel::Channel::warpctrl_command_name()`, in the same
-//!   category as the unchanged app id `dev.zap.Zap` and the `zap-oss` binary.
+//!   category as the app id `dev.phosphor.Phosphor` and the `phosphor-oss` binary.
 use std::cell::RefCell;
 use std::collections::HashMap;
 

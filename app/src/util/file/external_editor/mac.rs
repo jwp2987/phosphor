@@ -367,7 +367,13 @@ pub fn open_file_path_with_line_and_col(
 fn is_zap_bundle(bundle_id: &str) -> bool {
     AppId::parse(bundle_id)
         .map(|id| {
-            id.qualifier() == "dev" && matches!(id.organization(), "warp" | "zap")
+            // `zap` is this fork's pre-rename organization and `warp` is
+            // upstream's. Both are kept alongside `phosphor`: a user may still
+            // have an older bundle installed, and it is just as much "this app"
+            // for the purposes of default-app redirection. Replacing rather
+            // than adding would stop recognising it.
+            id.qualifier() == "dev"
+                && matches!(id.organization(), "warp" | "zap" | "phosphor")
         })
         .unwrap_or(false)
 }

@@ -8,11 +8,12 @@ fn test_data_dir_path() {
     // ChannelState, by default, is configured for Channel::Oss.
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
-            assert_eq!(data_dir(), home_dir.join(".zap"));
+            // Channel-keyed rather than app-id-keyed, but renamed alongside it.
+            assert_eq!(data_dir(), home_dir.join(".phosphor"));
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-            assert_eq!(data_dir(), home_dir.join(".local/share/zap"));
+            assert_eq!(data_dir(), home_dir.join(".local/share/phosphor"));
         } else if #[cfg(windows)] {
-            assert_eq!(data_dir(), home_dir.join("AppData\\Roaming\\zap\\Zap\\data"));
+            assert_eq!(data_dir(), home_dir.join("AppData\\Roaming\\phosphor\\Phosphor\\data"));
         } else {
             unimplemented!("Need to update tests for current platform!");
         }
@@ -25,11 +26,12 @@ fn test_config_local_dir_path() {
     // ChannelState, by default, is configured for Channel::Oss.
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
-            assert_eq!(config_local_dir(), home_dir.join(".zap"));
+            // Channel-keyed rather than app-id-keyed, but renamed alongside it.
+            assert_eq!(config_local_dir(), home_dir.join(".phosphor"));
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-            assert_eq!(config_local_dir(), home_dir.join(".config/zap"));
+            assert_eq!(config_local_dir(), home_dir.join(".config/phosphor"));
         } else if #[cfg(windows)] {
-            assert_eq!(config_local_dir(), home_dir.join("AppData\\Local\\zap\\Zap\\config"));
+            assert_eq!(config_local_dir(), home_dir.join("AppData\\Local\\phosphor\\Phosphor\\config"));
         } else {
             unimplemented!("Need to update tests for current platform!");
         }
@@ -61,8 +63,8 @@ fn test_macos_config_dir_name_scopes_to_data_profile() {
 fn test_warp_home_config_dir_path() {
     let home_dir = home_dir().expect("Should be able to compute home directory");
     let expected_dir_name = match ChannelState::data_profile() {
-        Some(data_profile) => format!(".zap-{data_profile}"),
-        None => ".zap".to_string(),
+        Some(data_profile) => format!(".phosphor-{data_profile}"),
+        None => ".phosphor".to_string(),
     };
 
     assert_eq!(
@@ -89,11 +91,11 @@ fn test_cache_dir_path() {
     // ChannelState, by default, is configured for Channel::Oss.
     cfg_if::cfg_if! {
         if #[cfg(target_os = "macos")] {
-            assert_eq!(cache_dir(), home_dir.join("Library/Application Support/dev.zap.Zap"));
+            assert_eq!(cache_dir(), home_dir.join("Library/Application Support/dev.phosphor.Phosphor"));
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-            assert_eq!(cache_dir(), home_dir.join(".cache/zap"));
+            assert_eq!(cache_dir(), home_dir.join(".cache/phosphor"));
         } else if #[cfg(windows)] {
-            assert_eq!(cache_dir(), home_dir.join("AppData\\Local\\zap\\Zap\\cache"));
+            assert_eq!(cache_dir(), home_dir.join("AppData\\Local\\phosphor\\Phosphor\\cache"));
         } else {
             unimplemented!("Need to update tests for current platform!");
         }
@@ -106,11 +108,11 @@ fn test_state_dir_path() {
     cfg_if::cfg_if! {
         // ChannelState, by default, is configured for Channel::Oss.
         if #[cfg(target_os = "macos")] {
-            assert_eq!(state_dir(), home_dir.join("Library/Application Support/dev.zap.Zap"));
+            assert_eq!(state_dir(), home_dir.join("Library/Application Support/dev.phosphor.Phosphor"));
         } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
-            assert_eq!(state_dir(), home_dir.join(".local/state/zap"));
+            assert_eq!(state_dir(), home_dir.join(".local/state/phosphor"));
         } else if #[cfg(windows)] {
-            assert_eq!(state_dir(), home_dir.join("AppData\\Local\\zap\\Zap\\data"));
+            assert_eq!(state_dir(), home_dir.join("AppData\\Local\\phosphor\\Phosphor\\data"));
         } else {
             unimplemented!("Need to update tests for current platform!");
         }
@@ -156,6 +158,51 @@ fn test_project_path_for_oss_app_id() {
             assert_eq!(project_dirs.project_path(), "zap");
         } else if #[cfg(windows)] {
             assert_eq!(project_dirs.project_path(), "zap\\Zap");
+        } else {
+            unimplemented!("Need to update tests for current platform!");
+        }
+    }
+}
+
+#[test]
+fn test_project_path_for_phosphor_app_id() {
+    // The post-rename identity. Pinned on all three platforms because the
+    // identity migration copies data into exactly these directories, and a
+    // wrong answer here is only cosmetic on the first launch and permanent
+    // thereafter.
+    let project_dirs = project_dirs_for_app_id(AppId::new("dev", "phosphor", "Phosphor"), None)
+        .expect("should be able to compute project dirs");
+    cfg_if::cfg_if! {
+        if #[cfg(target_os = "macos")] {
+            assert_eq!(project_dirs.project_path(), "dev.phosphor.Phosphor");
+        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+            // Lowercased to match the Linux package name. Note that
+            // `directories` lowercases the application name itself, so this
+            // holds with or without the explicit arm in
+            // `project_dirs_for_app_id`.
+            assert_eq!(project_dirs.project_path(), "phosphor");
+        } else if #[cfg(windows)] {
+            assert_eq!(project_dirs.project_path(), "phosphor\\Phosphor");
+        } else {
+            unimplemented!("Need to update tests for current platform!");
+        }
+    }
+}
+
+#[test]
+fn test_project_path_for_suffixed_phosphor_app_id() {
+    // Covers the `starts_with("Phosphor")` branch: a suffixed application name
+    // must become a dashed lowercase directory (`phosphor-dev`), not the
+    // run-together `phosphordev` that plain lowercasing would produce.
+    let project_dirs = project_dirs_for_app_id(AppId::new("dev", "phosphor", "PhosphorDev"), None)
+        .expect("should be able to compute project dirs");
+    cfg_if::cfg_if! {
+        if #[cfg(target_os = "macos")] {
+            assert_eq!(project_dirs.project_path(), "dev.phosphor.PhosphorDev");
+        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+            assert_eq!(project_dirs.project_path(), "phosphor-dev");
+        } else if #[cfg(windows)] {
+            assert_eq!(project_dirs.project_path(), "phosphor\\PhosphorDev");
         } else {
             unimplemented!("Need to update tests for current platform!");
         }

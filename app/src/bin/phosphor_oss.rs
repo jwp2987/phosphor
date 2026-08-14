@@ -26,7 +26,8 @@ fn main() -> Result<()> {
     let mut state = ChannelState::new(
         Channel::Oss,
         ChannelConfig {
-            app_id: AppId::new("dev", "zap", "Zap"),
+            // Keep in sync with `ChannelState::init`'s default app id.
+            app_id: AppId::new("dev", "phosphor", "Phosphor"),
             display_name: "Phosphor".into(),
             logfile_name: "zap.log".into(),
             autoupdate_config: None,
@@ -52,6 +53,17 @@ fn main() -> Result<()> {
 }
 
 // If we're not using an external plist, embed the following as the Info.plist.
+//
+// `CFBundleIdentifier` here is not decoration: on macOS
+// `warp_core::channel::state::app_id_from_bundle()` reads it back at runtime and
+// *overrides* the app id configured above. It must therefore stay in sync with
+// `AppId::new` above, `identifier` in `app/Cargo.toml`, and `BUNDLE_ID` in
+// `script/macos/bundle` — otherwise a bundled build and `cargo run` silently use
+// different data directories.
+//
+// `CFBundleURLSchemes` must match `ChannelState::url_scheme()`, which is now
+// `phosphor`. `zap` is kept alongside it so links already in the wild still
+// open; the app only ever *emits* the first.
 #[cfg(all(not(feature = "extern_plist"), target_os = "macos"))]
 embed_plist::embed_info_plist_bytes!(r#"
     <?xml version="1.0" encoding="UTF-8"?>
@@ -61,11 +73,11 @@ embed_plist::embed_info_plist_bytes!(r#"
     <key>CFBundleDevelopmentRegion</key>
     <string>English</string>
     <key>CFBundleDisplayName</key>
-    <string>Zap</string>
+    <string>Phosphor</string>
     <key>CFBundleExecutable</key>
-    <string>zap-oss</string>
+    <string>phosphor-oss</string>
     <key>CFBundleIdentifier</key>
-    <string>dev.zap.Zap</string>
+    <string>dev.phosphor.Phosphor</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleLocalizations</key>
@@ -75,7 +87,7 @@ embed_plist::embed_info_plist_bytes!(r#"
     <string>zh-CN</string>
     </array>
     <key>CFBundleName</key>
-    <string>Zap</string>
+    <string>Phosphor</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -87,9 +99,9 @@ embed_plist::embed_info_plist_bytes!(r#"
     <key>UIDesignRequiresCompatibility</key>
     <true/>
     <key>CFBundleURLTypes</key>
-    <array><dict><key>CFBundleURLName</key><string>Custom App</string><key>CFBundleURLSchemes</key><array><string>zap</string></array></dict></array>
+    <array><dict><key>CFBundleURLName</key><string>Custom App</string><key>CFBundleURLSchemes</key><array><string>phosphor</string><string>zap</string></array></dict></array>
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026, Zap</string>
+    <string>© 2026, Phosphor</string>
     </dict>
     </plist>
 "#.as_bytes());

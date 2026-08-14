@@ -55,8 +55,15 @@ fn try_create_mutex() -> Result<Option<MutexHandle>, Error> {
     //   session namespace"
     //
     // NOTE: This lock name must stay in sync with `AppMutexName` in
-    // `script/windows/windows-installer.iss`, which the installer uses to detect whether Zap is
-    // running.
+    // `script/windows/windows-installer.iss`, which the installer uses to detect whether the app
+    // is running.
+    //
+    // DELIBERATELY NOT RENAMED by the Phosphor rebrand. This is an invisible internal IPC token,
+    // in the same category as the `zap-local-secure-storage-fallback-key` literal. Keeping it
+    // stable is precisely what lets a NEW installer detect an OLD running instance during the
+    // upgrade where that matters most; renaming it would leave the installer polling a mutex name
+    // no running process holds, and its "wait for the app to exit" check would silently pass while
+    // the app is still running.
     let name = format!("Local\\Zap{:?}_SingleInstance", ChannelState::channel())
         .encode_utf16()
         .chain(std::iter::once(0))

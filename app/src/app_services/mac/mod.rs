@@ -43,8 +43,8 @@ pub enum StartupArgsForwardingError {
 /// A GUI app launched by double-clicking the Dock/Finder icon is automatically deduplicated by
 /// macOS's LaunchServices -- clicking an already-running app's icon just reactivates it, no
 /// custom code needed. This function exists for the path LaunchServices *doesn't* cover: the
-/// bundled `zap-oss` shell-integration script (`Contents/Resources/bin/zap-oss`) directly
-/// `exec`s the main binary to support the `zap-oss <path>` terminal command, bypassing
+/// bundled `phosphor-oss` shell-integration script (`Contents/Resources/bin/phosphor-oss`) directly
+/// `exec`s the main binary to support the `phosphor-oss <path>` terminal command, bypassing
 /// LaunchServices entirely. Without this check, that command spawns a second, fully independent
 /// GUI process -- its own window, its own Dock/App-Switcher entry -- instead of opening a new
 /// window in the already-running instance, exactly like the Linux/Windows equivalents this

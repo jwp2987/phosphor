@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>dev.zap.ZapDockTilePlugin</string>
+    <string>dev.phosphor.PhosphorDockTilePlugin</string>
     <key>CFBundleExecutable</key>
     <string>ZapDockTilePlugin</string>
     <key>CFBundleName</key>

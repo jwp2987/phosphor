@@ -105,6 +105,14 @@ impl SecureStorage {
                 // We can use whatever super duper foolproof secure key we want here.
                 // Here we are specifically choosing a value that will look inconspicuous
                 // in case someone chooses to scan our binary for strings.
+                //
+                // DO NOT RENAME THIS LITERAL. It looks exactly like a leftover
+                // "zap" string that the Phosphor rebrand should have swept up,
+                // but it is not user-visible: it *is* the AES-256-GCM key
+                // material for every fallback blob already written to disk on
+                // hosts with no Secret Service provider. Changing a single byte
+                // makes those blobs permanently undecryptable, silently — the
+                // read just starts reporting the secret as missing.
                 let mut key_bytes = Vec::from("zap-local-secure-storage-fallback-key");
                 key_bytes.resize(aead::AES_256_GCM.key_len(), 0);
                 match aead::UnboundKey::new(&aead::AES_256_GCM, key_bytes.as_slice()) {

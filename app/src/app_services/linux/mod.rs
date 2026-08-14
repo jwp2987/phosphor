@@ -157,11 +157,19 @@ impl ApplicationService {
 // `.destination(well_known_name())` / `.path(application_service_path())`, so
 // the constants here are never actually used; but to avoid misleading a
 // future caller who uses the default directly via `Proxy::new`, they still
-// point at OSS's default `dev.zap.Zap`.
+// point at OSS's default `dev.phosphor.Phosphor`.
+//
+// Note this is the `org.freedesktop.Application` well-known name used for
+// single-instance activation, *not* the secure-storage service name. Both read
+// as the app id, but they are unrelated mechanisms: getting this one wrong
+// breaks activation, while getting the keyring one wrong orphans stored API
+// keys. The live value is derived from `ChannelState::app_id()` in
+// `well_known_name()`, so it tracks the app id automatically; it must match the
+// `.desktop` file name for activation to resolve.
 #[proxy(
     interface = "org.freedesktop.Application",
-    default_service = "dev.zap.Zap",
-    default_path = "/dev/zap/Zap",
+    default_service = "dev.phosphor.Phosphor",
+    default_path = "/dev/phosphor/Phosphor",
     gen_blocking = false
 )]
 trait ExistingApplication {

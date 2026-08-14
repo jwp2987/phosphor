@@ -237,13 +237,13 @@ fn parse_preinstall_missing_status_falls_open() {
 }
 
 #[test]
-fn oss_remote_server_dir_uses_zap_namespace() {
-    assert_eq!(remote_server_dir(), "~/.zap/remote-server");
+fn oss_remote_server_dir_uses_phosphor_namespace() {
+    assert_eq!(remote_server_dir(), "~/.phosphor/remote-server");
 }
 
 #[test]
-fn oss_binary_name_matches_zap_cli() {
-    assert_eq!(binary_name(), "zap-oss");
+fn oss_binary_name_matches_phosphor_cli() {
+    assert_eq!(binary_name(), "phosphor-oss");
 }
 
 #[test]
@@ -274,19 +274,21 @@ fn oss_download_tarball_url_uses_github_release_asset() {
     assert!(
         url.contains("/phosphor-cli-"),
         "asset prefix must match what the release workflow publishes, not the \
-         channel command name (`zap-oss`): {url}"
+         channel command name (`phosphor-oss`): {url}"
     );
 }
 
 #[test]
 fn install_script_uses_release_asset_prefix_and_staging_placeholder() {
-    let script = install_script(Some("~/.zap/remote-server/zap-upload.tar.gz"));
+    let script = install_script(Some("~/.phosphor/remote-server/phosphor-upload.tar.gz"));
 
-    assert!(script.contains("staging_tarball_path=\"~/.zap/remote-server/zap-upload.tar.gz\""));
+    assert!(
+        script.contains("staging_tarball_path=\"~/.phosphor/remote-server/phosphor-upload.tar.gz\"")
+    );
     assert!(script.contains("phosphor-cli-$os_name-$arch_name.tar.gz"));
     // Deliberately changed on 2026-08-11: the script asked for a `zap-` asset,
     // but the release workflow publishes `phosphor-cli-`, so every remote
-    // install 404'd. `zap-oss` is the channel COMMAND name, not the ASSET name.
+    // install 404'd. `phosphor-oss` is the channel COMMAND name, not the ASSET name.
     assert!(
         !script.contains("/zap-$os_name-$arch_name.tar.gz"),
         "install script must ask for the published asset name, not the channel \
@@ -611,7 +613,7 @@ fn install_script_substitutes_bundled_resources_dir_name() {
 /// disk rather than about the template's text.
 ///
 /// Uses the staging-tarball path (`install_script(Some(..))`) to skip the
-/// network download, and points `HOME` at a temp dir so `~/.zap/remote-server`
+/// network download, and points `HOME` at a temp dir so `~/.phosphor/remote-server`
 /// resolves inside it.
 ///
 /// Gated to Unix because the test invokes `/bin/bash` and `tar` directly.
@@ -692,7 +694,7 @@ fn run_install_with_tarball(with_resources: bool) -> (tempfile::TempDir, String,
         std::fs::write(staging.join("resources/skills/demo.md"), "bundled skill").unwrap();
     }
 
-    let tarball = home_path.join("zap-upload.tar.gz");
+    let tarball = home_path.join("phosphor-upload.tar.gz");
     let tar_status = Command::new("tar")
         .arg("-czf")
         .arg(&tarball)

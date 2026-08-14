@@ -361,7 +361,7 @@ pub fn seed_dir(dir: &Path) -> std::io::Result<usize> {
     Ok(written)
 }
 
-/// The default suggested path shown by the settings panel (`~/.zap/prompts`). Returns `None` when home can't be resolved.
+/// The default suggested path shown by the settings panel (`~/.phosphor/prompts`). Returns `None` when home can't be resolved.
 pub fn default_prompts_dir() -> Option<PathBuf> {
     warp_core::paths::warp_home_prompts_dir()
 }

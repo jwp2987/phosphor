@@ -328,9 +328,13 @@ pub enum PackageManager {
 impl PackageManager {
     /// Candidate package names to look up in the system package manager for the
     /// current channel, ordered from most to least likely. OSS's deb/rpm/arch
-    /// bundle scripts all use `zap` as the package name (see
-    /// script/linux/bundle_*), but common naming on the AUR is `zap-bin` /
-    /// `zap-git`, so several are tried.
+    /// bundle scripts all use `phosphor` as the package name (see
+    /// script/linux/bundle_*), but common naming on the AUR is `phosphor-bin` /
+    /// `phosphor-git`, so several are tried.
+    ///
+    /// These must track the package names the bundle scripts actually produce.
+    /// A mismatch does not fail loudly — the lookup simply never matches and
+    /// autoupdate detection silently reports no package manager.
     fn candidate_names(channel: Channel) -> &'static [&'static str] {
         match channel {
             Channel::Stable => &["warp-terminal"],
@@ -338,9 +342,10 @@ impl PackageManager {
             Channel::Dev => &["warp-terminal-dev"],
             Channel::Integration => &["warp-terminal-integration"],
             Channel::Local => &["warp-terminal-local"],
-            // OSS: bundle_deb/rpm/arch all use `zap` as the package name, but AUR
-            // maintainers might pick `zap-bin` / `zap-git`, so try those too.
-            Channel::Oss => &["zap", "zap-bin", "zap-git"],
+            // OSS: bundle_deb/rpm/arch all use `phosphor` as the package name,
+            // but AUR maintainers might pick `phosphor-bin` / `phosphor-git`,
+            // so try those too.
+            Channel::Oss => &["phosphor", "phosphor-bin", "phosphor-git"],
         }
     }
 
@@ -440,7 +445,7 @@ impl PackageManager {
 
     /// Writes "the upgrade command the user should run" to the log. OSS users
     /// can find the precise instructions in the logs under
-    /// ~/.local/share/dev.zap.Zap/; the UI still falls back to "go download from
+    /// ~/.local/share/phosphor/; the UI still falls back to "go download from
     /// GitHub" without distinguishing by package manager.
     fn log_upgrade_hint(&self) {
         let hint = match self {
