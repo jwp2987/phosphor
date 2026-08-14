@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 
-# The user-facing launch command is `phosphor` only — not @@PACKAGE_NAME@@,
-# which stays as the internal package/install-dir name so existing installs'
-# config/data paths under ~/.config/zap etc. keep working unchanged (see
-# specs/phosphor-rebrand/SCOPE.md). Clean up any older package version's
-# @@PACKAGE_NAME@@ symlink before creating the phosphor one.
+# The user-facing launch command is `phosphor` — a symlink to the installed
+# @@BINARY_NAME@@ binary under @@OPTDIR@@, never the binary itself. This
+# package (@@PACKAGE_NAME@@) is a rename of the old `zap` package
+# (control.template carries Replaces:/Conflicts: against it), so also clean
+# up the `zap` name explicitly: it's no longer what @@PACKAGE_NAME@@ expands
+# to, so the old "clean up @@PACKAGE_NAME@@'s own symlink" cleanup below no
+# longer reaches it on its own.
 rm -f /usr/bin/@@PACKAGE_NAME@@
+rm -f /usr/bin/zap
 rm -f /usr/bin/phosphor
 ln -s @@OPTDIR@@/@@BINARY_NAME@@ /usr/bin/phosphor
 

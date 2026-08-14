@@ -7,6 +7,8 @@ Priority: optional
 Architecture: @@ARCH@@
 Maintainer: Phosphor Maintainers <phosphor-maintainers@localhost>
 Homepage: https://github.com/jwp2987/phosphor
+Replaces: zap (<< @@VERSION@@)
+Conflicts: zap (<< @@VERSION@@)
 Description: Phosphor, a community fork of the Rust-based Warp terminal
  Phosphor strips the mandatory cloud dependency from Warp, opens up the AI
  provider layer, ships a built-in SSH host manager, and lets you plug in

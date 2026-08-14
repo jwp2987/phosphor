@@ -1,2 +1,2 @@
-# Zap does not configure the upstream Warp APT repo, nor does it install the upstream signing key.
+# Phosphor does not configure the upstream Warp APT repo, nor does it install the upstream signing key.
 :

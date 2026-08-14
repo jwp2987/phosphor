@@ -25,6 +25,12 @@ optdepends=(
 	'kdialog: for file dialogs in KDE'
 	'org.freedesktop.secrets: for securely storing passwords'
 )
+replaces=(
+	'zap'
+)
+conflicts=(
+	'zap'
+)
 # Don't perform additional stripping of binaries; we already do the amount of
 # stripping we want as part of the bundle_install script.
 options=('!strip')
@@ -41,6 +47,9 @@ package() {
 	install -Dm755 $pkgname.sh "$pkgdir"/usr/bin/$pkgname
 
 	# Also provide `phosphor` as a launch command (the display brand), alongside
-	# the package's own $pkgname command (kept for existing installs/config paths).
+	# the package's own $pkgname command (kept for existing installs/config
+	# paths on channels where the two differ, e.g. warp-terminal-dev; for the
+	# OSS channel $pkgname is `phosphor` too, so this is a harmless duplicate
+	# install of the same file).
 	install -Dm755 $pkgname.sh "$pkgdir"/usr/bin/phosphor
 }

@@ -1,0 +1,50 @@
+[Desktop Entry]
+# The version of the desktop entry spec this conforms to.
+Version=1.0
+
+Type=Application
+
+Name=Phosphor
+GenericName=TerminalEmulator
+
+# `phosphor` is the user-facing launch command in every package type: a symlink
+# to the binary under @@OPTDIR@@ created by the deb postinst and shipped in
+# %{_bindir} by the rpm, and a wrapper script in arch packages.
+#
+# It is deliberately NOT the binary name: the installed binary is
+# `phosphor-oss` (Channel::Oss's binary/CLI command name), so `/usr/bin/phosphor`
+# is always a symlink to it, never a real file. This is what keeps a package
+# *rename* (this pass: `zap`/`zap-cli` -> `phosphor`/`phosphor-cli`, see
+# resources/linux/{debian,rpm,arch}/**) from becoming a file-ownership
+# conflict at /usr/bin/phosphor -- see "the phosphor symlink already exists"
+# in specs/phosphor-rebrand/LAYER3-PLAN.md §6. The package templates carry
+# Replaces/Conflicts (deb), Obsoletes (rpm), and replaces/conflicts (arch)
+# against the old `zap`/`zap-cli` names so upgrades don't leave both installed.
+#
+# This previously read `Exec=zap`, which was a DEAD LAUNCHER on deb and rpm:
+# both ship only /usr/bin/phosphor, and the deb postinst explicitly
+# `rm -f`s /usr/bin/@@PACKAGE_NAME@@ (plus a hardcoded /usr/bin/zap, kept
+# around post-rename since @@PACKAGE_NAME@@ no longer expands to it). Arch
+# happened to work because it installs both names. Keep this in step with the
+# postinst/spec symlinks.
+#
+# When packaged as an AppImage, bundle_appimage rewrites this whole line
+# (`sed -E "s|^Exec=.*|Exec=$BINARY_NAME %U|"`) to point directly at the binary
+# inside the AppImage, so its content does not matter there.
+Exec=phosphor %U
+StartupWMClass=dev.phosphor.Phosphor
+
+Keywords=shell;prompt;command;commandline;cmd;
+
+Icon=dev.phosphor.Phosphor
+
+Categories=System;TerminalEmulator;
+
+# Don't run this application within a terminal.
+Terminal=false
+
+# Register ourselves as the handler for phosphor:// URLs. Also keep zap://
+# registered so links created before this rename still resolve; both cost
+# nothing to advertise simultaneously. Drop the zap:// entry once existing
+# zap:// links in the wild are no longer a concern.
+MimeType=x-scheme-handler/phosphor;x-scheme-handler/zap;

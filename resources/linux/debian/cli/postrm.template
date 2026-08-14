@@ -4,4 +4,9 @@
 # postrm script.
 action="$1"
 
+# The symlink postinst creates is named after @@BINARY_NAME@@, not
+# @@PACKAGE_NAME@@ -- those coincide for the warpdotdev/oz channels but not
+# for OSS (package `phosphor-cli`, binary `phosphor-oss`). Remove both so a
+# package-name/binary-name mismatch never strands a dangling symlink.
 rm -f /usr/bin/@@PACKAGE_NAME@@
+rm -f /usr/bin/@@BINARY_NAME@@

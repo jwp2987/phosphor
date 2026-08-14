@@ -11,6 +11,8 @@ Url:         https://github.com/jwp2987/phosphor
 Packager:    Phosphor Maintainers <phosphor-maintainers@localhost>
 License:     AGPL-3.0-only AND MIT
 Obsoletes:   warp-cli < %{version}
+Obsoletes:   zap-cli < %{version}
+Provides:    zap-cli = %{version}
 
 
 # The prefix specifies where the majority of the application files are,
@@ -68,6 +70,6 @@ ln -s @@OPT_DIR@@/@@BINARY_NAME@@ %{buildroot}%{_bindir}/@@BINARY_NAME@@
 ###############################################################################
 %post
 
-# Zap does not configure the upstream Warp RPM repo, nor does it install the upstream signing key.
-# Zap does no post-install repo configuration; deb/rpm packages are distributed via GitHub Release.
+# Phosphor does not configure the upstream Warp RPM repo, nor does it install the upstream signing key.
+# Phosphor does no post-install repo configuration; deb/rpm packages are distributed via GitHub Release.
 exit 0

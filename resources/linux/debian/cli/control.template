@@ -6,8 +6,8 @@ Priority: optional
 Architecture: @@ARCH@@
 Maintainer: Phosphor Maintainers <phosphor-maintainers@localhost>
 Homepage: https://github.com/jwp2987/phosphor
-Replaces: warp-cli (<< @@VERSION@@)
-Conflicts: warp-cli (<< @@VERSION@@)
+Replaces: warp-cli (<< @@VERSION@@), zap-cli (<< @@VERSION@@)
+Conflicts: warp-cli (<< @@VERSION@@), zap-cli (<< @@VERSION@@)
 Description: Phosphor CLI — community fork of Warp's local orchestration platform
  Phosphor CLI is a tool for running, managing, and orchestrating coding agents
  locally. It is the CLI half of the Phosphor community fork of Warp.
