@@ -7,16 +7,17 @@ use instant::Instant;
 use tempfile::TempDir;
 use warp::appearance::Appearance;
 use warp::settings::{
-    AISettings, TuiStatuslineConfig, TuiStatuslineItem, TuiTheme, TuiThemeSettings,
-    TuiZeroStateObject,
+    AISettings, SettingsFileError, TuiStatuslineConfig, TuiStatuslineItem, TuiTheme,
+    TuiThemeSettings, TuiZeroStateObject,
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind, WarpConfig,
+    WarpConfigUpdateEvent, export_conversation_markdown, register_tui_session_view_test_singletons,
+    slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -72,7 +73,10 @@ use crate::session_registry::{TuiSessionId, TuiSessions};
 use crate::statusline_config_view::TuiStatuslineConfigEvent;
 use crate::terminal_block::{block_content_rows, should_render_terminal_block};
 use crate::terminal_use::TuiInputTarget;
-use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
+use crate::test_fixtures::{
+    add_test_semantic_selection, add_test_terminal_session,
+    add_test_terminal_session_with_settings_file_error,
+};
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
 use crate::tui_builder::TuiUiBuilder;
 use crate::usage::render_context_usage_entry;
@@ -1324,6 +1328,19 @@ fn add_focus_test_session(
     (view, session_id)
 }
 
+fn add_focus_test_session_with_settings_file_error(
+    app: &mut App,
+    fixture: &FocusTestFixture,
+    error: SettingsFileError,
+) -> ViewHandle<super::TuiTerminalSessionView> {
+    let (view, manager) =
+        add_test_terminal_session_with_settings_file_error(app, fixture.window_id, Some(error));
+    app.update(|ctx| {
+        TuiSessions::register_session(&fixture.sessions, view.clone(), manager, true, ctx);
+    });
+    view
+}
+
 fn render_element(element: Box<dyn TuiElement>, ctx: &AppContext, width: u16) -> TuiBuffer {
     render_element_with_size(element, ctx, width, 1)
 }
@@ -2341,6 +2358,72 @@ fn zero_state_reload_failure_renders_as_an_error_footer_hint() {
 
         let lines = render_footer_lines(&mut app, &view, 120);
         assert_eq!(lines, vec![super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT]);
+    });
+}
+
+/// Ported from the pin's `settings_reload_failure_renders_as_an_error_footer_hint`
+/// (upstream `73529d1d6`). A failed settings hot-reload reuses the same
+/// transient error slot the zero-state failure above uses; the detailed
+/// diagnostics stay in the log.
+#[test]
+fn settings_reload_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        app.update(|ctx| {
+            WarpConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
+                    SettingsFileError::InvalidSettings(vec!["Theme".to_owned()]),
+                ));
+            });
+        });
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::SETTINGS_INVALID_VALUES_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::SETTINGS_INVALID_VALUES_HINT]);
+    });
+}
+
+/// Ported from the pin's `startup_settings_parse_failure_renders_as_an_error_footer_hint`
+/// (upstream `73529d1d6`). A settings file that failed to parse at startup is
+/// reported by the first session, checked at construction rather than via a
+/// later reload event.
+#[test]
+fn startup_settings_parse_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let view = add_focus_test_session_with_settings_file_error(
+            &mut app,
+            &fixture,
+            SettingsFileError::FileParseFailed("expected a value".to_owned()),
+        );
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::SETTINGS_PARSE_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::SETTINGS_PARSE_FAILED_HINT]);
     });
 }
 

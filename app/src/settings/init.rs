@@ -168,6 +168,22 @@ pub fn init(
         None
     };
 
+    // Always log a settings-load failure with its full details. User-facing
+    // surfaces may additionally present a shorter summary.
+    if let Some(err) = &settings_file_error {
+        match err {
+            super::SettingsFileError::FileParseFailed(detail) => {
+                log::error!("Settings file could not be parsed: {detail}");
+            }
+            super::SettingsFileError::InvalidSettings(keys) => {
+                log::warn!(
+                    "Settings file has invalid values (using defaults for): {}",
+                    keys.join(", ")
+                );
+            }
+        }
+    }
+
     let user_defaults_on_startup = UserDefaultsOnStartup {
         should_restore_session,
         tips_data: TipsCompleted::new(tips_features_used, tips_skipped_or_completed),

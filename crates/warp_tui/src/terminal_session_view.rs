@@ -12,8 +12,8 @@ use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::{
-    AISettings, AISettingsChangedEvent, AppEditorSettings, TuiStatuslineConfig, TuiTheme,
-    TuiThemeSettings,
+    AISettings, AISettingsChangedEvent, AppEditorSettings, SettingsFileError, TuiStatuslineConfig,
+    TuiTheme, TuiThemeSettings,
 };
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
@@ -34,12 +34,12 @@ use warp::tui_export::{
     SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
     TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
-    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
-    block_context_from_terminal_model, build_slash_command_mixer, context_usage_report,
-    conversation_cost_report, detect_possible_git_repo, export_conversation_markdown, log_out_tui,
-    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
-    record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
-    record_static_slash_command_accepted, saved_prompt_text_for_id,
+    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD, WarpConfig,
+    WarpConfigUpdateEvent, block_context_from_terminal_model, build_slash_command_mixer,
+    context_usage_report, conversation_cost_report, detect_possible_git_repo,
+    export_conversation_markdown, log_out_tui, maybe_build_ai_query_upsert_event,
+    prepare_conversation_block_restoration, record_autodetection_toggle_from_slash_command,
+    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle, tui_conversation_actions_in_order,
     tui_set_active_profile,
 };
@@ -164,6 +164,18 @@ const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 /// as the pin so the hint's wording stays accurate.
 const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
+const SETTINGS_PARSE_FAILED_HINT: &str = "Settings failed to load: invalid syntax.";
+const SETTINGS_INVALID_VALUES_HINT: &str = "Settings failed to load: invalid values.";
+
+/// One-line summary for the footer's transient error slot. The full detail
+/// (the parse error, or the list of rejected keys) stays in the log, written
+/// by `settings::init`.
+fn settings_file_error_hint(error: &SettingsFileError) -> &'static str {
+    match error {
+        SettingsFileError::FileParseFailed(_) => SETTINGS_PARSE_FAILED_HINT,
+        SettingsFileError::InvalidSettings(_) => SETTINGS_INVALID_VALUES_HINT,
+    }
+}
 
 /// Fallback strings for the `/status` status menu.
 const STATUS_UNAVAILABLE: &str = "\u{2014}"; // em dash
@@ -1412,6 +1424,7 @@ impl TuiTerminalSessionView {
         surface_init: TerminalSurfaceInit,
         exit_summary: TuiExitSummaryHandle,
         keyboard_enhancement_supported: bool,
+        initial_settings_file_error: Option<SettingsFileError>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let TerminalSurfaceInit {
@@ -1907,6 +1920,14 @@ impl TuiTerminalSessionView {
                 ctx.notify();
             }
         });
+        // A failed settings hot-reload gets the same transient footer slot as
+        // the startup failure surfaced at the end of this constructor; the
+        // detailed diagnostics stay in the log (`settings::init`).
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), |view, _, event, ctx| {
+            if let WarpConfigUpdateEvent::SettingsErrors(error) = event {
+                view.show_settings_file_error(error, ctx);
+            }
+        });
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
             if matches!(
                 event,
@@ -2066,6 +2087,9 @@ impl TuiTerminalSessionView {
         };
         if let Some(failure) = initial_zero_state_load_failure {
             view.show_zero_state_ascii_load_failure(failure, ctx);
+        }
+        if let Some(error) = initial_settings_file_error {
+            view.show_settings_file_error(&error, ctx);
         }
         view
     }
@@ -2659,6 +2683,12 @@ impl TuiTerminalSessionView {
         ctx: &mut ViewContext<Self>,
     ) {
         self.show_error_hint(zero_state_ascii_load_failure_hint(failure).to_owned(), ctx);
+    }
+
+    /// Surfaces a settings-file load or reload failure as an error-colored
+    /// footer hint. Ported from the pin's `show_settings_file_error`.
+    fn show_settings_file_error(&mut self, error: &SettingsFileError, ctx: &mut ViewContext<Self>) {
+        self.show_error_hint(settings_file_error_hint(error).to_owned(), ctx);
     }
 
     /// Surfaces a `/usage` or `/cost` result. Mirrors the GUI's toast split: a plain transient
