@@ -154,6 +154,8 @@ use self::state::TuiTerminalSessionStateModel;
 const INITIAL_INPUT_WIDTH: u16 = 80;
 const INLINE_MENU_TOP_PADDING_ROWS: u16 = 1;
 const MAX_INPUT_TEXT_ROWS: u16 = 6;
+/// Top and bottom border rows plus one padding row inside each border.
+const BORDERED_INPUT_CHROME_ROWS: u16 = 4;
 const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
@@ -5225,7 +5227,7 @@ impl TuiTerminalSessionView {
                     .with_border_style(border_style)
                     .finish(),
             )
-            .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
+            .with_max_rows(MAX_INPUT_TEXT_ROWS + BORDERED_INPUT_CHROME_ROWS)
             .finish(),
         );
         let footer = self.render_footer(ctx).finish();

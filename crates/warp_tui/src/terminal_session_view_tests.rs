@@ -1374,6 +1374,33 @@ fn render_session(
     })
 }
 
+/// Every one of the six editor rows the composer is sized for must actually
+/// render: the input box's `TuiConstrainedBox` budget has to cover the border
+/// rows *and* the padding row inside each border
+/// (`MAX_INPUT_TEXT_ROWS + BORDERED_INPUT_CHROME_ROWS`), otherwise the last
+/// rows scroll out of view. Ported from the pin's
+/// `input_area_renders_all_six_editor_rows`.
+#[test]
+fn input_area_renders_all_six_editor_rows() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("input-0\ninput-1\ninput-2\ninput-3\ninput-4\ninput-5", ctx);
+            });
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        for row in 0..6 {
+            assert!(
+                rendered.contains(&format!("input-{row}")),
+                "input row {row} should be visible:\n{rendered}"
+            );
+        }
+    });
+}
+
 fn input_text(view: &ViewHandle<super::TuiTerminalSessionView>, ctx: &AppContext) -> String {
     view.as_ref(ctx)
         .input_view
