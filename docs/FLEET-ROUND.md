@@ -48,6 +48,43 @@ either: it is the expensive one. Push the branch and say it is unverified.
 Merge every finished branch into a scratch integration branch, run the full
 suite **once**, then merge the PRs. One cold build for N agents instead of N.
 
+## Shard size — fan out wider than feels necessary
+
+**A round finishes when its slowest agent finishes.** Total work is irrelevant to
+wall clock; one oversized shard sets the round's duration no matter how quickly
+the others land. An agent running ~1 hour is not acceptable, and the fix is more
+agents with smaller shards, never a faster agent.
+
+**Commit count does not predict how long a shard takes.** Measured on the first
+re-pin (`02b53fcd8` → `42effe840`, 231 commits, 6 agents):
+
+| shard | area | commits | ports | minutes |
+|---|---|---|---|---|
+| E | infra (`.github`, `script`, …) | 44 | 8 | 17 |
+| F | terminal/util crates | 13 | 8 | 22 |
+| D | UI crates | 27 | 18 | 28 |
+| C | `crates/warp_tui` | 57 | 9 | 33 |
+| A | `app/src` | 43 | 12 | 36 |
+| B | `app/src` | 43 | 12+ | 60+ |
+
+The 57-commit shard finished in 33 minutes; a 43-commit shard ran past 60. What
+drives the time is **how entangled the area is** and how many commits need real
+porting — not how many commits there are. Infra shards are mostly `N/A` verdicts
+and run fast; `app/src` is the hot, entangled area and runs slowest per commit.
+
+So:
+
+- Cap an **entangled code area at ~20 commits** per agent. `app/src` above all.
+- Infra and single-crate shards can be larger — 40+ is fine.
+- Split by **sub-area**, not by slicing a sorted list in half. `app/src` was 86
+  commits split two ways here; it should have been four or five agents split by
+  subsystem (`ai/`, `terminal/`, `settings*/`, `workspace|pane_group/`).
+- Prefer ~10-12 agents over 6. The coordinator's review load is per-finding, not
+  per-agent, so more agents cost the coordinator almost nothing.
+
+The one thing that does *not* scale down: every shard still needs a complete
+brief. See the retrofit rule below.
+
 ## The tradeoff, stated honestly
 
 Batching means a failure lands inside a pile of changes and has to be bisected.
