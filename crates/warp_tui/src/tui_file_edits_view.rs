@@ -15,12 +15,14 @@
 //! rows. Multi-file edits nest the per-file sections, indented, under one
 //! collapsible summary header (`✓ Edited 3 files +a −r ▾`); single-file edits
 //! render the file section alone. Blocked edits use the in-progress `Editing`
-//! verb while awaiting approval. When the storage was never seeded (failed or
-//! cancelled actions, or actions that resolved before this view existed), the
-//! view falls back to a one-line label from the action's recorded result.
+//! verb while awaiting approval. Failed and cancelled actions fall back to a
+//! one-line label from the action's recorded result; restored successful
+//! actions are hydrated from their original `FileEdit` request (see
+//! `TuiFileEditsView::new`, upstream ae9c63f95, #14211).
 use std::collections::HashMap;
 use std::path::Path;
 
+use ai::agent::action::FileEdit;
 use ai::agent::action_result::{AIAgentActionResultType, RequestFileEditsResult};
 use ai::diff_validation::{DiffDelta, DiffType};
 use itertools::Itertools;
@@ -28,6 +30,7 @@ use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
     AIActionStatus, AIAgentActionId, AIConversationId, BlocklistAIActionEvent,
     BlocklistAIActionModel, CancellationReason, DiffSessionType, FileDiff,
+    convert_file_edits_to_file_diffs,
 };
 use warp_editor::content::buffer::InitialBufferState;
 use warpui_core::elements::MouseStateHandle;
@@ -257,10 +260,51 @@ impl TuiFileEditsView {
     pub(super) fn new(
         action_id: AIAgentActionId,
         conversation_id: AIConversationId,
+        file_edits: Vec<FileEdit>,
         action_model: &ModelHandle<BlocklistAIActionModel>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        let storage = ctx.add_model(|_| TuiDiffStorage::new(Vec::new(), DiffSessionType::Local));
+        // Upstream ae9c63f95 (#14211, "fix(tui): restore file-edit diff stats
+        // in conversations"): a recorded result means this is a restored
+        // (already-finished) action; live actions have no result yet and stay
+        // executor-backed below. Only a *successful* restored edit rehydrates
+        // its originally-requested diffs -- cancelled/failed actions keep
+        // their terminal fallback label ("File edits cancelled" / "File
+        // edits failed"), mirroring the GUI's `set_restored_file_edits`,
+        // which marks non-success results `CodeDiffState::Rejected` rather
+        // than showing a diff. Without this, a restored successful action's
+        // `sections` stayed empty (nothing ever seeded `storage`), so
+        // `fallback_label` rendered the legacy persisted result's
+        // `lines_added`/`lines_removed` -- both hardcoded `0` on old data --
+        // producing the wrong "Edited N files (+0 −0)" instead of real diff
+        // stats and an expandable body. NOT COMPILED -- builds are
+        // suspended; verified by reading only.
+        let (is_restored, is_restored_success) = {
+            let restored_result = action_model
+                .as_ref(ctx)
+                .get_action_result(&action_id)
+                .and_then(|result| match &result.result {
+                    AIAgentActionResultType::RequestFileEdits(result) => Some(result),
+                    _ => None,
+                });
+            let is_restored = restored_result.is_some();
+            let is_restored_success = matches!(
+                restored_result,
+                Some(RequestFileEditsResult::Success { .. })
+            );
+            (is_restored, is_restored_success)
+        };
+        let initial_diffs = if is_restored_success {
+            // Legacy persisted results do not carry line counts, but the
+            // original request can be converted into the same lossy,
+            // display-only diff ranges the GUI reconstructs for restored
+            // edits (mocked content -- there is no access to the actual
+            // file content at restore time).
+            convert_file_edits_to_file_diffs(file_edits, &None, &None)
+        } else {
+            Vec::new()
+        };
+        let storage = ctx.add_model(|_| TuiDiffStorage::new(initial_diffs, DiffSessionType::Local));
 
         ctx.subscribe_to_model(&storage, |me, _, event, ctx| match event {
             TuiDiffStorageEvent::CandidateDiffsSet => {
@@ -294,14 +338,12 @@ impl TuiFileEditsView {
             }
         });
 
-        // An already-resolved action (e.g. on a restored transcript) renders
-        // from its recorded result; registering a storage for it would leave
-        // a stale entry in the executor.
-        if action_model
-            .as_ref(ctx)
-            .get_action_result(&action_id)
-            .is_none()
-        {
+        // An already-resolved action (e.g. on a restored transcript) must
+        // rehydrate the same lossy FileDiff representation used by the GUI
+        // rather than register with the executor -- that would leave a stale
+        // entry in it, and live registration is for actions whose diffs have
+        // not resolved yet.
+        if !is_restored {
             let executor = action_model.as_ref(ctx).request_file_edits_executor(ctx);
             executor.update(ctx, |executor, _| {
                 let handle = TuiDiffStorageHandle::new(storage.clone());
@@ -329,7 +371,7 @@ impl TuiFileEditsView {
             TuiPermissionPromptEvent::LayoutChanged => view.invalidate_layout(ctx),
         });
 
-        Self {
+        let mut view = Self {
             storage,
             action_id,
             action_model: action_model.clone(),
@@ -337,7 +379,18 @@ impl TuiFileEditsView {
             permission_prompt,
             sections: Vec::new(),
             section_states: SectionStates::default(),
+        };
+        if is_restored_success {
+            // `storage` was seeded with `initial_diffs` above, but that
+            // happened before `subscribe_to_model(&storage, ...)` was
+            // registered, so the seeding itself emits no
+            // `CandidateDiffsSet` this view would catch. Build the sections
+            // once, directly, so a restored successful edit's diff stats and
+            // body render on the very first frame instead of staying on the
+            // empty-sections fallback label forever.
+            view.rebuild_sections(ctx);
         }
+        view
     }
 
     /// Records this action's resolved diffs in the session revert registry so
