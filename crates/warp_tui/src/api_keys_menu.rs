@@ -25,8 +25,14 @@
 //!   and repurposes the shared input buffer as free-text key entry (the same buffer every other
 //!   menu here uses as a search filter) instead of a row list; Enter submits and returns to
 //!   `List`, Esc cancels back to `List` without closing the menu entirely -- only a second Esc,
-//!   from `List`, closes it. The typed key is not masked: the ratatui input line has no masking
-//!   primitive today, and this is the same exposure a locally-typed shell command already has.
+//!   from `List`, closes it. The typed key **is masked**: this state reports
+//!   [`TuiInlineMenuInputOwnership::InlineMenuMasked`], so the shared editor paints `•` glyphs
+//!   over the buffer (the model keeps the real text, so editing still works) and drops clipboard
+//!   export. A key echoed into the grid would otherwise be readable over the user's shoulder,
+//!   captured by any screen recording, retained in scrollback, and liable to end up in a pasted
+//!   bug report -- none of which a locally-typed shell command shares, since that can be scrubbed
+//!   from shell history. Mirrors the pin, whose `EditingProvider` state reports the same
+//!   ownership (#599).
 
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::tui_export::{
@@ -37,9 +43,9 @@ use warp_editor::model::CoreEditorModel;
 use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::inline_menu::{
-    MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuListState, TuiInlineMenuRow,
-    TuiInlineMenuRowStyle, TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot, TuiInlineMenuStatus,
-    result_row_capacity,
+    MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuInputOwnership, TuiInlineMenuListState,
+    TuiInlineMenuRow, TuiInlineMenuRowStyle, TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot,
+    TuiInlineMenuStatus, result_row_capacity,
 };
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 
@@ -183,6 +189,27 @@ impl TuiApiKeysMenuModel {
             TuiApiKeysMenuState::Closed => {}
         }
         ctx.emit(TuiApiKeysMenuEvent);
+    }
+
+    /// Returns the shared editor owner for the active API keys state.
+    ///
+    /// Key entry is the one masked surface in this fork's TUI: the buffer holds a credential
+    /// there, so it is concealed and cannot be copied back out. The state correspondence with
+    /// the pin is `EnteringKey` = `EditingProvider` (masked) and `List` = `Browsing` (plain
+    /// text); the pin's third open state, `ConnectingGrok`, has no counterpart here because
+    /// Grok subscription OAuth is declined (`DECLINED.md` #319), and a declined state needs no
+    /// ownership arm.
+    pub(crate) fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        if !self.is_open(ctx) {
+            return TuiInlineMenuInputOwnership::Composer;
+        }
+        match self.state {
+            TuiApiKeysMenuState::EnteringKey { .. } => {
+                TuiInlineMenuInputOwnership::InlineMenuMasked
+            }
+            TuiApiKeysMenuState::List { .. } => TuiInlineMenuInputOwnership::InlineMenuPlainText,
+            TuiApiKeysMenuState::Closed => TuiInlineMenuInputOwnership::Composer,
+        }
     }
 
     pub(crate) fn select_previous(&mut self, ctx: &mut ModelContext<Self>) {

@@ -373,7 +373,6 @@ pub(crate) enum TuiInlineMenuAccepted {
 ///
 /// The variants are exhaustive so ownership and masking cannot disagree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum TuiInlineMenuInputOwnership {
     /// The composer owns editor behavior; the menu only observes input and handles menu actions.
     Composer,
@@ -897,6 +896,11 @@ impl TuiInlineMenuHandle for ModelHandle<TuiApiKeysMenuModel> {
     }
     fn is_open(&self, ctx: &AppContext) -> bool {
         self.as_ref(ctx).is_open(ctx)
+    }
+    /// The only menu here that takes secret input: its key-entry state masks the shared
+    /// editor. Every other menu keeps the defaulted `Composer` ownership.
+    fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.as_ref(ctx).input_ownership(ctx)
     }
     fn open(&self, ctx: &mut AppContext) {
         self.update(ctx, |model, ctx| model.open(ctx));
