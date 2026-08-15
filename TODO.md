@@ -2323,7 +2323,17 @@ here, so this list stays a work ledger rather than a history.
 
 ### Defects — user-visible
 
-- [ ] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
+- [x] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
+      **FIXED, pending merge** — on `repin-gap-keymarker`. `menu_result_row` now
+      renders the second column when a `Default` row has *either* a description
+      or a `state_suffix` (upstream `bf56c3c18`'s hunk), with a suffix standing
+      alone taking the two-space gutter a description would have had. Two
+      render-level tests added, one per layer:
+      `inline_menu_tests::default_row_state_suffix_renders_with_and_without_a_description`
+      and `model_menu_tests::selectable_key_connected_model_renders_the_suffix`.
+      **The profile menu's `active` marker was invisible for the same reason**
+      (`profile_menu.rs` passes `description: None` on every row) and is fixed by
+      the same change. Original finding below for the record.
       `inline_menu.rs` emits `state_suffix` nested inside the `description`
       block, and `model_menu.rs` sets `description` only when `!is_selectable`.
       **Both existing tests pass** because they assert on
