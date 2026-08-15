@@ -44,6 +44,17 @@ pub(crate) const GEMINI_BLUE: ColorU = ColorU {
 };
 
 /// OpenAI brand color (dark gray/black)
+// Phosphor's own mark. Sampled from the dominant fill of
+// `app/assets/bundled/svg/phosphor-logo.svg`, so the toolbar tile matches the
+// logo rendered beside it. The pin uses a flat black for its equivalent
+// variant; this fork has an actual asset to key on, so it does.
+const PHOSPHOR_COLOR: ColorU = ColorU {
+    r: 0x42,
+    g: 0x32,
+    b: 0x28,
+    a: 0xff,
+};
+
 const OPENAI_COLOR: ColorU = ColorU {
     r: 0,
     g: 0,
@@ -329,7 +340,7 @@ impl CLIAgent {
             // still drives the toolbar tile; an `Icon::MistralLogo` can be wired
             // up in a follow-up once an officially licensed SVG is available.
             CLIAgent::Vibe => None,
-            CLIAgent::PhosphorTui => None,
+            CLIAgent::PhosphorTui => Some(Icon::PhosphorLogo),
             CLIAgent::Unknown => None,
         }
     }
@@ -422,7 +433,7 @@ impl CLIAgent {
             CLIAgent::Omp => Some(OMP_COLOR),
             CLIAgent::Hermes => Some(HERMES_PURPLE),
             CLIAgent::Vibe => Some(MISTRAL_ORANGE),
-            CLIAgent::PhosphorTui => None,
+            CLIAgent::PhosphorTui => Some(PHOSPHOR_COLOR),
             CLIAgent::Unknown => None,
         }
     }
