@@ -1793,9 +1793,22 @@ bypass, `175776e22` unescaped exec path). Remaining:
 - [ ] **~82 non-fix-flavoured commits** (features/refactors) were excluded by the
       keyword filter and never examined.
 
-Handed off, not lost: **#12492** (WSL UI freeze from redundant `canonicalize()`)
-— the fix lands in `app/src/terminal/view.rs`, so it went to the terminal agent
-rather than being dropped at an area boundary.
+**#12492 (WSL UI freeze from redundant `canonicalize()`) — REFUTED 2026-08-15,
+already fully ported. Do not re-raise.** The workspace agent flagged it and
+handed it to the terminal agent, which triaged `aa873b543d` and found it present
+on both sides. **COORDINATOR-VERIFIED:** `LocalSessionCanonicalPwdCache`
+(`terminal/view.rs:2299`), the `canonical_session_pwd_cache` field keyed on the
+non-canonical path (`:2576`), and the cache check inside
+`canonical_session_pwd_if_local` (`:7054`, `:7061`) are all present — and the
+actual freeze source, the every-10s scan across every terminal in every window,
+already calls the memoized accessor (`code/language_server_shutdown_manager.rs:110`)
+with no raw `.canonicalize()` left in the terminal hot path.
+
+This one is worth keeping visible as a *method* result, not just a corrected
+row: an agent reported a real-looking bug in code it could not see, and the
+agent that owned that code refuted it in one pass. Cross-area findings are
+hypotheses until the owning area checks them — which is the entire argument for
+the refutation fleet.
 
 Correctly report-only: **#12710** (hidden-files default) — the fork's default is
 already `true`; only the Settings UI toggle is absent, which is a feature.
