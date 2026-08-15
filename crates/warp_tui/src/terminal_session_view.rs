@@ -2590,7 +2590,18 @@ impl TuiTerminalSessionView {
         }
         let is_focused = self.is_focused_session(ctx);
         if is_focused {
-            self.update_process_input_focus(ctx);
+            // A redraw must not re-run the full focus reconciliation: doing so
+            // re-focuses whatever `focus_current_owner` picks, which stomps any
+            // nested focus an interaction surface has delegated to a child (the
+            // statusline picker's rows, a blocker's option selector). The only
+            // case a wakeup has to correct is a command that became
+            // long-running while the hidden composer still held focus — editor
+            // keys such as Enter would otherwise be intercepted instead of
+            // reaching the running process.
+            let pty_owns_input = self.input_target().pty_owns_input();
+            if pty_owns_input && self.input_view.is_focused(ctx) {
+                self.focus_current_owner(ctx);
+            }
             ctx.notify();
         }
         is_focused

@@ -438,14 +438,31 @@ fn statusline_slash_command_clears_input_focuses_one_picker_and_cancels_cleanly(
             view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
         });
 
-        let picker_id = view.read(&app, |view, ctx| {
+        let (picker_id, picker_focus_id) = view.read(&app, |view, ctx| {
             let picker = view
                 .statusline_config_view
                 .as_ref()
                 .expect("statusline picker should be open");
             assert!(view.input_view.as_ref(ctx).is_empty(ctx));
             assert!(picker.as_ref(ctx).is_focused(ctx));
-            picker.id()
+            (
+                picker.id(),
+                ctx.focused_view_id(fixture.window_id)
+                    .expect("the statusline picker owns focus while it is open"),
+            )
+        });
+
+        // A terminal redraw must leave the open interaction surface's focus
+        // alone; before this, the wakeup re-ran the full focus reconciliation
+        // and re-focused the picker itself, dropping any focus it had
+        // delegated to a child row.
+        assert!(view.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
+        app.read(|ctx| {
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(picker_focus_id),
+                "a redraw must preserve the interaction surface's focus"
+            );
         });
 
         // A second `/statusline` while one is already open does not mount a
@@ -2576,6 +2593,59 @@ fn terminal_wakeup_redraws_only_the_focused_session() {
 
         assert!(foreground.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
         assert!(!background.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
+    });
+}
+
+#[test]
+fn terminal_wakeup_focuses_a_new_long_running_command() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let input_id = view.read(&app, |view, _| view.input_view.id());
+
+        view.update(&mut app, |view, ctx| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("cat", "");
+            assert!(view.input_target().pty_owns_input());
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(input_id),
+                "the composer remains focused until the delayed terminal wakeup"
+            );
+
+            assert!(view.handle_terminal_wakeup(ctx));
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(view.id()),
+                "the PTY-owning session must receive input after the wakeup"
+            );
+        });
+    });
+}
+
+#[test]
+fn background_focus_reconciliation_does_not_steal_foreground_focus() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (foreground, _) = add_focus_test_session(&mut app, &fixture, true);
+        let (background, _) = add_focus_test_session(&mut app, &fixture, false);
+        let foreground_input_id = foreground.read(&app, |view, _| view.input_view.id());
+
+        background.update(&mut app, |view, ctx| {
+            view.update_process_input_focus(ctx);
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(foreground_input_id),
+                "background ownership transitions must not change framework focus"
+            );
+        });
     });
 }
 

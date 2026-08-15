@@ -241,14 +241,14 @@ const SHARED_EDITOR_BINDINGS: &[EditorBindingSpec] = &[
         input_name: Some("tui:input:move_to_line_start"),
         editor_name: Some("tui:editor:move_to_line_start"),
         description: "Move cursor to start of line",
-        keys: &["home", "ctrl-a"],
+        keys: &["home", "ctrl-a", "cmd-left"],
     },
     EditorBindingSpec {
         command: TuiEditorCommand::MoveToLineEnd,
         input_name: Some("tui:input:move_to_line_end"),
         editor_name: Some("tui:editor:move_to_line_end"),
         description: "Move cursor to end of line",
-        keys: &["end", "ctrl-e"],
+        keys: &["end", "ctrl-e", "cmd-right"],
     },
     EditorBindingSpec {
         command: TuiEditorCommand::SelectLeft,
@@ -311,7 +311,7 @@ const SHARED_EDITOR_BINDINGS: &[EditorBindingSpec] = &[
         input_name: Some("tui:input:select_all"),
         editor_name: Some("tui:editor:select_all"),
         description: "Select all text",
-        keys: &["ctrl-shift-A"],
+        keys: &["ctrl-shift-A", "cmd-a"],
     },
     EditorBindingSpec {
         command: TuiEditorCommand::Copy,
@@ -349,7 +349,7 @@ const SHARED_EDITOR_BINDINGS: &[EditorBindingSpec] = &[
         input_name: Some("tui:input:kill_to_line_start"),
         editor_name: Some("tui:editor:kill_to_line_start"),
         description: "Delete to start of line",
-        keys: &["ctrl-u"],
+        keys: &["ctrl-u", "cmd-backspace"],
     },
     EditorBindingSpec {
         command: TuiEditorCommand::Yank,
@@ -363,14 +363,14 @@ const SHARED_EDITOR_BINDINGS: &[EditorBindingSpec] = &[
         input_name: Some("tui:input:undo"),
         editor_name: Some("tui:editor:undo"),
         description: "Undo",
-        keys: &["ctrl-z"],
+        keys: &["ctrl-z", "cmd-z"],
     },
     EditorBindingSpec {
         command: TuiEditorCommand::Redo,
         input_name: Some("tui:input:redo"),
         editor_name: Some("tui:editor:redo"),
         description: "Redo",
-        keys: &["ctrl-shift-Z"],
+        keys: &["ctrl-shift-Z", "cmd-shift-Z"],
     },
 ];
 

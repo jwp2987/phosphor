@@ -421,6 +421,11 @@ impl TuiTranscriptView {
                 );
             }
         });
+        // A block can arrive already blocked (a restored or replayed exchange
+        // whose action is awaiting confirmation). Nothing else will announce
+        // that: the action event that created the blocker fired before this
+        // view existed, so the session view would never focus it.
+        let has_initial_blocker = view.as_ref(ctx).active_blocking_child(ctx).is_some();
         self.agent_blocks.borrow_mut().insert(view_id, view);
         let item = RichContentItem::new(Some(RichContentType::AIBlock), view_id, None, false);
         let mut model = self.model.lock();
@@ -429,6 +434,10 @@ impl TuiTranscriptView {
                 .block_list_mut()
                 .insert_rich_content_before_block_index(item, command_block_index),
             None => model.block_list_mut().append_rich_content(item, false),
+        }
+        drop(model);
+        if has_initial_blocker {
+            ctx.emit(TuiTranscriptViewEvent::BlockingStateChanged);
         }
         ctx.notify();
     }

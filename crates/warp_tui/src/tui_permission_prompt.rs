@@ -145,12 +145,6 @@ impl TuiPermissionPrompt {
             if event.action_id() != &prompt.action_id {
                 return;
             }
-            if matches!(
-                event,
-                BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_)
-            ) {
-                prompt.focus(ctx);
-            }
             ctx.emit(TuiPermissionPromptEvent::BlockingStateChanged);
             prompt.invalidate_layout(ctx);
         });

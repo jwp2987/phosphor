@@ -462,13 +462,17 @@ impl TuiAIBlock {
             &action_model,
             |me, action_model, event: &BlocklistAIActionEvent, ctx| {
                 if me.renders_action(event.action_id()) {
-                    if matches!(
+                    let materialized_active_blocker = if matches!(
                         event,
                         BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_)
                     ) {
-                        me.sync_action_views(&action_model, ctx);
+                        me.sync_action_views(&action_model, ctx)
+                    } else {
+                        false
+                    };
+                    if !materialized_active_blocker {
+                        ctx.emit(TuiAIBlockEvent::BlockingStateChanged);
                     }
-                    ctx.emit(TuiAIBlockEvent::BlockingStateChanged);
                     me.invalidate_action(event.action_id(), ctx);
                 }
             },
@@ -511,11 +515,16 @@ impl TuiAIBlock {
     /// Records the exchange's tool-call action ids and todo presence, and
     /// creates child views for stateful tool calls that don't have one yet.
     /// Rendering can't create views since it only sees `&AppContext`.
+    /// Returns whether this pass materialized a view that is *already* an
+    /// active blocker. That case needs its own `BlockingStateChanged` emit:
+    /// the blocker exists before any subsequent action event arrives, so
+    /// without it the session view never learns it has something to focus.
     fn sync_action_views(
         &mut self,
         action_model: &ModelHandle<BlocklistAIActionModel>,
         ctx: &mut ViewContext<Self>,
-    ) {
+    ) -> bool {
+        let mut materialized_active_blocker = false;
         let status = self.block_model.status(ctx);
         let output_streaming = status.is_streaming();
         let mut ask_question_actions = Vec::new();
@@ -607,6 +616,7 @@ impl TuiAIBlock {
             ctx.subscribe_to_view(&view, |me, _, event, ctx| match event {
                 TuiAskQuestionViewEvent::LayoutChanged => me.invalidate_layout(ctx),
             });
+            materialized_active_blocker |= view.as_ref(ctx).is_awaiting_answers(ctx);
             self.action_views
                 .insert(action_id, TuiToolCallView::AskQuestion(view));
             ctx.notify();
@@ -646,6 +656,7 @@ impl TuiAIBlock {
                     });
                 }
             });
+            materialized_active_blocker |= view.as_ref(ctx).active_permission_prompt(ctx).is_some();
             self.action_views
                 .insert(action_id, TuiToolCallView::Generic(view));
             ctx.notify();
@@ -678,6 +689,7 @@ impl TuiAIBlock {
                     });
                 }
             });
+            materialized_active_blocker |= view.as_ref(ctx).active_permission_prompt(ctx).is_some();
             self.action_views
                 .insert(action_id, TuiToolCallView::FileEdits(view));
             ctx.notify();
@@ -736,10 +748,15 @@ impl TuiAIBlock {
                     });
                 }
             });
+            materialized_active_blocker |= view.as_ref(ctx).active_permission_prompt(ctx).is_some();
             self.action_views
                 .insert(action_id, TuiToolCallView::ShellCommand(view));
             ctx.notify();
         }
+        if materialized_active_blocker {
+            ctx.emit(TuiAIBlockEvent::BlockingStateChanged);
+        }
+        materialized_active_blocker
     }
 
     /// Cancels a pending or running action as manually cancelled — the
