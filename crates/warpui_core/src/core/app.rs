@@ -2632,9 +2632,21 @@ impl AppContext {
                         // of the actual work later.
                         window.request_redraw();
 
-                        // In tests, however, there's no real event loop, so we need to do the work now.
-                        // While this _shouldn't_ be necessary in integration tests, it currently is.
-                        if ctx.is_unit_test || cfg!(feature = "integration_tests") {
+                        // In tests there's typically no host event loop pumping redraws in
+                        // step with assertions, so build the scene eagerly here. This also
+                        // dispatches the synthetic MouseMoved that keeps `Hoverable` state
+                        // correct after layout changes, which hover- and focus-driven tests
+                        // depend on.
+                        //
+                        // `defer_scene_build` opts out of this: when a build drives a
+                        // continuous stream of invalidations, eager building here forms an
+                        // invalidation → build_scene → synthetic MouseMoved → invalidation
+                        // loop that pins the main thread and starves the async executor. Those
+                        // builds rely on the normal platform redraw path instead.
+                        if ctx.is_unit_test
+                            || (cfg!(feature = "integration_tests")
+                                && !cfg!(feature = "defer_scene_build"))
+                        {
                             ctx.build_scene(window_id, window.as_ctx());
                         }
                     }
