@@ -442,8 +442,8 @@ use crate::palette::PaletteMode;
 use crate::search::command_palette::view::{Event as CommandPaletteEvent, View as CommandPalette};
 use crate::server::telemetry::{NotificationsTurnedOnSource, PaletteSource, TabRenameEvent};
 use crate::tab::{
-    tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor,
-    TabBarState, TabComponent, TabData, TabTelemetryAction, MOVE_TO_GROUP_LABEL,
+    next_tab_color, tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget,
+    SelectedTabColor, TabBarState, TabComponent, TabData, TabTelemetryAction, MOVE_TO_GROUP_LABEL,
     TAB_BAR_BORDER_HEIGHT,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
@@ -17996,7 +17996,10 @@ impl Workspace {
         let tab_bar_border =
             Border::bottom(TAB_BAR_BORDER_HEIGHT).with_border_fill(appearance.theme().outline());
 
-        let mut tab_bar_container = Container::new(
+        // No base fill: the tab bar inherits the terminal background painted by the
+        // workspace column behind it, so the two adjacent surfaces match. The bottom
+        // border still separates the bar from the content.
+        let tab_bar_element = Container::new(
             EventHandler::new(Clipped::new(self.render_tab_bar_hoverable(bar_contents)).finish())
                 .on_back_mouse_down(move |ctx, _app, _position| {
                     ctx.dispatch_typed_action(WorkspaceAction::ActivatePrevTab);
@@ -18008,12 +18011,8 @@ impl Workspace {
                 })
                 .finish(),
         )
-        .with_border(tab_bar_border);
-        if FeatureFlag::NewTabStyling.is_enabled() {
-            tab_bar_container = tab_bar_container
-                .with_background(internal_colors::fg_overlay_1(appearance.theme()));
-        }
-        let tab_bar_element = tab_bar_container.finish();
+        .with_border(tab_bar_border)
+        .finish();
 
         let dimming_color = appearance.theme().background().into();
         SavePosition::new(
@@ -19962,6 +19961,16 @@ impl TypedActionView for Workspace {
                 );
             }
             SetActiveTabName(name) => self.set_active_tab_name(name, ctx),
+            CycleActiveTabColor => {
+                // Upstream also redirects to the tab *group*'s colour when the active tab is
+                // grouped. This tree has no group-colour setter (`TabGroup::color` is only ever
+                // read), so every tab — grouped or not — cycles its own colour.
+                let Some(tab_color) = self.tabs.get(self.active_tab_index).map(|tab| tab.color())
+                else {
+                    return;
+                };
+                self.set_tab_color(self.active_tab_index, next_tab_color(tab_color), ctx);
+            }
             SetActiveTabColor(color) => self.set_tab_color(self.active_tab_index, *color, ctx),
             ToggleTabRightClickMenu { tab_index, anchor } => {
                 self.toggle_tab_right_click_menu(*tab_index, *anchor, ctx)

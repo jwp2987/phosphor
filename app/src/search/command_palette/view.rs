@@ -337,6 +337,14 @@ impl View {
             .map(|item| &item.search_result)
     }
 
+    #[cfg(feature = "integration_tests")]
+    pub fn selected_search_result<'a>(
+        &'a self,
+        app: &'a AppContext,
+    ) -> Option<&'a QueryResult<CommandPaletteItemAction>> {
+        self.search_bar_state.as_ref(app).selected_result()
+    }
+
     pub fn set_fixed_query_filters(
         &mut self,
         title: String,

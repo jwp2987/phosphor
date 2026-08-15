@@ -1905,6 +1905,7 @@ keybinding-desc-workspace-toggle-block-snackbar = Toggle sticky command header
 # Window / tab close
 keybinding-desc-workspace-rename-active-tab = Rename the current tab
 keybinding-desc-workspace-rename-active-pane = Rename the current pane
+keybinding-desc-workspace-cycle-active-tab-color = Cycle current tab color
 
 # Tab grouping / pinning
 keybinding-desc-workspace-new-tab-group = Create new tab group

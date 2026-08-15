@@ -4,7 +4,7 @@
 mod tests;
 
 #[cfg(feature = "local_fs")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use ::local_control::protocol::{
@@ -791,10 +791,11 @@ fn file_open(
     }
     let line_and_column = line_and_column(&params)?;
     let workspace = target_workspace(ActionKind::FileOpen, target, ctx)?;
+    #[cfg(feature = "local_fs")]
+    let path = resolve_file_open_path(&params.path, target, ctx)?;
     activate_target(&workspace, ActionKind::FileOpen, target, ctx)?;
     #[cfg(feature = "local_fs")]
     {
-        let path = PathBuf::from(params.path);
         let layout = params.new_tab.then_some(EditorLayout::NewTab);
         let file_target =
             resolve_file_target_to_open_in_warp(&path, EditorSettings::as_ref(ctx), layout);
@@ -818,6 +819,56 @@ fn file_open(
         ErrorCode::UnsupportedAction,
         "file.open is unavailable without local filesystem support",
     ))
+}
+
+/// Resolves the path for `file.open` against the targeted terminal session's working
+/// directory, so a caller running `warpctrl file open README.md` from a session gets the
+/// file the shell would resolve rather than one relative to Warp's own process directory.
+#[cfg(feature = "local_fs")]
+fn resolve_file_open_path(
+    path: &str,
+    target: &TargetSelector,
+    ctx: &mut ModelContext<LocalControlBridge>,
+) -> Result<PathBuf, ControlError> {
+    let action = ActionKind::FileOpen;
+    let path = Path::new(path);
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let pane_group = target_pane_group(action, target, ctx)?;
+    let pane_id = target_session_pane_id(action, target, &pane_group, ctx)?;
+    let (is_local, working_directory) = pane_group.read(ctx, |pane_group, ctx| {
+        let Some(terminal) = pane_group.terminal_view_from_pane_id(pane_id, ctx) else {
+            return (None, None);
+        };
+        let terminal = terminal.as_ref(ctx);
+        (
+            terminal.active_session_is_local(ctx),
+            terminal.active_session_path_if_local(ctx),
+        )
+    });
+    match working_directory {
+        Some(working_directory) => Ok(resolve_against_working_directory(path, &working_directory)),
+        None if is_local == Some(false) => Err(ControlError::new(
+            ErrorCode::TargetStateConflict,
+            "file.open requires an absolute path when the target session is remote",
+        )),
+        None => Err(ControlError::new(
+            ErrorCode::TargetStateConflict,
+            "file.open cannot resolve a relative path without a working directory for the target session",
+        )),
+    }
+}
+
+/// Joins a relative path onto `working_directory`, normalizing the result when it exists on
+/// disk so `./README.md` and `../README.md` display and compare like any other opened file.
+#[cfg(feature = "local_fs")]
+fn resolve_against_working_directory(path: &Path, working_directory: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let joined = working_directory.join(path);
+    dunce::canonicalize(&joined).unwrap_or(joined)
 }
 
 fn direction_param(params: &serde_json::Value) -> Result<ControlDirection, ControlError> {

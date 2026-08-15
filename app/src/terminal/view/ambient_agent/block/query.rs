@@ -83,6 +83,8 @@ fn render_user_query(
             &[],
             &[],
             None,
+            // Ambient-agent query blocks are not agent-view transcript navigation stops.
+            false,
             app,
         )
         .with_content_item_spacing()

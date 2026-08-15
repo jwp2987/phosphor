@@ -11,8 +11,8 @@ use pathfinder_color::ColorU;
 use warp_core::ui::appearance::Appearance;
 use warp_core::ui::theme::WarpTheme;
 use warpui::elements::{
-    ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Element, Empty, Flex,
-    MainAxisAlignment, MainAxisSize, ParentElement, Radius, Stack, Text,
+    Align, ConstrainedBox, Container, CornerRadius, Element, Empty, ParentElement, Radius, Stack,
+    Text,
 };
 use warpui::fonts::{Properties, Weight};
 
@@ -114,6 +114,11 @@ pub(crate) fn render_avatar_disc(
                     weight: Weight::Bold,
                     ..Default::default()
                 })
+                // The default 1.2 ratio pads the text box with leading, so
+                // centering the box leaves the letter's ink sitting high in
+                // the disc. At 1.0 the box is the glyph, and centering it
+                // centers what you can see.
+                .with_line_height_ratio(1.)
                 .finish()
         }
         AvatarGlyph::Icon(icon) => {
@@ -124,27 +129,10 @@ pub(crate) fn render_avatar_disc(
         }
     };
 
-    // Center the glyph on top of the disc both horizontally and vertically by
-    // using `MainAxisAlignment::Center` (along axis) and
-    // `CrossAxisAlignment::Center` (perpendicular) on both Flex containers.
-    let glyph_centered = ConstrainedBox::new(
-        Flex::column()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::Center)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(
-                Flex::row()
-                    .with_main_axis_size(MainAxisSize::Max)
-                    .with_main_axis_alignment(MainAxisAlignment::Center)
-                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                    .with_child(glyph_element)
-                    .finish(),
-            )
-            .finish(),
-    )
-    .with_width(size)
-    .with_height(size)
-    .finish();
+    let glyph_centered = ConstrainedBox::new(Align::new(glyph_element).finish())
+        .with_width(size)
+        .with_height(size)
+        .finish();
 
     Stack::new()
         .with_child(disc)

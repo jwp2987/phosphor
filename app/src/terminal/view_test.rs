@@ -3782,6 +3782,21 @@ fn agent_footer_updates_chip_groups_when_side_assignment_changes() {
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
+        // The agent footer's chips only run while the agent view is actually
+        // active, so this test has to enter it before asserting on chip groups.
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("Should be able to enter agent view");
+            });
+        });
 
         terminal.update(&mut app, |view, ctx| {
             let model = view.model.lock();
@@ -6345,6 +6360,432 @@ fn close_find_bar_preserves_options_on_async_find_path() {
 // ── Agent view lifecycle, ported from the pinned oracle ────────────────────────────
 
 #[test]
+fn cmd_up_in_agent_view_navigates_prompts_and_user_shell_blocks() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (prompt_view_ids, user_shell_index) = terminal.update(&mut app, |view, ctx| {
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+
+            // prompt 1 (user-query AI block — navigable)
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 1")],
+                ctx,
+            );
+
+            // Agent-requested run-shell (unhidden) and agent-monitored command: not navigable.
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("tool-call", "tool-result");
+                let tool_index = model.block_list().blocks().len() - 2;
+                let action_id = AIAgentActionId::from("tool-action".to_owned());
+                {
+                    let block = &mut model.block_list_mut().blocks_mut()[tool_index];
+                    block.set_conversation_id(conversation_id);
+                    block.set_agent_interaction_mode(
+                        crate::terminal::model::block::AgentInteractionMetadata::new_hidden(
+                            action_id.clone(),
+                            conversation_id,
+                        ),
+                    );
+                }
+                model
+                    .block_list_mut()
+                    .set_visibility_of_block_for_ai_action(&action_id, true);
+
+                model.simulate_block("agent-monitored", "output");
+                let monitored_index = model.block_list().blocks().len() - 2;
+                let block = &mut model.block_list_mut().blocks_mut()[monitored_index];
+                block.set_conversation_id(conversation_id);
+                block.set_agent_interaction_mode(
+                    crate::terminal::model::block::AgentInteractionMetadata::new(
+                        None,
+                        conversation_id,
+                        None,
+                        None,
+                        false,
+                        false,
+                    ),
+                );
+            }
+
+            // Post-tool-call agent-reply AI segment: production mounts this as a second
+            // AIBlock after run-shell. ResumeConversation has no displayable user query,
+            // so has_user_input is false and Cmd-Up must skip it.
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![AIAgentInput::ResumeConversation {
+                    context: Default::default(),
+                }],
+                ctx,
+            );
+
+            // user-executed shell command (navigable)
+            let user_shell_index =
+                simulate_user_shell_block_in_conversation(view, conversation_id, "user-shell");
+
+            // prompt 2 (user-query AI block — navigable)
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 2")],
+                ctx,
+            );
+
+            // Collect AI rich-content blocks and classify via production navigable list.
+            let ai_view_ids: Vec<_> = view
+                .rich_content_views
+                .iter()
+                .filter_map(|rc| rc.ai_block_metadata().map(|meta| meta.ai_block_handle.id()))
+                .collect();
+            assert!(
+                ai_view_ids.len() >= 3,
+                "expected query + agent-reply + query AI blocks, got {}",
+                ai_view_ids.len()
+            );
+
+            let navigable = view
+                .model
+                .lock()
+                .block_list()
+                .agent_transcript_navigable_items();
+            let navigable_ai: Vec<_> = navigable
+                .iter()
+                .filter_map(|item| match item {
+                    AgentTranscriptNavigableItem::AiBlock { view_id } => Some(*view_id),
+                    AgentTranscriptNavigableItem::ShellBlock(_) => None,
+                })
+                .collect();
+            assert_eq!(
+                navigable_ai.len(),
+                2,
+                "only user-query AI segments should be navigable, got {navigable:?}"
+            );
+            assert!(
+                ai_view_ids.iter().any(|id| !navigable_ai.contains(id)),
+                "expected at least one non-navigable agent-reply AI block among {ai_view_ids:?}"
+            );
+
+            (navigable_ai, user_shell_index)
+        });
+
+        let prompt_1 = *prompt_view_ids.first().expect("prompt 1");
+        let prompt_2 = *prompt_view_ids.last().expect("prompt 2");
+
+        terminal.update(&mut app, |view, ctx| {
+            // From the bottom: first Cmd-Up lands on latest prompt.
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::AiBlock { view_id: prompt_2 })
+            );
+            assert_eq!(view.selected_blocks.tail(), None);
+
+            // Next Cmd-Up lands on the user shell command.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::ShellBlock(user_shell_index))
+            );
+            assert_eq!(view.selected_blocks.tail(), Some(user_shell_index));
+
+            // Next Cmd-Up lands on the first prompt, skipping the tool call.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::AiBlock { view_id: prompt_1 })
+            );
+            assert_eq!(view.selected_blocks.tail(), None);
+
+            // Another Cmd-Up at the oldest item stays put.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::AiBlock { view_id: prompt_1 })
+            );
+            assert_eq!(view.selected_blocks.tail(), None);
+
+            // Cmd-Down symmetry walks back toward the latest prompt.
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::ShellBlock(user_shell_index))
+            );
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(
+                view.agent_transcript_selection_for_test(),
+                Some(AgentTranscriptNavigableItem::AiBlock { view_id: prompt_2 })
+            );
+        });
+    })
+}
+
+#[test]
+fn cmd_down_past_newest_transcript_item_scrolls_to_end() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 1")],
+                ctx,
+            );
+            // Enough conversation blocks that the transcript is taller than the viewport.
+            for _ in 0..100 {
+                simulate_user_shell_block_in_conversation(view, conversation_id, "user-shell");
+            }
+            assert!(view.is_vertically_scrollable(ctx));
+
+            // Select the newest navigable stop, then scroll the viewport to the top.
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            assert!(view.agent_transcript_selection_for_test().is_some());
+            view.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
+            assert!(matches!(
+                view.scroll_position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ));
+
+            // Cmd-Down past the newest stop must land the viewport on the true end of
+            // the blocklist and clear the navigation selection.
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(
+                view.scroll_position(),
+                ScrollPosition::FollowsBottomOfMostRecentBlock
+            );
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+            assert_eq!(view.selected_blocks.tail(), None);
+        });
+    })
+}
+
+#[test]
+fn cmd_down_past_newest_preserves_viewport_when_already_at_end() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 1")],
+                ctx,
+            );
+            simulate_user_shell_block_in_conversation(view, conversation_id, "user-shell");
+            assert!(!view.is_vertically_scrollable(ctx));
+
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            assert!(view.agent_transcript_selection_for_test().is_some());
+            view.update_scroll_position_locking(ScrollPositionUpdate::AfterHome, ctx);
+            assert!(matches!(
+                view.scroll_position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ));
+
+            // The whole transcript fits in the viewport, so it is already at the end:
+            // Cmd-Down past the newest stop must not touch the scroll position.
+            view.select_more_recent_block(true, false, ctx);
+            assert!(matches!(
+                view.scroll_position(),
+                ScrollPosition::FixedAtPosition { .. }
+            ));
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+        });
+    })
+}
+
+#[test]
+fn cmd_down_without_navigation_cursor_is_a_no_op() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 1")],
+                ctx,
+            );
+            simulate_user_shell_block_in_conversation(view, conversation_id, "user-shell");
+
+            // At the end of the transcript with no navigation cursor there is nothing to
+            // move toward, so Cmd-Down must leave the cursor, the selection, the ring and
+            // the viewport untouched.
+            let scroll_position = view.scroll_position();
+            view.select_more_recent_block(
+                true,  /* is_cmd_down */
+                false, /* is_shift_down */
+                ctx,
+            );
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+            assert_eq!(view.selected_blocks.tail(), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+            assert_eq!(view.scroll_position(), scroll_position);
+
+            // Cmd-Up takes the newest stop and Cmd-Down past it clears the cursor; a
+            // further Cmd-Down must not re-select that stop (no oscillation).
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            assert!(view.agent_transcript_selection_for_test().is_some());
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+            assert_eq!(view.selected_blocks.tail(), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+        });
+    })
+}
+
+#[test]
+fn agent_transcript_navigation_marks_target_user_query() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (prompt_view_ids, user_shell_index) = terminal.update(&mut app, |view, ctx| {
+            let conversation_id = enter_agent_view_for_navigation(view, ctx);
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 1")],
+                ctx,
+            );
+            let user_shell_index =
+                simulate_user_shell_block_in_conversation(view, conversation_id, "user-shell");
+            append_inputs_to_conversation_and_handle_event(
+                view,
+                conversation_id,
+                vec![agent_jump_user_query("prompt 2")],
+                ctx,
+            );
+
+            let navigable = view
+                .model
+                .lock()
+                .block_list()
+                .agent_transcript_navigable_items();
+            let navigable_ai: Vec<_> = navigable
+                .iter()
+                .filter_map(|item| match item {
+                    AgentTranscriptNavigableItem::AiBlock { view_id } => Some(*view_id),
+                    AgentTranscriptNavigableItem::ShellBlock(_) => None,
+                })
+                .collect();
+            assert_eq!(navigable_ai.len(), 2);
+            (navigable_ai, user_shell_index)
+        });
+
+        let prompt_1 = *prompt_view_ids.first().expect("prompt 1");
+        let prompt_2 = *prompt_view_ids.last().expect("prompt 2");
+
+        terminal.update(&mut app, |view, ctx| {
+            // No navigation yet: nothing is marked.
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+
+            // Every stop on a user query marks exactly that query.
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
+
+            // Stopping on a shell block moves the mark off the query.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert_eq!(view.selected_blocks.tail(), Some(user_shell_index));
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+
+            // The mark follows the cursor to the other query.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
+
+            // Clamped at the oldest stop: the target stays identifiable even though
+            // neither the cursor nor the viewport moves.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_1));
+            assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_1]);
+
+            // Cmd-Down back through the stops, then past the newest one, which clears
+            // the mark together with the navigation selection.
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
+            view.select_more_recent_block(true, false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+
+            // Re-mark a query, then exit the agent view below.
+            view.select_less_recent_block(false, ctx);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), Some(prompt_2));
+            assert_eq!(navigation_ring_targets(view, ctx), vec![prompt_2]);
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller.exit_agent_view_without_confirmation(ctx)
+            });
+        });
+        terminal.read(&app, |view, ctx| {
+            // Leaving the agent view drops the navigation cursor, its mark, and the ring.
+            assert_eq!(view.agent_transcript_selection_for_test(), None);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+        });
+    })
+}
+
+#[test]
+fn ordinary_block_selection_unchanged_outside_agent_view() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+                model.simulate_block("pwd", "bar");
+            }
+
+            // Outside the agent view, Cmd-Up walks ordinary block selection and never
+            // produces a query mark.
+            view.select_less_recent_block(false /* is_shift_down */, ctx);
+            let first = view.selected_blocks.tail().expect("a block gets selected");
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+
+            view.select_less_recent_block(false, ctx);
+            let second = view.selected_blocks.tail().expect("a block stays selected");
+            assert_eq!(second.0 + 1, first.0);
+            assert_eq!(view.agent_transcript_navigated_ai_block(ctx), None);
+            assert!(navigation_ring_targets(view, ctx).is_empty());
+        });
+    })
+}
+
+#[test]
 fn agent_view_lifecycle_updates_input_mode() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
@@ -6626,6 +7067,89 @@ fn append_exchange_with_inputs_and_handle_event(
         ctx,
     );
     (conversation_id, task_id, exchange_id, response_stream_id)
+}
+
+/// The AI blocks currently flagged to render the transcript-navigation ring.
+fn navigation_ring_targets(view: &TerminalView, app: &AppContext) -> Vec<EntityId> {
+    view.rich_content_views
+        .iter()
+        .filter_map(|rich_content| {
+            let ai_metadata = rich_content.ai_block_metadata()?;
+            ai_metadata
+                .ai_block_handle
+                .as_ref(app)
+                .is_agent_transcript_navigation_target()
+                .then(|| ai_metadata.ai_block_handle.id())
+        })
+        .collect()
+}
+
+fn enter_agent_view_for_navigation(
+    view: &mut TerminalView,
+    ctx: &mut ViewContext<TerminalView>,
+) -> AIConversationId {
+    view.agent_view_controller().update(ctx, |controller, ctx| {
+        controller
+            .try_enter_agent_view(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            )
+            .expect("agent view entry should succeed")
+    })
+}
+
+fn append_inputs_to_conversation_and_handle_event(
+    view: &mut TerminalView,
+    conversation_id: AIConversationId,
+    inputs: Vec<AIAgentInput>,
+    ctx: &mut ViewContext<TerminalView>,
+) {
+    let history_model = BlocklistAIHistoryModel::handle(ctx);
+    let (exchange_id, task_id, response_stream_id) =
+        history_model.update(ctx, |history_model, ctx| {
+            let response_stream_id = ResponseStreamId::new_for_test();
+            let exchange = exchange_with_inputs(inputs);
+            let exchange_id = exchange.id;
+            let task_id = history_model
+                .conversation(&conversation_id)
+                .expect("conversation should exist")
+                .get_root_task_id()
+                .clone();
+            history_model
+                .conversation_mut(&conversation_id)
+                .expect("conversation should exist")
+                .append_reassigned_exchange(&response_stream_id, exchange, view.view_id, ctx)
+                .expect("exchange should append");
+            (exchange_id, task_id, response_stream_id)
+        });
+    view.handle_ai_history_model_event(
+        history_model,
+        &BlocklistAIHistoryEvent::AppendedExchange {
+            exchange_id,
+            task_id,
+            // NOTE(adapted): the oracle names this field `terminal_surface_id`.
+            terminal_view_id: view.view_id,
+            conversation_id,
+            is_hidden: false,
+            response_stream_id: Some(response_stream_id),
+        },
+        ctx,
+    );
+}
+
+fn simulate_user_shell_block_in_conversation(
+    view: &mut TerminalView,
+    conversation_id: AIConversationId,
+    command: &str,
+) -> BlockIndex {
+    let mut model = view.model.lock();
+    model.simulate_block(command, "shell-output");
+    let index = model.block_list().blocks().len() - 2;
+    model.block_list_mut().blocks_mut()[index].set_conversation_id(conversation_id);
+    index.into()
 }
 
 fn ai_block_count(view: &TerminalView) -> usize {
