@@ -2811,8 +2811,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // excluded here too, consistent with RELEASE_FLAGS' cfg.
     #[cfg(all(debug_assertions, not(windows)))]
     flags.insert(FeatureFlag::SshRemoteServer);
-    #[cfg(all(debug_assertions, not(windows)))]
-    flags.insert(FeatureFlag::ServerFileBrowser);
 
     // Issue #72: the HTTP proxy settings page. Not gated by channel — enabled by
     // default on all channels including phosphor-oss, as a basic capability for
@@ -3041,8 +3039,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::CodeReviewSaveChanges,
         #[cfg(feature = "file_tree")]
         FeatureFlag::FileTree,
-        #[cfg(feature = "server_file_browser")]
-        FeatureFlag::ServerFileBrowser,
         #[cfg(feature = "allow_ignoring_input_suggestions")]
         FeatureFlag::AllowIgnoringInputSuggestions,
         // Zap (localization): the cloud entry points for the ambient agent / agent
@@ -3228,7 +3224,6 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
 /// and appear only once the corresponding token is set; dev builds enable them by
 /// default via the debug_assertions branch and don't need this variable.
 const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
-    ("server_file_browser", FeatureFlag::ServerFileBrowser),
     (
         "windows_high_performance_gpu_default",
         FeatureFlag::WindowsHighPerformanceGpuDefault,

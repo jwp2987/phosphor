@@ -345,7 +345,6 @@ pub enum LeftPanelDisplayedTab {
     GlobalSearch,
     ZapDrive,
     ConversationListView,
-    ServerFileBrowser,
     SkillManager,
 }
 
@@ -356,7 +355,6 @@ impl From<ToolPanelView> for LeftPanelDisplayedTab {
             ToolPanelView::GlobalSearch { .. } => LeftPanelDisplayedTab::GlobalSearch,
             ToolPanelView::ZapDrive => LeftPanelDisplayedTab::ZapDrive,
             ToolPanelView::ConversationListView => LeftPanelDisplayedTab::ConversationListView,
-            ToolPanelView::ServerFileBrowser => LeftPanelDisplayedTab::ServerFileBrowser,
             ToolPanelView::SkillManager => LeftPanelDisplayedTab::SkillManager,
         }
     }

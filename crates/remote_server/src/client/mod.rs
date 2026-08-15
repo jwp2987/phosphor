@@ -714,7 +714,10 @@ impl RemoteServerClient {
         }
     }
 
-    /// Resolves a path on the remote host for the server file browser.
+    /// Resolves a path on the remote host.
+    ///
+    /// No production caller since the server file browser was removed; the
+    /// daemon-side handler and proto message are still live and tested.
     pub async fn resolve_path(&self, path: String) -> Result<ResolvePathResponse, ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::host_scoped(

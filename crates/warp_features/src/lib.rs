@@ -394,9 +394,6 @@ pub enum FeatureFlag {
     /// Enables the file tree (with an entrypoint through code mode).
     FileTree,
 
-    /// Enables the current SSH session server file browser in the left panel.
-    ServerFileBrowser,
-
     /// Enables ignoring input suggestions.
     AllowIgnoringInputSuggestions,
 
@@ -822,7 +819,6 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::VerticalTabsSummaryMode,
     FeatureFlag::ConfigurableContextWindow,
     FeatureFlag::DragTabsToWindows,
-    FeatureFlag::ServerFileBrowser,
     FeatureFlag::TerminalLifecycleRecovery,
     FeatureFlag::WarpControlCli,
     FeatureFlag::JupyterNotebookRendering,

@@ -2,12 +2,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use warp_util::local_or_remote_path::LocalOrRemotePath;
-use warp_util::remote_path::RemotePath;
-use warp_util::standardized_path::StandardizedPath;
-use std::sync::Arc;
 
 use warp_core::ui::theme::color::internal_colors;
-use warp_core::{send_telemetry_from_ctx, ui::Icon, HostId, SessionId};
+use warp_core::{send_telemetry_from_ctx, ui::Icon};
 use warp_util::path::LineAndColumnArg;
 use warpui::{
     elements::{
@@ -36,7 +33,6 @@ use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
 use crate::skill_manager::{SkillManagerPanel, SkillManagerPanelEvent};
-use crate::terminal::model::session::Session;
 #[cfg(feature = "local_fs")]
 use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
@@ -47,9 +43,6 @@ use crate::workspace::view::conversation_list::view::{
 };
 use crate::workspace::view::global_search::view::{
     Event as GlobalSearchViewEvent, GlobalSearchEntryFocus, GlobalSearchView,
-};
-use crate::workspace::view::server_file_browser::{
-    ServerFileBrowserEvent, ServerFileBrowserView,
 };
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
@@ -80,7 +73,6 @@ struct MouseStateHandles {
     global_search_button: MouseStateHandle,
     warp_drive_button: MouseStateHandle,
     conversation_list_view_button: MouseStateHandle,
-    server_file_browser_button: MouseStateHandle,
     skill_manager_button: MouseStateHandle,
     wire_inspector_button: MouseStateHandle,
 }
@@ -91,7 +83,6 @@ pub enum LeftPanelAction {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     ZapDrive,
     ConversationListView,
-    ServerFileBrowser,
     SkillManager,
 }
 
@@ -99,7 +90,6 @@ pub enum LeftPanelEvent {
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     FileTree(pane_group::Event),
     ZapDrive(DrivePanelEvent),
-    ServerFileBrowser(ServerFileBrowserEvent),
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     OpenFileWithTarget {
         path: PathBuf,
@@ -140,7 +130,6 @@ pub enum ToolPanelView {
     GlobalSearch { entry_focus: GlobalSearchEntryFocus },
     ZapDrive,
     ConversationListView,
-    ServerFileBrowser,
     SkillManager,
 }
 
@@ -208,7 +197,6 @@ pub struct LeftPanelView {
     close_button_mouse_state: MouseStateHandle,
     warp_drive_view: ViewHandle<DrivePanel>,
     conversation_list_view: ViewHandle<ConversationListView>,
-    server_file_browser_view: ViewHandle<ServerFileBrowserView>,
     skill_manager_view: ViewHandle<SkillManagerPanel>,
     active_view: active_view_state::ActiveViewState,
     toolbelt_buttons: Vec<ToolbeltButtonConfig>,
@@ -254,7 +242,6 @@ impl LeftPanelView {
         };
         let warp_drive_view = ctx.add_typed_action_view(DrivePanel::new);
         let conversation_list_view = ctx.add_typed_action_view(ConversationListView::new);
-        let server_file_browser_view = ctx.add_typed_action_view(ServerFileBrowserView::new);
         let skill_manager_view = ctx.add_typed_action_view(SkillManagerPanel::new);
         ctx.subscribe_to_view(&skill_manager_view, |_me, _, event, ctx| match event {
             SkillManagerPanelEvent::OpenSkillFile { path } => {
@@ -271,9 +258,6 @@ impl LeftPanelView {
 
         ctx.subscribe_to_view(&warp_drive_view, |_me, _, event, ctx| {
             ctx.emit(LeftPanelEvent::ZapDrive(event.clone()));
-        });
-        ctx.subscribe_to_view(&server_file_browser_view, |_me, _, event, ctx| {
-            ctx.emit(LeftPanelEvent::ServerFileBrowser(event.clone()));
         });
 
         ctx.subscribe_to_view(&conversation_list_view, |_me, _, event, ctx| match event {
@@ -335,7 +319,8 @@ impl LeftPanelView {
 
                 // Update GlobalSearchView root directories based on all working
                 // directories. Terminal working dirs are local; remote (SSH)
-                // roots are supplied separately via the server-file-browser seam.
+                // roots went through `GlobalSearchView::set_server_search_root`,
+                // which lost its only caller with the server file browser.
                 let roots: Vec<LocalOrRemotePath> = directories
                     .iter()
                     .map(|d| d.path.clone())
@@ -378,7 +363,6 @@ impl LeftPanelView {
             close_button_mouse_state: Default::default(),
             warp_drive_view,
             conversation_list_view,
-            server_file_browser_view,
             skill_manager_view,
             active_view: active_view_state::new(active_view),
             toolbelt_buttons,
@@ -419,7 +403,6 @@ impl LeftPanelView {
             // Use discriminant comparison for GlobalSearch since it has inner data
             match (v, &current_view) {
                 (ToolPanelView::GlobalSearch { .. }, ToolPanelView::GlobalSearch { .. }) => true,
-                (ToolPanelView::ServerFileBrowser, ToolPanelView::ServerFileBrowser) => true,
                 (ToolPanelView::SkillManager, ToolPanelView::SkillManager) => true,
                 _ => std::mem::discriminant(v) == std::mem::discriminant(&current_view),
             }
@@ -511,18 +494,6 @@ impl LeftPanelView {
                     action: LeftPanelAction::ConversationListView,
                     render_with_active_state: false,
                     tooltip_keybinding: toolbelt_tooltip_keybinding(&tooltip_keybinding_names, ctx),
-                    tooltip_keybinding_names,
-                }
-            }
-            ToolPanelView::ServerFileBrowser => {
-                let tooltip_keybinding_names = Vec::new();
-                ToolbeltButtonConfig {
-                    icon: Icon::Folder,
-                    active_icon: None,
-                    tooltip_text: crate::t!("workspace-left-panel-server-file-browser"),
-                    action: LeftPanelAction::ServerFileBrowser,
-                    render_with_active_state: false,
-                    tooltip_keybinding: None,
                     tooltip_keybinding_names,
                 }
             }
@@ -619,52 +590,6 @@ impl LeftPanelView {
             .get_file_tree_view(pane_group_id)
     }
 
-    pub fn set_server_file_browser_root(
-        &mut self,
-        host_id: HostId,
-        path: String,
-        session_id: Option<SessionId>,
-        session: Option<Arc<Session>>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.server_file_browser_view.update(ctx, |view, ctx| {
-            view.set_remote_root(host_id.clone(), path.clone(), session_id, session, ctx);
-        });
-
-        // Bind the same remote root as a global-search source so global search
-        // can query the host over the ripgrep RPC. Uses the pane group's own
-        // GlobalSearchView; local terminal roots are merged in alongside.
-        if let Some(pane_group_id) = self
-            .active_pane_group
-            .as_ref()
-            .and_then(|pane_group| pane_group.upgrade(ctx))
-            .map(|pane_group| pane_group.id())
-        {
-            let server_root = StandardizedPath::try_new(&path).ok().map(|std_path| {
-                LocalOrRemotePath::Remote(RemotePath::new(
-                    crate::code::buffer_location::core_host_id_to_util(&host_id),
-                    std_path,
-                ))
-            });
-            let global_search_view =
-                self.get_or_create_global_search_view_for_pane_group(pane_group_id, ctx);
-            global_search_view.update(ctx, |view, view_ctx| {
-                view.set_server_search_root(server_root, view_ctx);
-            });
-        }
-    }
-
-    pub fn navigate_server_file_browser(
-        &mut self,
-        host_id: HostId,
-        path: String,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.server_file_browser_view.update(ctx, |view, ctx| {
-            view.navigate_to_remote_path(host_id, path, ctx);
-        });
-    }
-
     pub fn active_view(&self) -> ToolPanelView {
         self.active_view.get()
     }
@@ -736,8 +661,9 @@ impl LeftPanelView {
             .any(|dir| dir.terminal_id.is_some());
 
         // Update GlobalSearchView root directories based on all working
-        // directories. Terminal working dirs are local; remote (SSH) roots are
-        // supplied separately via the server-file-browser seam.
+        // directories. Terminal working dirs are local; remote (SSH) roots went
+        // through `GlobalSearchView::set_server_search_root`, which lost its
+        // only caller with the server file browser.
         let roots: Vec<LocalOrRemotePath> = active_directories
             .iter()
             .map(|d| d.path.clone())
@@ -828,12 +754,6 @@ impl LeftPanelView {
             }
             ToolPanelView::ConversationListView => {
                 self.conversation_list_view.update(ctx, |view, ctx| {
-                    view.on_left_panel_focused(ctx);
-                });
-            }
-            ToolPanelView::ServerFileBrowser => {
-                ctx.focus(&self.server_file_browser_view);
-                self.server_file_browser_view.update(ctx, |view, ctx| {
                     view.on_left_panel_focused(ctx);
                 });
             }
@@ -1101,9 +1021,6 @@ impl LeftPanelView {
                 LeftPanelAction::ConversationListView => {
                     self.active_view.get() == ToolPanelView::ConversationListView
                 }
-                LeftPanelAction::ServerFileBrowser => {
-                    self.active_view.get() == ToolPanelView::ServerFileBrowser
-                }
                 LeftPanelAction::SkillManager => {
                     self.active_view.get() == ToolPanelView::SkillManager
                 }
@@ -1248,9 +1165,6 @@ impl LeftPanelView {
                 active_view_state::set(self, ToolPanelView::ConversationListView, ctx);
                 send_telemetry_from_ctx!(TelemetryEvent::ConversationListViewOpened, ctx);
             }
-            LeftPanelAction::ServerFileBrowser => {
-                active_view_state::set(self, ToolPanelView::ServerFileBrowser, ctx);
-            }
             LeftPanelAction::SkillManager => {
                 active_view_state::set(self, ToolPanelView::SkillManager, ctx);
             }
@@ -1353,7 +1267,6 @@ impl View for LeftPanelView {
                 }
                 ToolPanelView::ZapDrive => ctx.focus(&self.warp_drive_view),
                 ToolPanelView::ConversationListView => ctx.focus(&self.conversation_list_view),
-                ToolPanelView::ServerFileBrowser => ctx.focus(&self.server_file_browser_view),
                 ToolPanelView::SkillManager => ctx.focus(&self.skill_manager_view),
             }
         }
@@ -1369,7 +1282,6 @@ impl View for LeftPanelView {
             self.mouse_state_handles
                 .conversation_list_view_button
                 .clone(),
-            self.mouse_state_handles.server_file_browser_button.clone(),
             self.mouse_state_handles.skill_manager_button.clone(),
         ];
 
@@ -1429,14 +1341,6 @@ impl View for LeftPanelView {
             ToolPanelView::ConversationListView => {
                 Shrinkable::new(1.0, ChildView::new(&self.conversation_list_view).finish()).finish()
             }
-            ToolPanelView::ServerFileBrowser => Shrinkable::new(
-                1.0,
-                Container::new(ChildView::new(&self.server_file_browser_view).finish())
-                    .with_padding_left(2.)
-                    .with_padding_right(2.)
-                    .finish(),
-            )
-            .finish(),
             ToolPanelView::SkillManager => Shrinkable::new(
                 1.0,
                 Container::new(ChildView::new(&self.skill_manager_view).finish())

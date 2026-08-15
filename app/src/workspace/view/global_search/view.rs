@@ -323,9 +323,10 @@ pub struct GlobalSearchView {
     /// Local terminal working directories, as delivered by `DirectoriesChanged`.
     /// Combined with `server_search_root` to form the effective roots.
     local_root_directories: Vec<LocalOrRemotePath>,
-    /// Remote (SSH) search root for the active server session, delivered
-    /// separately via the server-file-browser seam. `None` when no remote
-    /// session is bound.
+    /// Remote (SSH) search root for the active server session. `None` when no
+    /// remote session is bound — which is currently always: the only binder was
+    /// the server file browser, removed with that feature. See
+    /// `set_server_search_root`.
     server_search_root: Option<LocalOrRemotePath>,
     /// Deduplicated roots for ripgrep search (excludes nested subdirectories)
     search_roots: Vec<LocalOrRemotePath>,
@@ -1037,9 +1038,16 @@ impl GlobalSearchView {
     }
 
     /// Bind (or clear) the remote search root for the active server session.
-    /// Delivered via the server-file-browser seam, which is the only channel
-    /// carrying remote working directories (local `DirectoriesChanged` only
-    /// reports paths for local sessions).
+    ///
+    /// **Currently has no caller.** Its only caller was
+    /// `LeftPanelView::set_server_file_browser_root`, removed along with the
+    /// server file browser. That was also the only channel carrying remote
+    /// working directories (local `DirectoriesChanged` only reports paths for
+    /// local sessions), so global search over an SSH host is inert until
+    /// something binds a root here again. Retained deliberately rather than
+    /// deleted: re-wiring it is a smaller change than reconstructing it, and
+    /// the path was already unreachable in shipped builds, since the removed
+    /// caller sat behind the never-enabled `ServerFileBrowser` flag.
     pub fn set_server_search_root(
         &mut self,
         root: Option<LocalOrRemotePath>,
