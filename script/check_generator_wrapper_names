@@ -117,7 +117,7 @@ PWSH_NAME="$(const_value POWERSHELL_GENERATOR_WRAPPER)"
 
 if [[ -z "$POSIX_NAME" || -z "$PWSH_NAME" ]]; then
   fail "could not read POSIX_GENERATOR_WRAPPER / POWERSHELL_GENERATOR_WRAPPER from $EXEC_RS"
-  printf '       Both must stay \`pub const <NAME>: &str = "...";\` at column 0.\n' >&2
+  printf '       Both must stay `pub const <NAME>: &str = "...";` at column 0.\n' >&2
   exit 1
 fi
 
@@ -155,7 +155,11 @@ require "$PWSH" "Clear-History -CommandLine '$PWSH_NAME*'" \
 
 # POSIX: definition plus each shell's own history guard.
 require "$BASH_BODY" "$POSIX_NAME() {" "the bash generator wrapper definition"
-require "$BASH_BODY" "HISTIGNORE=\"*$POSIX_NAME*" "the bash HISTIGNORE entry"
+# TWO occurrences on purpose: the HISTIGNORE assignment is an if/else pair (append
+# to the user's existing value, or set it outright), so a rename that fixes only the
+# reachable branch leaves the call leaking into history for half of all users.
+require_count "$BASH_BODY" "HISTIGNORE=\"*$POSIX_NAME*" 2 \
+  "the bash HISTIGNORE entry -- both branches of the if/else must carry the pattern"
 require "$BASH_BODY" "!= $POSIX_NAME*" "the warp_preexec BASH_COMMAND guard"
 
 require "$ZSH_BODY" "$POSIX_NAME() {" "the zsh generator wrapper definition"
