@@ -701,7 +701,7 @@ impl AutoupdateState {
         }
 
         ctx.emit(AutoupdateStateEvent::CheckComplete {
-            result: update_available,
+            result: Box::new(update_available),
             request_type,
         });
         ctx.notify();
@@ -776,7 +776,7 @@ pub enum AutoupdateStateEvent {
     /// Emitted when an update check has finished.
     CheckComplete {
         /// Result of the check of whether there is an update available.
-        result: Result<UpdateReady>,
+        result: Box<Result<UpdateReady>>,
         /// Type of request that this check references.
         request_type: RequestType,
     },
