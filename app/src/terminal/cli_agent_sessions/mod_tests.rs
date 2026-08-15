@@ -944,15 +944,19 @@ fn failed_status_maps_to_the_error_conversation_status() {
         .to_conversation_status(),
         ConversationStatus::Error
     );
-    // Free-form `error_type` must not steer the mapping -- including the
-    // `"cancelled"` value this fork's own TUI publisher emits.
+    // `"cancelled"` is the one `error_type` that DOES steer the mapping.
+    // Upstream has no cancellation event tag, so a cancelled TUI turn is
+    // published as `stop_failure` + `error_type: "cancelled"`; mapping that to
+    // Error put a red triangle on a deliberate Ctrl-C (#596). The classifier
+    // lives in `warp_core::cli_agent_error_type` and matches on a variant, not
+    // on this literal, so a third-party producer's spelling cannot decide it.
     assert_eq!(
         CLIAgentSessionStatus::Failed {
             error_type: Some("cancelled".to_owned()),
             message: None,
         }
         .to_conversation_status(),
-        ConversationStatus::Error
+        ConversationStatus::Cancelled
     );
     assert_eq!(
         CLIAgentSessionStatus::Failed {
