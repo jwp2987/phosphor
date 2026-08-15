@@ -21,8 +21,8 @@ use warpui::{
     AppContext, Element, SingletonEntity,
 };
 
-const OPEN_WARP_AI_ITEM_BODY_TEXT: &str = "Ask Zap AI for command suggestions";
-const TRANSLATE_WITH_WARP_AI_ITEM_BODY_TEXT: &str = "Translate into shell command using Zap AI";
+const OPEN_WARP_AI_ITEM_BODY_TEXT: &str = "Ask Phosphor AI for command suggestions";
+const TRANSLATE_WITH_WARP_AI_ITEM_BODY_TEXT: &str = "Translate into shell command using Phosphor AI";
 
 #[derive(Clone, Debug)]
 pub enum WarpAISearchItem {
@@ -125,7 +125,7 @@ impl SearchItem for WarpAISearchItem {
     }
 
     fn accessibility_label(&self) -> String {
-        format!("Zap AI: {}", self.item_body_text())
+        format!("Phosphor AI: {}", self.item_body_text())
     }
 }
 

@@ -549,7 +549,7 @@ impl ThemePickerSlide {
                 ui_builder
                     .span(localized(
                         "auth-local-privacy-note",
-                        "Zap stores onboarding choices locally on this device.",
+                        "Phosphor stores onboarding choices locally on this device.",
                     ))
                     .with_style(disclaimer_styles)
                     .build()

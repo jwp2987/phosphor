@@ -865,7 +865,7 @@ pub fn accessibility_content(
         // Found autoupdate
         (RequestType::ManualCheck, Ok(UpdateReady::Yes { .. })) => Some(AccessibilityContent::new(
             "Update available.",
-            "Use the command palette to install and relaunch Zap",
+            "Use the command palette to install and relaunch Phosphor",
             WarpA11yRole::HelpRole,
         )),
         // Any non-successful autoupdate check

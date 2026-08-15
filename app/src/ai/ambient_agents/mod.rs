@@ -18,7 +18,7 @@ pub use task::{
 pub const OUT_OF_CREDITS_TASK_FAILURE_MESSAGE: &str =
     "Agent usage limit reached. Please try again later.";
 pub const SERVER_OVERLOADED_TASK_FAILURE_MESSAGE: &str =
-    "Zap is temporarily overloaded. Please try again shortly.";
+    "Phosphor is temporarily overloaded. Please try again shortly.";
 
 /// JSON payload for starting an agent run. In Zap this is only used by local UI/CLI
 /// plumbing; no remote run endpoint is contacted.

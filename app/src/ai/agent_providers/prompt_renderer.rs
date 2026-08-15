@@ -1079,7 +1079,7 @@ fn fallback_init_project_command(arguments: &str) -> String {
 /// Fallback system render (only used when template loading/rendering fails; should never trigger on the normal path).
 fn fallback_system(model_id: &str) -> String {
     format!(
-        "You are the AI coding agent inside Zap, an AI Development Environment (ADE). \
+        "You are the AI coding agent inside Phosphor, an AI Development Environment (ADE). \
          Model: {model_id}. \
          Use the registered tools (run_shell_command / read_files / apply_file_diffs / grep / file_glob / ...) \
          to take actions on the user's behalf. Be concise."

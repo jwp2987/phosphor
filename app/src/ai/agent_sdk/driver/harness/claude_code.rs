@@ -472,7 +472,7 @@ impl HarnessRunner for ClaudeHarnessRunner {
         let claude_version = self.resolve_claude_version(foreground).await;
 
         let _ = (foreground, conversation_id, block_id, claude_version);
-        log::debug!("Skipping Claude transcript and block snapshot export in Zap");
+        log::debug!("Skipping Claude transcript and block snapshot export in Phosphor");
 
         Ok(())
     }

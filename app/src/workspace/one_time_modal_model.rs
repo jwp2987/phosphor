@@ -47,7 +47,7 @@ impl OneTimeModalModel {
                         .did_check_to_trigger_zap_launch_modal
                         .set_value(true, ctx)
                     {
-                        log::warn!("Failed to mark Zap launch modal as dismissed: {e}");
+                        log::warn!("Failed to mark Phosphor launch modal as dismissed: {e}");
                     }
                 });
                 // New signups shouldn't see feature-intro popovers on their second
@@ -280,7 +280,7 @@ impl OneTimeModalModel {
                 .did_check_to_trigger_zap_launch_modal
                 .set_value(true, ctx)
             {
-                log::warn!("Failed to mark Zap launch modal as dismissed: {e}");
+                log::warn!("Failed to mark Phosphor launch modal as dismissed: {e}");
             }
         });
 

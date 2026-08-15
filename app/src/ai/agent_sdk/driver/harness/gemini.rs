@@ -193,7 +193,7 @@ impl HarnessRunner for GeminiHarnessRunner {
         };
 
         let _ = (foreground, conversation_id, block_id);
-        log::debug!("Skipping Gemini block snapshot export in Zap");
+        log::debug!("Skipping Gemini block snapshot export in Phosphor");
         Ok(())
     }
 }

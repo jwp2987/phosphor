@@ -8,12 +8,12 @@ use warpui::ViewContext;
 use super::view::Workspace;
 use crate::pane_group::{AnyPaneContent, FilePane};
 
-const WARP_HOME_TITLE: &str = "Welcome to Zap";
+const WARP_HOME_TITLE: &str = "Welcome to Phosphor";
 const WARP_HOME_CONTENT: &str = r#"
-Welcome to Zap.
+Welcome to Phosphor.
 
 Use this local workspace to:
-* Create, view, and edit Zap Drive objects
+* Create, view, and edit Phosphor Drive objects
 * Manage local settings
 * Work with local agent sessions, notebooks, and workflows"#;
 

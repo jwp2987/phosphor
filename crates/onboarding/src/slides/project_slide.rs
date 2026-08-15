@@ -137,7 +137,7 @@ impl ProjectSlide {
             .ui_builder()
             .paragraph(localized(
                 "onboarding-project-subtitle",
-                "Set up a project to optimize it for coding in Zap.",
+                "Set up a project to optimize it for coding in Phosphor.",
             ))
             .with_style(UiComponentStyles {
                 font_size: Some(20.),

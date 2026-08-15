@@ -224,7 +224,7 @@ pub fn prompt_chip_logging_workflow(shell_family: ShellFamily) -> Option<Workflo
         ),
         arguments: vec![],
         source_url: None,
-        author: Some("Zap".into()),
+        author: Some("Phosphor".into()),
         author_url: None,
         shells: vec![],
         environment_variables: None,

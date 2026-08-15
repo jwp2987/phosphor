@@ -9,6 +9,6 @@ define_settings_group!(AutoupdateSettings, settings: [
         private: false,
         storage_key: "AutomaticUpdatesEnabled",
         toml_path: "updates.automatic_updates_enabled",
-        description: "Whether Zap automatically checks for and downloads updates in the background.",
+        description: "Whether Phosphor automatically checks for and downloads updates in the background.",
     },
 ]);

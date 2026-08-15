@@ -79,13 +79,13 @@ impl AwsCredentialsState {
             ),
             Self::Disabled => (
                 "AWS Bedrock Disabled".to_string(),
-                "Zap will not load your AWS CLI credentials until AWS Bedrock is enabled by you or your workspace admin"
+                "Phosphor will not load your AWS CLI credentials until AWS Bedrock is enabled by you or your workspace admin"
                     .to_string(),
                 Icon::Key,
             ),
             Self::Refreshing => (
                 "Refreshing credentials...".to_string(),
-                "Loading your AWS CLI credentials into Zap".to_string(),
+                "Loading your AWS CLI credentials into Phosphor".to_string(),
                 Icon::RefreshCw04,
             ),
             Self::Loaded {

@@ -81,7 +81,7 @@ impl View for RootView {
         let callout = self.callout.render(
             appearance,
             CalloutParams {
-                title: "Meet your Zap input".into(),
+                title: "Meet your Phosphor input".into(),
                 text: "Your terminal input can detect natural language as well as commands.".into(),
                 step: StepStatus::new(1, 2),
                 right_button: CalloutButton {

@@ -235,7 +235,7 @@ impl AgentSlide {
             .ui_builder()
             .paragraph(localized(
                 "onboarding-agent-title",
-                "Customize your Zap Agent",
+                "Customize your Phosphor Agent",
             ))
             .with_style(UiComponentStyles {
                 font_size: Some(36.),
@@ -860,7 +860,7 @@ impl AgentSlide {
             .finish();
 
         let label = Text::new(
-            localized("onboarding-agent-disable-warp-agent", "Disable Zap Agent"),
+            localized("onboarding-agent-disable-warp-agent", "Disable Phosphor Agent"),
             appearance.ui_font_family(),
             14.0,
         )

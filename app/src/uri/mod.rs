@@ -114,8 +114,8 @@ impl UriHost {
         match self {
             UriHost::Auth => {
                 safe_info!(
-                    safe: ("Ignored auth url because Zap has no cloud login flow"),
-                    full: ("Ignored auth url {url} because Zap has no cloud login flow")
+                    safe: ("Ignored auth url because Phosphor has no cloud login flow"),
+                    full: ("Ignored auth url {url} because Phosphor has no cloud login flow")
                 );
             }
             UriHost::Action => {
@@ -310,7 +310,7 @@ impl UriHost {
                         // record the original intent; it's handled as a no-op.
                         "platform" => {
                             log::warn!(
-                                "The warp://settings/platform route has been retired in Zap; ignoring this request"
+                                "The warp://settings/platform route has been retired in Phosphor; ignoring this request"
                             );
                         }
                         // Any other simple, cloud-free sub-page (e.g. `appearance`,
@@ -878,7 +878,7 @@ impl Action {
             | Self::NewAgentConversation => W::default(),
             Self::NewTab => W::ShowPrimaryWindow(WindowActivationFallbackBehavior::Notify {
                 title: "New tab created".to_owned(),
-                description: "Go to Zap to see your new tab.".to_owned(),
+                description: "Go to Phosphor to see your new tab.".to_owned(),
             }),
             Self::NewWindow => W::Nothing,
         }

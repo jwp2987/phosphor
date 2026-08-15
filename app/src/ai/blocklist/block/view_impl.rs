@@ -675,7 +675,7 @@ pub fn render_citation(
         }
         AIAgentCitation::WarpDocumentation { .. } => {
             let icon = Icon::Zap.to_warpui_icon(theme.foreground()).finish();
-            let name = String::from("Zap Docs");
+            let name = String::from("Phosphor Docs");
             (Some(icon), name)
         }
         AIAgentCitation::WebPage { url } => {

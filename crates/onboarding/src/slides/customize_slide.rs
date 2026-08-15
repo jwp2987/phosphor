@@ -147,7 +147,7 @@ impl CustomizeUISlide {
             .ui_builder()
             .paragraph(localized(
                 "onboarding-customize-title",
-                "Customize your Zap",
+                "Customize your Phosphor",
             ))
             .with_style(UiComponentStyles {
                 font_size: Some(36.),

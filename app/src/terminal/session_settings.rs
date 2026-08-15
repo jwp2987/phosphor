@@ -285,7 +285,7 @@ define_settings_group!(SessionSettings, settings: [
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "session.startup_shell_override",
-        description: "The shell to use when Zap starts up.",
+        description: "The shell to use when Phosphor starts up.",
     },
     new_session_shell_override: NewSessionShellOverride {
         type: Option<NewSessionShell>,
@@ -303,7 +303,7 @@ define_settings_group!(SessionSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "terminal.input.honor_ps1",
-        description: "Whether to use your shell's PS1 prompt instead of the Zap prompt.",
+        description: "Whether to use your shell's PS1 prompt instead of the Phosphor prompt.",
     },
     saved_prompt: SavedPrompt {
         type: PromptSelection,

@@ -167,7 +167,7 @@ impl PassiveSuggestionsModel {
         };
 
         log::debug!(
-            "[passive-suggestions] skipped MAA request because the multi-agent endpoint is disabled in Zap"
+            "[passive-suggestions] skipped MAA request because the multi-agent endpoint is disabled in Phosphor"
         );
         let (cancellation_tx, cancellation_rx) = futures::channel::oneshot::channel();
 

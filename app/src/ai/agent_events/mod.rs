@@ -40,7 +40,7 @@ impl AgentEventStreamClient for DisabledAgentEventStreamClient {
         _since_sequence: i64,
     ) -> Result<http_client::EventSourceStream> {
         Err(anyhow!(
-            "Agent event stream disabled in Zap - RTC endpoint is removed"
+            "Agent event stream disabled in Phosphor - RTC endpoint is removed"
         ))
     }
 }

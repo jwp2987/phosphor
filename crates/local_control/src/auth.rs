@@ -135,7 +135,7 @@ impl CredentialGrant {
         if &self.instance_id != instance_id {
             return Err(ControlError::new(
                 ErrorCode::UnauthorizedLocalClient,
-                "local-control credential belongs to a different Zap instance",
+                "local-control credential belongs to a different Phosphor instance",
             ));
         }
         if self.action != action {

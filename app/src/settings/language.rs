@@ -30,7 +30,7 @@ use warp_core::settings::{macros::define_settings_group, SupportedPlatforms, Syn
     settings_value::SettingsValue,
 )]
 #[schemars(
-    description = "The language used in Zap's user interface.",
+    description = "The language used in Phosphor's user interface.",
     rename_all = "snake_case"
 )]
 pub enum Language {
@@ -106,6 +106,6 @@ define_settings_group!(LanguageSettings, settings: [
         private: false,
         storage_key: "Language",
         toml_path: "appearance.language",
-        description: "The language used in Zap's user interface. Falls back to English when the chosen language is not fully translated.",
+        description: "The language used in Phosphor's user interface. Falls back to English when the chosen language is not fully translated.",
     },
 ]);

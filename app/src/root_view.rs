@@ -2305,7 +2305,7 @@ impl RootView {
                             self.web_handoff(ctx);
                         } else {
                             // Zap has removed the log_out UI entry point; native no longer forces a logout.
-                            log::warn!("User account disabled; ignoring (Zap has removed log_out)");
+                            log::warn!("User account disabled; ignoring (Phosphor has removed log_out)");
                         }
                     }
                 }

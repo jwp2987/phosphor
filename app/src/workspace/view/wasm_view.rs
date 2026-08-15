@@ -43,7 +43,7 @@ impl Workspace {
                     if let Some(url) = parse_current_url() {
                         ctx.dispatch_typed_action(WorkspaceAction::OpenLinkOnDesktop(url));
                     } else {
-                        log::warn!("Could not get URL for Open in Zap button");
+                        log::warn!("Could not get URL for Open in Phosphor button");
                     }
                 },
             )

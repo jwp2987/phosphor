@@ -28,7 +28,7 @@ pub enum AIApiError {
     #[error("Request failed due to lack of AI quota.")]
     QuotaLimit,
 
-    #[error("Zap is currently overloaded. Please try again later.")]
+    #[error("Phosphor is currently overloaded. Please try again later.")]
     ServerOverloaded,
 
     #[error("Internal error occurred at transport layer.")]

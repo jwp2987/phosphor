@@ -109,7 +109,7 @@ impl CodexModal {
 
         // Title
         let title = FormattedTextElement::from_str(
-            "Use Codex models in Zap",
+            "Use Codex models in Phosphor",
             appearance.ui_font_family(),
             24.,
         )

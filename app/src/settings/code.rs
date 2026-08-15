@@ -10,7 +10,7 @@ define_settings_group!(CodeSettings, settings: [
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "code.editor.use_warp_as_default_editor",
-        description: "Whether Zap is used as the default code editor.",
+        description: "Whether Phosphor is used as the default code editor.",
     }
 
     // Whether or not the user has manually dismissed the code toolbelt new feature popup.
