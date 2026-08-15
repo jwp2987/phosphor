@@ -18,6 +18,34 @@ pub(crate) const DEFAULT_PERMANENT_ERROR_BACKOFF_STEPS: &[u64] = &[30];
 pub(crate) const DEFAULT_AGENT_EVENT_PROACTIVE_RECONNECT: Duration = Duration::from_secs(14 * 60);
 pub(crate) const DEFAULT_AGENT_EVENT_FAILURES_BEFORE_ERROR_LOG: usize = 5;
 
+/// Consecutive authentication failures (HTTP 401/403) after which a bounded
+/// listener gives up instead of reconnecting. A small threshold (rather than 1)
+/// tolerates a one-off token blip while still bailing quickly once credentials
+/// are permanently invalid.
+///
+/// Ported from the pin (`02b53fcd8`, `6f24ea230`, #13800) for the same reason
+/// upstream added it: `run_parent_bridge_forever` (see
+/// `agent_sdk/driver/harness/claude_code/parent_bridge.rs`) used to call
+/// [`AgentEventDriverConfig::retry_forever`] unconditionally, so a listener
+/// whose stream is permanently rejected retried every
+/// `permanent_error_backoff_steps` forever. In this fork the failure is
+/// permanent by construction: the only [`AgentEventStreamClient`] wired up is
+/// `DisabledAgentEventStreamClient`, whose `stream_agent_events` always
+/// returns `Err(...)` ("RTC endpoint is removed"). That error carries no HTTP
+/// status, so it never trips the auth-specific counter below, but bounding it
+/// still matters if a real client is ever wired back in.
+// Only consumed by `bounded_run_ids`'s caller in `parent_bridge.rs`, so it is
+// otherwise dead code on the wasm target.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) const DEFAULT_AUTH_ERROR_GIVE_UP_FAILURES: usize = 3;
+
+/// Total wall-clock time a bounded listener keeps retrying, measured from the
+/// first failure since the last successful open/event, before it gives up. Set
+/// larger than the proactive reconnect window so healthy streams are never
+/// affected; it only bounds sustained failure.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) const DEFAULT_AGENT_EVENT_MAX_RETRY_DURATION: Duration = Duration::from_secs(30 * 60);
+
 /// Configuration for the shared agent-event stream driver.
 #[derive(Clone, Debug)]
 pub(crate) struct AgentEventDriverConfig {
@@ -65,6 +93,22 @@ impl AgentEventDriverConfig {
             failures_before_error_log: DEFAULT_AGENT_EVENT_FAILURES_BEFORE_ERROR_LOG,
             auth_error_give_up_failures: None,
             max_retry_duration: None,
+        }
+    }
+
+    /// Build a reconnecting config for a listener that must NOT run forever.
+    /// Unlike [`retry_forever`](Self::retry_forever), this stops after
+    /// sustained authentication failures or a bounded total retry window, so a
+    /// listener whose credentials (or, in this fork's case, whose backend) are
+    /// permanently rejected shuts down instead of reconnecting indefinitely.
+    // Only called by `parent_bridge.rs`'s message-bridge listener, so it is
+    // otherwise dead code on the wasm target.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub(crate) fn bounded_run_ids(run_ids: Vec<String>, since_sequence: i64) -> Self {
+        Self {
+            auth_error_give_up_failures: Some(DEFAULT_AUTH_ERROR_GIVE_UP_FAILURES),
+            max_retry_duration: Some(DEFAULT_AGENT_EVENT_MAX_RETRY_DURATION),
+            ..Self::retry_forever(run_ids, since_sequence)
         }
     }
 }
