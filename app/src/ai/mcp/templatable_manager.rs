@@ -11,6 +11,8 @@ mod wasm;
 use diesel::SqliteConnection;
 #[cfg(not(target_family = "wasm"))]
 use parking_lot::Mutex;
+#[cfg(not(target_family = "wasm"))]
+use simple_logger::SimpleLogger;
 use std::collections::{HashMap, HashSet};
 #[cfg(not(target_family = "wasm"))]
 use std::sync::Arc;
@@ -82,6 +84,15 @@ pub struct TemplatableMCPServerManager {
     /// UUIDs of MCP servers started via the Oz CLI. We track these so they can be distinguished from
     /// file-based ephemeral MCP servers, which are directory-scoped.
     cli_spawned_server_uuids: HashSet<Uuid>,
+    /// Log-file handles for spawned server instances, keyed by installation
+    /// UUID. `LogManager` reserves one log path per template UUID and rejects
+    /// re-registration while an unclosed logger holds it, so shutdown paths
+    /// close the outgoing instance's logger eagerly instead of waiting for
+    /// async teardown to drop the remaining clones. Without this, an
+    /// immediate respawn (e.g. an MCP server picking up a rotated token)
+    /// loses the race and fails to spawn.
+    #[cfg(not(target_family = "wasm"))]
+    server_loggers: HashMap<Uuid, SimpleLogger>,
 }
 
 /// Information about a spawned agent task.
