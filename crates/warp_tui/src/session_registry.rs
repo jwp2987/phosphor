@@ -21,14 +21,14 @@ use std::path::PathBuf;
 
 use pathfinder_geometry::vector::Vector2F;
 use warp::tui_export::{
-    AIConversationId, BannerState, BlocklistAIHistoryModel, 
-    LocalTtyTerminalManager, ServerConversationToken, TerminalManagerTrait, TerminalSurfaceResult,
+    AIConversation, AIConversationId, BannerState, BlocklistAIHistoryModel, LocalTtyTerminalManager,
+    ServerConversationToken, TerminalManagerTrait, TerminalSurfaceResult,
 };
 use warpui::SingletonEntity;
 use warpui_core::runtime::TuiDriverHandle;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle, ViewHandle, WindowId};
 
-use crate::orchestration_model::TuiOrchestrationModel;
+use crate::orchestration_model::{TuiOrchestrationEvent, TuiOrchestrationModel};
 use crate::resume::TuiExitSummaryHandle;
 use crate::terminal_session_view::TuiTerminalSessionView;
 
@@ -214,6 +214,24 @@ impl TuiSessions {
         (session_id, surface)
     }
 
+    /// Creates an unfocused local terminal session for a restored child and
+    /// restores its persisted transcript onto it, without relaunching the child
+    /// or resending its prompt. Ported from `40ac1d4b1`.
+    pub(crate) fn create_restored_local_child_session(
+        sessions: &ModelHandle<Self>,
+        window_id: WindowId,
+        startup_directory: Option<PathBuf>,
+        conversation: AIConversation,
+        ctx: &mut AppContext,
+    ) -> (TuiSessionId, ViewHandle<TuiTerminalSessionView>) {
+        let (session_id, surface) =
+            Self::create_local_terminal_session(sessions, window_id, false, startup_directory, ctx);
+        surface.update(ctx, |view, ctx| {
+            view.restore_orchestrated_child_conversation(conversation, ctx);
+        });
+        (session_id, surface)
+    }
+
     /// Registers a terminal session view with the container.
     pub(crate) fn register_session(
         sessions: &ModelHandle<Self>,
@@ -244,15 +262,72 @@ impl TuiSessions {
     /// Subscribes the session owner to orchestration lifecycle requests: the
     /// focused session's tab bar refreshes when the orchestration model
     /// notifies (topology changed) or when focus moves to a different
-    /// session -- see [`TuiOrchestrationModel`]'s module doc for why this is
-    /// a trimmed subset of the pin's `wire_orchestration` (no child-session
-    /// materialization subscription, since nothing in this fork emits a
-    /// request to create one).
+    /// session, and restored child sessions are materialized / dropped on
+    /// request -- see [`TuiOrchestrationModel`]'s module doc for why this is
+    /// still a trimmed subset of the pin's `wire_orchestration` (no *launch*
+    /// materialization, since nothing in this fork emits a request to create
+    /// a child from scratch).
     pub(crate) fn wire_orchestration(
         sessions: &ModelHandle<Self>,
         orchestration: &ModelHandle<TuiOrchestrationModel>,
         ctx: &mut AppContext,
     ) {
+        // Keep the model's child-session bookkeeping in step with the
+        // registry: a session removed for any reason must stop being
+        // projected into the tab bar.
+        let orchestration_for_removals = orchestration.clone();
+        ctx.subscribe_to_model(sessions, move |_, event, ctx| {
+            let TuiSessionsEvent::SessionRemoved(session_id) = event else {
+                return;
+            };
+            let session_id = *session_id;
+            orchestration_for_removals.update(ctx, |orchestration, ctx| {
+                orchestration.handle_session_removed(session_id, ctx);
+            });
+        });
+
+        let sessions_for_events = sessions.clone();
+        let orchestration_for_events = orchestration.clone();
+        ctx.subscribe_to_model(orchestration, move |_, event, ctx| match event {
+            TuiOrchestrationEvent::RestoreLocalChildSession {
+                root_session_id,
+                conversation,
+            } => {
+                let Some(window_id) = sessions_for_events
+                    .as_ref(ctx)
+                    .session(*root_session_id)
+                    .map(|session| session.view().window_id(ctx))
+                else {
+                    return;
+                };
+                let conversation_id = conversation.id();
+                let startup_directory = conversation
+                    .current_working_directory()
+                    .or_else(|| conversation.initial_working_directory())
+                    .map(PathBuf::from);
+                let (session_id, _session_view) = Self::create_restored_local_child_session(
+                    &sessions_for_events,
+                    window_id,
+                    startup_directory,
+                    (**conversation).clone(),
+                    ctx,
+                );
+                orchestration_for_events.update(ctx, |orchestration, ctx| {
+                    orchestration.register_restored_local_oz_child_session(
+                        session_id,
+                        conversation_id,
+                        ctx,
+                    );
+                });
+            }
+            TuiOrchestrationEvent::RemoveChildSession(session_id) => {
+                let session_id = *session_id;
+                sessions_for_events.update(ctx, |sessions, ctx| {
+                    sessions.remove_session(session_id, ctx);
+                });
+            }
+        });
+
         let sessions_for_model_updates = sessions.clone();
         ctx.observe_model(orchestration, move |_, ctx| {
             let focused_view = sessions_for_model_updates
