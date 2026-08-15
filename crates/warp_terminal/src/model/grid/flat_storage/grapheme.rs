@@ -142,8 +142,13 @@ fn str_to_cell_width(grapheme: &str) -> u8 {
     {
         1
     } else {
-        grapheme
-            .width()
+        // See `cell::keycap_sequence_width`'s doc comment: this agrees with plain
+        // `UnicodeWidthStr::width` for every grapheme it recognizes, but this test helper builds
+        // grid content directly from a string (bypassing the real per-character write path in
+        // `ansi_handler.rs`), so it needs its own explicit keycap check to stay consistent with
+        // what real input produces for a grapheme like `1️⃣`.
+        let width = cell::keycap_sequence_width(grapheme).unwrap_or_else(|| grapheme.width());
+        width
             .try_into()
             .expect("cell width of a grapheme should never be larger than 2^8")
     }

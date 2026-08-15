@@ -2634,15 +2634,30 @@ impl Block {
         // Bash and Fish support emoji presentation selectors for bracketed paste mode correctly (moving cursor
         // appropriately), but Zsh does not, which can lead to a duplicated character bug in the command when pasting
         // certain emojis.
+        //
+        // This is specifically a quirk of Zsh's own line editor (zle) echoing bracket-pasted input, so it only
+        // applies to grids that mirror what zle has on the command line: the prompt/command grid and the rprompt.
+        // `output_grid` renders whatever the running command writes to stdout/stderr, which never passes through
+        // zle at all, so gating it on the shell type was wrong.
+        //
+        // Investigated 2026-08-15 while chasing a report of `1️⃣` (U+0031 U+FE0F U+20E3) rendering as an
+        // overlapping tofu box in the GUI: `output_grid` was suppressing the WIDE_CHAR reservation for every
+        // emoji-presentation sequence printed to a Zsh pane's output -- e.g. `cat` on a markdown file containing
+        // keycap emoji -- even though nothing about that content ever touched zle's redraw logic. The accumulated
+        // grapheme's width was already being computed correctly (unicode-width 0.1.14 resolves emoji-presentation
+        // and keycap sequences at the string level); the flag was just suppressing the WIDE_CHAR_SPACER that width
+        // should have reserved. See `ansi_handler.rs`'s zero-width character handling for where this flag is
+        // consulted.
         let supports_emoji_presentation_selector = shell_host.shell_type != ShellType::Zsh;
         self.header_grid
             .set_supports_emoji_presentation_selector(supports_emoji_presentation_selector);
         self.rprompt_grid
             .grid_handler
             .set_supports_emoji_presentation_selector(supports_emoji_presentation_selector);
+        // Always correctly-widen emoji-presentation sequences in command output; see comment above.
         self.output_grid
             .grid_handler
-            .set_supports_emoji_presentation_selector(supports_emoji_presentation_selector);
+            .set_supports_emoji_presentation_selector(true);
 
         self.shell_host = Some(shell_host);
     }

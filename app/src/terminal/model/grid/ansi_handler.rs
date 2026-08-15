@@ -214,7 +214,10 @@ impl ansi::Handler for GridHandler {
 
             self.grid[row][col].push_zerowidth(c, /* log_long_grapheme_warnings */ true);
             let cell_content_width = match self.grid[row][col].raw_content() {
-                CharOrStr::Str(s) => s.width(),
+                // `keycap_sequence_width` is an explicit, crate-independent check for keycap
+                // emoji (e.g. `1️⃣`); see its doc comment for why it exists alongside
+                // `unicode_width`, which already agrees with it for every sequence it matches.
+                CharOrStr::Str(s) => cell::keycap_sequence_width(s).unwrap_or_else(|| s.width()),
                 // Note that we should never reach here since we are pushing a zerowidth character,
                 // which should always make the cell content a string. However, we cover these cases
                 // exhaustively as a safeguard (to avoid panics).
@@ -229,8 +232,22 @@ impl ansi::Handler for GridHandler {
             // Bash and Fish support emoji variation selectors, but Zsh does not in bracketed paste
             // mode. Specifically, this references sequences such as \0x2601\0xFE0F (☁️),
             // which are commonly used in prompts e.g. GCloud prompt chip in Starship.
+            //
+            // The `!WIDE_CHAR` guard matters for any grapheme with *more than one* trailing
+            // zero-width character, such as a keycap emoji (base digit + U+FE0F VS16 +
+            // U+20E3 COMBINING ENCLOSING KEYCAP): this branch runs once per zero-width push, and
+            // the cell's accumulated content is already 2-wide as soon as the VS16 lands (unicode-
+            // width resolves the digit+VS16 pair as an emoji-presentation sequence on its own).
+            // Without the guard, the *second* zero-width push (U+20E3) would see
+            // `cell_content_width == 2` again and re-run this block, inserting a second, orphaned
+            // WIDE_CHAR_SPACER and advancing the cursor an extra cell -- reserving three columns for
+            // a two-column glyph instead of two. Found 2026-08-15 while investigating a keycap
+            // rendering report; see also the `set_shell_host` comment in `block.rs`, which was the
+            // actual cause of that report (this guard is a separate, previously-latent bug that
+            // would only have been masked, not fixed, by that change).
             if cell_content_width == 2
                 && self.ansi_handler_state.supports_emoji_presentation_selector
+                && !self.grid[row][col].flags.contains(Flags::WIDE_CHAR)
             {
                 // Current cursor cell contains a wide character (double-width).
                 self.grid[row][col].flags.insert(Flags::WIDE_CHAR);

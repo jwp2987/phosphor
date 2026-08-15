@@ -36,6 +36,52 @@ pub const MAX_GRAPHEME_BYTES: usize = 256;
 /// grapheme cluster on a single cell.  See [`Cell::push_zerowidth`].
 const WARN_GRAPHEME_BYTES: usize = 128;
 
+/// Recognizes a fully-qualified keycap emoji sequence -- a keycap base character (`0`-`9`, `#`,
+/// or `*`) followed by U+FE0F VARIATION SELECTOR-16 and U+20E3 COMBINING ENCLOSING KEYCAP, e.g.
+/// `1️⃣` -- and returns `Some(2)` for it. Returns `None` for everything else, meaning "no opinion,
+/// use `unicode_width`'s answer".
+///
+/// # Why this exists despite `unicode-width` already getting this right
+///
+/// Investigated 2026-08-15 while chasing a report of `1️⃣` (U+0031 U+FE0F U+20E3) rendering as an
+/// overlapping tofu box in the GUI. That turned out to be caused by `output_grid` wrongly
+/// inheriting the Zsh bracketed-paste workaround from `Block::set_shell_host` (see the comment
+/// there) -- not by this crate's width calculation, which was already correct: unicode-width
+/// 0.1.14 (the version this workspace resolves to; see `Cargo.lock`) implements UTR #51
+/// emoji-presentation-sequence detection in `UnicodeWidthStr::width`, verified by reading the
+/// vendored `unicode-width-0.1.14/src/tables.rs` automaton by hand and cross-checking against the
+/// crate's own test suite (`assert_width!("*️⃣", 2, 2)` in its `tests/tests.rs`, `*` being one of
+/// the same twelve keycap bases as a digit).
+///
+/// So every call site in this codebase that measures a whole grapheme cluster with a single
+/// `str::width()` call (which, as of this writing, is all of them) already gets `2` for a keycap
+/// sequence without this function's help. It exists anyway, as a narrow and easily-audited
+/// substitute for that specific behavior, because:
+///   - It does not depend on a third-party crate's internal state machine continuing to implement
+///     this exact rule forever -- a future `unicode-width` bump could change it, and nothing here
+///     would notice.
+///   - It still gives the right answer for code that (today or in the future) computes a cell's
+///     width by summing per-`char` widths instead of measuring the joined grapheme string in one
+///     call, since `UnicodeWidthChar::width` is -- by the crate's own design, in every version --
+///     context-free per codepoint and cannot see the surrounding sequence at all.
+pub fn keycap_sequence_width(grapheme: &str) -> Option<usize> {
+    let mut chars = grapheme.chars();
+    let base = chars.next()?;
+    if !matches!(base, '0'..='9' | '#' | '*') {
+        return None;
+    }
+    if chars.next() != Some('\u{FE0F}') {
+        return None;
+    }
+    if chars.next() != Some('\u{20E3}') {
+        return None;
+    }
+    if chars.next().is_some() {
+        return None;
+    }
+    Some(2)
+}
+
 bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub struct Flags: u16 {

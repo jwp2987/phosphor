@@ -105,3 +105,53 @@ fn push_zerowidth_seeds_base_char_on_first_push() {
     cell.push_zerowidth('\u{0301}', /* log_long_grapheme_warnings */ true);
     assert_eq!(cell.raw_content(), CharOrStr::Str("x\u{0301}"));
 }
+
+// Tests for `keycap_sequence_width`. Written 2026-08-15 while investigating a report that a
+// keycap emoji (`1️⃣`, i.e. U+0031 U+FE0F U+20E3) rendered as a tofu box overdrawing the
+// character after it in the GUI. These are NOT tests of a fix to `unicode_width` itself --
+// reading the vendored `unicode-width-0.1.14` source (the version this workspace resolves to;
+// see `Cargo.lock`) and its own test suite showed it already resolves this exact grapheme to
+// width 2 via `UnicodeWidthStr::width`. The actual bug was `Block::set_shell_host` (in `app`)
+// applying the Zsh bracketed-paste workaround to `output_grid`, which has nothing to do with
+// Zsh's line editor. These tests exist to pin down `keycap_sequence_width`'s own behavior as an
+// explicit, crate-independent cross-check, per its doc comment.
+
+#[test]
+fn keycap_sequence_width_recognizes_fully_qualified_keycap() {
+    // All twelve legal keycap bases per Unicode's emoji-data.txt: 0-9, '#', '*'.
+    for base in "0123456789#*".chars() {
+        let grapheme = format!("{base}\u{FE0F}\u{20E3}");
+        assert_eq!(
+            super::keycap_sequence_width(&grapheme),
+            Some(2),
+            "expected {grapheme:?} to be recognized as a keycap sequence"
+        );
+    }
+}
+
+#[test]
+fn keycap_sequence_width_rejects_unqualified_keycap() {
+    // Without the VS16, this is the "unqualified" keycap form -- not a defined emoji-presentation
+    // sequence per UTR #51. Leave it to `unicode_width`'s own answer instead of asserting one here.
+    assert_eq!(super::keycap_sequence_width("1\u{20E3}"), None);
+}
+
+#[test]
+fn keycap_sequence_width_rejects_non_keycap_base() {
+    // 'a' is not one of the twelve Unicode keycap bases, so this is not a keycap sequence
+    // however structurally similar it looks to one.
+    assert_eq!(super::keycap_sequence_width("a\u{FE0F}\u{20E3}"), None);
+}
+
+#[test]
+fn keycap_sequence_width_rejects_partial_sequence() {
+    // Just the digit + VS16, with no combining enclosing keycap yet -- e.g. mid-accumulation,
+    // before the third codepoint of a real keycap grapheme has arrived at the cell.
+    assert_eq!(super::keycap_sequence_width("1\u{FE0F}"), None);
+}
+
+#[test]
+fn keycap_sequence_width_rejects_trailing_content() {
+    // Anything after the keycap sequence means this is not (just) a keycap grapheme.
+    assert_eq!(super::keycap_sequence_width("1\u{FE0F}\u{20E3}a"), None);
+}

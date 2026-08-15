@@ -1323,6 +1323,61 @@ fn test_emoji_variation_selector() {
     assert_eq!(grid[0][4].c, 'c');
 }
 
+/// Regression test for a keycap emoji (e.g. `1️⃣` = U+0031 U+FE0F U+20E3) reserving *three*
+/// grid columns instead of two.
+///
+/// Before the 2026-08-15 fix, the `if cell_content_width == 2 { .. }` block in
+/// `ansi_handler.rs`'s zero-width character handling ran once per zero-width character pushed
+/// onto a cell, with no guard against having already run. A keycap sequence has *two* trailing
+/// zero-width characters (U+FE0F then U+20E3), and the cell's accumulated content is already
+/// 2-wide as soon as the first one (U+FE0F) lands, since unicode-width resolves `<digit>+VS16`
+/// as an emoji-presentation sequence on its own. So the block fired a second time when U+20E3
+/// arrived, inserting a second, orphaned `WIDE_CHAR_SPACER` and advancing the cursor an extra
+/// column: a 2-column glyph ended up reserving 3 columns, silently eating the column that
+/// should have held the very next character.
+///
+/// (The originally-reported symptom -- the keycap visually *overdrawing* the next character
+/// rather than leaving a gap before it -- turned out to be a separate bug in
+/// `Block::set_shell_host`, not this one; see the comment there. This test guards the
+/// double-reservation bug in this file specifically, which was a real but distinct defect
+/// uncovered while investigating that report.)
+#[test]
+fn test_keycap_emoji_does_not_double_reserve_spacer_cell() {
+    // Manually create BlockGrid so we can use input() to insert characters.
+    let size = SizeInfo::new_without_font_metrics(2, 10);
+
+    let mut blockgrid = BlockGrid::new(
+        size,
+        MAX_SCROLL_LIMIT,
+        ChannelEventListener::new_for_test(),
+        ObfuscateSecrets::No,
+        PerformResetGridChecks::default(),
+    );
+
+    blockgrid.start();
+    // 1️⃣ followed immediately by 'W', with no literal space -- the shape of the original
+    // report ("1️⃣ Where" rendering as "▯Where", i.e. the glyph swallowing the space).
+    for c in ['1', '\u{FE0F}', '\u{20E3}', 'W'] {
+        blockgrid.input(c);
+    }
+
+    assert!(has_wide_char_character(&blockgrid));
+    let grid = blockgrid.grid_storage();
+    assert_eq!(grid[0][0].c, '1');
+    assert!(matches!(
+        grid[0][0].content_for_display(),
+        CharOrStr::Str(_)
+    ));
+    assert!(grid[0][0].flags.intersects(Flags::WIDE_CHAR));
+    // Exactly one spacer cell reserved for the glyph -- not two.
+    assert!(grid[0][1].flags.intersects(Flags::WIDE_CHAR_SPACER));
+    assert!(!grid[0][1].flags.intersects(Flags::WIDE_CHAR));
+    // 'W' must land immediately after the spacer, at column 2 -- not column 3, which is where
+    // it would land if a second, orphaned spacer were inserted.
+    assert_eq!(grid[0][2].c, 'W');
+    assert!(!grid[0][2].flags.intersects(Flags::WIDE_CHAR_SPACER));
+}
+
 #[test]
 pub fn test_grid_agnostic_point() {
     let mut grid = mock_blockgrid(

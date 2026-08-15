@@ -359,6 +359,75 @@ pub fn test_command_grid_bold_after_reset() {
     assert_eq!("command", block.contents_to_string());
 }
 
+fn test_zsh_shell_host() -> ShellHost {
+    ShellHost {
+        shell_type: ShellType::Zsh,
+        user: "test-user".to_string(),
+        hostname: "test-host".to_string(),
+    }
+}
+
+// Regression test for a keycap emoji (e.g. `1️⃣` = U+0031 U+FE0F U+20E3) rendering as an
+// overlapping tofu box in the GUI, reported 2026-08-15.
+//
+// `set_shell_host` applies a Zsh-specific bracketed-paste workaround (Zsh's line editor doesn't
+// echo emoji variation selectors correctly) by suppressing WIDE_CHAR reservation for
+// emoji-presentation sequences. That workaround is only meaningful for grids that mirror what
+// Zsh's line editor has echoed -- the command line -- but it was being applied to `output_grid`
+// too, which just displays whatever the running command writes to stdout/stderr and never goes
+// through Zsh's line editor at all. So a keycap emoji printed by a command (e.g. `cat` on a
+// markdown file) in a Zsh pane got its WIDE_CHAR_SPACER silently dropped, and the (still
+// correctly font-shaped, 2-cell-wide) glyph overdrew the next character.
+#[test]
+pub fn test_keycap_emoji_is_wide_in_output_grid_even_under_zsh() {
+    let mut block = TestBlockBuilder::new().build();
+    block.set_shell_host(test_zsh_shell_host());
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+    for c in "cat notes.md".chars() {
+        block.input(c);
+    }
+    block.preexec(Default::default());
+
+    // Exactly the shape of the original report: a keycap emoji followed by a literal space and
+    // then more text, all written to command output.
+    for c in "1️⃣ Where".chars() {
+        block.input(c);
+    }
+
+    let output = block.output_grid().grid_storage();
+    assert_eq!(output[0][0].c, '1');
+    assert!(
+        output[0][0].flags.intersects(Flags::WIDE_CHAR),
+        "keycap emoji written to output_grid should reserve two columns even in a Zsh pane"
+    );
+    assert!(output[0][1].flags.intersects(Flags::WIDE_CHAR_SPACER));
+    assert_eq!(output[0][2].c, ' ');
+    assert_eq!(output[0][3].c, 'W');
+}
+
+// Companion to `test_keycap_emoji_is_wide_in_output_grid_even_under_zsh`: verifies the original
+// Zsh bracketed-paste workaround is untouched for the command line itself, which is the grid it
+// was actually meant to protect (see the comment on `set_shell_host`).
+#[test]
+pub fn test_keycap_emoji_is_narrow_in_command_grid_under_zsh() {
+    let mut block = TestBlockBuilder::new().build();
+    block.set_shell_host(test_zsh_shell_host());
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+
+    for c in "1️⃣".chars() {
+        block.input(c);
+    }
+
+    let command = block.prompt_and_command_grid().grid_storage();
+    assert_eq!(command[0][0].c, '1');
+    assert!(
+        !command[0][0].flags.intersects(Flags::WIDE_CHAR),
+        "the Zsh bracketed-paste workaround should still apply to the command grid"
+    );
+}
+
 // Tests that the command grid has non-zero height even if the shell does not echo a linefeed
 // after the user inputs an empty command (this happens in recent Bash versions)
 #[test]
