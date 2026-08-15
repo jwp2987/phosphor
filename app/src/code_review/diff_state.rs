@@ -419,6 +419,15 @@ pub struct LocalDiffStateModel {
     metadata: Option<DiffMetadata>,
     computing_diffs_abort_handle: Option<SpawnedFutureHandle>,
     computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
+    /// Tracks an in-flight `refresh_pr_info` lookup so the UI can avoid
+    /// treating a pending/unknown PR state as "no PR" (flicker bug).
+    refreshing_pr_info_handle: Option<SpawnedFutureHandle>,
+    /// Branch name for which `refresh_pr_info` has been called at least once.
+    /// Gates the metadata-refresh fallback so it only retries `gh pr view` once
+    /// per branch when `pr_info` is `None` (e.g. branch has no PR, lookup
+    /// failed). Without this, every filesystem event on the repo would re-fire
+    /// `gh pr view` for branches that legitimately have no PR.
+    pr_info_attempted_for_branch: Option<String>,
     /// Controls whether periodic throttled metadata refresh is active.
     /// Refresh is suppressed when the code review pane is not open.
     metadata_refresh_enabled: bool,
@@ -465,6 +474,8 @@ impl LocalDiffStateModel {
             metadata: None,
             computing_diffs_abort_handle: None,
             computing_metadata_abort_handle: None,
+            refreshing_pr_info_handle: None,
+            pr_info_attempted_for_branch: None,
             metadata_refresh_enabled: false,
         };
 
@@ -625,6 +636,11 @@ impl LocalDiffStateModel {
         self.metadata
             .as_ref()
             .and_then(|metadata| metadata.pr_info.as_ref())
+    }
+
+    /// Whether PR info for the current branch is currently being refreshed.
+    pub fn is_pr_info_refreshing(&self) -> bool {
+        self.refreshing_pr_info_handle.is_some()
     }
 
     /// Checks if git operations like stash or reset would be blocked due to repository state.
@@ -1153,17 +1169,22 @@ impl LocalDiffStateModel {
             }
         }
 
-        let new_repository_root = new_repository.as_ref(ctx).root_dir().to_local_path_lossy();
         ctx.emit(DiffStateModelEvent::RepositoryChanged);
 
         if let Some(handle) = self.computing_metadata_abort_handle.take() {
             handle.abort();
         }
 
-        // Always include base branch metadata since only code review uses this model now.
-        let include_base_branch = true;
-        let abort_handle =
-            ctx.spawn(
+        // Only kick off the expensive metadata + diff loading when the code
+        // review pane is actually open. When the pane opens later, `on_open`
+        // calls `set_code_review_metadata_refresh_enabled(true)` (which
+        // triggers metadata) and `load_diffs_for_current_repo` (which triggers
+        // diffs), so nothing is lost — just deferred.
+        if self.metadata_refresh_enabled {
+            let new_repository_root = new_repository.as_ref(ctx).root_dir().to_local_path_lossy();
+            // Always include base branch metadata since only code review uses this model now.
+            let include_base_branch = true;
+            let abort_handle = ctx.spawn(
                 async move {
                     Self::load_metadata_for_repo(new_repository_root, include_base_branch).await
                 },
@@ -1176,8 +1197,9 @@ impl LocalDiffStateModel {
                 },
             );
 
-        self.computing_metadata_abort_handle = Some(abort_handle);
-        self.state = InternalDiffState::Loading;
+            self.computing_metadata_abort_handle = Some(abort_handle);
+            self.state = InternalDiffState::Loading;
+        }
 
         // Assign the repository handle before spawning the registration future.
         // `registration_future` may resolve immediately (e.g. watcher already active), and
@@ -1511,12 +1533,10 @@ impl LocalDiffStateModel {
 
         match metadata {
             Ok(mut metadata) => {
-                // Preserve cached PR info across same-branch metadata refreshes.
-                // `load_metadata_for_repo` always initialises pr_info: None, but
-                // re-fetching it on every file-system tick would be too expensive.
-                if previous_branch.as_deref() == Some(metadata.current_branch_name.as_str()) {
-                    metadata.pr_info = previous_pr_info;
-                }
+                // Carry forward cached PR info while refresh_pr_info is pending
+                // so the header doesn't flash to Commit/Create PR between
+                // branch switch and PR lookup completion.
+                metadata.pr_info = previous_pr_info;
                 self.metadata = Some(metadata);
             }
             Err(e) => {
@@ -1542,9 +1562,16 @@ impl LocalDiffStateModel {
             if FeatureFlag::GitOperationsInCodeReview.is_enabled() {
                 self.refresh_pr_info(ctx);
             }
-        } else if FeatureFlag::GitOperationsInCodeReview.is_enabled() && self.pr_info().is_none() {
-            // No cached PR info yet — check once so the button updates
-            // after an external push or PR creation.
+        } else if FeatureFlag::GitOperationsInCodeReview.is_enabled()
+            && self.pr_info().is_none()
+            && !self.is_pr_info_refreshing()
+            && self.pr_info_attempted_for_branch != current_branch
+        {
+            // Initial-load fallback: if metadata arrived without a successful
+            // PR lookup yet on this branch, try once. Gated by
+            // `pr_info_attempted_for_branch` so subsequent metadata refreshes
+            // (every fs event on the repo) don't re-fire `gh pr view` when the
+            // branch has no PR or the lookup failed.
             self.refresh_pr_info(ctx);
         }
 
@@ -1663,8 +1690,18 @@ impl LocalDiffStateModel {
                 total_additions += metadata.lines_added;
                 total_deletions += metadata.lines_removed;
             } else if matches!(status, GitFileStatus::Untracked) {
-                let num_lines =
-                    Self::num_lines_in_file_if_non_binary(&repo_path.join(file_path)).await?;
+                // Degrade per entry: an uncountable untracked path (e.g. a nested
+                // repo/worktree directory, or an unreadable file) contributes 0
+                // lines instead of failing the whole metadata computation.
+                let num_lines = Self::num_lines_in_file_if_non_binary(&repo_path.join(file_path))
+                    .await
+                    .unwrap_or_else(|err| {
+                        log::debug!(
+                            "Could not count lines for untracked entry {}: {err}",
+                            file_path.display()
+                        );
+                        None
+                    });
                 total_additions += num_lines.unwrap_or(0);
             }
         }
@@ -1714,8 +1751,13 @@ impl LocalDiffStateModel {
             let is_binary = binary_files.contains(&file_path);
             let mut file_diff =
                 Self::get_file_diff(repo_path, &file_path, &status, is_binary, None).await?;
-            let content_at_head =
-                Self::get_file_content_at_head(repo_path, &file_path, &status).await;
+            // Never read or ship base content for binary files: it can't be
+            // inline-rendered and, after lossy UTF-8 decoding, can balloon ~3x.
+            let content_at_head = if is_binary {
+                None
+            } else {
+                Self::get_file_content_at_head(repo_path, &file_path, &status).await
+            };
 
             file_diff.is_autogenerated =
                 super::is_file_autogenerated(&file_path, content_at_head.as_deref());
@@ -1895,30 +1937,38 @@ impl LocalDiffStateModel {
             return Ok(None);
         }
 
-        let content_at_head = match &merge_base {
-            Some(base) => {
-                match status {
-                    GitFileStatus::New | GitFileStatus::Untracked => {
-                        // For new and untracked files that don't exist in the merge base,
-                        // provide empty baseline content. The diff hunks will show
-                        // all content as additions, which is the correct representation.
-                        Some(String::new())
-                    }
-                    GitFileStatus::Renamed { old_path } => {
-                        // The original content is in the old path of the given base commit.
-                        Self::get_file_content_at_commit(repo_path, old_path, base).await
-                    }
-                    _ => {
-                        Self::get_file_content_at_commit(
-                            repo_path,
-                            &file_path.to_string_lossy(),
-                            base,
-                        )
-                        .await
+        // Never read or ship base content for binary files: it can't be
+        // inline-rendered and, after lossy UTF-8 decoding, can balloon ~3x.
+        let content_at_head = if is_binary {
+            None
+        } else {
+            match &merge_base {
+                Some(base) => {
+                    match status {
+                        GitFileStatus::New | GitFileStatus::Untracked => {
+                            // For new and untracked files that don't exist in the merge base,
+                            // provide empty baseline content. The diff hunks will show
+                            // all content as additions, which is the correct representation.
+                            // Non-file entries (e.g. nested repo/worktree directories) get
+                            // no baseline so no editor is constructed for them.
+                            repo_path.join(file_path).is_file().then(String::new)
+                        }
+                        GitFileStatus::Renamed { old_path } => {
+                            // The original content is in the old path of the given base commit.
+                            Self::get_file_content_at_commit(repo_path, old_path, base).await
+                        }
+                        _ => {
+                            Self::get_file_content_at_commit(
+                                repo_path,
+                                &file_path.to_string_lossy(),
+                                base,
+                            )
+                            .await
+                        }
                     }
                 }
+                None => Self::get_file_content_at_head(repo_path, file_path, status).await,
             }
-            None => Self::get_file_content_at_head(repo_path, file_path, status).await,
         };
 
         file_diff.is_autogenerated =
@@ -2102,9 +2152,18 @@ impl LocalDiffStateModel {
                 total_additions += metadata.lines_added;
                 total_deletions += metadata.lines_removed;
             } else if matches!(status, GitFileStatus::Untracked) {
-                // Get total size of the file
-                let num_lines =
-                    Self::num_lines_in_file_if_non_binary(&repo_path.join(file_path)).await?;
+                // Degrade per entry: an uncountable untracked path (e.g. a nested
+                // repo/worktree directory, or an unreadable file) contributes 0
+                // lines instead of failing the whole metadata computation.
+                let num_lines = Self::num_lines_in_file_if_non_binary(&repo_path.join(file_path))
+                    .await
+                    .unwrap_or_else(|err| {
+                        log::debug!(
+                            "Could not count lines for untracked entry {}: {err}",
+                            file_path.display()
+                        );
+                        None
+                    });
                 total_additions += num_lines.unwrap_or(0);
             }
         }
@@ -2972,9 +3031,16 @@ impl LocalDiffStateModel {
     /// Call this on branch change or after push — not on every metadata refresh.
     #[cfg(feature = "local_fs")]
     pub fn refresh_pr_info(&mut self, ctx: &mut ModelContext<Self>) {
+        if let Some(handle) = self.refreshing_pr_info_handle.take() {
+            handle.abort();
+        }
         let Some(repo_path) = self.active_repository_path(ctx) else {
             return;
         };
+        // Mark this branch as attempted before spawning so the fallback in
+        // `handle_updated_metadata_for_repo` won't re-fire while the lookup
+        // is in flight or after it completes with no PR.
+        self.pr_info_attempted_for_branch = self.get_current_branch_name();
         #[cfg(feature = "local_tty")]
         let path_future = LocalShellState::handle(ctx).update(ctx, |shell_state, ctx| {
             shell_state.get_interactive_path_env_var(ctx)
@@ -2984,7 +3050,7 @@ impl LocalDiffStateModel {
             use futures::FutureExt;
             futures::future::ready(None).boxed()
         };
-        ctx.spawn(
+        let handle = ctx.spawn(
             async move {
                 let path_env = path_future.await;
                 get_pr_for_branch(&repo_path, path_env.as_deref())
@@ -2992,6 +3058,7 @@ impl LocalDiffStateModel {
                     .unwrap_or(None)
             },
             |me, pr_info, ctx| {
+                me.refreshing_pr_info_handle = None;
                 if let Some(metadata) = &mut me.metadata {
                     metadata.pr_info = pr_info;
                     ctx.emit(DiffStateModelEvent::DiffMetadataChanged(
@@ -3000,6 +3067,7 @@ impl LocalDiffStateModel {
                 }
             },
         );
+        self.refreshing_pr_info_handle = Some(handle);
     }
 
     #[cfg(not(feature = "local_fs"))]
@@ -3264,6 +3332,15 @@ impl DiffStateModel {
             Self::Local(m) => m.as_ref(ctx).pr_info(),
             #[cfg(not(target_family = "wasm"))]
             Self::Remote(m) => m.as_ref(ctx).pr_info(),
+        }
+    }
+
+    /// Whether PR info for the current branch is currently being refreshed.
+    pub fn is_pr_info_refreshing(&self, ctx: &AppContext) -> bool {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).is_pr_info_refreshing(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.as_ref(ctx).is_pr_info_refreshing(),
         }
     }
 

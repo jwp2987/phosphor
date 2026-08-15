@@ -850,6 +850,13 @@ impl CodeReviewView {
     pub fn on_close(&mut self, ctx: &mut ViewContext<Self>) {
         self.is_open = false;
 
+        if self
+            .find_model
+            .read(ctx, |model, _| model.is_find_bar_open())
+        {
+            self.close_find_bar(ctx);
+        }
+
         ctx.unsubscribe_to_model(&self.diff_state_model);
 
         self.code_review_footer = None;
@@ -2145,8 +2152,14 @@ impl CodeReviewView {
     }
 
     fn close_find_bar(&mut self, ctx: &mut ViewContext<Self>) {
-        self.find_model.update(ctx, |model, _| {
+        self.find_bar.update(ctx, |find_bar, ctx| {
+            find_bar.set_query_text("", ctx);
+        });
+
+        let editor_handles = self.editor_handles().collect::<Vec<_>>();
+        self.find_model.update(ctx, |model, model_ctx| {
             model.set_is_find_bar_open(false);
+            model.update_query(None, editor_handles.into_iter(), model_ctx);
             model.clear_results();
         });
 
@@ -6472,8 +6485,9 @@ impl CodeReviewView {
                 // `has_upstream` controls the label/icon on the push-chained
                 // intent (Commit and push vs Commit and publish).
                 let diff_state = self.diff_state_model.as_ref(ctx);
-                let allow_create_pr =
-                    diff_state.pr_info(ctx).is_none() && !diff_state.is_on_main_branch(ctx);
+                let allow_create_pr = diff_state.pr_info(ctx).is_none()
+                    && !diff_state.is_pr_info_refreshing(ctx)
+                    && !diff_state.is_on_main_branch(ctx);
                 let has_upstream = diff_state.upstream_ref(ctx).is_some();
                 // Remote repos prefill the Changes list from the synced diff
                 // state; local repos load it from the working tree in new_state.
@@ -6554,6 +6568,7 @@ impl CodeReviewView {
         let has_uncommitted_changes = self.has_uncommitted_changes(app);
         let has_upstream = diff_state.upstream_ref(app).is_some();
         let has_local_commits = !diff_state.unpushed_commits(app).is_empty();
+        let is_pr_info_refreshing = diff_state.is_pr_info_refreshing(app);
         // False when upstream == main (e.g. after `git checkout -b feature origin/master`),
         // which means the branch hasn't been pushed to its own remote ref yet.
         let upstream_differs_from_main = diff_state.upstream_differs_from_main(app);
@@ -6566,7 +6581,11 @@ impl CodeReviewView {
             PrimaryGitActionMode::Push
         } else if diff_state.pr_info(app).is_some() {
             PrimaryGitActionMode::ViewPr
-        } else if has_upstream && !diff_state.is_on_main_branch(app) && upstream_differs_from_main {
+        } else if !is_pr_info_refreshing
+            && has_upstream
+            && !diff_state.is_on_main_branch(app)
+            && upstream_differs_from_main
+        {
             PrimaryGitActionMode::CreatePr
         } else {
             // Nothing actionable — show Commit disabled.
@@ -6609,6 +6628,7 @@ impl CodeReviewView {
                     button.set_label(crate::t!("common-push"), ctx);
                     button.set_icon(Some(Icon::ArrowUp), ctx);
                     button.set_disabled(false, ctx);
+                    button.set_tooltip(None::<String>, ctx);
                     button.set_on_click(
                         |ctx| ctx.dispatch_typed_action(CodeReviewAction::OpenPushDialog),
                         ctx,
@@ -6624,6 +6644,7 @@ impl CodeReviewView {
                     button.set_label(crate::t!("code-review-create-pr"), ctx);
                     button.set_icon(Some(Icon::Github), ctx);
                     button.set_disabled(false, ctx);
+                    button.set_tooltip(None::<String>, ctx);
                     button.set_on_click(
                         |ctx| ctx.dispatch_typed_action(CodeReviewAction::OpenCreatePrDialog),
                         ctx,
@@ -6632,7 +6653,9 @@ impl CodeReviewView {
                 });
             }
             PrimaryGitActionMode::ViewPr => {
-                let pr_info = self.diff_state_model.as_ref(ctx).pr_info(ctx).cloned();
+                let diff_state = self.diff_state_model.as_ref(ctx);
+                let pr_info = diff_state.pr_info(ctx).cloned();
+                let is_pr_info_refreshing = diff_state.is_pr_info_refreshing(ctx);
                 if let Some(pr_info) = pr_info {
                     let url = pr_info.url.clone();
                     let number = pr_info.number;
@@ -6640,7 +6663,11 @@ impl CodeReviewView {
                     self.git_primary_action_button.update(ctx, |button, ctx| {
                         button.set_label(label, ctx);
                         button.set_icon(Some(Icon::Github), ctx);
-                        button.set_disabled(false, ctx);
+                        button.set_disabled(is_pr_info_refreshing, ctx);
+                        button.set_tooltip(
+                            is_pr_info_refreshing.then_some("Refreshing PR info"),
+                            ctx,
+                        );
                         button.set_on_click(
                             move |ctx| {
                                 ctx.dispatch_typed_action(CodeReviewAction::ViewPr(url.clone()))
@@ -6656,6 +6683,7 @@ impl CodeReviewView {
                     button.set_label(crate::t!("common-publish"), ctx);
                     button.set_icon(Some(Icon::UploadCloud), ctx);
                     button.set_disabled(false, ctx);
+                    button.set_tooltip(None::<String>, ctx);
                     button.set_on_click(
                         |ctx| ctx.dispatch_typed_action(CodeReviewAction::PublishBranch),
                         ctx,
