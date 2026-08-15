@@ -90,7 +90,8 @@ migration copies *from*. A find-and-replace that blindly renamed every
 | file:line | context | verdict |
 |---|---|---|
 | `crates/warp_core/src/channel/state.rs:40` | `AppId::new("dev", "zap", "Zap")` — default `ChannelConfig` | OWNED BY Rust |
-| `app/src/bin/zap_oss.rs:29` | `AppId::new("dev", "zap", "Zap")` — OSS channel config | OWNED BY Rust |
+| `app/src/bin/zap_oss.rs:29` | `AppId::new("dev", "zap", "Zap")` — GUI OSS channel config | OWNED BY Rust |
+| `crates/warp_tui/src/bin/oss.rs:24` | `AppId::new("dev", "zap", "Zap")` — **TUI** OSS channel config | OWNED BY Rust — **MISSED BY THIS INVENTORY, added 2026-08-15 (issue #585).** The scan ran on the literal `dev.zap.Zap` plus the two `AppId::new` sites `LAYER3-PLAN.md` §1 already knew about, and this file spells the id as three separate string arguments in a crate nobody thought of as an identity site. `874c2f43d` therefore left the TUI on the old identity and `v2026.08.14.1-beta` shipped with the GUI and TUI on different config dirs and different keyring services. Enumerate `AppId::new` call sites, not binaries |
 | `app/src/bin/zap_oss.rs:68` | `<string>dev.zap.Zap</string>` (Info.plist template embedded in the bin) | OWNED BY Rust |
 | `app/src/app_services/linux/mod.rs:160,163` | `default_service = "dev.zap.Zap"` — D-Bus well-known name for single-instance activation (see the SCOPE.md correction — **not** the keyring service) | OWNED BY Rust |
 | `app/src/util/file/external_editor/mac_test.rs:6` | `assert!(is_zap_bundle("dev.zap.Zap"))` | OWNED BY Rust — **and** `is_zap_bundle` (`external_editor/mac.rs:367`) needs a new `dev.phosphor.Phosphor` arm added, not just this literal swapped; see §"Additional findings" below |
@@ -154,7 +155,7 @@ few hits, "throughout" noted where it recurs heavily.
 | `app/src/terminal/cli_agent.rs` | 180, 229, 231 | OWNED BY Rust |
 | `app/src/terminal/cli_agent_tests.rs` | 269, 617, 623, 668 | OWNED BY Rust |
 | `crates/warp_tui/tests/worker_dispatch.rs` | 10 (`CARGO_BIN_EXE_zap-tui-oss`) | OWNED BY Rust |
-| `crates/warp_tui/scripts/tui_harness.py` | 2, 12, 44, 92, 104 | OWNED BY Rust (dev harness shipped with the crate, coupled to the bin name) — note line 26 (see `.local/state/zap-tui` below) uses a *different* directory name than the app id, worth double-checking during the rename, not just find-replacing |
+| `crates/warp_tui/scripts/tui_harness.py` | 2, 12, 44, 92, 104 | OWNED BY Rust (dev harness shipped with the crate, coupled to the bin name) — note line 26 (see `.local/state/zap-tui` below) uses a *different* directory name than the app id, worth double-checking during the rename, not just find-replacing. **RESOLVED 2026-08-15 (with #585):** the comment was simply wrong, not evidence of a second identity. The real path is `state_dir()` / `TUI_LOG_SUBDIRECTORY` / `logfile_name` = `~/.local/state/phosphor/warp-cli/zap-tui.log`; there is no `zap-tui` app directory, and `oz` is `CLI_LOG_SUBDIRECTORY`, not the TUI's. The shared-app-id design holds |
 | `.github/workflows/phosphor_release.yml` | 408, 419, 426, 808, 817, 824, 890, 899, 904 | UNCERTAIN — same reasoning as §2 |
 | `DECLINED.md` | 191 | DOC DRIFT — describes current fact ("declares one real bin (`zap-tui-oss`)") inside a *decision* row about `tui_cli_shell_command`. The decision itself doesn't depend on the binary name, so this needs a one-line factual update in the same commit as the actual rename, not before (editing a `DECLINED.md` row prematurely, out of sync with code, is worse than leaving it) |
 | `README.md` | 110 | DOC DRIFT |

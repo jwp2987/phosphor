@@ -2340,12 +2340,23 @@ here, so this list stays a work ledger rather than a history.
       hits vs 1-2). Same subsystem as the stale `warp-command-signatures` data
       this round fixed — that one made completions *wrong*, this makes a class
       of names invisible.
-- [ ] **#585 — the TUI OSS binary still uses the pre-rename app id.**
-      `crates/warp_tui/src/bin/oss.rs:24` is `AppId::new("dev","zap","Zap")`
-      while `app/src/bin/phosphor_oss.rs:30` is `("dev","phosphor","Phosphor")`.
-      GUI reads `~/.config/phosphor`, TUI reads `~/.config/zap`, different
-      keyring service names — **API keys saved in the GUI are invisible to the
-      TUI.** Storage identity, needs the layer-3 migration story.
+- [x] **#585 — the TUI OSS binary still uses the pre-rename app id.**
+      **FIXED, pending merge** — flipped to `("dev","phosphor","Phosphor")` on
+      `repin-gap-appid`. `crates/warp_tui/src/bin/oss.rs:24` was
+      `AppId::new("dev","zap","Zap")` while `app/src/bin/phosphor_oss.rs:30` is
+      `("dev","phosphor","Phosphor")`. GUI read `~/.config/phosphor`, TUI read
+      `~/.config/zap`, different keyring service names — **API keys saved in
+      the GUI were invisible to the TUI.** Shipped that way in
+      `v2026.08.14.1-beta`.
+      *Root cause of the miss:* `specs/phosphor-rebrand/LAYER3-PLAN.md` §1
+      states "`AppId` is set in two places" and tabulates only
+      `channel/state.rs` and `app/src/bin/zap_oss.rs`. There are three; the
+      rename commit `874c2f43d` faithfully executed a plan that was one site
+      short. Plan and inventory corrected in the same branch.
+      *Migration:* none, matching `874c2f43d`'s recorded decision — the
+      maintainer accepted losing local state rather than carrying a keychain
+      migration. This orphans TUI-written state under `dev.zap.Zap` as well;
+      recorded in `README.md`'s storage-identity note.
 
 ### Defects — correctness of the guards and the record
 
