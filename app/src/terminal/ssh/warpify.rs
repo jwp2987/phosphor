@@ -78,7 +78,7 @@ pub fn warpify_description(
 
     let description = FormattedText::new(vec![FormattedTextLine::Line(vec![
         FormattedTextFragment::plain_text(
-            "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Oz, and more. "
+            "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Phosphor Agent, and more. "
         ),
         FormattedTextFragment::hyperlink(crate::t!("common-learn-more"), SSH_DOCS_URL),
     ])]);

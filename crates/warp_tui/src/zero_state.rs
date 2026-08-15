@@ -262,7 +262,7 @@ fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
 
     let mut column = TuiFlex::column()
         .child(
-            TuiText::new("Warp Agent")
+            TuiText::new("Phosphor Agent")
                 .with_style(title_style)
                 .truncate()
                 .finish(),

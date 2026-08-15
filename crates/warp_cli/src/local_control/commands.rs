@@ -135,12 +135,12 @@ pub(super) fn run_surface_command(
 fn render_human_readable(action: ActionKind, data: &serde_json::Value) -> String {
     match action {
         ActionKind::AppPing => format!(
-            "Warp instance {} is reachable (protocol version {})",
+            "Phosphor instance {} is reachable (protocol version {})",
             value_or_unknown(data, "instance_id"),
             value_or_unknown(data, "protocol_version")
         ),
         ActionKind::AppVersion => format!(
-            "Warp instance {}\nchannel: {}\napp_id: {}\nprotocol_version: {}",
+            "Phosphor instance {}\nchannel: {}\napp_id: {}\nprotocol_version: {}",
             value_or_unknown(data, "instance_id"),
             value_or_unknown(data, "channel"),
             value_or_unknown(data, "app_id"),
@@ -249,7 +249,7 @@ fn render_instance_list(
         OutputFormat::Ndjson => write_json_line(&output),
         OutputFormat::Pretty | OutputFormat::Text => {
             if output.instances.is_empty() {
-                println!("No running Warp instances with local control were found.");
+                println!("No running Phosphor instances with local control were found.");
                 return Ok(());
             }
             for instance in &output.instances {

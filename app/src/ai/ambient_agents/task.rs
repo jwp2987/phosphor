@@ -218,7 +218,7 @@ impl AgentSource {
             AgentSource::Cli => "CLI",
             AgentSource::ScheduledAgent => "Scheduled",
             AgentSource::Interactive => "Phosphor (local agent)",
-            AgentSource::WebApp => "Oz",
+            AgentSource::WebApp => "Web",
             AgentSource::GitHubAction => "GitHub Action",
         }
     }

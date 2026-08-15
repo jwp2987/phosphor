@@ -247,7 +247,7 @@ impl TuiOrchestrationModel {
                 harness_type: Some(harness_type),
                 ..
             } => {
-                format!("Local {harness_type} child agents aren't supported in Warp Agent CLI yet.")
+                format!("Local {harness_type} child agents aren't supported in Phosphor Agent CLI yet.")
             }
             StartAgentExecutionMode::Local {
                 harness_type: None, ..

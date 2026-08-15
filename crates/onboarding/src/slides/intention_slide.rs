@@ -259,7 +259,7 @@ impl IntentionSlide {
                 localized("onboarding-ai-feature-warp-agents", "Phosphor agents"),
                 localized(
                     "onboarding-ai-feature-oz-cloud-agents-platform",
-                    "Oz local agents platform",
+                    "Phosphor local agents platform",
                 ),
                 localized(
                     "onboarding-ai-feature-next-command-predictions",

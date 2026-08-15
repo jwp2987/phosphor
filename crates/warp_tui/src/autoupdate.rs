@@ -644,10 +644,10 @@ async fn fetch_latest_version(client: &http_client::Client) -> Result<String> {
         Err(error) => {
             let releases_base_url = ChannelState::releases_base_url();
             if releases_base_url.is_empty() {
-                return Err(error.context("failed to fetch channel versions from the Warp server"));
+                return Err(error.context("failed to fetch channel versions from the Phosphor server"));
             }
             log::warn!(
-                "Failed to fetch channel versions from the Warp server ({error:#}); \
+                "Failed to fetch channel versions from the Phosphor server ({error:#}); \
                  falling back to GCP JSON storage"
             );
             // The nonce busts any CDN/browser-style caching of the JSON file.

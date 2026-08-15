@@ -2352,7 +2352,7 @@ pub fn prompt_chip_command_for_git_branch(
 
     if branch.is_linked_worktree {
         return PromptChipShellCommand::Echo {
-            message: "The branch is already checked out in another worktree, but Warp couldn't find its path.",
+            message: "The branch is already checked out in another worktree, but Phosphor couldn't find its path.",
         };
     }
 
