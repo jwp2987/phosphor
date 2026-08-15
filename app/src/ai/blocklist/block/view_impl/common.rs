@@ -1839,6 +1839,17 @@ fn load_renderable_image_asset(
 
     #[cfg(not(feature = "local_fs"))]
     let asset_source = blocklist_image_asset_source(&image.source, current_working_directory)?;
+    // NOT COMPILED -- builds are suspended. Ported from upstream `dbca9ac43`
+    // ("Prevent WASM blocklist local image loads", #11515): in a WASM build, a
+    // blocklist Markdown image can resolve to a local-filesystem `AssetSource`
+    // (e.g. a path written by an agent that ran outside the browser sandbox,
+    // such as `/tmp/...png`) that the browser has no way to read. Without this
+    // guard, WASM would still try to load it and crash; falling through to the
+    // existing alt-text/Markdown rendering path is the same fallback native
+    // rendering already uses when an image can't be loaded.
+    if !should_load_blocklist_image_asset(&asset_source) {
+        return None;
+    }
     let asset_state = AssetCache::as_ref(app).load_asset::<ImageType>(asset_source.clone());
     if matches!(asset_state, AssetState::FailedToLoad(_)) {
         return None;
@@ -1863,6 +1874,18 @@ fn can_render_blocklist_image(
         app,
     )
     .is_some()
+}
+
+// NOT COMPILED -- builds are suspended. Ported from upstream `dbca9ac43`
+// (#11515), see the comment above `load_renderable_image_asset`'s call site.
+#[cfg(target_arch = "wasm32")]
+fn should_load_blocklist_image_asset(asset_source: &AssetSource) -> bool {
+    !matches!(asset_source, AssetSource::LocalFile { .. })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn should_load_blocklist_image_asset(_: &AssetSource) -> bool {
+    true
 }
 
 fn render_image_section<A: Action>(
