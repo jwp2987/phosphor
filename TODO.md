@@ -1763,75 +1763,83 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
 
-## FLAG-DARK FEATURES — implemented, shipped, unreachable (opened 2026-08-15)
+## FLAG-DARK FEATURES — corrected 2026-08-15, 15 restored
 
-**A different category from parity debt, and a much cheaper one.** Everything
-below is already ported and wired in this tree. It does not run because nothing
-can turn it on. Do not size these as porting work.
+**A category of its own, and much cheaper than parity debt: the code is already
+here, already compiling, already tested. Some of these needed only a line in a
+list.** Do not size any of them as porting work until the three-path check below
+says otherwise.
 
-De-clouding removed Warp's runtime feature-flag service (`app/src/server/experiments/`
-applies server-driven experiment state, and that state never arrives now). What
-replaced it is: `RELEASE_FLAGS`, plus cargo features listed in `app/Cargo.toml`'s
-`default`, plus a one-entry `UNSTABLE_FEATURES` env hook. **`DOGFOOD_FLAGS` and
-`PREVIEW_FLAGS` are never applied by the GUI at all** — only `warp_tui`'s `dev`
-and `local` binaries call `.with_additional_features(DOGFOOD_FLAGS)`. So any flag
-whose only enable path was the backend or a non-default tier is off permanently,
-silently, with no decision recorded anywhere.
+### The corrected accounting — most dark flags are NOT this fork's doing
 
-### Method — check ALL THREE paths, or you will get this wrong
+An earlier draft of this entry implied de-clouding had turned everything off.
+That overstated it. Of 231 flags, 90 are unreachable in a normal GUI build, and
+they split three ways:
 
-A flag is reachable in a normal GUI build only via:
-1. membership in `RELEASE_FLAGS`, or
-2. a `#[cfg(feature = "x")]` entry in `app/src/lib.rs`'s `extra_flags` **where `x`
-   is in `app/Cargo.toml`'s `default`**, or
-3. an `UNSTABLE_FEATURES` name (one entry exists: `windows_high_performance_gpu_default`).
+| | count | verdict |
+|---|---:|---|
+| dark at the pin **too** | **69** | upstream gates these per-account from its backend. Not fork regressions. **Do not "fix" them.** |
+| fork-original flags | 5 | this fork's own, off by its own choice |
+| **on at the pin, off here** | **16** | **the fork lost the switch** — no `FORCE_DISABLED_FLAGS` entry, no recorded reason |
 
-**And a reachable flag is still not a visible feature.** Several are ANDed with a
-user setting. `VerticalTabs` was mis-diagnosed here as dark on 2026-08-15 by
-checking only the flag lists: `vertical_tabs` IS in `default` in this fork *and*
-the pin, and the real gate is `app/src/tab.rs:63` —
-`FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::…use_vertical_tabs`,
-a user setting (`appearance.vertical_tabs.enabled`) that defaults to `false`.
-Nothing was wrong; it was switched off. Check the setting too.
+Only that third group is drift. See `docs/pin-migration.md` Phase 6.7 for the
+method, the four traps, and why a naive script reports the pin as having 7
+reachable flags (that is the size of `RELEASE_FLAGS`, and it means your parse
+failed — the flag-init file MOVED between pin and fork).
 
-### Result: 231 flags, 91 unreachable
+### Root cause
 
-Ranked by how much implementation sits behind them (call sites in app code,
-excluding the flag definition itself). None of these is cloud-gated by
-inspection, but each needs confirming before acting:
+The pin's `app/Cargo.toml` `default` list carries 193 entries; this fork's had
+141. The list was trimmed once, wholesale, and never reconciled. Eight of the
+sixteen additionally had no `#[cfg(feature = "x")] FeatureFlag::Y` entry at all,
+so they were declared-but-never-wired — adding the feature to `default` alone
+would have done nothing.
 
-| flag | call sites | enable path | upstream tier |
-|---|---:|---|---|
-| `GroupedTabs` | 54 | **none at all** | — |
-| `QueueSlashCommand` | 36 | cargo `queue_slash_command`, not in `default` | DOGFOOD |
-| `WarpControlCli` | 25 | **none at all** | DOGFOOD |
-| `EditableMarkdownMermaid` | 23 | cargo, not in `default` | DOGFOOD |
-| `PinnedTabs` | 22 | **none at all** | — |
-| `GitOperationsInCodeReview` | 22 | cargo, not in `default` | PREVIEW |
-| `TerminalLifecycleRecovery` | 16 | **none at all** | DOGFOOD |
-| `OscHyperlinks` | 16 | **none at all** | DOGFOOD |
-| `JupyterNotebookRendering` | 14 | **none at all** | DOGFOOD |
-| `KittyImages` | 9 | **none at all** | — |
-| `ITermImages` | 9 | cargo `iterm_images`, not in `default` | — |
-| `DirectoryTabColors` | 9 | cargo, not in `default` | DOGFOOD |
+- [x] **Restore the 15. DONE 2026-08-15.** Declared the 8 missing cargo features,
+      added the 8 missing `extra_flags` entries, and put all 15 in `default`.
+      `SoloUserByok` deliberately excluded — BYOK is bring-your-own-**key**
+      against Warp's account system, irrelevant to a BYOP fork, and it had one
+      reference in `lib.rs` with no implementation behind it.
 
-`GroupedTabs`, `PinnedTabs` and `KittyImages` are the striking ones: substantial
-local terminal features with **no enable path whatsoever** — not a flag list, not
-a cargo feature, not the env hook. `KittyImages`/`ITermImages` are inline image
-protocols, which is a user-visible terminal capability simply switched off.
+      Verified all 15 are default-on at the pin before enabling: 14 via the pin's
+      `default`, `DragTabsToWindows` via its `RELEASE_FLAGS`. Compiles clean.
 
-Full audit output: regenerate with the three-path check above; the 2026-08-15 run
-is not committed (scratch only).
+      What was restored, with the implementation each unlocks:
+      | flag | implementation |
+      |---|---|
+      | `GroupedTabs` | `app/src/workspace/tab_group.rs` (54 call sites) |
+      | `QueueSlashCommand` | `app/src/ai/blocklist/queued_query.rs` |
+      | `PinnedTabs` | `app/src/workspace/view/tab_grouping.rs` |
+      | `TerminalLifecycleRecovery` | `app/src/terminal/model/lifecycle/` (+ own tests) |
+      | `AgentHarness` | gates every **non-Oz** harness — see below |
+      | `CodexPlugin` | `app/src/terminal/cli_agent_sessions/plugin_manager/codex.rs` |
+      | `GitOperationsInCodeReview` | commit / push / create-PR from the review panel |
+      | `PendingUserQueryIndicator` | `app/src/terminal/view/pending_user_query.rs` |
+      | `RemoteCodebaseIndexing` | `app/src/ai/codebase_auto_indexing.rs` |
+      | `BackgroundComputerUse` | `execute/{use_computer,request_computer_use}.rs` |
+      | `DirectoryTabColors`, `DragTabsToWindows`, `VerticalTabsSummaryMode`, `QueuedPromptsV2`, `AsyncFind` | tab/window/find surfaces |
 
-- [ ] **Decide, per flag, which of the 91 should be on.** Cheapest work available
-      in this repo: no porting, no compiling against the pin, just a decision and
-      a line. Start with the table above.
-- [ ] **Record the decision for the ones that stay off.** They currently read as
-      missing features to every audit, and this fleet re-derived several of them
-      from scratch for exactly that reason.
-- [ ] **Fix the category error in existing entries.** Some items tracked elsewhere
-      in this file as "missing subsystems" may be flag-dark rather than unported.
-      Check the three paths before sizing any of them as porting work.
+**`AgentHarness` is the one that mattered most.** `agent_sdk/mod.rs:151` rejects
+`--harness` for anything that is not `Harness::Oz` when the flag is off, and
+`agent_view.rs:165` *silently drops CLI agent conversations on restore* with only
+a `log::warn!`. Oz is Warp's cloud agent, which this fork does not have at all —
+so the flag being off blocked the Claude Code and Codex harnesses that a BYOP
+fork exists to use.
+
+- [ ] **Watch these two at runtime.** Both touch subsystems this fork has already
+      mis-classified once and had to reverse: `BackgroundComputerUse` (computer
+      use is the documented false-positive in `FORCE_DISABLED_FLAGS`' own comment)
+      and `RemoteCodebaseIndexing` (`DECLINED.md` carries a codebase-indexing
+      reversal). If behaviour regresses after this change, start here.
+- [ ] **`AsyncFind` is an override, not a gate**
+      (`FeatureFlag::AsyncFind.is_enabled() || *self.async_find_enabled`). Turning
+      it on matches upstream but *force-enables* async find and hides the user
+      toggle. Revisit if the lost setting is wanted back.
+- [ ] **Decide the 5 fork-original dark flags**, and record the reason in
+      `DECLINED.md` rather than leaving them merely absent from every list.
+- [ ] **Audit the remaining ~37 `default` entries the pin has and this fork does
+      not.** 15 of the 52-entry gap gated feature flags; the rest were not
+      examined and may gate build behaviour rather than flags.
 
 ## UNPORTED UPSTREAM FIXES — 2026-08-15 AUDIT (fleet walk of `0dbd3d56..02b53fcd8`)
 
