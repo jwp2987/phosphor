@@ -2347,6 +2347,54 @@ here, so this list stays a work ledger rather than a history.
       keyring service names — **API keys saved in the GUI are invisible to the
       TUI.** Storage identity, needs the layer-3 migration story.
 
+### Defects found by the fix-refutation pass (2026-08-15)
+
+- [ ] **#601 — every OpenCode/DeepSeek harness launch logs a false install failure.**
+      `driver.rs:1125` calls `manager.install()` with no `can_auto_install()`
+      check. DeepSeek returns `false` unconditionally, OpenCode likewise, Codex
+      behind a flag — so `install()` hits the trait default `Err("Auto-install
+      not supported")` and logs a warning for a *correct* decline. Also masks a
+      genuine Claude failure in the same stream. Distinct from #600: that path
+      needs `has_local_marketplace_override()`, this one needs
+      `can_auto_install()`, and the pin calls each in only one of the two.
+- [ ] **#602 — MCP template variables render unmasked.** `mcp_install_flow.rs`
+      collects them into the shared input with **no** `input_ownership`, while
+      its own `Debug` impl writes `[REDACTED]`. `TuiMcpTemplateVariable` carries
+      no secret flag, so nothing distinguishes an API token from a hostname.
+      Same class as #599; masking primitive arrives with `repin-input`.
+
+### Known-incomplete fixes — verified by refutation, not yet closed
+
+- [ ] **#596's central claim does not hold.** The commit says the cancellation
+      spelling is "written down once and both halves refer to the variant". The
+      **publisher still hardcodes `error_type: Some("cancelled")`**, and the test
+      that appears to guard this only asserts the constant against its own
+      literal. Also the fix moves the *status chip* only — `notifications/model.rs`
+      still files every `Failed` as `NotificationCategory::Error`, so a Ctrl-C
+      still lands in the notification centre as an error.
+- [ ] **#597's fix is sound; its justification is wrong.** The
+      permanent-bootstrap-file argument does not hold — that file is returned
+      only for `BootstrapSessionType::Local` PowerShell (the case #597 never
+      affected), and `WarpifiedRemote` streams the script from the local binary
+      each session rather than using an RC file. The rename direction is still
+      right on its other grounds, but **the wrong evidence is now baked into two
+      permanent doc comments** and should be corrected.
+- [ ] **`check_generator_wrapper_names` is defeated by commenting a line out —
+      8 of 8 `require`/`require_count` checks.** Commenting the pwsh
+      `Export-ModuleMember` line *is* #597's failure mode, and the guard passes.
+      It checks presence, not activeness. It also scans 4 of the 19 files in
+      `app/assets/bundled/bootstrap/`, so a third spelling in `bash.sh` passes.
+- [ ] **`check_brand_strings` residual misses**, exact text:
+      `concat!("Warp", " Agent…")`, `format!("… {} Agent…", "Warp")`,
+      `"Zap-powered completions"`, `"Zap2 is available"`, `"Warp\nAgent"`,
+      `"Warpを再起動してください"` (Rust side only), and **Fluent terms
+      (`-term = Warp Agent`) are not scanned at all** — zero terms today.
+      Worst false positive: a `brand-guard: allow` marker covers one line, so a
+      multi-line Fluent value or a marked message's `.attribute` still fires —
+      which hits its one sanctioned use, the AGPL §13 attribution.
+      **`Zapfino` fires in production code**; green today only because all 16
+      occurrences are in `*_test.rs`. Wider instance: `Ozone`.
+
 ### Defects — correctness of the guards and the record
 
 - [x] **#591 — `user_controlled_alt_screen_...` asserts far less than the pin.**
