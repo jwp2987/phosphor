@@ -1,4 +1,4 @@
-use settings_page::{FilteredPageType, MatchData, PageType, SettingsWidget};
+use settings_page::{FilteredPageType, MatchData, PageType, SettingsWidget, search_terms_match};
 use warpui::elements::Empty;
 use warpui::{App, AppContext, Element, Entity, View};
 
@@ -1207,18 +1207,21 @@ fn arrow_down_wrapping_into_collapsed_umbrella_respects_search_filter() {
 // Searching on an AI/Code subpage rebuilds the subpage's PageType (via
 // set_active_subpage), which resets its widget filter to every widget; the
 // active query must be reapplied so only matching widgets render. These tests
-// exercise the real PageType::Uncategorized filter lifecycle via the real
-// `update_filter` method. The production reapply call sites in mod.rs
+// exercise the real PageType::Uncategorized filter lifecycle and the real
+// `search_terms_match` predicate. The production reapply call sites in mod.rs
 // (handle_search_editor_event/cycle_pages/SelectAndRefresh) need a full
-// ViewContext<SettingsView>, so they are verified via computer-use screenshots.
+// ViewContext<SettingsView>, so they are verified by reading (NOT COMPILED --
+// builds are suspended) rather than computer-use screenshots here.
 //
-// NOTE: Warp additionally has a `search_terms_match_direct_unit_checks` test
-// exercising a module-level `pub(super) fn search_terms_match` in
-// settings_page.rs. In this fork that helper is a private fn nested inside
-// `PageType::update_filter` (not exposed at module scope), so it can't be
-// called directly from here -- see final report (NEEDS-ADAPTATION). Its
-// behavior is still covered indirectly by the `update_filter`-driven tests
-// below.
+// Upstream 2356ddab2 (#14116): `search_terms_match` is extracted to a
+// `pub(super)` module-level fn in settings_page.rs (was previously nested
+// inside `PageType::update_filter`), which is what makes
+// `search_terms_match_direct_unit_checks` below possible -- an earlier sweep
+// left that test out because the helper wasn't module-level yet. Note this
+// test-only sweep also did NOT port the production fix (the
+// `reapply_search_filter_to_active_subpage` call sites in mod.rs) -- these
+// tests exercise `PageType::update_filter` directly and would have stayed
+// green either way, which is exactly why the omission wasn't caught here.
 
 /// Minimal View so PageType<V> can be instantiated in a unit test without the
 /// full SettingsView/ViewContext the production reapply call sites require.
@@ -1285,6 +1288,34 @@ fn visible_widget_count<V: View>(page: &PageType<V>) -> usize {
         panic!("expected Uncategorized page");
     };
     widgets.len()
+}
+
+#[test]
+fn search_terms_match_direct_unit_checks() {
+    // Empty query matches everything (mirrors PageType::update_filter's guard).
+    assert!(search_terms_match("warp agent global ai toggle", ""));
+    // All-words, case-insensitive, non-contiguous.
+    assert!(search_terms_match(
+        "active ai autosuggestions prompt",
+        "autosuggestions"
+    ));
+    assert!(search_terms_match(
+        "active ai autosuggestions prompt",
+        "ACTIVE AI"
+    ));
+    assert!(search_terms_match(
+        "file search fuzzy opener",
+        "file search"
+    ));
+    // Every word must appear.
+    assert!(!search_terms_match(
+        "warp agent global ai toggle",
+        "file search"
+    ));
+    assert!(!search_terms_match(
+        "active ai autosuggestions prompt",
+        "autosuggestions key"
+    ));
 }
 
 #[test]
