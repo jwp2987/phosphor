@@ -11,8 +11,8 @@ use crate::ai::agent::todos::AIAgentTodoList;
 use crate::ai::agent::{
     util::parse_markdown_into_text_and_code_sections, AIAgentAction, AIAgentActionType,
     AIAgentCitation, AIAgentInput, AIAgentOutputMessage, AIAgentText, AIAgentTodo,
-    ArtifactCreatedData, MessageId, SuggestedAgentModeWorkflow, SuggestedRule, Suggestions,
-    TodoOperation,
+    ArtifactCreatedData, MessageId, RejectedToolCallKind, SuggestedAgentModeWorkflow,
+    SuggestedRule, Suggestions, TodoOperation,
 };
 use crate::ai::agent::{
     CloneRepositoryURL, SubagentCall, SubagentType, SummarizationType, WebFetchStatus,
@@ -514,11 +514,12 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
             // has no visible trace at all, which is the silent-failure this branch fixes.
             api::message::Message::ToolCallResult(_) => {
                 match invalid_arguments_rejected_tool_call(&self.server_message_data) {
-                    Some((tool, detail)) => Ok(MaybeAIAgentOutputMessage::Message(
+                    Some((tool, detail, kind)) => Ok(MaybeAIAgentOutputMessage::Message(
                         AIAgentOutputMessage::rejected_tool_call(
                             MessageId::new(self.id),
                             tool,
                             detail,
+                            kind,
                         )
                         .with_citations(citations),
                     )),
@@ -566,18 +567,22 @@ impl ConvertAPIMessageToClientOutputMessage for api::Message {
 /// `invalid_arguments` marker produces a visible message.
 fn invalid_arguments_rejected_tool_call(
     server_message_data: &str,
-) -> Option<(Option<String>, String)> {
+) -> Option<(Option<String>, String, RejectedToolCallKind)> {
     let payload: serde_json::Value = serde_json::from_str(server_message_data).ok()?;
     // `unknown_tool` is the same class of event — a tool call rejected before it ran — split
     // out of `invalid_arguments` so the model is told to fix the NAME rather than the
     // arguments. It must stay recognized here or splitting it would have silently undone
     // this function's whole purpose for that case.
-    if !matches!(
-        payload.get("error").and_then(serde_json::Value::as_str),
-        Some("invalid_arguments" | "unknown_tool")
-    ) {
-        return None;
-    }
+    //
+    // The `error` field is also the only place the producer's type-level distinction survives
+    // the trip through the protobuf message, so it is carried out as `RejectedToolCallKind`
+    // rather than discarded: until it was, the UI told the user to fix the ARGUMENTS of a
+    // call whose arguments were never looked at.
+    let kind = match payload.get("error").and_then(serde_json::Value::as_str) {
+        Some("invalid_arguments") => RejectedToolCallKind::InvalidArguments,
+        Some("unknown_tool") => RejectedToolCallKind::UnknownToolName,
+        _ => return None,
+    };
     let tool = payload
         .get("tool")
         .and_then(serde_json::Value::as_str)
@@ -589,7 +594,7 @@ fn invalid_arguments_rejected_tool_call(
         .filter(|s| !s.is_empty())
         .unwrap_or("its arguments did not match the tool's expected format")
         .to_owned();
-    Some((tool, detail))
+    Some((tool, detail, kind))
 }
 
 impl From<api::message::AgentOutput> for AIAgentText {

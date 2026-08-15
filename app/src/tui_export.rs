@@ -50,9 +50,9 @@ pub use crate::ai::agent::{
     AIAgentTextSection, AIAgentTodo, AIAgentTodoId, AgentOutputImage, AgentOutputImageLayout,
     AgentOutputMermaidDiagram, AgentOutputTable, AskUserQuestionResult, CancellationReason,
     FileGlobV2Result, GrepResult, ImageContext, MessageId, ReceivedMessageDisplay,
-    RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, ShellCommandDelay,
-    StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType, TodoOperation,
-    UserQueryMode, rejected_tool_call_text,
+    RejectedToolCallKind, RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared,
+    ShellCommandDelay, StartAgentExecutionMode, SuggestNewConversationResult, SummarizationType,
+    TodoOperation, UserQueryMode, rejected_tool_call_text,
 };
 pub use crate::ai::agent_conversations_model::{
     AgentConversationsModel, AgentConversationsModelEvent, AgentManagementFilters,

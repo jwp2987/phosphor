@@ -7,7 +7,7 @@ use super::{
     MaybeAIAgentOutputMessage,
 };
 use crate::ai::agent::task::TaskId;
-use crate::ai::agent::{AIAgentActionType, AIAgentOutputMessageType};
+use crate::ai::agent::{AIAgentActionType, AIAgentOutputMessageType, RejectedToolCallKind};
 
 fn file_artifact_created_message(filepath: &str, description: &str) -> api::Message {
     api::Message {
@@ -208,12 +208,14 @@ fn tool_call_result_message(server_message_data: &str) -> api::Message {
 /// Extracts the `(tool, detail)` pair from an `AIAgentOutputMessageType::RejectedToolCall`,
 /// panicking if the conversion produced anything else. Used to assert the new failure
 /// representation's actual shape, not just that some text rendered.
-fn extract_rejected_tool_call(output: MaybeAIAgentOutputMessage) -> (Option<String>, String) {
+fn extract_rejected_tool_call(
+    output: MaybeAIAgentOutputMessage,
+) -> (Option<String>, String, RejectedToolCallKind) {
     let MaybeAIAgentOutputMessage::Message(output_message) = output else {
         panic!("expected an output message, got NoClientRepresentation");
     };
     match output_message.message {
-        AIAgentOutputMessageType::RejectedToolCall { tool, detail } => (tool, detail),
+        AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => (tool, detail, kind),
         other => panic!("expected a RejectedToolCall output message, got {other:?}"),
     }
 }
@@ -248,21 +250,71 @@ fn invalid_arguments_tool_call_result_becomes_a_rejected_tool_call_message() {
         })
         .expect("conversion should succeed");
 
-    let (tool, detail) = extract_rejected_tool_call(converted);
+    let (tool, detail, kind) = extract_rejected_tool_call(converted);
     assert_eq!(
         tool.as_deref(),
         Some("apply_file_diffs"),
         "the tool name must be carried structurally, not just embedded in prose"
     );
     assert!(detail.contains("missing field `operations`"), "{detail}");
+    assert_eq!(kind, RejectedToolCallKind::InvalidArguments);
 
     // The shared rendering text (what GUI/TUI/copy/SDK all actually show the user) must
     // still say the call was rejected, not just relay the raw detail.
-    let rendered = crate::ai::agent::rejected_tool_call_text(tool.as_deref(), &detail);
+    let rendered = crate::ai::agent::rejected_tool_call_text(tool.as_deref(), &detail, kind);
     assert!(
         rendered.to_lowercase().contains("rejected"),
         "the message must say the call was rejected, not just relay the raw detail: {rendered}"
     );
+}
+
+/// An `unknown_tool` marker must arrive as `RejectedToolCallKind::UnknownToolName`, and the
+/// rendered text must NOT tell the user the arguments need correcting.
+///
+/// Observed 2026-08-15 (`zap.log`, `gpt-oss:20b` over Ollama): the model sent
+/// `run_shell_log??` carrying a well-formed `file_glob` argument object. `chat_stream` told
+/// the *model* the right thing ("Your ARGUMENTS were not the problem"), but this conversion
+/// dropped the `error` discriminator, so the *user* was shown "Asking the model to retry with
+/// corrected arguments" — advice pointing at the only part of the call that was correct.
+#[test]
+fn unknown_tool_marker_is_carried_as_a_name_failure_not_an_argument_failure() {
+    let task_id = TaskId::new("task".to_string());
+    // Mirrors the `unknown_tool` payload chat_stream builds when `tools::lookup` misses.
+    let payload = serde_json::json!({
+        "error": "unknown_tool",
+        "detail": "unknown tool name: run_shell_log??",
+        "tool": "run_shell_log??",
+        "received_args": r#"{"search_dir":"/var/log/libvirt/qemu","patterns":["*HA*.log"]}"#,
+        "executed": false,
+        "hint": "No tool with that name exists, so NOTHING RAN.",
+    })
+    .to_string();
+    let message = tool_call_result_message(&payload);
+
+    let converted = message
+        .to_client_output_message(ConversionParams {
+            task_id: &task_id,
+            current_todo_list: None,
+            active_code_review: None,
+            skill_path_origin: &SkillPathOrigin::Local,
+        })
+        .expect("conversion should succeed");
+
+    let (tool, detail, kind) = extract_rejected_tool_call(converted);
+    assert_eq!(tool.as_deref(), Some("run_shell_log??"));
+    assert_eq!(
+        kind,
+        RejectedToolCallKind::UnknownToolName,
+        "the producer's `error` discriminator must survive the trip, not be re-derived \
+         from the detail string"
+    );
+
+    let rendered = crate::ai::agent::rejected_tool_call_text(tool.as_deref(), &detail, kind);
+    assert!(
+        !rendered.contains("corrected arguments"),
+        "an unknown NAME must not be reported as an argument problem: {rendered}"
+    );
+    assert!(rendered.to_lowercase().contains("rejected"), "{rendered}");
 }
 
 /// A `tool` field missing from the marker (should never happen in practice, but the parser
@@ -287,7 +339,7 @@ fn invalid_arguments_without_a_tool_name_still_produces_a_rejected_tool_call() {
         })
         .expect("conversion should succeed");
 
-    let (tool, detail) = extract_rejected_tool_call(converted);
+    let (tool, detail, _kind) = extract_rejected_tool_call(converted);
     assert_eq!(tool, None);
     assert!(detail.contains("missing field `operations`"), "{detail}");
 }

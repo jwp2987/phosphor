@@ -5661,9 +5661,11 @@ pub async fn generate_byop_output(
                                 .map(|t| now.duration_since(t).as_millis() as u64 >= TOOL_ARGS_UPDATE_THROTTLE_MS)
                                 .unwrap_or(true);
                             if elapsed_ok {
-                                if let Ok(parsed) =
-                                    parse_incoming_tool_call(&call, mcp_context.as_ref())
-                                {
+                                if let Ok(parsed) = parse_incoming_tool_call(
+                                    &call,
+                                    mcp_context.as_ref(),
+                                    &tool_names_for_extract,
+                                ) {
                                     let mut updated = make_tool_call_message(
                                         &current_task_id,
                                         &request_id,
@@ -5681,7 +5683,11 @@ pub async fn generate_byop_output(
                                 // Reparse failed (intermediate state): silent, wait for the
                                 // next chunk.
                             }
-                        } else { match parse_incoming_tool_call(&call, mcp_context.as_ref())
+                        } else { match parse_incoming_tool_call(
+                            &call,
+                            mcp_context.as_ref(),
+                            &tool_names_for_extract,
+                        )
                         { Ok(parsed) => {
                             // First successful parse → immediately emit a placeholder card.
                             // Every chunk gets reparsed until the placeholder is emitted
@@ -6302,7 +6308,7 @@ pub async fn generate_byop_output(
                 continue;
             }
 
-            match parse_incoming_tool_call(&call, mcp_context.as_ref()) {
+            match parse_incoming_tool_call(&call, mcp_context.as_ref(), &tool_names_for_extract) {
                 Ok(warp_tool) => {
                     // If a placeholder card was already emitted during the ToolCallChunk
                     // stage (same call_id), use update_message instead to refresh it in
@@ -7035,9 +7041,110 @@ fn double_encoded_container_hint(detail: &str) -> Option<&'static str> {
     )
 }
 
+/// Tools a garbled name may be recovered ONTO by [`recover_tool_by_arg_shape`].
+///
+/// Deliberately read-only. Recovery infers intent from the argument shape, and an inference is
+/// occasionally wrong; the cost of a wrong inference must stay bounded by "we searched
+/// something the model didn't ask about". `run_shell_command`, `apply_file_diffs`,
+/// `write_to_long_running_shell_command` and the computer-use pair are therefore absent — a
+/// misrouted call there executes or overwrites, and no amount of schema matching justifies
+/// running a command the model never named.
+///
+/// `webfetch` / `websearch` are absent for the same reason in a different currency: they leave
+/// the machine. They are already behind the profile's web-search privacy switch, and a
+/// recovered call would send a query outward that the user never approved by name.
+///
+/// `ask_user_question`, `todowrite` and the UI markers are absent because they have nothing
+/// worth recovering — no result the model is blocked on.
+///
+/// `search_codebase` and `get_relevant_files` are absent for a structural reason rather than a
+/// safety one: `chat_stream` intercepts them BY NAME upstream of `parse_incoming_tool_call`,
+/// and their `from_args` deliberately always returns `Err`. Recovery routes through the typed
+/// path, so it could never reach their dispatchers anyway — listing them would only look like
+/// it worked, and would silently start mis-routing if either `from_args` were ever filled in.
+const NAME_RECOVERY_ELIGIBLE_TOOLS: &[&str] = &[
+    "read_files",
+    "grep",
+    "file_glob",
+    "read_shell_command_output",
+    "read_skill",
+    "read_documents",
+];
+
+/// Last-ditch recovery for a tool call whose NAME is garbage but whose ARGUMENTS are not.
+///
+/// Small local models name tools badly. `UnknownToolName`'s doc comment records `gpt-oss:20b`
+/// inventing `search` when it meant `file_glob`; on 2026-08-15 the same model on the same
+/// intended tool produced `run_shell_log??` carrying
+/// `{"search_dir":"/var/log/libvirt/qemu","patterns":["*HA*.log"],"limit":10}` — an exact,
+/// unique fit for `file_glob`'s schema. The arguments are the reliable signal; the name is the
+/// unreliable one. When the arguments identify exactly one advertised read-only tool, honour
+/// them instead of spending a round trip telling the model to rename its call.
+///
+/// A match requires ALL of:
+/// - every key the model sent is a declared property of the candidate (no stray fields), and
+/// - every `required` property of the candidate is present, and
+/// - exactly one candidate in the whole registry satisfies the above (ambiguity → no
+///   recovery — two tools that fit equally well mean the shape did not identify anything), and
+/// - the candidate's own `from_args` accepts the arguments, so recovery never trades an
+///   unknown-name rejection for an invalid-arguments one under a name the model never wrote.
+///
+/// `advertised` is the tool list actually sent this turn, so recovery cannot resurrect a tool
+/// that was withdrawn — `read_files` on a legacy-SSH session, anything in
+/// `PLAN_MODE_BLOCKED_TOOLS` under `/plan`. This mirrors the allowlist reasoning on
+/// `available_tool_names`: a withdrawn tool reached by a back door is the exact failure the
+/// withdrawal exists to prevent.
+fn recover_tool_by_arg_shape(
+    args_str: &str,
+    advertised: &[String],
+) -> Option<&'static tools::OpenAiTool> {
+    let parsed: serde_json::Value = serde_json::from_str(args_str).ok()?;
+    let sent = parsed.as_object()?;
+    // An empty argument object identifies nothing — several tools take only optionals.
+    if sent.is_empty() {
+        return None;
+    }
+
+    let mut found: Option<&'static tools::OpenAiTool> = None;
+    for candidate in tools::REGISTRY.iter().copied() {
+        if !NAME_RECOVERY_ELIGIBLE_TOOLS.contains(&candidate.name)
+            || !advertised.iter().any(|n| n == candidate.name)
+        {
+            continue;
+        }
+        let schema = (candidate.parameters)();
+        let Some(properties) = schema.get("properties").and_then(serde_json::Value::as_object)
+        else {
+            continue;
+        };
+        if !sent.keys().all(|k| properties.contains_key(k)) {
+            continue;
+        }
+        let required_satisfied = schema
+            .get("required")
+            .and_then(serde_json::Value::as_array)
+            .map(|req| {
+                req.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .all(|r| sent.contains_key(r))
+            })
+            .unwrap_or(true);
+        if !required_satisfied || (candidate.from_args)(args_str).is_err() {
+            continue;
+        }
+        if found.is_some() {
+            // Ambiguous: the argument shape fits more than one tool, so it identifies none.
+            return None;
+        }
+        found = Some(candidate);
+    }
+    found
+}
+
 fn parse_incoming_tool_call(
     call: &ToolCall,
     mcp_ctx: Option<&crate::ai::agent::MCPContext>,
+    advertised: &[String],
 ) -> anyhow::Result<api::message::tool_call::Tool> {
     // genai's ToolCall.fn_arguments is a Value; tools::*'s from_args expects &str, so we
     // serialize the Value back into a string before passing it in (the original protocol
@@ -7050,10 +7157,25 @@ fn parse_incoming_tool_call(
     if tools::mcp::is_mcp_function(&call.fn_name) {
         return tools::mcp::parse_mcp_tool_call(&call.fn_name, &args_str, mcp_ctx);
     }
-    let Some(tool) = tools::lookup(&call.fn_name) else {
-        return Err(anyhow::Error::new(UnknownToolName {
-            name: call.fn_name.clone(),
-        }));
+    let tool = match tools::lookup(&call.fn_name) {
+        Some(tool) => tool,
+        // The name resolved to nothing. Before spending a round trip on the rename, see
+        // whether the ARGUMENTS name a tool unambiguously — see `recover_tool_by_arg_shape`.
+        None => match recover_tool_by_arg_shape(&args_str, advertised) {
+            Some(recovered) => {
+                log::warn!(
+                    "[byop] tool name recovery: {} → {} (unique read-only arg-shape match)",
+                    call.fn_name,
+                    recovered.name
+                );
+                recovered
+            }
+            None => {
+                return Err(anyhow::Error::new(UnknownToolName {
+                    name: call.fn_name.clone(),
+                }))
+            }
+        },
     };
     match (tool.from_args)(&args_str) {
         Ok(t) => Ok(t),
@@ -7547,6 +7669,102 @@ fn make_finished_done(
                 request_cost: None,
             },
         )),
+    }
+}
+
+#[cfg(test)]
+mod name_recovery_tests {
+    use super::*;
+
+    /// Every tool advertised on the legacy-SSH session where the defect was observed.
+    fn advertised_on_legacy_ssh() -> Vec<String> {
+        [
+            "run_shell_command",
+            "grep",
+            "file_glob",
+            "write_to_long_running_shell_command",
+            "read_shell_command_output",
+            "ask_user_question",
+            "read_documents",
+            "edit_documents",
+            "create_documents",
+            "suggest_prompt",
+            "open_code_review",
+            "transfer_shell_command_control_to_user",
+            "todowrite",
+            "webfetch",
+            "websearch",
+        ]
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect()
+    }
+
+    /// The verbatim call from `zap.log` (2026-08-15T04:10:43Z, `gpt-oss:20b` over Ollama, a
+    /// legacy-SSH session): the name is unrecoverable garbage, the arguments are a clean
+    /// `file_glob`. Before recovery this cost a full round trip and showed the user a red row
+    /// telling them to fix arguments that were already correct.
+    #[test]
+    fn recovers_the_observed_run_shell_log_call_to_file_glob() {
+        let args = r#"{"search_dir":"/var/log/libvirt/qemu","patterns":["*HA*.log"],"limit":10}"#;
+        let recovered = recover_tool_by_arg_shape(args, &advertised_on_legacy_ssh());
+        assert_eq!(
+            recovered.map(|t| t.name),
+            Some("file_glob"),
+            "the argument shape identifies file_glob unambiguously"
+        );
+    }
+
+    /// The bound on the whole mechanism: a shape that fits an execution-class tool must NOT
+    /// be recovered, however unambiguous it is. `run_shell_command` is the tool most likely to
+    /// be reached this way and the one where a wrong inference actually runs something.
+    #[test]
+    fn never_recovers_onto_an_execution_class_tool() {
+        let args =
+            r#"{"command":"rm -rf /tmp","is_read_only":false,"uses_pager":false,"is_risky":true}"#;
+        assert!(
+            recover_tool_by_arg_shape(args, &advertised_on_legacy_ssh()).is_none(),
+            "a garbled name must never be resolved into running a shell command"
+        );
+    }
+
+    /// Recovery reads the turn's advertised list, not the registry, so it cannot resurrect a
+    /// tool that was deliberately withdrawn. `read_files` is withdrawn on a legacy-SSH session
+    /// (`LEGACY_SSH_BLOCKED_TOOLS`), and reaching it by argument shape would be exactly the
+    /// back door `available_tool_names`' allowlist comment warns about.
+    #[test]
+    fn does_not_resurrect_a_tool_withdrawn_this_turn() {
+        let args = r#"{"files":[{"path":"/etc/os-release"}]}"#;
+        assert!(
+            recover_tool_by_arg_shape(args, &advertised_on_legacy_ssh()).is_none(),
+            "read_files is not advertised on a legacy-SSH session and must stay unreachable"
+        );
+
+        let mut with_read_files = advertised_on_legacy_ssh();
+        with_read_files.push("read_files".to_owned());
+        assert_eq!(
+            recover_tool_by_arg_shape(args, &with_read_files).map(|t| t.name),
+            Some("read_files"),
+            "the same shape resolves once the tool is actually on the turn's list"
+        );
+    }
+
+    /// A key the candidate does not declare means the model was describing something else;
+    /// a partial fit is not a fit.
+    #[test]
+    fn a_stray_key_blocks_recovery() {
+        let args = r#"{"search_dir":"/var/log","patterns":["*.log"],"recursive":true}"#;
+        assert!(recover_tool_by_arg_shape(args, &advertised_on_legacy_ssh()).is_none());
+    }
+
+    /// Empty and non-object argument payloads identify nothing and must not resolve.
+    #[test]
+    fn empty_or_malformed_arguments_never_recover() {
+        let advertised = advertised_on_legacy_ssh();
+        assert!(recover_tool_by_arg_shape("{}", &advertised).is_none());
+        assert!(recover_tool_by_arg_shape("[]", &advertised).is_none());
+        assert!(recover_tool_by_arg_shape("not json", &advertised).is_none());
+        assert!(recover_tool_by_arg_shape("", &advertised).is_none());
     }
 }
 

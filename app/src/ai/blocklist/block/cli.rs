@@ -1749,11 +1749,12 @@ impl View for CLISubagentView {
                         }
                         // Same failed-action affordance (red-X `RenderableAction`) as the
                         // main block renderer's handling of this message kind.
-                        AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                        AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
                             if is_latest_model && !should_hide_responses {
                                 let text = crate::ai::agent::rejected_tool_call_text(
                                     tool.as_deref(),
                                     detail,
+                                    *kind,
                                 );
                                 let rendered = RenderableAction::new(&text, app)
                                     .with_icon(inline_action_icons::red_x_icon(appearance).finish())

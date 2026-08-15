@@ -594,8 +594,8 @@ impl AIAgentOutput {
                     result.push(format!("Received {} agent events", event_ids.len()));
                     last_was_action = false;
                 }
-                AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
-                    result.push(rejected_tool_call_text(tool.as_deref(), detail));
+                AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
+                    result.push(rejected_tool_call_text(tool.as_deref(), detail, *kind));
                     last_was_action = false;
                 }
             }
@@ -1718,9 +1718,10 @@ pub enum AIAgentOutputMessageType {
     EventsFromAgents {
         event_ids: Vec<String>,
     },
-    /// A tool call the model attempted that was rejected before dispatch — in practice
-    /// always because the arguments failed to parse against the tool's JSON Schema (see
-    /// `invalid_arguments_rejected_tool_call` in `convert_from.rs` for the producing side).
+    /// A tool call the model attempted that was rejected before dispatch — either because
+    /// the arguments failed to parse against the tool's JSON Schema, or because no tool by
+    /// that name exists (see `invalid_arguments_rejected_tool_call` in `convert_from.rs` for
+    /// the producing side). `kind` says which; they need different user-facing advice.
     ///
     /// This is deliberately not represented as an `Action`: parsing failed before there was
     /// enough information to build a real, typed `AIAgentActionType` (every variant of that
@@ -1733,17 +1734,52 @@ pub enum AIAgentOutputMessageType {
         tool: Option<String>,
         /// Human-readable detail on why the call was rejected.
         detail: String,
+        /// Which of the two pre-dispatch failures this was.
+        kind: RejectedToolCallKind,
     },
+}
+
+/// Why a tool call was rejected before dispatch.
+///
+/// The distinction is carried rather than re-derived: `chat_stream` already separates the two
+/// cases by TYPE (`UnknownToolName` vs a `from_args` error) and encodes the split in the
+/// synthetic payload's `error` field, which `convert_from` parses. Collapsing them here would
+/// mean sniffing the detail string to get back what the producer already knew — the exact
+/// mistake `UnknownToolName`'s doc comment warns against.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RejectedToolCallKind {
+    /// The tool exists; `from_args` rejected the arguments against its JSON Schema.
+    InvalidArguments,
+    /// `tools::lookup` found no tool by that name, so the arguments were never even examined.
+    UnknownToolName,
 }
 
 /// Shared user-facing sentence for a [`AIAgentOutputMessageType::RejectedToolCall`]. Used by
 /// every renderer/serializer of that variant (GUI, TUI, `format_for_copy`, `Display`, the
 /// headless SDK driver) so the phrasing stays consistent in one place.
-pub fn rejected_tool_call_text(tool: Option<&str>, detail: &str) -> String {
-    const RETRY_NOTE: &str = "Asking the model to retry with corrected arguments.";
+///
+/// The closing note is per-`kind` because the generic "retry with corrected arguments" is
+/// actively wrong for an unknown name — the arguments are usually fine, and telling the user
+/// (and, in the transcript, the model) to fix them points at the half that worked. Observed
+/// 2026-08-15 from `gpt-oss:20b` over Ollama: `run_shell_log??` carrying a well-formed
+/// `file_glob` argument object.
+pub fn rejected_tool_call_text(
+    tool: Option<&str>,
+    detail: &str,
+    kind: RejectedToolCallKind,
+) -> String {
+    let note = match kind {
+        RejectedToolCallKind::InvalidArguments => {
+            "Asking the model to retry with corrected arguments."
+        }
+        RejectedToolCallKind::UnknownToolName => {
+            "No tool by that name exists, so nothing ran. Asking the model to retry with one \
+             of the tool names it was given."
+        }
+    };
     match tool {
-        Some(tool) => format!("Tool call rejected: {tool}\n\n{detail}\n\n{RETRY_NOTE}"),
-        None => format!("Tool call rejected\n\n{detail}\n\n{RETRY_NOTE}"),
+        Some(tool) => format!("Tool call rejected: {tool}\n\n{detail}\n\n{note}"),
+        None => format!("Tool call rejected\n\n{detail}\n\n{note}"),
     }
 }
 
@@ -1940,8 +1976,8 @@ impl Display for AIAgentOutputMessage {
             AIAgentOutputMessageType::EventsFromAgents { event_ids } => {
                 write!(f, "Received {} agent events", event_ids.len())?
             }
-            AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
-                write!(f, "{}", rejected_tool_call_text(tool.as_deref(), detail))?
+            AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
+                write!(f, "{}", rejected_tool_call_text(tool.as_deref(), detail, *kind))?
             }
         }
 
@@ -2090,10 +2126,15 @@ impl AIAgentOutputMessage {
         }
     }
 
-    pub fn rejected_tool_call(id: MessageId, tool: Option<String>, detail: String) -> Self {
+    pub fn rejected_tool_call(
+        id: MessageId,
+        tool: Option<String>,
+        detail: String,
+        kind: RejectedToolCallKind,
+    ) -> Self {
         Self {
             id,
-            message: AIAgentOutputMessageType::RejectedToolCall { tool, detail },
+            message: AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind },
             citations: vec![],
         }
     }

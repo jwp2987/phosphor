@@ -1333,11 +1333,12 @@ impl TuiAIBlock {
                     // A rejected tool call is a genuine failure, not ordinary output — it
                     // reuses the same `Failure` section (and error styling) as a failed
                     // exchange, rather than a bespoke rendering path for one message kind.
-                    AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                    AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
                         sections.push(TuiAIBlockSection::Failure(
                             FailedOutputPresentation::Message(rejected_tool_call_text(
                                 tool.as_deref(),
                                 detail,
+                                *kind,
                             )),
                         ));
                     }

@@ -17,8 +17,8 @@ use warp::tui_export::{
     AgentOutputImageLayout, AgentOutputMermaidDiagram, AgentOutputTable, Appearance,
     FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback, ReceivedMessageDisplay,
     RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, SummarizationType,
-    TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode, rejected_tool_call_text,
-    should_show_failed_output_usage_notice,
+    RejectedToolCallKind, TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
+    rejected_tool_call_text, should_show_failed_output_usage_notice,
 };
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::theme::Fill as ThemeFill;
@@ -123,8 +123,11 @@ fn agent_block_renders_rejected_tool_call_as_a_failure_section() {
             // Structural assertion: the message converts to the same `Failure` section kind
             // used elsewhere for a failed exchange, carrying the shared rendering text —
             // not a `RichText` paragraph, which is what a plain-prose regression would produce.
-            let expected_text =
-                rejected_tool_call_text(Some("apply_file_diffs"), "missing field `operations`");
+            let expected_text = rejected_tool_call_text(
+                Some("apply_file_diffs"),
+                "missing field `operations`",
+                RejectedToolCallKind::InvalidArguments,
+            );
             assert_eq!(
                 block.as_ref(ctx).sections(ctx),
                 vec![
@@ -2217,6 +2220,7 @@ fn rejected_tool_call_message(id: &str, tool: Option<&str>, detail: &str) -> AIA
         message: AIAgentOutputMessageType::RejectedToolCall {
             tool: tool.map(str::to_owned),
             detail: detail.to_owned(),
+            kind: RejectedToolCallKind::InvalidArguments,
         },
         citations: Vec::new(),
     }

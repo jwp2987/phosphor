@@ -440,8 +440,8 @@ pub mod text {
                 AIAgentOutputMessageType::EventsFromAgents { event_ids } => {
                     writeln!(w, "Received {} agent events", event_ids.len())?;
                 }
-                AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
-                    writeln!(w, "{}", rejected_tool_call_text(tool.as_deref(), detail))?;
+                AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
+                    writeln!(w, "{}", rejected_tool_call_text(tool.as_deref(), detail, *kind))?;
                 }
             }
         }
@@ -1042,9 +1042,9 @@ pub mod json {
                 }
                 AIAgentOutputMessageType::MessagesReceivedFromAgents { .. }
                 | AIAgentOutputMessageType::EventsFromAgents { .. } => None,
-                AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
+                AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
                     Some(JsonMessage::ToolError {
-                        error: Cow::Owned(rejected_tool_call_text(tool.as_deref(), detail)),
+                        error: Cow::Owned(rejected_tool_call_text(tool.as_deref(), detail, *kind)),
                     })
                 }
             }

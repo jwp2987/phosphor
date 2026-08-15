@@ -909,9 +909,12 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                         // prose. It reuses `RenderableAction` + the red-X icon already used
                         // for other failed/rejected actions elsewhere in this file, rather
                         // than a bespoke error widget.
-                        AIAgentOutputMessageType::RejectedToolCall { tool, detail } => {
-                            let text =
-                                crate::ai::agent::rejected_tool_call_text(tool.as_deref(), detail);
+                        AIAgentOutputMessageType::RejectedToolCall { tool, detail, kind } => {
+                            let text = crate::ai::agent::rejected_tool_call_text(
+                                tool.as_deref(),
+                                detail,
+                                *kind,
+                            );
                             let action = RenderableAction::new(&text, app)
                                 .with_icon(inline_action_icons::red_x_icon(appearance).finish());
                             output_items.add_child(action.render(app).finish());
