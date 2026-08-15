@@ -15,6 +15,8 @@ use std::{
 
 use crate::ai::llms::{LLMId, LLMPreferences};
 use crate::ai::mcp::{JSONMCPServer, MCPServerState};
+use crate::ai::skills::SkillManager;
+use ai::skills::{parse_skills_dirs_env, read_skills_for_skills_dirs, resolve_skills_dirs};
 
 use crate::ai::agent_sdk::driver::harness::{
     harness_model_env_vars, task_env_vars, HarnessKind, HarnessRunner, SavePoint,
@@ -909,6 +911,45 @@ impl AgentDriver {
         })
     }
 
+    /// Load skills from the `WARP_SKILL_DIRS` environment variable as personal (home) tier skills.
+    ///
+    /// `WARP_SKILL_DIRS` is a comma-separated list of paths; each entry is itself a skills directory
+    /// whose **direct children** are expected to be skill folders containing `SKILL.md`. Relative
+    /// entries are resolved against the driver's working directory — not the process's current
+    /// working directory, which environment preparation may have changed (e.g. by cd-ing into a
+    /// cloned repo). Skills loaded this way behave identically to `~/.agents/skills` personal
+    /// skills—always in scope, regardless of the current working directory.
+    ///
+    /// Invalid, missing, or unreadable entries are skipped with a warning; an unset or empty
+    /// variable is a no-op.
+    async fn load_skills_dirs(foreground: &ModelSpawner<Self>) {
+        let dirs = parse_skills_dirs_env();
+        if dirs.is_empty() {
+            return;
+        }
+        log::info!(
+            "WARP_SKILL_DIRS: loading skills from {} directories",
+            dirs.len()
+        );
+        let load_result = foreground
+            .spawn(move |me, ctx| {
+                let dirs = resolve_skills_dirs(&me.working_dir, dirs);
+                let skills = read_skills_for_skills_dirs(&dirs);
+                if skills.is_empty() {
+                    log::info!("WARP_SKILL_DIRS: no skills found");
+                } else {
+                    log::info!("WARP_SKILL_DIRS: loaded {} skill(s)", skills.len());
+                }
+                SkillManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.add_skills_dirs_skills(skills, ctx);
+                });
+            })
+            .await;
+        if let Err(err) = load_result {
+            log::warn!("Failed to load WARP_SKILL_DIRS skills: {err}");
+        }
+    }
+
     /// Runs the agent to completion.
     /// Driving the agent mostly requires main-thread UI framework updates, but using `async` and
     /// a `ModelSpawner` lets us express the high-level process linearly rather than in a
@@ -990,6 +1031,9 @@ impl AgentDriver {
                 .spawn(|me, ctx| me.start_profile_mcp_servers(ctx))
                 .await?
                 .await?;
+
+            // Skill loading is Oz-only; third-party harnesses have their own skill systems.
+            Self::load_skills_dirs(&foreground).await;
         }
 
         // Run the harness with a prompt
