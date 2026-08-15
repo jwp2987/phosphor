@@ -12,11 +12,15 @@ use warp::settings::{
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
-    AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
-    AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentExchangeId, AIAgentInput,
+    AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, AIBlockModel,
+    AIBlockOutputStatus, AIConversationAutoexecuteMode, AIConversationId, AIRequestType,
+    AgentViewEntryOrigin, AgentViewState, AskUserQuestionItem, AskUserQuestionOption,
+    AskUserQuestionType, BlockPadding, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    ConversationStatus, Harness, InputType, LLMId, LLMPreferences, MessageId,
+    OutputStatusUpdateCallback, PtyIntent, PtyIntentEvent, ServerOutputId, Shared, SizeInfo,
+    SizeUpdate, TaskId, TuiUpArrowHistoryItemKind, export_conversation_markdown,
+    queue_tui_permission_action, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -32,7 +36,9 @@ use warpui_core::elements::tui::{
 use warpui_core::event::ModifiersState;
 use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::TuiPresenter;
-use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
+use warpui_core::{
+    App, AppContext, TuiView, TypedActionView as _, ViewContext, WindowInvalidation,
+};
 
 use super::{
     ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, AUTO_APPROVE_DISABLED_HINT,
@@ -52,6 +58,7 @@ use super::{
     log_bundle_success_message, raw_prompt_if_not_blank, render_status_footer_row,
     render_statusline_datetime,
 };
+use crate::agent_block::{TuiAIBlock, TuiBlockingChild};
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
 use crate::input_mode_policy::{AI_LOCKED_CONFIG, AI_UNLOCKED_CONFIG};
@@ -2645,6 +2652,174 @@ fn background_focus_reconciliation_does_not_steal_foreground_focus() {
                 Some(foreground_input_id),
                 "background ownership transitions must not change framework focus"
             );
+        });
+    });
+}
+
+/// A block model whose output is supplied directly, for exercising a block
+/// that is materialized *after* its action already blocked. The production
+/// path builds its model with `AIBlockModelImpl::new`, which needs a persisted
+/// exchange the test harness does not have.
+struct LateMaterializationBlockModel {
+    conversation_id: AIConversationId,
+    status: AIBlockOutputStatus,
+}
+
+impl AIBlockModel for LateMaterializationBlockModel {
+    type View = TuiAIBlock;
+
+    fn status(&self, _app: &AppContext) -> AIBlockOutputStatus {
+        self.status.clone()
+    }
+
+    fn server_output_id(&self, _app: &AppContext) -> Option<ServerOutputId> {
+        None
+    }
+
+    fn model_id(&self, _app: &AppContext) -> Option<LLMId> {
+        None
+    }
+
+    fn base_model<'a>(&'a self, _app: &'a AppContext) -> Option<&'a LLMId> {
+        None
+    }
+
+    fn inputs_to_render<'a>(&'a self, _app: &'a AppContext) -> &'a [AIAgentInput] {
+        &[]
+    }
+
+    fn conversation_id(&self, _app: &AppContext) -> Option<AIConversationId> {
+        Some(self.conversation_id)
+    }
+
+    fn on_updated_output(
+        &self,
+        _callback: OutputStatusUpdateCallback<Self::View>,
+        _ctx: &mut ViewContext<Self::View>,
+    ) {
+    }
+
+    fn request_type(&self, _app: &AppContext) -> AIRequestType {
+        AIRequestType::Active
+    }
+}
+
+/// Blocks `action` on user confirmation *before* any view renders it, then
+/// appends the agent block that renders it — the restored/replayed-exchange
+/// ordering, where the action event that created the blocker fired before the
+/// block view existed.
+fn materialize_already_blocked_action(
+    app: &mut App,
+    session: &ViewHandle<TuiTerminalSessionView>,
+    action: AIAgentAction,
+) -> ViewHandle<TuiAIBlock> {
+    let (conversation_id, action_model, transcript) = session.update(app, |session, ctx| {
+        let conversation_id = session
+            .conversation_selection
+            .update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start")
+            });
+        ctx.focus(&session.input_view);
+        (
+            conversation_id,
+            session.ai_action_model.clone(),
+            session.transcript.clone(),
+        )
+    });
+    action_model.update(app, |model, ctx| {
+        queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+    });
+    let status = AIBlockOutputStatus::Complete {
+        output: Shared::new(AIAgentOutput {
+            messages: vec![AIAgentOutputMessage {
+                id: MessageId::new("late-action-message".to_owned()),
+                message: AIAgentOutputMessageType::Action(action),
+                citations: Vec::new(),
+            }],
+            ..Default::default()
+        }),
+    };
+    transcript.update(app, |transcript, ctx| {
+        transcript.append_agent_block_for_test(
+            conversation_id,
+            AIAgentExchangeId::new(),
+            Rc::new(LateMaterializationBlockModel {
+                conversation_id,
+                status,
+            }),
+            ctx,
+        )
+    })
+}
+
+#[test]
+fn foreground_session_focuses_an_already_blocked_question_when_materialized() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (session, _) = add_focus_test_session(&mut app, &fixture, true);
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("late-question".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            action: AIAgentActionType::AskUserQuestion {
+                questions: vec![AskUserQuestionItem {
+                    question_id: "question".to_owned(),
+                    question: "Which option?".to_owned(),
+                    question_type: AskUserQuestionType::MultipleChoice {
+                        is_multiselect: false,
+                        options: vec![AskUserQuestionOption {
+                            label: "Alpha".to_owned(),
+                            recommended: false,
+                        }],
+                        supports_other: false,
+                    },
+                }],
+            },
+            requires_result: true,
+        };
+
+        let block = materialize_already_blocked_action(&mut app, &session, action);
+        let question = block.read(&app, |block, ctx| {
+            let Some(TuiBlockingChild::AskQuestion(view)) = block.active_blocking_child(ctx) else {
+                panic!("materialized question should be the active blocker");
+            };
+            view
+        });
+
+        app.read(|ctx| {
+            assert!(ctx.check_view_or_child_focused(fixture.window_id, &question.id()));
+        });
+    });
+}
+
+#[test]
+fn foreground_session_focuses_an_already_blocked_permission_when_materialized() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (session, _) = add_focus_test_session(&mut app, &fixture, true);
+        // A generic tool call: upstream uses `InitProject`, which this fork's
+        // action enum does not carry. `OpenCodeReview` takes the same
+        // `sync_action_views` branch (neither question, file edits, documents,
+        // nor shell command) and so materializes the same generic view with a
+        // permission prompt.
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("late-permission".to_owned()),
+            task_id: TaskId::new("task".to_owned()),
+            action: AIAgentActionType::OpenCodeReview,
+            requires_result: true,
+        };
+
+        let block = materialize_already_blocked_action(&mut app, &session, action);
+        let permission = block.read(&app, |block, ctx| {
+            let Some(TuiBlockingChild::Permission(view)) = block.active_blocking_child(ctx) else {
+                panic!("materialized permission prompt should be the active blocker");
+            };
+            view
+        });
+
+        app.read(|ctx| {
+            assert!(ctx.check_view_or_child_focused(fixture.window_id, &permission.id()));
         });
     });
 }
