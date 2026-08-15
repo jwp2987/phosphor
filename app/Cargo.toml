@@ -667,6 +667,11 @@ agent_mode_evals = [
     "integration_tests",
     "rust-embed/debug-embed",
     "warpui/log_named_telemetry_events",
+    # The third crate of upstream 19a3bc552b. Without this the `defer_scene_build`
+    # feature exists and compiles but nothing turns it on for the eval harness,
+    # which is the only caller that needs it -- i.e. the fix would be inert by
+    # exactly the mechanism this audit has been fixing all night.
+    "warpui/defer_scene_build",
     "warp_logging/agent_mode_evals",
 ]
 allow_ignoring_input_suggestions = []
