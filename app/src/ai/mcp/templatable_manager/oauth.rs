@@ -331,7 +331,7 @@ pub async fn make_authenticated_client(
         if is_file_based {
             log::info!(
                 "File-based MCP server {uuid} requires OAuth authentication; \
-                 using a loopback callback because Zap is running headless."
+                 using a loopback callback because Phosphor is running headless."
             );
         }
         Some(LoopbackOAuthReceiver::bind().await?)
@@ -349,7 +349,7 @@ pub async fn make_authenticated_client(
     // Start the authorization process with our redirect URI (custom scheme normally, or the
     // loopback server's URL in headless mode).
     oauth_state
-        .start_authorization(&[], &redirect_uri, Some("Zap"))
+        .start_authorization(&[], &redirect_uri, Some("Phosphor"))
         .await?;
 
     let OAuthState::Session(AuthorizationSession {
@@ -367,7 +367,7 @@ pub async fn make_authenticated_client(
     // For apps for which we have static client IDs (e.g. GitHub), we manually override scopes.
     let mut scopes: &[&str] = &[];
 
-    let config = match auth_manager.register_client("Zap", &redirect_uri).await {
+    let config = match auth_manager.register_client("Phosphor", &redirect_uri).await {
         Ok(config) => config,
         Err(err @ AuthError::RegistrationFailed(_)) => {
             // If we failed dynamic registration, check to see if this is an auth

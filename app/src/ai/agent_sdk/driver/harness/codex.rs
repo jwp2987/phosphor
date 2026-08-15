@@ -385,7 +385,7 @@ impl HarnessRunner for CodexHarnessRunner {
         }
 
         let _ = (foreground, conversation_id, block_id, rollout_path);
-        log::debug!("Skipping Codex transcript and block snapshot export in Zap");
+        log::debug!("Skipping Codex transcript and block snapshot export in Phosphor");
         Ok(())
     }
 }

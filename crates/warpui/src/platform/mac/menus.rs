@@ -215,12 +215,12 @@ fn resolve_standard_action(action: StandardAction) -> StandardMenuItemProperties
             ns_string!(""),
         ),
         StandardAction::Quit => make(
-            ns_string!("Quit Zap"),
+            ns_string!("Quit Phosphor"),
             sel!(terminate:),
             cmd,
             ns_string!("q"),
         ),
-        StandardAction::Hide => make(ns_string!("Hide Zap"), sel!(hide:), cmd, ns_string!("h")),
+        StandardAction::Hide => make(ns_string!("Hide Phosphor"), sel!(hide:), cmd, ns_string!("h")),
         StandardAction::HideOtherApps => make(
             ns_string!("Hide Others"),
             sel!(hideOtherApplications:),

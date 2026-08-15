@@ -261,7 +261,7 @@ impl UpdateManager {
         let _ = fetch_single_object_option;
         let _ = ctx;
         let (fetch_cloud_object_tx, fetch_cloud_object_rx) = oneshot::channel::<()>();
-        log::debug!("Zap skipping single cloud object fetch: {server_id:?}");
+        log::debug!("Phosphor skipping single cloud object fetch: {server_id:?}");
         let _ = fetch_cloud_object_tx.send(());
         fetch_cloud_object_rx
     }

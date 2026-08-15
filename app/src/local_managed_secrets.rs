@@ -35,11 +35,11 @@ impl ManagedSecretsClient for DisabledManagedSecretsClient {
         _encrypted_value: String,
         _description: Option<String>,
     ) -> Result<ManagedSecret> {
-        Err(anyhow!("Cloud managed secrets disabled in Zap"))
+        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
     }
 
     async fn delete_managed_secret(&self, _owner: SecretOwner, _name: String) -> Result<()> {
-        Err(anyhow!("Cloud managed secrets disabled in Zap"))
+        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
     }
 
     async fn update_managed_secret(
@@ -49,7 +49,7 @@ impl ManagedSecretsClient for DisabledManagedSecretsClient {
         _encrypted_value: Option<String>,
         _description: Option<String>,
     ) -> Result<ManagedSecret> {
-        Err(anyhow!("Cloud managed secrets disabled in Zap"))
+        Err(anyhow!("Cloud managed secrets disabled in Phosphor"))
     }
 
     async fn list_secrets(&self) -> Result<Vec<ManagedSecret>> {
@@ -67,6 +67,6 @@ impl ManagedSecretsClient for DisabledManagedSecretsClient {
         &self,
         _options: warp_managed_secrets::client::IdentityTokenOptions,
     ) -> Result<TaskIdentityToken> {
-        Err(anyhow!("Task identity token issuance disabled in Zap"))
+        Err(anyhow!("Task identity token issuance disabled in Phosphor"))
     }
 }

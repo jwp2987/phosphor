@@ -799,10 +799,10 @@ impl Entity for ResponseStream {
 async fn byop_required_response_stream(
     cancellation_rx: oneshot::Receiver<()>,
 ) -> Result<api::ResponseStream, ConvertToAPITypeError> {
-    log::debug!("No BYOP provider selected for Zap agent request");
+    log::debug!("No BYOP provider selected for Phosphor agent request");
     let error_stream = futures::stream::once(async {
         Err(Arc::new(AIApiError::Other(anyhow!(
-            "Zap requires a configured BYOP provider in Settings"
+            "Phosphor requires a configured BYOP provider in Settings"
         ))))
     })
     .take_until(cancellation_rx);

@@ -622,7 +622,7 @@ impl LongRunningCommandSubmissionMode {
     settings_value::SettingsValue,
 )]
 #[schemars(
-    description = "A configurable item in the Zap Agent CLI statusline.",
+    description = "A configurable item in the Phosphor Agent CLI statusline.",
     rename_all = "snake_case"
 )]
 #[serde(rename_all = "snake_case")]
@@ -2012,7 +2012,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "agents.statusline",
-        description: "Controls the order and visibility of Zap Agent CLI statusline items.",
+        description: "Controls the order and visibility of Phosphor Agent CLI statusline items.",
     },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
@@ -2162,7 +2162,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "cloud_platform.third_party_api_keys.aws_bedrock_credentials_enabled",
-        description: "Whether Zap should use your local AWS credentials for Bedrock-enabled requests.",
+        description: "Whether Phosphor should use your local AWS credentials for Bedrock-enabled requests.",
     }
     // Whether to automatically run the AWS login command when Bedrock credentials are expired.
     //
@@ -2291,7 +2291,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok",
-        description: "Whether Zap credits can be used even when providing your own API key.",
+        description: "Whether Phosphor credits can be used even when providing your own API key.",
     }
 
     should_render_use_agent_footer_for_user_commands: ShouldRenderUseAgentToolbarForUserCommands {

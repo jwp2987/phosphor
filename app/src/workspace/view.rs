@@ -3890,7 +3890,7 @@ impl Workspace {
     fn show_local_conversation_not_found_toast(&mut self, ctx: &mut ViewContext<Self>) {
         self.toast_stack.update(ctx, |view, ctx| {
             let new_toast = DismissibleToast::error(
-                "Conversation is not available in local Zap history.".to_string(),
+                "Conversation is not available in local Phosphor history.".to_string(),
             );
             view.add_ephemeral_toast(new_toast, ctx);
         });
@@ -5978,7 +5978,7 @@ impl Workspace {
                 .unwrap_or_else(|| "<unknown>".to_string());
 
             format!(
-                "Zap log export\n\
+                "Phosphor log export\n\
                  Generated at: {now}\n\
                  Version: {version}\n\
                  channel: {channel}\n\
@@ -16354,7 +16354,7 @@ impl Workspace {
                 let command = code.trim().to_string();
                 let args_state =
                     ArgumentsState::for_command_workflow(&Default::default(), command.clone());
-                let workflow = Workflow::new("Command from Zap AI", command)
+                let workflow = Workflow::new("Command from Phosphor AI", command)
                     .with_arguments(args_state.arguments);
                 self.run_workflow_in_active_input(
                     &WorkflowType::AIGenerated {
@@ -16869,7 +16869,7 @@ impl Workspace {
         let body = appearance
             .ui_builder()
             .wrappable_text(
-                "Ask Zap AI to explain errors, suggest commands or write scripts.".to_owned(),
+                "Ask Phosphor AI to explain errors, suggest commands or write scripts.".to_owned(),
                 true,
             )
             .with_style(UiComponentStyles {
@@ -19879,7 +19879,7 @@ impl Workspace {
             // Many users' browser settings will block Local Network Access so this will end up redirecting to download page,
             // even if they have the app installed.
             let toast_message = format!(
-                "Have Zap installed but redirecting to download page?\nEnable Local Network Access for the Zap web launcher in your browser."
+                "Have Phosphor installed but redirecting to download page?\nEnable Local Network Access for the Phosphor web launcher in your browser."
             );
             self.toast_stack.update(ctx, |toast_stack, ctx| {
                 toast_stack.add_persistent_toast(DismissibleToast::default(toast_message), ctx)
@@ -21396,14 +21396,14 @@ impl TypedActionView for Workspace {
                         .did_check_to_trigger_zap_launch_modal
                         .set_value(false, ctx)
                     {
-                        log::warn!("Failed to reset Zap launch modal dismissed setting: {e}");
+                        log::warn!("Failed to reset Phosphor launch modal dismissed setting: {e}");
                     }
                 });
                 let new_value = *GeneralSettings::as_ref(ctx)
                     .did_check_to_trigger_zap_launch_modal
                     .value();
                 log::info!(
-                    "Zap launch modal state: old={}, new={}, feature_flag_enabled={}",
+                    "Phosphor launch modal state: old={}, new={}, feature_flag_enabled={}",
                     old_value,
                     new_value,
                     FeatureFlag::ZapLaunchModal.is_enabled()

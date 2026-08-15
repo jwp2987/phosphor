@@ -30,7 +30,7 @@ fn test_skill_path_from_file_path_skill_md() {
 #[test]
 fn test_skill_path_from_file_path_warp_home_skill() {
     let Some(warp_home_skills_dir) = warp_core::paths::warp_home_skills_dir() else {
-        eprintln!("Skipping test: Zap home skills directory not available");
+        eprintln!("Skipping test: Phosphor home skills directory not available");
         return;
     };
     let warp_home_skill = warp_home_skills_dir

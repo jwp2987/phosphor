@@ -105,7 +105,7 @@ pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Res
 /// (`crates/warp_cli/src/agent_mailbox.rs`) keyed by `OZ_RUN_ID`; see that
 /// module's doc comment for why `oz run` could not be ported and this is a
 /// new command under the existing `agent` surface instead.
-const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Zap.
+const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Phosphor.
 
 Coordinate with the lead agent through the Oz CLI messaging environment:
 - Your run id is in OZ_RUN_ID.

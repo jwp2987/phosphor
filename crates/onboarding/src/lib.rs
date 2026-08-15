@@ -30,7 +30,7 @@ pub use localization::set_localizer;
 /// Shared by the intention slide's agent card checklist and the login slide's
 /// skip-login confirmation dialog so the two always stay in sync.
 pub const AI_FEATURES: &[&str] = &[
-    "Zap agents",
+    "Phosphor agents",
     "Oz local agents platform",
     "Next command predictions",
     "Prompt suggestions",

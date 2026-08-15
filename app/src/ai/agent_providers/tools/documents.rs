@@ -125,7 +125,7 @@ fn read_result_to_json(result: &api::message::tool_call_result::Result) -> Optio
 
 pub static READ_DOCUMENTS: OpenAiTool = OpenAiTool {
     name: "read_documents",
-    description: "Read local Zap Drive documents (referenced by document_id, not filesystem \
+    description: "Read local Phosphor Drive documents (referenced by document_id, not filesystem \
                   files). Returns JSON: { documents: [{document_id, content, line_range?}] }. \
                   Use when the user mentions a specific document_id or a particular Drive document.",
     parameters: read_parameters,
@@ -214,7 +214,7 @@ fn edit_result_to_json(result: &api::message::tool_call_result::Result) -> Optio
 
 pub static EDIT_DOCUMENTS: OpenAiTool = OpenAiTool {
     name: "edit_documents",
-    description: "String search-and-replace on existing Zap Drive documents. \
+    description: "String search-and-replace on existing Phosphor Drive documents. \
                   Similar to apply_file_diffs::edit, but targets Drive documents (referenced by \
                   document_id). search must match existing content **exactly** (including \
                   whitespace and newlines) or the edit fails.",
@@ -321,7 +321,7 @@ fn create_result_to_json(result: &api::message::tool_call_result::Result) -> Opt
 
 pub static CREATE_DOCUMENTS: OpenAiTool = OpenAiTool {
     name: "create_documents",
-    description: "Create one or more new documents in Zap Drive (each with title + full \
+    description: "Create one or more new documents in Phosphor Drive (each with title + full \
                   content). Good for persisting analysis results, notes, or todos as reusable \
                   Drive documents.",
     parameters: create_parameters,

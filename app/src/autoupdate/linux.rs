@@ -31,7 +31,7 @@ pub(super) async fn download_update_and_cleanup(
                 .await
         }
         UpdateMethod::PackageManager(package_manager) => {
-            log::info!("Detected that Zap was installed using {package_manager:?}");
+            log::info!("Detected that Phosphor was installed using {package_manager:?}");
             Ok(DownloadReady::NeedsAuthorization)
         }
     }
@@ -45,7 +45,7 @@ pub(super) fn apply_update() -> Result<ReadyForRelaunch> {
         UpdateMethod::Unknown => bail!("Cannot apply update for unknown update method!"),
         UpdateMethod::AppImage(_) => Ok(ReadyForRelaunch::Yes),
         UpdateMethod::PackageManager(package_manager) => bail!(
-            "Zap does not support package-manager autoupdate for {package_manager}; install the new release manually"
+            "Phosphor does not support package-manager autoupdate for {package_manager}; install the new release manually"
         ),
     }
 }
