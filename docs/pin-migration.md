@@ -291,6 +291,71 @@ port. `DECLINED.md` lists the recurring false positives (`remote_server`,
 `computer_use`, Grok OAuth) that get mislabelled as cloud — `remote_server` in
 particular is the local SSH extension and **is** in scope.
 
+## Phase 6.7 — the feature-default drift check
+
+**Do this every re-pin.** Phase 6.5 asks whether upstream's *code* landed here.
+This asks whether upstream's *configuration* did, and the answer has been no for
+a long time without anyone noticing.
+
+At pin `02b53fcd8` the pin's `app/Cargo.toml` `default` list had **193** entries;
+this fork's had **141**. Fifteen of the missing ones gated real, present,
+compiled implementation — `GroupedTabs` (a whole `workspace/tab_group.rs`),
+`PinnedTabs`, `QueueSlashCommand` (`blocklist/queued_query.rs`),
+`TerminalLifecycleRecovery` (a `terminal/model/lifecycle/` module with its own
+tests), `AgentHarness` (which gates every NON-Oz harness, i.e. the Claude Code
+and Codex paths a BYOP fork exists to use), and others. None was in
+`FORCE_DISABLED_FLAGS`, so none was ever a deliberate BYOP exclusion. They were
+lost when the default list was trimmed, and nothing recorded it.
+
+This is the cheapest defect class in the repo: the code is already here, already
+compiling, already tested. The fix is a line in a list.
+
+### The method
+
+```bash
+# both default lists, sorted
+git show <pin>:app/Cargo.toml | awk '/^default = \[/,/^\]/' | grep -oE '"[a-z0-9_]+"' | sort > /tmp/pin.txt
+awk '/^default = \[/,/^\]/' app/Cargo.toml   | grep -oE '"[a-z0-9_]+"' | sort > /tmp/fork.txt
+comm -23 /tmp/pin.txt /tmp/fork.txt      # on at the pin, off here
+```
+
+For each difference, find the flag it gates and decide. A flag is reachable in a
+normal GUI build via exactly three paths, and you must check all of them:
+
+1. membership in `RELEASE_FLAGS`;
+2. a `#[cfg(feature = "x")] FeatureFlag::Y` entry **where `x` is in `default`**;
+3. an `UNSTABLE_FEATURES` name (one entry exists).
+
+### Four traps in this check specifically
+
+- **The flag-init file MOVED.** The pin keeps `enabled_features()` in
+  `app/src/features.rs`; this fork has it inline in `app/src/lib.rs`. A script
+  that greps only `app/src/lib.rs` against the pin finds **zero** cfg entries and
+  reports the pin as having 7 reachable flags instead of 193. That number is the
+  size of `RELEASE_FLAGS` — if you see it, your parse failed.
+- **Reachable is not visible.** Several flags are ANDed with a user setting.
+  `VerticalTabs` is reachable in both fork and pin; the sidebar is still absent
+  because `appearance.vertical_tabs.enabled` defaults to `false`. Check the
+  setting before declaring anything broken.
+- **Most dark flags are NOT the fork's doing.** Of 90 unreachable flags at this
+  pin, 69 were unreachable at the pin too — upstream gates those per-account from
+  its backend, which this fork removed. Only the 15 that upstream ships ON are
+  drift. Do not "fix" the other 69.
+- **Some flags are declared but never wired.** Eight of the fifteen had no
+  `#[cfg(feature)]` entry at all, so adding the feature to `default` alone would
+  have done nothing. Check the entry exists, not just the feature.
+
+### Where deliberate exclusions belong
+
+`FORCE_DISABLED_FLAGS` (`crates/warp_features/src/lib.rs`) — a *hard* disable
+that short-circuits `is_enabled()` before any other source. Its doc comment is
+the standard to hold to: it is only right for a subsystem that genuinely cannot
+exist in a BYOP build, and anything merely off-by-default belongs in the channel
+lists "so it stays reachable". It also records a past error of exactly this kind,
+where `AgentModeComputerUse` was hard-disabled on the false assumption that
+computer use was a cloud capability. **If a flag is off and the reason is not
+written down, that is the bug.**
+
 ## Traps
 
 Each of these has actually cost time here.
