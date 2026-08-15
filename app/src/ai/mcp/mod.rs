@@ -40,7 +40,11 @@ pub use templatable_manager::TemplatableMCPServerManager;
 cfg_if::cfg_if! {
     if #[cfg(not(feature = "local_fs"))] {
         mod dummy_file_based_manager;
-        pub use dummy_file_based_manager::FileBasedMCPManager;
+        pub use dummy_file_based_manager::{FileBasedMCPManager, FileBasedMCPServerScope};
+        #[cfg(any(feature = "tui", test))]
+        pub use dummy_file_based_manager::{
+            FileBasedMCPServerSource, FileBasedMCPServerWithSources, FileMCPConfigDiagnostic,
+        };
         mod dummy_file_mcp_watcher;
         pub use dummy_file_mcp_watcher::FileMCPWatcher;
     }
@@ -56,7 +60,11 @@ pub(crate) fn home_config_file_path(provider: MCPProvider) -> Option<PathBuf> {
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
         pub mod file_based_manager;
-        pub use file_based_manager::FileBasedMCPManager;
+        pub use file_based_manager::{FileBasedMCPManager, FileBasedMCPServerScope};
+        #[cfg(any(feature = "tui", test))]
+        pub use file_based_manager::{FileBasedMCPServerSource, FileBasedMCPServerWithSources};
+        #[cfg(any(feature = "tui", test))]
+        pub use file_mcp_watcher::FileMCPConfigDiagnostic;
         pub mod file_mcp_watcher;
         pub use file_mcp_watcher::{FileMCPWatcher, FileMCPWatcherEvent};
     }

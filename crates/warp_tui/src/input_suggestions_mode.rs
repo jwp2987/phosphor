@@ -17,6 +17,8 @@ pub(crate) enum TuiInputSuggestionsMode {
     ModelSelector,
     SkillMenu,
     Mcp,
+    /// The `/mcp` install flow collecting a template variable.
+    McpInstall,
     /// Up-arrow prompt-and-command history menu (issue #387): agent mode shows
     /// prompts and commands, shell mode shows commands only.
     PromptAndCommandHistory,
@@ -51,6 +53,7 @@ impl TuiInputSuggestionsMode {
             | Self::ModelSelector
             | Self::SkillMenu
             | Self::Mcp
+            | Self::McpInstall
             | Self::PromptAndCommandHistory
             | Self::Completions
             | Self::ProfileSelector
@@ -110,6 +113,7 @@ impl TuiInputSuggestionsModeModel {
             | TuiInputSuggestionsMode::ModelSelector
             | TuiInputSuggestionsMode::SkillMenu
             | TuiInputSuggestionsMode::Mcp
+            | TuiInputSuggestionsMode::McpInstall
             | TuiInputSuggestionsMode::PromptAndCommandHistory
             | TuiInputSuggestionsMode::Completions
             | TuiInputSuggestionsMode::ProfileSelector

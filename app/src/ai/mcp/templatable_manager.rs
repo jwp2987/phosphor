@@ -276,12 +276,13 @@ impl TemplatableMCPServerManager {
     /// resolves the installation's *template* UUID in the synced credential map.
     /// This fork stores file-based OAuth credentials keyed by the installation's
     /// content hash instead (`has_oauth_credentials_for_file_based_server`), so
-    /// the hash is passed in alongside the UUID. The second term is upstream's
-    /// verbatim: a server that authenticated its transport can be logged out of
-    /// even before its credentials have been persisted.
+    /// the hash is passed in alongside the UUID; it is `None` for a non-file
+    /// installation, which has no hash and so only the second term applies. That
+    /// term is upstream's verbatim: a server that authenticated its transport
+    /// can be logged out of even before its credentials have been persisted.
     #[cfg(all(not(target_family = "wasm"), feature = "tui"))]
-    pub fn can_log_out(&self, installation_uuid: Uuid, hash: u64) -> bool {
-        self.has_oauth_credentials_for_file_based_server(hash)
+    pub fn can_log_out(&self, installation_uuid: Uuid, hash: Option<u64>) -> bool {
+        hash.is_some_and(|hash| self.has_oauth_credentials_for_file_based_server(hash))
             || self
                 .active_servers
                 .get(&installation_uuid)

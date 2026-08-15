@@ -56,6 +56,7 @@ use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestions
 use crate::keybindings::{
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, TUI_BINDING_GROUP,
 };
+use crate::mcp_install_flow::TuiMcpInstallFlowAction;
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::transcript_view::TuiTranscriptView;
 use crate::tui_builder::TuiUiBuilder;
@@ -138,6 +139,8 @@ pub enum TuiInputViewEvent {
     AcceptedModel(LLMId),
     /// The user selected an action from the MCP menu.
     AcceptedMcp(TuiMcpAction),
+    /// The user advanced the explicit MCP installation flow.
+    AcceptedMcpInstall(TuiMcpInstallFlowAction),
     /// Shift+Up should move focus from the first visual row to the region above.
     MoveFocusUp,
     /// The user accepted a row from the up-arrow prompt-and-command history
@@ -1147,6 +1150,9 @@ impl TuiInputView {
             }
             TuiInlineMenuAccepted::Mcp(action) => {
                 ctx.emit(TuiInputViewEvent::AcceptedMcp(action));
+            }
+            TuiInlineMenuAccepted::McpInstall(action) => {
+                ctx.emit(TuiInputViewEvent::AcceptedMcpInstall(action));
             }
             TuiInlineMenuAccepted::PromptAndCommandHistory(row) => {
                 ctx.emit(TuiInputViewEvent::AcceptedPromptAndCommandHistory(

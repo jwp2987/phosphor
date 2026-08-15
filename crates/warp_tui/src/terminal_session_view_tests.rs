@@ -102,7 +102,7 @@ fn mcp_menu_footer_replaces_status_with_controls() {
             ctx.add_singleton_model(|_| Appearance::mock());
             let footer = render_mcp_menu_footer(
                 &TuiUiBuilder::from_app(ctx),
-                Some(TuiMcpAction::Stop(TuiMcpServerId(1))),
+                Some(TuiMcpAction::Stop(TuiMcpServerId::FileBased(1))),
                 true,
             )
             .finish();
@@ -144,7 +144,7 @@ fn mcp_menu_footer_hides_unavailable_logout_control() {
             ctx.add_singleton_model(|_| Appearance::mock());
             let footer = render_mcp_menu_footer(
                 &TuiUiBuilder::from_app(ctx),
-                Some(TuiMcpAction::Start(TuiMcpServerId(1))),
+                Some(TuiMcpAction::Start(TuiMcpServerId::FileBased(1))),
                 false,
             )
             .finish();
@@ -158,7 +158,7 @@ fn mcp_menu_footer_hides_unavailable_logout_control() {
 
 #[test]
 fn mcp_primary_action_hints_match_available_actions() {
-    let id = TuiMcpServerId(1);
+    let id = TuiMcpServerId::FileBased(1);
     assert_eq!(
         mcp_primary_action_hint(TuiMcpAction::Start(id)),
         Some("to start")
@@ -174,6 +174,10 @@ fn mcp_primary_action_hints_match_available_actions() {
     assert_eq!(
         mcp_primary_action_hint(TuiMcpAction::ReopenAuthorization(id)),
         Some("to authenticate")
+    );
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::Enable(id)),
+        Some("to install and enable")
     );
     assert_eq!(mcp_primary_action_hint(TuiMcpAction::LogOut(id)), None);
 }

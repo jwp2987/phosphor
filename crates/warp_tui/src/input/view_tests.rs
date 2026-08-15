@@ -176,7 +176,7 @@ fn ctrl_r_dispatches_selected_mcp_credential_removal() {
             let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
             let input_mode = add_test_input_mode(ctx);
             let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Mcp);
-            let expected = TuiMcpAction::LogOut(TuiMcpServerId(7));
+            let expected = TuiMcpAction::LogOut(TuiMcpServerId::FileBased(7));
             let menu = TuiInlineMenu::new(TestMcpMenu { action: expected });
             let (window_id, view) = ctx.add_tui_window(
                 AddWindowOptions {
@@ -1036,6 +1036,7 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedConversation(_)
                 | TuiInputViewEvent::AcceptedModel(_)
                 | TuiInputViewEvent::AcceptedMcp(_)
+                | TuiInputViewEvent::AcceptedMcpInstall(_)
                 | TuiInputViewEvent::AcceptedPromptAndCommandHistory(..)
                 | TuiInputViewEvent::AcceptedCompletion(_)
                 | TuiInputViewEvent::AcceptedProfile(_)

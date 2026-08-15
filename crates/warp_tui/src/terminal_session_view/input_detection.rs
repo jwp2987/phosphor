@@ -99,7 +99,11 @@ impl TuiTerminalSessionView {
         ctx: &mut ViewContext<Self>,
     ) {
         self.abort_input_detection(ctx);
-        if is_user_edit {
+        // While the MCP install flow owns the input, keystrokes are a variable
+        // value, not a prompt: never reclassify them as shell input.
+        if is_user_edit
+            && self.suggestions_mode.as_ref(ctx).mode() != TuiInputSuggestionsMode::McpInstall
+        {
             self.schedule_input_detection(ctx);
         }
     }
