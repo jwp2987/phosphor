@@ -742,3 +742,132 @@ fn permission_request_still_populates_summary_and_tool_fields() {
         CLIAgentSessionStatus::Blocked { .. },
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Cancellation round trip (#596).
+//
+// A cancelled TUI turn used to light the red error triangle in the hosting GUI
+// and latch there until the next prompt, because the publisher's `"cancelled"`
+// classification was thrown away one layer above these tests: the publisher
+// sent it, the parser carried it, and `to_conversation_status()` collapsed
+// every `Failed` into `Error`. Nothing covered the whole path end to end, which
+// is how two independently-correct halves composed into a user-visible defect.
+// These tests walk the path the user's Ctrl-C actually takes: publisher bytes
+// -> `parse_event` -> `apply_event` -> the status the GUI chip renders.
+// ---------------------------------------------------------------------------
+
+/// The exact OSC 777 body `CliAgentOscEventPublisher` writes when the selected
+/// TUI conversation reaches `ConversationStatus::Cancelled`. Field-for-field
+/// what its `status_osc_event` / `handle_history_event` pair produces, with the
+/// `serde` `skip_serializing_none` omissions applied.
+const CANCELLED_TUI_NOTIFICATION: &str = r#"{"v":1,"agent":"warp-tui","event":"stop_failure","session_id":"7","cwd":"/home/u/proj","project":"proj","query":"refactor the parser","response":"The task was cancelled before completion.","summary":"Phosphor Agent was cancelled.","error_type":"cancelled"}"#;
+
+fn in_progress_tui_session() -> CLIAgentSession {
+    CLIAgentSession {
+        agent: CLIAgent::PhosphorTui,
+        status: CLIAgentSessionStatus::InProgress,
+        session_context: CLIAgentSessionContext::default(),
+        input_state: CLIAgentInputState::Closed,
+        should_auto_toggle_input: false,
+        listener: None,
+        remote_host: None,
+        plugin_version: None,
+        draft_text: None,
+        custom_command_prefix: None,
+        received_rich_notification: false,
+    }
+}
+
+#[test]
+fn a_cancelled_tui_turn_reaches_the_gui_as_cancelled_not_as_an_error() {
+    use crate::ai::agent::conversation::ConversationStatus;
+
+    let event = parse_event(Some("warp://cli-agent"), CANCELLED_TUI_NOTIFICATION).unwrap();
+
+    // Leg 1: the wire body resolves to this fork's own TUI and to a failure
+    // event carrying the producer's classification.
+    assert_eq!(event.agent, CLIAgent::PhosphorTui);
+    assert_eq!(event.event, CLIAgentEventType::StopFailure);
+    assert_eq!(event.payload.error_type.as_deref(), Some("cancelled"));
+
+    // Leg 2: the session records it as a terminal failure, same as any other
+    // `stop_failure` -- the session layer deliberately keeps no opinion about
+    // which failures are benign.
+    let mut session = in_progress_tui_session();
+    let new_status = session.apply_event(&event);
+    assert_eq!(
+        new_status,
+        Some(CLIAgentSessionStatus::Failed {
+            error_type: Some("cancelled".to_owned()),
+            message: Some("The task was cancelled before completion.".to_owned()),
+        })
+    );
+
+    // Leg 3: the status chip. This is the assertion the defect was about --
+    // `ConversationStatus::Error` here is the red triangle that latches until
+    // the next `PromptSubmit`, for a turn the user themselves stopped.
+    assert_eq!(
+        session.status.to_conversation_status(),
+        ConversationStatus::Cancelled
+    );
+}
+
+#[test]
+fn a_cancelled_turn_from_a_third_party_producer_is_recognised_too() {
+    use crate::ai::agent::conversation::ConversationStatus;
+
+    // Nothing about this is TUI-specific: any plugin that classifies its
+    // `stop_failure` as a cancellation gets the neutral status, including the
+    // US spelling, which `warp_core::cli_agent_error_type` accepts precisely so
+    // one letter cannot decide whether the user sees an error triangle.
+    for error_type in ["cancelled", "Cancelled", "canceled"] {
+        let body =
+            format!(r#"{{"agent":"claude","event":"stop_failure","error_type":"{error_type}"}}"#);
+        let event = parse_event(Some("warp://cli-agent"), &body).unwrap();
+
+        let mut session = in_progress_tui_session();
+        session.agent = CLIAgent::Claude;
+        session.apply_event(&event);
+
+        assert_eq!(
+            session.status.to_conversation_status(),
+            ConversationStatus::Cancelled,
+            "{error_type:?} should reach the chip as a cancellation"
+        );
+    }
+}
+
+#[test]
+fn every_other_failure_still_reaches_the_gui_as_an_error() {
+    use crate::ai::agent::conversation::ConversationStatus;
+
+    // The guard against over-reach. `error_type` is free-form producer text, so
+    // an unrecognised value -- or none at all -- must stay an unqualified
+    // failure. Hiding a real error behind a neutral chip would be the worse bug
+    // in the other direction.
+    //
+    // NOTE for the merge: `failed_status_maps_to_the_error_conversation_status`
+    // (from the `stop_failure` consumer work, #582) asserts the *old* behaviour
+    // for `"cancelled"` specifically. That assertion encodes this defect and
+    // must be changed to `ConversationStatus::Cancelled`; the rest of it is
+    // still right and is covered here.
+    for error_type in [Some("rate_limit"), Some("error"), Some("cancel"), None] {
+        let body = match error_type {
+            Some(kind) => {
+                format!(r#"{{"agent":"claude","event":"stop_failure","error_type":"{kind}"}}"#)
+            }
+            None => r#"{"agent":"claude","event":"stop_failure"}"#.to_owned(),
+        };
+        let event = parse_event(Some("warp://cli-agent"), &body).unwrap();
+
+        let mut session = in_progress_tui_session();
+        session.agent = CLIAgent::Claude;
+        session.apply_event(&event);
+
+        assert_eq!(
+            session.status.to_conversation_status(),
+            ConversationStatus::Error,
+            "{error_type:?} must not be treated as benign"
+        );
+    }
+}
