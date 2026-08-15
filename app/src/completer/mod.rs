@@ -4,6 +4,7 @@ mod js;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -35,6 +36,18 @@ lazy_static! {
         file_type: EngineFileType::Directory,
     };
     static ref EMPTY_COMMAND_REGISTRY: Arc<CommandRegistry> = Arc::new(CommandRegistry::empty());
+}
+
+/// Coalescing gate for one directory path, used by
+/// [`SessionContext::refresh_directory_entries`].
+///
+/// `completions` counts refreshes that have finished for this path. A caller snapshots it
+/// BEFORE queueing on `lock`; if it has moved by the time the lock is acquired, another
+/// caller already produced a fresh listing while this one waited, and this caller can take
+/// that result instead of issuing a second remote command.
+struct RefreshGate {
+    lock: tokio::sync::Mutex<()>,
+    completions: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -71,23 +84,83 @@ pub struct SessionContext {
     /// unported upstream change rather than something the fork broke.
     cached_directory_entries: Arc<dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>>,
 
+    /// Per-path coalescing gates for `refresh_directory_entries`. `Arc` for the same
+    /// load-bearing reason as `cached_directory_entries` above: these are useless unless
+    /// every clone of this context shares them.
+    refresh_gates: Arc<dashmap::DashMap<TypedPathBuf, Arc<RefreshGate>>>,
+
     /// Snapshot of all Zap workflow aliases.
     workflow_aliases: HashMap<String, String>,
 }
 
 impl SessionContext {
-    /// Lists `directory` fresh from disk and caches the results.
-    pub(crate) async fn refresh_directory_entries(
+    /// Lists `directory` fresh from disk and caches the results, coalescing concurrent
+    /// refreshes of the same path so only one listing is actually performed.
+    ///
+    /// The coalescing is not an optimisation; on a legacy-SSH session it is a correctness
+    /// concern. This method deliberately does NOT read `cached_directory_entries` -- callers
+    /// use it precisely when they must see current contents -- so the shared cache added for
+    /// `list_directory_entries` cannot help here. Each call runs
+    /// `list_directory_entries_internal`, which on a remote session shells out to `find` over
+    /// the session's ControlMaster: one SSH channel per call.
+    ///
+    /// Measured 2026-08-15 against a remote host, on a build that ALREADY had the shared
+    /// cache: three identical `cd <dir> && find -L . -maxdepth 1 ...` in flight at once for a
+    /// single directory, part of a peak of seven concurrent channels alongside the completer's
+    /// `compgen -c`, a `cat` of the shell history, `git branch`, and
+    /// `kubectl config current-context`. `DirectoryFetcher` cancels its OWN previous fetch via
+    /// `fetch_handle`, but nothing dedupes across fetchers, so N working-directory chips on one
+    /// path meant N concurrent remote commands. Past the host's `MaxSessions` (default 10) sshd
+    /// refuses the channel and OpenSSH prints `channel N: open failed` into the user's live
+    /// shell.
+    ///
+    /// Double-checked: snapshot the gate's completion count, queue on its lock, and if the
+    /// count moved while waiting then a peer finished a refresh for this exact path in the
+    /// meantime -- take its result rather than issue a redundant command. A burst of N callers
+    /// therefore costs one listing, and every one of them still observes a listing no older
+    /// than its own request.
+    /// Deliberately NOT an `async fn`. The completion snapshot has to be taken when the caller
+    /// ISSUES the request, not when the returned future is first polled -- an `async fn` body
+    /// does not run until first poll, so a caller whose future is created during a burst but
+    /// polled after a peer has already finished would snapshot the peer's own result and
+    /// re-list anyway. That is precisely the case a burst of context chips produces, and the
+    /// coalescing test caught it: with an eager snapshot the burst collapses to one listing,
+    /// with a lazy one it does not.
+    pub(crate) fn refresh_directory_entries(
         &self,
         directory: TypedPathBuf,
-    ) -> Arc<Vec<EngineDirEntry>> {
-        let result = Arc::new(
-            self.list_directory_entries_internal(&directory.to_path())
-                .await,
-        );
-        self.cached_directory_entries
-            .insert(directory, result.clone());
-        result
+    ) -> impl std::future::Future<Output = Arc<Vec<EngineDirEntry>>> + '_ {
+        let gate = self
+            .refresh_gates
+            .entry(directory.clone())
+            .or_insert_with(|| {
+                Arc::new(RefreshGate {
+                    lock: tokio::sync::Mutex::new(()),
+                    completions: AtomicU64::new(0),
+                })
+            })
+            .clone();
+        // Eager, at call time -- see the note above.
+        let completions_at_request = gate.completions.load(AtomicOrdering::Acquire);
+
+        async move {
+            let _guard = gate.lock.lock().await;
+
+            if gate.completions.load(AtomicOrdering::Acquire) != completions_at_request
+                && let Some(entries) = self.cached_directory_entries.get(&directory)
+            {
+                return entries.clone();
+            }
+
+            let result = Arc::new(
+                self.list_directory_entries_internal(&directory.to_path())
+                    .await,
+            );
+            self.cached_directory_entries
+                .insert(directory, result.clone());
+            gate.completions.fetch_add(1, AtomicOrdering::Release);
+            result
+        }
     }
 
     async fn list_directory_entries_internal(
@@ -406,6 +479,7 @@ impl SessionContext {
                     current_working_directory,
                     js_ctx: js_function_caller.map(js::SessionJsExecutionContext::new),
                     cached_directory_entries: Arc::new(Default::default()),
+                    refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
                 }
             } else {
@@ -414,6 +488,7 @@ impl SessionContext {
                     command_registry,
                     current_working_directory,
                     cached_directory_entries: Arc::new(Default::default()),
+                    refresh_gates: Arc::new(Default::default()),
                     workflow_aliases,
                 }
             }

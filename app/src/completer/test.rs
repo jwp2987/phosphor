@@ -573,3 +573,64 @@ pub fn test_session_context_follows_symlinked_directories_remotely() {
         );
     });
 }
+
+/// Concurrent refreshes of the SAME directory must be coalesced into one listing.
+///
+/// `refresh_directory_entries` deliberately bypasses `cached_directory_entries` — its callers
+/// use it precisely when they must see current contents — so the shared cache cannot dedupe
+/// them. On a legacy-SSH session each call shells out to `find` over the session's
+/// ControlMaster, one SSH channel apiece. Measured 2026-08-15 on a build that already had the
+/// shared cache: three identical `find -L . -maxdepth 1` in flight at once for a single
+/// directory, because `DirectoryFetcher` cancels only its OWN previous fetch and nothing
+/// dedupes across fetchers. Past the host's `MaxSessions` sshd starts refusing channels and
+/// OpenSSH prints `channel N: open failed` into the user's live shell.
+///
+/// Asserted by pointer identity rather than by contents: two separate listings of the same
+/// directory would be equal but distinct allocations, so `Arc::ptr_eq` is what distinguishes
+/// "coalesced into one listing" from "ran twice and happened to agree".
+#[test]
+pub fn test_concurrent_directory_refreshes_are_coalesced() {
+    App::test((), |app| async move {
+        VirtualFS::test(
+            "test_concurrent_directory_refreshes_are_coalesced",
+            |dirs, mut sandbox| {
+                sandbox.touch(vec![Stub::EmptyFile("first.txt")]);
+
+                let tests_dir = TypedPathBuf::from(dirs.tests().to_string_lossy().as_bytes());
+                let ctx = test_session_context(Session::test(), tests_dir.clone(), &app);
+
+                let (first, second) = warpui::r#async::block_on(futures::future::join(
+                    ctx.refresh_directory_entries(tests_dir.clone()),
+                    ctx.refresh_directory_entries(tests_dir.clone()),
+                ));
+
+                assert!(
+                    Arc::ptr_eq(&first, &second),
+                    "both callers must observe the SAME listing allocation; two distinct \
+                     allocations mean the directory was listed twice, which on a remote \
+                     session is two SSH channels for one directory"
+                );
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(first)),
+                    HashSet::from_iter([EngineDirEntry::test_file("first.txt")]),
+                );
+
+                // A LATER refresh must still re-read: coalescing collapses a concurrent burst,
+                // it must never turn `refresh_` into a cache read. Adding a file after the
+                // burst has settled has to be visible.
+                sandbox.touch(vec![Stub::EmptyFile("second.txt")]);
+                let after =
+                    warpui::r#async::block_on(ctx.refresh_directory_entries(tests_dir));
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(after)),
+                    HashSet::from_iter([
+                        EngineDirEntry::test_file("first.txt"),
+                        EngineDirEntry::test_file("second.txt"),
+                    ]),
+                    "a refresh after the burst must re-read from disk, not serve the coalesced \
+                     result"
+                );
+            },
+        );
+    });
+}
