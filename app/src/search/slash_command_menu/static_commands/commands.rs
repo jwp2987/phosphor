@@ -416,6 +416,18 @@ pub static EXPORT_TO_CLIPBOARD: LazyLock<StaticCommand> = LazyLock::new(|| Stati
     argument: None,
 });
 
+/// Copies an identifier for the current conversation so the user can attach it to a
+/// Phosphor issue. See `ServerConversationToken::debugging_payload` for what lands on the
+/// clipboard -- a deeplink on dogfood channels, a plain id blob everywhere else.
+pub static COPY_DEBUGGING_ID: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/copy-debugging-id",
+    description: t_static!("slash-cmd-copy-debugging-id-desc"),
+    icon_path: "bundled/svg/copy.svg",
+    availability: Availability::ACTIVE_CONVERSATION,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static EXPORT_TO_FILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/export-to-file",
     description: t_static!("slash-cmd-export-to-file-desc"),
@@ -664,6 +676,7 @@ fn all_commands() -> Vec<StaticCommand> {
         STATUSLINE.clone(),
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
+        COPY_DEBUGGING_ID.clone(),
         MODEL.clone(),
         API_KEYS.clone(),
     ];
@@ -807,6 +820,30 @@ mod tests {
                 command.name
             );
         }
+    }
+
+    /// Adapted from the pin's `copy_debugging_id_command_has_correct_registry_metadata`
+    /// (upstream b4070d6a9). The pin asserts on a stored `kind` field and a
+    /// `SlashCommandSurfaces::GuiAndTui` value; this fork derives both from the command name,
+    /// so the equivalent assertions are `kind()`, `supports_gui()` and `supports_tui()`.
+    #[test]
+    fn copy_debugging_id_command_is_registered_for_gui_and_tui() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(COPY_DEBUGGING_ID.name)
+            .expect("expected /copy-debugging-id to be registered");
+
+        assert_eq!(command.name, "/copy-debugging-id");
+        assert_eq!(command.kind(), SlashCommandKind::CopyDebuggingId);
+        assert!(command.supports_gui());
+        assert!(command.supports_tui());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(command.availability, Availability::ACTIVE_CONVERSATION);
+        assert!(command.argument.is_none());
+        // Available once there is an active conversation, hidden before that.
+        assert!(command.is_active(Availability::ACTIVE_CONVERSATION));
+        assert!(!command.is_active(Availability::ALWAYS));
     }
 
     /// Ported from Warp's `api_keys_command_is_tui_only_and_has_no_arguments`. Unlike Warp,

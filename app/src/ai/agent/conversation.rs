@@ -966,6 +966,13 @@ impl AIConversation {
         self.server_conversation_token.as_ref()
     }
 
+    /// The token to identify this conversation by when reporting a problem: its own, or the
+    /// one it was forked from, since a fork's first turns are only recorded under the parent.
+    pub fn debugging_server_conversation_token(&self) -> Option<&ServerConversationToken> {
+        self.server_conversation_token()
+            .or_else(|| self.forked_from_server_conversation_token())
+    }
+
     /// Returns the server-assigned run identifier as a string.
     pub fn run_id(&self) -> Option<String> {
         self.task_id.map(|id| id.to_string())

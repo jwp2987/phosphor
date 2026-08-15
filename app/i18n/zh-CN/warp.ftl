@@ -2401,6 +2401,9 @@ slash-cmd-conversations-desc = 打开对话历史
 slash-cmd-prompts-desc = 搜索已保存的提示词
 slash-cmd-rewind-desc = 倒回到对话中的上一个节点
 slash-cmd-export-to-clipboard-desc = 以 markdown 格式将当前对话导出到剪贴板
+slash-cmd-copy-debugging-id-desc = 复制此对话的调试 ID，用于附加到 Phosphor issue
+slash-cmd-copy-debugging-id-copied = 调试 ID 已复制到剪贴板 — 请附加到你的 Phosphor issue
+slash-cmd-copy-debugging-id-none = 此对话尚无调试 ID。
 slash-cmd-export-to-file-desc = 将当前对话导出为 markdown 文件
 slash-cmd-export-to-file-hint = <可选：文件名>
 

@@ -4003,3 +4003,50 @@ fn escape_with_root_selected_clears_tab_focus_without_switching() {
         });
     });
 }
+
+// --- `/copy-debugging-id` (upstream b4070d6a9) ---
+
+/// The footer hint slot must carry an error-toned notice when the conversation has no
+/// server token yet. `footer_hint()` reads `transient_hint.current()` verbatim when
+/// present, so asserting on it covers what the footer renders.
+#[test]
+fn copy_debugging_id_shows_error_hint_when_no_server_token() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::COPY_DEBUGGING_ID, None, ctx);
+        });
+
+        view.read(&app, |view, _| {
+            assert_eq!(
+                view.transient_hint.current(),
+                Some((
+                    super::COPY_DEBUGGING_ID_NO_TOKEN_HINT,
+                    super::TransientHintTone::Error
+                )),
+                "/copy-debugging-id with no server token must set the no-token error hint"
+            );
+        });
+    });
+}
+
+/// The same hint must actually reach the rendered session, not just the hint slot.
+#[test]
+fn copy_debugging_id_footer_hint_renders_in_session() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::COPY_DEBUGGING_ID, None, ctx);
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(
+            rendered.contains(super::COPY_DEBUGGING_ID_NO_TOKEN_HINT),
+            "rendered session must contain the no-token hint in the footer; got:\n{rendered}"
+        );
+    });
+}

@@ -762,6 +762,32 @@ impl Input {
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
             }
+            copy_debugging_id if command.name == commands::COPY_DEBUGGING_ID.name => {
+                let debugging_payload = BlocklistAIHistoryModel::as_ref(ctx)
+                    .active_conversation(self.terminal_view_id)
+                    .and_then(|conversation| conversation.debugging_server_conversation_token())
+                    .map(|token| token.debugging_payload(None));
+                match debugging_payload {
+                    Some(debugging_payload) => {
+                        ctx.clipboard()
+                            .write(ClipboardContent::plain_text(debugging_payload));
+                        let window_id = ctx.window_id();
+                        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                            toast_stack.add_ephemeral_toast(
+                                DismissibleToast::default(crate::t!(
+                                    "slash-cmd-copy-debugging-id-copied"
+                                )),
+                                window_id,
+                                ctx,
+                            );
+                        });
+                    }
+                    None => {
+                        show_error_toast(crate::t!("slash-cmd-copy-debugging-id-none"), ctx);
+                        return true;
+                    }
+                }
+            }
             export_to_file if command.name == commands::EXPORT_TO_FILE.name => {
                 #[cfg(not(target_family = "wasm"))]
                 {
