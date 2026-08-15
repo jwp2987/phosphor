@@ -44,10 +44,14 @@ pub(crate) const GEMINI_BLUE: ColorU = ColorU {
 };
 
 /// OpenAI brand color (dark gray/black)
-// Phosphor's own mark. Sampled from the dominant fill of
-// `app/assets/bundled/svg/phosphor-logo.svg`, so the toolbar tile matches the
-// logo rendered beside it. The pin uses a flat black for its equivalent
-// variant; this fork has an actual asset to key on, so it does.
+// Phosphor's own mark. Taken from the top stop of the bezel gradient in
+// `app/assets/bundled/svg/phosphor-logo.svg` -- that asset is a four-gradient
+// SVG with no single dominant fill, so this is a representative sample rather
+// than *the* colour, and it is the one number here worth re-picking by eye.
+// The pin uses a flat black for its equivalent variant; this fork has an
+// actual asset to key on. Note the logo itself renders through the Image
+// branch in `render_cli_agent_logo`, not through this colour -- this drives
+// the surrounding tile only.
 const PHOSPHOR_COLOR: ColorU = ColorU {
     r: 0x42,
     g: 0x32,
