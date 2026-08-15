@@ -35,6 +35,12 @@ const MAX_RECONNECT_ATTEMPTS: u32 = 2;
 /// Delay between reconnection attempts.
 #[cfg(not(target_family = "wasm"))]
 const RECONNECT_DELAY: Duration = Duration::from_secs(2);
+/// Brief timeout for awaiting a child process's exit status after a
+/// spontaneous disconnect. Gives the `remote-server-proxy` subprocess time
+/// to report its exit code and signal status before we give up and report
+/// `None`. Upstream: f0ca7861fe5603e31e1a43118ddf2ff5c17782ca (#10728).
+#[cfg(not(target_family = "wasm"))]
+const EXIT_STATUS_WAIT_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// Parameters that travel together through the reconnection flow.
 #[cfg(not(target_family = "wasm"))]
@@ -291,6 +297,18 @@ pub enum RemoteSessionState {
         host_id: HostId,
         control_path: Option<PathBuf>,
     },
+    /// A spontaneous disconnect was detected and the background task is
+    /// briefly awaiting the child process's exit status (see
+    /// `RemoteServerManager::await_exit_status`) before deciding whether to
+    /// reconnect or emit `SessionDisconnected`. Preserves `control_path` so
+    /// `deregister_session` can still call `stop_control_master` if the user
+    /// exits during this window. Upstream:
+    /// f0ca7861fe5603e31e1a43118ddf2ff5c17782ca (#10728), adapted from the
+    /// `Initializing`-state connection-failure path upstream actually
+    /// patched to this fork's remaining `try_status()`-based race, in the
+    /// spontaneous-disconnect-after-`Connected` path.
+    #[cfg(not(target_family = "wasm"))]
+    AwaitingExitStatus { control_path: Option<PathBuf> },
     /// Connection dropped (EOF/error from the reader task).
     Disconnected,
 }
@@ -1311,7 +1329,10 @@ impl RemoteServerManager {
         let control_path = match &prev {
             Some(RemoteSessionState::Connected { control_path, .. })
             | Some(RemoteSessionState::Initializing { control_path, .. }) => control_path.clone(),
-            Some(RemoteSessionState::Reconnecting { control_path, .. }) => control_path.clone(),
+            Some(RemoteSessionState::Reconnecting { control_path, .. })
+            | Some(RemoteSessionState::AwaitingExitStatus { control_path, .. }) => {
+                control_path.clone()
+            }
             _ => None,
         };
 
@@ -1411,6 +1432,9 @@ impl RemoteServerManager {
             ) => true,
             #[cfg(not(target_family = "wasm"))]
             Some(RemoteSessionState::Reconnecting { .. }) => true,
+            // The connection is already gone; we're only confirming why.
+            #[cfg(not(target_family = "wasm"))]
+            Some(RemoteSessionState::AwaitingExitStatus { .. }) => false,
         }
     }
 
@@ -1756,14 +1780,44 @@ impl RemoteServerManager {
         }
     }
 
-    /// Captures the exit status from a `Child` process, if available.
+    /// Asynchronously awaits the exit status of a `Child` process with a
+    /// short timeout.
+    ///
+    /// Uses `Child::status()`, which resolves only once the process has
+    /// actually exited, instead of the non-blocking `Child::try_status()`
+    /// this replaced. `try_status()` raced against a just-killed child: on
+    /// a spontaneous disconnect the reader task observes EOF as soon as the
+    /// pipe closes, which can happen slightly before the OS finishes
+    /// reaping the `remote-server-proxy` process, so a one-shot
+    /// non-blocking check could spuriously report "still running" (or a
+    /// transient `Ok(None)`) for a child that was in fact already gone —
+    /// which in turn made `mark_session_disconnected` misclassify an
+    /// already-dead daemon as a transient network blip and attempt an
+    /// immediate reconnect that was bound to fail.
+    ///
+    /// Upstream: f0ca7861fe5603e31e1a43118ddf2ff5c17782ca (#10728),
+    /// "Wait on child process to exit before showing error". Upstream fixed
+    /// a different call site — the `Initializing`-state connection-failure
+    /// path in `connect_session`, which this fork's `14c8c8de` host-scoped-
+    /// request rewrite (2026-06-03) later restructured away, dropping the
+    /// exit-status capture there entirely (`SessionConnectionFailed` no
+    /// longer even carries an `exit_status` field). `capture_exit_status`'s
+    /// `try_status()` race lives on in exactly one place in this fork —
+    /// `mark_session_disconnected`'s spontaneous-disconnect-after-Connected
+    /// path below — so the async-wait pattern is adapted here instead of
+    /// diffed in verbatim. NOT COMPILED: verified by reading only. The
+    /// `ModelSpawner::spawn` closure bound
+    /// (`FnOnce(&mut M, &mut ModelContext<M>) -> R`, `crates/warpui_core/
+    /// src/core/model/context.rs`) is synchronous, so this await cannot
+    /// happen inside `mark_session_disconnected` itself — hence the
+    /// extract-await-reenter split with `finish_mark_session_disconnected`.
     #[cfg(not(target_family = "wasm"))]
-    fn capture_exit_status(
-        child: &mut async_process::Child,
+    async fn await_exit_status(
+        mut child: async_process::Child,
         session_id: SessionId,
     ) -> Option<RemoteServerExitStatus> {
-        match child.try_status() {
-            Ok(Some(status)) => {
+        match child.status().with_timeout(EXIT_STATUS_WAIT_TIMEOUT).await {
+            Ok(Ok(status)) => {
                 let code = status.code();
                 #[cfg(unix)]
                 let signal_killed = {
@@ -1781,15 +1835,16 @@ impl RemoteServerManager {
                     signal_killed,
                 })
             }
-            Ok(None) => {
-                log::warn!(
-                    "Remote server process still running for session {session_id:?} \
-                     despite EOF on reader task"
-                );
+            Ok(Err(e)) => {
+                log::warn!("Failed to read exit status for session {session_id:?}: {e}");
                 None
             }
-            Err(e) => {
-                log::warn!("Failed to read exit status for session {session_id:?}: {e}");
+            Err(_) => {
+                log::warn!(
+                    "Remote server process did not exit within \
+                     {EXIT_STATUS_WAIT_TIMEOUT:?} for session {session_id:?}, \
+                     despite EOF on reader task"
+                );
                 None
             }
         }
@@ -1810,90 +1865,156 @@ impl RemoteServerManager {
         if let RemoteSessionState::Connected {
             host_id,
             identity_key,
-            mut _child,
+            _child,
             control_path,
             transport,
             ..
         } = prev
         {
-            let exit_status = Self::capture_exit_status(&mut _child, session_id);
-            // Drop the old child process explicitly before reconnecting.
-            drop(_child);
-            // If the child process has already exited (`exit_status.is_some()`),
-            // it means the remote daemon is really gone — e.g. the user typed
-            // `exit` in the remote shell, and ssh ControlMaster tore down all
-            // slave channels together, so `remote-server-proxy` exited too. In
-            // this case, an immediate reconnect will most likely fail and would
-            // instead make the terminal pane hang for 2-4 seconds before fully
-            // ending; so we skip auto-reconnect and go straight to the
-            // Disconnected path. Only `exit_status.is_none()` (child still
-            // running but the reader got EOF) — a "true transient network
-            // blip" — keeps the reconnect logic.
-            let child_already_exited = exit_status.is_some();
-            let Some(auth_context) = self.auth_context.clone().filter(|_| !child_already_exited)
-            else {
-                if child_already_exited {
-                    log::info!(
-                        "Spontaneous disconnect for session {session_id:?}: \
-                         child already exited (exit_status={exit_status:?}), \
-                         skipping reconnect"
-                    );
-                } else {
-                    log::warn!(
-                        "Spontaneous disconnect for session {session_id:?}, \
-                         but no auth context is available for reconnect"
-                    );
-                }
-                self.sessions
-                    .insert(session_id, RemoteSessionState::Disconnected);
-                self.remove_from_host_index(&host_id, session_id);
-                ctx.emit(RemoteServerManagerEvent::SessionDisconnected {
-                    session_id,
-                    host_id: host_id.clone(),
-                    exit_status,
-                });
-                if !self.host_to_sessions.contains_key(&host_id) {
-                    self.handle_host_disconnected(host_id, ctx);
-                }
-                return;
-            };
-            log::info!(
-                "Spontaneous disconnect for session {session_id:?}, \
-                 will attempt reconnect (transport={transport:?})"
-            );
-
-            // Clear stale repo metadata and host index so downstream
-            // models don't hold onto data from the dead server process.
-            self.remove_from_host_index(&host_id, session_id);
-            if !self.host_to_sessions.contains_key(&host_id) {
-                self.handle_host_disconnected(host_id.clone(), ctx);
-            }
-
-            // Clear last navigated path so navigate_to_directory
-            // re-fires after reconnect.
-            // We need to do this on disconnect because the cached
-            // navigated path is only deduping for the current _remote server session.
-            self.last_navigated_path.remove(&session_id);
-
-            self.attempt_reconnect(
+            // Park the session in `AwaitingExitStatus` (preserving
+            // `control_path`, see its doc comment) while a background task
+            // awaits the child's exit status off the entity-model thread —
+            // see `await_exit_status`'s doc comment for why this can't
+            // happen inline. `finish_mark_session_disconnected` re-enters
+            // via `spawner` once the wait resolves (or times out) to make
+            // the reconnect-vs-disconnect decision that used to run
+            // synchronously here.
+            self.sessions.insert(
                 session_id,
-                ReconnectParams {
-                    attempt: 1,
-                    host_id,
-                    exit_status,
-                    transport,
-                    auth_context,
-                    control_path,
-                    identity_key,
+                RemoteSessionState::AwaitingExitStatus {
+                    control_path: control_path.clone(),
                 },
-                ctx,
             );
+
+            let spawner = self.spawner.clone();
+            ctx.background_executor()
+                .spawn(async move {
+                    let exit_status = Self::await_exit_status(_child, session_id).await;
+                    let _ = spawner
+                        .spawn(move |me, ctx| {
+                            me.finish_mark_session_disconnected(
+                                session_id,
+                                host_id,
+                                identity_key,
+                                control_path,
+                                transport,
+                                exit_status,
+                                ctx,
+                            );
+                        })
+                        .await;
+                })
+                .detach();
         } else {
             // Non-Connected states (Initializing, Connecting, etc.) —
             // no reconnect, just mark disconnected.
             self.sessions
                 .insert(session_id, RemoteSessionState::Disconnected);
         }
+    }
+
+    /// Completes `mark_session_disconnected` once the child's exit status
+    /// is known (or the wait timed out): decides reconnect vs. disconnect
+    /// and updates session state accordingly. Split out so the exit-status
+    /// wait can happen off the entity-model thread — see
+    /// `mark_session_disconnected`'s doc comment.
+    ///
+    /// This is the same decision logic `mark_session_disconnected` ran
+    /// synchronously before the `f0ca7861` port; only the exit-status
+    /// source changed (async `await_exit_status` instead of sync
+    /// `capture_exit_status`).
+    #[cfg(not(target_family = "wasm"))]
+    fn finish_mark_session_disconnected(
+        &mut self,
+        session_id: SessionId,
+        host_id: HostId,
+        identity_key: String,
+        control_path: Option<PathBuf>,
+        transport: Arc<dyn RemoteTransport>,
+        exit_status: Option<RemoteServerExitStatus>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // The session may have been deregistered (or otherwise reset) while
+        // we were awaiting the exit status. Only proceed if it is still
+        // sitting in the `AwaitingExitStatus` placeholder
+        // `mark_session_disconnected` left behind — anything else (removed
+        // entirely, or replaced by some other transition) means this
+        // callback is stale and must not clobber whatever state is there
+        // now.
+        match self.sessions.get(&session_id) {
+            Some(RemoteSessionState::AwaitingExitStatus { .. }) => {}
+            _ => return,
+        }
+        self.sessions.remove(&session_id);
+
+        // If the child process has already exited (`exit_status.is_some()`),
+        // it means the remote daemon is really gone — e.g. the user typed
+        // `exit` in the remote shell, and ssh ControlMaster tore down all
+        // slave channels together, so `remote-server-proxy` exited too. In
+        // this case, an immediate reconnect will most likely fail and would
+        // instead make the terminal pane hang for 2-4 seconds before fully
+        // ending; so we skip auto-reconnect and go straight to the
+        // Disconnected path. Only `exit_status.is_none()` (child still
+        // running, or the wait timed out) — a "true transient network
+        // blip" — keeps the reconnect logic.
+        let child_already_exited = exit_status.is_some();
+        let Some(auth_context) = self.auth_context.clone().filter(|_| !child_already_exited) else {
+            if child_already_exited {
+                log::info!(
+                    "Spontaneous disconnect for session {session_id:?}: \
+                     child already exited (exit_status={exit_status:?}), \
+                     skipping reconnect"
+                );
+            } else {
+                log::warn!(
+                    "Spontaneous disconnect for session {session_id:?}, \
+                     but no auth context is available for reconnect"
+                );
+            }
+            self.sessions
+                .insert(session_id, RemoteSessionState::Disconnected);
+            self.remove_from_host_index(&host_id, session_id);
+            ctx.emit(RemoteServerManagerEvent::SessionDisconnected {
+                session_id,
+                host_id: host_id.clone(),
+                exit_status,
+            });
+            if !self.host_to_sessions.contains_key(&host_id) {
+                self.handle_host_disconnected(host_id, ctx);
+            }
+            return;
+        };
+        log::info!(
+            "Spontaneous disconnect for session {session_id:?}, \
+             will attempt reconnect (transport={transport:?})"
+        );
+
+        // Clear stale repo metadata and host index so downstream
+        // models don't hold onto data from the dead server process.
+        self.remove_from_host_index(&host_id, session_id);
+        if !self.host_to_sessions.contains_key(&host_id) {
+            self.handle_host_disconnected(host_id.clone(), ctx);
+        }
+
+        // Clear last navigated path so navigate_to_directory
+        // re-fires after reconnect.
+        // We need to do this on disconnect because the cached
+        // navigated path is only deduping for the current _remote server session.
+        self.last_navigated_path.remove(&session_id);
+
+        self.attempt_reconnect(
+            session_id,
+            ReconnectParams {
+                attempt: 1,
+                host_id,
+                exit_status,
+                transport,
+                auth_context,
+                control_path,
+                identity_key,
+            },
+            ctx,
+        );
     }
 
     /// Attempt to re-establish the remote server connection.

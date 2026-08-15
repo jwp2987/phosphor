@@ -119,7 +119,7 @@ pub const GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(10 
 
 /// Unique identifier for a connected proxy session in daemon mode.
 pub type ConnectionId = uuid::Uuid;
-use super::protocol::RequestId;
+use super::protocol::{MAX_MESSAGE_SIZE, RequestId};
 use crate::ai::agent::FileLocations;
 use crate::ai::blocklist::{read_local_file_context, ReadFileContextResult};
 use crate::terminal::model::session::command_executor::{
@@ -3653,16 +3653,40 @@ impl ServerModel {
             move |me, result, _ctx| {
                 let result_oneof = match result {
                     Ok(output) => {
+                        let mut stdout = output.stdout.clone();
+                        let mut stderr = output.stderr.clone();
+
+                        // Truncate to stay under the wire-level message size
+                        // limit. Leave headroom for protobuf framing overhead.
+                        // Without this, an oversized `RunCommand` response
+                        // failed at the write layer with `MessageTooLarge`
+                        // (see the writer loop in `unix/mod.rs`) instead of
+                        // ever reaching the client in any form.
+                        // Upstream: d9dee18e19e8c06e24b7b32a9619685e5dd3289c
+                        // (#10681). NOT COMPILED: verified by reading only.
+                        const MAX_OUTPUT_BYTES: usize = MAX_MESSAGE_SIZE - 1024;
+                        let total = stdout.len() + stderr.len();
+                        if total > MAX_OUTPUT_BYTES {
+                            log::warn!(
+                                "RunCommand output too large \
+                                 (request_id={request_id_for_response}): \
+                                 {total} bytes, truncating to {MAX_OUTPUT_BYTES}"
+                            );
+                            let ratio = MAX_OUTPUT_BYTES as f64 / total as f64;
+                            stdout.truncate((stdout.len() as f64 * ratio) as usize);
+                            stderr.truncate((stderr.len() as f64 * ratio) as usize);
+                        }
+
                         log::info!(
                             "RunCommand completed (request_id={request_id_for_response}): \
                              exit_code={:?}, stdout_len={}, stderr_len={}",
                             output.exit_code,
-                            output.stdout.len(),
-                            output.stderr.len(),
+                            stdout.len(),
+                            stderr.len(),
                         );
                         run_command_response::Result::Success(RunCommandSuccess {
-                            stdout: output.stdout.clone(),
-                            stderr: output.stderr.clone(),
+                            stdout,
+                            stderr,
                             exit_code: output.exit_code.map(|c| c.value()),
                         })
                     }
