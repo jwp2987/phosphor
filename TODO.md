@@ -2315,6 +2315,69 @@ other way.
       visual claims needing the app running. Text-layout code exists across three
       platform backends, so #316 is not a missing-feature question.
 
+## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
+
+`ORACLE.md` pins the Warp *commit*, but upstream's `Cargo.toml` pins several
+**external git repos** that move on their own schedule. Nothing in the re-pin
+runbook covered them until now (`docs/pin-migration.md` Phase 3.5 closes that),
+so they have drifted silently since the initial public release.
+
+Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly**
+— this has mostly been tracked — and the exceptions split three ways.
+
+### Real drift — the fork is simply behind
+
+- [ ] **`warp-command-signatures`: `00a032b8` → `fe352669`.** The completion
+      spec data, pulled with `embed-signatures`, compiled into the binary and
+      consumed by `crates/warp_completer`. Set in "Initial public release of
+      Warp" and never touched since. Upstream was already at `29cd61c3` at the
+      **old** pin, so the fork was behind before this pin move — this is
+      pre-existing debt, not something the re-pin created. Recorded in no
+      document: not `DECLINED.md`, not `ORACLE.md`, not `docs/STATE.md`.
+      Consequence: every command whose flags or arguments changed upstream
+      completes against stale data. The bump is a lockfile change plus a build,
+      **not** a source port; the five intermediate revs do not apply as diffs
+      because the fork's base does not match the start of the chain.
+      Repo is reachable (HEAD `d79e09c4` as of 2026-08-15).
+
+- [ ] **`notify-debouncer-full`: `f3afcda30` → `91b719849`.** Same repo
+      (`warpdotdev/notify`), fork behind, undocumented. This is the filesystem
+      watch debouncer — it sits under the directory-watch paths that the
+      `RepositoryWatchMode` work also touches, so check the two together.
+
+### A divergence needing a decision, not a bump
+
+- [ ] **`rmcp`: fork pins `warpdotdev/rmcp` at `c0f65dc44`; upstream has moved
+      to crates.io `version = "1.6"`.** Not a lag — a different sourcing
+      strategy. Decide whether to follow upstream onto the published crate
+      (fewer git deps, `deny.toml`'s `allow-git` gets shorter) or keep the fork
+      pin, and record whichever it is.
+
+### Correct as they stand — do not "fix" these
+
+- **`winit`** differs deliberately and is documented in `Cargo.toml`: the fork
+  carries one extra commit (rust-windowing/winit#4453, Windows dark-mode
+  detection via registry), open and unreviewed upstream since 2025-12-27.
+- **`tink-core` / `tink-proto` / `tink-hybrid`** are upstream-only and correctly
+  absent: they back `crates/managed_secrets`' envelope encryption, and this fork
+  wires `DisabledManagedSecretsClient`.
+
+## WINDOWS TUI INSTALLER — deferred 2026-08-15 (maintainer's call)
+
+- [ ] Upstream `ddba1684e` / `d9ed47239` ship a signed Inno Setup installer for
+      the TUI and rework TUI autoupdate to download and run it. **Deferred, not
+      declined** — revisit when Windows packaging is worth investing in.
+
+      What it needs, so the next person does not re-derive it: the fork's
+      `script/windows/bundle.ps1` has no `tui` artifact at all; the TUI install
+      layout here is Unix-only (`#[cfg(unix)]`, symlinks); and the commits carry
+      `warp_tui` feature additions that do not exist in this fork
+      (`nld_classifier_v3`, `nld_heuristic_v2`, `voice_input`). So this is a
+      packaging project, not a port.
+
+      Related and already tracked separately: the Windows smoke suite above is
+      at 5/19 with GUI bootstrap as the blocker.
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is

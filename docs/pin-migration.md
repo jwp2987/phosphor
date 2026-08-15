@@ -201,6 +201,63 @@ possible progress and they shrink the queue before anyone spends thought on it.
 
 It is a **snapshot, not a gate**. Regenerate it; do not trust a stale copy.
 
+## Phase 3.5 — move the git-pinned dependencies too
+
+**The pin is not only a Warp commit.** Upstream's `Cargo.toml` pins external git
+repositories by exact rev, and those repos move on their own schedule. Nothing
+in Phases 0–3 looks at them: the queue diffs `*.rs`, the identity manifest
+compares blobs under `app/src` and `crates`, and a dependency rev lives in
+neither. So they drift silently, and the drift is invisible to every gate —
+`cargo` is perfectly happy to keep building the old rev forever.
+
+This was found the hard way at the first re-pin: `warp-command-signatures` was
+still at the rev set in "Initial public release of Warp", two pins back. It is
+the completion-spec data, pulled with `embed-signatures` and compiled into the
+binary, so every command whose flags changed upstream had been completing
+against stale data — with nothing anywhere recording that as a known gap.
+
+### The check
+
+```bash
+for dep in $(grep -oE '^[a-z0-9_-]+ = \{ git' Cargo.toml | cut -d' ' -f1); do
+    fork=$(grep -E "^$dep = \{ git" Cargo.toml \
+           | grep -oE 'rev = "[0-9a-f]+"' | grep -oE '[0-9a-f]+')
+    up=$(git show <new-pin>:Cargo.toml \
+         | grep -E "^$dep = \{ git" \
+         | grep -oE 'rev = "[0-9a-f]+"' | grep -oE '[0-9a-f]+')
+    [ "$fork" != "$up" ] && printf '%-32s fork=%.9s upstream=%.9s\n' "$dep" "$fork" "$up"
+done
+```
+
+Run it against **both** pins, not just the new one. A dep that already differed
+at the old pin is pre-existing debt rather than something this move introduced,
+and saying which it is takes one extra command.
+
+### Classify every difference — there are three kinds, and only one is a bump
+
+| kind | what it looks like | what to do |
+|---|---|---|
+| **drift** | same repo URL, fork's rev is an ancestor of upstream's | bump the rev, regenerate the lockfile, build. Record it. |
+| **divergence** | different repo, or upstream moved to a published crate | a **decision**, not a bump. Record which way you went and why. |
+| **deliberate** | the fork pins its own fork on purpose | leave it alone — and confirm the reason is still written down in `Cargo.toml` next to the pin |
+
+At the first re-pin the split was 17 identical, 2 drift
+(`warp-command-signatures`, `notify-debouncer-full`), 1 divergence (`rmcp` — the
+fork pins a git fork, upstream moved to crates.io `1.6`), 1 deliberate (`winit`,
+carrying an unmerged Windows dark-mode fix), and 3 correctly absent (`tink-*`,
+which back cloud-coupled envelope encryption).
+
+### Two traps
+
+- **A stale rev is not a missing feature, and porting will not fix it.** The
+  intermediate revs generally do not apply as diffs, because the fork's base
+  does not match the start of the chain. Bump the pin; do not try to port the
+  data repo's history.
+- **A deliberate fork pin must say so where the pin is**, in a comment on the
+  dependency line. If the reason lives only in a commit message, the next
+  re-pin "fixes" it back to upstream and silently reintroduces whatever bug the
+  fork carried a patch for.
+
 ## Phase 4 — port, as a fleet round
 
 Follow `docs/FLEET-ROUND.md` exactly. The rules that matter most:
