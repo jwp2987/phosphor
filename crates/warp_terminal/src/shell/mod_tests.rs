@@ -322,3 +322,39 @@ fn test_rc_file_paths_use_target_os_separator() {
     assert!(ShellType::Bash.rc_file_paths(TargetOS::Windows).is_empty());
     assert!(ShellType::Fish.rc_file_paths(TargetOS::Windows).is_empty());
 }
+
+// The deferred function/builtin enumeration commands (#586). These are
+// per-shell rather than a constant because only one shell needs them: Bash,
+// Zsh and Fish already emit their complete function and builtin lists during
+// bootstrap, so asking again would cost an in-band round trip and return
+// nothing new.
+#[test]
+fn only_powershell_enumerates_functions_and_builtins_after_bootstrap() {
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        assert_eq!(shell_type.shell_command_to_get_all_functions(), None);
+        assert_eq!(shell_type.shell_command_to_get_all_builtins(), None);
+    }
+
+    let functions = ShellType::PowerShell
+        .shell_command_to_get_all_functions()
+        .expect("PowerShell's bootstrap cannot afford the full function list");
+    let builtins = ShellType::PowerShell
+        .shell_command_to_get_all_builtins()
+        .expect("PowerShell's bootstrap cannot afford the full cmdlet list");
+
+    assert!(functions.contains("Get-Command -CommandType Function"));
+    assert!(builtins.contains("Get-Command -CommandType Cmdlet"));
+
+    // The shell integration's own helpers are still declared `Warp-*` in
+    // `pwsh.ps1`, so the filter has to keep matching that prefix; rebranding it
+    // would leak `Warp-Precmd` and friends into the user's completions.
+    assert!(functions.contains("$_.Name.StartsWith('Warp')"));
+    assert!(!builtins.contains("StartsWith"));
+
+    // Both write raw UTF-8 bytes to stdout rather than letting PowerShell's
+    // formatter wrap or pad the object list.
+    for command in [functions, builtins] {
+        assert!(command.contains("[System.Text.UTF8Encoding]::new($false).GetBytes($text)"));
+        assert!(command.contains("[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"));
+    }
+}

@@ -1,13 +1,22 @@
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::any::Any;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
+use async_trait::async_trait;
+use smol_str::SmolStr;
+use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use warpui::{
     elements::Empty, platform::WindowStyle, App, AppContext, Element, Entity, ModelHandle,
     TypedActionView, View, ViewContext,
 };
 
+use crate::terminal::shell::{Shell, ShellType};
+
 use super::command_executor::testing::TestCommandExecutor;
-use super::{BootstrapSessionType, Session, SessionId, SessionInfo, Sessions, SessionsEvent};
+use super::{
+    BootstrapSessionType, CommandExecutor, ExecuteCommandOptions, Session, SessionId, SessionInfo,
+    Sessions, SessionsEvent,
+};
 
 struct TestView {
     events: Vec<SessionsEvent>,
@@ -177,4 +186,196 @@ fn powershell_read_command_embeds_escaped_path_without_args() {
         command,
         OsString::from(r"[System.IO.File]::ReadAllText('C:\o''brien\history.txt')")
     );
+}
+
+// --- Deferred function/builtin name sets (#586) -----------------------------
+//
+// The pin (`02b53fcd8` and `42effe840` alike) ships this machinery with no
+// tests of its own, so these are new rather than ported. They pin down the two
+// properties the port has to hold: the loaders are a no-op for every shell
+// whose bootstrap already reports the complete set, and for the one shell that
+// needs them the deferred names reach `function_names` / `builtin_names` /
+// `top_level_commands` without duplicating the bootstrap snapshot.
+
+/// A `CommandExecutor` that records what it was asked to run and answers with
+/// canned output, so the deferred loaders can be driven without a live shell.
+#[derive(Debug)]
+struct RecordingCommandExecutor {
+    stdout: String,
+    status: CommandExitStatus,
+    commands: Mutex<Vec<String>>,
+}
+
+impl RecordingCommandExecutor {
+    fn succeeding(stdout: &str) -> Arc<Self> {
+        Arc::new(Self {
+            stdout: stdout.to_owned(),
+            status: CommandExitStatus::Success,
+            commands: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn failing() -> Arc<Self> {
+        Arc::new(Self {
+            stdout: String::new(),
+            status: CommandExitStatus::Failure,
+            commands: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn recorded(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl CommandExecutor for RecordingCommandExecutor {
+    async fn execute_command(
+        &self,
+        command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<CommandOutput> {
+        self.commands.lock().unwrap().push(command.to_owned());
+        Ok(CommandOutput {
+            stdout: self.stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            status: match self.status {
+                CommandExitStatus::Success => CommandExitStatus::Success,
+                CommandExitStatus::Failure => CommandExitStatus::Failure,
+            },
+            exit_code: None,
+        })
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        false
+    }
+}
+
+fn names(values: &[&str]) -> HashSet<SmolStr> {
+    values.iter().map(|value| SmolStr::from(*value)).collect()
+}
+
+fn session_for_shell(
+    shell_type: ShellType,
+    executor: Arc<RecordingCommandExecutor>,
+) -> Arc<Session> {
+    let info = SessionInfo::new_for_test()
+        .with_shell_type(shell_type)
+        .with_function_names(names(&["prompt"]))
+        .with_builtins(names(&["Get-Item"]));
+    Arc::new(Session::new(info, executor))
+}
+
+fn sorted<'a>(values: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut values: Vec<&str> = values.collect();
+    values.sort_unstable();
+    values
+}
+
+#[test]
+fn deferred_function_names_are_merged_without_duplicating_the_bootstrap_set() {
+    App::test((), |_app| async move {
+        // The bootstrap snapshot already carried `prompt`; only the two names it
+        // did not carry should be added.
+        let executor = RecordingCommandExecutor::succeeding("prompt\nInvoke-Custom\nStart-Thing\n");
+        let session = session_for_shell(ShellType::PowerShell, executor.clone());
+
+        session.load_all_function_names().await;
+
+        assert_eq!(
+            sorted(session.function_names()),
+            vec!["Invoke-Custom", "Start-Thing", "prompt"]
+        );
+        assert!(sorted(session.top_level_commands()).contains(&"Invoke-Custom"));
+        assert_eq!(
+            executor.recorded(),
+            vec![ShellType::PowerShell
+                .shell_command_to_get_all_functions()
+                .expect("PowerShell enumerates functions asynchronously")
+                .to_owned()]
+        );
+    });
+}
+
+#[test]
+fn deferred_builtin_names_are_merged_without_duplicating_the_bootstrap_set() {
+    App::test((), |_app| async move {
+        let executor = RecordingCommandExecutor::succeeding("Get-Item\nGet-Custom\n");
+        let session = session_for_shell(ShellType::PowerShell, executor.clone());
+
+        session.load_all_builtins().await;
+
+        assert_eq!(
+            sorted(session.builtin_names()),
+            vec!["Get-Custom", "Get-Item"]
+        );
+        assert!(sorted(session.top_level_commands()).contains(&"Get-Custom"));
+        assert_eq!(
+            executor.recorded(),
+            vec![ShellType::PowerShell
+                .shell_command_to_get_all_builtins()
+                .expect("PowerShell enumerates builtins asynchronously")
+                .to_owned()]
+        );
+    });
+}
+
+#[test]
+fn deferred_name_loaders_run_no_command_for_shells_that_report_at_bootstrap() {
+    App::test((), |_app| async move {
+        for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+            let executor = RecordingCommandExecutor::succeeding("should_never_be_read\n");
+            let session = session_for_shell(shell_type, executor.clone());
+
+            session.load_all_function_names().await;
+            session.load_all_builtins().await;
+
+            assert!(
+                executor.recorded().is_empty(),
+                "{shell_type:?} enumerates functions and builtins during bootstrap; \
+                 a second in-band command would be pure overhead"
+            );
+            assert_eq!(sorted(session.function_names()), vec!["prompt"]);
+            assert_eq!(sorted(session.builtin_names()), vec!["Get-Item"]);
+        }
+    });
+}
+
+#[test]
+fn deferred_name_set_is_loaded_at_most_once_per_session() {
+    App::test((), |_app| async move {
+        let executor = RecordingCommandExecutor::succeeding("Invoke-Custom\n");
+        let session = session_for_shell(ShellType::PowerShell, executor.clone());
+
+        session.load_all_function_names().await;
+        session.load_all_function_names().await;
+
+        assert_eq!(executor.recorded().len(), 1);
+        assert_eq!(
+            sorted(session.function_names()),
+            vec!["Invoke-Custom", "prompt"]
+        );
+    });
+}
+
+#[test]
+fn a_failed_enumeration_leaves_the_bootstrap_names_intact() {
+    App::test((), |_app| async move {
+        let executor = RecordingCommandExecutor::failing();
+        let session = session_for_shell(ShellType::PowerShell, executor.clone());
+
+        session.load_all_function_names().await;
+        session.load_all_builtins().await;
+
+        assert_eq!(sorted(session.function_names()), vec!["prompt"]);
+        assert_eq!(sorted(session.builtin_names()), vec!["Get-Item"]);
+    });
 }
