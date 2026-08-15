@@ -4,7 +4,7 @@
 # green so the whole surface reads like a single-gun CRT, while red and yellow
 # are kept warm enough that errors and warnings still stand out.
 # Installation (Windows):
-#   Copy this file to %APPDATA%\zap\Zap\data\themes\phosphor_green.yaml
+#   Copy this file to %APPDATA%\phosphor\Phosphor\data\themes\phosphor_green.yaml
 #   After restarting Phosphor, select "Phosphor Green" under
 #   Settings → Appearance → Themes.
 ---

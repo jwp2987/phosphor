@@ -87,7 +87,7 @@ mod appimage {
                     found.browser_download_url.clone()
                 } else {
                     log::warn!(
-                        "openWarp: cached release tag {} has no asset named {asset}, falling back to the tag URL",
+                        "Phosphor: cached release tag {} has no asset named {asset}, falling back to the tag URL",
                         release.tag_name
                     );
                     format!(
@@ -475,7 +475,7 @@ impl PackageManager {
                 )
             }
         };
-        log::info!("openWarp upgrade hint: {hint}");
+        log::info!("Phosphor upgrade hint: {hint}");
     }
 }
 

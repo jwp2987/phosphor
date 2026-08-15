@@ -21477,7 +21477,7 @@ impl TypedActionView for Workspace {
 
                                 if ChannelState::channel().is_dogfood() {
                                     log::info!(
-                                        "openWarp: dev performance sample saved locally at {output_path}"
+                                        "Phosphor: dev performance sample saved locally at {output_path}"
                                     );
                                 }
 

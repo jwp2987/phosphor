@@ -55,16 +55,16 @@ pub(crate) fn verify_oss_asset_sha256(
     asset_name: &str,
 ) -> anyhow::Result<()> {
     let Some(release) = github::cached_release() else {
-        log::info!("openWarp: no cached release, skipping SHA-256 verification");
+        log::info!("Phosphor: no cached release, skipping SHA-256 verification");
         return Ok(());
     };
     let Some(asset) = release.find_asset(asset_name) else {
-        log::warn!("openWarp: {asset_name} not found in the cached release, skipping SHA-256 verification");
+        log::warn!("Phosphor: {asset_name} not found in the cached release, skipping SHA-256 verification");
         return Ok(());
     };
     let Some(expected) = asset.sha256_hex() else {
         log::info!(
-            "openWarp: asset {asset_name} has no recognizable digest (possibly an algorithm other than sha256), skipping verification"
+            "Phosphor: asset {asset_name} has no recognizable digest (possibly an algorithm other than sha256), skipping verification"
         );
         return Ok(());
     };
@@ -84,7 +84,7 @@ pub(crate) fn verify_oss_asset_sha256(
     }
     let actual = format!("{:x}", hasher.finalize());
     if actual == expected {
-        log::info!("openWarp: SHA-256 verification passed ({asset_name})");
+        log::info!("Phosphor: SHA-256 verification passed ({asset_name})");
         Ok(())
     } else {
         Err(anyhow!(

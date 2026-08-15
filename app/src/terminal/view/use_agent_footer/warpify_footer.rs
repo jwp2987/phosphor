@@ -85,9 +85,9 @@ impl WarpifyFooterView {
     pub fn set_mode(&mut self, mode: WarpificationMode, ctx: &mut ViewContext<Self>) {
         let (label, binding_name) = match mode {
             WarpificationMode::Ssh { .. } => {
-                ("Warpify SSH session", "terminal:warpify_ssh_session")
+                ("Phosphorize SSH session", "terminal:warpify_ssh_session")
             }
-            WarpificationMode::Subshell { .. } => ("Warpify subshell", "terminal:warpify_subshell"),
+            WarpificationMode::Subshell { .. } => ("Phosphorize subshell", "terminal:warpify_subshell"),
         };
         self.warpify_button.update(ctx, |button, ctx| {
             button.set_label(label, ctx);

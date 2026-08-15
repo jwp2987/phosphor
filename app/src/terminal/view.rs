@@ -9220,11 +9220,11 @@ impl TerminalView {
 
         let a11y_message = match &warpify_keybinding {
             Some(keystroke) => format!(
-                "You can press {} to Warpify this {} for more Phosphor features.",
+                "You can press {} to Phosphorize this {} for more Phosphor features.",
                 keystroke.displayed(),
                 lowercase_title
             ),
-            None => format!("You can Warpify this {lowercase_title} for more Phosphor features."),
+            None => format!("You can Phosphorize this {lowercase_title} for more Phosphor features."),
         };
 
         model
@@ -24872,7 +24872,7 @@ impl TypedActionView for TerminalView {
                 WarpA11yRole::TextareaRole,
             )),
             ShowWarpifySettings => Custom(AccessibilityContent::new_without_help(
-                "Opened Warpify Settings",
+                "Opened Phosphorize Settings",
                 WarpA11yRole::ButtonRole,
             )),
             OpenFilesPalette { .. } => Custom(AccessibilityContent::new_without_help(

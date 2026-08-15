@@ -71,7 +71,7 @@ pub async fn dump_jemalloc_heap_profile(memory_breakdown: serde_json::Value) {
     match result {
         Ok(profile_data) => {
             log::warn!(
-                "openWarp: detected abnormal memory usage (heap profile size {} bytes, memory breakdown: {})",
+                "Phosphor: detected abnormal memory usage (heap profile size {} bytes, memory breakdown: {})",
                 profile_data.len(),
                 memory_breakdown
             );
