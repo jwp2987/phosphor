@@ -1328,6 +1328,63 @@ fn test_vim_jump_to_end_and_beginning() {
 }
 
 #[test]
+fn test_vim_counted_g_and_gg_jump_to_specific_line() {
+    // Coverage gap, not a bug: neither upstream (730a4acc0, "fix(vim): respect
+    // count before gg", #13167) nor this file ever exercised the buffer position
+    // `NG`/`Ngg` actually land on -- only that the vim FSA parses the right
+    // `JumpToLine(n)` event. Worth pinning explicitly because upstream's fix
+    // subtracts 1 to convert vim's 1-indexed count to a 0-indexed buffer row, and
+    // porting that verbatim here would be *wrong*: this fork's `Buffer` always
+    // prefixes content with a zero-width `BlockMarker` (`Buffer::default()` in
+    // crates/editor/src/content/buffer.rs), so content rows are already
+    // 1-indexed (row 1 == line 1, confirmed by `test_dimension_conversions` in
+    // crates/editor/src/content/buffer_test.rs). `CodeEditorView::jump_to_line`
+    // and `CodeEditorModel::vim_select_to_line` correctly use the raw count
+    // as-is; see the comments there.
+    let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor(
+            "abc
+            def
+            ghi",
+            &mut app,
+        );
+
+        vim_user_insert(&editor, "2G", &mut app);
+        assert_eq!(cursor_position(&editor, &app), (2, 0));
+
+        vim_user_insert(&editor, "gg", &mut app);
+        assert_eq!(cursor_position(&editor, &app), (1, 0));
+
+        vim_user_insert(&editor, "3gg", &mut app);
+        assert_eq!(cursor_position(&editor, &app), (3, 0));
+
+        // Out-of-range counts still clamp to the last line rather than panicking.
+        vim_user_insert(&editor, "100G", &mut app);
+        assert_eq!(cursor_position(&editor, &app), (3, 0));
+    });
+}
+
+#[test]
+fn test_vim_operator_pending_counted_gg_deletes_to_specific_line() {
+    // Sibling coverage for `CodeEditorModel::vim_select_to_line`, the
+    // operator-pending/visual counterpart of `jump_to_line` above (`d2gg`, `v2gg`,
+    // ...). See the comment on `test_vim_counted_g_and_gg_jump_to_specific_line`.
+    let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_code_editor_app(&mut app);
+        let editor = add_code_editor("aaa\nbbb\nccc\nddd", &mut app);
+
+        // From line 1, "d3gg" deletes lines 1-3 linewise, leaving only "ddd".
+        vim_user_insert(&editor, "d3gg", &mut app);
+        assert_eq!(buffer_text(&editor, &app), "ddd");
+    });
+}
+
+#[test]
 fn test_vim_begin_line_below() {
     let _feature_flag_guard = FeatureFlag::VimCodeEditor.override_enabled(true);
 

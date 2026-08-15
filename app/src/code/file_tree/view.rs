@@ -572,13 +572,18 @@ impl FileTreeView {
                 if !root_paths.is_empty() {
                     let id = RepositoryIdentifier::Local(std_path.clone());
                     if let Some(state) = RepoMetadataModel::as_ref(ctx).get_repository(&id, ctx) {
-                        for root_path in root_paths {
-                            if let Some(root_dir) = self.root_directories.get_mut(&root_path) {
+                        for root_path in &root_paths {
+                            if let Some(root_dir) = self.root_directories.get_mut(root_path) {
                                 root_dir.entry = state.entry.clone();
                             }
                         }
 
-                        self.rebuild_flattened_items();
+                        // Upstream bd7202f30 (#10184): only rebuild the affected
+                        // root(s), not every displayed root -- see
+                        // `rebuild_flattened_items_for_root`.
+                        for root_path in &root_paths {
+                            self.rebuild_flattened_items_for_root(root_path);
+                        }
                         self.apply_pending_focus_target();
                         ctx.notify();
                     }
@@ -623,7 +628,12 @@ impl FileTreeView {
                     if let Some(root_dir) = self.root_directories.get_mut(&repo_path) {
                         root_dir.entry = state.entry.clone();
                     }
-                    self.rebuild_flattened_items();
+                    // Only rebuild the affected remote root instead of all roots.
+                    // Remote servers stream frequent incremental updates; a full
+                    // rebuild would cause unrelated local roots to re-render on
+                    // every remote filesystem change, leading to visible flicker
+                    // (upstream bd7202f30, #10184).
+                    self.rebuild_flattened_items_for_root(&repo_path);
                     ctx.notify();
                 }
             }
@@ -633,7 +643,10 @@ impl FileTreeView {
                 let repo_path = &remote_id.path;
                 self.displayed_directories.retain(|p| p != repo_path);
                 self.root_directories.remove(repo_path);
-                self.rebuild_flattened_items();
+                // The removed root is already gone from root_directories/
+                // displayed_directories, so this is effectively a no-op rebuild
+                // that avoids touching the remaining roots' flattened items.
+                self.rebuild_flattened_items_for_root(repo_path);
                 ctx.notify();
             }
             RepoMetadataEvent::FileTreeUpdated { .. }
@@ -1580,14 +1593,32 @@ impl FileTreeView {
         }
 
         let id = repo_metadata::RepositoryIdentifier::local(path.clone());
-        let entry = RepoMetadataModel::as_ref(ctx)
-            .get_repository(&id, ctx)
-            .map(|state| state.entry.clone());
+        // Upstream 5d8507e40 ("Don't get a freshly cloned repo stuck in a loading
+        // state in project explorer", #9998): `get_repository` returns `None` for
+        // both `IndexedRepoState::Pending` (still (re-)indexing) and `::Failed`
+        // (see local_model.rs) -- collapsing them was the bug. A repo that
+        // finishes an initial index, then gets a background re-index kicked off
+        // (e.g. after a `git clone` populates it), would transiently read back as
+        // `None` here on every re-index and get its already-populated `entry`
+        // clobbered with `create_empty_entry`, flashing the tree back to a loading
+        // state. Read `repository_state` directly so `Pending` can keep the
+        // existing entry instead. NOT COMPILED -- builds are suspended; verified
+        // by reading only.
+        let repo_state = RepoMetadataModel::as_ref(ctx).repository_state(&id, ctx);
         if let Some(root_dir) = self.root_directories.get_mut(path) {
-            root_dir.entry = match entry {
-                Some(entry) => entry,
-                None => Self::create_empty_entry(path),
-            };
+            match repo_state {
+                Some(IndexedRepoState::Indexed(state)) => {
+                    root_dir.entry = state.entry.clone();
+                }
+                Some(IndexedRepoState::Pending(_)) => {
+                    // Repo is being (re-)indexed. Keep whatever entry we already
+                    // have so the tree doesn't flash back to a loading state
+                    // during the Pending -> Indexed transition.
+                }
+                Some(IndexedRepoState::Failed(_)) | None => {
+                    root_dir.entry = Self::create_empty_entry(path);
+                }
+            }
         }
     }
 
@@ -1606,32 +1637,64 @@ impl FileTreeView {
         });
     }
 
+    /// Rebuilds the flattened items list for a single root directory only, leaving
+    /// all other roots untouched. Use this when only one root's backing data has
+    /// changed (e.g. a `FileTreeEntryUpdated` for one repo) to avoid unnecessarily
+    /// re-flattening -- and re-rendering -- unrelated roots.
+    ///
+    /// Upstream bd7202f30 ("Fix file tree refresh logic", #10184): a remote SSH
+    /// session's file-watcher streams a `FileTreeEntryUpdated { Remote }` event per
+    /// filesystem change on the remote host. Every one of those previously called
+    /// the unfiltered `rebuild_flattened_items()`, which re-flattens *all* displayed
+    /// roots including unrelated local ones -- so the local file tree visibly
+    /// blinked/reshuffled on every remote filesystem change. This targets just the
+    /// affected root. NOT COMPILED -- builds are suspended; verified by reading
+    /// only.
+    fn rebuild_flattened_items_for_root(&mut self, target_root: &StandardizedPath) {
+        self.rebuild_flatten_items_and_select_path(None, None, Some(target_root));
+    }
+
     /// Rebuilds the flattened items list from the current entry tree, optionally removing an item.
     fn rebuild_flattened_items(&mut self) {
-        self.rebuild_flatten_items_and_select_path(None, None);
+        self.rebuild_flatten_items_and_select_path(None, None, None);
     }
 
     fn rebuild_flattened_items_without(&mut self, path_to_remove: &StandardizedPath) -> bool {
-        self.rebuild_flatten_items_and_select_path(None, Some(path_to_remove))
+        self.rebuild_flatten_items_and_select_path(None, Some(path_to_remove), None)
     }
 
     /// Rebuilds the flattened items list from the current entry tree
     /// If `id_to_select` is `Some`, the item identified by that FileTreeIdentifier will be selected.
     /// If `path_to_remove` is `Some`, the item identified by `path_to_remove` will be removed
     /// upon rebuilding.
+    /// If `target_root` is `Some`, only that root is re-flattened; every other
+    /// displayed root's existing `items` are left as-is (see
+    /// `rebuild_flattened_items_for_root`). If `None`, every displayed root is
+    /// rebuilt, as before.
     /// Returns `true` if an item was removed.
     fn rebuild_flatten_items_and_select_path(
         &mut self,
         id_to_select: Option<&FileTreeIdentifier>,
         path_to_remove: Option<&StandardizedPath>,
+        target_root: Option<&StandardizedPath>,
     ) -> bool {
         let mut any_item_removed = false;
 
         // Clone the ID to preserve so we don't hold a borrow on self.selected_item
         let id_to_preserve = id_to_select.cloned().or_else(|| self.selected_item.clone());
 
-        // Process all displayed directories
+        // Process displayed directories, optionally filtering to a single root.
+        // Safe to skip non-matching roots here: each root's flattened `items` are
+        // stored (and only overwritten below) per-root on `root_dir.items`, not
+        // assembled into one shared list that gets replaced wholesale -- so a
+        // skipped root simply keeps its current (already up to date) items.
         for root_path in self.displayed_directories.clone() {
+            if let Some(target) = target_root
+                && root_path != *target
+            {
+                continue;
+            }
+
             let Some(root_dir) = self.root_directories.get(&root_path) else {
                 continue;
             };

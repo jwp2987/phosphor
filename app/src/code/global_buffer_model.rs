@@ -717,7 +717,21 @@ impl GlobalBufferModel {
         state.set_base_content_version(new_version);
 
         if let Some(char_offset_edits) = char_offset_edits {
-            if let BufferSource::ServerLocal { sync_clock, .. } = &mut state.source {
+            // Upstream 25bb50823 ("Fix spurious unsaved diff state", #10823): a
+            // save echoed back through the file watcher produces an empty diff
+            // (`diff.is_empty()` above already handles the *local* buffer-version
+            // half of that). Without this guard, a ServerLocal buffer would still
+            // broadcast that empty diff to every connected remote client as a
+            // `ServerLocalBufferUpdated`/`BufferUpdatedPush`. A connected client
+            // then advances its `base_content_version` to match (its
+            // `BufferUpdatedFromFileEvent`/push handler doesn't know the edit list
+            // was empty) without the buffer content itself having changed underneath
+            // it, producing the same spurious "unsaved changes" mismatch on their
+            // end that the local half of this fix prevents here. NOT COMPILED --
+            // builds are suspended; verified by reading only.
+            if !char_offset_edits.is_empty()
+                && let BufferSource::ServerLocal { sync_clock, .. } = &mut state.source
+            {
                 let new_sv = sync_clock.bump_server();
                 ctx.emit(GlobalBufferModelEvent::ServerLocalBufferUpdated {
                     file_id,

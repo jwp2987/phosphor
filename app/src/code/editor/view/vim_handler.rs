@@ -257,8 +257,21 @@ impl VimHandler for CodeEditorView {
                             VimMotion::JumpToMatchingBracket => {
                                 model.vim_select_to_matching_bracket(ctx);
                             }
-                            _ => {
-                                // TODO: Implement other motions (find char, brackets, etc.)
+                            VimMotion::JumpToUnmatchedBracket(bracket) => {
+                                // Upstream 47234cc6d ("Fix vim d%/c%/y% in the code editor",
+                                // #14176) added this arm alongside JumpToMatchingBracket above:
+                                // both motions were parsed correctly by the vim FSA but fell into
+                                // this closure's `_ => TODO` catch-all, so `d[`, `c]`, `y[` etc.
+                                // were silent no-ops (empty selection, guarded out by the
+                                // caller's `if !selected_text.is_empty()`). This fork's
+                                // independent vim-mode port (`b94fe7835`) added the
+                                // JumpToMatchingBracket arm but not this one, leaving the
+                                // unmatched-bracket half of the same bug in place.
+                                // `keep_selection: true` matches the standalone `[`/`]` handler
+                                // below (`jump_to_unmatched_bracket`, called with `false`) and
+                                // upstream's fix. NOT COMPILED -- builds are suspended; verified
+                                // by reading only.
+                                model.vim_jump_to_unmatched_bracket(bracket, true, ctx);
                             }
                         }
                     }
@@ -729,6 +742,17 @@ impl VimHandler for CodeEditorView {
         self.model.update(ctx, |model, ctx| {
             let buffer = model.content().as_ref(ctx);
             let max_row = buffer.max_point().row;
+            // NOTE: upstream 730a4acc0 ("fix(vim): respect count before gg", #13167)
+            // converts vim's 1-indexed count via `saturating_sub(1)` before this clamp,
+            // because upstream's buffer rows are 0-indexed (row 0 == line 1). This
+            // fork's `Buffer` always prefixes content with a zero-width
+            // `BufferText::BlockMarker` (see `Buffer::default()` in
+            // crates/editor/src/content/buffer.rs), which occupies row 0, so content
+            // rows here are already 1-indexed (row 1 == line 1) -- confirmed by
+            // `test_dimension_conversions` in crates/editor/src/content/buffer_test.rs
+            // and by the existing `test_vim_jump_to_end_and_beginning` (G on a 3-line
+            // buffer lands on row 3). Porting upstream's `-1` verbatim here would
+            // *introduce* the off-by-one instead of fixing one -- do not add it.
             let row = line_number.max(1).min(max_row);
             model.jump_to_line_column(row as usize, None, ctx);
         });

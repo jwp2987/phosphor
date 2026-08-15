@@ -450,7 +450,8 @@ impl CodeEditorModel {
             ctx.add_model(|_| HiddenLinesModel::new(content.clone(), selection_model.clone()));
 
         let render_state = ctx.add_model(|ctx| {
-            // CharCell layout never consults `RichTextStyles`, so pass a stub.
+            // CharCell layout consumes the configured tab size; RenderState
+            // retains the remaining styles for API compatibility with pixel layout.
             RenderState::new_tui(
                 terminal_width,
                 Self::tui_stub_text_styles(),
@@ -500,8 +501,14 @@ impl CodeEditorModel {
         }
     }
 
-    /// A minimal `RichTextStyles` for CharCell mode, where styles are never consulted for
-    /// rendering. All colors are transparent and sizes zero.
+    /// A minimal `RichTextStyles` for CharCell mode, where colors and sizes are never
+    /// consulted for rendering. `RenderState::new_tui` does consume
+    /// `base_text.fixed_width_tab_size` for tab geometry (upstream 5b38233b8, "fix(tui):
+    /// preserve tab indentation in diff hunk paint", #14392) -- keep it in sync with
+    /// `code_text`'s tab size below rather than leaving it `None`. In this fork `None`
+    /// happens to fall back to the same `DEFAULT_CHAR_CELL_TAB_SIZE` (4), so this was not
+    /// a live bug, but an explicit value avoids the two silently diverging if the default
+    /// ever changes. NOT COMPILED -- builds are suspended; verified by reading only.
     fn tui_stub_text_styles() -> RichTextStyles {
         use warp_editor::render::model::{
             BlockSpacings, BrokenLinkStyle, CheckBoxStyle, HorizontalRuleStyle, InlineCodeStyle,
@@ -527,7 +534,7 @@ impl CodeEditorModel {
             fixed_width_tab_size,
         };
         RichTextStyles {
-            base_text: paragraph(None),
+            base_text: paragraph(Some(4)),
             code_text: paragraph(Some(4)),
             code_background: Fill::None,
             embedding_background: Fill::None,
@@ -3501,6 +3508,12 @@ impl CodeEditorModel {
     ) {
         let buffer = self.content().as_ref(ctx);
         let current_selections = self.selection_model.as_ref(ctx).selection_offsets();
+        // NOTE: do not port upstream's `saturating_sub(1)` conversion from 730a4acc0
+        // here -- see the comment on `CodeEditorView::jump_to_line` in vim_handler.rs
+        // (the plain-navigation sibling of this operator-pending/visual path, `d5G`
+        // vs. `5G`). This fork's `Buffer` rows are already 1-indexed for content
+        // because of the leading zero-width `BlockMarker`, so `line_number` (vim's
+        // own 1-indexed count) is used as-is.
         let target_row = line_number.max(1).min(buffer.max_point().row);
         let new_selections = current_selections.mapped(|selection| SelectionOffsets {
             head: Point::new(target_row, 0).to_buffer_char_offset(buffer),

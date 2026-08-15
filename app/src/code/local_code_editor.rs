@@ -1638,7 +1638,6 @@ impl LocalCodeEditorView {
             if event.file_id() != file_id {
                 return;
             }
-            me.update_diff_hunk_gutter_buttons(ctx);
             match event {
                 GlobalBufferModelEvent::BufferLoaded {
                     content_version, ..
@@ -1648,15 +1647,19 @@ impl LocalCodeEditorView {
                     // conflict, but don't redo the one-time load wiring.
                     me.has_remote_conflict = false;
                     if me.base_content_version.is_some() {
+                        // A `return` here (as before 1aa6811fb) would skip the
+                        // `update_diff_hunk_gutter_buttons` call now at the bottom of
+                        // this subscription, so this is an if/else rather than an
+                        // early return.
                         me.base_content_version = Some(*content_version);
                         ctx.notify();
-                        return;
+                    } else {
+                        me.base_content_version = Some(*content_version);
+                        me.subscribe_to_lsp_manager_updates(ctx);
+                        me.try_connect_lsp_server(ctx);
+                        me.on_file_loaded(ctx);
+                        ctx.emit(LocalCodeEditorEvent::FileLoaded);
                     }
-                    me.base_content_version = Some(*content_version);
-                    me.subscribe_to_lsp_manager_updates(ctx);
-                    me.try_connect_lsp_server(ctx);
-                    me.on_file_loaded(ctx);
-                    ctx.emit(LocalCodeEditorEvent::FileLoaded);
                 }
                 GlobalBufferModelEvent::FailedToLoad { error, .. } => {
                     me.is_new_file = true;
@@ -1677,6 +1680,22 @@ impl LocalCodeEditorView {
                     }
                 }
                 GlobalBufferModelEvent::FileSaved { .. } => {
+                    // Upstream 1aa6811fb ("Fix file saves on a remote session", #12742):
+                    // a sibling view of the same buffer (e.g. this file also open in code
+                    // review) previously never advanced `base_content_version` when
+                    // *another* view saved, so it kept diffing against pre-save content
+                    // and showed a spurious "unsaved changes" / dirty gutter state after
+                    // a save that had actually succeeded. `GlobalBufferModel` has already
+                    // called `set_base_content_version` for the Local/ServerLocal case by
+                    // the time this event fires (see the `FileModelEvent::FileSaved` arm
+                    // in global_buffer_model.rs), so re-reading it here -- the same
+                    // pattern `FailedToSave` below already uses -- picks it up. Remote
+                    // buffers don't track `base_content_version` at all (see
+                    // `InternalBufferState::base_content_version`'s doc comment; they use
+                    // `SyncClock` instead), so `base_version` correctly stays `None` for
+                    // them and this is a no-op there. NOT COMPILED -- builds are
+                    // suspended; verified by reading only.
+                    me.base_content_version = GlobalBufferModel::as_ref(ctx).base_version(file_id);
                     me.has_remote_conflict = false;
                     ctx.emit(LocalCodeEditorEvent::FileSaved);
                 }
@@ -1695,6 +1714,11 @@ impl LocalCodeEditorView {
                 // care about them.
                 GlobalBufferModelEvent::ServerLocalBufferUpdated { .. } => {}
             }
+
+            // Runs after the match above (not before, as it did prior to 1aa6811fb) so it
+            // reflects the `base_content_version` the arms above may have just updated,
+            // rather than the stale pre-event value.
+            me.update_diff_hunk_gutter_buttons(ctx);
         });
     }
 
