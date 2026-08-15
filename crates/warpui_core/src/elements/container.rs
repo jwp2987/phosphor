@@ -24,6 +24,7 @@ pub struct Container {
     corner_radius: CornerRadius,
     drop_shadow: Option<DropShadow>,
     foreground_overlay: Option<Fill>,
+    foreground_border: Option<Border>,
     child: Box<dyn Element>,
     size: Option<Vector2F>,
     origin: Option<Point>,
@@ -43,6 +44,7 @@ impl Container {
             border: Border::default(),
             corner_radius: CornerRadius::default(),
             foreground_overlay: None,
+            foreground_border: None,
             drop_shadow: None,
             child,
             size: None,
@@ -62,6 +64,17 @@ impl Container {
         F: Into<Fill>,
     {
         self.foreground_overlay = Some(overlay.into());
+        self
+    }
+
+    /// Draws a border *over* the container's content instead of around it.
+    ///
+    /// Unlike [`Self::with_border`], this reserves no layout space and does not
+    /// inset the child, so it can ring an element without resizing or moving
+    /// anything. Painted on its own click-through layer, above the child and
+    /// above any foreground overlay.
+    pub fn with_foreground_border(mut self, border: impl Into<Border>) -> Self {
+        self.foreground_border = Some(border.into());
         self
     }
 
@@ -328,6 +341,22 @@ impl Element for Container {
             ctx.scene
                 .draw_rect_with_hit_recording(RectF::new(origin, size))
                 .with_background(overlay)
+                .with_corner_radius(self.corner_radius);
+            ctx.scene.stop_layer();
+        }
+
+        // Draw a foreground border on top of the container.
+        if let Some(foreground_border) = self.foreground_border {
+            ctx.scene.start_layer(ClipBounds::ActiveLayer);
+            ctx.scene.set_active_layer_click_through();
+
+            #[cfg(debug_assertions)]
+            ctx.scene
+                .set_location_for_panic_logging(self.construction_location);
+
+            ctx.scene
+                .draw_rect_with_hit_recording(RectF::new(origin, size))
+                .with_border(foreground_border)
                 .with_corner_radius(self.corner_radius);
             ctx.scene.stop_layer();
         }
