@@ -4,10 +4,10 @@ use std::sync::Arc;
 
 use parking_lot::FairMutex;
 use warp::tui_export::{
-    ActiveSession, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
-    ConversationSelection, ConversationSelectionHandle, IgnoredSuggestionsModel,
-    ModelEventDispatcher, Sessions, TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
-    AgentViewState,
+    AIConversationAutoexecuteMode, ActiveSession, AgentViewState, Appearance,
+    BlocklistAIActionModel, BlocklistAIHistoryModel, ConversationSelection,
+    ConversationSelectionHandle, IgnoredSuggestionsModel, ModelEventDispatcher, Sessions,
+    TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::semantic_selection::SemanticSelection;
@@ -136,6 +136,7 @@ pub(crate) fn add_test_conversation_selection(ctx: &mut AppContext) -> Conversat
         Box::new(TuiConversationSelection::new(
             terminal_surface_id,
             terminal_model,
+            AIConversationAutoexecuteMode::RespectUserSettings,
             ctx,
         )) as Box<dyn ConversationSelection>
     })
@@ -211,7 +212,13 @@ pub(crate) fn add_test_terminal_session(
         let surface_init = TerminalSurfaceInit::new_for_test(ctx);
         let terminal_model = surface_init.model.clone();
         let view = ctx.add_typed_action_tui_view(window_id, |ctx| {
-            TuiTerminalSessionView::new(surface_init, TuiExitSummaryHandle::default(), false, ctx)
+            TuiTerminalSessionView::new(
+                surface_init,
+                TuiExitSummaryHandle::default(),
+                false,
+                AIConversationAutoexecuteMode::RespectUserSettings,
+                ctx,
+            )
         });
         let manager = ctx.add_model(|_| {
             Box::new(TestTerminalManager(terminal_model)) as Box<dyn TerminalManagerTrait>

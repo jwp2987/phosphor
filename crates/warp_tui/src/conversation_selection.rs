@@ -13,6 +13,11 @@ use warpui::{AppContext, EntityId, ModelContext, SingletonEntity};
 pub(super) struct TuiConversationSelection {
     terminal_surface_id: EntityId,
     terminal_model: Arc<FairMutex<TerminalModel>>,
+    /// The autoexecute mode every conversation this surface creates starts in,
+    /// fixed at launch by `--auto-approve`. A conversation can still be toggled
+    /// individually afterwards; that choice is not written back here, so later
+    /// new conversations keep using the launch default.
+    default_autoexecute_mode: AIConversationAutoexecuteMode,
     pending_query_state: PendingQueryState,
 }
 
@@ -21,9 +26,15 @@ impl TuiConversationSelection {
     pub(super) fn new(
         terminal_surface_id: EntityId,
         terminal_model: Arc<FairMutex<TerminalModel>>,
+        default_autoexecute_mode: AIConversationAutoexecuteMode,
         ctx: &mut ModelContext<Box<dyn ConversationSelection>>,
     ) -> Self {
-        let conversation_id = Self::start_new_conversation(terminal_surface_id, false, ctx);
+        let conversation_id = Self::start_new_conversation(
+            terminal_surface_id,
+            default_autoexecute_mode.is_autoexecute_any_action(),
+            ctx,
+        );
+
         terminal_model
             .lock()
             .block_list_mut()
@@ -35,6 +46,7 @@ impl TuiConversationSelection {
         Self {
             terminal_surface_id,
             terminal_model,
+            default_autoexecute_mode,
             pending_query_state: PendingQueryState::Existing { conversation_id },
         }
     }
@@ -67,7 +79,7 @@ impl TuiConversationSelection {
         self.set_terminal_conversation_context(None);
         self.set_pending_query_state(
             PendingQueryState::New {
-                autoexecute_override: AIConversationAutoexecuteMode::RespectUserSettings,
+                autoexecute_override: self.default_autoexecute_mode,
             },
             ctx,
         );
@@ -252,7 +264,11 @@ impl ConversationSelection for TuiConversationSelection {
         if let Some(previous_conversation_id) = previous_conversation_id {
             Self::emit_deactivated(previous_conversation_id, true, ctx);
         }
-        let conversation_id = Self::start_new_conversation(self.terminal_surface_id, false, ctx);
+        let conversation_id = Self::start_new_conversation(
+            self.terminal_surface_id,
+            self.default_autoexecute_mode.is_autoexecute_any_action(),
+            ctx,
+        );
         self.set_terminal_conversation_context(Some(conversation_id));
         self.set_pending_query_state(PendingQueryState::Existing { conversation_id }, ctx);
         Self::emit_activated(origin, ctx);
@@ -354,6 +370,25 @@ impl ConversationSelection for TuiConversationSelection {
                 new_conversation_id,
                 ..
             } if self.selected_id() == Some(*old_conversation_id) => {
+                // The agent, not the user, created this conversation, so it did
+                // not go through `start_new_conversation` above and starts in
+                // the user's default. Bring it up to the launch default so a
+                // `--auto-approve` session stays auto-approving across an
+                // agent-requested split.
+                if self.default_autoexecute_mode.is_autoexecute_any_action() {
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                        if history
+                            .conversation(new_conversation_id)
+                            .is_some_and(|conversation| !conversation.autoexecute_any_action())
+                        {
+                            history.toggle_autoexecute_override(
+                                new_conversation_id,
+                                self.terminal_surface_id,
+                                ctx,
+                            );
+                        }
+                    });
+                }
                 self.select_existing_conversation(
                     *new_conversation_id,
                     AgentViewEntryOrigin::AgentRequestedNewConversation,

@@ -18,21 +18,21 @@ use warp::settings::{
 };
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
-    AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
-    ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
-    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState,
-    Appearance, BlockId, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
-    CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
-    CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
-    CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitRepoModels,
-    GitRepoStatusModel, GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
-    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
-    ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
-    PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
-    ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference, SlashCommandKind,
-    SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
+    AIAgentPtyWriteMode, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
+    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent, AgentConversationEntryId,
+    AgentConversationListEntryState, AgentConversationsModel, AgentInteractionMetadata,
+    AgentViewEntryOrigin, AgentViewState, Appearance, BlockId, BlocklistAIActionEvent,
+    BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
+    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
+    ChangelogRequestType, ClientProfileId, CommandExecutionSource, ConversationFileExport,
+    ConversationSelection, ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX,
+    GitRepoModels, GitRepoStatusModel, GitStatusMetadata, LLMId, LLMPreferences,
+    LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
+    LoadedConversationData, ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput,
+    PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
+    ServerConversationToken, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
+    SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
     TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
     UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
@@ -1628,6 +1628,7 @@ impl TuiTerminalSessionView {
         surface_init: TerminalSurfaceInit,
         exit_summary: TuiExitSummaryHandle,
         keyboard_enhancement_supported: bool,
+        default_autoexecute_mode: AIConversationAutoexecuteMode,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let TerminalSurfaceInit {
@@ -1655,6 +1656,7 @@ impl TuiTerminalSessionView {
             Box::new(TuiConversationSelection::new(
                 terminal_surface_id,
                 model_for_conversation_selection,
+                default_autoexecute_mode,
                 ctx,
             )) as Box<dyn ConversationSelection>
         });
