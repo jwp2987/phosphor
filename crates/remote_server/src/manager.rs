@@ -307,8 +307,19 @@ pub enum RemoteSessionState {
     /// `Initializing`-state connection-failure path upstream actually
     /// patched to this fork's remaining `try_status()`-based race, in the
     /// spontaneous-disconnect-after-`Connected` path.
+    ///
+    /// Carries `host_id` for the same reason `Connected` and `Reconnecting`
+    /// do: `deregister_session` must be able to call `remove_from_host_index`
+    /// for a session torn down while parked here. Omitting it leaked the
+    /// session id into `host_to_sessions` permanently, which then made
+    /// `connect_session`'s `is_first_session` check read `false` forever for
+    /// that host and suppressed `HostConnected` — see the note on
+    /// `deregister_session`'s `host_id` extraction.
     #[cfg(not(target_family = "wasm"))]
-    AwaitingExitStatus { control_path: Option<PathBuf> },
+    AwaitingExitStatus {
+        control_path: Option<PathBuf>,
+        host_id: HostId,
+    },
     /// Connection dropped (EOF/error from the reader task).
     Disconnected,
 }
@@ -1337,10 +1348,26 @@ impl RemoteServerManager {
         };
 
         // Extract `host_id` from states that track a host connection.
+        //
+        // `AwaitingExitStatus` MUST be listed here. The `f0ca7861` port introduced
+        // it as a window — up to `EXIT_STATUS_WAIT_TIMEOUT` plus executor latency —
+        // that did not exist before, because the reconnect-vs-disconnect decision
+        // used to run synchronously. A session deregistered inside that window
+        // (tab closed, session ended) skipped `remove_from_host_index`, stranding
+        // its id in `host_to_sessions` forever: nothing else cleans it up, since
+        // `finish_mark_session_disconnected` bails out as soon as it finds the
+        // session gone from `self.sessions`. The next connection to that host then
+        // read `is_first_session = !host_to_sessions.contains_key(..)` as `false`
+        // and never re-emitted `HostConnected`, silently skipping the host-scoped
+        // one-time init gated on it (repo metadata, codebase index model).
+        //
+        // Found by the refutation pass, not by a test — nothing in
+        // `manager_tests.rs` exercises `mark_session_disconnected` or this state.
         let host_id = match &prev {
             Some(RemoteSessionState::Connected { host_id, .. }) => Some(host_id.clone()),
             #[cfg(not(target_family = "wasm"))]
-            Some(RemoteSessionState::Reconnecting { host_id, .. }) => Some(host_id.clone()),
+            Some(RemoteSessionState::Reconnecting { host_id, .. })
+            | Some(RemoteSessionState::AwaitingExitStatus { host_id, .. }) => Some(host_id.clone()),
             _ => None,
         };
         if let Some(host_id) = host_id {
@@ -1883,6 +1910,8 @@ impl RemoteServerManager {
                 session_id,
                 RemoteSessionState::AwaitingExitStatus {
                     control_path: control_path.clone(),
+                    // Cloned: `host_id` is moved into the background task below.
+                    host_id: host_id.clone(),
                 },
             );
 
