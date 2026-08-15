@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::repositories::stub_git_repository;
-use crate::repository::{RepositorySubscriber, TrackedRemoteRef};
+use crate::repository::{RepositorySubscriber, RepositoryWatchMode, TrackedRemoteRef};
 use crate::watcher::{DirectoryWatcher, TaskQueue};
 use crate::{CanonicalizedPath, RepoMetadataError, Repository, RepositoryUpdate};
 use futures::channel::mpsc;
@@ -41,6 +41,101 @@ fn test_add_repository_success() {
             // Verify it's in the watcher's registry
             watcher_handle.read(&app, |watcher, _ctx| {
                 assert!(watcher.is_directory_watched(&canonical_path));
+            });
+        });
+    });
+}
+
+/// Ported from upstream `d78ced530`. Two linked worktrees of the same repository both
+/// register the shared `.git/refs` and `.git/config` paths; unwinding one worktree's
+/// git-mode subscription must not unwatch the other's.
+#[test]
+fn test_shared_git_paths_remain_watched_until_last_worktree_stops() {
+    VirtualFS::test("shared_git_paths_remain_watched", |dirs, mut vfs| {
+        stub_git_repository(&mut vfs, "repo");
+        vfs.mkdir("repo/.git/refs");
+        vfs.mkdir("repo/.git/worktrees/worktree-1");
+        vfs.mkdir("repo/.git/worktrees/worktree-2");
+        vfs.mkdir("worktree-1");
+        vfs.mkdir("worktree-2");
+
+        let worktree_1_path = dirs.tests().join("worktree-1");
+        let worktree_2_path = dirs.tests().join("worktree-2");
+        let external_git_dir_1 = dirs.tests().join("repo/.git/worktrees/worktree-1");
+        let external_git_dir_2 = dirs.tests().join("repo/.git/worktrees/worktree-2");
+        let shared_refs_dir = dirs.tests().join("repo/.git/refs");
+        let shared_config = dirs.tests().join("repo/.git/config");
+
+        App::test((), |mut app| async move {
+            let watcher_handle = app.add_singleton_model(DirectoryWatcher::new_for_testing);
+            let worktree_1_handle = watcher_handle
+                .update(&mut app, |watcher, ctx| {
+                    watcher.add_directory_with_git_dir(
+                        StandardizedPath::from_local_canonicalized(&worktree_1_path).unwrap(),
+                        Some(
+                            StandardizedPath::from_local_canonicalized(&external_git_dir_1)
+                                .unwrap(),
+                        ),
+                        ctx,
+                    )
+                })
+                .unwrap();
+            let worktree_2_handle = watcher_handle
+                .update(&mut app, |watcher, ctx| {
+                    watcher.add_directory_with_git_dir(
+                        StandardizedPath::from_local_canonicalized(&worktree_2_path).unwrap(),
+                        Some(
+                            StandardizedPath::from_local_canonicalized(&external_git_dir_2)
+                                .unwrap(),
+                        ),
+                        ctx,
+                    )
+                })
+                .unwrap();
+
+            let (scan_tx, _) = mpsc::unbounded();
+            let (update_tx, _) = mpsc::unbounded();
+            let active_tasks = Arc::new(AtomicUsize::new(0));
+            let worktree_1_start = worktree_1_handle.update(&mut app, |repository, ctx| {
+                repository.start_watching(
+                    RepositoryWatchMode::GitRepository,
+                    Box::new(TestSubscriber::new(
+                        scan_tx.clone(),
+                        update_tx.clone(),
+                        active_tasks.clone(),
+                    )),
+                    ctx,
+                )
+            });
+            let worktree_2_start = worktree_2_handle.update(&mut app, |repository, ctx| {
+                repository.start_watching(
+                    RepositoryWatchMode::GitRepository,
+                    Box::new(TestSubscriber::new(scan_tx, update_tx, active_tasks)),
+                    ctx,
+                )
+            });
+            std::mem::drop(worktree_1_start.registration_future);
+            std::mem::drop(worktree_2_start.registration_future);
+
+            worktree_1_handle.update(&mut app, |repository, ctx| {
+                repository.stop_watching(worktree_1_start.subscriber_id, ctx);
+            });
+
+            let shared_refs_dir =
+                StandardizedPath::from_local_canonicalized(&shared_refs_dir).unwrap();
+            let shared_config = StandardizedPath::from_local_canonicalized(&shared_config).unwrap();
+            watcher_handle.read(&app, |watcher, _| {
+                assert!(!watcher.stopped_watching_paths.contains(&shared_refs_dir));
+                assert!(!watcher.stopped_watching_paths.contains(&shared_config));
+            });
+
+            worktree_2_handle.update(&mut app, |repository, ctx| {
+                repository.stop_watching(worktree_2_start.subscriber_id, ctx);
+            });
+
+            watcher_handle.read(&app, |watcher, _| {
+                assert!(watcher.stopped_watching_paths.contains(&shared_refs_dir));
+                assert!(watcher.stopped_watching_paths.contains(&shared_config));
             });
         });
     });
@@ -248,7 +343,11 @@ fn test_task_queue_processes_all_tasks() {
                     TestSubscriber::new(scan_tx.clone(), update_tx.clone(), active_tasks.clone());
 
                 let start = repo1_handle.update(&mut app, |repo, ctx| {
-                    repo.start_watching(Box::new(subscriber1), ctx)
+                    repo.start_watching(
+                        RepositoryWatchMode::FilesystemOnly,
+                        Box::new(subscriber1),
+                        ctx,
+                    )
                 });
                 start
                     .registration_future
@@ -256,7 +355,11 @@ fn test_task_queue_processes_all_tasks() {
                     .expect("Failed to add subscriber");
 
                 let start = repo2_handle.update(&mut app, |repo, ctx| {
-                    repo.start_watching(Box::new(subscriber2), ctx)
+                    repo.start_watching(
+                        RepositoryWatchMode::FilesystemOnly,
+                        Box::new(subscriber2),
+                        ctx,
+                    )
                 });
                 start
                     .registration_future
@@ -318,7 +421,11 @@ fn test_scan_queue_handles_nonexistent_subscriber() {
             let subscriber = TestSubscriber::new(tx, update_tx, active_scans.clone());
 
             std::mem::drop(repo_handle.update(&mut app, |repo, ctx| {
-                repo.start_watching(Box::new(subscriber), ctx)
+                repo.start_watching(
+                    RepositoryWatchMode::FilesystemOnly,
+                    Box::new(subscriber),
+                    ctx,
+                )
             }));
 
             // Wait for processing to complete
@@ -371,7 +478,11 @@ fn test_file_updates_delivered() {
                 let subscriber =
                     TestSubscriber::new(scan_tx.clone(), update_tx.clone(), task_count.clone());
                 let start = repo_handle.update(&mut app, |repo, ctx| {
-                    repo.start_watching(Box::new(subscriber), ctx)
+                    repo.start_watching(
+                        RepositoryWatchMode::FilesystemOnly,
+                        Box::new(subscriber),
+                        ctx,
+                    )
                 });
                 start
                     .registration_future
@@ -608,7 +719,11 @@ fn test_commit_related_files_excluded_from_update_lists() {
 
             log::info!("Start setting up watcher");
             let start = repo_handle.update(&mut app, |repo, ctx| {
-                repo.start_watching(Box::new(subscriber), ctx)
+                repo.start_watching(
+                    RepositoryWatchMode::GitRepository,
+                    Box::new(subscriber),
+                    ctx,
+                )
             });
             start
                 .registration_future
@@ -737,7 +852,11 @@ fn start_watching_registers_gitignore_pruning_watch_filter() {
             let (update_tx, _update_rx) = mpsc::unbounded::<RepositoryUpdate>();
             let subscriber = TestSubscriber::new(tx, update_tx, Arc::new(AtomicUsize::new(0)));
             std::mem::drop(repo_handle.update(&mut app, |repo, ctx| {
-                repo.start_watching(Box::new(subscriber), ctx)
+                repo.start_watching(
+                    RepositoryWatchMode::FilesystemOnly,
+                    Box::new(subscriber),
+                    ctx,
+                )
             }));
 
             let gitignores = repo_handle.read(&app, |repo, _ctx| repo.watch_filter_gitignores());

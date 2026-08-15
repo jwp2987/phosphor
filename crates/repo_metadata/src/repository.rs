@@ -49,10 +49,23 @@ pub trait RepositorySubscriber: Send + Sync {
 
 /// A unique identifier for repository subscribers.
 pub type SubscriberId = usize;
+/// Controls which repository changes a subscriber receives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepositoryWatchMode {
+    /// Watch ordinary filesystem content without activating Git metadata tracking.
+    FilesystemOnly,
+    /// Watch filesystem content and Git metadata such as commits, index locks, and upstream refs.
+    GitRepository,
+}
 
 pub struct StartWatching {
     pub subscriber_id: SubscriberId,
     pub registration_future: BoxFuture<'static, Result<(), RepoMetadataError>>,
+}
+struct RepositorySubscription {
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    mode: RepositoryWatchMode,
+    subscriber: Box<dyn RepositorySubscriber>,
 }
 
 /// Model for tracking a code repository that Zap is aware of.
@@ -68,7 +81,7 @@ pub struct Repository {
     /// the `.git` component. `None` when the repo is not a linked worktree.
     common_git_directory: Option<StandardizedPath>,
     /// Collection of subscribers interested in file changes.
-    subscribers: HashMap<SubscriberId, Box<dyn RepositorySubscriber>>,
+    subscribers: HashMap<SubscriberId, RepositorySubscription>,
     /// Counter for generating unique subscriber IDs.
     next_subscriber_id: SubscriberId,
     /// Cached gitignore patterns for this repository.
@@ -77,6 +90,8 @@ pub struct Repository {
     /// Cached loose remote-tracking ref tracked by the active branch.
     #[cfg(feature = "local_fs")]
     tracked_remote_ref: Option<TrackedRemoteRef>,
+    #[cfg(test)]
+    tracked_remote_ref_refresh_count: usize,
 
     task_queue: ModelHandle<TaskQueue>,
 }
@@ -154,6 +169,8 @@ impl Repository {
             gitignores,
             #[cfg(feature = "local_fs")]
             tracked_remote_ref: None,
+            #[cfg(test)]
+            tracked_remote_ref_refresh_count: 0,
             task_queue,
         }
     }
@@ -186,9 +203,11 @@ impl Repository {
     /// Directory registrations can be created from a raw path before git detection completes.
     /// Preserve any metadata already associated with the repository, since later raw-path
     /// registrations must not downgrade a known linked worktree.
+    #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub(super) fn enrich_external_git_directory(
         &mut self,
         external_git_directory: StandardizedPath,
+        ctx: &mut ModelContext<Self>,
     ) {
         if self.external_git_directory.is_some() {
             return;
@@ -200,6 +219,21 @@ impl Repository {
             .and_then(|p| StandardizedPath::try_from_local(&p).ok())
             .filter(|common| common != &external_git_directory);
         self.external_git_directory = Some(external_git_directory);
+
+        // A repository can learn it is a linked worktree *after* a git-mode subscriber
+        // already started watching, so the newly-known git paths must be registered now.
+        #[cfg(feature = "local_fs")]
+        if self.has_git_repository_subscribers() {
+            let git_paths = self.git_watch_paths();
+            if !git_paths.is_empty() {
+                let gitignores = self.watch_filter_gitignores();
+                let registration_future =
+                    DirectoryWatcher::handle(ctx).update(ctx, move |watcher, ctx| {
+                        watcher.start_watching_directories(git_paths, gitignores, ctx)
+                    });
+                ctx.spawn(registration_future, |_, _, _| {});
+            }
+        }
     }
 
     /// Returns the path to the actual `.git` directory for this repository.
@@ -318,10 +352,21 @@ impl Repository {
         notify: bool,
         ctx: &mut ModelContext<Self>,
     ) {
+        if !self.has_git_repository_subscribers() {
+            return;
+        }
+
+        #[cfg(test)]
+        {
+            self.tracked_remote_ref_refresh_count += 1;
+        }
         let root_dir = self.root_dir().to_local_path_lossy();
         ctx.spawn(
             Repository::resolve_tracked_remote_ref(root_dir),
             move |repository, tracked_remote_ref, ctx| {
+                if !repository.has_git_repository_subscribers() {
+                    return;
+                }
                 let tracked_remote_ref_changed =
                     repository.update_tracked_remote_ref(tracked_remote_ref);
                 if notify && tracked_remote_ref_changed {
@@ -334,7 +379,7 @@ impl Repository {
     #[cfg(feature = "local_fs")]
     fn enqueue_remote_ref_update(&mut self, ctx: &mut ModelContext<Self>) {
         let repository_handle = ctx.handle();
-        let subscriber_ids = self.get_subscriber_ids();
+        let subscriber_ids = self.get_git_repository_subscriber_ids();
         let update = RepositoryUpdate {
             remote_ref_updated: true,
             ..Default::default()
@@ -351,15 +396,18 @@ impl Repository {
         });
     }
 
-    /// The set of directories this repository's subscribers need watched:
-    /// the working tree root, the per-worktree gitdir (linked worktrees
-    /// only), and — for linked worktrees — the shared `.git/refs` directory
-    /// (commit refs + remote-tracking refs) and `.git/config` (tracking
-    /// state) so shared-ref and tracking-state changes are visible even
-    /// when the main worktree isn't itself registered.
+    /// The set of Git-metadata directories a `GitRepository`-mode subscriber needs
+    /// watched: the per-worktree gitdir (linked worktrees only), and — for linked
+    /// worktrees — the shared `.git/refs` directory (commit refs + remote-tracking
+    /// refs) and `.git/config` (tracking state) so shared-ref and tracking-state
+    /// changes are visible even when the main worktree isn't itself registered.
+    ///
+    /// The working-tree root is deliberately *not* included: it is watched for every
+    /// subscriber regardless of mode, and registering it here would reintroduce the
+    /// Git tracking that `RepositoryWatchMode::FilesystemOnly` exists to avoid.
     #[cfg(feature = "local_fs")]
-    fn watch_paths(&self) -> Vec<StandardizedPath> {
-        let mut paths = vec![self.root_dir.clone()];
+    pub(crate) fn git_watch_paths(&self) -> Vec<StandardizedPath> {
+        let mut paths = Vec::new();
         if let Some(external_git_dir) = &self.external_git_directory {
             paths.push(external_git_dir.clone());
         }
@@ -378,6 +426,13 @@ impl Repository {
         paths
     }
 
+    #[cfg(feature = "local_fs")]
+    pub(crate) fn has_git_repository_subscribers(&self) -> bool {
+        self.subscribers
+            .values()
+            .any(|subscription| subscription.mode == RepositoryWatchMode::GitRepository)
+    }
+
     /// Returns the current watcher count.
     pub fn watcher_count(&self) -> usize {
         self.subscribers.len()
@@ -390,6 +445,7 @@ impl Repository {
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub fn start_watching(
         &mut self,
+        mode: RepositoryWatchMode,
         subscriber: Box<dyn RepositorySubscriber>,
         ctx: &mut ModelContext<Self>,
     ) -> StartWatching {
@@ -398,22 +454,34 @@ impl Repository {
 
         // If this is the first subscriber, we need to start watching the repository
         #[cfg(feature = "local_fs")]
-        let should_start_watching = self.subscribers.is_empty();
+        let should_start_filesystem_watching = self.subscribers.is_empty();
+        #[cfg(feature = "local_fs")]
+        let should_start_git_watching =
+            mode == RepositoryWatchMode::GitRepository && !self.has_git_repository_subscribers();
 
-        self.subscribers.insert(subscriber_id, subscriber);
+        self.subscribers
+            .insert(subscriber_id, RepositorySubscription { mode, subscriber });
 
         #[cfg(feature = "local_fs")]
-        let registration_future: BoxFuture<'static, Result<(), RepoMetadataError>> =
-            if should_start_watching {
-                let directories_to_watch = self.watch_paths();
+        let registration_future: BoxFuture<'static, Result<(), RepoMetadataError>> = {
+            let mut directories_to_watch = Vec::new();
+            if should_start_filesystem_watching {
+                directories_to_watch.push(self.root_dir.clone());
+            }
+            if should_start_git_watching {
+                directories_to_watch.extend(self.git_watch_paths());
+            }
+
+            if directories_to_watch.is_empty() {
+                Box::pin(ready(Ok(())))
+            } else {
                 let gitignores = self.watch_filter_gitignores();
 
                 Box::pin(DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
                     watcher.start_watching_directories(directories_to_watch, gitignores, ctx)
                 }))
-            } else {
-                Box::pin(ready(Ok(())))
-            };
+            }
+        };
 
         #[cfg(not(feature = "local_fs"))]
         let registration_future: BoxFuture<'static, Result<(), RepoMetadataError>> =
@@ -424,7 +492,9 @@ impl Repository {
             queue.enqueue_scan(self_handle, subscriber_id, ctx);
         });
         #[cfg(feature = "local_fs")]
-        self.refresh_tracked_remote_ref(false, ctx);
+        if should_start_git_watching {
+            self.refresh_tracked_remote_ref(false, ctx);
+        }
 
         StartWatching {
             subscriber_id,
@@ -438,28 +508,44 @@ impl Repository {
     /// RepositoryWatcher's set of watched paths.
     #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
     pub fn stop_watching(&mut self, subscriber_id: SubscriberId, ctx: &mut ModelContext<Self>) {
-        let Some(mut subscriber) = self.subscribers.remove(&subscriber_id) else {
+        let Some(mut subscription) = self.subscribers.remove(&subscriber_id) else {
             return;
         };
 
-        subscriber.on_unsubscribe(ctx);
+        subscription.subscriber.on_unsubscribe(ctx);
 
-        if self.subscribers.is_empty() {
+        #[cfg(feature = "local_fs")]
+        let should_stop_git_watching = subscription.mode == RepositoryWatchMode::GitRepository
+            && !self.has_git_repository_subscribers();
+
+        #[cfg(feature = "local_fs")]
+        if should_stop_git_watching {
+            self.tracked_remote_ref = None;
+        }
+
+        let should_stop_filesystem_watching = self.subscribers.is_empty();
+        if should_stop_filesystem_watching {
             // If this was the last subscriber, notify the RepWatcher to stop watching.
             log::debug!(
                 "All subscribers removed for {}, stopping watcher",
                 self.root_dir
             );
+        }
 
-            #[cfg(feature = "local_fs")]
-            {
-                let watch_paths = self.watch_paths();
-                DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
-                    for path in watch_paths {
-                        std::mem::drop(watcher.stop_watching_directory(&path, ctx));
-                    }
-                });
-            }
+        #[cfg(feature = "local_fs")]
+        if should_stop_filesystem_watching || should_stop_git_watching {
+            let root_dir = self.root_dir.clone();
+            let git_paths = if should_stop_git_watching {
+                self.git_watch_paths()
+            } else {
+                Vec::new()
+            };
+            DirectoryWatcher::handle(ctx).update(ctx, |watcher, ctx| {
+                if should_stop_filesystem_watching {
+                    std::mem::drop(watcher.stop_watching_directory(&root_dir, ctx));
+                }
+                watcher.stop_watching_unused_git_directories(&root_dir, git_paths, ctx);
+            });
         }
     }
 
@@ -469,9 +555,9 @@ impl Repository {
         subscriber_id: SubscriberId,
         ctx: &mut ModelContext<Self>,
     ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        match self.subscribers.remove(&subscriber_id) { Some(mut subscriber) => {
-            let future = subscriber.on_scan(self, ctx);
-            self.subscribers.insert(subscriber_id, subscriber);
+        match self.subscribers.remove(&subscriber_id) { Some(mut subscription) => {
+            let future = subscription.subscriber.on_scan(self, ctx);
+            self.subscribers.insert(subscriber_id, subscription);
             Some(future)
         } _ => {
             None
@@ -486,19 +572,44 @@ impl Repository {
         update: &RepositoryUpdate,
         ctx: &mut ModelContext<Self>,
     ) -> Option<Pin<Box<dyn Future<Output = ()> + Send + 'static>>> {
-        match self.subscribers.remove(&subscriber_id) { Some(mut subscriber) => {
-            let future = subscriber.on_files_updated(self, update, ctx);
-            self.subscribers.insert(subscriber_id, subscriber);
+        match self.subscribers.remove(&subscriber_id) { Some(mut subscription) => {
+            let future = subscription.subscriber.on_files_updated(self, update, ctx);
+            self.subscribers.insert(subscriber_id, subscription);
             Some(future)
         } _ => {
             None
         }}
     }
 
-    /// Returns the subscriber IDs for this repository.
+    /// Returns updates filtered for each subscriber's watch mode.
     #[cfg(feature = "local_fs")]
-    pub(crate) fn get_subscriber_ids(&self) -> Vec<SubscriberId> {
-        self.subscribers.keys().cloned().collect()
+    pub(crate) fn subscriber_updates(
+        &self,
+        update: &RepositoryUpdate,
+    ) -> Vec<(SubscriberId, RepositoryUpdate)> {
+        self.subscribers
+            .iter()
+            .filter_map(|(&subscriber_id, subscription)| {
+                let mut update = update.clone();
+                if subscription.mode == RepositoryWatchMode::FilesystemOnly {
+                    update.commit_updated = false;
+                    update.index_lock_detected = false;
+                    update.remote_ref_updated = false;
+                }
+                (!update.is_empty()).then_some((subscriber_id, update))
+            })
+            .collect()
+    }
+
+    /// Returns the subscriber IDs of this repository's `GitRepository`-mode subscribers.
+    #[cfg(feature = "local_fs")]
+    fn get_git_repository_subscriber_ids(&self) -> Vec<SubscriberId> {
+        self.subscribers
+            .iter()
+            .filter_map(|(&subscriber_id, subscription)| {
+                (subscription.mode == RepositoryWatchMode::GitRepository).then_some(subscriber_id)
+            })
+            .collect()
     }
 
     /// The gitignore set threaded into the watch filter registered for this

@@ -29,7 +29,7 @@ use notify_debouncer_full::notify::{RecursiveMode, WatchFilter};
 use repo_metadata::{
     repositories::DetectedRepositories,
     repository::{RepositorySubscriber, SubscriberId},
-    CanonicalizedPath, Repository, RepositoryUpdate,
+    CanonicalizedPath, Repository, RepositoryUpdate, RepositoryWatchMode,
 };
 use warp_util::content_version::ContentVersion;
 use warp_util::file::FileSaveError;
@@ -1021,6 +1021,7 @@ impl FileModel {
         let (repository_update_tx, repository_update_rx) = async_channel::unbounded();
         let start = repository.update(ctx, |repo, ctx| {
             repo.start_watching(
+                RepositoryWatchMode::FilesystemOnly,
                 Box::new(FileRepositorySubscriber {
                     repository_update_tx,
                 }),

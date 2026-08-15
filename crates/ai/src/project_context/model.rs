@@ -28,7 +28,7 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
         use repo_metadata::entry::{Entry, FileMetadata};
         use repo_metadata::repository::RepositorySubscriber;
-        use repo_metadata::{Repository, DirectoryWatcher, RepositoryUpdate};
+        use repo_metadata::{Repository, DirectoryWatcher, RepositoryUpdate, RepositoryWatchMode};
         use repo_metadata::{RepositoryIdentifier, StandingQueryContent};
         use ignore::gitignore::Gitignore;
         use async_channel::Sender;
@@ -621,6 +621,7 @@ impl ProjectContextModel {
         let (repository_update_tx, repository_update_rx) = async_channel::unbounded();
         let start = repository_model.update(ctx, |repo, ctx| {
             repo.start_watching(
+                RepositoryWatchMode::FilesystemOnly,
                 Box::new(ProjectContextRepositorySubscriber {
                     repository_update_tx,
                 }),

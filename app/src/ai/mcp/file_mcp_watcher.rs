@@ -6,6 +6,7 @@ use repo_metadata::{
     repositories::{DetectedRepositories, DetectedRepositoriesEvent, RepoDetectionSource},
     repository::{Repository, RepositorySubscriber, SubscriberId},
     watcher::{DirectoryWatcher, RepositoryUpdate},
+    RepositoryWatchMode,
 };
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -243,6 +244,7 @@ impl FileMCPWatcher {
 
         let start = repo_handle.update(ctx, |repo, ctx| {
             repo.start_watching(
+                RepositoryWatchMode::FilesystemOnly,
                 Box::new(FileMCPSubscriber {
                     stored_dir: repo_path.clone(),
                     message_tx: file_mcp_tx,
@@ -305,7 +307,9 @@ impl FileMCPWatcher {
             stored_dir: home_dir,
             message_tx: file_mcp_tx,
         });
-        let start = repo_handle.update(ctx, |repo, ctx| repo.start_watching(subscriber, ctx));
+        let start = repo_handle.update(ctx, |repo, ctx| {
+            repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
+        });
         let subscriber_id = start.subscriber_id;
         // Store optimistically; removed in the error callback below if registration fails.
         home_provider_watchers.insert(

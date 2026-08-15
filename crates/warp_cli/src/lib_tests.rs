@@ -708,6 +708,55 @@ fn api_key_before_subcommand_parses() {
     assert!(matches!(boxed_cmd.as_ref(), CliCommand::Whoami));
 }
 
+// Ported from upstream 9dcef6a88 ("[REMOTE-2400] Hide API key values in CLI help",
+// #14532). Clap renders the *resolved* value of an `env`-bound argument into generated
+// help, so `--help` leaked the contents of `WARP_API_KEY`. The pin's version also renders
+// the `runner` subcommand's inherited help; this fork has no `runner` subcommand, so only
+// the top-level render is asserted -- the global flag is defined once on `GlobalOptions`,
+// which is what `hide_env_values` applies to.
+#[test]
+#[serial_test::serial]
+fn help_hides_api_key_env_value() {
+    const API_KEY: &str = "warp-cli-test-api-key-NOT-REAL";
+
+    let previous_api_key = set_env_var("WARP_API_KEY", API_KEY);
+
+    let mut command = <Args as clap::CommandFactory>::command();
+    let top_level_help = command.render_long_help().to_string();
+    let args = Args::try_parse_from(["warp", "whoami"]).expect("API key env var should parse");
+
+    restore_env_var("WARP_API_KEY", previous_api_key);
+
+    assert!(
+        top_level_help.contains("WARP_API_KEY"),
+        "help should identify the API key environment variable:\n{top_level_help}"
+    );
+    assert!(
+        !top_level_help.contains(API_KEY),
+        "help should not reveal the API key environment value:\n{top_level_help}"
+    );
+    assert_eq!(args.api_key().map(String::as_str), Some(API_KEY));
+}
+
+fn set_env_var(name: &str, value: &str) -> Option<std::ffi::OsString> {
+    let previous = std::env::var_os(name);
+    // Safety: tests that mutate process environment are marked `serial` so we
+    // do not race with other environment readers/writers in this crate.
+    unsafe { std::env::set_var(name, value) };
+    previous
+}
+
+fn restore_env_var(name: &str, previous: Option<std::ffi::OsString>) {
+    match previous {
+        // Safety: tests that mutate process environment are marked `serial` so
+        // we do not race with other environment readers/writers in this crate.
+        Some(value) => unsafe { std::env::set_var(name, value) },
+        // Safety: tests that mutate process environment are marked `serial` so
+        // we do not race with other environment readers/writers in this crate.
+        None => unsafe { std::env::remove_var(name) },
+    }
+}
+
 #[test]
 fn debug_before_subcommand_parses() {
     // Regression test: `warp --debug <subcommand>` should work.
