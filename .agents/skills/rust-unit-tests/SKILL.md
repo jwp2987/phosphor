@@ -144,7 +144,13 @@ A flaky test is worse than no test: once people learn to re-run a red test, they
 - **Ordering** — tests must pass in any order and in parallel. Watch for statics, singletons, `OnceCell`, and environment variables.
 - **Shared state** — when a test must touch global or external state, use `serial_test`'s `#[serial]` or scope the state locally.
 
-If you can't make a test deterministic quickly, quarantine it (`#[ignore]` with a linked issue) rather than leaving an intermittently red test in the suite — and treat that as debt to pay down, not a place to leave it.
+Upstream's version of this guidance says to quarantine a test you can't quickly
+make deterministic, with `#[ignore]` and a linked issue. **That does not apply
+here.** `AGENTS.md` §5.6 names flaky and order-dependent tests specifically as
+defects to fix now, not to defer: a test that only passes when another module
+runs first is not hermetic, and the fix is to make its setup explicit per-test.
+Reach for the determinism techniques above; `#[ignore]` is not the escape hatch
+from them.
 
 ## Async and feature-gated code
 - For async logic, use `#[tokio::test]` when the code requires a runtime.
