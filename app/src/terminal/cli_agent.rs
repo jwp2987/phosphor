@@ -399,7 +399,7 @@ impl CLIAgent {
     /// Whether Phosphor should show its CLI-agent footer for this agent. `false`
     /// for this fork's own TUI: a footer offering to hand a long-running command
     /// off to itself would be nonsensical.
-    pub(super) fn supports_cli_agent_footer(&self) -> bool {
+    pub(crate) fn supports_cli_agent_footer(&self) -> bool {
         !matches!(self, CLIAgent::PhosphorTui)
     }
 

@@ -2689,7 +2689,12 @@ impl Input {
         current_prompt.update(ctx, |prompt_type, ctx| {
             if let PromptType::Dynamic { prompt } = prompt_type {
                 prompt.update(ctx, |current_prompt, ctx| {
-                    current_prompt.subscribe_to_input_editor(editor.clone(), ctx);
+                    current_prompt.subscribe_to_input_editor(
+                        editor.clone(),
+                        agent_view_controller.clone(),
+                        terminal_view_id,
+                        ctx,
+                    );
                 });
             }
         });

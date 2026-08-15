@@ -3721,6 +3721,21 @@ fn agent_footer_updates_chip_groups_when_side_assignment_changes() {
         let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
+        // The agent footer's chips only run while the agent view is actually
+        // active, so this test has to enter it before asserting on chip groups.
+        terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("Should be able to enter agent view");
+            });
+        });
 
         terminal.update(&mut app, |view, ctx| {
             let model = view.model.lock();
