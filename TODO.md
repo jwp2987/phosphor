@@ -2315,6 +2315,101 @@ other way.
       visual claims needing the app running. Text-layout code exists across three
       platform backends, so #316 is not a missing-feature question.
 
+## OPEN ISSUES FROM THE FIRST RE-PIN (2026-08-15) — `02b53fcd8` -> `42effe840`
+
+Filed during the re-pin round and its refutation pass. **Open only** — defects
+found and fixed inside the round are recorded in their commit messages, not
+here, so this list stays a work ledger rather than a history.
+
+### Defects — user-visible
+
+- [ ] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
+      `inline_menu.rs` emits `state_suffix` nested inside the `description`
+      block, and `model_menu.rs` sets `description` only when `!is_selectable`.
+      **Both existing tests pass** because they assert on
+      `snapshot.rows[].state_suffix`, never on rendered lines — so any fix needs
+      a render-level test or it reverts silently. ~15 lines, three files.
+- [ ] **#582 — `CLIAgentEventType::StopFailure` missing**, so agent failure
+      never reaches the GUI status chip — for *every* integration, not just the
+      TUI. Present at the OLD pin, so unported debt. Now asymmetric: the OSC 777
+      publisher ported this round **emits** `stop_failure` with no consumer.
+      ~8 files' exhaustive matches + a call on failure-chip semantics.
+- [ ] **#586 — shell completions never learn functions or builtins.**
+      `Session::load_all_function_names` / `load_all_builtins` and the whole
+      deferred name-set machinery exist at the old pin, absent here (verified 0
+      hits vs 1-2). Same subsystem as the stale `warp-command-signatures` data
+      this round fixed — that one made completions *wrong*, this makes a class
+      of names invisible.
+- [ ] **#585 — the TUI OSS binary still uses the pre-rename app id.**
+      `crates/warp_tui/src/bin/oss.rs:24` is `AppId::new("dev","zap","Zap")`
+      while `app/src/bin/phosphor_oss.rs:30` is `("dev","phosphor","Phosphor")`.
+      GUI reads `~/.config/phosphor`, TUI reads `~/.config/zap`, different
+      keyring service names — **API keys saved in the GUI are invisible to the
+      TUI.** Storage identity, needs the layer-3 migration story.
+
+### Defects — correctness of the guards and the record
+
+- [ ] **#591 — `user_controlled_alt_screen_...` asserts far less than the pin.**
+      Negated `any`, so the fork's narrower predicate forbids *less*: pin bans
+      ten border glyphs + the model label, fork bans `┌` alone. This round's
+      `4431b15ff` port replaces box-drawing borders with hairline glyphs, so the
+      fork's assertion now has almost nothing left to catch. §5.6; recorded in
+      no document and uncommented at the site.
+- [ ] **#593 — 28 ledger rows say CLOUD where `DECLINED.md` says the opposite.**
+      24 are the `grok_*` cluster in `crates/ai/src/api_keys_tests.rs`, which
+      `DECLINED.md:93` claims by name and count while `:250` says explicitly it
+      is ***not*** a cloud drop. Kills the rule-2 tripwire and teaches the exact
+      false history the "common false positives" section exists to prevent.
+      **68 further `judgement`-confidence CLOUD rows are unsampled** — the
+      sampled hit rate was 28/58.
+- [ ] **#592 — tests added to already-classified files land in no bucket.**
+      `UNCLASSIFIED` is whole-file, so a file with existing ledger rows can
+      never surface new upstream tests. Measured this move: **284** across the
+      63 files first worked, plus **128** genuine candidates across the 9 files
+      a tooling bug had hidden. `terminal_session_view_tests.rs` alone gained
+      71 and rewrote 26 of the 84 it kept. Ceiling across the tree: 685.
+      Understates new debt silently, every re-pin.
+- [ ] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
+      genuine proper nouns continuing lowercase would fire. `Zapfino` (Apple's
+      font, 16 occurrences) survives only because every occurrence sits in a
+      `*_test.rs` file or a comment. A font name in production code needs
+      handling.
+
+### Divergences that need a decision, not a fix
+
+- [ ] **#583 — `test_phosphor_tui_variant_properties` asserts `None`** for
+      `brand_color()`/`icon()`; upstream now returns `Some(ColorU::black())` /
+      `Some(Icon::Warp)`. Either give the variant Phosphor branding and update
+      the assertion, or keep `None` with a `DECLINED.md` row and a `keep:`
+      marker. Leaving it stale is the one option that is wrong.
+- [ ] **#584 — `todo_glyph` `InProgress` uses `•` (U+2022)** where both pins use
+      `●` (U+25CF). Sibling arms (`✓`, `■`) match the pin exactly, so it is a
+      single-glyph divergence recorded nowhere. A ported test now pins the
+      character, which is the only thing holding it.
+
+### Consequences of this round's merges — check after integrating
+
+- [ ] **Benchmark debt becomes real.** `repin-misc` adds
+      `benches/transcript_bench.rs` and `benchmark_support.rs`. Two other
+      branches skipped bench hunks as "no bench harness here" — after merge,
+      `a95e6e541`'s `ClippedTerminalBlockBenchmark` and `b462e0132`'s
+      `zero_state_bench.rs` are genuine unported debt.
+- [ ] **`slash_command_is_submitted_as_prompt`** (`app/src/terminal/input/slash_commands/mod.rs:80`)
+      matches `SlashCommandKind::Orchestrate`, which this fork's `kind()` never
+      produces — `/orchestrate` maps to `SlashCommandKind::Other`. Latent
+      unreachable branch; found while confirming `a86400ede` was already present.
+- [ ] **`join_a_workspace()`** (`app/src/integration_testing/assertions.rs:43`)
+      is now unreferenced — the two deleted team command-palette tests were its
+      only consumers. Left deliberately as pin-derived scaffolding.
+- [ ] **`agent-zero-state-title-cloud` (ja)** reads
+      `新規 Phosphor Agent ローカルエージェント会話` — the doubled-noun artifact,
+      but the redundancy sits inside `ローカルエージェント`. Removing it changes
+      meaning, not branding. Needs a translator; the key has no `en` counterpart
+      to follow, and the brand guard cannot see it.
+- [ ] **`input_cut_binding_yields_ctrl_x_to_contextual_menu_clear`** is not
+      portable: neither the test nor the `INLINE_MENU_CAN_CLEAR_SELECTED_FLAG`
+      carve-out for cut exists here. Porting needs a production change.
+
 ## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
 
 `ORACLE.md` pins the Warp *commit*, but upstream's `Cargo.toml` pins several
