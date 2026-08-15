@@ -605,6 +605,26 @@ default = [
     "open_warp_new_settings_modes",
     "settings_file",
     "ssh_tmux_wrapper",
+    # Reachable at the pin (02b53fcd8) via its own `default`, but dropped from this
+    # fork's. Each gates real, present implementation -- see TODO.md's flag-dark
+    # section for the audit. Not in FORCE_DISABLED_FLAGS, i.e. never a deliberate
+    # BYOP exclusion; they were simply lost when the default list was trimmed from
+    # the pin's 193 entries to 141.
+    "agent_harness",
+    "async_find",
+    "background_computer_use",
+    "codex_plugin",
+    "directory_tab_colors",
+    "drag_tabs_to_windows",
+    "git_operations_in_code_review",
+    "grouped_tabs",
+    "pending_user_query_indicator",
+    "pinned_tabs",
+    "queue_slash_command",
+    "queued_prompts_v2",
+    "remote_codebase_indexing",
+    "terminal_lifecycle_recovery",
+    "vertical_tabs_summary_mode",
 ]
 # Enable this feature to automatically perform heap profiling.  NOTE: This will
 # substantially slow down program execution.
@@ -862,6 +882,14 @@ directory_tab_colors = []
 open_warp_new_settings_modes = []
 hoa_code_review = []
 vertical_tabs = []
+async_find = []
+background_computer_use = []
+codex_plugin = []
+grouped_tabs = []
+pinned_tabs = []
+queued_prompts_v2 = []
+remote_codebase_indexing = []
+terminal_lifecycle_recovery = []
 vertical_tabs_summary_mode = []
 tab_configs = []
 agent_harness = []
