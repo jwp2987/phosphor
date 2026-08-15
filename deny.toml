@@ -8,7 +8,7 @@ ignore = [
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is a unmaintained dependency of get-size-derive." },
     { id = "RUSTSEC-2024-0384", reason = "instant is unmaintained; we should migrate to web-time." },
     { id = "RUSTSEC-2020-0077", reason = "memmap is unmaintained; we should migrate to memmap2." },
-    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained; this is a dependency of metal, which we should eliminate by moving to the objc2 family of crates."},
+    { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained. It WAS a dependency of metal, and this entry used to say the fix was moving to the objc2 family of crates -- that migration has now landed and metal is gone from Cargo.lock. paste survives via a different path: the vendored lib/rust-genai (directly and through macro_rules_attribute), plus app itself. The remedy is therefore no longer an objc2 migration; it is dropping paste from genai/app, which is unrelated work."},
     { id = "RUSTSEC-2023-0081", reason = "safemem is unmaintained; this is a dependency of plist." },
 ]
 
