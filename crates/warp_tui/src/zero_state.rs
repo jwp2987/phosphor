@@ -32,11 +32,13 @@ use std::time::Duration;
 use ai::project_context::model::{
     ProjectContextModel, ProjectContextModelEvent, ProjectRulesResult,
 };
+use warp::settings::{TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
 use warp::tui_export::{
     ActiveSession, ActiveSessionEvent, ChangelogModel, ChangelogModelEvent, ChangelogState,
     SkillManager, TuiMcpConfigState, TuiMcpManager, TuiMcpServerStatus,
 };
 use warp_core::channel::ChannelState;
+use warp_core::settings::Setting;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::animation::AnimationClock;
@@ -78,6 +80,47 @@ const LEFT_COLUMN_COLS: u16 = 48;
 /// for its wireframe detail.
 const ANIMATION_PANEL_COLS: u16 = 32;
 
+/// Which zero-state sections are currently switched on, snapshotted from
+/// [`TuiZeroStateSettings`] so a render pass never re-reads the settings model.
+///
+/// The pin also carries a `signed_in_user` toggle for its "Signed in as …"
+/// account line; this fork dropped that line with the cloud backend, so there
+/// is no field for it here. The title and version lines are always shown and
+/// have no toggle in either.
+#[derive(Clone, Copy)]
+struct ZeroStateSectionVisibility {
+    changelog: bool,
+    project_info: bool,
+    mcp: bool,
+    animation: bool,
+}
+
+impl Default for ZeroStateSectionVisibility {
+    fn default() -> Self {
+        Self {
+            changelog: true,
+            project_info: true,
+            mcp: true,
+            animation: true,
+        }
+    }
+}
+
+impl ZeroStateSectionVisibility {
+    fn from_settings(ctx: &AppContext) -> Self {
+        if !ctx.has_singleton_model::<TuiZeroStateSettings>() {
+            return Self::default();
+        }
+        let settings = TuiZeroStateSettings::as_ref(ctx);
+        Self {
+            changelog: *settings.show_changelog.value(),
+            project_info: *settings.show_project_info.value(),
+            mcp: *settings.show_mcp.value(),
+            animation: *settings.show_animation.value(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TuiZeroStateView
 // ---------------------------------------------------------------------------
@@ -94,6 +137,7 @@ pub(crate) struct TuiZeroStateView {
     animation_config: Arc<ZeroStateAnimationConfig>,
     interaction: ZeroStateInteractionHandle,
     active_session: ModelHandle<ActiveSession>,
+    section_visibility: ZeroStateSectionVisibility,
 }
 
 impl TuiZeroStateView {
@@ -157,11 +201,38 @@ impl TuiZeroStateView {
             },
         );
 
+        // Toggling a section applies to the live zero state; no restart.
+        if ctx.has_singleton_model::<TuiZeroStateSettings>() {
+            ctx.subscribe_to_model(&TuiZeroStateSettings::handle(ctx), |view, _, event, ctx| {
+                match event {
+                    TuiZeroStateSettingsChangedEvent::TuiZeroStateShowChangelogSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowProjectInfoSetting {
+                        ..
+                    }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowMcpSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowAnimationSetting { .. } => {
+                        view.section_visibility = ZeroStateSectionVisibility::from_settings(ctx);
+                        ctx.notify();
+                    }
+                    // The animation config model already subscribes to these
+                    // three and re-snapshots the shape itself.
+                    TuiZeroStateSettingsChangedEvent::TuiZeroStateObjectSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateRotationPeriodSecondsSetting {
+                        ..
+                    }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateExtrusionDepthSetting {
+                        ..
+                    } => {}
+                }
+            });
+        }
+
         Self {
             clock: AnimationClock::starting_at(Duration::ZERO),
             animation_config: animation_config_snapshot,
             interaction,
             active_session,
+            section_visibility: ZeroStateSectionVisibility::from_settings(ctx),
         }
     }
 }
@@ -183,6 +254,17 @@ impl TuiView for TuiZeroStateView {
                 .ok()
                 .map(|cwd| cwd.to_string_lossy().into_owned())
         });
+        let text_column = build_zero_state_text_column_with_visibility(
+            cwd.as_deref(),
+            &builder,
+            self.section_visibility,
+            ctx,
+        );
+        if !self.section_visibility.animation {
+            // Copy-only: no reserved animation panel beside the copy and no
+            // starfield behind it.
+            return opaque_zero_state_overlay(text_column);
+        }
         let animation = ZeroStateAnimationElement::new(
             self.clock,
             self.animation_config.clone(),
@@ -203,7 +285,6 @@ impl TuiView for TuiZeroStateView {
             ANIMATION_PANEL_COLS,
         )
         .finish();
-        let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
         build_zero_state_layout(starfield, animation, text_column)
     }
 }
@@ -495,16 +576,35 @@ impl TuiElement for ZeroStateLayers {
 /// Both [`TuiZeroStateView::render`] and the regression tests call this
 /// function so a change to how `render` composes the column is caught by the
 /// test suite.
+#[cfg(test)]
 fn build_zero_state_text_column(
     cwd: Option<&str>,
     builder: &TuiUiBuilder,
+    app: &AppContext,
+) -> Box<dyn TuiElement> {
+    build_zero_state_text_column_with_visibility(
+        cwd,
+        builder,
+        ZeroStateSectionVisibility::default(),
+        app,
+    )
+}
+
+/// As [`build_zero_state_text_column`], with the caller's section visibility.
+/// A hidden section contributes no rows at all — no orphaned header and no
+/// spacer row — so with every toggle off only the title and version remain.
+fn build_zero_state_text_column_with_visibility(
+    cwd: Option<&str>,
+    builder: &TuiUiBuilder,
+    visibility: ZeroStateSectionVisibility,
     app: &AppContext,
 ) -> Box<dyn TuiElement> {
     // Compute project context once — find_applicable_project_rules walks the
     // directory tree and clones rule file contents, so resolving it once
     // avoids a redundant allocation on every zero-state re-render (pwd
     // change, changelog load, MCP update, PathIndexed, skill change).
-    let (path_header_text, project_rules) = match cwd {
+    let project_cwd = visibility.project_info.then_some(cwd).flatten();
+    let (path_header_text, project_rules) = match project_cwd {
         Some(cwd) => {
             let cwd_path = LocalOrRemotePath::Local(PathBuf::from(cwd));
             let rules = ProjectContextModel::as_ref(app).find_applicable_project_rules(&cwd_path);
@@ -517,20 +617,12 @@ fn build_zero_state_text_column(
     // Title, version, and changelog — constrained to LEFT_COLUMN_COLS so
     // changelog bullets (which lack `.truncate()`) do not wrap against the
     // column's full natural width.
-    let constrained_top = TuiConstrainedBox::new(render_top_section(builder, app).finish())
-        .with_min_cols(LEFT_COLUMN_COLS)
-        .with_max_cols(LEFT_COLUMN_COLS)
-        .finish();
-
-    // Project context body (rules / skills / placeholder) and MCP — also
-    // constrained to LEFT_COLUMN_COLS, keeping those rows stable.
-    let rules_ref = project_rules.flatten();
-    let constrained_bottom = TuiConstrainedBox::new(
-        render_bottom_section(cwd, rules_ref.as_ref(), builder, app).finish(),
-    )
-    .with_min_cols(LEFT_COLUMN_COLS)
-    .with_max_cols(LEFT_COLUMN_COLS)
-    .finish();
+    let constrained_top =
+        TuiConstrainedBox::new(render_top_section(builder, visibility, app).finish())
+            .with_min_cols(LEFT_COLUMN_COLS)
+            .with_max_cols(LEFT_COLUMN_COLS)
+            .finish();
+    let mut column = TuiFlex::column().child(constrained_top);
 
     // The project path header lives outside the LEFT_COLUMN_COLS-constrained
     // boxes so it can use the column's full natural width: it wraps onto
@@ -542,18 +634,25 @@ fn build_zero_state_text_column(
         let path_header = TuiText::new(path_header_text)
             .with_style(header_style)
             .finish();
-        TuiFlex::column()
-            .child(constrained_top)
-            .child(blank_row())
-            .child(path_header)
-            .child(constrained_bottom)
-            .finish()
-    } else {
-        TuiFlex::column()
-            .child(constrained_top)
-            .child(constrained_bottom)
-            .finish()
+        column = column.child(blank_row()).child(path_header);
     }
+
+    // Project context body (rules / skills / placeholder) and MCP — also
+    // constrained to LEFT_COLUMN_COLS, keeping those rows stable. Omitted
+    // entirely when both sections are hidden, so no empty box is reserved.
+    if project_cwd.is_some() || visibility.mcp {
+        let rules_ref = project_rules.flatten();
+        let constrained_bottom = TuiConstrainedBox::new(
+            render_bottom_section(project_cwd, rules_ref.as_ref(), visibility, builder, app)
+                .finish(),
+        )
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+        column = column.child(constrained_bottom);
+    }
+
+    column.finish()
 }
 
 /// Top section of the text column: title, version, and changelog bullets.
@@ -561,7 +660,11 @@ fn build_zero_state_text_column(
 /// Wrapped in a [`TuiConstrainedBox`] with `min = max = LEFT_COLUMN_COLS` by
 /// the caller so that changelog bullets (which lack `.truncate()`) do not
 /// word-wrap against the column's full natural width.
-fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
+fn render_top_section(
+    builder: &TuiUiBuilder,
+    visibility: ZeroStateSectionVisibility,
+    app: &AppContext,
+) -> TuiFlex {
     let title_style = builder.accent_text_style().add_modifier(Modifier::BOLD);
     let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
     let muted = builder.muted_text_style();
@@ -575,7 +678,11 @@ fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
         )
         .child(render_version_line(builder, app));
 
-    let bullets = changelog_bullets(app);
+    let bullets = if visibility.changelog {
+        changelog_bullets(app)
+    } else {
+        Vec::new()
+    };
     if !bullets.is_empty() {
         column = column.child(blank_row()).child(
             TuiText::new("What's new")
@@ -610,6 +717,7 @@ fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
 fn render_bottom_section(
     cwd: Option<&str>,
     rules: Option<&ProjectRulesResult>,
+    visibility: ZeroStateSectionVisibility,
     builder: &TuiUiBuilder,
     app: &AppContext,
 ) -> TuiFlex {
@@ -619,7 +727,11 @@ fn render_bottom_section(
     } else {
         column
     };
-    render_mcp_section(column, builder, app)
+    if visibility.mcp {
+        render_mcp_section(column, builder, app)
+    } else {
+        column
+    }
 }
 
 /// Returns the abbreviated path text displayed as the project section header.

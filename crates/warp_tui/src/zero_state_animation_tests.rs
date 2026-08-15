@@ -50,7 +50,8 @@ use tempfile::TempDir;
 use warp::settings::{
     TuiZeroStateExtrusionDepthSetting, TuiZeroStateObject, TuiZeroStateObjectSetting,
     TuiZeroStateRotationPeriodSeconds, TuiZeroStateRotationPeriodSecondsSetting,
-    TuiZeroStateSettings,
+    TuiZeroStateSettings, TuiZeroStateShowAnimationSetting, TuiZeroStateShowChangelogSetting,
+    TuiZeroStateShowMcpSetting, TuiZeroStateShowProjectInfoSetting,
 };
 use warp_core::settings::Setting as _;
 use warpui::{EntityIdMap, SingletonEntity as _};
@@ -663,6 +664,10 @@ fn settings_model_reloads_only_object_changes() {
                 })),
                 rotation_period_seconds: TuiZeroStateRotationPeriodSecondsSetting::new(None),
                 extrusion_depth: TuiZeroStateExtrusionDepthSetting::new(None),
+                show_changelog: TuiZeroStateShowChangelogSetting::new(None),
+                show_project_info: TuiZeroStateShowProjectInfoSetting::new(None),
+                show_mcp: TuiZeroStateShowMcpSetting::new(None),
+                show_animation: TuiZeroStateShowAnimationSetting::new(None),
             });
             ZeroStateAnimationConfig::register(ctx);
         });

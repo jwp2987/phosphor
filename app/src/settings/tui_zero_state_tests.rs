@@ -121,7 +121,11 @@ fn zero_state_schema_entries_are_registered_and_public() {
         .filter(|entry| entry.hierarchy == Some("appearance.zero_state"))
         .collect::<Vec<_>>();
 
-    assert_eq!(zero_state_entries.len(), 3);
+    // object, rotation_period_seconds, extrusion_depth, plus the four
+    // per-section visibility toggles. The pin has a fifth toggle,
+    // `show_signed_in_user`, which this fork does not carry (see the comment
+    // on the settings group).
+    assert_eq!(zero_state_entries.len(), 7);
     for entry in zero_state_entries {
         assert!(!entry.is_private);
         assert!(entry.description.contains("TUI"));
