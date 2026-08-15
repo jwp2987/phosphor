@@ -493,6 +493,40 @@ fn built_in_mark_contains(x: f64, y: f64) -> bool {
     x.abs() + y.abs() <= BUILT_IN_MARK_RADIUS
 }
 
+/// Runs one retained projection and folds the result into a checksum, so a
+/// benchmark can hold [`LogoProjector`]'s caches across iterations and measure
+/// the projection alone — no element tree, no layout, no paint surface.
+///
+/// The checksum exists only to keep the optimizer from discarding the frame;
+/// its value is not meaningful and is not asserted anywhere.
+///
+/// Lives here rather than in `benchmark_support` because the projector, its
+/// frame type, and the idle-rotation helpers are all private to this module.
+#[cfg(feature = "test-util")]
+pub(crate) fn benchmark_logo_projection(
+    elapsed: Duration,
+    size: TuiSize,
+    config: &ZeroStateAnimationConfig,
+    projector: &mut LogoProjector,
+) -> u64 {
+    projector
+        .project(
+            elapsed,
+            size,
+            config,
+            idle_angle(elapsed, configured_idle_velocity(config)),
+            true,
+        )
+        .map_or(0, |frame| {
+            frame.iter_cells().fold(0u64, |checksum, (x, y, cell)| {
+                checksum
+                    .wrapping_add(x as u64)
+                    .wrapping_add((y as u64).rotate_left(7))
+                    .wrapping_add(cell.glyph.as_str().as_bytes()[0] as u64)
+            })
+        })
+}
+
 #[cfg(test)]
 #[path = "zero_state_animation_tests.rs"]
 mod tests;

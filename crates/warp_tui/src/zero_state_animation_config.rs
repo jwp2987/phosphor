@@ -233,6 +233,31 @@ impl Entity for ZeroStateAnimationConfig {
 impl SingletonEntity for ZeroStateAnimationConfig {}
 
 impl ZeroStateAnimationConfig {
+    /// A fixed ASCII silhouette for benchmarks, with every other knob left at
+    /// the production default so a run differs from the built-in mark's only
+    /// in shape — the comparison the zero-state benchmark exists to make.
+    ///
+    /// `active_object` stays [`TuiZeroStateObject::BuiltIn`] (as upstream's
+    /// fixture does) because the `AsciiFile` variant names a path on disk and
+    /// this mask is inline. Nothing reads `active_object` during projection;
+    /// it only reconciles the config against the settings model, which no
+    /// benchmark drives.
+    #[cfg(feature = "test-util")]
+    pub(crate) fn benchmark_ascii() -> Self {
+        Self {
+            active_object: TuiZeroStateObject::BuiltIn,
+            shape: Arc::new(ZeroStateShape::Ascii(
+                AsciiArtMask::parse("    #\n   ###\n  #####\n #######\n   ###\n  #   #\n")
+                    .expect("benchmark ASCII art is valid"),
+            )),
+            rotation_period: Duration::from_secs_f64(
+                warp::settings::DEFAULT_TUI_ZERO_STATE_ROTATION_PERIOD_SECONDS,
+            ),
+            extrusion_depth: warp::settings::DEFAULT_TUI_ZERO_STATE_EXTRUSION_DEPTH,
+            load_failure: None,
+        }
+    }
+
     pub(crate) fn register(ctx: &mut AppContext) {
         let config_dir = warp_core::paths::config_local_dir();
         let (object, rotation_period, extrusion_depth) = {
