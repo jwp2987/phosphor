@@ -8,7 +8,8 @@ use warpui_extras::secure_storage::SecureStorage;
 // (`02b53fcd8`, release `2026.07.29.09.05` stable — see `ORACLE.md`), which has
 // 903 lines / 67 `#[test]`s. An earlier pass measured against `warp/master`
 // (71 tests); the classification below is re-verified against the pin and the
-// buckets are: 12 ported / 3 blocked / 16 superseded / 36 cloud = 67.
+// buckets are: 12 ported / 3 blocked / 16 superseded / 22 declined /
+// 2 duplicated / 12 cloud = 67.
 //
 // Every test below keeps Warp's assertions verbatim; only *shape* is adapted
 // (Warp's `persist_provider_key(LLMProvider, ..)` -> this fork's per-provider
@@ -39,7 +40,11 @@ use warpui_extras::secure_storage::SecureStorage;
 //   - `ApiKeys::provider_key_count` — method absent. It is dead code at the
 //     pin too (defined and tested, zero non-test call sites), so adding it
 //     here would import dead code purely to host a test. Blocks the three
-//     `provider_key_count_*` tests (3).
+//     `provider_key_count_*` tests (3). These are **not** part of the 16
+//     `CustomEndpoint` tests #142 declines — `provider_key_count_zero_when_empty`
+//     and `provider_key_count_counts_each_provider_key` never touch a custom
+//     endpoint at all, and only the third's endpoint-exclusion assertion does.
+//     The blocker is this absent method, which #142 says nothing about.
 //
 // Also absent, but not blocking any pinned test on their own:
 //
@@ -50,8 +55,9 @@ use warpui_extras::secure_storage::SecureStorage;
 //     `persisted_provider_api_key_*` tests are ported onto the setters below.
 //   - `ApiKeyManager::has_any_key` — absent on the manager (present on
 //     `ApiKeys`). At the pin it only adds "…or a connected Grok
-//     subscription", so its four `manager_has_any_key_*` tests are counted
-//     under cloud below.
+//     subscription", so of its four `manager_has_any_key_*` tests the two that
+//     mention Grok are counted under the declined subscription below and the
+//     two that do not are counted as duplicates.
 //
 // No longer absent (this header used to list it):
 //
@@ -91,20 +97,47 @@ use warpui_extras::secure_storage::SecureStorage;
 // `endpoints_with_only_empty_models_are_skipped`, the three `display_label_*`,
 // and `api_keys_for_request_none_for_custom_endpoints_only`.
 //
-// Cloud-only, no local/BYOP equivalent exists to run them against (36 tests):
+// Declined, not cloud — the xAI/Grok subscription (22 tests). The `grok_*`,
+// `has_grok_subscription_*`, `api_keys_for_request_*_grok_token*` and the two
+// of four `manager_has_any_key_*` tests that mention Grok all cover
+// `GrokTokens`, the OAuth token pair a connected xAI *subscription* yields. **That flow is not a cloud drop and this comment used to say it
+// was** (#598): at the pin `crates/ai/src/grok_subscription/oauth.rs` holds
+// `AUTHORIZE_URL = "https://auth.x.ai/oauth2/authorize"`,
+// `TOKEN_URL = "https://auth.x.ai/oauth2/token"`,
+// `REDIRECT_HOST = "127.0.0.1"` / `REDIRECT_PORT = 56121`, and
+// `refresh_access_token` POSTs `grant_type=refresh_token` straight to that
+// same xAI `TOKEN_URL` — no `warp.dev` host appears anywhere in the module's
+// three files, and `grok_subscription/mod.rs`'s own doc says "The Grok
+// subscription is BYO auth". These tests are out of scope because Phosphor
+// declined the *subscription product* as a credential source — `DECLINED.md`
+// #319, which spells this out ("The flow is genuinely local ... it is *not* a
+// cloud drop — but it is an alternative credential *source*") — not because
+// anything here talks to Warp. `DECLINED.md`'s "Not declined — common false
+// positives" section names Grok OAuth for the same reason. A BYO xAI key is
+// an ordinary custom provider here, so there is no pasted-key path these
+// tests could be re-aimed at.
 //
-//   - 24 tests — the `grok_*`, `has_grok_subscription_*` and
-//     `manager_has_any_key_*` groups — cover `GrokTokens`, an OAuth token pair
-//     minted by Warp's hosted xAI-subscription connect flow and refreshed by
-//     `crate::grok_subscription` against Warp's servers. There is no
-//     pasted-key path to run them against; a BYO xAI key is an ordinary
-//     custom provider here. The two `manager_has_any_key_*` cases that do not
-//     involve Grok are exact duplicates of `has_any_key_false_when_empty` and
-//     `has_any_key_true_for_openai_only`, which are ported below.
-//   - 12 tests — the `geap_*` group — cover Gemini Enterprise credentials
-//     minted by Warp's backend for a `GeapMintBinding` (user uid +
-//     workload-identity audience + service account). The binding is issued by
-//     the cloud, so there is nothing local to bind to.
+// Duplicates of tests already ported (2 tests). The two `manager_has_any_key_*`
+// cases that do not involve Grok — `manager_has_any_key_false_when_no_keys_and_no_grok`
+// and `manager_has_any_key_true_for_pasted_key_without_grok` — are exact
+// duplicates of `has_any_key_false_when_empty` and
+// `has_any_key_true_for_openai_only`, which are ported below.
+//
+// Cloud-only, no local/BYOP equivalent exists to run them against (12 tests).
+// The `geap_*` and `api_keys_for_request_*_geap_token*` groups cover Gemini
+// Enterprise credentials minted for a `GeapMintBinding` (user uid +
+// workload-identity audience + service account).
+// Unlike Grok above, this one is verified cloud: the exchange itself goes to
+// Google (`STS_TOKEN_URL`, `IAM_GENERATE_ACCESS_TOKEN_URL` in the pin's
+// `app/src/ai/geap_credentials.rs`), but its *only* input is a "brand-new Warp
+// OIDC JWT" from `ManagedSecretManager::issue_task_identity_token`, which
+// travels over `warp_graphql`; and the binding itself needs a Warp account
+// (`AuthStateProvider::…user_id()`) plus team-workspace settings
+// (`UserWorkspaces::gemini_enterprise_host_settings`). `crates/ai`'s own module
+// doc concedes it: "The network-facing mint lives in the app layer, which has
+// the workspace settings and Warp OIDC access this crate cannot see." This
+// fork wires `ManagedSecretManager` to `DisabledManagedSecretsClient`
+// (`app/src/lib.rs`), so there is nothing local to bind to.
 //
 // Not a port, but noted: the AWS Bedrock branch of `api_keys_for_request` is
 // byte-identical to the pin's and is untested at the pin as well as here.
