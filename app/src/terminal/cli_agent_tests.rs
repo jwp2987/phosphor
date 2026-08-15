@@ -672,7 +672,6 @@ fn test_phosphor_tui_variant_properties() {
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
     assert_eq!(CLIAgent::PhosphorTui.brand_color(), Some(PHOSPHOR_COLOR));
     assert_eq!(CLIAgent::PhosphorTui.icon(), Some(Icon::PhosphorLogo));
-    assert_eq!(CLIAgent::PhosphorTui.icon(), None);
     assert!(CLIAgent::PhosphorTui.supported_skill_providers().is_empty());
     assert!(!CLIAgent::PhosphorTui.supports_bash_mode());
     assert!(!CLIAgent::PhosphorTui.supports_cli_agent_footer());
