@@ -206,7 +206,12 @@ while IFS=$'\t' read -r status path; do
         hit=""
         while IFS= read -r mv; do
             [[ -z "$mv" ]] && continue
-            if printf '%s' "$diff_text" | grep -qF "$mv"; then
+            # Same SIGPIPE hazard the two helpers above were repaired for, and
+            # this one is oriented worst: $diff_text is a per-file `git diff`,
+            # and a marker near the END always returns 0, so the failure only
+            # appears when there genuinely IS a collision, on the large files
+            # most likely to have one. Measured: exit 0 at 64KB, 141 at 70KB+.
+            if grep -qF "$mv" <<<"$diff_text"; then
                 hit="$mv"
                 break
             fi
