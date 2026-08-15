@@ -202,7 +202,7 @@ mermaid_to_svg = { git = "https://github.com/warpdotdev/mermaid-to-svg.git", rev
 mime_guess = "2.0"
 minimp4 = "0.1.2"
 nix = { version = "0.26.4", default-features = false, features = ["signal"] }
-notify-debouncer-full = { git = "https://github.com/warpdotdev/notify", rev = "f3afcda3058941e17e09689afea40e2a2db057e0" }
+notify-debouncer-full = { git = "https://github.com/warpdotdev/notify", rev = "91b719849bc04ef251bcb2cc61076b099204e970" }
 nom = "7.1.1"
 num-traits = "0.2"
 # We disable default features as the "rustls-tls" feature enables the reqwest
@@ -406,7 +406,7 @@ argon2 = "0.5"
 sha2 = "0.10"
 shell-escape = "0.1.5"
 shellexpand = "3.1.1"
-warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "00a032b8ea0ee5711e2077e39a92dc9ca2051cd3", default-features = false }
+warp-command-signatures = { git = "https://github.com/warpdotdev/command-signatures.git", rev = "fe3526693fe4ea3dc208ee5ef892b3aad2679af6", default-features = false }
 # Fork of warpdotdev/winit (which upstream Warp itself pins) carrying ONE extra
 # commit: rust-windowing/winit#4453, "fix(windows): use registry value to detect
 # dark mode". That PR has been open and unreviewed since 2025-12-27, so waiting
