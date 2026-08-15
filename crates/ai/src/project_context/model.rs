@@ -130,7 +130,12 @@ pub struct ProjectRule {
     pub content: String,
 }
 
-#[derive(Debug, Default)]
+// Clone: needed so `register_watcher_for_path`'s stream handler can read a
+// snapshot of a path's rules out of `path_to_rules` with `.get().cloned()`
+// instead of `.remove()`-ing them for the duration of the async update task
+// -- see `pending_updates` on `ProjectContextModel` and the upstream fix it's
+// ported from (`5146a5bffdbf89dadb4ab44a15853caec11f65f8`, #10238).
+#[derive(Debug, Default, Clone)]
 struct RuleAtPath {
     parent_path: PathBuf,
     warp_md: Option<ProjectRule>,
@@ -179,7 +184,7 @@ fn matches_rules_pattern(file_name_str: &str) -> bool {
     false
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct ProjectRules {
     rules: Vec<RuleAtPath>,
 }
@@ -341,6 +346,32 @@ impl ProjectRules {
 pub struct ProjectContextModel {
     /// Mapping from directory path to list of rule files found in that directory
     path_to_rules: HashMap<PathBuf, ProjectRules>,
+    /// Queued repository updates for paths that have an in-flight
+    /// `process_repository_updates` task in `register_watcher_for_path`'s
+    /// stream handler. The presence of a key indicates an active async task
+    /// for that path; the `Vec` holds updates that arrived while that task
+    /// was running.
+    ///
+    /// Ported from upstream `5146a5bffdbf89dadb4ab44a15853caec11f65f8`
+    /// ("Fix race condition causing permanent loss of active rule files",
+    /// #10238). NOT the same fix the pin (`02b53fcd8`) ships today -- the
+    /// pin later replaced this whole directory-watcher pipeline with a
+    /// generation-counter design (`rule_refresh_generations` hanging off
+    /// `RepoMetadataModel` standing queries; see `reconcile_project_rules`'s
+    /// doc comment above), which this fork does not have and did not adopt.
+    /// But this fork's `register_watcher_for_path` kept the OLDER
+    /// directory-watcher pipeline the intermediate commit fixed, unchanged,
+    /// including the exact bug: it called `path_to_rules.remove()` before
+    /// spawning the async update task, so a second update for the same path
+    /// arriving while the first was still in flight found no entry to
+    /// process at all and was silently dropped -- observed as rule files
+    /// (WARP.md/AGENTS.md) permanently vanishing from AI context until
+    /// restart, e.g. across an editor's atomic delete-then-write save. That
+    /// bug is still live here today, so this ports the intermediate fix
+    /// onto the pipeline this fork actually kept, rather than adopting the
+    /// pin's later, larger, unrelated architecture change.
+    #[cfg(feature = "local_fs")]
+    pending_updates: HashMap<PathBuf, Vec<RepositoryUpdate>>,
     /// Fast-path synchronous rule cache (aligned with opencode's `findUp` pattern).
     ///
     /// Only used as a fallback when `find_applicable_rules` returns None (async
@@ -436,12 +467,20 @@ impl RulesDelta {
     /// incrementally; a symmetric "cancel both sides" approach would silently
     /// drop real state changes.
     ///
-    /// Ported from the pinned oracle (`02b53fcd8`, release `2026.07.29.09.05`
-    /// stable), where this is also `#[cfg(test)]`-only: `merge` has no
-    /// production call site there either (`model.rs` never calls it outside
-    /// `model_tests.rs`), so gating it to tests matches upstream rather than
-    /// inventing a production use this fork doesn't have. Refs #150 item 2.
-    #[cfg(test)]
+    /// CORRECTED: earlier revisions of this comment said this was
+    /// `#[cfg(test)]`-only, ported that way because the pin (`02b53fcd8`) has
+    /// no production call site for `merge` (its file-watcher pipeline was
+    /// replaced by a generation-counter design that doesn't need it -- see
+    /// `reconcile_project_rules`'s doc comment). That claim was true of the
+    /// pin but not of this file: `drain_pending_updates` (ported from the
+    /// intermediate upstream commit `5146a5bffdbf89dadb4ab44a15853caec11f65f8`,
+    /// #10238, onto the OLDER directory-watcher pipeline this fork actually
+    /// kept -- see `pending_updates`'s doc comment on `ProjectContextModel`)
+    /// is a real, reachable production caller. Gated on `local_fs` to match
+    /// that caller, with `test` added so `model_tests.rs`'s direct unit
+    /// coverage of `merge`'s ordering rules keeps working standalone. Refs
+    /// #150 item 2.
+    #[cfg(any(feature = "local_fs", test))]
     fn merge(&mut self, other: RulesDelta) {
         // Each newly-discovered path supersedes any prior deletion or earlier
         // discovery of the same path.
@@ -615,24 +654,102 @@ impl ProjectContextModel {
                     return;
                 }
 
-                let existing_rules = me.path_to_rules.remove(&path_clone);
-                let repo_path = path_clone.clone();
-                if let Some(rules) = existing_rules {
-                    let repo_path_for_closure = repo_path.clone();
-                    ctx.spawn(
-                        async move {
-                            Self::process_repository_updates(update, rules, repo_path).await
-                        },
-                        move |me, (rules, rule_delta), ctx| {
-                            ctx.emit(ProjectContextModelEvent::KnownRulesChanged(rule_delta));
-
-                            me.path_to_rules.insert(repo_path_for_closure, rules);
-                            ctx.emit(ProjectContextModelEvent::PathIndexed);
-                        },
-                    );
+                // If a task is already in flight for this path, queue the update instead of
+                // spawning a concurrent task that could overwrite (or be overwritten by) it --
+                // see `pending_updates`'s doc comment for the race this closes.
+                if let Some(queued) = me.pending_updates.get_mut(&path_clone) {
+                    queued.push(update);
+                    return;
                 }
+
+                // NOT `.remove()`: the rules must stay in `path_to_rules` for the duration of
+                // async processing, or a second update racing in below (before this branch
+                // re-inserts) would find nothing to queue against and fall through unqueued.
+                let Some(rules) = me.path_to_rules.get(&path_clone).cloned() else {
+                    return;
+                };
+
+                // Mark this path as having an in-flight task (empty queue).
+                me.pending_updates.insert(path_clone.clone(), Vec::new());
+
+                let repo_path = path_clone.clone();
+                let repo_path_for_closure = repo_path.clone();
+                ctx.spawn(
+                    async move { Self::process_repository_updates(update, rules, repo_path).await },
+                    move |me, (rules, rule_delta), ctx| {
+                        me.apply_update_result(&repo_path_for_closure, rules, rule_delta, ctx);
+                    },
+                );
             },
             |_, _| {},
+        );
+    }
+
+    /// Called when an async update task spawned by `register_watcher_for_path`'s stream
+    /// handler completes: emits events, stores the new rules, and drains any updates that
+    /// queued up in `pending_updates` while the task was in flight.
+    ///
+    /// Ported from upstream `5146a5bffdbf89dadb4ab44a15853caec11f65f8` (#10238) -- see
+    /// `pending_updates`'s doc comment for why this fork still needs it.
+    #[cfg(feature = "local_fs")]
+    fn apply_update_result(
+        &mut self,
+        path: &Path,
+        rules: ProjectRules,
+        rule_delta: RulesDelta,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.emit(ProjectContextModelEvent::KnownRulesChanged(rule_delta));
+        self.path_to_rules.insert(path.to_path_buf(), rules);
+        self.drain_pending_updates(path, ctx);
+        ctx.emit(ProjectContextModelEvent::PathIndexed);
+    }
+
+    /// Processes any updates that queued up in `pending_updates` for `path` while the
+    /// previous async task was in flight. Runs the batch sequentially against the latest
+    /// rules and combines the resulting deltas with `RulesDelta::merge` (order-preserving:
+    /// the last operation on a given path wins), rather than applying them independently
+    /// against a stale snapshot -- see `RulesDelta::merge`'s doc comment for why that
+    /// distinction matters.
+    ///
+    /// Ported from upstream `5146a5bffdbf89dadb4ab44a15853caec11f65f8` (#10238) -- see
+    /// `pending_updates`'s doc comment for why this fork still needs it.
+    #[cfg(feature = "local_fs")]
+    fn drain_pending_updates(&mut self, path: &Path, ctx: &mut ModelContext<Self>) {
+        let path_buf = path.to_path_buf();
+        let Some(queued) = self.pending_updates.get_mut(&path_buf) else {
+            return;
+        };
+
+        if queued.is_empty() {
+            self.pending_updates.remove(&path_buf);
+            return;
+        }
+
+        let updates = std::mem::take(queued);
+        let Some(rules) = self.path_to_rules.get(&path_buf).cloned() else {
+            self.pending_updates.remove(&path_buf);
+            return;
+        };
+
+        let repo_path = path_buf.clone();
+        let repo_path_for_closure = path_buf;
+        ctx.spawn(
+            async move {
+                let mut current_rules = rules;
+                let mut combined_delta = RulesDelta::default();
+                for update in updates {
+                    let (updated_rules, delta) =
+                        Self::process_repository_updates(update, current_rules, repo_path.clone())
+                            .await;
+                    current_rules = updated_rules;
+                    combined_delta.merge(delta);
+                }
+                (current_rules, combined_delta)
+            },
+            move |me, (rules, rule_delta), ctx| {
+                me.apply_update_result(&repo_path_for_closure, rules, rule_delta, ctx);
+            },
         );
     }
 
@@ -654,15 +771,19 @@ impl ProjectContextModel {
     /// origin — plain `PathBuf`s are enough, and the pin's per-path
     /// local/remote dispatch inside the loop body isn't needed here.
     ///
-    /// Like `RulesDelta::merge` above (ported under the same reasoning),
-    /// this fork has no non-test caller yet: the pin calls this from
-    /// `refresh_project_rules_for_repo`, which hangs off
+    /// This fork has no non-test caller for this function: the pin calls it
+    /// from `refresh_project_rules_for_repo`, which hangs off
     /// `RepoMetadataModel`'s standing-query results — a different discovery
     /// pipeline than this fork's directory-watcher-based
     /// `register_watcher_for_path`/`process_repository_updates` above. Ported
     /// as a pure function so its behavior — the actual test debt this closes
     /// — is covered without inventing a call site upstream doesn't have
     /// either. Refs #150 item 2, #170.
+    ///
+    /// (`RulesDelta::merge`, previously described here as being in the same
+    /// no-production-caller position, now DOES have one — `drain_pending_updates`
+    /// — see its doc comment. The two are unrelated ports that happened to
+    /// both start out test-only; don't assume they still match.)
     #[cfg_attr(not(test), allow(dead_code))]
     fn reconcile_project_rules(
         rule_paths: Vec<PathBuf>,
