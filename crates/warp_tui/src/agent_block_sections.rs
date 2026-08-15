@@ -259,7 +259,7 @@ pub(crate) fn todo_status_glyph(
 ) -> (&'static str, TuiStyle) {
     match status {
         TodoStatus::Pending => ("◌", builder.primary_text_style()),
-        TodoStatus::InProgress => ("•", builder.attention_glyph_style()),
+        TodoStatus::InProgress => ("●", builder.attention_glyph_style()),
         TodoStatus::Completed => ("✓", builder.success_glyph_style()),
         TodoStatus::Cancelled | TodoStatus::Stopped => ("■", builder.muted_text_style()),
     }
