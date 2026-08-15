@@ -7,10 +7,10 @@ use crate::ai::execution_profiles::{
     ComputerUsePermission,
 };
 use crate::ai::mcp::TemplatableMCPServerManager;
-use crate::auth::AuthStateProvider;
+use crate::auth::{AuthStateProvider, UserUid};
 use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
 use crate::cloud_object::update_manager::UpdateManager;
-use crate::cloud_object::{StoredObjectMetadata, StoredObjectPermissions};
+use crate::cloud_object::{Owner, StoredObjectMetadata, StoredObjectPermissions};
 use crate::network::NetworkStatus;
 use crate::server::ids::{ServerId, SyncId};
 use crate::settings::PrivacySettings;
@@ -168,6 +168,181 @@ fn reconciles_unsynced_default_profile_with_cloud_after_initial_load() {
                 info.data().apply_code_diffs,
                 ActionPermission::AlwaysAsk,
                 "edit should be reflected on the existing profile object"
+            );
+        });
+    })
+}
+
+/// NOT COMPILED -- builds are suspended. Regression coverage for upstream
+/// `c2954dcbc0` ("Prevent the client from reading non-personal AI execution
+/// profiles", #25377, GHSA-cqw8-cqq2-8cjm) ported against this fork's own
+/// `ObjectStoreModel`/`StoredObject` test scaffolding -- the pin's four tests
+/// build `ServerAIExecutionProfile`/`ServerObjectGuest`/`AccessLevel` values
+/// via `warp_graphql::object_permissions`, a crate this fork does not have
+/// (cloud, dropped), so those exact tests are not portable verbatim. This is
+/// a from-scratch equivalent of the pin's `ignores_shared_default_profile_after_initial_load`,
+/// exercising the same `reconcile_with_cloud_state_after_initial_load` path as
+/// the test above, but with an attacker-owned object that must NOT be adopted.
+#[test]
+fn ignores_non_owned_default_profile_after_initial_load() {
+    App::test((), |mut app| async move {
+        install_singletons(&mut app, AuthStateProvider::new_for_test());
+        let profile_model = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+
+        let attacker_owner = Owner::User {
+            user_uid: UserUid::new("attacker-owner"),
+        };
+        let attacker_sync_id = SyncId::ServerId(ServerId::from(31338));
+        let attacker_profile = AIExecutionProfile {
+            name: "Attacker Default".to_string(),
+            is_default_profile: true,
+            apply_code_diffs: ActionPermission::AlwaysAllow,
+            ..Default::default()
+        };
+        let attacker_object = AIExecutionProfileObject::new(
+            attacker_sync_id,
+            AIExecutionProfileObjectModel::new(attacker_profile),
+            StoredObjectMetadata::mock(),
+            StoredObjectPermissions {
+                owner: attacker_owner,
+                permissions_last_updated_ts: None,
+                anyone_with_link: None,
+                guests: Vec::new(),
+            },
+        );
+
+        ObjectStoreModel::handle(&app).update(&mut app, move |object_store_model, ctx| {
+            object_store_model.add_object(attacker_sync_id, attacker_object);
+            ctx.emit(ObjectStoreEvent::InitialLoadCompleted);
+        });
+
+        profile_model.read(&app, |model, ctx| {
+            let default_profile = model.default_profile(ctx);
+            assert_eq!(
+                default_profile.sync_id(),
+                None,
+                "non-owned default profile should not be reconciled as default"
+            );
+            assert_eq!(
+                default_profile.data().apply_code_diffs,
+                ActionPermission::AgentDecides,
+                "non-owned profile should not control diff-apply approvals"
+            );
+        });
+    })
+}
+
+/// NOT COMPILED -- builds are suspended. See
+/// `ignores_non_owned_default_profile_after_initial_load` above for why this
+/// is a from-scratch equivalent of the pin's coverage rather than a verbatim
+/// port. Exercises the live-event path (`ObjectStoreModel::create_object`,
+/// which emits `ObjectStoreEvent::ObjectCreated`) rather than the bulk
+/// initial-load path, since upstream's fix touches both call sites.
+#[test]
+fn ignores_non_owned_default_profile_created_via_event() {
+    App::test((), |mut app| async move {
+        install_singletons(&mut app, AuthStateProvider::new_for_test());
+        let profile_model = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+
+        let attacker_owner = Owner::User {
+            user_uid: UserUid::new("attacker-owner"),
+        };
+        let attacker_sync_id = SyncId::ServerId(ServerId::from(31339));
+        let attacker_profile = AIExecutionProfile {
+            name: "Attacker Default".to_string(),
+            is_default_profile: true,
+            execute_commands: ActionPermission::AlwaysAllow,
+            ..Default::default()
+        };
+        let attacker_object = AIExecutionProfileObject::new(
+            attacker_sync_id,
+            AIExecutionProfileObjectModel::new(attacker_profile),
+            StoredObjectMetadata::mock(),
+            StoredObjectPermissions {
+                owner: attacker_owner,
+                permissions_last_updated_ts: None,
+                anyone_with_link: None,
+                guests: Vec::new(),
+            },
+        );
+
+        ObjectStoreModel::handle(&app).update(&mut app, move |object_store_model, ctx| {
+            object_store_model.create_object(attacker_sync_id, attacker_object, ctx);
+        });
+
+        profile_model.read(&app, |model, ctx| {
+            let default_profile = model.default_profile(ctx);
+            assert_eq!(
+                default_profile.sync_id(),
+                None,
+                "non-owned default profile delivered via ObjectCreated should not be adopted"
+            );
+            assert_eq!(
+                default_profile.data().execute_commands,
+                ActionPermission::AlwaysAsk,
+                "non-owned profile should not control command approvals"
+            );
+        });
+    })
+}
+
+/// NOT COMPILED -- builds are suspended. See
+/// `ignores_non_owned_default_profile_after_initial_load` above for why this
+/// is a from-scratch equivalent of the pin's coverage rather than a verbatim
+/// port. Equivalent of the pin's `filters_non_owned_non_default_profile_from_list`.
+#[test]
+fn filters_non_owned_non_default_profile_from_list() {
+    App::test((), |mut app| async move {
+        install_singletons(&mut app, AuthStateProvider::new_for_test());
+        let profile_model = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+
+        let attacker_owner = Owner::User {
+            user_uid: UserUid::new("attacker-owner"),
+        };
+        let attacker_sync_id = SyncId::ServerId(ServerId::from(99999));
+        let attacker_profile = AIExecutionProfile {
+            name: "Attacker Custom".to_string(),
+            is_default_profile: false,
+            ..Default::default()
+        };
+        let attacker_object = AIExecutionProfileObject::new(
+            attacker_sync_id,
+            AIExecutionProfileObjectModel::new(attacker_profile),
+            StoredObjectMetadata::mock(),
+            StoredObjectPermissions {
+                owner: attacker_owner,
+                permissions_last_updated_ts: None,
+                anyone_with_link: None,
+                guests: Vec::new(),
+            },
+        );
+
+        ObjectStoreModel::handle(&app).update(&mut app, move |object_store_model, ctx| {
+            object_store_model.create_object(attacker_sync_id, attacker_object, ctx);
+        });
+
+        profile_model.read(&app, |model, ctx| {
+            assert!(
+                !model.has_multiple_profiles(),
+                "non-owned profile should not appear in profile list"
+            );
+            let all_ids = model.get_all_profile_ids();
+            assert_eq!(
+                all_ids.len(),
+                1,
+                "only the default profile should be in the list"
+            );
+            assert_eq!(all_ids[0], model.default_profile_id());
+            assert_eq!(
+                model.default_profile(ctx).data().name,
+                "Default",
+                "surviving profile should be the user's own default, not the attacker's"
             );
         });
     })
