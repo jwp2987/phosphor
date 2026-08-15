@@ -450,7 +450,8 @@ impl CodeEditorModel {
             ctx.add_model(|_| HiddenLinesModel::new(content.clone(), selection_model.clone()));
 
         let render_state = ctx.add_model(|ctx| {
-            // CharCell layout never consults `RichTextStyles`, so pass a stub.
+            // CharCell layout consumes the configured tab size; RenderState
+            // retains the remaining styles for API compatibility with pixel layout.
             RenderState::new_tui(
                 terminal_width,
                 Self::tui_stub_text_styles(),
@@ -500,8 +501,14 @@ impl CodeEditorModel {
         }
     }
 
-    /// A minimal `RichTextStyles` for CharCell mode, where styles are never consulted for
-    /// rendering. All colors are transparent and sizes zero.
+    /// A minimal `RichTextStyles` for CharCell mode, where colors and sizes are never
+    /// consulted for rendering. `RenderState::new_tui` does consume
+    /// `base_text.fixed_width_tab_size` for tab geometry (upstream 5b38233b8, "fix(tui):
+    /// preserve tab indentation in diff hunk paint", #14392) -- keep it in sync with
+    /// `code_text`'s tab size below rather than leaving it `None`. In this fork `None`
+    /// happens to fall back to the same `DEFAULT_CHAR_CELL_TAB_SIZE` (4), so this was not
+    /// a live bug, but an explicit value avoids the two silently diverging if the default
+    /// ever changes. NOT COMPILED -- builds are suspended; verified by reading only.
     fn tui_stub_text_styles() -> RichTextStyles {
         use warp_editor::render::model::{
             BlockSpacings, BrokenLinkStyle, CheckBoxStyle, HorizontalRuleStyle, InlineCodeStyle,
@@ -527,7 +534,7 @@ impl CodeEditorModel {
             fixed_width_tab_size,
         };
         RichTextStyles {
-            base_text: paragraph(None),
+            base_text: paragraph(Some(4)),
             code_text: paragraph(Some(4)),
             code_background: Fill::None,
             embedding_background: Fill::None,
