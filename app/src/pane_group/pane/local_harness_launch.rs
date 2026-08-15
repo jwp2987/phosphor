@@ -16,7 +16,9 @@ use crate::ai::{
     },
     local_harness_setup::{LocalHarnessSetupState, local_harness_setup_state},
 };
-use crate::terminal::cli_agent_sessions::plugin_manager::plugin_manager_for;
+use crate::terminal::cli_agent_sessions::plugin_manager::{
+    plugin_manager_for, CliAgentPluginManager,
+};
 use crate::terminal::shell::ShellType;
 
 #[derive(Clone)]
@@ -25,6 +27,73 @@ pub(super) struct PreparedLocalHarnessLaunch {
     pub env_vars: HashMap<OsString, OsString>,
     pub run_id: String,
     pub task_id: AmbientAgentTaskId,
+}
+
+/// Brings the notification plugin up to date before a hidden local Claude child
+/// pane launches, so those panes get the same stop/blocked notifications a
+/// regular Claude session does -- unless the developer has pointed the
+/// `claude-code-warp` marketplace at a local checkout, in which case this does
+/// nothing at all.
+///
+/// Ported from the pin's `ensure_local_claude_child_plugins`
+/// (`local_harness_launch.rs:36-66`, `02b53fcd8`) for #600. Half of the pin's
+/// body is deliberately absent: it also installs the Oz platform plugin here,
+/// which this fork declined and removed with the rest of that surface (#595;
+/// see `DECLINED.md`, "Oz platform plugins"). Only the notification-plugin half
+/// is ported, because only the notification plugin does anything here.
+///
+/// # Why the override guard, restated for this fork
+///
+/// The pin's comment justifies the guard by "oz-harness-support testing" -- a
+/// workflow that does not exist here, since both that plugin and the
+/// `oz harness-support` command its skills shell out to are gone. Transcribing
+/// it would cite a dead workflow. The guard is still correct, for a reason that
+/// binds harder here than at the pin:
+///
+/// * **The notification plugin is a live, local, developer-modifiable surface.**
+///   `ClaudeCodePluginManager::install` shells out to
+///   `claude plugin marketplace add warpdotdev/claude-code-warp` followed by
+///   `claude plugin install warp@claude-code-warp`. The plugin it installs only
+///   emits OSC 9/777 sequences, which this app's own terminal parses (see
+///   `terminal::model::ansi::handler`) into CLI-agent session notifications.
+///   Nothing hosted sits in that loop, so it is a surface this fork can change.
+/// * **A local marketplace override is the only way to test such a change.**
+///   `warpdotdev/claude-code-warp` is an upstream third-party repository this
+///   fork cannot publish to. Pointing `extraKnownMarketplaces["claude-code-warp"]`
+///   in `~/.claude/settings.json` at a local clone -- conventionally a checkout
+///   named `claude-code-warp-internal` -- is the only route from an edited
+///   plugin to a running Phosphor build. That is not hypothetical maintenance
+///   work: the plugin's own notification copy is upstream-branded, and this
+///   fork's user-visible strings are not.
+/// * **Both install paths destroy the override.** `install()` re-adds the public
+///   repo under the same marketplace name, overwriting the local source;
+///   `update()` is worse, running `plugin marketplace remove claude-code-warp`
+///   first, which drops the developer's entry outright.
+///
+/// So the guard protects a workflow this fork still has, rather than the one the
+/// pin's comment names. It matters most at *this* call site: launching a local
+/// child pane is not an "install the plugin" action anyone opted into, and the
+/// only feedback is a `log::warn!` on failure -- a successful clobber is silent,
+/// so the override simply stops being used with no indication why.
+///
+/// The `needs_update()`/`is_installed()` branching is the second half of #600.
+/// Before it, this path ran a full `claude plugin install` -- two subprocesses,
+/// one of them a network fetch -- on every single child-pane launch, which is
+/// also what made the clobber recur rather than happen once.
+async fn ensure_local_claude_child_plugins(manager: &dyn CliAgentPluginManager) {
+    if manager.has_local_marketplace_override() {
+        return;
+    }
+    let plugin_result = if manager.needs_update() {
+        manager.update().await
+    } else if !manager.is_installed() {
+        manager.install().await
+    } else {
+        Ok(())
+    };
+    if let Err(error) = plugin_result {
+        log::warn!("Claude notification plugin setup failed for child harness: {error}");
+    }
 }
 
 pub(super) fn normalize_local_child_harness(harness_type: &str) -> Option<Harness> {
@@ -259,9 +328,7 @@ pub(super) async fn prepare_local_harness_child_launch(
                 )
                 .map_err(|error: AgentDriverError| error.to_string())?;
             if let Some(manager) = plugin_manager_for(claude_harness.cli_agent()) {
-                if let Err(error) = manager.install().await {
-                    log::warn!("Claude plugin installation failed for child harness: {error}");
-                }
+                ensure_local_claude_child_plugins(manager.as_ref()).await;
             }
 
             build_local_claude_child_command(&local_claude_child_prompt(&prompt))
