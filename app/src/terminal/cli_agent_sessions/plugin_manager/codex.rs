@@ -193,11 +193,11 @@ impl CliAgentPluginManager for CodexPluginManager {
     }
 
     fn install_success_message(&self) -> &'static str {
-        "Phosphor plugin installed. Please restart Codex to activate."
+        "Notification plugin installed. Please restart Codex to activate."
     }
 
     fn update_success_message(&self) -> &'static str {
-        "Phosphor plugin updated. Please restart Codex to activate."
+        "Notification plugin updated. Please restart Codex to activate."
     }
 
     fn install_instructions(&self) -> &'static PluginInstructions {
