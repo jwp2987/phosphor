@@ -1773,6 +1773,19 @@ commit is a scope decision rather than a silent defect. Nothing below is fixed.
 Verified by the coordinator where marked. Agent worktrees were based at
 `1990bdef8`; findings were reconciled against `main` before recording.
 
+### ai/agent stack (251 commits triaged, ~35 hand-verified, 1 partial — FIXED)
+
+The partial (`6f24ea230`, bounded parent-bridge retry) is fixed and merged. Every
+other unported commit in this area was cloud and is now recorded by name in
+`DECLINED.md` so it stops being re-derived. One non-cloud item is left:
+
+- [ ] **`89ec9a397` — `should_suppress_during_recovery` has zero references
+      anywhere in this fork.** Not ported, and not stubbed either, so it is
+      neither a partial nor a working divergence — the concept simply does not
+      exist here. Needs a look at what upstream suppresses during recovery and
+      whether this fork has an equivalent path that should be doing it. Low
+      priority, but genuinely unexamined rather than decided.
+
 ### remote_server + core crates (278 commits triaged, ~35 hand-verified, 0 partials)
 
 - [ ] **The daemon's writer loop is stuck pre-fix — two upstream commits, both
