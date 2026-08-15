@@ -48,7 +48,28 @@ pub struct SessionContext {
 
     /// Directory listings keyed by absolute path. Callers that must reflect a directory's
     /// current contents should use `refresh_directory_entries` to re-read from disk.
-    cached_directory_entries: dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>,
+    ///
+    /// **The `Arc` is load-bearing, and its absence is not a style question.** `SessionContext`
+    /// is `Clone`, and the context-chip layer clones it freely — once per chip
+    /// (`context_chips/display.rs:312`) and once per `DirectoryFetcher`
+    /// (`context_chips/display_chip.rs:935`). `DashMap`'s `Clone` deep-copies, so without the
+    /// `Arc` every clone gets a private map that starts empty and whose inserts are invisible
+    /// to every other clone: the cache can never hit across consumers, and it never expires
+    /// into correctness either — it is simply dead.
+    ///
+    /// On a local session that costs a duplicated `std::fs::read_dir`. On a legacy-SSH session
+    /// `list_directory_entries_internal` shells out to `find` over the session's ControlMaster,
+    /// so each clone opens its **own SSH channel** for the same directory. Observed 2026-08-15
+    /// on a remote host: three identical
+    /// `cd /home/winters/srv/scripts && find . -maxdepth 1 -type d -print0 ...` in flight at
+    /// once, alongside the completer's `compgen -c` and two `git branch` callers. Past the
+    /// host's `MaxSessions` (default 10) sshd refuses the channel and OpenSSH prints
+    /// `channel N: open failed: connect failed: open failed` into the user's live shell.
+    ///
+    /// Upstream carries the `Arc` (pin `02b53fcd8`, same field). This fork descends from
+    /// `0dbd3d56` ("Initial public release of Warp"), which predates that fix, so this is an
+    /// unported upstream change rather than something the fork broke.
+    cached_directory_entries: Arc<dashmap::DashMap<TypedPathBuf, Arc<Vec<EngineDirEntry>>>>,
 
     /// Snapshot of all Zap workflow aliases.
     workflow_aliases: HashMap<String, String>,
@@ -384,7 +405,7 @@ impl SessionContext {
                     command_registry,
                     current_working_directory,
                     js_ctx: js_function_caller.map(js::SessionJsExecutionContext::new),
-                    cached_directory_entries: Default::default(),
+                    cached_directory_entries: Arc::new(Default::default()),
                     workflow_aliases,
                 }
             } else {
@@ -392,7 +413,7 @@ impl SessionContext {
                     session: session.into(),
                     command_registry,
                     current_working_directory,
-                    cached_directory_entries: Default::default(),
+                    cached_directory_entries: Arc::new(Default::default()),
                     workflow_aliases,
                 }
             }

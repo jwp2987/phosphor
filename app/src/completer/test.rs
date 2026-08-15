@@ -437,3 +437,91 @@ pub fn test_session_context_refresh_directory_entries_bypasses_cache() {
         );
     });
 }
+
+/// A `SessionContext` clone must SHARE the directory cache, not deep-copy it.
+///
+/// This is the invariant that upstream's `Arc<DashMap>` provides and that
+/// `test_session_context_refresh_directory_entries_bypasses_cache` above cannot see: that
+/// test exercises one context instance and never clones, so it passes identically whether
+/// the field is `DashMap` or `Arc<DashMap>`. When #12362 was ported into this fork it kept
+/// the doc comment, `refresh_directory_entries`, the `DirectoryFetcher` change and that
+/// test, and dropped only the `Arc` — and nothing failed, because nothing asserted this.
+///
+/// The cost of the gap, observed 2026-08-15: `SessionContext` is `Clone` and the
+/// context-chip layer clones it per chip (`context_chips/display.rs:312`) and per
+/// `DirectoryFetcher` (`context_chips/display_chip.rs:935`). `DashMap::clone` deep-copies,
+/// so every clone got a private cache that always missed. On a legacy-SSH session each miss
+/// shells out to `find` over the session's ControlMaster, so clones opened one SSH channel
+/// each for the same directory — three identical `find . -maxdepth 1` in flight at once,
+/// which past the host's `MaxSessions` makes sshd print
+/// `channel N: open failed: connect failed: open failed` into the user's live shell.
+#[test]
+pub fn test_session_context_clone_shares_the_directory_cache() {
+    App::test((), |app| async move {
+        VirtualFS::test(
+            "test_session_context_clone_shares_the_directory_cache",
+            |dirs, mut sandbox| {
+                sandbox.touch(vec![Stub::EmptyFile("first.txt")]);
+
+                let tests_dir = TypedPathBuf::from(dirs.tests().to_string_lossy().as_bytes());
+                let ctx = test_session_context(Session::test(), tests_dir.clone(), &app);
+                let clone = ctx.clone();
+
+                // Populate the cache through the ORIGINAL.
+                let primed = warpui::r#async::block_on(
+                    ctx.path_completion_context()
+                        .expect("Path completion context should exist with active session")
+                        .list_directory_entries(tests_dir.clone()),
+                );
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(primed)),
+                    HashSet::from_iter([EngineDirEntry::test_file("first.txt")]),
+                );
+
+                // Change the directory on disk. A clone that shares the cache must still
+                // serve the cached listing; a clone with its own map would miss, re-read,
+                // and see `second.txt` — which over SSH is the duplicate `find` this guards.
+                sandbox.touch(vec![Stub::EmptyFile("second.txt")]);
+
+                let from_clone = warpui::r#async::block_on(
+                    clone
+                        .path_completion_context()
+                        .expect("Path completion context should exist with active session")
+                        .list_directory_entries(tests_dir.clone()),
+                );
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(from_clone)),
+                    HashSet::from_iter([EngineDirEntry::test_file("first.txt")]),
+                    "the clone must hit the cache the original populated, not re-read the \
+                     directory into a private map of its own"
+                );
+
+                // The sharing is bidirectional: a refresh through the CLONE must be visible
+                // to the original, or consumers would keep diverging after the first write.
+                let refreshed =
+                    warpui::r#async::block_on(clone.refresh_directory_entries(tests_dir.clone()));
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(refreshed)),
+                    HashSet::from_iter([
+                        EngineDirEntry::test_file("first.txt"),
+                        EngineDirEntry::test_file("second.txt"),
+                    ]),
+                );
+
+                let from_original = warpui::r#async::block_on(
+                    ctx.path_completion_context()
+                        .expect("Path completion context should exist with active session")
+                        .list_directory_entries(tests_dir),
+                );
+                assert_eq!(
+                    HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(from_original)),
+                    HashSet::from_iter([
+                        EngineDirEntry::test_file("first.txt"),
+                        EngineDirEntry::test_file("second.txt"),
+                    ]),
+                    "a write through one handle must be observable through the other"
+                );
+            },
+        );
+    });
+}

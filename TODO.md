@@ -1769,8 +1769,24 @@ chasing a maintainer report of OpenSSH printing `channel N: open failed: connect
 failed: open failed` into a live SSH session after choosing **Skip** on the
 remote-server install prompt.
 
-**Read this first, or you will "fix" these and be surprised.** *None of the three
-is proven to cause that error.* They were found by diffing the fork's SSH path
+**ROOT CAUSE FOUND 2026-08-15 — it is none of the three below.** The storm is
+`SessionContext::cached_directory_entries` (`app/src/completer/mod.rs`) being a bare
+`DashMap` rather than `Arc<DashMap>`. `SessionContext` is `Clone` and the context-chip
+layer clones it per chip (`context_chips/display.rs:312`) and per `DirectoryFetcher`
+(`context_chips/display_chip.rs:935`); `DashMap::clone` deep-copies, so every clone gets a
+private cache that starts empty and whose inserts nobody else sees. On a legacy-SSH session
+each miss shells out to `find` over the ControlMaster, so each clone opens its **own SSH
+channel for the same directory** — measured at three identical
+`find . -maxdepth 1` in flight for one directory, plus `compgen -c` and two `git branch`
+callers, peak 5 and climbing. Past the host's `MaxSessions` sshd refuses and OpenSSH prints
+the error into the live shell. Upstream carries the `Arc` (pin `02b53fcd8`); this fork
+descends from `0dbd3d56` which predates that fix, so it is an **unported upstream change,
+not a fork regression**. Fixed by restoring the `Arc`. Skip, the remote server and the tmux
+wrapper were all red herrings — Skip only routes you onto the path where the missing `Arc`
+becomes visible.
+
+**The three items below remain open and are still worth doing, but note:** *none of them
+is the cause of that error.* They were found by diffing the fork's SSH path
 against the pin (`02b53fcd8`) and are real regressions on their own merits, but
 the causal chain to the channel storm is **still open**. The reported string is
 sshd's `MaxSessions` refusal (it answers `CONNECT_FAILED` with the message text
