@@ -336,7 +336,7 @@ mod tests {
                     target,
                     FileTarget::CodeEditor(_) | FileTarget::MarkdownViewer(_)
                 ),
-                "{path} must resolve to an in-Warp surface, got {target:?}"
+                "{path} must resolve to an in-Phosphor surface, got {target:?}"
             );
         }
     }

@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# Fail if a user-visible string calls this product Zap, Oz, or Warp.
+#
+# WHY THIS EXISTS
+# ---------------
+# The fork shipped three names for one thing. On `repin` before this guard:
+# "Zap Agent" x25, "Warp Agent" x23, "Phosphor Agent" x7, plus 141 occurrences
+# of Oz. Upstream's own "Oz Agent" -> "Warp Agent" rename (42effe840) is what
+# surfaced it, and every port from the pin drags more of Warp's copy in.
+#
+# This is not housekeeping. docs/DESIGN-PHOSPHOR-FORK.md §6: AGPL-3.0 §7
+# declines trademark grants, so shipping Warp's name on this fork's UI is a
+# licensing problem, not just an inconsistent one.
+#
+# WHAT IT CHECKS, AND WHAT IT DELIBERATELY DOES NOT
+# -------------------------------------------------
+# Only text that reaches a human: Rust string literals in shipped source, and
+# the VALUE side of the Fluent catalogues. `warp` is also 24 crate names, 22
+# workspace dependencies, hundreds of Rust identifiers, the `WARP_*` env vars,
+# the OSC/DCS payloads, the `warpify` shell hooks, and every legitimate
+# reference to upstream in docs/. A blanket search over any of those produces
+# noise, and a guard people learn to ignore is worse than no guard. So the
+# match is deliberately narrow:
+#
+#   1. Only the three capitalised brand words, standalone. A hit must not be
+#      preceded by [A-Za-z0-9_.:-] nor followed by [A-Za-z0-9_-]. That single
+#      predicate is what keeps the guard quiet on:
+#        WARP_SKILL_DIRS, WARP.md      (all-caps -- different case, no match)
+#        warp_tui, warpdotdev, warp.dev (lowercase -- no match)
+#        WarpTheme, Warpify, WarpAgent  (followed by a letter)
+#        openWarp, AskWarpAI, SshWarpifyBlock (preceded by a letter)
+#        Harness::Oz, Icon::Zap          (preceded by ':')
+#        dev.warp.Warp, dev.zap.Zap      (preceded by '.')
+#        X-Zap-Client-ID, Zap-Run-GeneratorCommand (adjacent '-')
+#
+#   2. In Rust, only inside a double-quoted literal, never a comment. An
+#      identifier or a doc comment mentioning Warp is lineage, not branding.
+#
+#   3. In Rust, a literal with NO whitespace in it is a token, not copy. Keys,
+#      headers, registry paths, single-instance mutex names, DCS markers and
+#      bare app-identity names ("Zap" in `paths.rs`'s legacy directory map)
+#      are all single tokens; user-visible copy is at minimum a two-word label.
+#
+#   4. In Rust, a literal in a match-arm pattern or on the right of == / != is
+#      an input being RECOGNISED, not output being SHOWN. That is what keeps
+#      `SettingsSection::from_str`'s "Oz" | "Zap Agent" legacy aliases legal --
+#      renaming those orphans every settings row already persisted under them.
+#
+#   5. Tests are excluded: *_test.rs, *_tests.rs, tests/, examples/,
+#      test_data/, and the whole `crates/integration` harness crate. Their
+#      brand strings are arbitrary fixture data, not shipped copy.
+#
+# THE ONE PLACE SHAPE IS NOT ENOUGH
+# ---------------------------------
+# Two uses of a standalone "Warp" in the catalogues are legitimate and no
+# string-shape rule can tell them from a regression, because they are correct
+# for reasons that live outside the text:
+#
+#   - "Warp plugin" / "Warp extension" / "Warp marketplace" (and the ja/zh
+#     forms) name real third-party packages -- @warp-dot-dev/opencode-warp and
+#     warpdotdev/codex-warp. Renaming them stops the user finding what the
+#     instructions tell them to install. Handled by a phrase rule below:
+#     "Warp" is allowed when it immediately qualifies a package noun.
+#
+#   - The AGPL-3.0 §13 attribution ("Phosphor is a modified version of Warp")
+#     must stay true. Handled by an in-band marker, NOT a list in this file:
+#     put `# brand-guard: allow <reason>` on or directly above the line. In
+#     Rust the marker is `// brand-guard: allow <reason>`.
+#
+# The marker is in-band on purpose. A suppression list inside a guard drifts
+# and is invisible at the point of change; a marker is reviewed in the same
+# diff as the string it excuses. If this file ever grows a THIRD content rule,
+# that is the signal the shape-based boundary has stopped working -- reopen it
+# rather than adding a fourth.
+#
+# WHAT THIS GUARD CANNOT SEE
+# --------------------------
+# Copy assembled at runtime from a non-literal source, and strings that reach
+# the user through a channel this scope does not cover (packaging metadata,
+# .desktop entries, generated changelogs). Those still need a human.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "brand strings: skipped (python3 not available)"
+    exit 0
+fi
+
+python3 - "$@" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+TOKEN = re.compile(r"(?<![A-Za-z0-9_.:\-])(Zap|Oz|Warp)(?![A-Za-z0-9_\-])")
+STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+MARKER = re.compile(r"brand-guard:\s*allow")
+
+# Rule 4: the literal is being matched against, not rendered.
+MATCH_ARM = re.compile(r'^\s*(?:r#)?"(?:[^"\\]|\\.)*"(?:\s*\|\s*(?:r#)?"(?:[^"\\]|\\.)*")*\s*=>')
+COMPARISON = re.compile(r"[=!]=\s*(?:&\s*)?(?:r#)?$")
+
+# Rule "the one place shape is not enough": Warp qualifying a package noun.
+PACKAGE_NOUN = re.compile(
+    r"Warp\s*(?:plugin|extension|marketplace|"
+    r"プラグイン|"          # プラグイン
+    r"拡張機能|"                # 拡張機能 (ja: extension)
+    r"插件|"                            # 插件 (zh: plugin)
+    r"扩展)",                           # 扩展 (zh: extension)
+    re.IGNORECASE,
+)
+
+SKIP_DIR_PARTS = {"target", "node_modules", "test_data", "tests", "examples"}
+
+
+def rust_sources():
+    for root in ("app/src", "crates"):
+        for p in sorted(Path(root).rglob("*.rs")):
+            parts = set(p.parts)
+            if parts & SKIP_DIR_PARTS:
+                continue
+            if p.parts[:2] == ("crates", "integration"):
+                continue
+            if p.name.endswith(("_test.rs", "_tests.rs")):
+                continue
+            yield p
+
+
+def check_rust():
+    hits = []
+    for p in rust_sources():
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith(("//", "/*", "*")):
+                continue
+            if MARKER.search(line):
+                continue
+            if MATCH_ARM.match(line):
+                continue
+            for m in STRING.finditer(line):
+                literal = m.group(1)
+                if not TOKEN.search(literal):
+                    continue
+                if not re.search(r"\s", literal):
+                    continue  # rule 3: a token, not a sentence
+                if COMPARISON.search(line[: m.start()]):
+                    continue  # rule 4
+                hits.append((str(p), lineno, m.group(0)))
+    return hits
+
+
+FTL_ID = re.compile(r"^(\s*\.?[A-Za-z][A-Za-z0-9_-]*\s*=\s*)(.*)$")
+
+
+def check_fluent():
+    hits = []
+    for p in sorted(Path("app/i18n").glob("*/*.ftl")):
+        lines = p.read_text(errors="replace").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = FTL_ID.match(line)
+            if m:
+                value = m.group(2)
+            elif line[:1].isspace():
+                value = line  # continuation of a multi-line value
+            else:
+                continue
+            if not TOKEN.search(value):
+                continue
+            if MARKER.search(line):
+                continue
+            prev = lines[lineno - 2] if lineno >= 2 else ""
+            if prev.lstrip().startswith("#") and MARKER.search(prev):
+                continue
+            # Strip the legitimate package-noun uses, then re-test.
+            if not TOKEN.search(PACKAGE_NOUN.sub("", value)):
+                continue
+            hits.append((str(p), lineno, value.strip()))
+    return hits
+
+
+def check_prose():
+    """Files the user opens by hand, where the comment IS the user-visible part."""
+    hits = []
+    targets = sorted(Path("themes").glob("*.yaml"))
+    targets += sorted(Path("app/resources/tab_configs").glob("*.toml"))
+    for p in targets:
+        for lineno, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
+            if MARKER.search(line):
+                continue
+            if TOKEN.search(line):
+                hits.append((str(p), lineno, line.strip()))
+    return hits
+
+
+status = 0
+for label, hits in (
+    ("Rust string literal", check_rust()),
+    ("Fluent message value", check_fluent()),
+    ("shipped prose file", check_prose()),
+):
+    if not hits:
+        continue
+    status = 1
+    print(f"error: {len(hits)} user-visible {label}(s) name the product Zap/Oz/Warp:", file=sys.stderr)
+    for path, lineno, text in hits:
+        print(f"  {path}:{lineno}  {text[:140]}", file=sys.stderr)
+    print(file=sys.stderr)
+
+if status:
+    print(
+        "The product is Phosphor and its agent is Phosphor Agent. If a hit above is\n"
+        "genuinely not a brand reference -- an upstream attribution, or the name of a\n"
+        "Warp-published package the user has to find -- mark that line with\n"
+        "`brand-guard: allow <reason>` rather than editing this script.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print("check_brand_strings: ok -- no user-visible string names Zap, Oz, or Warp")
+PY

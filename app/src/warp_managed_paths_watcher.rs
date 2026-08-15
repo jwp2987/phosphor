@@ -392,7 +392,7 @@ mod tests {
                 assert_eq!(path.config_path, warp_home_mcp_config_path);
             }
             (_, _, None) => {}
-            _ => panic!("Expected Zap MCP path when home directory is available"),
+            _ => panic!("Expected Phosphor MCP path when home directory is available"),
         }
     }
 

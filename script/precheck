@@ -206,6 +206,10 @@ if [[ -x ./script/check_declined_collisions ]]; then
     ./script/check_declined_collisions >/dev/null 2>&1 && ok "declined collisions" \
         || fail "declined collisions -- run ./script/check_declined_collisions for detail"
 fi
+if [[ -x ./script/check_brand_strings ]]; then
+    ./script/check_brand_strings >/dev/null 2>&1 && ok "brand strings" \
+        || fail "brand strings -- run ./script/check_brand_strings for detail"
+fi
 if [[ -x ./script/check_settings_registry ]]; then
     ./script/check_settings_registry >/dev/null 2>&1 && ok "settings registry" \
         || fail "settings registry -- run ./script/check_settings_registry for detail"
