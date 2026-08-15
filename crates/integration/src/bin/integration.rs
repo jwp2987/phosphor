@@ -311,6 +311,10 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_command_search_loads_history);
     register_test!(test_histfile_left_joined_with_persisted_history);
     register_test!(test_history_command_is_linked_to_local_workflow);
+    // Listed in ui_tests.rs (behind `#[ignore]`, "TODO(alokedesai): Fix this on
+    // the latest version of Bash") but never registered here, so un-ignoring it
+    // would have produced a "test not found" panic rather than a test run.
+    register_test!(test_up_arrow_history);
     register_test!(test_up_arrow_history_enters_shift_tab_for_workflow);
 
     // Zap (localization, Phase 5): the websocket integration test was physically removed along with the Listener.

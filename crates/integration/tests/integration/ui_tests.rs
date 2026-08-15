@@ -196,10 +196,12 @@ integration_tests! {
     #[ignore = "Affected by agent_view feature flag UI changes"]
     test_up_arrow_history_enters_shift_tab_for_workflow,
 
-    test_websocket_begins_on_startup,
-    test_websocket_does_not_begin_on_startup,
-    test_websocket_begins_after_joining_a_team,
-    test_websocket_begins_after_creating_an_object,
+    // The four `test_websocket_*` entries that stood here were removed in
+    // 26c1ed8b5 ("Phase 5-5 删除 websocket 集成测试") along with the cloud
+    // Listener singleton they drove; that commit deleted
+    // crates/integration/src/test/websockets.rs and their register_test! lines
+    // but left these names behind, so nextest kept generating four tests that
+    // could only ever panic with "test not found".
 
     test_secret_is_obfuscated_on_copy,
     test_secret_tooltip_respects_safe_mode_setting,
@@ -353,25 +355,11 @@ integration_tests! {
     #[ignore = "Manual test: requires real display for frame capture"]
     test_video_recording,
 
-    // SFTP browser popup tests
-    test_sftp_pane_opens_in_workspace,
-    test_sftp_pane_focus_and_keyboard,
-    test_sftp_pane_close,
-    test_sftp_pane_tab_switch,
-    test_sftp_pane_disconnected_render,
-
-    // SFTP browser UI integration tests (mock backend)
-    test_sftp_mock_backend_connected,
-    test_sftp_toolbar_refresh,
-    test_sftp_toolbar_new_folder,
-    test_sftp_toolbar_upload,
-    test_sftp_toolbar_up,
-    test_sftp_click_file_row_selects,
-    test_sftp_right_click_opens_menu,
-    test_sftp_ctx_menu_delete,
-    test_sftp_ctx_menu_rename,
-    test_sftp_breadcrumb_root_click,
-    test_sftp_keyboard_backspace_up,
-    test_sftp_keyboard_delete,
-    test_sftp_keyboard_escape_close_dialog,
+    // The eighteen `test_sftp_*` entries that stood here were removed in
+    // 3c657be07 ("remove fork-original SSH Manager feature (Track 3)") along
+    // with app/src/sftp_manager and the SftpPane they drove; that commit
+    // deleted crates/integration/src/test/sftp_browser.rs and their
+    // register_test! lines but left these names behind, so nextest kept
+    // generating eighteen tests that could only ever panic with
+    // "test not found".
 }
