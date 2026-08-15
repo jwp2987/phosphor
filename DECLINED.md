@@ -90,7 +90,7 @@ Phosphor drops Warp's cloud backend. These are not gaps.
 
 | what | issue | note |
 |---|---|---|
-| **xAI / Grok subscription OAuth** | #319 | Phosphor supports **API-key credentials only**. The flow is genuinely local (OAuth2+PKCE direct to `auth.x.ai`, loopback `127.0.0.1:56121`, public Grok-CLI `client_id`) — it is *not* a cloud drop — but it is an alternative credential *source*, and a user with an xAI API key is already fully served. Keeps 5 `grok_subscription` tests and 24 `grok_*` tests in `api_keys_tests.rs` out of scope. Self-contained if ever revisited (~492 lines). |
+| **xAI / Grok subscription OAuth** | #319 | Phosphor supports **API-key credentials only**. The flow is genuinely local (OAuth2+PKCE direct to `auth.x.ai`, loopback `127.0.0.1:56121`, public Grok-CLI `client_id`) — it is *not* a cloud drop — but it is an alternative credential *source*, and a user with an xAI API key is already fully served. Keeps 5 `grok_subscription` tests and 22 `grok_*` tests in `api_keys_tests.rs` out of scope. **Corrected 2026-08-15: this said 24.** Two of the counted tests — `manager_has_any_key_false_when_no_keys_and_no_grok` and `manager_has_any_key_true_for_pasted_key_without_grok` — say "grok" only in their *names*; their bodies are bare `has_any_key()` assertions over `ApiKeys::default()` and an OpenAI key, with no Grok surface at all, and are exact duplicates of the fork's ported `has_any_key_false_when_empty` / `has_any_key_true_for_openai_only`. They are COVERED-ELSEWHERE, not declined. The inflated count is how a name-prefix match reads when nobody opens the bodies — the same failure that put 24 ledger rows under CLOUD (#598). Self-contained if ever revisited (~492 lines). |
 
 ## Telemetry and crash reporting — deliberately asymmetric
 
