@@ -422,6 +422,13 @@ impl RemoteDiffStateModel {
             .and_then(|metadata| metadata.pr_info.as_ref())
     }
 
+    /// The remote model's PR info comes from synced metadata snapshots rather
+    /// than a separate client-side `gh pr view` lookup, so there is no
+    /// in-flight state to report here.
+    pub fn is_pr_info_refreshing(&self) -> bool {
+        false
+    }
+
     /// Git-operation blocking is a local working-tree concern; the remote
     /// daemon owns it, so the client never blocks. Concretely, the daemon's
     /// mutating git handlers all call `guard_git_operation_in_progress`
