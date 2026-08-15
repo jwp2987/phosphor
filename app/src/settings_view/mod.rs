@@ -1539,6 +1539,14 @@ impl SettingsView {
                         if let Some(subpage) = AISubpage::from_section(current) {
                             self.ai_page_handle.update(ctx, |view, ctx| {
                                 view.set_active_subpage(Some(subpage), ctx);
+                                // Upstream 2356ddab2 (#14116): set_active_subpage
+                                // rebuilds the subpage's PageType with its default
+                                // all-widgets filter, undoing the filtering done
+                                // above. Reapply the active query so the restored
+                                // subpage still shows only matching widgets. NOT
+                                // COMPILED -- builds are suspended; verified by
+                                // reading only.
+                                view.update_filter(&search_query, ctx);
                             });
                         }
                     }
@@ -2162,8 +2170,46 @@ impl SettingsView {
         }
     }
 
+    /// Reapply the active search query to the currently-selected AI subpage.
+    ///
+    /// Upstream 2356ddab2 (#14116, "Fix settings search filtering for Code and
+    /// AI subpages"): `set_active_subpage`/`set_and_refresh_current_page_internal`
+    /// rebuild the subpage's `PageType` with its default all-widgets filter
+    /// (`new_uncategorized`/`build_page` initialize `filter` to every index),
+    /// so every navigation that lands on an AI subpage while a search is
+    /// active -- arrow-key `cycle_pages`, the sidebar-click
+    /// `SettingsAction::SelectAndRefresh`, and the restore step in
+    /// `handle_search_editor_event` -- silently dropped back to showing every
+    /// widget on that subpage instead of only the ones matching the query.
+    /// This reapplies the filter after each such rebuild.
+    ///
+    /// Upstream also covers a `CodeSubpage` (`is_code_subpage`/
+    /// `CodeSubpage::from_section`) half of the same bug: the pin's Code
+    /// settings page shares one backing page across subpages the way AI does.
+    /// This fork's Code settings page (`code_page.rs`) has no subpage
+    /// architecture -- no `CodeSubpage` type, no `is_code_subpage` -- so that
+    /// half does not apply here; there is no equivalent unfiltered-rebuild to
+    /// guard against. NOT COMPILED -- builds are suspended; verified by
+    /// reading only.
+    fn reapply_search_filter_to_active_subpage(
+        &mut self,
+        query: &str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let current = self.current_settings_page;
+        if current.is_ai_subpage()
+            && current != SettingsSection::AgentMCPServers
+            && AISubpage::from_section(current).is_some()
+        {
+            self.ai_page_handle.update(ctx, |view, ctx| {
+                view.update_filter(query, ctx);
+            });
+        }
+    }
+
     fn cycle_pages(&mut self, direction: CycleDirection, ctx: &mut ViewContext<Self>) {
-        let is_search_active = !self.search_editor.as_ref(ctx).buffer_text(ctx).is_empty();
+        let search_query = self.search_editor.as_ref(ctx).buffer_text(ctx);
+        let is_search_active = !search_query.is_empty();
 
         // Build nav stops from the current sidebar state. A collapsed umbrella
         // is represented as a single stop (rather than being skipped) so that
@@ -2204,6 +2250,9 @@ impl SettingsView {
         };
 
         self.set_and_refresh_current_page_internal(target_section, false, false, ctx);
+        if is_search_active {
+            self.reapply_search_filter_to_active_subpage(&search_query, ctx);
+        }
     }
 
     fn input_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -2580,7 +2629,14 @@ impl TypedActionView for SettingsView {
     fn handle_action(&mut self, action: &SettingsAction, ctx: &mut ViewContext<Self>) {
         match action {
             SettingsAction::SelectAndRefresh(section) => {
+                let search_query = self.search_editor.as_ref(ctx).buffer_text(ctx);
+                let is_search_active = !search_query.is_empty();
+
                 self.set_and_refresh_current_page_internal(*section, false, true, ctx);
+
+                if is_search_active {
+                    self.reapply_search_filter_to_active_subpage(&search_query, ctx);
+                }
 
                 if *section == SettingsSection::MCPServers {
                     send_telemetry_from_ctx!(

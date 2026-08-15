@@ -7654,7 +7654,6 @@ impl Workspace {
             .ok()
             .map(|path| path.to_string_lossy().into_owned())
         {
-            let command = format!("{exec} {}", warp_cli::dump_debug_info_flag());
             // Get the active session for this tab if it exists.
             let mut active_session_handle = self
                 .active_tab_pane_group()
@@ -7680,6 +7679,22 @@ impl Workspace {
                 });
             if let Some(terminal_view_handle) = active_session_handle {
                 terminal_view_handle.update(ctx, |terminal_view, ctx| {
+                    // Upstream 73ab280ee (#13188, "Escape executable path in 'dump debug
+                    // info' command palette action"): `exec` is `current_exe()`'s path,
+                    // interpolated unescaped into a command string that gets typed into
+                    // the shell. On a filesystem where the executable's path contains
+                    // shell metacharacters (spaces, quotes, `;`, backticks -- e.g. a
+                    // user-writable install directory, or a symlink/rename under
+                    // attacker influence), the un-escaped path let it act as a command
+                    // separator instead of a single argument. Shell-escaping it here
+                    // (as every other path interpolated into a pending command already
+                    // is) closes that off. NOT COMPILED -- builds are suspended;
+                    // verified by reading only.
+                    let command = format!(
+                        "{} {}",
+                        terminal_view.shell_family(ctx).shell_escape(&exec),
+                        warp_cli::dump_debug_info_flag()
+                    );
                     terminal_view.set_pending_command(&command, ctx);
                 });
             }
@@ -23677,19 +23692,43 @@ impl Workspace {
             DropResult::RemoveSourceTab {
                 transferred_tab_index,
             } => {
+                // Upstream a612c9591 (#13409, "fix cross-window tab drag
+                // crash"): `transferred_tab_index` can be stale by the time
+                // this fires (e.g. the preview's workspace was already gone
+                // -- see `finalize_preview_as_new_window`'s `NoOp` bail).
+                // Removing on a stale index tore out a bystander tab or
+                // panicked in `remove_tab`; skip the removal when the index
+                // no longer names a real tab. NOT COMPILED -- builds are
+                // suspended; verified by reading only.
                 if let Some(tab) = self.tabs.get(transferred_tab_index) {
                     ctx.unsubscribe_to_view(&tab.pane_group);
+                } else {
+                    log::warn!(
+                        "tab_drag: handle_drop_result RemoveSourceTab stale index={transferred_tab_index} tabs_len={} (skipping remove)",
+                        self.tabs.len()
+                    );
                 }
-                self.remove_tab_without_undo(transferred_tab_index, ctx);
+                if transferred_tab_index < self.tabs.len() {
+                    self.remove_tab_without_undo(transferred_tab_index, ctx);
+                }
             }
             DropResult::RemoveSourceTabAndClosePreview {
                 transferred_tab_index,
                 preview_window_id,
             } => {
+                // See the NOT COMPILED note on `RemoveSourceTab` above --
+                // same stale-index guard, upstream a612c9591 (#13409).
                 if let Some(tab) = self.tabs.get(transferred_tab_index) {
                     ctx.unsubscribe_to_view(&tab.pane_group);
+                } else {
+                    log::warn!(
+                        "tab_drag: handle_drop_result RemoveSourceTabAndClosePreview stale index={transferred_tab_index} tabs_len={} (skipping remove)",
+                        self.tabs.len()
+                    );
                 }
-                self.remove_tab_without_undo(transferred_tab_index, ctx);
+                if transferred_tab_index < self.tabs.len() {
+                    self.remove_tab_without_undo(transferred_tab_index, ctx);
+                }
                 ctx.windows()
                     .close_window(preview_window_id, TerminationMode::ContentTransferred);
             }
