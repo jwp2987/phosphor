@@ -2093,7 +2093,7 @@ rules-add-button = 追加
 rules-init-project-button = プロジェクトを初期化
 
 # --- Agent view zero-state + message bar ---
-agent-zero-state-title = 新規 Phosphor Agent エージェント会話
+agent-zero-state-title = 新規 Phosphor Agent 会話
 agent-zero-state-title-cloud = 新規 Phosphor Agent ローカルエージェント会話
 agent-zero-state-description = 下にプロンプトを送信して新規会話を開始
 agent-zero-state-description-with-location = `{ $location }` で新規会話を開始するには下にプロンプトを送信
@@ -2889,7 +2889,7 @@ agent-tip-open-code-review = `/open-code-review` でコードレビューパネ�
 agent-tip-new-conversation = `/new` でクリーンなコンテキストで新しいエージェント会話を開始できます。
 agent-tip-compact = `/compact` で現在の会話を要約しコンテキストウィンドウの空きを確保できます。
 agent-tip-usage = `/usage` で現在の AI クレジット使用量を表示できます。
-agent-tip-oz-headless = `oz` コマンドで Phosphor Agent エージェントをヘッドレスモードで実行できます。リモートマシンに便利です。
+agent-tip-oz-headless = `oz` コマンドで Phosphor Agent をヘッドレスモードで実行できます。リモートマシンに便利です。
 agent-tip-selected-text-context = 選択したテキストを右クリックするとエージェントのコンテキストとして添付できます。
 agent-tip-project-rules = `AGENTS.md` または `CLAUDE.md` でプロジェクトスコープのルールを適用できます。
 agent-tip-url-context = URL を貼り付けるとそのウェブページをエージェントのコンテキストとして添付できます。
