@@ -319,8 +319,18 @@ impl TerminalView {
         match restore_context_state {
             RestorationDirState::NeedsCd { path } => {
                 let path_for_hint = path.clone();
+                // [Security] `path` comes from a persisted conversation record, not from
+                // this session's own shell — it is not trusted input. The prior
+                // `cd "{path}"` interpolation let a directory string containing `"`,
+                // `$(...)`, or a backtick break out of the double-quoted argument and
+                // execute arbitrary shell code on conversation restoration. Upstream
+                // `c697c8f5f6` "Properly escape cd during conversation restoration"
+                // (#25383, GHSA-8659-m852-gmfx) fixed this with `shell_escape`; ported
+                // here as the same call. NOT COMPILED -- builds are suspended; verified
+                // by reading only.
+                let escaped = self.shell_family(ctx).shell_escape(&path);
                 let did_execute_cd = self.input.update(ctx, |input, ctx| {
-                    input.try_execute_command(&format!("cd \"{path}\""), ctx)
+                    input.try_execute_command(&format!("cd {escaped}"), ctx)
                 });
                 if did_execute_cd {
                     self.on_next_block_completed(move |me, ctx| {
