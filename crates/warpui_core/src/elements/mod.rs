@@ -4,9 +4,16 @@ mod align;
 #[cfg(feature = "tui")]
 pub mod animation;
 #[cfg(feature = "tui")]
-pub mod shimmer_math;
-#[cfg(feature = "tui")]
 pub mod tui;
+
+// NOT feature-gated, unlike its neighbours above: `shimmer_math` is 89 lines of
+// pure math (`PI`, `Duration`, `ColorU`) with no ratatui dependency of any kind.
+// It was grouped with the TUI helpers when it was extracted, which left the GUI's
+// `shimmering_text` element carrying a byte-for-byte private duplicate of the same
+// maths. Sharing it is the point of the extraction; gating it to `tui` made that
+// impossible and is what broke the `--features gui` build when the duplicate was
+// removed.
+pub mod shimmer_math;
 mod child_view;
 mod clipped;
 mod clipped_scrollable;
