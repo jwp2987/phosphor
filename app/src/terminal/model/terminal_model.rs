@@ -69,8 +69,6 @@ use crate::terminal::model::secrets::ObfuscateSecrets;
 use crate::terminal::shared_session::protocol::SessionSourceType;
 use warp_core::command::ExitCode;
 use warp_core::report_error;
-#[cfg(not(target_family = "wasm"))]
-use warpui::util::save_as_file;
 
 use crate::terminal::shared_session::protocol::{
     AICommandMetadata, OrderedTerminalEventType, ParticipantId,
@@ -3668,16 +3666,18 @@ impl ansi::Handler for TerminalModel {
                 pending.data = decoded_bytes;
 
                 if !pending.metadata.inline {
-                    #[cfg(not(target_family = "wasm"))]
-                    if let Some(cwd) = self
-                        .active_block_metadata()
-                        .current_working_directory()
-                        .map(|cwd| cwd.to_string())
-                    {
-                        let mut path = PathBuf::from(cwd);
-                        path.push(pending.metadata.name);
-                        let _ = save_as_file(&pending.data[..], path);
-                    }
+                    // [Security] A non-inline iTerm `File=`/`MultipartFile=` OSC payload
+                    // used to be written straight to `cwd/<attacker-controlled name>` —
+                    // any program whose output the user's terminal renders (a malicious
+                    // `cat`, a compromised SSH host, a CI log) could overwrite arbitrary
+                    // files in the working directory. Upstream `f3b9ce1c8f` "[Security]
+                    // Disable iterm file download, limit support to inline files"
+                    // (#25261, GHSA advisory) removed the write entirely; only inline
+                    // (`inline=1`) image payloads are still handled, below. NOT COMPILED
+                    // -- builds are suspended; verified by reading only.
+                    log::warn!(
+                        "Ignoring non-inline iTerm file payload; automatic local file writes are disabled."
+                    );
                     return;
                 }
 
