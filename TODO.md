@@ -1811,8 +1811,23 @@ Checked and found at PARITY with the pin, so do not re-derive these: the
 `handle_ssh_remote_server_skip`, executor selection in `command_executor.rs`,
 the `SshInitState` machine (linear, no retry loop), and the fact that a wrapper
 session never transitions back out of `IsLegacySSHSession::Yes`. The fork's
-`SSHTmuxWrapper` is fork-original and on by default, but `use_ssh_tmux_wrapper`
-defaults `false`, which reduces the fork's gate to the pin's expression exactly.
+`SSHTmuxWrapper` is on by default, but `use_ssh_tmux_wrapper` defaults `false`,
+which reduces the fork's gate to the pin's expression exactly.
+
+**Correction 2026-08-15: `SSHTmuxWrapper` is NOT fork-original**, as this entry
+first claimed. It exists at `0dbd3d56`; upstream *deleted* it in `57062bd9`
+(#12478, 2026-06-12) — "Fully removes the legacy tmux-based SSH warpification
+flow in favor of the remote-server SSH extension", ~6.3k lines plus a one-time
+deprecation banner for opted-in users. The fork retained code upstream
+abandoned. Do not treat `use_ssh_tmux_wrapper = true` as a supported escape
+hatch: it is a path with no upstream future, and turning it on also drops the
+session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
+`apply_file_diffs` / `read_skill` onto a host that cannot serve them.
+
+- [ ] **Port `1b65a8b9` (#14746), "Follow symlinks in Tab path completion
+      (remote/SSH sessions)".** Surfaced by the same `git log warp/master --
+      app/src/completer/mod.rs` that found the root cause above; not yet
+      assessed against the fork.
 
 - [ ] **Restore `reuse_ssh_control_master`.** The pin discovers an existing
       ControlMaster for the destination host (`ssh -G`, verified with
