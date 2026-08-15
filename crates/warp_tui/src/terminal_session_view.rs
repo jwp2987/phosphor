@@ -5221,6 +5221,7 @@ impl TuiTerminalSessionView {
             TuiConstrainedBox::new(
                 TuiContainer::new(TuiChildView::new(&self.input_view).finish())
                     .with_padding_x(1)
+                    .with_padding_y(1)
                     .with_border_style(border_style)
                     .finish(),
             )

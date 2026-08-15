@@ -1516,7 +1516,9 @@ fn bootstrap_renders_starting_shell_above_input() {
             .iter()
             .enumerate()
             .skip(status_index + 1)
-            .find(|(_, line)| line.contains('┌') || line.contains('─'))
+            .find(|(_, line)| {
+                line.contains('▏') || line.contains('▁') || line.contains('─')
+            })
             .map(|(index, _)| index)
             .expect("bootstrap input border should render below the status");
         assert!(status_index < input_index);
@@ -1649,7 +1651,7 @@ fn long_running_command_keeps_input_hidden() {
         assert!(
             !lines
                 .iter()
-                .any(|line| line.contains('┌') || line.contains('─')),
+                .any(|line| line.chars().any(|glyph| "┌┐└┘─│▁▏▕▔".contains(glyph))),
             "LRC must keep the input editor hidden:\n{}",
             lines.join("\n")
         );
@@ -3036,7 +3038,7 @@ fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
             .expect("alternate-screen output should start in the output area");
         let input_row = lines
             .iter()
-            .position(|line| line.contains('┌'))
+            .position(|line| line.contains('▏'))
             .expect("agent-controlled alternate screen should render the composer");
         assert!(
             alt_screen_row < input_row,
@@ -3100,7 +3102,9 @@ fn user_controlled_alt_screen_keeps_full_session_input_on_the_pty() {
             lines.join("\n")
         );
         assert!(
-            !lines.iter().any(|line| line.contains('┌')),
+            !lines
+                .iter()
+                .any(|line| line.chars().any(|glyph| "┌┐└┘─│▁▏▕▔".contains(glyph))),
             "user-controlled alternate screen should not render the agent composer:\n{}",
             lines.join("\n")
         );
