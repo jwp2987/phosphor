@@ -546,7 +546,16 @@ fn add_file_edits_view(
             |_| TestHostView,
         );
         ctx.add_typed_action_tui_view(window_id, move |ctx| {
-            TuiFileEditsView::new(action_id, conversation_id, &action_model, ctx)
+            // `file_edits` is empty on purpose. It is consumed only on the RESTORED
+            // path (`8e645f54b` / upstream `ae9c63f95`, #14211), which `new` enters
+            // only when `action_model` already holds a recorded result. Every test
+            // using this helper drives a LIVE action whose sections come from the
+            // executor, so an empty vec preserves exactly the behaviour these tests
+            // were written against rather than changing what they assert.
+            //
+            // The restored path therefore still has NO test coverage in the TUI --
+            // upstream shipped none either. Worth adding once the tree builds again.
+            TuiFileEditsView::new(action_id, conversation_id, Vec::new(), &action_model, ctx)
         })
     })
 }
