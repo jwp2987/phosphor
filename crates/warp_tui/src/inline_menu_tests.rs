@@ -749,6 +749,63 @@ fn interactive_menu_scrolls_only_within_its_bounds() {
     });
 }
 
+/// #587: `state_suffix` used to be emitted from inside the `description` block, so a
+/// `Default` row with a suffix and no description rendered *nothing*. That inverted the
+/// model menu's `(key connected)` marker -- selectable models (no `disabled` description)
+/// lost it and unselectable ones kept it. Asserts on the rendered lines, because the
+/// snapshot-level tests assert on `TuiInlineMenuRow::state_suffix`, which was always right.
+#[test]
+fn default_row_state_suffix_renders_with_and_without_a_description() {
+    let lines = rendered_labels(
+        TuiInlineMenuSnapshot {
+            header: None,
+            rows: vec![
+                TuiInlineMenuRow {
+                    title: "byop:openai:gpt-5".to_owned(),
+                    prefix: None,
+                    description: None,
+                    state_suffix: Some("(key connected)".to_owned()),
+                    is_selectable: true,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+                TuiInlineMenuRow {
+                    title: "byop:openai:o3".to_owned(),
+                    prefix: None,
+                    description: Some("disabled".to_owned()),
+                    state_suffix: Some("(key connected)".to_owned()),
+                    is_selectable: false,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+                TuiInlineMenuRow {
+                    title: "byop:local:llama".to_owned(),
+                    prefix: None,
+                    description: Some("disabled".to_owned()),
+                    state_suffix: None,
+                    is_selectable: false,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+            ],
+            selected_index: Some(0),
+            scroll_offset: 0,
+            scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+            max_visible_rows: 8,
+            status: None,
+        },
+        4,
+    );
+
+    assert_eq!(
+        lines,
+        vec![
+            // Selectable and key-connected: the marker must render, in the same column a
+            // description would have started in.
+            "byop:openai:gpt-5  (key connected)",
+            "byop:openai:o3  disabled (key connected)",
+            "byop:local:llama  disabled",
+        ]
+    );
+}
+
 #[test]
 fn interactive_menu_hovered_selectable_row_renders_bold() {
     App::test((), |app| async move {
