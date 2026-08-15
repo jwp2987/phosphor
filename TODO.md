@@ -1773,6 +1773,40 @@ commit is a scope decision rather than a silent defect. Nothing below is fixed.
 Verified by the coordinator where marked. Agent worktrees were based at
 `1990bdef8`; findings were reconciled against `main` before recording.
 
+### workspace / settings / TUI (612 commits, 116 fix-flavoured, 34 partial candidates; 5 FIXED)
+
+Five fixed and merged, two of them security (`c12836866` MCP `+Add` redaction
+bypass, `175776e22` unescaped exec path). Remaining:
+
+- [ ] **#13591 — wide-grapheme stray-character rendering bug.** Real, unfixed.
+      Root cause sits in `crates/warpui_core` / `crates/editor`, which **no agent
+      in the 2026-08-15 fleet owned** — the partition covered `app/src`, the
+      terminal/AI/completer crates and `warp_tui`, but not `warpui_core`,
+      `warpui`, or `warpui_extras`. That is a genuine coverage hole in the audit,
+      not just an unfixed bug: **~1,240 upstream commits touch `warpui_core` and
+      `warpui` and have never been swept at all.**
+- [ ] **~25 of the 34 PARTIAL candidates were never hand-verified** (tab-group
+      rename bugs, cross-window drag "fuzzy shake", MCP install-modal styling,
+      and others). The triage script flagged them; nobody read them. These are
+      the cheapest remaining wins in this area — the expensive part (finding
+      them) is already done.
+- [ ] **~82 non-fix-flavoured commits** (features/refactors) were excluded by the
+      keyword filter and never examined.
+
+Handed off, not lost: **#12492** (WSL UI freeze from redundant `canonicalize()`)
+— the fix lands in `app/src/terminal/view.rs`, so it went to the terminal agent
+rather than being dropped at an area boundary.
+
+Correctly report-only: **#12710** (hidden-files default) — the fork's default is
+already `true`; only the Settings UI toggle is absent, which is a feature.
+
+**False positives this agent rejected (do not re-raise):** #10839 (MCP redaction
+toggle — `UserWorkspaces`→`PrivacySettings` rename), #14270 (NLD-after-agent-
+terminal-use — deliberately adapted per #399/#254), #13594 (duplicate shell
+commands — `agent_view_state`→`transcript_scope`, `LayoutInvalidated`→
+`LayoutChanged` renames), #14425 (skill-status zero-state — `InventoryChanged`
+covers it).
+
 ### ai/agent stack (251 commits triaged, ~35 hand-verified, 1 partial — FIXED)
 
 The partial (`6f24ea230`, bounded parent-bridge retry) is fixed and merged. Every
