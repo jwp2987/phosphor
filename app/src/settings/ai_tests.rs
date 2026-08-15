@@ -5,6 +5,7 @@ use crate::{
     test_util::settings::initialize_settings_for_tests,
 };
 use chrono::Utc;
+use settings::Setting as _;
 use warpui::{App, SingletonEntity};
 
 fn create_test_request_limit_info(
@@ -26,6 +27,22 @@ fn create_test_request_limit_info(
         max_files_per_repo: 5000,
         embedding_generation_batch_size: 100,
     }
+}
+
+/// The pin's `auto_approve_denylist_bypass_defaults_on_and_is_available_in_gui_and_tui_settings`
+/// also asserts the setting is exposed on both the GUI and TUI `SettingSurfaces`.
+/// `SettingSurfaces`/`SettingsMode` are deliberately dropped in this fork (see
+/// `DECLINED.md`), so there is no surface set to assert on and this test carries a
+/// different name rather than claiming that coverage. The default and the TOML path
+/// are the portable half.
+#[test]
+fn auto_approve_denylist_bypass_defaults_on() {
+    let setting = AutoApproveBypassesCommandDenylist::new(None);
+    assert!(*setting.value());
+    assert_eq!(
+        AutoApproveBypassesCommandDenylist::toml_path(),
+        Some("agents.warp_agent.other.auto_approve_bypasses_command_denylist")
+    );
 }
 
 #[test]

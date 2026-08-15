@@ -668,7 +668,10 @@ pub enum RenderableAIError {
     },
     /// An agent-issued command caused the shell process to exit. Set by
     /// `BlocklistAIController::fail_conversation_due_to_shell_exit`.
-    AgentExitedShell,
+    /// `command` is the (secret-redacted) command that exited the shell.
+    AgentExitedShell {
+        command: String,
+    },
 }
 
 /// The cause behind a [`RenderableAIError::TransientNetworkError`]. Kept structured (rather than
@@ -696,7 +699,6 @@ pub enum TransientNetworkErrorKind {
 impl RenderableAIError {
     const TRANSIENT_NETWORK_ERROR_MESSAGE: &'static str =
         "Zap lost connection while receiving the agent response. This is usually temporary.";
-    const AGENT_EXITED_SHELL_MESSAGE: &'static str = "The shell exited while the agent was running a command, so the run could not continue. Ensure the agent is not asked to run commands or source scripts that can exit the shell.";
 
     /// Creates a transient network error. `kind` is the structured cause, preserved so user
     /// reports can disambiguate the different causes behind the shared user-facing copy.
@@ -825,7 +827,12 @@ impl Display for RenderableAIError {
                 )
             }
             Self::Other { error_message, .. } => write!(f, "{error_message}"),
-            Self::AgentExitedShell => write!(f, "{}", Self::AGENT_EXITED_SHELL_MESSAGE),
+            Self::AgentExitedShell { command } => write!(
+                f,
+                "The shell exited while the agent was running the command `{command}`, so the run \
+                 could not continue. Ensure the agent is not asked to run commands or source \
+                 scripts that can exit the shell."
+            ),
         }
     }
 }
