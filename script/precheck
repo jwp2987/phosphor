@@ -189,7 +189,12 @@ else
     fmt_bad=0
     for f in "${changed[@]}"; do
         [[ -f "$f" ]] || continue
-        if rustfmt --check --config-path .rustfmt.toml "$f" 2>&1 | grep -qE '^error: (expected|unexpected)'; then
+        # Captured before matching: `rustfmt | grep -q` under pipefail returns
+        # 141 when grep exits early on a match, so a REAL parse error reads as
+        # clean. This gate exists to catch exactly that, and it is the gate the
+        # whole fleet relies on in place of compiling.
+        fmt_out="$(rustfmt --check --config-path .rustfmt.toml "$f" 2>&1)"
+        if grep -qE '^error: (expected|unexpected)' <<<"$fmt_out"; then
             fail "$f does not parse"; fmt_bad=1
         fi
     done

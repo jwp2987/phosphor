@@ -132,13 +132,29 @@ ledger_summary_for() {
 
 is_test_bearing() {
     # $1 = rev, $2 = path
-    git show "$1:$2" 2>/dev/null | grep -qE "$TEST_ATTR_RE"
+    #
+    # The content is captured BEFORE grepping, deliberately. `git show | grep -q`
+    # under `set -o pipefail` is a silent-wrong-answer generator: grep -q exits
+    # at the first match, git show takes SIGPIPE and exits 141, and pipefail
+    # propagates 141 as the pipeline status -- which reads as "no match" and
+    # drops the file from every bucket. It is size- and timing-dependent, so it
+    # reproduces intermittently and the queue's output stops being deterministic.
+    # Measured at the 02b53fcd8 -> 42effe840 move: the queue reported 194
+    # test-bearing files where the same logic run serially found 204.
+    local content
+    content="$(git show "$1:$2" 2>/dev/null)" || return 1
+    [[ -n "$content" ]] || return 1
+    grep -qE "$TEST_ATTR_RE" <<<"$content"
 }
 
 is_cloud_touching() {
     # $1 = rev, $2 = path -- reads the pin's own imports, same first filter
     # check_cloud_boundary and SCOPE-*.md both use.
-    git show "$1:$2" 2>/dev/null | grep -E '^\s*use ' | grep -qE "$CLOUD_RE"
+    # Same SIGPIPE hazard as is_test_bearing -- capture, then match.
+    local uses
+    uses="$(git show "$1:$2" 2>/dev/null | grep -E '^\s*use ')"
+    [[ -n "$uses" ]] || return 1
+    grep -qE "$CLOUD_RE" <<<"$uses"
 }
 
 scope_verdict_for() {
