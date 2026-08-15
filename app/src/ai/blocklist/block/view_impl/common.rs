@@ -3119,7 +3119,7 @@ pub fn render_failed_output(props: FailedOutputProps, app: &AppContext) -> Box<d
             )
         }
         // Carries its own complete user-facing copy via Display.
-        RenderableAIError::AgentExitedShell => props.error.to_string(),
+        RenderableAIError::AgentExitedShell { .. } => props.error.to_string(),
     };
 
     Flex::row()
