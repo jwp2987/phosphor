@@ -21,8 +21,8 @@ use super::{
 };
 use crate::autoupdate::TuiAutoupdateStatus;
 use crate::zero_state_animation::{
-    ZeroStateAnimationConfig, ZeroStateAnimationElement, ZeroStateMarkStyles,
-    ZeroStateStarfieldElement,
+    ZeroStateAnimationConfig, ZeroStateAnimationElement, ZeroStateInteractionHandle,
+    ZeroStateMarkStyles, ZeroStateStarfieldElement,
 };
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
@@ -281,6 +281,7 @@ fn zero_state_animation_is_centered_in_remaining_space_and_hidden_when_space_is_
                 ZeroStateAnimationElement::new(
                     AnimationClock::starting_at(Duration::ZERO),
                     Arc::new(ZeroStateAnimationConfig::default()),
+                    ZeroStateInteractionHandle::default(),
                     ZeroStateMarkStyles {
                         front: style,
                         back: style,
