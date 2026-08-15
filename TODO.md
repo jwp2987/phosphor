@@ -1763,6 +1763,79 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
 
+## UNPORTED UPSTREAM FIXES — 2026-08-15 AUDIT (fleet walk of `0dbd3d56..02b53fcd8`)
+
+Findings from the partial-port sweep now written up as Phase 6.5 of
+`docs/pin-migration.md`. **These are FULLY unported, not partial ports** — the
+sweep's remit was to fix partials and merely record these, because a never-taken
+commit is a scope decision rather than a silent defect. Nothing below is fixed.
+
+Verified by the coordinator where marked. Agent worktrees were based at
+`1990bdef8`; findings were reconciled against `main` before recording.
+
+### remote_server + core crates (278 commits triaged, ~35 hand-verified, 0 partials)
+
+- [ ] **The daemon's writer loop is stuck pre-fix — two upstream commits, both
+      100% absent, on the same function.** `d9dee18e1` ("Fix daemon message too
+      big error") adds an `is_write_recoverable()` gate to the daemon's own write
+      loop plus `RunCommand` output-size truncation in `server_model.rs`.
+      **COORDINATOR-VERIFIED:** `is_write_recoverable` exists at
+      `crates/remote_server/src/protocol.rs:174` and is referenced by exactly one
+      call site, `client/mod.rs:1139` — the client. `app/src/remote_server/unix/mod.rs`'s
+      writer loop never consults it, so *any* write error, including a recoverable
+      "message too big", tears down the entire connection. `363d1d6e9`
+      ("Downgrade remote server SSH disconnect errors") is the sibling: routine
+      broken-pipe/connection-reset on client disconnect still logs at
+      `log::error!` rather than `log::warn!`. Highest-severity item in this batch.
+
+- [ ] **`97a9ff5f` — wasm debug panic in `StandardizedPath::from_local_absolute_unchecked`.**
+      `debug_assert!(path.is_absolute())` uses std's `Path::is_absolute()`, which
+      returns `false` for Unix-rooted paths on `wasm32-unknown-unknown`. This fork
+      still targets wasm32 (lsp, ai, editor, code_review, terminal/view). Upstream's
+      fix is a same-file swap to the encoding-aware `typed_path` check. Low risk,
+      genuinely broken today.
+
+- [ ] **Remote git-chip / PR-context proto plumbing appears entirely absent.**
+      Zero hits under `app/src/remote_server/` or `crates/remote_server/proto/` for
+      `RepositoryInfo`, `GitBranchStatus` or PR-url fields, while the local-session
+      equivalent (`app/src/util/git.rs`) is present and current. Traced across
+      `3ed3ae1d`, `8c63aaf9b`, `dbaf6d50`, `90f7a4c8`. **Consequence, and why it
+      belongs next to the legacy-SSH section below: on a remote/SSH session the
+      agent gets materially less git and PR context than it does locally.** Not in
+      `DECLINED.md`. Sampled, not exhaustively verified (`bbdc5a2ea`, `08487819f`,
+      `856c74b0` unchecked) — needs a scope call, not an assertion.
+
+- [ ] **`f0ca7861` — `capture_exit_status` races.** `crates/remote_server/src/manager.rs`
+      still uses synchronous `child.try_status()`, which returns `None` on a
+      just-killed child, instead of upstream's async `.status()` + 200ms timeout.
+      Diagnostic accuracy only.
+
+- [ ] **`ae69bd4c` — no tarball cache for the SCP fallback.** The fork re-downloads
+      on every install; no `remote_server_artifact_version()`.
+
+- [ ] **`44d87708` — reliability tracking.** `send_tracked_request` / `failure_rx` /
+      `RequestFailedEvent` absent; the fork still uses the ad-hoc
+      `ClientRequestFailed`-per-callsite pattern that upstream's commit message
+      calls a footgun. Mostly moot while telemetry is dead, but the pattern is
+      live debt.
+
+- [ ] **Windows PowerShell, low priority.** `ebedb9fd` (localized / non-UTF8
+      executable-name mojibake) and `ef4b562191` / `eab3b3fa9` (deferred cmdlet and
+      function-name loading, perf) — none ported in
+      `crates/warp_terminal/src/shell/mod.rs`.
+
+- [ ] **`a792340801` and `5b047fc2` — record in `DECLINED.md`, do not port.**
+      Sentry init and daemon client-ID forwarding, both cloud telemetry. Correctly
+      unported, but not named in `DECLINED.md`, so they keep reading as gaps. A
+      one-line row each stops the re-discovery.
+
+**False positives this agent rejected (do not re-raise):** `5ea50d236` (documented
+divergence — `SkillManagerEvent::InventoryChanged` is a safe superset),
+`d775c92` (shipped under renamed symbols), `14c8c8de` (28-file host-scoped-request
+refactor, verified present throughout), `f49457b2` (ported via `RemoteServerLog`),
+plus `18baecd45`, `844dc2cec`, `e75b31553`, `99f80df4d`, `388f5dc1`, `1df6ff13`,
+`fb3cb0e9b`, `b8e86f34`, `af5b45b6d`, `a9cb364a5`, `e6098a8a`.
+
 ## LEGACY-SSH REGRESSIONS AGAINST THE PIN (opened 2026-08-15)
 
 Three things the fork dropped from the pin on the legacy-SSH path, found while
