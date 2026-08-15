@@ -71,16 +71,22 @@ impl DetectedRepositories {
 
             if let Some(repository) = self.repository_roots.get(&path) {
                 if let Some(local_path) = repository.to_local_path() {
-                    if let Some(repository) =
+                    if let Some(watched) =
                         DirectoryWatcher::as_ref(ctx).get_watched_directory_for_path(&local_path)
                     {
                         ctx.emit(DetectedRepositoriesEvent::DetectedGitRepo {
-                            repository: repository.clone(),
+                            repository: watched.clone(),
                             source,
                         });
+                        // Watcher is alive — use the cached result.
+                        return Either::Right(ready(repository.to_local_path()));
                     }
+                    // Watcher was cleaned up (e.g. diff state model dropped
+                    // and recreated). Fall through to the full scan below,
+                    // which will re-register the watcher.
+                } else {
+                    return Either::Right(ready(repository.to_local_path()));
                 }
-                return Either::Right(ready(repository.to_local_path()));
             };
 
             let local_path_for_search = path.to_local_path();
