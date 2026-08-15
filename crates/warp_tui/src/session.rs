@@ -49,7 +49,12 @@ struct TuiArgs {
     resume: Option<String>,
 
     /// API key for non-interactive authentication.
-    #[arg(long, env = "WARP_API_KEY")]
+    // `hide_env_values` keeps `--help` from rendering the RESOLVED value of
+    // WARP_API_KEY into the terminal, scrollback, and anything capturing help
+    // output. Deliberately diverges from the pin, which leaves this unguarded
+    // here while guarding the identical argument in warp_cli (9dcef6a88). See
+    // DECLINED.md and #588.
+    #[arg(long, env = "WARP_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 
     /// Securely store a model-provider API key for Warp Agent CLI.
