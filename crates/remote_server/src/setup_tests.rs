@@ -985,3 +985,36 @@ fn bash_path() -> &'static str {
         "bash"
     }
 }
+
+/// `is_dev_source_build()` must be decided by "is this a distributed artifact"
+/// (bundle feature + release tag) alone, never by the cargo profile.
+///
+/// Keying it on `debug_assertions` left `cargo run --release` in a gap where
+/// neither install path worked: the dev cross-compile path was off because the
+/// profile was release, and the download path 404s without a release tag. The
+/// remote server then never installed and sessions silently fell back to the
+/// ControlMaster executor, which opens an SSH channel per command and trips the
+/// remote's `MaxSessions`.
+///
+/// Note this assertion can only *fail* under `cargo test --release` — in a debug
+/// test run the removed `cfg!(debug_assertions)` term was true anyway, so both
+/// the old and new implementations agree. That is precisely the blind spot that
+/// let the original bug through, so the test is written to be meaningful in the
+/// profile where it matters rather than omitted.
+#[test]
+fn dev_source_build_is_independent_of_the_cargo_profile() {
+    // The env override short-circuits the whole function; skip if it is set.
+    if std::env::var_os("WARP_REMOTE_SERVER_FROM_LOCAL").is_some() {
+        return;
+    }
+
+    let is_distributed_artifact =
+        ChannelState::is_release_bundle() || ChannelState::app_version().is_some();
+
+    assert_eq!(
+        is_dev_source_build(),
+        !is_distributed_artifact,
+        "is_dev_source_build() must depend only on the bundle feature and the release tag; \
+         a release-profile source build is still a source build"
+    );
+}

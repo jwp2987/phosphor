@@ -205,8 +205,9 @@ fn should_skip_scp_fallback(error: &InstallError) -> bool {
 // stale binary instead of the developer's just-edited code, making it
 // impossible to debug remote-server changes at all.
 //
-// So on a DEBUG source build with no release tag (see
-// `remote_server::setup::is_dev_source_build()`), `install_binary()` instead:
+// So on a source build with no release tag — any profile, including
+// `--release`; see `remote_server::setup::is_dev_source_build()` —
+// `install_binary()` instead:
 //   1. Cross-compiles the local `warp` binary to x86_64 musl (profile /
 //      features matching `script/deploy_remote_server` exactly);
 //   2. Uploads the artifact over the existing SSH ControlMaster socket via

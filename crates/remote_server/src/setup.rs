@@ -616,11 +616,31 @@ pub const DEV_REMOTE_FEATURES: &str = "release_bundle,crash_reporting,standalone
 
 /// Determines whether we're currently on the "dev-mode remote-server install" path.
 ///
-/// Default condition: a DEBUG build (`debug_assertions`) with no injected
-/// `GIT_RELEASE_TAG` (`app_version().is_none()`, i.e. a local source build,
-/// not a release). This matches the same standard used for "no release tag"
-/// in `remote_server_binary()` / `download_url()`. Always `false` for release
-/// builds, with no behavior change.
+/// Default condition: a **source build** — not packaged for distribution
+/// (`is_release_bundle()`, i.e. the `release_bundle` feature that `script/bundle`
+/// sets) and carrying no injected `GIT_RELEASE_TAG` (`app_version().is_none()`).
+///
+/// This deliberately does NOT key on `debug_assertions`. It used to, and that
+/// left `cargo run --release` / `script/run --release` in a gap where neither
+/// install path could work:
+///
+/// * the dev path was off, because `debug_assertions` is off under `--release`;
+/// * the download path 404s, because with no release tag `download_url()` falls
+///   to `latest/download`, which only resolves to a non-prerelease and every
+///   release published so far is a prerelease (see that function's comment).
+///
+/// So the remote server could never install, `RemoteServerManager` had no
+/// connected client, and `command_executor` fell back to the ControlMaster
+/// `RemoteCommandExecutor` — which opens one SSH channel per command, exhausts
+/// the remote's `MaxSessions`, and prints `channel N: open failed` into the
+/// user's session. A release-*profile* source build is a build someone actually
+/// runs, so it now takes the same path a debug source build does.
+///
+/// This is the third instance of the profile/bundle confusion; see the comment
+/// in `enabled_features()` (`app/src/lib.rs`) for the one that cost a day.
+/// Keying on the bundle feature rather than the profile is what keeps a
+/// distributed build from ever attempting a local cross-compile on a user's
+/// machine.
 ///
 /// Explicit override: setting `WARP_REMOTE_SERVER_FROM_LOCAL=1` forces the
 /// local cross-compile path (`0`/unset is treated as off). Used to temporarily
@@ -635,7 +655,7 @@ pub fn is_dev_source_build() -> bool {
             return true;
         }
     }
-    cfg!(debug_assertions) && ChannelState::app_version().is_none()
+    !ChannelState::is_release_bundle() && ChannelState::app_version().is_none()
 }
 
 /// Timeout for checking whether the binary exists.
