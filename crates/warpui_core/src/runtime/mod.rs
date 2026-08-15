@@ -50,8 +50,8 @@ mod event_conversion;
 mod renderer;
 mod terminal_probe;
 
-use event_conversion::ClickTracker;
 pub use event_conversion::crossterm_event_to_tui_event;
+use event_conversion::{ClickTracker, ShiftKeyTracker, ShiftRestoration};
 pub use renderer::TuiFrameRenderer;
 pub use terminal_probe::{
     BackgroundLuminance, ProbedRgb, ProbedTerminalColors, TuiProbe, background_luminance,
@@ -86,6 +86,9 @@ struct TuiScreen<T, R: TuiTerminal> {
     /// Synthesizes multi-click counts for left mouse presses, which crossterm
     /// does not report.
     click_tracker: ClickTracker,
+    /// Restores Shift after crossterm substitutes a layout-produced alternate
+    /// character and removes the modifier bit.
+    shift_key_tracker: ShiftKeyTracker,
     /// The pointer position from the most recent positional event, replayed as
     /// a synthetic `MouseMoved` after each draw so hover state tracks elements
     /// that move under a stationary pointer.
@@ -110,6 +113,7 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
             renderer: TuiFrameRenderer::new(),
             terminal,
             click_tracker: ClickTracker::default(),
+            shift_key_tracker: ShiftKeyTracker::default(),
             last_mouse_position: None,
             stdout_write_lock,
         }
@@ -182,11 +186,25 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
         self.dispatch_event(ctx, &event);
     }
 
-    /// Converts a raw crossterm event into the TUI vocabulary, annotating left
-    /// mouse-down events with a synthesized multi-click count (crossterm only
-    /// reports raw presses). Returns `None` for events with no TUI equivalent.
-    fn convert_event(&mut self, event: CrosstermEvent) -> Option<TuiEvent> {
+    /// Converts a raw crossterm event into the TUI vocabulary, restoring Shift
+    /// from modifier lifecycle events and synthesizing mouse multi-click counts.
+    /// Returns `None` for events with no TUI equivalent.
+    fn convert_event(&mut self, mut event: CrosstermEvent) -> Option<TuiEvent> {
+        let restoration = self.shift_key_tracker.update(&mut event);
         let mut tui_event = crossterm_event_to_tui_event(event)?;
+        if restoration == ShiftRestoration::Symbol
+            && let TuiEvent::KeyDown {
+                keystroke, details, ..
+            } = &mut tui_event
+        {
+            // Crossterm replaced the symbol's base key with the character the
+            // layout produced, which already encodes Shift. Keeping the bit
+            // would make one chord need two spellings: `ctrl-shift-!` where the
+            // layout shifts the symbol and `ctrl-!` where it does not. The base
+            // key is also unrecoverable from the produced character.
+            keystroke.shift = false;
+            details.key_without_modifiers = None;
+        }
         self.click_tracker.annotate(&mut tui_event, Instant::now());
         Some(tui_event)
     }
@@ -202,6 +220,8 @@ impl<T: TuiView, R: TuiTerminal> TuiScreen<T, R> {
 
         // Keymap pass (GUI parity): offer a keystroke to the focused view's
         // responder chain first, exactly like the GUI window event path.
+        // `ModifierKeyChanged` bypasses this pass and continues to element
+        // dispatch because keymaps represent press-driven keystrokes.
         if let Some((keystroke, is_composing)) = event.key_down() {
             let responder_chain = ctx.get_responder_chain(self.window_id);
             match ctx.dispatch_keystroke(self.window_id, &responder_chain, keystroke, is_composing)
@@ -275,7 +295,7 @@ where
     /// Enters the alternate screen + raw mode and prepares to drive `root_view`.
     /// The terminal is restored when the returned runtime is dropped.
     pub fn enter(app: &App, window_id: WindowId, root_view: ViewHandle<T>) -> io::Result<Self> {
-        let guard = TuiTerminalGuard::enter()?;
+        let guard = TuiTerminalGuard::enter(false)?;
         let mut runtime = Self::with_terminal(app, window_id, root_view, CrosstermTerminal::new());
         runtime._terminal_guard = Some(guard);
         Ok(runtime)
@@ -438,25 +458,34 @@ impl TuiTerminal for CrosstermTerminal {
 pub struct TuiTerminalGuard {
     _guard: RawModeGuard<CrosstermModeControl>,
     keyboard_enhancement_supported: bool,
+    modifier_key_lifecycle_enabled: bool,
 }
 
 impl TuiTerminalGuard {
     /// Enables raw mode and switches to the alternate screen, restoring both
     /// when the guard is dropped.
-    pub fn enter() -> io::Result<Self> {
+    pub fn enter(report_modifier_key_lifecycle: bool) -> io::Result<Self> {
         let keyboard_enhancement_supported =
             matches!(terminal::supports_keyboard_enhancement(), Ok(true));
         Ok(Self {
             _guard: RawModeGuard::enter(CrosstermModeControl {
                 keyboard_enhancement_supported,
+                report_modifier_key_lifecycle,
             })?,
             keyboard_enhancement_supported,
+            modifier_key_lifecycle_enabled: keyboard_enhancement_supported
+                && report_modifier_key_lifecycle,
         })
     }
 
     /// Whether the host terminal supports the Kitty keyboard-enhancement protocol.
     pub fn keyboard_enhancement_supported(&self) -> bool {
         self.keyboard_enhancement_supported
+    }
+
+    /// Whether standalone modifier press/release reporting is active.
+    pub fn modifier_key_lifecycle_enabled(&self) -> bool {
+        self.modifier_key_lifecycle_enabled
     }
 }
 
@@ -495,6 +524,11 @@ impl TuiDriverHandle {
     /// Whether the host terminal supports the Kitty keyboard-enhancement protocol.
     pub fn keyboard_enhancement_supported(&self) -> bool {
         self._guard.keyboard_enhancement_supported()
+    }
+
+    /// Whether standalone modifier press/release reporting is active.
+    pub fn modifier_key_lifecycle_enabled(&self) -> bool {
+        self._guard.modifier_key_lifecycle_enabled()
     }
 }
 
@@ -537,8 +571,9 @@ pub fn spawn_tui_driver<T: TuiView>(
     window_id: WindowId,
     root_view: ViewHandle<T>,
     probe: Option<TuiProbe>,
+    report_modifier_key_lifecycle: bool,
 ) -> io::Result<TuiDriverHandle> {
-    let guard = TuiTerminalGuard::enter()?;
+    let guard = TuiTerminalGuard::enter(report_modifier_key_lifecycle)?;
 
     // Shared with the reader thread so a focus-triggered probe's OSC query
     // can never land in the middle of a frame write (see `TuiScreen::draw`).
@@ -777,11 +812,13 @@ trait TerminalModeControl {
 
 struct CrosstermModeControl {
     keyboard_enhancement_supported: bool,
+    report_modifier_key_lifecycle: bool,
 }
 
 fn enter_terminal_screen(
     out: &mut impl Write,
     keyboard_enhancement_supported: bool,
+    report_modifier_key_lifecycle: bool,
 ) -> io::Result<()> {
     execute!(
         out,
@@ -801,10 +838,13 @@ fn enter_terminal_screen(
     // reader starts because crossterm's query cannot run concurrently with
     // event polling.
     if keyboard_enhancement_supported {
-        let _ = execute!(
-            out,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
+        let mut flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+        if report_modifier_key_lifecycle {
+            flags |= KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+        }
+        let _ = execute!(out, PushKeyboardEnhancementFlags(flags));
     }
     Ok(())
 }
@@ -830,7 +870,11 @@ impl TerminalModeControl for CrosstermModeControl {
     fn enter(&mut self) -> io::Result<()> {
         terminal::enable_raw_mode()?;
         let mut out = stdout();
-        if let Err(error) = enter_terminal_screen(&mut out, self.keyboard_enhancement_supported) {
+        if let Err(error) = enter_terminal_screen(
+            &mut out,
+            self.keyboard_enhancement_supported,
+            self.report_modifier_key_lifecycle,
+        ) {
             let _ = leave_terminal_screen(&mut out, self.keyboard_enhancement_supported);
             let _ = terminal::disable_raw_mode();
             return Err(error);
