@@ -16,7 +16,7 @@ use crate::{send_telemetry_from_ctx, LaunchMode, TelemetryEvent};
 
 use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::cloud_object::update_manager::UpdateManager;
-use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType};
+use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject as _};
 use crate::drive::ObjectTypeAndId;
 use crate::server::ids::SyncId;
 use crate::settings::AgentModeCommandExecutionPredicate;
@@ -144,6 +144,16 @@ impl AIExecutionProfilesModel {
                 let object_store_model = ObjectStoreModel::handle(ctx).as_ref(ctx);
                 let all_profile_objects: Vec<&super::AIExecutionProfileObject> = object_store_model
                     .get_all_objects_of_type::<GenericStringObjectId, AIExecutionProfileObjectModel>()
+                    // NOT COMPILED -- builds are suspended. Ported from upstream `c2954dcbc0`
+                    // ("Prevent the client from reading non-personal AI execution profiles",
+                    // #25377, GHSA-cqw8-cqq2-8cjm): a stored object whose owner isn't the
+                    // current user must never be treated as one of the user's own execution
+                    // profiles -- e.g. a maliciously crafted "always execute" profile shared
+                    // with the user could otherwise get silently applied as their default.
+                    // The server-side share gate is the primary defense; this is the
+                    // client-side backstop upstream added on top of it. Applied at all three
+                    // sites that read profile objects out of the store, matching upstream.
+                    .filter(|p| Self::is_owned_by_current_user(p, ctx))
                     .collect();
 
                 let default_profile_object: Option<&super::AIExecutionProfileObject> = all_profile_objects
@@ -248,6 +258,25 @@ impl AIExecutionProfilesModel {
 
         model.maybe_inherit_from_legacy_settings(ctx);
         model
+    }
+
+    /// Returns true iff `profile`'s stored owner is the current user's personal drive.
+    ///
+    /// NOT COMPILED -- builds are suspended. Ported from upstream `c2954dcbc0` ("Prevent the
+    /// client from reading non-personal AI execution profiles", #25377,
+    /// GHSA-cqw8-cqq2-8cjm). Upstream's `CloudObject` trait is this fork's `StoredObject`
+    /// (`app/src/cloud_object/mod.rs`), and `CloudAIExecutionProfile` is this fork's
+    /// `AIExecutionProfileObject` -- otherwise a direct port. Unverified: `ModelContext<Self>`
+    /// coercing to the `&AppContext` `UserWorkspaces::as_ref`/`.permissions()` expect at each
+    /// call site, matching the pattern `create_profile` (above) already uses for
+    /// `UserWorkspaces::as_ref(ctx).personal_drive(ctx)` with the same `ctx` type.
+    fn is_owned_by_current_user(
+        profile: &super::AIExecutionProfileObject,
+        ctx: &AppContext,
+    ) -> bool {
+        UserWorkspaces::as_ref(ctx)
+            .personal_drive(ctx)
+            .is_some_and(|owner| profile.permissions().owner == owner)
     }
 
     /// This function performs one-time migrations from legacy settings into the default profile.
@@ -1471,6 +1500,10 @@ impl AIExecutionProfilesModel {
         let object_store_model = ObjectStoreModel::as_ref(ctx);
         let all_profiles: Vec<(SyncId, bool)> = object_store_model
             .get_all_objects_of_type::<GenericStringObjectId, AIExecutionProfileObjectModel>()
+            // See the `is_owned_by_current_user` filter in `new()` -- same GHSA-cqw8-cqq2-8cjm
+            // backstop, applied here too so a non-owned object can't get reconciled in as if
+            // it were the user's own default/profile after an initial load.
+            .filter(|o| Self::is_owned_by_current_user(o, ctx))
             .map(|o| (o.id, o.model().string_model.is_default_profile))
             .collect();
 
@@ -1537,6 +1570,14 @@ impl AIExecutionProfilesModel {
             log::warn!("Received ObjectCreated event for AI execution profile but object not found in ObjectStoreModel: {sync_id:?}");
             return;
         };
+
+        if !Self::is_owned_by_current_user(object, ctx) {
+            // See the `is_owned_by_current_user` filter in `new()` -- same GHSA-cqw8-cqq2-8cjm
+            // backstop. This is the live-event path: a non-owned object can also arrive here
+            // via an `ObjectCreated` event after startup, not just at initial load.
+            log::info!("Ignoring non-owned execution profile from cloud: {sync_id:?}");
+            return;
+        }
 
         // Check if this is the default profile
         if object.model().string_model.is_default_profile {
