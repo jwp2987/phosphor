@@ -41,7 +41,10 @@ use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
-    Color, Modifier, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiStack, TuiText,
+    Cell, Color, Modifier, TuiClipBounds, TuiConstrainedBox, TuiConstraint, TuiContainer,
+    TuiElement, TuiEvent, TuiEventContext, TuiFlex, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiPresentationContext, TuiScreenPoint, TuiScreenPosition, TuiScreenRect,
+    TuiSize, TuiText,
 };
 use warpui_core::{AppContext, Entity, ModelHandle, TuiView, ViewContext};
 
@@ -244,21 +247,242 @@ fn build_zero_state_layout(
         .flex_child(animation_region)
         .finish();
 
-    // The container measures to the copy's own rectangle, so the opaque fill
-    // covers exactly the copy and the stack leaves it at the top of the view.
-    // `Color::Reset` keeps the host terminal's own background while still
-    // registering as a stack-local opaque rectangle, so the stars below are
-    // cleared without introducing a concrete RGB fill (see `TuiStack`'s
-    // opaque-region handling in warpui_core).
+    ZeroStateLayers::new(
+        starfield,
+        animation_layer,
+        opaque_zero_state_overlay(text_column),
+    )
+    .finish()
+}
+
+/// The generic-`TuiStack` composition [`build_zero_state_layout`] replaces.
+/// Kept as the reference implementation the direct compositor is checked
+/// against, so a divergence between the two is a test failure rather than a
+/// silent rendering change.
+#[cfg(test)]
+fn build_zero_state_stack_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+) -> Box<dyn TuiElement> {
+    use warpui_core::elements::tui::TuiStack;
+
+    let copy_column_reservation = TuiConstrainedBox::new(TuiText::new("").finish())
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+    let animation = TuiConstrainedBox::new(animation)
+        .with_max_cols(ANIMATION_PANEL_COLS)
+        .finish();
+    let animation_region = TuiFlex::row()
+        .flex_child(TuiText::new("").finish())
+        .child(animation)
+        .flex_child(TuiText::new("").finish())
+        .finish();
+    let animation_layer = TuiFlex::row()
+        .child(copy_column_reservation)
+        .flex_child(animation_region)
+        .finish();
     let overlay_layer = TuiContainer::new(text_column)
         .with_background(Color::Reset)
         .finish();
-
     TuiStack::new()
         .child(starfield)
         .child(animation_layer)
         .child(overlay_layer)
         .finish()
+}
+
+/// The copy's opaque rectangle. The container measures to the copy's own
+/// content, so the fill covers exactly the copy and the layers leave it at the
+/// top of the view. `Color::Reset` keeps the host terminal's own background
+/// while still clearing the stars beneath, rather than stamping a concrete RGB
+/// fill over them.
+fn opaque_zero_state_overlay(text_column: Box<dyn TuiElement>) -> Box<dyn TuiElement> {
+    ZeroStateOpaqueOverlay::new(
+        TuiContainer::new(text_column)
+            .with_background(Color::Reset)
+            .finish(),
+    )
+    .finish()
+}
+
+/// Clears its own rectangle before painting the copy. Painted directly onto
+/// the shared surface (rather than composited from a scratch layer by
+/// `TuiStack`), a `Color::Reset` background alone would leave the starfield's
+/// glyphs showing through the blank cells; this restores the stack's
+/// opaque-rectangle semantics without its per-layer buffers.
+struct ZeroStateOpaqueOverlay {
+    child: Box<dyn TuiElement>,
+    size: Option<TuiSize>,
+}
+
+impl ZeroStateOpaqueOverlay {
+    fn new(child: Box<dyn TuiElement>) -> Self {
+        Self { child, size: None }
+    }
+}
+
+impl TuiElement for ZeroStateOpaqueOverlay {
+    fn layout(
+        &mut self,
+        constraint: TuiConstraint,
+        ctx: &mut TuiLayoutContext,
+        app: &AppContext,
+    ) -> TuiSize {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, ctx: &mut TuiLayoutContext, app: &AppContext) {
+        self.child.after_layout(ctx, app);
+    }
+
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        if let Some(size) = self.size {
+            for y in 0..size.height {
+                for x in 0..size.width {
+                    surface.set_cell(origin.offset(i32::from(x), i32::from(y)), Cell::default());
+                }
+            }
+        }
+        self.child.render(origin, surface, ctx);
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.child.origin()
+    }
+
+    fn present(&mut self, ctx: &mut TuiPresentationContext<'_>) {
+        self.child.present(ctx);
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &TuiEvent,
+        event_ctx: &mut TuiEventContext<'_>,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, event_ctx, app)
+    }
+}
+
+/// A zero-state-specific stack whose children are known to paint sparsely or
+/// explicitly fill their visible rectangle. Painting them directly avoids the
+/// generic stack's full-screen scratch buffers and transparency scans.
+struct ZeroStateLayers {
+    children: [Box<dyn TuiElement>; 3],
+    child_sizes: [TuiSize; 3],
+    size: Option<TuiSize>,
+    origin: Option<TuiScreenPoint>,
+}
+
+impl ZeroStateLayers {
+    fn new(
+        starfield: Box<dyn TuiElement>,
+        animation: Box<dyn TuiElement>,
+        overlay: Box<dyn TuiElement>,
+    ) -> Self {
+        Self {
+            children: [starfield, animation, overlay],
+            child_sizes: [TuiSize::ZERO; 3],
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl TuiElement for ZeroStateLayers {
+    fn layout(
+        &mut self,
+        constraint: TuiConstraint,
+        ctx: &mut TuiLayoutContext,
+        app: &AppContext,
+    ) -> TuiSize {
+        let mut content_size = TuiSize::ZERO;
+        for (child, child_size) in self.children.iter_mut().zip(&mut self.child_sizes) {
+            *child_size = child.layout(constraint, ctx, app);
+            content_size = TuiSize::new(
+                content_size.width.max(child_size.width),
+                content_size.height.max(child_size.height),
+            );
+        }
+        let size = constraint.clamp(content_size);
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, ctx: &mut TuiLayoutContext, app: &AppContext) {
+        for child in &mut self.children {
+            child.after_layout(ctx, app);
+        }
+    }
+
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        let screen_origin = ctx.scene_point(origin);
+        self.origin = Some(screen_origin);
+        let Some(size) = self.size else {
+            return;
+        };
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
+        for (child, child_size) in self.children.iter_mut().zip(self.child_sizes) {
+            let child_size = TuiSize::new(
+                child_size.width.min(size.width),
+                child_size.height.min(size.height),
+            );
+            let child_bounds = TuiScreenRect::new(screen_origin, child_size);
+            ctx.with_scene_layer(
+                TuiClipBounds::BoundedByActiveLayerAnd(child_bounds),
+                |ctx| child.render(origin, surface, ctx),
+            );
+        }
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.origin
+    }
+
+    fn present(&mut self, ctx: &mut TuiPresentationContext<'_>) {
+        for child in &mut self.children {
+            child.present(ctx);
+        }
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &TuiEvent,
+        event_ctx: &mut TuiEventContext<'_>,
+        app: &AppContext,
+    ) -> bool {
+        for child in self.children.iter_mut().rev() {
+            if child.dispatch_event(event, event_ctx, app) {
+                return true;
+            }
+        }
+        false
+    }
 }
 
 /// Assembles the text column overlaid on top of the animation layer: the
@@ -573,7 +797,10 @@ fn render_project_context_body(
     let mut rule_files: Vec<String> = Vec::new();
     if let Some(rules) = rules {
         for rule in &rules.active_rules {
-            if let Some(name) = rule.path.file_name().map(|n| n.to_string_lossy().into_owned())
+            if let Some(name) = rule
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
                 && !rule_files.iter().any(|file| *file == name)
             {
                 rule_files.push(name);

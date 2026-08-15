@@ -17,7 +17,7 @@ use warpui_core::elements::tui::{
 
 use super::{
     ANIMATION_PANEL_COLS, LEFT_COLUMN_COLS, autoupdate_status_label, build_zero_state_layout,
-    build_zero_state_text_column, mcp_status_label,
+    build_zero_state_stack_layout, build_zero_state_text_column, mcp_status_label,
 };
 use crate::autoupdate::TuiAutoupdateStatus;
 use crate::zero_state_animation::{
@@ -156,6 +156,48 @@ fn dense_star_layer(width: usize, height: usize) -> Box<dyn TuiElement> {
         .collect::<Vec<_>>()
         .join("\n");
     TuiText::new(stars).finish()
+}
+
+fn static_zero_state_layers(
+    width: u16,
+    height: u16,
+) -> (
+    Box<dyn TuiElement>,
+    Box<dyn TuiElement>,
+    Box<dyn TuiElement>,
+) {
+    (
+        dense_star_layer(usize::from(width), usize::from(height)),
+        TuiText::new("animation").finish(),
+        TuiText::new("copy here\n\nsecond line").finish(),
+    )
+}
+
+/// `ZeroStateLayers` (the direct compositor) must paint byte-for-byte what the
+/// generic `TuiStack` composition it replaced painted, at every size.
+#[test]
+fn direct_zero_state_layers_match_scratch_composition() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            for (width, height) in [(60, 12), (80, 24), (120, 40), (240, 80)] {
+                let (stars, animation, overlay) = static_zero_state_layers(width, height);
+                let direct = render_to_buffer(
+                    build_zero_state_layout(stars, animation, overlay),
+                    ctx,
+                    width,
+                    height,
+                );
+                let (stars, animation, overlay) = static_zero_state_layers(width, height);
+                let scratch = render_to_buffer(
+                    build_zero_state_stack_layout(stars, animation, overlay),
+                    ctx,
+                    width,
+                    height,
+                );
+                assert_eq!(direct, scratch, "layout differs at {width}x{height}");
+            }
+        });
+    });
 }
 
 /// The copy block gets an opaque rectangle sized to its own content: stars are
