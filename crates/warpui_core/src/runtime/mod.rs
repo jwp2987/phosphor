@@ -295,8 +295,11 @@ where
     /// loop marks itself dirty once it passes.
     pending_repaint: Option<Instant>,
     /// Whether the host terminal currently has focus. Timed animation repaints
-    /// are suspended while false, but ordinary invalidations may still draw.
+    /// may be suspended while false, but ordinary invalidations may still draw.
     focused: bool,
+    /// Whether timed repaints should be suspended while the host terminal is
+    /// unfocused. Disabled by default so focus-based suspension is opt-in.
+    freeze_repaints_when_unfocused: bool,
     /// Restores the terminal when the runtime is dropped (the `enter` path).
     /// Held only for its `Drop`.
     _terminal_guard: Option<TuiTerminalGuard>,
@@ -339,6 +342,7 @@ where
             last_size: None,
             pending_repaint: None,
             focused: true,
+            freeze_repaints_when_unfocused: false,
             _terminal_guard: None,
         }
     }
@@ -386,7 +390,7 @@ where
         if self.last_size != Some(size) {
             self.dirty.set(true);
         }
-        if self.focused
+        if should_schedule_repaints(self.focused, self.freeze_repaints_when_unfocused)
             && self
                 .pending_repaint
                 .is_some_and(|deadline| deadline <= Instant::now())
@@ -399,11 +403,12 @@ where
         }
         let screen = &mut self.screen;
         let requested_repaint = app.update(|ctx| screen.draw(ctx))?;
-        self.pending_repaint = if self.focused {
-            requested_repaint
-        } else {
-            None
-        };
+        self.pending_repaint =
+            if should_schedule_repaints(self.focused, self.freeze_repaints_when_unfocused) {
+                requested_repaint
+            } else {
+                None
+            };
         self.last_size = Some(size);
         Ok(())
     }
@@ -423,7 +428,9 @@ where
                     }
                     CrosstermEvent::FocusLost => {
                         self.focused = false;
-                        self.pending_repaint = None;
+                        if self.freeze_repaints_when_unfocused {
+                            self.pending_repaint = None;
+                        }
                     }
                     _ => {}
                 }
@@ -540,7 +547,9 @@ pub struct TuiDriverHandle {
     _task: ForegroundTask,
     /// The pending element-requested repaint timer, if any (see
     /// [`draw_and_schedule_repaint`]). Dropping it cancels the timer.
-    _repaint_timer: Rc<RefCell<Option<ForegroundTask>>>,
+    repaint_timer: Rc<RefCell<Option<ForegroundTask>>>,
+    focused: Rc<Cell<bool>>,
+    freeze_repaints_when_unfocused: Rc<Cell<bool>>,
     _reader: thread::JoinHandle<()>,
     /// Tells the reader thread to stop reading further events/probes at its
     /// next loop boundary, checked before teardown restores the terminal.
@@ -561,6 +570,14 @@ impl TuiDriverHandle {
     /// Whether standalone modifier press/release reporting is active.
     pub fn modifier_key_lifecycle_enabled(&self) -> bool {
         self._guard.modifier_key_lifecycle_enabled()
+    }
+
+    /// Controls whether timed repaints stop while the host terminal is unfocused.
+    pub fn set_freeze_repaints_when_unfocused(&mut self, freeze: bool) {
+        self.freeze_repaints_when_unfocused.set(freeze);
+        if freeze && !self.focused.get() {
+            self.repaint_timer.borrow_mut().take();
+        }
     }
 }
 
@@ -604,6 +621,7 @@ pub fn spawn_tui_driver<T: TuiView>(
     root_view: ViewHandle<T>,
     probe: Option<TuiProbe>,
     report_modifier_key_lifecycle: bool,
+    freeze_repaints_when_unfocused: bool,
 ) -> io::Result<TuiDriverHandle> {
     let guard = TuiTerminalGuard::enter(report_modifier_key_lifecycle)?;
 
@@ -627,6 +645,7 @@ pub fn spawn_tui_driver<T: TuiView>(
     // one for its own deadline — or clears it when nothing is animating.
     let repaint_timer: Rc<RefCell<Option<ForegroundTask>>> = Rc::default();
     let focused = Rc::new(Cell::new(true));
+    let freeze_repaints_when_unfocused = Rc::new(Cell::new(freeze_repaints_when_unfocused));
 
     // Redraw whenever the window is invalidated. `update_windows` invokes this at
     // the end of every `flush_effects`, so any `notify()` repaints. (The callback
@@ -636,8 +655,15 @@ pub fn spawn_tui_driver<T: TuiView>(
         let screen = screen.clone();
         let repaint_timer = repaint_timer.clone();
         let focused = focused.clone();
+        let freeze_repaints_when_unfocused = freeze_repaints_when_unfocused.clone();
         ctx.on_window_invalidated(window_id, move |_, ctx| {
-            if let Err(error) = draw_and_schedule_repaint(&screen, &repaint_timer, &focused, ctx) {
+            if let Err(error) = draw_and_schedule_repaint(
+                &screen,
+                &repaint_timer,
+                &focused,
+                &freeze_repaints_when_unfocused,
+                ctx,
+            ) {
                 log::error!(
                     "{:#}",
                     anyhow::Error::new(error).context("failed to draw a TUI frame")
@@ -653,7 +679,13 @@ pub fn spawn_tui_driver<T: TuiView>(
     // returning `Err` here drops `guard` (restoring the terminal) and lets the
     // caller surface the error, rather than leaving a live raw-mode session with
     // no usable frame.
-    draw_and_schedule_repaint(&screen, &repaint_timer, &focused, ctx)?;
+    draw_and_schedule_repaint(
+        &screen,
+        &repaint_timer,
+        &focused,
+        &freeze_repaints_when_unfocused,
+        ctx,
+    )?;
 
     let weak_app = ctx.weak_app();
     let (sender, receiver) = async_channel::unbounded::<CrosstermEvent>();
@@ -686,6 +718,7 @@ pub fn spawn_tui_driver<T: TuiView>(
     let dispatch_screen = screen.clone();
     let dispatch_repaint_timer = repaint_timer.clone();
     let dispatch_focused = focused.clone();
+    let dispatch_freeze_repaints_when_unfocused = freeze_repaints_when_unfocused.clone();
     let task = ctx.foreground_executor().spawn(async move {
         while let Ok(event) = receiver.recv().await {
             let Some(mut app) = weak_app.upgrade() else {
@@ -694,6 +727,7 @@ pub fn spawn_tui_driver<T: TuiView>(
             let screen = dispatch_screen.clone();
             let repaint_timer = dispatch_repaint_timer.clone();
             let focused = dispatch_focused.clone();
+            let freeze_repaints_when_unfocused = dispatch_freeze_repaints_when_unfocused.clone();
             // Dispatch reuses the shared screen's cached element tree (so embedded
             // child views resolve their elements). Edits queue effects that flush
             // when this `update` returns — firing the invalidation callback to
@@ -708,7 +742,9 @@ pub fn spawn_tui_driver<T: TuiView>(
                         }
                         CrosstermEvent::FocusLost => {
                             focused.set(false);
-                            repaint_timer.borrow_mut().take();
+                            if freeze_repaints_when_unfocused.get() {
+                                repaint_timer.borrow_mut().take();
+                            }
                         }
                         _ => {}
                     }
@@ -723,7 +759,9 @@ pub fn spawn_tui_driver<T: TuiView>(
 
     Ok(TuiDriverHandle {
         _task: task,
-        _repaint_timer: repaint_timer,
+        repaint_timer,
+        focused,
+        freeze_repaints_when_unfocused,
         _reader: reader,
         reader_shutdown,
         probe_lifecycle_lock,
@@ -820,37 +858,51 @@ fn draw_and_schedule_repaint<T: TuiView, R: TuiTerminal + 'static>(
     screen: &Rc<RefCell<TuiScreen<T, R>>>,
     timer_slot: &Rc<RefCell<Option<ForegroundTask>>>,
     focused: &Rc<Cell<bool>>,
+    freeze_repaints_when_unfocused: &Rc<Cell<bool>>,
     ctx: &mut AppContext,
 ) -> io::Result<()> {
     let deadline = screen.borrow_mut().draw(ctx)?;
-    let timer = deadline.filter(|_| focused.get()).map(|deadline| {
-        let screen = screen.clone();
-        let focused = Rc::clone(focused);
-        // Weak, or the slot (held by the task) and the task (held by the slot)
-        // would keep each other alive.
-        let weak_slot = Rc::downgrade(timer_slot);
-        let weak_app = ctx.weak_app();
-        ctx.foreground_executor().spawn(async move {
-            let now = Instant::now();
-            if deadline > now {
-                Timer::after(deadline - now).await;
-            }
-            let (Some(mut app), Some(timer_slot)) = (weak_app.upgrade(), weak_slot.upgrade())
-            else {
-                return;
-            };
-            app.update(move |ctx| {
-                // The draw below replaces the slot, dropping this task's own
-                // handle; `async_task` defers destruction, so this in-flight
-                // poll completes normally.
-                if let Err(error) = draw_and_schedule_repaint(&screen, &timer_slot, &focused, ctx) {
-                    log::error!("failed to draw a TUI frame: {error}");
+    let timer = deadline
+        .filter(|_| should_schedule_repaints(focused.get(), freeze_repaints_when_unfocused.get()))
+        .map(|deadline| {
+            let screen = screen.clone();
+            let focused = Rc::clone(focused);
+            let freeze_repaints_when_unfocused = Rc::clone(freeze_repaints_when_unfocused);
+            // Weak, or the slot (held by the task) and the task (held by the slot)
+            // would keep each other alive.
+            let weak_slot = Rc::downgrade(timer_slot);
+            let weak_app = ctx.weak_app();
+            ctx.foreground_executor().spawn(async move {
+                let now = Instant::now();
+                if deadline > now {
+                    Timer::after(deadline - now).await;
                 }
-            });
-        })
-    });
+                let (Some(mut app), Some(timer_slot)) = (weak_app.upgrade(), weak_slot.upgrade())
+                else {
+                    return;
+                };
+                app.update(move |ctx| {
+                    // The draw below replaces the slot, dropping this task's own
+                    // handle; `async_task` defers destruction, so this in-flight
+                    // poll completes normally.
+                    if let Err(error) = draw_and_schedule_repaint(
+                        &screen,
+                        &timer_slot,
+                        &focused,
+                        &freeze_repaints_when_unfocused,
+                        ctx,
+                    ) {
+                        log::error!("failed to draw a TUI frame: {error}");
+                    }
+                });
+            })
+        });
     *timer_slot.borrow_mut() = timer;
     Ok(())
+}
+
+fn should_schedule_repaints(focused: bool, freeze_repaints_when_unfocused: bool) -> bool {
+    focused || !freeze_repaints_when_unfocused
 }
 
 /// The alternate-screen + raw-mode operations a [`RawModeGuard`] toggles.

@@ -48,10 +48,11 @@ use std::time::Duration;
 use instant::Instant;
 use tempfile::TempDir;
 use warp::settings::{
-    TuiZeroStateExtrusionDepthSetting, TuiZeroStateObject, TuiZeroStateObjectSetting,
-    TuiZeroStateRotationPeriodSeconds, TuiZeroStateRotationPeriodSecondsSetting,
-    TuiZeroStateSettings, TuiZeroStateShowAnimationSetting, TuiZeroStateShowChangelogSetting,
-    TuiZeroStateShowMcpSetting, TuiZeroStateShowProjectInfoSetting,
+    TuiZeroStateExtrusionDepthSetting, TuiZeroStateFreezeAnimationWhenUnfocusedSetting,
+    TuiZeroStateObject, TuiZeroStateObjectSetting, TuiZeroStateRotationPeriodSeconds,
+    TuiZeroStateRotationPeriodSecondsSetting, TuiZeroStateSettings,
+    TuiZeroStateShowAnimationSetting, TuiZeroStateShowChangelogSetting, TuiZeroStateShowMcpSetting,
+    TuiZeroStateShowProjectInfoSetting,
 };
 use warp_core::settings::Setting as _;
 use warpui::{EntityIdMap, SingletonEntity as _};
@@ -668,6 +669,8 @@ fn settings_model_reloads_only_object_changes() {
                 show_project_info: TuiZeroStateShowProjectInfoSetting::new(None),
                 show_mcp: TuiZeroStateShowMcpSetting::new(None),
                 show_animation: TuiZeroStateShowAnimationSetting::new(None),
+                freeze_animation_when_unfocused:
+                    TuiZeroStateFreezeAnimationWhenUnfocusedSetting::new(None),
             });
             ZeroStateAnimationConfig::register(ctx);
         });

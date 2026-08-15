@@ -220,7 +220,9 @@ impl TuiZeroStateView {
                     | TuiZeroStateSettingsChangedEvent::TuiZeroStateRotationPeriodSecondsSetting {
                         ..
                     }
-                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateExtrusionDepthSetting {
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateExtrusionDepthSetting { .. }
+                    // Handled by the driver, wired in `session::init`.
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateFreezeAnimationWhenUnfocusedSetting {
                         ..
                     } => {}
                 }

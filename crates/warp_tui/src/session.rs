@@ -13,9 +13,10 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use clap::error::ErrorKind;
 use inquire::{InquireError, Password, PasswordDisplayMode};
-use warp::settings::TuiThemeSettings;
+use warp::settings::{TuiThemeSettings, TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
 use warp::tui_export::{Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
+use warp_core::settings::Setting as _;
 use warpui::SingletonEntity as _;
 use warpui_core::platform::{TerminationMode, WindowStyle};
 use warpui_core::runtime::spawn_tui_driver;
@@ -282,16 +283,37 @@ fn init(
         },
         |_| RootTuiView::new(),
     );
+    let freeze_repaints_when_unfocused = *TuiZeroStateSettings::as_ref(ctx)
+        .freeze_animation_when_unfocused
+        .value();
     match spawn_tui_driver(
         ctx,
         window_id,
         root.clone(),
         Some(probe),
         REPORT_MODIFIER_KEY_LIFECYCLE,
+        freeze_repaints_when_unfocused,
     ) {
         Ok(driver) => {
             let sessions =
                 ctx.add_singleton_model(|_| TuiSessions::new(driver, exit_summary, resume_token));
+            let sessions_for_zero_state_settings = sessions.clone();
+            ctx.subscribe_to_model(
+                &TuiZeroStateSettings::handle(ctx),
+                move |settings, event, ctx| {
+                    let TuiZeroStateSettingsChangedEvent::TuiZeroStateFreezeAnimationWhenUnfocusedSetting {
+                        ..
+                    } = event
+                    else {
+                        return;
+                    };
+                    let freeze = *settings.as_ref(ctx).freeze_animation_when_unfocused.value();
+                    sessions_for_zero_state_settings.update(ctx, |sessions, _| {
+                        sessions.set_freeze_repaints_when_unfocused(freeze);
+                    });
+                    ctx.invalidate_all_views();
+                },
+            );
             let orchestration = TuiOrchestrationModel::register(ctx);
             TuiSessions::wire_orchestration(&sessions, &orchestration, ctx);
             TuiPaneGroup::register(ctx);
