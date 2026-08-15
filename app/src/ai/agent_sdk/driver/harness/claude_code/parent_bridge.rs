@@ -709,7 +709,20 @@ async fn run_parent_bridge_forever(
     // full bridge restart (e.g. after a crash), so a fresh process resumes from
     // the last persisted sequence instead of replaying the whole run's history.
     let since_sequence = read_parent_bridge_event_cursor(&state_dir).unwrap_or(0);
-    let config = AgentEventDriverConfig::retry_forever(vec![run_id.clone()], since_sequence);
+    // Bounded, not `retry_forever`: ported from the pin (`02b53fcd8`, `6f24ea230`,
+    // #13800). Once this bridge's stream fails permanently it must stop rather
+    // than reconnect forever -- and in this fork the failure IS permanent by
+    // construction, since the only `AgentEventStreamClient` ever wired up here
+    // is `DisabledAgentEventStreamClient` (see `agent_events/mod.rs`), which
+    // always errors ("RTC endpoint is removed"). Before this fix, every run
+    // with a `parent_bridge` (gated on `task_id: Option<AmbientAgentTaskId>` at
+    // `claude_code.rs::ClaudeHarnessRunner::new` -- currently always `None` in
+    // this fork, see `DECLINED.md`'s Bedrock-OIDC row) would have spawned a
+    // background task that retried every `permanent_error_backoff_steps`
+    // (30s) forever for the life of the process, since a generic `anyhow!`
+    // error carries no HTTP status and so never trips the auth-specific
+    // counter -- only `max_retry_duration`'s wall-clock backstop bounds it.
+    let config = AgentEventDriverConfig::bounded_run_ids(vec![run_id.clone()], since_sequence);
     let source = ProviderAgentEventSource::new(agent_event_stream_client);
     let mut consumer = MessageBridgeEventConsumer { run_id, state_dir };
     run_agent_event_driver(source, config, &mut consumer).await
