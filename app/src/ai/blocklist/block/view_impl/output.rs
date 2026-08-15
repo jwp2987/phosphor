@@ -2083,10 +2083,22 @@ fn create_formatted_text_for_grep(
         .as_ref()
         .is_some_and(|status| status.is_queued());
 
+    // NOT COMPILED -- builds are suspended. Ported from upstream `d793e7f939`
+    // ("Fix doubled file separators in grep & file-glob tool-call headers
+    // (Windows)", #13160): rendering the raw tool-call `path` argument
+    // verbatim doubled up path separators in the displayed header on
+    // Windows (the model's path and the shell's native separator disagree).
+    // `shell_native_absolute_path` is the same helper already used above in
+    // this file (e.g. for `read_files`' file locations) to normalize a
+    // tool-supplied path into the host shell's native format before display.
     let display_path = if path == "." {
-        "the current directory"
+        "the current directory".to_string()
     } else {
-        path
+        shell_native_absolute_path(
+            path,
+            props.shell_launch_data,
+            props.current_working_directory,
+        )
     };
 
     let formatted_text = if queries.len() == 1 {
@@ -2193,8 +2205,17 @@ fn create_formatted_text_for_file_glob(
         .as_ref()
         .is_some_and(|status| status.is_queued());
 
+    // NOT COMPILED -- builds are suspended. Ported from upstream `d793e7f939`
+    // (#13160) -- see the comment in `create_formatted_text_for_grep` above,
+    // same fix applied to the file-glob tool-call header.
     let path = path
-        .map(ToOwned::to_owned)
+        .map(|path| {
+            shell_native_absolute_path(
+                path,
+                props.shell_launch_data,
+                props.current_working_directory,
+            )
+        })
         .unwrap_or_else(|| crate::t!("common-current-directory"));
 
     let formatted_text = if patterns.len() == 1 {
