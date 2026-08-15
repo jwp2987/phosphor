@@ -14,7 +14,7 @@
 
 use warp::tui_export::{
     AIConversationId, BlocklistAIHistoryModel, Harness, StartAgentExecutionMode,
-    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, 
+    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome,
     register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;
@@ -203,7 +203,7 @@ fn snapshot_is_shared_across_tree_and_filters_conversations_without_sessions() {
 /// events into the coordinator, mirroring how a real caller (once one
 /// exists -- see [`super::TuiOrchestrationModel`]'s module doc) would wire
 /// both `StartAgentExecutorEvent` variants to `dispatch_create_agent` /
-/// `cleanup_failed_child`.
+/// `cleanup_child`.
 fn add_relayed_executor(
     app: &mut App,
     parent_session_id: TuiSessionId,
@@ -223,7 +223,7 @@ fn add_relayed_executor(
                     );
                 }
                 StartAgentExecutorEvent::CleanupFailedChildLaunch { conversation_id } => {
-                    orchestration.cleanup_failed_child(conversation_id, ctx);
+                    orchestration.cleanup_child(conversation_id, ctx);
                 }
             });
         });

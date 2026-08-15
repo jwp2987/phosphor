@@ -7,7 +7,7 @@
 //! (`app/src/ai/blocklist/action_model/execute/start_agent.rs`, re-exported
 //! via `warp::tui_export`) -- the claim below that it "does not exist
 //! anywhere in this fork" is stale. [`dispatch_create_agent`],
-//! [`fail_child_request`] and [`cleanup_failed_child`] are built and wired to
+//! [`fail_child_request`] and [`cleanup_child`] are built and wired to
 //! it, so a TUI-dispatched
 //! `StartAgentExecutionMode::Local` request now resolves as a clean failure
 //! (matching the pin's own "not supported outside of dogfood" behaviour for
@@ -25,6 +25,14 @@
 //!   genuinely local replacement (materializing a real TUI session the way
 //!   `app/src/pane_group/pane/local_harness_launch.rs` already does for the
 //!   GUI's hidden panes) is future work, not a mechanical trim of this file.
+//!
+//!   **Scoped to the executor-dispatched path only.** Child agents *do*
+//!   materialize in this fork by the user-invoked route: `/orchestrate`
+//!   drives [`crate::pane_group::TuiPaneGroup::spawn_local_child_agents`],
+//!   which creates a real hidden PTY-backed session per child and registers
+//!   its conversation into the topology. The snapshot below, the tab bar it
+//!   feeds, and the kill paths are therefore live code against real
+//!   children, not staged-but-unreachable scaffolding.
 //! - **Everything remote**: `begin_remote_child_launch`,
 //!   `register_remote_child_session`, `finish_remote_child_launch`,
 //!   `OrchestrationEventStreamer`/`handle_streamer_event`. Declined
@@ -58,7 +66,8 @@ use std::collections::{HashMap, HashSet};
 use warp::tui_export::{
     AIConversationId, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus,
     StartAgentExecutionMode, StartAgentExecutor, StartAgentRequest,
-    descendant_conversations_in_pill_order, orchestration_root_conversation_id,
+    descendant_conversation_ids_in_spawn_order, descendant_conversations_in_pill_order,
+    orchestration_root_conversation_id,
 };
 use warpui::SingletonEntity;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle};
@@ -67,24 +76,48 @@ use crate::orchestration_tab_bar::{TuiOrchestrationChild, TuiOrchestrationSnapsh
 use crate::session_registry::{TuiSessionId, TuiSessions};
 use crate::tab_bar::TuiTabBarPagingState;
 
+/// Session-lifecycle work the orchestration model cannot perform inline.
+///
+/// Both variants are deferred rather than executed in place because the
+/// caller is frequently the very view being torn down: the ctrl-c kill path
+/// runs inside `TuiTerminalSessionView`'s own update, so reaching back into
+/// that same view (to cancel its conversation) or dropping its session would
+/// re-enter a live borrow. `TuiSessions::wire_orchestration` drains these
+/// once the originating update has completed.
+///
+/// The pin carries a third, cloud-only variant pair for remote child launch
+/// (`BeginRemoteChildLaunch`/`FinishRemoteChildLaunch`); those are declined
+/// here (`DECLINED.md` #290) and `is_remote_child` is permanently false.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TuiOrchestrationEvent {
+    /// Cancel the child's in-flight work through its own session view, then
+    /// finish the teardown that was interrupted to get here.
+    KillLocalChildSession {
+        session_id: TuiSessionId,
+        conversation_id: AIConversationId,
+    },
+    /// Drop a retained child session from the registry.
+    RemoveChildSession(TuiSessionId),
+}
+
 /// The TUI's orchestration singleton. See the module doc above for what was
 /// cut relative to the pin.
 pub(crate) struct TuiOrchestrationModel {
     /// Paging intent shared by the per-session tab-bar views.
     tab_bar_paging: TuiTabBarPagingState<AIConversationId>,
     /// Session ids subscribed to a conversation's agent-event stream, keyed
-    /// by the session consuming them. Always empty in this port: nothing
-    /// yet materializes a session for a dispatched child (see the module
-    /// doc), so nothing ever calls `register_event_consumer`. Kept so
-    /// [`cleanup_failed_child`]'s contract matches the pin's, and so a
+    /// by the session consuming them. Always empty in this port: agent-event
+    /// streams are a server-push concept and there is no streamer here
+    /// (`DECLINED.md` #290), so nothing ever calls `register_event_consumer`.
+    /// Kept so [`cleanup_child`]'s contract matches the pin's, and so a
     /// failed dispatch can be asserted not to have registered one.
     ///
-    /// [`cleanup_failed_child`]: Self::cleanup_failed_child
+    /// [`cleanup_child`]: Self::cleanup_child
     event_consumers_by_session: HashMap<TuiSessionId, HashSet<AIConversationId>>,
 }
 
 impl Entity for TuiOrchestrationModel {
-    type Event = ();
+    type Event = TuiOrchestrationEvent;
 }
 
 impl SingletonEntity for TuiOrchestrationModel {}
@@ -293,22 +326,119 @@ impl TuiOrchestrationModel {
         });
     }
 
-    /// Tears down the ephemeral conversation of a child that failed at the
-    /// launch stage (the executor's `CleanupFailedChildLaunch`). Nothing in
-    /// this port materializes a session for a `Local` request (see the
-    /// module doc), so unlike the pin there is no session-side half to tear
-    /// down here yet -- only the failed-child conversation itself.
-    pub(crate) fn cleanup_failed_child(
+    /// Deletes a child conversation and drops the retained TUI session that
+    /// was running it. Used both by the executor's `CleanupFailedChildLaunch`
+    /// (a child that never got off the ground) and by [`Self::kill_child_agent`].
+    ///
+    /// Adapted from the pin, which reads the session out of its own
+    /// `child_session_by_conversation` map. This fork has no such map on the
+    /// model: `/orchestrate` children are materialized by
+    /// [`crate::pane_group::TuiPaneGroup`], and the authoritative index from a
+    /// conversation to the session hosting it is
+    /// [`TuiSessions::session_ids_by_conversation`] -- the same index
+    /// [`Self::snapshot`] navigates by, so a killable tab and a resolvable
+    /// session are the same set by construction. It is read **before** the
+    /// delete: the index is derived from live history, and `TuiPaneGroup`
+    /// separately drops its own tracking entry in response to
+    /// `DeletedConversation`, so a lookup afterwards would race both and leak
+    /// the hidden PTY session.
+    pub(crate) fn cleanup_child(
         &mut self,
         conversation_id: &AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        let terminal_view_id =
-            BlocklistAIHistoryModel::as_ref(ctx).terminal_view_id_for_conversation(conversation_id);
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let child_session_id = TuiSessions::as_ref(ctx)
+            .session_ids_by_conversation(history)
+            .get(conversation_id)
+            .copied();
+        let terminal_view_id = history.terminal_view_id_for_conversation(conversation_id);
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
             history.delete_conversation(*conversation_id, terminal_view_id, ctx);
         });
+        if let Some(session_id) = child_session_id {
+            ctx.emit(TuiOrchestrationEvent::RemoveChildSession(session_id));
+        }
         ctx.notify();
+    }
+
+    /// Kills a child agent: cancels any in-flight execution, deletes the
+    /// conversation from history, and drops the retained TUI session.
+    /// Equivalent to the GUI's `KillAgentConversation` path.
+    ///
+    /// Two of the pin's three steps are dropped as cloud, not overlooked:
+    ///
+    /// - The pin first tombstones the conversation via
+    ///   `OrchestrationEventStreamer::mark_conversation_killed` so late SSE
+    ///   events cannot resurrect a killed child. There is no event streamer
+    ///   here (`DECLINED.md` #290) and therefore no late server events to
+    ///   tombstone against -- a child's state only ever changes from inside
+    ///   this process.
+    /// - The pin then branches on `is_remote_child` to best-effort cancel the
+    ///   server-side task through `ServerApiProvider`/`cancel_ambient_agent_task`.
+    ///   `is_remote_child` is permanently false in this fork, so only the
+    ///   local arm survives.
+    ///
+    /// **Divergence worth knowing:** the pin's local child is an in-app Oz
+    /// conversation, so cancelling its controller *is* the kill. This fork's
+    /// `/orchestrate` children are PTY-backed `claude` CLI processes
+    /// ([`crate::pane_group::TuiPaneGroup::spawn_local_child_agents`]), so the
+    /// controller cancel is usually a no-op and the actual kill is dropping
+    /// the session, which drops its terminal manager and the child process
+    /// with it. The cancel is kept regardless: children registered without a
+    /// harness do run in-app, and the cancel path additionally tears down any
+    /// computer-use background session for the conversation (see
+    /// `BlocklistAIController::cancel_conversation_progress`).
+    pub(crate) fn kill_child_agent(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        // Cancel in-flight execution BEFORE deletion, while the conversation
+        // is still resolvable.
+        let is_in_progress = BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| {
+                let status = conversation.status();
+                status.is_in_progress() || status.is_blocked()
+            });
+        if is_in_progress {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let child_session_id = TuiSessions::as_ref(ctx)
+                .session_ids_by_conversation(history)
+                .get(&conversation_id)
+                .copied();
+            if let Some(session_id) = child_session_id {
+                // Cancelling reaches into the child's own view, which may be
+                // the view currently driving this update. Defer it; the
+                // handler resumes the teardown below while the conversation
+                // is still available.
+                ctx.emit(TuiOrchestrationEvent::KillLocalChildSession {
+                    session_id,
+                    conversation_id,
+                });
+                return;
+            }
+        }
+
+        self.cleanup_child(&conversation_id, ctx);
+    }
+
+    /// Kills every descendant spawned by `conversation_id`, including nested
+    /// descendants. Children are removed deepest-first so each retained
+    /// session can tear down while its ancestry is still available.
+    pub(crate) fn kill_descendant_agents(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let descendant_ids = descendant_conversation_ids_in_spawn_order(
+            BlocklistAIHistoryModel::as_ref(ctx),
+            conversation_id,
+        );
+        for descendant_id in descendant_ids.into_iter().rev() {
+            self.kill_child_agent(descendant_id, ctx);
+        }
     }
 }
 

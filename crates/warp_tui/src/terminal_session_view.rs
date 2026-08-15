@@ -94,7 +94,8 @@ use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{
     ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, TuiOrchestrationSnapshot,
     TuiOrchestrationTabNavigationAction, orchestration_tab_bar_config,
-    register_orchestration_surface_bindings,
+    register_orchestration_surface_bindings, render_orchestration_child_selected_tab_footer,
+    render_orchestration_tab_footer,
 };
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use ai::agent::action_result::RequestFileEditsResult;
@@ -158,6 +159,9 @@ const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
 const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
+/// The footer hint shown while the ctrl-c kill-child window is armed.
+/// Replaces the exit hint when viewing a child agent conversation.
+pub(crate) const CTRL_C_KILL_CHILD_HINT: &str = "ctrl-c again to kill child agent";
 /// The footer hint shown while the agent is manually tagged into a running
 /// command, telling the user how to give input back to the command. Ported
 /// from the pin (`02b53fcd8`, `RUNNING_COMMAND_DETACH_HINT`) as part of #390 --
@@ -740,6 +744,10 @@ pub(crate) struct TuiTerminalSessionView {
     /// Armed by a ctrl-c press; a second press while armed exits the TUI.
     /// The footer shows [`CTRL_C_EXIT_HINT`] while armed.
     exit_confirmation: ExitConfirmation,
+    /// When set, the `exit_confirmation` window was armed to kill this child
+    /// rather than exit the TUI. The footer shows [`CTRL_C_KILL_CHILD_HINT`]
+    /// while armed, and a second ctrl-c within the window kills the child.
+    child_kill_armed_conversation: Option<AIConversationId>,
     /// Last-response exchanges whose completed summary has been hidden with
     /// `/cost`. A later response has a new exchange ID and starts visible,
     /// matching the GUI's per-last-block state.
@@ -1087,8 +1095,61 @@ impl TuiTerminalSessionView {
             focus_changed = true;
             self.focus_current_owner(ctx);
         }
+        // Disarm the child-kill window when the child is no longer reachable.
+        if !tabs_are_available && self.child_kill_armed_conversation.is_some() {
+            self.exit_confirmation.disarm();
+            self.child_kill_armed_conversation = None;
+            focus_changed = true;
+        }
         if availability_changed || focus_changed {
             ctx.notify();
+        }
+    }
+
+    /// If the orchestration snapshot shows a child tab selected (not the root),
+    /// returns that child's conversation id. Used to decide between the kill
+    /// path and the normal exit path on a ctrl-c press.
+    fn is_child_conversation_selected(&self, ctx: &AppContext) -> Option<AIConversationId> {
+        let snapshot = self.compute_orchestration_tab_snapshot(ctx)?;
+        (snapshot.selected_conversation_id != snapshot.root_conversation_id)
+            .then_some(snapshot.selected_conversation_id)
+    }
+
+    /// Kills a child agent: cancels its in-flight work, deletes the
+    /// conversation from history, drops its retained TUI session, and returns
+    /// focus to the root/main orchestration agent. Equivalent to the GUI's
+    /// Kill agent path.
+    fn kill_child_agent(&mut self, conversation_id: AIConversationId, ctx: &mut ViewContext<Self>) {
+        // Clear any armed kill or exit window.
+        self.exit_confirmation.disarm();
+        self.child_kill_armed_conversation = None;
+        // Return tab bar to unfocused state before the session is removed so
+        // the focus fall-back lands on the right surface.
+        self.orchestration_tabs_focused = false;
+        // Resolve the root session id BEFORE the kill clears the snapshot.
+        // We bypass `focus_conversation_session` because after the child is
+        // deleted the parent is no longer an orchestration root (no children),
+        // and that helper gates on the root check.
+        let root_session_id = self
+            .compute_orchestration_tab_snapshot(ctx)
+            .and_then(|snapshot| {
+                let history = BlocklistAIHistoryModel::as_ref(ctx);
+                TuiSessions::as_ref(ctx)
+                    .session_ids_by_conversation(history)
+                    .get(&snapshot.root_conversation_id)
+                    .copied()
+            });
+        // Cancel + delete + remove session via the orchestration model.
+        TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+            model.kill_child_agent(conversation_id, ctx);
+        });
+        // Focus the root session directly using the pre-kill resolved id.
+        if let Some(session_id) = root_session_id {
+            TuiSessions::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.focus_session(session_id, ctx);
+            });
+        } else {
+            self.set_orchestration_tab_focus(false, ctx);
         }
     }
 
@@ -1845,8 +1906,8 @@ impl TuiTerminalSessionView {
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
-        // confirmation; the ctrl-c buffer clear leaves the buffer empty, so the
-        // window it arms survives its own clear.
+        // confirmation (and any child-kill window); the ctrl-c buffer clear
+        // leaves the buffer empty, so the window it arms survives its own clear.
         let editor_for_footer = input_editor_model.clone();
         ctx.subscribe_to_model(&input_editor_model, move |view, _, event, ctx| {
             let CodeEditorModelEvent::ContentChanged { origin } = event else {
@@ -1859,6 +1920,7 @@ impl TuiTerminalSessionView {
                 .is_empty();
             if !is_empty {
                 view.exit_confirmation.disarm();
+                view.child_kill_armed_conversation = None;
             }
             view.handle_input_content_changed(origin.from_user(), ctx);
             ctx.notify();
@@ -2253,6 +2315,7 @@ impl TuiTerminalSessionView {
             pending_history_command_workflow_data: None,
             orchestration_tab_bar,
             orchestration_tabs_focused: false,
+            child_kill_armed_conversation: None,
             agent_terminal_control_lock: false,
         };
         if let Some(failure) = initial_zero_state_load_failure {
@@ -2868,10 +2931,22 @@ impl TuiTerminalSessionView {
         self.show_success_hint(COPY_SELECTION_HINT.to_owned(), ctx);
     }
 
-    /// Handles a ctrl-c press: a second press within [`CTRL_C_EXIT_WINDOW`]
-    /// exits the TUI; otherwise one contextual action runs — cancel the running
-    /// conversation if there is one, else clear the input — and the exit
-    /// confirmation is (re-)armed, surfacing [`CTRL_C_EXIT_HINT`] in the footer.
+    /// Handles a ctrl-c press.
+    ///
+    /// Priority order:
+    /// 1. Cancel in-flight conversation restore.
+    /// 2. Dismiss an open read-only sheet, then handle terminal-use takeover.
+    /// 3. **Kill-child path (tab-bar focused + child tab selected):** a single
+    ///    ctrl-c immediately kills the selected child agent and returns focus to
+    ///    the root/main orchestration agent.
+    /// 4. **Kill-child path (viewing a child conversation without tab focus):**
+    ///    the first ctrl-c arms a 1-second kill window and shows a child-kill
+    ///    footer hint; a second ctrl-c within the window kills the child agent.
+    /// 5. **Exit path (root/main agent or no orchestration):** a second press
+    ///    within [`CTRL_C_EXIT_WINDOW`] exits the TUI; otherwise one contextual
+    ///    action runs — cancel the running conversation if there is one, else
+    ///    clear the input — and the exit confirmation is (re-)armed, surfacing
+    ///    [`CTRL_C_EXIT_HINT`] in the footer.
     fn handle_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
         if self.cancel_conversation_restore(ctx) {
             return;
@@ -2897,9 +2972,48 @@ impl TuiTerminalSessionView {
         });
         if self.handle_terminal_use_interrupt(ctx) {
             self.exit_confirmation.disarm();
+            self.child_kill_armed_conversation = None;
             ctx.notify();
             return;
         }
+
+        // Path 1: tab-bar focused + child tab selected → single ctrl-c kills.
+        if self.orchestration_tabs_focused
+            && let Some(child_id) = self.is_child_conversation_selected(ctx)
+        {
+            self.kill_child_agent(child_id, ctx);
+            return;
+        }
+
+        // Path 2: tab-bar not focused, viewing a child conversation.
+        // First ctrl-c arms the kill window; second within ~1s kills the child.
+        if !self.orchestration_tabs_focused
+            && let Some(child_id) = self.is_child_conversation_selected(ctx)
+        {
+            let now = Instant::now();
+            if self.child_kill_armed_conversation == Some(child_id)
+                && self.exit_confirmation.should_exit(now)
+            {
+                // Second ctrl-c: kill the child and return to main agent.
+                self.kill_child_agent(child_id, ctx);
+                return;
+            }
+            // First ctrl-c: arm the kill window with the child-specific hint.
+            self.child_kill_armed_conversation = Some(child_id);
+            let window_expires_at = self.exit_confirmation.arm(now);
+            ctx.spawn(Timer::after(CTRL_C_EXIT_WINDOW), move |view, _, ctx| {
+                if view.exit_confirmation.disarm_expired(window_expires_at) {
+                    view.child_kill_armed_conversation = None;
+                    ctx.notify();
+                }
+            });
+            ctx.notify();
+            return;
+        }
+
+        // Path 3 (original): root/main agent or no orchestration.
+        // Ensure any stale kill window is cleared before the normal exit path.
+        self.child_kill_armed_conversation = None;
         let now = Instant::now();
         if self.exit_confirmation.should_exit(now) {
             ctx.terminate_app(TerminationMode::ForceTerminate, None);
@@ -2940,7 +3054,7 @@ impl TuiTerminalSessionView {
 
     /// Cancels the surface's running conversation (in-flight stream or pending
     /// tool actions), returning whether there was one to cancel.
-    fn cancel_active_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+    pub(crate) fn cancel_active_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let terminal_surface_id = ctx.view_id();
         self.ai_controller.update(ctx, |controller, ctx| {
             let conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
@@ -3022,12 +3136,15 @@ impl TuiTerminalSessionView {
         // Replacing hints occupy the entire status row, in the existing
         // priority order: ctrl-c → loading → transient.
         if self.exit_confirmation.is_armed() {
-            return TuiFlex::row().child(
-                TuiText::new(CTRL_C_EXIT_HINT)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
+            // When the kill-child window is armed, show the child-specific hint
+            // so the user knows the next ctrl-c will kill the child agent rather
+            // than exiting the whole TUI.
+            let hint = if self.child_kill_armed_conversation.is_some() {
+                CTRL_C_KILL_CHILD_HINT
+            } else {
+                CTRL_C_EXIT_HINT
+            };
+            return TuiFlex::row().child(TuiText::new(hint).with_style(muted).truncate().finish());
         }
         if matches!(
             &self.conversation_restore_state,
@@ -4077,6 +4194,19 @@ impl TuiTerminalSessionView {
                 {
                     self.show_transient_hint(NEW_CONVERSATION_COMMAND_RUNNING_HINT.to_owned(), ctx);
                     return;
+                }
+                // Starting a new conversation abandons the current one; take its
+                // whole orchestration subtree down with it rather than leaving
+                // orphaned child agents (and, here, their hidden PTY sessions)
+                // running with no bar left to reach them from.
+                if let Some(conversation_id) = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                {
+                    TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.kill_descendant_agents(conversation_id, ctx);
+                    });
                 }
                 self.cancel_active_conversation(ctx);
                 let terminal_surface_id = ctx.view_id();
@@ -5227,8 +5357,34 @@ impl TuiTerminalSessionView {
             .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
             .finish(),
         );
-        let footer = self.render_footer(ctx).finish();
+        let footer = if self.orchestration_tabs_focused {
+            self.render_orchestration_tab_footer(builder, ctx)
+        } else {
+            self.render_footer(ctx).finish()
+        };
         content.child(TuiConstrainedBox::new(footer).with_max_rows(1).finish())
+    }
+
+    /// Footer shown while orchestration tabs own keyboard focus.
+    ///
+    /// The dispatch above is new here, not part of the ported commit: this
+    /// fork built `render_orchestration_tab_footer` but never routed the
+    /// composer footer through it, so while the `Agents:` bar had focus the
+    /// row still showed the ordinary session footer. The pin routes it in
+    /// `append_composer_and_footer`'s equivalent; without the routing the
+    /// kill hint below would be unreachable.
+    fn render_orchestration_tab_footer(
+        &self,
+        builder: &TuiUiBuilder,
+        ctx: &AppContext,
+    ) -> Box<dyn TuiElement> {
+        // Show the kill hint when a child tab is selected so the user knows
+        // that a single ctrl-c will terminate that agent.
+        if self.is_child_conversation_selected(ctx).is_some() {
+            render_orchestration_child_selected_tab_footer(builder)
+        } else {
+            render_orchestration_tab_footer(builder)
+        }
     }
 
     fn handle_typeahead_event(&mut self, ctx: &mut ViewContext<Self>) {
