@@ -252,6 +252,40 @@ highest-value thirty done properly beats six hundred done badly — and say in t
 round report where you stopped, because an unfinished sweep that reads as
 finished is how this class of bug survives a re-pin in the first place.
 
+### The failure this method invites, and the only defence against it
+
+**An upstream fix can be WRONG here.** The fork has diverged, and a fix written
+against upstream's semantics can be a no-op, or actively harmful, against the
+fork's. The triage above tells you a hunk is missing; it cannot tell you whether
+you should want it.
+
+Observed 2026-08-15, and caught only by luck and diligence. An agent ported
+`730a4acc0` (#13167, "respect count before gg"), which adds a `saturating_sub(1)`
+row conversion. Plausible, well-documented, upstream-sourced, and it made the
+fork's code look more like the pin. It was **wrong**: this fork's `Buffer`
+prefixes every document with a zero-width `BlockMarker`, so its rows are already
+1-indexed, and upstream's conversion would have *introduced* the off-by-one it
+exists to fix. The agent found this by tracing `test_dimension_conversions` and
+`test_vim_jump_to_end_and_beginning` through real buffer semantics, then reverted
+its own change and kept only the comments and two regression tests.
+
+Nothing in the mechanical method would have caught that. The grep said MISSING,
+which was true. The upstream commit message said "fixes an off-by-one", which was
+true upstream. Both facts pointed the wrong way.
+
+So: **before porting, establish what the fork's code actually does, not what
+upstream's did.** Read the fork's own tests for the surrounding behaviour — they
+encode the fork's semantics, and they are the fastest way to discover a
+divergence. If a port makes an existing fork test look wrong, that is the signal
+to stop and investigate, never the signal to change the test (`AGENTS.md`
+§5.6/§5.10/§5.11).
+
+A corollary worth budgeting for: this is why findings from an area's *own* owner
+are worth more than findings from a neighbour. On the same day, a cross-area
+report of a WSL freeze bug (#12492) was refuted outright by the agent that owned
+that code — the fix had been present all along. A cross-area finding is a
+hypothesis until the owning area checks it.
+
 Cloud is out of scope: this fork dropped it, so a cloud commit is not a partial
 port. `DECLINED.md` lists the recurring false positives (`remote_server`,
 `computer_use`, Grok OAuth) that get mislabelled as cloud — `remote_server` in
