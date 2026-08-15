@@ -106,7 +106,16 @@ impl super::SecureStorage for SecureStorage {
 
     fn remove_value(&self, key: &str) -> Result<(), Error> {
         let storage_file = self.storage_file(key);
-        std::fs::remove_file(storage_file).map_err(Error::from)
+        // Map a missing backing file to `Error::NotFound` (matching the macOS and Linux
+        // implementations) rather than a generic I/O error, so callers that special-case
+        // `Error::NotFound` for an unset key behave consistently on Windows.
+        std::fs::remove_file(storage_file).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Error::NotFound
+            } else {
+                Error::IOError(e)
+            }
+        })
     }
 }
 
