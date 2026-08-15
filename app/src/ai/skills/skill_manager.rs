@@ -672,6 +672,44 @@ impl SkillManager {
         ctx.emit(SkillManagerEvent::InventoryChanged);
     }
 
+    /// Registers skills loaded from the `WARP_SKILL_DIRS` environment variable's
+    /// directories as personal (home) tier skills.
+    ///
+    /// Unlike [`Self::handle_skills_added`], this method does not require each skill's
+    /// path to follow a known provider directory structure. Skills are stored directly
+    /// under the local home directory bucket so they are always in scope — the same
+    /// precedence as `~/.agents/skills` and other personal skills.
+    ///
+    /// Call this after reading skills with [`ai::skills::read_skills_for_skills_dirs`].
+    pub fn add_skills_dirs_skills(
+        &mut self,
+        skills: Vec<ParsedSkill>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(home_dir) = dirs::home_dir() else {
+            log::warn!("WARP_SKILL_DIRS: home directory unavailable; cannot register env skills");
+            return;
+        };
+        let home_dir = LocalOrRemotePath::Local(home_dir);
+        for skill in skills {
+            self.directory_skills
+                .entry(home_dir.clone())
+                .or_default()
+                .insert(skill.path.clone());
+            self.skills_by_name
+                .entry(skill.name.clone())
+                .or_default()
+                .insert(skill.path.clone());
+            self.skills_by_path.insert(skill.path.clone(), skill);
+        }
+
+        // Not in the pin: this fork's skill *inventory* panel is driven by
+        // `SkillManagerEvent::InventoryChanged` (see this file's header), so env-loaded
+        // skills must announce themselves the same way `handle_skills_added` does or they
+        // would be indexed but invisible in the panel.
+        ctx.emit(SkillManagerEvent::InventoryChanged);
+    }
+
     fn handle_skills_deleted(&mut self, paths: Vec<LocalOrRemotePath>, ctx: &mut ModelContext<Self>) {
         if paths.is_empty() {
             return;

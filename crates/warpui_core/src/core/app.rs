@@ -4663,55 +4663,63 @@ impl AppContext {
                 self.task_done(task_id);
             }
             TaskCallback::ViewFromStream {
-                window_id,
                 view_id,
                 mut on_item,
                 on_done,
             } => {
+                // A stream can outlive a cross-window view transfer, so resolve the view's
+                // current window when each item arrives.
+                //
                 // GUI views live in `window.views`; Zap keeps TUI views in the
                 // `tui`-feature-gated `window.tui_views` map. Dispatch to whichever
                 // holds this view — omitting the TUI fallback silently terminates the
                 // relay task (dropping its stream, e.g. the PTY wakeup receiver).
-                let gui_view = self
-                    .windows
-                    .get_mut(&window_id)
-                    .and_then(|w| w.views.remove(&view_id));
-                if let Some(mut view) = gui_view {
-                    on_item(view.as_any_mut(), output, self, window_id, view_id);
-                    self.windows
-                        .get_mut(&window_id)
-                        .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
-                        .views
-                        .insert(view_id, view);
-                } else {
-                    #[cfg(feature = "tui")]
-                    let tui_view = self
+                if let Some(current_window_id) = self.view_to_window.get(&view_id).copied() {
+                    let gui_view = self
                         .windows
-                        .get_mut(&window_id)
-                        .and_then(|w| w.tui_views.remove(&view_id));
-                    #[cfg(not(feature = "tui"))]
-                    let tui_view: Option<()> = None;
-
-                    #[cfg(feature = "tui")]
-                    if let Some(mut view) = tui_view {
-                        on_item(view.as_any_mut(), output, self, window_id, view_id);
+                        .get_mut(&current_window_id)
+                        .and_then(|w| w.views.remove(&view_id));
+                    if let Some(mut view) = gui_view {
+                        on_item(view.as_any_mut(), output, self, current_window_id, view_id);
                         self.windows
-                            .get_mut(&window_id)
+                            .get_mut(&current_window_id)
                             .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
-                            .tui_views
+                            .views
                             .insert(view_id, view);
                     } else {
-                        result = Err(anyhow!(
-                            "Unable to retrieve view when relaying task output from stream"
-                        ));
+                        #[cfg(feature = "tui")]
+                        let tui_view = self
+                            .windows
+                            .get_mut(&current_window_id)
+                            .and_then(|w| w.tui_views.remove(&view_id));
+                        #[cfg(not(feature = "tui"))]
+                        let tui_view: Option<()> = None;
+
+                        #[cfg(feature = "tui")]
+                        if let Some(mut view) = tui_view {
+                            on_item(view.as_any_mut(), output, self, current_window_id, view_id);
+                            self.windows
+                                .get_mut(&current_window_id)
+                                .ok_or_else(|| anyhow!("Unable to retrieve window for view"))?
+                                .tui_views
+                                .insert(view_id, view);
+                        } else {
+                            result = Err(anyhow!(
+                                "Unable to retrieve view when relaying task output from stream"
+                            ));
+                        }
+                        #[cfg(not(feature = "tui"))]
+                        {
+                            let _ = tui_view;
+                            result = Err(anyhow!(
+                                "Unable to retrieve view when relaying task output from stream"
+                            ));
+                        }
                     }
-                    #[cfg(not(feature = "tui"))]
-                    {
-                        let _ = tui_view;
-                        result = Err(anyhow!(
-                            "Unable to retrieve view when relaying task output from stream"
-                        ));
-                    }
+                } else {
+                    result = Err(anyhow!(
+                        "Unable to retrieve window when relaying task output from stream"
+                    ));
                 }
                 // Streams go through different code paths compared to Futures.
                 // Even if the stream halts after this call, we still need to
@@ -4719,7 +4727,6 @@ impl AppContext {
                 self.task_callbacks.insert(
                     task_id,
                     TaskCallback::ViewFromStream {
-                        window_id,
                         view_id,
                         on_item,
                         on_done,
@@ -4746,33 +4753,38 @@ impl AppContext {
                 }
             }
             TaskCallback::ViewFromStream {
-                window_id,
                 view_id,
                 on_done: callback,
                 ..
             } => {
-                let gui_view = self
-                    .windows
-                    .get_mut(&window_id)
-                    .and_then(|w| w.views.remove(&view_id));
-                if let Some(mut view) = gui_view {
-                    callback(view.as_any_mut(), self, window_id, view_id);
+                // Completion must use the same current window as item delivery.
+                let current_window_id = self.view_to_window.get(&view_id).copied();
+                let gui_view = match current_window_id {
+                    Some(current_window_id) => self
+                        .windows
+                        .get_mut(&current_window_id)
+                        .and_then(|w| w.views.remove(&view_id)),
+                    None => None,
+                };
+                if let (Some(current_window_id), Some(mut view)) = (current_window_id, gui_view) {
+                    callback(view.as_any_mut(), self, current_window_id, view_id);
                     self.windows
-                        .get_mut(&window_id)
+                        .get_mut(&current_window_id)
                         .expect("Window should exist.")
                         .views
                         .insert(view_id, view);
                 } else {
                     // Zap TUI views live in the `tui`-gated `tui_views` map.
                     #[cfg(feature = "tui")]
-                    if let Some(mut view) = self
-                        .windows
-                        .get_mut(&window_id)
-                        .and_then(|w| w.tui_views.remove(&view_id))
+                    if let Some(current_window_id) = current_window_id
+                        && let Some(mut view) = self
+                            .windows
+                            .get_mut(&current_window_id)
+                            .and_then(|w| w.tui_views.remove(&view_id))
                     {
-                        callback(view.as_any_mut(), self, window_id, view_id);
+                        callback(view.as_any_mut(), self, current_window_id, view_id);
                         self.windows
-                            .get_mut(&window_id)
+                            .get_mut(&current_window_id)
                             .expect("Window should exist.")
                             .tui_views
                             .insert(view_id, view);

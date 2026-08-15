@@ -96,6 +96,16 @@ impl SkillManager {
         false
     }
 
+    /// No-op counterpart of `skill_manager::SkillManager::add_skills_dirs_skills`
+    /// for builds without a local filesystem: there are no directories to read
+    /// `WARP_SKILL_DIRS` skills out of, so there is nothing to register.
+    pub fn add_skills_dirs_skills(
+        &mut self,
+        _skills: Vec<ParsedSkill>,
+        _ctx: &mut ModelContext<Self>,
+    ) {
+    }
+
     pub fn best_supported_provider(
         &self,
         skill: &SkillDescriptor,
