@@ -59,8 +59,9 @@ pub(super) struct MessageBridge {
 /// directory (`claude_code/wake_driver.rs` doesn't exist here -- see
 /// `DECLINED.md`). It's still real behavior: `ClaudeHarnessRunner::cleanup`
 /// decides between the two variants from local signals only (final-save
-/// success, no mid-run failure, clean exit, and the CLI session not still
-/// `InProgress`/`Blocked`), see `claude_code.rs::should_preserve_parent_bridge`.
+/// success, no mid-run failure, clean exit, and the CLI session not
+/// `InProgress`/`Blocked`/`Failed`), see
+/// `claude_code.rs::should_preserve_parent_bridge`.
 pub(super) enum MessageBridgeCleanupDisposition {
     RemoveState,
     PreserveState,
