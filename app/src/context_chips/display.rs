@@ -294,7 +294,18 @@ impl PromptDisplay {
     pub fn on_pane_focus_changed(&mut self, focused: bool, ctx: &mut ViewContext<Self>) {
         self.pane_is_focused = focused;
         let new_chips = self.collect_chips(ctx);
-        self.reset_chips(&new_chips, ctx);
+        // Upstream e1ae7cb3c ("Guard reset_chips reload in focus and repo-path updates",
+        // #12360): unguarded, `reset_chips` clears and rebuilds every `DisplayChip` view
+        // (see `reset_chips` below) on EVERY focus change -- e.g. every pane/tab switch --
+        // even when the chips themselves haven't changed. That tears down chip views that
+        // may have an open menu (silently closing it) and causes a visible flicker, for no
+        // reason on the (very common) case where nothing about the chips actually changed.
+        // `handle_prompt_change` already gates its `reset_chips` call the same way; this
+        // brings focus/repo-path updates in line with it. NOT COMPILED -- builds are
+        // suspended; verified by reading only.
+        if self.check_if_chip_values_have_changed(&new_chips, ctx) {
+            self.reset_chips(&new_chips, ctx);
+        }
         ctx.notify();
     }
 
@@ -359,7 +370,11 @@ impl PromptDisplay {
     pub fn update_repo_path(&mut self, repo_path: Option<PathBuf>, ctx: &mut ViewContext<Self>) {
         self.current_repo_path = repo_path;
         let new_chips = self.collect_chips(ctx);
-        self.reset_chips(&new_chips, ctx);
+        // See the comment in `on_pane_focus_changed` above (upstream e1ae7cb3c, #12360) --
+        // same unguarded reset_chips issue, this time on every repo-path update.
+        if self.check_if_chip_values_have_changed(&new_chips, ctx) {
+            self.reset_chips(&new_chips, ctx);
+        }
         ctx.notify();
     }
 }
