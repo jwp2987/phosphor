@@ -191,11 +191,13 @@ fn powershell_read_command_embeds_escaped_path_without_args() {
 // --- Deferred function/builtin name sets (#586) -----------------------------
 //
 // The pin (`02b53fcd8` and `42effe840` alike) ships this machinery with no
-// tests of its own, so these are new rather than ported. They pin down the two
+// tests of its own, so these are new rather than ported. They pin down the
 // properties the port has to hold: the loaders are a no-op for every shell
-// whose bootstrap already reports the complete set, and for the one shell that
+// whose bootstrap already reports the complete set; for the one shell that
 // needs them the deferred names reach `function_names` / `builtin_names` /
-// `top_level_commands` without duplicating the bootstrap snapshot.
+// `top_level_commands` without duplicating the bootstrap snapshot; and a run
+// that reports failure contributes nothing, however much it wrote to stdout
+// first.
 
 /// A `CommandExecutor` that records what it was asked to run and answers with
 /// canned output, so the deferred loaders can be driven without a live shell.
@@ -206,6 +208,40 @@ struct RecordingCommandExecutor {
     commands: Mutex<Vec<String>>,
 }
 
+/// The stdout of a PowerShell enumeration that failed partway through.
+///
+/// It is non-empty on purpose, and that is the whole point of it.
+/// `load_deferred_name_set` decodes `CommandOutput::to_string`, which reads
+/// **stdout** whatever the exit status, so an empty-stdout failure fixture
+/// cannot tell the exit-status guard apart from its absence: the parse arm
+/// would run on `""`, add nothing, and every assertion would still hold. The
+/// pairing modelled here — bytes on stdout *and* a failure status — is what the
+/// executors that carry this command actually produce: `LocalCommandExecutor`
+/// pipes stdout and the exit status apart, and `RemoteServerExecutor` forwards
+/// both as the remote reported them. On a pty-backed session PowerShell's error
+/// record shares the success stream, which is how the prose below lands in the
+/// same buffer as the names, wrapped to the terminal width as a real console
+/// wraps it.
+///
+/// Every line is name-shaped, because the loader keeps *whole lines*:
+/// `Invoke-Partial` and `Get-Bogus` are indistinguishable from a successful
+/// enumeration's output, and the diagnostic lines lead with `Get-Command`, a
+/// genuine cmdlet. Delete the exit-status guard and all of them become
+/// completion candidates — which is precisely the regression this fixture
+/// exists to see.
+const FAILED_ENUMERATION_STDOUT: &str = "\
+Get-Command : The term 'Get-Bogus' is not recognized as the name of a cmdlet,
+function, script file, or operable program. Check the spelling of the name, or
+if a path was included, verify that the path is correct and try again.
+At line:1 char:11
++ $names = Get-Command -CommandType Function | Where-Object { -not $_ ...
++          ~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (Get-Bogus:String) [Get-Command],
+   CommandNotFoundException
+Invoke-Partial
+Get-Bogus
+";
+
 impl RecordingCommandExecutor {
     fn succeeding(stdout: &str) -> Arc<Self> {
         Arc::new(Self {
@@ -215,9 +251,11 @@ impl RecordingCommandExecutor {
         })
     }
 
+    /// A command that failed *after* writing to stdout — see
+    /// [`FAILED_ENUMERATION_STDOUT`] for why the stdout must not be empty.
     fn failing() -> Arc<Self> {
         Arc::new(Self {
-            stdout: String::new(),
+            stdout: FAILED_ENUMERATION_STDOUT.to_owned(),
             status: CommandExitStatus::Failure,
             commands: Mutex::new(Vec::new()),
         })
@@ -284,8 +322,12 @@ fn sorted<'a>(values: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
 fn deferred_function_names_are_merged_without_duplicating_the_bootstrap_set() {
     App::test((), |_app| async move {
         // The bootstrap snapshot already carried `prompt`; only the two names it
-        // did not carry should be added.
-        let executor = RecordingCommandExecutor::succeeding("prompt\nInvoke-Custom\nStart-Thing\n");
+        // did not carry should be added. The blank line is deliberate — a
+        // pty-captured enumeration picks up stray newlines, and without the
+        // loader's `!name.is_empty()` filter it would arrive as an empty
+        // completion candidate, so this is what makes that filter observable.
+        let executor =
+            RecordingCommandExecutor::succeeding("prompt\n\nInvoke-Custom\nStart-Thing\n");
         let session = session_for_shell(ShellType::PowerShell, executor.clone());
 
         session.load_all_function_names().await;
@@ -308,7 +350,9 @@ fn deferred_function_names_are_merged_without_duplicating_the_bootstrap_set() {
 #[test]
 fn deferred_builtin_names_are_merged_without_duplicating_the_bootstrap_set() {
     App::test((), |_app| async move {
-        let executor = RecordingCommandExecutor::succeeding("Get-Item\nGet-Custom\n");
+        // As with the function names above, the blank line keeps the loader's
+        // empty-line filter observable rather than assumed.
+        let executor = RecordingCommandExecutor::succeeding("Get-Item\n\nGet-Custom\n");
         let session = session_for_shell(ShellType::PowerShell, executor.clone());
 
         session.load_all_builtins().await;
@@ -358,6 +402,13 @@ fn deferred_name_set_is_loaded_at_most_once_per_session() {
         session.load_all_function_names().await;
         session.load_all_function_names().await;
 
+        // Sequential callers only. Dropping the shared-future cell entirely
+        // shows up here as a second recorded command, but replacing it with a
+        // "has `storage` been set yet?" check would not: this executor answers
+        // without ever yielding, so the first load always finishes before the
+        // second starts. Covering *concurrent* callers needs a fixture that can
+        // be held pending mid-command; see the note in `load_deferred_name_set`
+        // for the property that would then be under test.
         assert_eq!(executor.recorded().len(), 1);
         assert_eq!(
             sorted(session.function_names()),
@@ -375,7 +426,39 @@ fn a_failed_enumeration_leaves_the_bootstrap_names_intact() {
         session.load_all_function_names().await;
         session.load_all_builtins().await;
 
+        // Both loaders really did reach the shell. Without this the rest of the
+        // test would pass just as well on a session that never enumerated at
+        // all, which is not the property being pinned down.
+        assert_eq!(
+            executor.recorded(),
+            vec![
+                ShellType::PowerShell
+                    .shell_command_to_get_all_functions()
+                    .expect("PowerShell enumerates functions asynchronously")
+                    .to_owned(),
+                ShellType::PowerShell
+                    .shell_command_to_get_all_builtins()
+                    .expect("PowerShell enumerates builtins asynchronously")
+                    .to_owned(),
+            ]
+        );
+
         assert_eq!(sorted(session.function_names()), vec!["prompt"]);
         assert_eq!(sorted(session.builtin_names()), vec!["Get-Item"]);
+        // Nothing at all from the failed run, not even by way of
+        // `top_level_commands`, which merges both deferred sets.
+        assert_eq!(
+            sorted(session.top_level_commands()),
+            vec!["Get-Item", "prompt"]
+        );
+
+        // Checked line by line as well, so a regression names the text that
+        // leaked instead of only reporting a set that no longer matches.
+        for line in FAILED_ENUMERATION_STDOUT.lines() {
+            assert!(
+                !session.top_level_commands().any(|command| command == line),
+                "a failed enumeration's stdout became a completion candidate: {line:?}"
+            );
+        }
     });
 }
