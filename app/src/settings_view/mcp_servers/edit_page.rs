@@ -799,6 +799,29 @@ impl TypedActionView for MCPServersEditPageView {
                         return;
                     }
 
+                    // Upstream 51c380ce9 (#11297, "Fix MCP +Add path bypassing secret
+                    // redaction check"): this branch used to build `parsed_servers` above
+                    // and go straight to creating them, unlike the edit-existing path
+                    // (`parse_templatable_json`, above) which runs each parsed server
+                    // through `detect_secrets_in_templatable_mcp_server` before saving.
+                    // Net effect: pasting a secret into a freshly added MCP server via
+                    // "+ Add" skipped the local secret-redaction guard entirely, so the
+                    // actionable "This MCP server contains secrets..." toast never fired
+                    // here even with redaction enabled. NOT COMPILED -- builds are
+                    // suspended; verified by reading only.
+                    if parsed_servers
+                        .iter()
+                        .try_for_each(|parsed_server| {
+                            self.detect_secrets_in_templatable_mcp_server(
+                                ctx,
+                                &parsed_server.templatable_mcp_server,
+                            )
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+
                     for parsed_server in parsed_servers {
                         TemplatableMCPServerManager::handle(ctx).update(
                             ctx,
