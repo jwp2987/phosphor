@@ -202,6 +202,61 @@ against `script/known_test_failures.txt`. A re-pin that ports tests will move
 that baseline legitimately; a re-pin that *breaks* something moves it too.
 Diff the baseline deliberately and explain every line that moved.
 
+## Phase 6.5 — the partial-port sweep
+
+**Do this every re-pin. It is the highest-yield check in this document, and it
+exists because the failure it catches is invisible to every other gate.**
+
+A commit ported *incompletely* passes review, passes CI, and often ships with
+its own upstream test — because the test was ported too and cannot detect what
+was dropped. The queue in Phase 2 asks "was this file touched?"; it does not ask
+"did every hunk of that commit actually land?" Nothing else here does either.
+
+Five instances were found in one sitting on 2026-08-15, all predating that day:
+
+| upstream | what landed | what did not |
+|---|---|---|
+| `01778efe` (#12362) | doc comment, new method, caller change, **and the test** | `Arc<DashMap>` → bare `DashMap`, the one load-bearing line |
+| `88c344e2` (#25354, **[Security]**) | the `session.rs` escaping site | the `remote_command_executor.rs` site |
+| `1b65a8b9` (#14746) | — | `find -L`, never taken |
+| `0d24d2cf` (#12465) | — | control-master reuse, never taken |
+| `0ed36638` (#9444) | — | `$CDPATH` completion, never taken |
+
+The `01778efe` case is the shape to fear: our own sweep `c3b86368` ported it
+while aiming at *test coverage*, dragged the surrounding production code along,
+and dropped one line. The ported test exercised a single context and never
+cloned, so it passed identically with and without the fix. The consequence was
+one SSH channel per context-chip clone per directory, exhausting the remote's
+`MaxSessions` and printing `channel N: open failed` into the user's live shell.
+
+### The method
+
+Mechanical; script it, do not eyeball hundreds of commits:
+
+1. `git log --format=%H <old-pin>..<new-pin> -- <path>` for candidates.
+2. Per commit, `git show --stat`; drop files absent from this fork — but check
+   for a **renamed** equivalent first (Warp→Zap→Phosphor renames are pervasive,
+   and a rename reads as "absent" if you do not).
+3. Per surviving file, take 1–3 **distinctive** added lines from the diff —
+   identifiers, string literals, whole expressions; never whitespace or `use`
+   lines — and grep this fork's copy.
+4. Classify: all present = ported. None present = never ported (a parity gap,
+   a *different* decision — record it, do not fix it in this pass).
+   **Some present = PARTIAL. Investigate by hand.**
+5. Expect false positives on every PARTIAL: the fork rewrote the area, code
+   moved, or it diverged on purpose. **Check `DECLINED.md` and `git log` for a
+   deliberate decision before "fixing" anything.**
+
+Prioritise security fixes, then correctness/panic/race/leak fixes. The
+highest-value thirty done properly beats six hundred done badly — and say in the
+round report where you stopped, because an unfinished sweep that reads as
+finished is how this class of bug survives a re-pin in the first place.
+
+Cloud is out of scope: this fork dropped it, so a cloud commit is not a partial
+port. `DECLINED.md` lists the recurring false positives (`remote_server`,
+`computer_use`, Grok OAuth) that get mislabelled as cloud — `remote_server` in
+particular is the local SSH extension and **is** in scope.
+
 ## Traps
 
 Each of these has actually cost time here.
@@ -220,6 +275,10 @@ Each of these has actually cost time here.
   how often the agents' own confidence predictions were right — feed it.
 - **The gap grows at re-pin, by design.** Do not let it read as a regression in
   the status you write.
+- **A ported test does not prove a ported fix.** The test comes from the same
+  upstream commit and is usually written against the *behaviour*, not the
+  mechanism — so it passes whether or not the mechanism landed. Phase 6.5 exists
+  because of this; `01778efe` is the worked example.
 
 ## What this does not cover
 
