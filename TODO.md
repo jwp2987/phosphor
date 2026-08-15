@@ -2329,11 +2329,20 @@ here, so this list stays a work ledger rather than a history.
       **Both existing tests pass** because they assert on
       `snapshot.rows[].state_suffix`, never on rendered lines — so any fix needs
       a render-level test or it reverts silently. ~15 lines, three files.
-- [ ] **#582 — `CLIAgentEventType::StopFailure` missing**, so agent failure
+- [x] **#582 — `CLIAgentEventType::StopFailure` missing**, so agent failure
       never reaches the GUI status chip — for *every* integration, not just the
       TUI. Present at the OLD pin, so unported debt. Now asymmetric: the OSC 777
       publisher ported this round **emits** `stop_failure` with no consumer.
       ~8 files' exhaustive matches + a call on failure-chip semantics.
+      **FIXED, pending merge** — `repin-gap-stopfail`. The gap was wider than
+      filed: `CLIAgentSessionStatus::Failed` was missing too, so the variant
+      alone had nowhere to land. Four exhaustive matches over the status enum
+      were extended (`to_conversation_status`, `notifications/model.rs`,
+      `terminal/view.rs`, `agent_sdk/driver.rs`) plus the one over the event
+      type. Chip semantics follow the pin exactly: `Failed { .. }` →
+      `ConversationStatus::Error` regardless of `error_type`, latching until the
+      next `PromptSubmit` (no timer). Two stale comments claiming `Failed` was
+      cloud-only were corrected in place.
 - [ ] **#586 — shell completions never learn functions or builtins.**
       `Session::load_all_function_names` / `load_all_builtins` and the whole
       deferred name-set machinery exist at the old pin, absent here (verified 0
