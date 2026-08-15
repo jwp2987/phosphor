@@ -25859,9 +25859,14 @@ impl View for TerminalView {
                     );
                 }
 
+                // Upstream `427e1ab16f` "Clip terminal view column to prevent split-pane
+                // footer overflow" (#11099): without `Clipped`, a footer taller than its
+                // pane (e.g. a long queued-prompt list) overflows into the neighboring
+                // split pane instead of being clipped to this one. NOT COMPILED -- builds
+                // are suspended; verified by reading only.
                 let stack = Stack::new()
                     .with_constrain_absolute_children()
-                    .with_child(column.finish());
+                    .with_child(Clipped::new(column.finish()).finish());
                 if matches!(input_mode, InputMode::Waterfall) && !is_alt_screen_active {
                     self.render_waterfall_mode_background(&model, stack, app)
                 } else {
