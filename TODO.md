@@ -2378,6 +2378,47 @@ Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly*
       Related and already tracked separately: the Windows smoke suite above is
       at 5/19 with GUI bootstrap as the blocker.
 
+## HOMEBREW-MANAGED TUI UPDATES — SCOPE-DECISION 2026-08-15 (needs a cask identity)
+
+- [ ] Upstream `f4be4f692` (#14899) makes TUI autoupdate package-manager-aware:
+      a `Homebrew` arm on the install-method detection that only *checks* for a
+      newer version and renders `brew upgrade --cask <token>` instead of staging
+      an install, leaving Homebrew-owned files alone. The mechanism is sound and
+      non-cloud, and the fork's `crates/warp_tui/src/autoupdate.rs` still has the
+      pre-change shape it grafts onto (`InstallLayout::detect`,
+      `AutoupdateEligibility::Enabled(layout)`, `check_now`), so the port is
+      mechanically straightforward.
+
+      **It is blocked on a product decision, not on code.** Upstream keys the
+      detection on the binary `warp-tui-stable` sitting under
+      `Caskroom/warp-agent-cli`, and renders that cask token in a user-visible
+      status string. Porting those literals gives this fork permanently dead
+      code whose only tests can never fire, and — worse than dead — a status
+      line telling a Phosphor user to run a `brew` command that installs Warp.
+
+      What is missing, so the next person does not re-derive it:
+
+      1. **No Homebrew distribution exists for this fork at all.** Upstream's
+         companion PRs are a tap (`warpdotdev/homebrew-warp`, cask
+         `warp-agent-cli`) and an automated cask-bump job in
+         `warpdotdev/channel-versions`. Neither has a Phosphor counterpart, and
+         nothing in this tree references a tap, a cask, or `brew` as a
+         distribution channel.
+      2. **The binary name the detector keys on does not exist here.**
+         `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares
+         exactly one bin, `zap-tui-oss`. `src/bin/stable.rs` is present as
+         source but is deliberately undeclared — it needs `warp_channel_config`,
+         which this fork does not have.
+      3. **That name is itself in flux.** Unmerged branches rename
+         `zap-tui-oss` to `phosphor-tui-oss`. Choosing a cask token before that
+         lands means choosing twice.
+
+      To unblock, the maintainer needs to settle three things: whether Phosphor
+      distributes via Homebrew at all; if so, the tap repo and cask token; and
+      the release binary name after the zap→phosphor rename. **Do not invent a
+      cask name to make the port compile** — the token is a public identifier
+      and a user-visible string, not an implementation detail.
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is
