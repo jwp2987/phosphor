@@ -29,10 +29,28 @@ them — earlier versions were wrong in instructive ways.
 
 <!--
 This project is Phosphor — a BYOP terminal, forked from Warp via Zap/OpenWarp
-and evolving independently. The Zap -> Phosphor change is display/brand only:
-the app id (dev.zap.Zap), on-disk paths, keyring service, and binary names
-(zap-oss) are intentionally unchanged, so internal "zap" identifiers are
-expected. See specs/phosphor-rebrand/SCOPE.md for the layered plan.
+and evolving independently. See specs/phosphor-rebrand/SCOPE.md for the layered
+plan.
+
+CORRECTED 2026-08-15. This note used to say the rebrand was "display/brand
+only" and that the app id (dev.zap.Zap), on-disk paths, keyring service and
+binary names (zap-oss) were intentionally unchanged. That stopped being true at
+874c2f43d (layer 3), and leaving it stood the guidance on its head: an agent
+following it would "restore" the Zap app id and silently re-introduce #585.
+
+What is actually true now:
+  - The live app id is AppId::new("dev", "phosphor", "Phosphor")
+    (crates/warp_core/src/channel/state.rs). It roots ProjectDirs — data,
+    config, state, cache, themes, logs — AND ChannelState::data_domain(), which
+    is the keyring/Secret-Service service name, i.e. the API-key namespace.
+  - Binaries are phosphor-oss / phosphor-tui-oss.
+  - There is NO data migration. Losing local state on the rename was accepted
+    deliberately; see 874c2f43d and README.md's storage-identity section.
+  - Internal "zap" identifiers that remain are load-bearing compatibility
+    surfaces, not leftovers: persistence keys, X-Zap-* headers, the
+    \x1bP>|Zap(...) DCS reply, Software\Zap registry paths, and the
+    paths.rs "Zap" => "zap" legacy arm. Those stay. Display copy does not —
+    script/check_brand_strings enforces that boundary.
 
 DEV-ENVIRONMENT NOTE — command-signatures stub (address later):
   This working copy may contain a local, gitignored stub at
