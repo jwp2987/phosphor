@@ -77,18 +77,28 @@ impl StandardizedPath {
     /// to penalize hot paths.
     pub fn from_local_absolute_unchecked(path: &Path) -> Self {
         debug_assert!(
-            path.is_absolute(),
-            "from_local_absolute called with non-absolute path: {}",
-            path.display()
-        );
-        debug_assert!(
             path.to_str().is_some(),
             "from_local_absolute called with non-UTF-8 path: {}",
             path.display()
         );
         let path_str = path.to_str().unwrap_or_default();
         let typed = local_typed_path_buf(path_str);
-        Self(typed.normalize())
+        let normalized = typed.normalize();
+        // Check absoluteness via the encoding-aware `typed_path` path rather than
+        // `std::path::Path::is_absolute`. On `wasm32-unknown-unknown` (a target
+        // this workspace still builds for elsewhere — lsp, ai, editor,
+        // code_review, terminal/view all have `cfg(target_arch = "wasm32")`
+        // paths) std treats a Unix-rooted path like `/Users/...` as
+        // non-absolute: that target is neither `cfg(unix)` nor `wasi`, so std
+        // requires a Windows-style prefix. That spuriously tripped this assert
+        // in debug wasm builds for any genuinely-absolute Unix path.
+        // `typed_path` is correct on every target.
+        // Upstream: 97a9ff5f94548e2b66743d1d2d33ad7c84393f21 (#13552).
+        debug_assert!(
+            normalized.is_absolute(),
+            "from_local_absolute called with non-absolute path: {path_str}"
+        );
+        Self(normalized)
     }
 
     /// Create from a local path with full canonicalization (resolves
