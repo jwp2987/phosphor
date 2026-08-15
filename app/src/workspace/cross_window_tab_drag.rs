@@ -1307,28 +1307,38 @@ impl CrossWindowTabDrag {
             return DropResult::ClosePreviewOnly { preview_window_id };
         }
 
-        match WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) { Some(ws) => {
-            ws.update(ctx, |ws, ctx| {
-                ws.set_is_tab_drag_preview(false);
-                // The preview's `suppress_detach_panes_on_window_close` flag
-                // is latched to `true` by every forward handoff out of the
-                // preview (`prepare_for_transferred_tab_attach` in
-                // `execute_handoff_multi_tab_to_other`) and is *not* cleared
-                // by `reverse_handoff` for the multi-tab case (only
-                // `is_tab_drag_preview` is restored there). Promoting the
-                // preview to a permanent window without clearing this flag
-                // would leave a normal-looking window that silently skips
-                // pane-detach on its next user-initiated close.
-                ws.set_suppress_detach_panes_on_window_close(false);
-                ws.sync_window_button_visibility(ctx);
-                ws.update_titlebar_height(ctx);
-                ctx.notify();
-            });
-        } _ => {
+        // Upstream a612c9591 (#13409, "fix cross-window tab drag crash"): this
+        // used to fall through to `show_window_and_focus_app` and then return
+        // `CloseSourceWindow`/`RemoveSourceTab` keyed on `drag.source_tab_index()`
+        // even when the preview's workspace was already gone. The caller
+        // (`Workspace::handle_drop_result` in view.rs) trusted that index and
+        // called `remove_tab_without_undo` on it unconditionally, tearing out
+        // a bystander tab or panicking once the index was stale. Bail with
+        // `NoOp` instead so there is nothing left keyed on a workspace that no
+        // longer exists. NOT COMPILED -- builds are suspended; verified by
+        // reading only.
+        let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) else {
             log::warn!(
-                "tab_drag: finalize_preview_as_new_window no workspace for preview_wid={preview_window_id}"
+                "tab_drag: finalize_preview_as_new_window no workspace for preview_wid={preview_window_id} -> NoOp"
             );
-        }}
+            return DropResult::NoOp;
+        };
+        ws.update(ctx, |ws, ctx| {
+            ws.set_is_tab_drag_preview(false);
+            // The preview's `suppress_detach_panes_on_window_close` flag
+            // is latched to `true` by every forward handoff out of the
+            // preview (`prepare_for_transferred_tab_attach` in
+            // `execute_handoff_multi_tab_to_other`) and is *not* cleared
+            // by `reverse_handoff` for the multi-tab case (only
+            // `is_tab_drag_preview` is restored there). Promoting the
+            // preview to a permanent window without clearing this flag
+            // would leave a normal-looking window that silently skips
+            // pane-detach on its next user-initiated close.
+            ws.set_suppress_detach_panes_on_window_close(false);
+            ws.sync_window_button_visibility(ctx);
+            ws.update_titlebar_height(ctx);
+            ctx.notify();
+        });
         ctx.windows().show_window_and_focus_app(preview_window_id);
         Self::deferred_focus(preview_window_id, ctx);
 

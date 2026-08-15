@@ -23779,19 +23779,43 @@ impl Workspace {
             DropResult::RemoveSourceTab {
                 transferred_tab_index,
             } => {
+                // Upstream a612c9591 (#13409, "fix cross-window tab drag
+                // crash"): `transferred_tab_index` can be stale by the time
+                // this fires (e.g. the preview's workspace was already gone
+                // -- see `finalize_preview_as_new_window`'s `NoOp` bail).
+                // Removing on a stale index tore out a bystander tab or
+                // panicked in `remove_tab`; skip the removal when the index
+                // no longer names a real tab. NOT COMPILED -- builds are
+                // suspended; verified by reading only.
                 if let Some(tab) = self.tabs.get(transferred_tab_index) {
                     ctx.unsubscribe_to_view(&tab.pane_group);
+                } else {
+                    log::warn!(
+                        "tab_drag: handle_drop_result RemoveSourceTab stale index={transferred_tab_index} tabs_len={} (skipping remove)",
+                        self.tabs.len()
+                    );
                 }
-                self.remove_tab_without_undo(transferred_tab_index, ctx);
+                if transferred_tab_index < self.tabs.len() {
+                    self.remove_tab_without_undo(transferred_tab_index, ctx);
+                }
             }
             DropResult::RemoveSourceTabAndClosePreview {
                 transferred_tab_index,
                 preview_window_id,
             } => {
+                // See the NOT COMPILED note on `RemoveSourceTab` above --
+                // same stale-index guard, upstream a612c9591 (#13409).
                 if let Some(tab) = self.tabs.get(transferred_tab_index) {
                     ctx.unsubscribe_to_view(&tab.pane_group);
+                } else {
+                    log::warn!(
+                        "tab_drag: handle_drop_result RemoveSourceTabAndClosePreview stale index={transferred_tab_index} tabs_len={} (skipping remove)",
+                        self.tabs.len()
+                    );
                 }
-                self.remove_tab_without_undo(transferred_tab_index, ctx);
+                if transferred_tab_index < self.tabs.len() {
+                    self.remove_tab_without_undo(transferred_tab_index, ctx);
+                }
                 ctx.windows()
                     .close_window(preview_window_id, TerminationMode::ContentTransferred);
             }
