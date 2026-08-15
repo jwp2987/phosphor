@@ -7,6 +7,7 @@ use pathfinder_geometry::vector::vec2f;
 use rand::{distributions::Alphanumeric, thread_rng, Rng as _};
 use std::{
     collections::HashMap,
+    ops::Range,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
@@ -2377,7 +2378,34 @@ impl CodeDiffView {
                             file_path_str = rename.to_string_lossy().to_string();
                         }
                         let was_edited = diff.diff_view.as_ref(ctx).was_edited();
-                        let changed_lines = diff.diff_view.as_ref(ctx).changed_lines(ctx);
+                        // NOT COMPILED -- builds are suspended. Ported from upstream
+                        // `89f61b63ba` (#11987) -- see the doc comment on
+                        // `updated_file_contexts_from_editor_buffers` in
+                        // `request_file_edits.rs` for why this half of the fix matters too:
+                        // that consumer now trusts `FileLocations.lines` to decide whether
+                        // to send the whole file or just the changed ranges, so this
+                        // producer has to reliably populate it. The editor's own
+                        // `changed_lines(ctx)` is empty for a brand-new file (nothing to
+                        // diff against yet) or a fully-deleted one, even though the diff
+                        // itself clearly has content -- `changed_lines_for_result` falls
+                        // back to deriving a range straight from the parsed `DiffType` in
+                        // that case, instead of leaving `lines` empty (which used to mean
+                        // "send the whole file", the exact regression this closes).
+                        let editor_changed_lines = diff.diff_view.as_ref(ctx).changed_lines(ctx);
+                        let changed_lines = changed_lines_for_result(
+                            editor_changed_lines.clone(),
+                            diff.diff_view.as_ref(ctx).diff(),
+                        );
+                        let changed_lines_for_malformed_signal = if editor_changed_lines.is_empty()
+                        {
+                            changed_lines
+                                .iter()
+                                .cloned()
+                                .map(file_context_range_to_editor_range)
+                                .collect()
+                        } else {
+                            editor_changed_lines
+                        };
                         let has_malformed_terminal_signal = diff
                             .diff_view
                             .as_ref(ctx)
@@ -2385,7 +2413,7 @@ impl CodeDiffView {
                             .is_some_and(|editor_diff| {
                                 has_malformed_terminal_correction_signal(
                                     editor_diff,
-                                    &changed_lines,
+                                    &changed_lines_for_malformed_signal,
                                 )
                             });
 
@@ -2403,12 +2431,7 @@ impl CodeDiffView {
                         updated_files.push((
                             FileLocations {
                                 name: file_path_str,
-                                lines: if FeatureFlag::ChangedLinesOnlyApplyDiffResult.is_enabled()
-                                {
-                                    changed_lines
-                                } else {
-                                    vec![]
-                                },
+                                lines: changed_lines,
                             },
                             was_edited,
                         ));
@@ -3192,4 +3215,57 @@ fn keystroke_for_mode(key: &str, is_passive: bool) -> Keystroke {
         key: key.to_owned(),
         ..Default::default()
     }
+}
+
+// NOT COMPILED -- builds are suspended. Ported from upstream `89f61b63ba`
+// ("Limit apply diff results to changed ranges", #11987) -- see the call
+// site's comment above for why the editor's own `changed_lines(ctx)` isn't
+// always enough on its own.
+fn changed_lines_for_result(
+    editor_changed_lines: Vec<Range<usize>>,
+    diff_type: Option<&DiffType>,
+) -> Vec<Range<usize>> {
+    if !editor_changed_lines.is_empty() {
+        return editor_changed_lines
+            .into_iter()
+            .map(editor_range_to_file_context_range)
+            .collect();
+    }
+
+    match diff_type {
+        Some(DiffType::Create { delta }) => inserted_content_range(1, &delta.insertion)
+            .into_iter()
+            .collect(),
+        Some(DiffType::Update { deltas, .. }) => deltas
+            .iter()
+            .filter_map(changed_line_range_for_delta)
+            .collect(),
+        Some(DiffType::Delete { .. }) | None => vec![],
+    }
+}
+
+fn changed_line_range_for_delta(delta: &DiffDelta) -> Option<Range<usize>> {
+    let replacement_range = &delta.replacement_line_range;
+    if replacement_range.start == replacement_range.end {
+        return inserted_content_range(replacement_range.start.max(1), &delta.insertion);
+    }
+
+    Some(replacement_range.clone())
+}
+
+fn inserted_content_range(start: usize, content: &str) -> Option<Range<usize>> {
+    let line_count = content.lines().count();
+    (line_count > 0).then_some(start..start + line_count)
+}
+
+/// `changed_lines(ctx)` (the editor's own tracked ranges) is 0-based; `FileLocations.lines` (and
+/// everything downstream of `changed_lines_for_result` above) is 1-based, matching
+/// `request_file_edits.rs`'s `updated_file_contexts_from_editor_buffers`, which subtracts 1 back
+/// off before indexing into `content.lines()`. These two convert between the two conventions.
+fn editor_range_to_file_context_range(range: Range<usize>) -> Range<usize> {
+    range.start.saturating_add(1)..range.end.saturating_add(1)
+}
+
+fn file_context_range_to_editor_range(range: Range<usize>) -> Range<usize> {
+    range.start.saturating_sub(1)..range.end.saturating_sub(1)
 }
