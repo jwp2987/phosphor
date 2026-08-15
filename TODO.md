@@ -1762,6 +1762,81 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
 
+## LEGACY-SSH REGRESSIONS AGAINST THE PIN (opened 2026-08-15)
+
+Three things the fork dropped from the pin on the legacy-SSH path, found while
+chasing a maintainer report of OpenSSH printing `channel N: open failed: connect
+failed: open failed` into a live SSH session after choosing **Skip** on the
+remote-server install prompt.
+
+**Read this first, or you will "fix" these and be surprised.** *None of the three
+is proven to cause that error.* They were found by diffing the fork's SSH path
+against the pin (`02b53fcd8`) and are real regressions on their own merits, but
+the causal chain to the channel storm is **still open**. The reported string is
+sshd's `MaxSessions` refusal (it answers `CONNECT_FAILED` with the message text
+`open failed`, which is why the phrase doubles), so something opened more than
+the host's session budget concurrently — and every caller audited so far
+(`execute.rs::action_phase`, the completer's two argument engines) correctly
+serializes via `supports_parallel_command_execution()`. The unmeasured
+alternative is that the remote is configured below the default `MaxSessions 10`,
+in which case the pin would fail there identically and none of this is a fork
+regression at all. Measure before attributing:
+
+```
+# local (phosphor's side) — do the ssh children pile up?
+watch -n0.5 'pgrep -fa "ssh -q -o PasswordAuthentication=no" | wc -l'
+# on the remote — what is the actual budget?
+grep -ri maxsessions /etc/ssh/sshd_config /etc/ssh/sshd_config.d/ 2>/dev/null
+```
+
+Checked and found at PARITY with the pin, so do not re-derive these: the
+`SshRemoteServer` / `InBandGeneratorsForSSH` flag-list membership, the
+`are_in_band_generators_for_all_sessions_enabled` default (`false` both sides),
+`handle_ssh_remote_server_skip`, executor selection in `command_executor.rs`,
+the `SshInitState` machine (linear, no retry loop), and the fact that a wrapper
+session never transitions back out of `IsLegacySSHSession::Yes`. The fork's
+`SSHTmuxWrapper` is fork-original and on by default, but `use_ssh_tmux_wrapper`
+defaults `false`, which reduces the fork's gate to the pin's expression exactly.
+
+- [ ] **Restore `reuse_ssh_control_master`.** The pin discovers an existing
+      ControlMaster for the destination host (`ssh -G`, verified with
+      `ssh -O check`) and attaches to it instead of always creating its own;
+      it threads the decision through `PtyOptions` (pin
+      `app/src/terminal/local_tty/mod.rs:110`) from
+      `terminal_manager.rs:794`. The fork has **no trace of the setting or the
+      field** — `app/src/terminal/local_tty/mod.rs:85-99` has neither.
+      Consequence beyond the missing feature: this is why the bootstrap scripts
+      never emit `external_control_master`, so the ownership signal that
+      `a13b9d49` built the `owns_control_master` guard for is dead by
+      construction and **#37 cannot be finished until this is restored**. That
+      commit's TODO reads as unplumbed wiring; it is actually a removed feature.
+
+- [ ] **Restore the `node --version` per-prompt cache, and the chip gate.** The
+      pin caches the resolved version keyed on `"$PWD:$PATH"` in globals that
+      persist across `precmd`, so `node --version` is only spawned when the
+      directory or PATH changes (`nvm use`) — present in all three bootstrap
+      shells at the pin, absent from all three in the fork:
+      | file | pin | fork |
+      |---|---|---|
+      | `app/assets/bundled/bootstrap/bash_body.sh` | cached (`_WARP_NODE_VERSION_CACHE_KEY`) | spawns every prompt (`:611`) |
+      | `app/assets/bundled/bootstrap/zsh_body.sh` | cached | spawns every prompt |
+      | `app/assets/bundled/bootstrap/fish.sh` | cached | spawns every prompt |
+      The pin *also* gates the whole detection per session via
+      `PtyOptions::node_version_chip_enabled` → `WARP_PROMPT_NODE_VERSION_ENABLED`
+      (pin `local_tty/mod.rs:116`); the fork dropped that field too, so there is
+      no way to turn it off. In a git repo over SSH this is one remote
+      subprocess per prompt that the pin does not pay. It burns remote CPU
+      in-band and does **not** open an SSH channel, so it is a latency
+      regression, not the channel bug.
+
+- [ ] **Escape single quotes in the ControlMaster executor's `cd`.**
+      `remote_command_executor.rs:60` builds `cd '{current_directory_path}' &&`
+      by interpolation. The pin runs the path through
+      `shared::shell_escape_single_quotes(path, shell.shell_type())` first —
+      the fork is simply behind on that fix. A remote directory containing a
+      single quote breaks out of the quoting and corrupts every generator
+      command for that session. Cheap, isolated, independently testable.
+
 ## REMOTE-SERVER DISTRIBUTION AND BINARY SIZE (opened 2026-08-11)
 
 Two items with one root cause, raised by the maintainer after the SSH-install
