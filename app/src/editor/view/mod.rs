@@ -2372,8 +2372,25 @@ impl VimHandler for EditorView {
                                     editor_model.extend_selection_linewise(include_newline, ctx);
                                 }
                             }
-                            VimMotion::JumpToLine(_line_number) => {
-                                // Jumping to line number not supported
+                            VimMotion::JumpToLine(line_number) => {
+                                let max_row = editor_model.buffer(ctx).max_point().row;
+                                // This buffer (app/src/editor's own, not
+                                // crates/editor's `BlockMarker`-prefixed one used by
+                                // the code editor) is plain 0-indexed, matching
+                                // upstream, so vim's 1-indexed line number is
+                                // converted with a `saturating_sub(1)` here -- do not
+                                // copy `app/src/code/editor`'s `.max(1)` variant into
+                                // this file, they are not interchangeable.
+                                let row = (*line_number).saturating_sub(1).min(max_row);
+                                editor_model.move_cursor(
+                                    /* keep_selection */ true,
+                                    move |_, _| Point::new(row, 0),
+                                    ctx,
+                                );
+                                if *motion_type == MotionType::Linewise {
+                                    let include_newline = *operator != VimOperator::Change;
+                                    editor_model.extend_selection_linewise(include_newline, ctx);
+                                }
                             }
                         }
                     }
