@@ -131,6 +131,14 @@ impl TuiInlineMenuHandle for ModelHandle<TuiMcpInstallFlowModel> {
         self.as_ref(ctx).is_open(ctx)
     }
 
+    /// The install flow takes MCP template values, which are routinely API
+    /// tokens, so its free-text steps mask the shared editor (#602). The model
+    /// decides per step; see `mcp_install_flow`'s module docs for why every
+    /// free-text variable is masked rather than only the ones that look secret.
+    fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.as_ref(ctx).input_ownership(ctx)
+    }
+
     fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
         None
     }

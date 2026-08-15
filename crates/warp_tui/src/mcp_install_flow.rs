@@ -7,6 +7,30 @@
 //! installed or started here: the session view performs the installation on the
 //! completion, so cancelling at any point leaves catalog and runtime state
 //! exactly as they were.
+//!
+//! **Free-text values are masked, all of them** (#602). A template variable is
+//! how an MCP server template asks for the credential it needs to reach the
+//! service it proxies, so the typed value is routinely an API token — which is
+//! why [`TuiMcpInstallFlowAction`]'s `Debug` here, and `TuiMcpVariableValue`'s
+//! in `app/src/tui/mcp.rs`, both print `[REDACTED]`. The screen path was the
+//! one that was missed: the value was echoed into the grid, readable over the
+//! user's shoulder, captured by any screen recording, and left in scrollback.
+//!
+//! Masking is not selective because there is nothing to select on. The variable
+//! schema this flow renders carries no secret/sensitive marker at any layer:
+//! `TuiMcpTemplateVariable` (`app/src/tui/mcp.rs`) is `key` plus
+//! `allowed_values`, it is built from `TemplateVariable`
+//! (`app/src/ai/mcp/templatable.rs`), which is the same two fields, and so is
+//! the pin's own `MCPTemplateVariable` GraphQL type at `42effe840`
+//! (`allowedValues`, `key`). Guessing from the key name (`*_TOKEN`, `*_KEY`)
+//! would leak exactly the credential the guess was written to protect the first
+//! time a template names one `GH_PAT` or `password`, and the user cannot tell
+//! from the screen which mode they are in. So every free-text variable is
+//! masked and the status line keeps the user oriented by naming the variable
+//! ("Enter a value for `GITHUB_TOKEN` (1/2)") rather than showing its value.
+//!
+//! Dropdown variables keep plaintext ownership: their value comes from the
+//! selected row, so the shared buffer holds nothing that becomes a value.
 
 use std::fmt;
 
@@ -18,8 +42,9 @@ use warp_editor::model::CoreEditorModel;
 use warpui_core::{AppContext, Entity, ModelContext, ModelHandle};
 
 use crate::inline_menu::{
-    MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuListState, TuiInlineMenuRow,
-    TuiInlineMenuRowStyle, TuiInlineMenuSnapshot, TuiInlineMenuStatus, result_row_capacity,
+    MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuInputOwnership, TuiInlineMenuListState,
+    TuiInlineMenuRow, TuiInlineMenuRowStyle, TuiInlineMenuSnapshot, TuiInlineMenuStatus,
+    result_row_capacity,
 };
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 
@@ -93,6 +118,39 @@ impl TuiMcpInstallFlowModel {
     pub(crate) fn is_open(&self, ctx: &AppContext) -> bool {
         !matches!(self.step, TuiMcpInstallStep::Closed)
             && self.suggestions_mode.as_ref(ctx).mode() == TuiInputSuggestionsMode::McpInstall
+    }
+
+    /// Returns the shared editor owner for the active install step (#602).
+    ///
+    /// A free-text step masks: its buffer becomes the variable's value, and a
+    /// template variable is routinely a credential (see the module docs for why
+    /// this is unconditional rather than keyed off a secret flag — there is no
+    /// such flag in the schema, upstream's included). A dropdown step owns the
+    /// input as plaintext, because the value comes from the selected row and
+    /// the buffer contributes nothing.
+    ///
+    /// A flow that is not open owns nothing: a parked flow must not mask (or
+    /// unmask) the composer. An index with no variable behind it — unreachable,
+    /// since `apply_value` only advances onto a variable that exists — fails
+    /// closed to masked, because a step that cannot be identified cannot be
+    /// shown to be free of a credential.
+    pub(crate) fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        if !self.is_open(ctx) {
+            return TuiInlineMenuInputOwnership::Composer;
+        }
+        let TuiMcpInstallStep::Variable { index, .. } = &self.step else {
+            return TuiInlineMenuInputOwnership::Composer;
+        };
+        let takes_free_text = self
+            .request
+            .as_ref()
+            .and_then(|request| request.variables.get(*index))
+            .is_none_or(|variable| variable.allowed_values.is_none());
+        if takes_free_text {
+            TuiInlineMenuInputOwnership::InlineMenuMasked
+        } else {
+            TuiInlineMenuInputOwnership::InlineMenuPlainText
+        }
     }
 
     /// Begins collecting values. Returns `false` when there is nothing to
