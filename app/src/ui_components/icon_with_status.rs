@@ -326,12 +326,21 @@ impl StatusBadgeStyle {
 
 /// Returns the brand-circle diameter for a given `total_size`. Callers that
 /// pre-render their own avatar (to pass into
-/// [`render_custom_avatar_with_status_badge`]) should size it to this so the
+/// [`render_custom_avatar_with_status_badge`]) can size it to this so the
 /// badge's overhang matches the sizing-based variants above.
+///
+/// Currently unused: the only pre-rendering caller (the orchestration pill
+/// bar) sizes its disc to an absolute design value instead and cancels the
+/// default overhang, so it does not want this ratio. Kept as the accessor for
+/// the default geometry, which `corner_overlay_offset` below still derives
+/// from `CIRCLE_RATIO`.
+#[allow(dead_code)]
 pub(crate) fn circle_size(total: f32) -> f32 {
     total * CIRCLE_RATIO
 }
 
+/// Returns the diameter of the status badge's cutout ring, i.e. the badge's
+/// full painted footprint.
 fn badge_size(total: f32, style: StatusBadgeStyle) -> f32 {
     total * style.ring_ratio
 }
@@ -363,9 +372,14 @@ fn corner_overlay_offset(total: f32, overlay_extra_overhang_ratio: f32) -> f32 {
     -((1.0 - CIRCLE_RATIO) - total_overhang) * total
 }
 
-/// Wraps a pre-rendered avatar (sized to `circle_size(total_size)` by the
-/// caller) with an optional status-badge cutout-ring overlay, both derived
-/// proportionally from `total_size`.
+/// Wraps a pre-rendered avatar with an optional status-badge cutout-ring
+/// overlay, derived proportionally from `total_size`.
+///
+/// The overlay is anchored to the `total_size` box's bottom-right corner
+/// however big `avatar` is, so pass either an avatar sized to
+/// [`circle_size`]`(total_size)` (to match the overhang of the sizing-based
+/// variants) or an element that already fills the `total_size` box and places
+/// its own artwork inside it.
 ///
 /// `is_remote_child` is accepted for structural parity with the pin's
 /// `PillSpec` but is always effectively `false` in this fork -- see the
@@ -389,6 +403,12 @@ pub(crate) fn render_custom_avatar_with_status_badge(
         );
     }
     let Some(status) = status else {
+        // No status badge: still reserve the full `total_size` footprint the
+        // caller asked for, so badged and un-badged variants occupy identical
+        // space. `ConstrainedBox` only tightens constraints — it does not
+        // center — so an avatar smaller than `total_size` is painted at the
+        // box's top-left. Callers that need it centered must wrap it in
+        // `Align`.
         return ConstrainedBox::new(avatar)
             .with_width(total_size)
             .with_height(total_size)
