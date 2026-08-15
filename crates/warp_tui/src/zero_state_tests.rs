@@ -12,7 +12,10 @@ use warpui_core::elements::tui::{
     TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, text_width,
 };
 
-use super::{LEFT_COLUMN_COLS, build_zero_state_text_column, mcp_status_label};
+use super::{
+    LEFT_COLUMN_COLS, autoupdate_status_label, build_zero_state_text_column, mcp_status_label,
+};
+use crate::autoupdate::TuiAutoupdateStatus;
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
     TuiMcpServerSnapshot {
@@ -26,6 +29,14 @@ fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
         has_credentials: false,
         authorization_url: None,
     }
+}
+
+#[test]
+fn failed_autoupdate_status_has_visible_label() {
+    assert_eq!(
+        autoupdate_status_label(TuiAutoupdateStatus::Failed),
+        Some("automatic update failed")
+    );
 }
 
 #[test]
