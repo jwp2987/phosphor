@@ -363,9 +363,16 @@ impl UserWorkspaces {
                 })
     }
 
-    /// Whether BYO API key is enabled for the current user, based on the active policies.
-    /// Note that the value may be incorrect if called before the team's billing metadata has been fetched.
-    /// For solo users (no workspace), this is controlled by the `SoloUserByok` feature flag.
+    /// Whether BYO API key is enabled for the current user. Always `true` here.
+    ///
+    /// Upstream this is an entitlement question -- it consults team billing metadata, and
+    /// for solo users (no workspace) it is gated on the `SoloUserByok` feature flag. This
+    /// fork has no team, no workspace and no billing metadata to consult, and BYO keys is
+    /// not a permission it grants but the only mode it operates in, so the answer is
+    /// unconditional. `SoloUserByok` is correspondingly declined; see `DECLINED.md`.
+    ///
+    /// The previous comment here still described upstream's gating and was simply false
+    /// against this body, which has returned `true` unconditionally since the fork.
     pub fn is_byo_api_key_enabled(&self) -> bool {
         true
     }
