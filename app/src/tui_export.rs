@@ -104,10 +104,11 @@ pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, 
 // orchestration tab bar snapshot; kept separate from the (unported)
 // cloud-runner "RunAgents" orchestration family.
 pub use crate::ai::blocklist::orchestration_topology::{
-    OrchestrationParticipantKind, OrderedOrchestrationDescendant,
+    LoadedSubtreeRollup, OrchestrationParticipantKind, OrderedOrchestrationDescendant,
+    aggregated_orchestrator_status, child_conversations_in_pill_order,
     descendant_conversation_ids_in_spawn_order, descendant_conversations_in_pill_order,
-    orchestration_root_conversation_id, orchestrator_agent_id_for_conversation,
-    resolve_orchestration_participant,
+    loaded_subtree_rollup, orchestration_root_conversation_id,
+    orchestrator_agent_id_for_conversation, resolve_orchestration_participant,
 };
 pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;

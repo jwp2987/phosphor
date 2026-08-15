@@ -3642,9 +3642,9 @@ fn orchestration_tab_navigation_bindings_remain_scoped_to_tab_context() {
             let input_context = input_only_context();
             for (name, key) in [
                 ("tui:orchestration_tabs:previous", "left"),
-                ("tui:orchestration_tabs:previous", "shift-tab"),
                 ("tui:orchestration_tabs:next", "right"),
-                ("tui:orchestration_tabs:next", "tab"),
+                ("tui:orchestration_tabs:tree_previous", "shift-tab"),
+                ("tui:orchestration_tabs:tree_next", "tab"),
                 ("tui:orchestration_tabs:first_child", "shift-left"),
                 ("tui:orchestration_tabs:last_child", "shift-right"),
             ] {
@@ -3918,9 +3918,9 @@ fn escape_from_child_tab_switches_to_root_and_clears_tab_focus() {
                     .as_ref(ctx)
                     .orchestration_tab_bar
                     .as_ref(ctx)
-                    .main_tab_key(),
+                    .tree_root_key(),
                 Some(parent_conversation_id.to_string()),
-                "tab bar should expose the parent as the main tab"
+                "tab bar should expose the parent as the tree root"
             );
         });
 
@@ -3979,9 +3979,9 @@ fn escape_with_root_selected_clears_tab_focus_without_switching() {
                     .as_ref(ctx)
                     .orchestration_tab_bar
                     .as_ref(ctx)
-                    .main_tab_key(),
+                    .tree_root_key(),
                 Some(parent_conversation_id.to_string()),
-                "root tab bar should expose the root as the main tab"
+                "root tab bar should expose the root as the tree root"
             );
         });
 
@@ -4031,7 +4031,7 @@ fn orchestration_child_selected_footer_shows_kill_hint() {
             ctx.add_singleton_model(|_| Appearance::mock());
             let builder = TuiUiBuilder::from_app(ctx);
             let buffer = render_element(
-                render_orchestration_child_selected_tab_footer(&builder),
+                render_orchestration_child_selected_tab_footer(&builder, 0),
                 ctx,
                 120,
             );
@@ -4043,6 +4043,20 @@ fn orchestration_child_selected_footer_shows_kill_hint() {
             assert!(
                 footer.contains("kill sub-agent"),
                 "child-selected footer should describe the kill action: {footer}"
+            );
+            assert!(
+                !footer.contains("nested"),
+                "leaf footer must not name a nested blast radius: {footer}"
+            );
+            let group_buffer = render_element(
+                render_orchestration_child_selected_tab_footer(&builder, 2),
+                ctx,
+                120,
+            );
+            let group_footer = group_buffer.to_lines().join("\n");
+            assert!(
+                group_footer.contains("kill sub-agent +2 nested"),
+                "group footer should name the blast radius: {group_footer}"
             );
             assert!(
                 footer.contains('\u{2193}'),
@@ -4557,6 +4571,81 @@ fn new_slash_command_kills_descendant_agents() {
                 .expect("/new should select a replacement conversation");
             assert_ne!(new_conversation_id, parent_conversation_id);
             assert!(history.conversation(&new_conversation_id).is_some());
+        });
+    });
+}
+
+/// Multi-level subtree kill (upstream 683d40782): with the bar focused,
+/// Ctrl+C on the drilled-in anchor kills that agent and its whole loaded
+/// subtree, and can never fall through to conversation-cancel + app-exit.
+#[test]
+fn ctrl_c_on_drilled_anchor_with_tabs_focused_kills_the_subtree() {
+    let _flag = warp_core::features::FeatureFlag::MultiLevelOrchestration.override_enabled(true);
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (_parent_view, parent_session_id, parent_conversation_id) =
+            add_orchestration_session(&mut app, &fixture, true);
+        let (child_view, child_session_id, child_conversation_id) =
+            add_orchestration_child(&mut app, &fixture, parent_conversation_id, "child");
+        let (_grandchild_view, _grandchild_session_id, grandchild_conversation_id) =
+            add_orchestration_child(&mut app, &fixture, child_conversation_id, "grandchild");
+
+        // Select the group child: it re-anchors the bar, occupying the
+        // main-tab slot (selected == anchor != root).
+        app.update(|ctx| {
+            TuiSessions::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.focus_session(child_session_id, ctx);
+            });
+        });
+        child_view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection.select_existing_conversation(
+                    child_conversation_id,
+                    AgentViewEntryOrigin::Tui,
+                    ctx,
+                );
+            });
+            view.refresh_orchestration_tab_state(ctx);
+            view.orchestration_tabs_focused = true;
+            view.refresh_orchestration_tab_bar(ctx);
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                child_view.as_ref(ctx).bar_focused_kill_target(ctx),
+                Some((child_conversation_id, 1)),
+                "the drilled-in anchor must be the kill target with its blast radius"
+            );
+        });
+
+        // A single ctrl-c kills the anchor and its subtree — it must not
+        // cancel the conversation and arm the app-exit window.
+        child_view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::Interrupt, ctx);
+        });
+
+        app.read(|ctx| {
+            assert!(
+                !child_view.as_ref(ctx).exit_confirmation.is_armed(),
+                "the drilled-anchor kill must not arm the exit confirmation window"
+            );
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            assert!(
+                history.conversation(&child_conversation_id).is_none(),
+                "the anchor conversation must be deleted"
+            );
+            assert!(
+                history.conversation(&grandchild_conversation_id).is_none(),
+                "the anchor's subtree must be deleted with it"
+            );
+            assert!(
+                history.conversation(&parent_conversation_id).is_some(),
+                "the root must survive"
+            );
+            assert_eq!(
+                TuiSessions::as_ref(ctx).focused_session_id(),
+                Some(parent_session_id),
+                "focus should return to the root agent after the subtree kill"
+            );
         });
     });
 }

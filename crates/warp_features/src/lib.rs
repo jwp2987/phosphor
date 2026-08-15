@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use enum_iterator::{cardinality, Sequence};
+use enum_iterator::{Sequence, cardinality};
 
 #[cfg(feature = "test-util")]
 pub use overrides::{get_overrides, set_overrides};
@@ -611,6 +611,24 @@ pub enum FeatureFlag {
     /// flows while the default behavior temporarily keeps them disabled.
     LocalClaudeCodexChildHarnesses,
 
+    /// Gates the client-side multi-level orchestration surfaces. Upstream this
+    /// covers three things; only the third exists here, because the first two
+    /// are declined:
+    ///
+    /// - child conversations auto-executing their own `run_agents` calls --
+    ///   agent-invoked agent spawning is declined (`DECLINED.md` #325);
+    /// - the `run_agents` confirmation card's "may start child agents"
+    ///   disclosure -- that card is declined (`DECLINED.md` #290);
+    /// - **the TUI's `Agents:` bar becoming a drill-down bar** (breadcrumbs,
+    ///   subtree rollup badges, per-level paging) plus parent-prefixed
+    ///   received-message headers. That half is local and in scope, and is
+    ///   what this flag actually gates in this fork.
+    ///
+    /// With the flag off the bar keeps the flat root-anchored rendering, which
+    /// a byte-for-byte golden-row test pins. Placed in `DOGFOOD_FLAGS` only,
+    /// matching upstream's own default-off state at the pin.
+    MultiLevelOrchestration,
+
     /// Shows a pending user query indicator during summarization when a follow-up
     /// prompt is queued via `/fork-and-compact` or `/compact-and`.
     PendingUserQueryIndicator,
@@ -798,6 +816,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::LocalComputerUse,
     FeatureFlag::OzPlatformSkills,
     FeatureFlag::AgentViewBlockContext,
+    FeatureFlag::MultiLevelOrchestration,
     FeatureFlag::PendingUserQueryIndicator,
     FeatureFlag::QueueSlashCommand,
     FeatureFlag::QueuedPromptsV2,
@@ -931,7 +950,9 @@ impl FeatureFlag {
         // Allow calling this in integration tests because we sometimes use it in the app
         // during flows that integration tests cover.
         if cfg!(test) && cfg!(not(feature = "integration_tests")) {
-            panic!("Tried to globally enable {self:?} in a test. Use FeatureFlag::{self:?}.override_enabled instead");
+            panic!(
+                "Tried to globally enable {self:?} in a test. Use FeatureFlag::{self:?}.override_enabled instead"
+            );
         }
         FLAG_STATES[self as usize].store(enabled, Ordering::Relaxed);
     }
@@ -975,9 +996,15 @@ impl FeatureFlag {
             BlocklistMarkdownTableRendering => {
                 Some("Enables rendering markdown tables inline in AI block list responses.")
             }
-            MarkdownTables => Some("Enables rendering and interaction support for markdown tables in notebooks."),
-            SettingsFile => Some("Enables configuring Zap via a user-editable `settings.toml` file, with hot reload and error reporting for invalid values."),
-            GitOperationsInCodeReview => Some("Enables commit, push, and create-PR actions directly from the code review panel."),
+            MarkdownTables => {
+                Some("Enables rendering and interaction support for markdown tables in notebooks.")
+            }
+            SettingsFile => Some(
+                "Enables configuring Zap via a user-editable `settings.toml` file, with hot reload and error reporting for invalid values.",
+            ),
+            GitOperationsInCodeReview => Some(
+                "Enables commit, push, and create-PR actions directly from the code review panel.",
+            ),
             _ => None,
         }
     }

@@ -65,16 +65,23 @@ use std::collections::{HashMap, HashSet};
 
 use warp::tui_export::{
     AIConversationId, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus,
-    StartAgentExecutionMode, StartAgentExecutor, StartAgentRequest,
-    descendant_conversation_ids_in_spawn_order, descendant_conversations_in_pill_order,
+    StartAgentExecutionMode, StartAgentExecutor, StartAgentRequest, aggregated_orchestrator_status,
+    child_conversations_in_pill_order, descendant_conversation_ids_in_spawn_order,
+    descendant_conversations_in_pill_order, loaded_subtree_rollup,
     orchestration_root_conversation_id,
 };
+use warp_core::features::FeatureFlag;
 use warpui::SingletonEntity;
 use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle};
 
-use crate::orchestration_tab_bar::{TuiOrchestrationChild, TuiOrchestrationSnapshot};
+use crate::orchestration_tab_bar::{
+    TuiOrchestrationBreadcrumb, TuiOrchestrationChild, TuiOrchestrationSnapshot,
+};
 use crate::session_registry::{TuiSessionId, TuiSessions};
-use crate::tab_bar::TuiTabBarPagingState;
+use crate::tab_bar::{TuiTabBarNavigationDirection, TuiTabBarPagingState};
+
+/// The main-tab label used for the orchestration tree root.
+pub(crate) const ORCHESTRATOR_TAB_LABEL: &str = "orchestrator";
 
 /// Session-lifecycle work the orchestration model cannot perform inline.
 ///
@@ -103,8 +110,10 @@ pub(crate) enum TuiOrchestrationEvent {
 /// The TUI's orchestration singleton. See the module doc above for what was
 /// cut relative to the pin.
 pub(crate) struct TuiOrchestrationModel {
-    /// Paging intent shared by the per-session tab-bar views.
-    tab_bar_paging: TuiTabBarPagingState<AIConversationId>,
+    /// Paging intent shared by the per-session tab-bar views, tracked per
+    /// rendered level (keyed by the level's anchor conversation) so paging
+    /// within a drilled-in level does not disturb any other level's page.
+    tab_bar_paging_by_anchor: HashMap<AIConversationId, TuiTabBarPagingState<AIConversationId>>,
     /// Session ids subscribed to a conversation's agent-event stream, keyed
     /// by the session consuming them. Always empty in this port: agent-event
     /// streams are a server-push concept and there is no streamer here
@@ -128,7 +137,7 @@ impl TuiOrchestrationModel {
     pub(crate) fn register(ctx: &mut AppContext) -> ModelHandle<Self> {
         let history = BlocklistAIHistoryModel::handle(ctx);
         let model = ctx.add_singleton_model(|_| Self {
-            tab_bar_paging: TuiTabBarPagingState::default(),
+            tab_bar_paging_by_anchor: HashMap::new(),
             event_consumers_by_session: HashMap::new(),
         });
         let model_for_history = model.clone();
@@ -170,6 +179,10 @@ impl TuiOrchestrationModel {
     }
 
     fn topology_changed(&mut self, ctx: &mut ModelContext<Self>) {
+        // Drop explicit page state for levels whose anchor no longer exists.
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        self.tab_bar_paging_by_anchor
+            .retain(|anchor, _| history.conversation(anchor).is_some());
         ctx.notify();
     }
 
@@ -186,7 +199,26 @@ impl TuiOrchestrationModel {
         let session_ids_by_conversation = sessions.session_ids_by_conversation(history);
         session_ids_by_conversation.get(&root_conversation_id)?;
 
-        let children = descendant_conversations_in_pill_order(history, root_conversation_id)
+        let multi_level = FeatureFlag::MultiLevelOrchestration.is_enabled();
+        let anchor_conversation_id = if multi_level {
+            drill_down_anchor_id(
+                history,
+                &session_ids_by_conversation,
+                selected_conversation_id,
+                root_conversation_id,
+            )
+        } else {
+            root_conversation_id
+        };
+
+        // One level (the anchor's DIRECT children) while multi-level is
+        // enabled; the historical flat all-descendants projection otherwise.
+        let ordered_children = if multi_level {
+            child_conversations_in_pill_order(history, anchor_conversation_id)
+        } else {
+            descendant_conversations_in_pill_order(history, root_conversation_id)
+        };
+        let children = ordered_children
             .into_iter()
             .filter_map(|descendant| {
                 let conversation_id = descendant.conversation_id;
@@ -201,6 +233,9 @@ impl TuiOrchestrationModel {
                         .to_owned(),
                     spawn_index: descendant.spawn_index,
                     status: conversation.status().clone(),
+                    subtree_rollup: multi_level
+                        .then(|| loaded_subtree_rollup(history, conversation_id))
+                        .flatten(),
                 })
             })
             .collect::<Vec<_>>();
@@ -208,16 +243,45 @@ impl TuiOrchestrationModel {
             return None;
         }
 
-        let resolved_page = self.tab_bar_paging.resolve(
-            children.first().map(|child| child.conversation_id),
-            |anchor| {
-                children
-                    .iter()
-                    .any(|child| child.conversation_id == *anchor)
-            },
-        );
+        let anchor_label = if anchor_conversation_id == root_conversation_id {
+            ORCHESTRATOR_TAB_LABEL.to_owned()
+        } else {
+            conversation_agent_label(history, anchor_conversation_id)
+        };
+        let anchor_status =
+            multi_level.then(|| aggregated_orchestrator_status(history, anchor_conversation_id));
+        let anchor_navigable = session_ids_by_conversation.contains_key(&anchor_conversation_id);
+        let breadcrumbs = if multi_level {
+            breadcrumbs_for_anchor(
+                history,
+                &session_ids_by_conversation,
+                anchor_conversation_id,
+                root_conversation_id,
+            )
+        } else {
+            Vec::new()
+        };
+
+        let resolved_page = self
+            .tab_bar_paging_by_anchor
+            .get(&anchor_conversation_id)
+            .cloned()
+            .unwrap_or_default()
+            .resolve(children.first().map(|child| child.conversation_id), {
+                let children = &children;
+                move |anchor| {
+                    children
+                        .iter()
+                        .any(|child| child.conversation_id == *anchor)
+                }
+            });
         Some(TuiOrchestrationSnapshot {
             root_conversation_id,
+            anchor_conversation_id,
+            anchor_label,
+            anchor_status,
+            anchor_navigable,
+            breadcrumbs,
             selected_conversation_id,
             children,
             page_anchor: resolved_page.page_anchor,
@@ -225,28 +289,84 @@ impl TuiOrchestrationModel {
         })
     }
 
-    /// Stores an explicitly selected secondary page without switching sessions.
+    /// Stores an explicitly selected secondary page for one rendered level
+    /// without switching sessions.
     pub(crate) fn set_explicit_page(
         &mut self,
+        level_anchor: AIConversationId,
         page_anchor: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.tab_bar_paging.set_explicit_anchor(page_anchor);
+        self.tab_bar_paging_by_anchor
+            .entry(level_anchor)
+            .or_default()
+            .set_explicit_anchor(page_anchor);
         ctx.notify();
     }
 
-    /// Focuses the retained session for a conversation and resumes automatic reveal.
+    /// Resolves the adjacent conversation in the whole orchestration tree:
+    /// the root followed by every navigable descendant in pill order,
+    /// wrapping at either end. This is the GUI's keyboard-cycling order
+    /// (`adjacent_orchestration_child_conversation_id`) restricted to
+    /// conversations with retained TUI sessions.
+    pub(crate) fn adjacent_tree_conversation(
+        &self,
+        selected_conversation_id: AIConversationId,
+        direction: TuiTabBarNavigationDirection,
+        ctx: &AppContext,
+    ) -> Option<AIConversationId> {
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let root_conversation_id =
+            orchestration_root_conversation_id(history, selected_conversation_id)?;
+        let session_ids_by_conversation =
+            TuiSessions::as_ref(ctx).session_ids_by_conversation(history);
+        let order = std::iter::once(root_conversation_id)
+            .chain(
+                descendant_conversations_in_pill_order(history, root_conversation_id)
+                    .into_iter()
+                    .map(|descendant| descendant.conversation_id),
+            )
+            .filter(|conversation_id| session_ids_by_conversation.contains_key(conversation_id))
+            .collect::<Vec<_>>();
+        let selected_index = order
+            .iter()
+            .position(|conversation_id| *conversation_id == selected_conversation_id)?;
+        let target_index = match direction {
+            TuiTabBarNavigationDirection::Previous => {
+                selected_index.checked_sub(1).unwrap_or(order.len() - 1)
+            }
+            TuiTabBarNavigationDirection::Next => (selected_index + 1) % order.len(),
+        };
+        order.get(target_index).copied()
+    }
+
+    /// Focuses the retained session for a conversation and resumes automatic
+    /// reveal on the level the bar will anchor to for that conversation.
     pub(crate) fn focus_conversation_session(
         &mut self,
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) -> Option<TuiSessionId> {
-        let history = BlocklistAIHistoryModel::as_ref(ctx);
-        orchestration_root_conversation_id(history, conversation_id)?;
-        let session_id = *TuiSessions::as_ref(ctx)
-            .session_ids_by_conversation(history)
-            .get(&conversation_id)?;
-        self.tab_bar_paging.clear_explicit_anchor();
+        let (session_id, level_anchor) = {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let root_conversation_id =
+                orchestration_root_conversation_id(history, conversation_id)?;
+            let session_ids_by_conversation =
+                TuiSessions::as_ref(ctx).session_ids_by_conversation(history);
+            let session_id = *session_ids_by_conversation.get(&conversation_id)?;
+            let level_anchor = if FeatureFlag::MultiLevelOrchestration.is_enabled() {
+                drill_down_anchor_id(
+                    history,
+                    &session_ids_by_conversation,
+                    conversation_id,
+                    root_conversation_id,
+                )
+            } else {
+                root_conversation_id
+            };
+            (session_id, level_anchor)
+        };
+        self.tab_bar_paging_by_anchor.remove(&level_anchor);
         TuiSessions::handle(ctx).update(ctx, |sessions, ctx| {
             sessions.focus_session(session_id, ctx);
         });
@@ -440,6 +560,99 @@ impl TuiOrchestrationModel {
             self.kill_child_agent(descendant_id, ctx);
         }
     }
+
+    /// Kills a child agent together with its entire loaded subtree,
+    /// deepest-first, so no descendant session is orphaned. With multi-level
+    /// orchestration disabled this only kills the child itself — depth > 1
+    /// cannot arise from new activity while the flag is off.
+    pub(crate) fn kill_child_agent_subtree(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if FeatureFlag::MultiLevelOrchestration.is_enabled() {
+            self.kill_descendant_agents(conversation_id, ctx);
+        }
+        self.kill_child_agent(conversation_id, ctx);
+    }
+}
+
+/// Resolves the level the bar renders for a selection, mirroring the GUI's
+/// `drill_down_anchor_id`: a selection that has at least one navigable child
+/// anchors its own level, otherwise the bar shows the selection's parent
+/// level. Filtered by session navigability so the row can never dead-end on
+/// a child with no session to switch to.
+fn drill_down_anchor_id(
+    history: &BlocklistAIHistoryModel,
+    session_ids_by_conversation: &HashMap<AIConversationId, TuiSessionId>,
+    selected_conversation_id: AIConversationId,
+    root_conversation_id: AIConversationId,
+) -> AIConversationId {
+    let has_navigable_child = history
+        .child_conversation_ids_of(&selected_conversation_id)
+        .iter()
+        .any(|child_id| {
+            session_ids_by_conversation.contains_key(child_id)
+                && history.conversation(child_id).is_some()
+        });
+    if has_navigable_child {
+        return selected_conversation_id;
+    }
+    history
+        .conversation(&selected_conversation_id)
+        .and_then(|conversation| {
+            history.resolved_parent_conversation_id_for_conversation(conversation)
+        })
+        .unwrap_or(root_conversation_id)
+}
+
+/// Resolves the breadcrumb chips shown while the bar is drilled below the
+/// tree root, mirroring the GUI's `breadcrumb_ids` rule: one chip for the
+/// root, plus one for the anchor's direct parent when that parent is a
+/// distinct intermediate level. Never more than two chips at any depth.
+/// Chips must be selectable (they switch sessions), so a loaded but
+/// sessionless parent contributes no chip.
+fn breadcrumbs_for_anchor(
+    history: &BlocklistAIHistoryModel,
+    session_ids_by_conversation: &HashMap<AIConversationId, TuiSessionId>,
+    anchor_conversation_id: AIConversationId,
+    root_conversation_id: AIConversationId,
+) -> Vec<TuiOrchestrationBreadcrumb> {
+    if anchor_conversation_id == root_conversation_id {
+        return Vec::new();
+    }
+    let mut breadcrumbs = vec![TuiOrchestrationBreadcrumb {
+        conversation_id: root_conversation_id,
+        label: ORCHESTRATOR_TAB_LABEL.to_owned(),
+    }];
+    let parent_id = history
+        .conversation(&anchor_conversation_id)
+        .and_then(|anchor| history.resolved_parent_conversation_id_for_conversation(anchor))
+        .filter(|parent_id| {
+            *parent_id != root_conversation_id
+                && *parent_id != anchor_conversation_id
+                && session_ids_by_conversation.contains_key(parent_id)
+        });
+    if let Some(parent_id) = parent_id {
+        breadcrumbs.push(TuiOrchestrationBreadcrumb {
+            conversation_id: parent_id,
+            label: conversation_agent_label(history, parent_id),
+        });
+    }
+    breadcrumbs
+}
+
+/// A conversation's non-empty agent name, or the shared fallback label.
+fn conversation_agent_label(
+    history: &BlocklistAIHistoryModel,
+    conversation_id: AIConversationId,
+) -> String {
+    history
+        .conversation(&conversation_id)
+        .and_then(|conversation| conversation.agent_name())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Agent")
+        .to_owned()
 }
 
 #[cfg(test)]
