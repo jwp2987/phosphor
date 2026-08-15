@@ -382,6 +382,10 @@ pub fn init(app: &mut AppContext) {
             )
             .with_group(bindings::BindingGroup::Settings.as_str())
             .with_context_predicate(id!("Workspace")),
+            // `ctrl-shift->` on every platform, per the pin. On Linux/Windows the pin also
+            // gives this chord to `file_tree:toggle_hidden_files`, whose narrower predicate
+            // would win; that binding is deliberately moved to `ctrl-shift-H` here — see
+            // its site below and the DECLINED.md "Divergences" row.
             EditableBinding::new(
                 "workspace:increase_font_size",
                 crate::t!("keybinding-desc-workspace-increase-font-size"),
@@ -729,6 +733,16 @@ pub fn init(app: &mut AppContext) {
         // Ported from the pin (`02b53fcd8:app/src/workspace/mod.rs`); issue #498. Gated on
         // SHOW_PROJECT_EXPLORER (not a dedicated hidden-files flag) since the toggle only
         // makes sense while the project explorer is visible, matching the pin.
+        //
+        // DELIBERATE DIVERGENCE FROM THE PIN (see DECLINED.md, "Divergences"):
+        // the pin binds this to `ctrl-shift->` on Linux/Windows, which is also
+        // `workspace:increase_font_size` (registered above under the UIZoom flag with the
+        // broader `Workspace` predicate). The more specific predicate wins, so on Linux the
+        // pin's chord dispatches ToggleHiddenFiles and font size never increases —
+        // `test_change_font_size` cannot pass. Upstream never sees this because its
+        // integration suite runs on macOS, where this binding is `cmd-shift->` and does not
+        // collide. Font size keeps the pin's `ctrl-shift->`; hidden files moves to
+        // `ctrl-shift-H` on Linux/Windows. macOS is unchanged.
         EditableBinding::new(
             TOGGLE_HIDDEN_FILES_BINDING_NAME,
             BindingDescription::new(crate::t!("keybinding-desc-workspace-toggle-hidden-files")),
@@ -737,7 +751,7 @@ pub fn init(app: &mut AppContext) {
         .with_group(bindings::BindingGroup::Navigation.as_str())
         .with_context_predicate(id!("Workspace") & id!(flags::SHOW_PROJECT_EXPLORER))
         .with_mac_key_binding("cmd-shift->")
-        .with_linux_or_windows_key_binding("ctrl-shift->"),
+        .with_linux_or_windows_key_binding("ctrl-shift-H"),
         EditableBinding::new(
             LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
             BindingDescription::new(crate::t!("keybinding-desc-workspace-left-panel-warp-drive")),
