@@ -1602,10 +1602,27 @@ impl AIBlock {
                         for source in image_sources {
                             resolved_image_sources.insert(
                                 source.clone(),
-                                Some(resolve_asset_source_relative_to_directory(
-                                    &source,
-                                    cwd.as_deref().map(Path::new),
-                                )),
+                                // NOT COMPILED -- builds are suspended. Ported from
+                                // upstream `da6066b759` ("Invalidate cached local-file
+                                // images in AI blocks when the file changes", #12840):
+                                // `with_local_file_content_version()` reads the file's
+                                // mtime+size into `AssetSource::LocalFile`'s cache key
+                                // (the mechanism itself,
+                                // `crates/warpui_core/src/assets/asset_cache.rs`, was
+                                // already ported) so a changed file at the same path
+                                // is treated as a distinct asset and re-read instead
+                                // of serving a stale decoded/rendered cache entry.
+                                // Runs here in this existing background link-detection
+                                // task, off the UI thread, matching upstream's
+                                // placement -- never on the per-streaming-token path
+                                // or on render.
+                                Some(
+                                    resolve_asset_source_relative_to_directory(
+                                        &source,
+                                        cwd.as_deref().map(Path::new),
+                                    )
+                                    .with_local_file_content_version(),
+                                ),
                             );
                         }
 
