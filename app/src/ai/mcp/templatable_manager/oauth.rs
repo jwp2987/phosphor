@@ -153,6 +153,22 @@ async fn install_persisting_credential_store(
     client_secret: Option<String>,
     spawner: ModelSpawner<TemplatableMCPServerManager>,
     installation_uuid: Uuid,
+    // NOT COMPILED -- builds are suspended. Ported from upstream `edfd4149d9`
+    // ("fix(mcp): persist token_received_at so OAuth refresh fires before
+    // expiry", #8863, #9460). Without a real value here, this function's own
+    // seed below hardcoded `token_received_at: None` for the in-memory
+    // credential store it installs -- meaning rmcp's pre-emptive refresh
+    // check (which needs both `expires_in` and `token_received_at`) was
+    // silently skipped for every session, from the moment this store was
+    // installed until the next actual token refresh populated a real value
+    // via `PersistingCredentialStore::save`. The unconditional
+    // `auth_manager.refresh_token()` call right after this function's
+    // cached-creds call site masked it there (see that call site's
+    // comment), but the fresh-OAuth call site has no such mask, so a
+    // session that just completed its first authorization used its cached
+    // token past TTL until a request hit a 401 and forced re-auth -- the
+    // exact repro in #8863.
+    token_received_at: Option<u64>,
 ) {
     let (persist_tx, persist_rx) = async_channel::unbounded();
     let store = PersistingCredentialStore {
@@ -170,7 +186,7 @@ async fn install_persisting_credential_store(
                 client_id,
                 token_response: Some(token_response),
                 granted_scopes: Vec::new(),
-                token_received_at: None,
+                token_received_at,
             })
             .await;
     }
@@ -278,11 +294,17 @@ pub async fn make_authenticated_client(
             //
             // Install the persisting credential store before refreshing so that
             // the refresh result is automatically written back to secure storage.
+            // Threading `credentials.credentials.token_received_at` through (rather than
+            // the function's own hardcoded fallback) is masked here by the unconditional
+            // `refresh_token()` call immediately below -- see
+            // `install_persisting_credential_store`'s doc comment -- but pass the real,
+            // loaded-from-disk value anyway rather than relying on that mask.
             install_persisting_credential_store(
                 &mut auth_manager,
                 client_secret,
                 spawner.clone(),
                 uuid,
+                credentials.credentials.token_received_at,
             )
             .await;
             match auth_manager.refresh_token().await {
@@ -445,15 +467,19 @@ pub async fn make_authenticated_client(
     // Handle the callback with the received authorization code and CSRF token.
     oauth_state.handle_callback(code, csrf_token).await?;
 
+    // The token was just issued by the callback handled above, so "now" is an
+    // accurate `token_received_at` for rmcp's pre-emptive refresh check. Computed
+    // unconditionally (not inside the `if let Some(token_response)` below) because
+    // `install_persisting_credential_store` further down needs it regardless of
+    // whether there was a token response to persist.
+    let token_received_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .ok();
+
     // Save the credentials to secure storage.
     let (client_id, token_response) = oauth_state.get_credentials().await?;
     if let Some(token_response) = token_response {
-        // The token was just issued by the callback handled above, so "now" is
-        // an accurate `token_received_at` for rmcp's pre-emptive refresh check.
-        let token_received_at = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .ok();
         let credentials = PersistedCredentials {
             credentials: StoredCredentials {
                 client_id,
@@ -475,7 +501,13 @@ pub async fn make_authenticated_client(
         AuthError::InternalError("Failed to create authorization manager".to_string())
     })?;
 
-    install_persisting_credential_store(&mut am, client_secret, spawner, uuid).await;
+    // Seed with the same `token_received_at` just stamped and saved above, rather than
+    // the function's own hardcoded fallback -- this path has no `refresh_token()` call
+    // to mask a missing value, so a fresh authorization would otherwise have its
+    // pre-emptive refresh check permanently disabled for its whole first session. See
+    // `install_persisting_credential_store`'s doc comment.
+    install_persisting_credential_store(&mut am, client_secret, spawner, uuid, token_received_at)
+        .await;
 
     Ok((AuthClient::new(reqwest::Client::new(), am), true))
 }
