@@ -119,8 +119,8 @@ pub(super) async fn handle_daemon_connection(
     spawner: warpui::ModelSpawner<ServerModel>,
     exec: std::sync::Arc<executor::Background>,
 ) {
-    use futures::io::{AsyncWriteExt, BufReader, BufWriter};
     use futures::AsyncReadExt as _;
+    use futures::io::{AsyncWriteExt, BufReader, BufWriter};
 
     let (conn_tx, conn_rx) = async_channel::unbounded::<remote_server::proto::ServerMessage>();
 
@@ -165,7 +165,13 @@ pub(super) async fn handle_daemon_connection(
                     log::warn!("Daemon: skipping malformed message from conn {conn_id}: {e}");
                 }
                 Err(e) => {
-                    log::error!("Daemon: fatal read error from conn {conn_id}: {e}");
+                    if is_disconnect_error(&e) {
+                        log::warn!(
+                            "Daemon: read error from conn {conn_id} (client disconnected): {e}"
+                        );
+                    } else {
+                        log::error!("Daemon: fatal read error from conn {conn_id}: {e}");
+                    }
                     break;
                 }
             }
@@ -183,15 +189,63 @@ pub(super) async fn handle_daemon_connection(
     // ---- Writer loop -------------------------------------------------------
     // Drains outbound messages until conn_rx closes (reader called
     // deregister_connection) or a fatal write error occurs.
+    //
+    // Upstream: d9dee18e19e8c06e24b7b32a9619685e5dd3289c (#10681, "Fix daemon
+    // message too big error") + 363d1d6e929df5ff23431eb2d2cf1018cb0009e9
+    // (#10727, "Downgrade remote server SSH disconnect errors"). Before this,
+    // ANY write error — including a recoverable `MessageTooLarge` from an
+    // oversized `RunCommand` response, or a routine broken-pipe when the
+    // client just disconnected — tore down the whole connection and logged
+    // at `error!`. NOT COMPILED: verified by reading only.
     while let Ok(msg) = conn_rx.recv().await {
         if let Err(e) = remote_server::protocol::write_server_message(&mut writer, &msg).await {
-            log::error!("Daemon: write error on conn {conn_id}: {e}");
-            break;
+            if !e.is_write_recoverable() {
+                if is_disconnect_protocol_error(&e) {
+                    log::warn!("Daemon: write error on conn {conn_id} (client disconnected): {e}");
+                } else {
+                    log::error!("Daemon: write error on conn {conn_id}: {e}");
+                }
+                break;
+            }
+            // Recoverable write error (e.g. MessageTooLarge): nothing was
+            // written to the stream, so it remains aligned. Log and skip
+            // rather than tearing down the entire connection.
+            log::warn!("Daemon: skipping undeliverable message on conn {conn_id}: {e}");
+
+            // Send an ErrorResponse so the client doesn't hang waiting
+            // for a response that will never arrive.
+            if msg.request_id.is_empty() {
+                continue;
+            }
+            let error_msg = remote_server::proto::ServerMessage {
+                request_id: msg.request_id.clone(),
+                message: Some(remote_server::proto::server_message::Message::Error(
+                    remote_server::proto::ErrorResponse {
+                        code: remote_server::proto::ErrorCode::Internal.into(),
+                        message: format!("Response could not be delivered: {e}"),
+                    },
+                )),
+            };
+            if let Err(e2) =
+                remote_server::protocol::write_server_message(&mut writer, &error_msg).await
+            {
+                if !e2.is_write_recoverable() {
+                    log::error!("Daemon: failed to send error response on conn {conn_id}: {e2}");
+                    break;
+                }
+                log::warn!("Daemon: failed to send error response on conn {conn_id}: {e2}");
+                continue;
+            }
+            // Fall through to flush the error response.
         }
         // Flush after every message so responses reach the proxy without
         // waiting for the BufWriter's internal buffer to fill up.
         if let Err(e) = writer.flush().await {
-            log::error!("Daemon: flush error on conn {conn_id}: {e}");
+            if is_disconnect_io_error(&e) {
+                log::warn!("Daemon: flush error on conn {conn_id} (client disconnected): {e}");
+            } else {
+                log::error!("Daemon: flush error on conn {conn_id}: {e}");
+            }
             break;
         }
     }
@@ -206,3 +260,35 @@ pub(super) async fn handle_daemon_connection(
         })
         .await;
 }
+
+/// Returns `true` if the IO error represents a normal client disconnect.
+///
+/// Upstream: 363d1d6e929df5ff23431eb2d2cf1018cb0009e9 (#10727). For
+/// connectivity issues like a broken pipe or a connection reset, the daemon
+/// shouldn't log at `error!` — they are outside its control and happen on
+/// every ordinary "user closed the SSH session" teardown.
+fn is_disconnect_io_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+    )
+}
+
+/// Returns `true` if the `ProtocolError` wraps a disconnect IO error.
+fn is_disconnect_error(e: &remote_server::protocol::ProtocolError) -> bool {
+    match e {
+        remote_server::protocol::ProtocolError::Io(io_err) => is_disconnect_io_error(io_err),
+        _ => false,
+    }
+}
+
+/// Alias for [`is_disconnect_error`] — used in the write path for clarity.
+fn is_disconnect_protocol_error(e: &remote_server::protocol::ProtocolError) -> bool {
+    is_disconnect_error(e)
+}
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
