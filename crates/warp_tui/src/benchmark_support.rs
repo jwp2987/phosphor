@@ -6,6 +6,10 @@
 //! the conversation and exchange ids as separate arguments and has no
 //! `is_restored_for_telemetry` flag; and `WindowInvalidation` fields are plain
 //! `HashSet<EntityId>` rather than upstream's `EntityIdSet` alias.
+//!
+//! [`ClippedTerminalBlockBenchmark`] is ported from upstream `a95e6e541`,
+//! whose non-benchmark half (the viewport-clipped inline terminal paint it
+//! measures) is already in this fork.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -16,8 +20,8 @@ use parking_lot::FairMutex;
 use warp::tui_export::{
     AIAgentExchangeId, AIAgentInput, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType,
     AIAgentText, AIAgentTextSection, AIBlockModel, AIBlockOutputStatus, AIConversationId,
-    AIRequestType, Appearance, LLMId, MessageId, OutputStatusUpdateCallback, RichContentItem,
-    RichContentType, ServerOutputId, Shared, TerminalModel,
+    AIRequestType, Appearance, BlockId, LLMId, MessageId, OutputStatusUpdateCallback,
+    RichContentItem, RichContentType, ServerOutputId, Shared, TerminalModel,
 };
 use warpui::platform::WindowStyle;
 use warpui::{
@@ -25,12 +29,13 @@ use warpui::{
     ViewHandle, WindowInvalidation,
 };
 use warpui_core::elements::tui::{
-    TuiElement, TuiRect, TuiViewportPosition, TuiViewportVerticalAlignment, TuiViewportedList,
-    TuiViewportedListState,
+    TuiClipped, TuiElement, TuiRect, TuiViewportPosition, TuiViewportVerticalAlignment,
+    TuiViewportedList, TuiViewportedListState,
 };
 use warpui_core::presenter::tui::TuiPresenter;
 
 use crate::agent_block::TuiAIBlock;
+use crate::terminal_block::{TerminalBlockElement, block_content_rows};
 use crate::test_fixtures::add_test_action_model_and_events;
 use crate::tui_block_list_viewport_source::{
     AgentBlockRegistry, CLISubagentBlockRegistry, TuiBlockListViewportSource,
@@ -49,6 +54,70 @@ pub enum TranscriptDataset {
         preceding_rows: usize,
         tail_rows: usize,
     },
+}
+
+/// One inline terminal block painted through a fixed-height clipped viewport.
+///
+/// Measures what upstream `a95e6e541` changed: an inline
+/// [`TerminalBlockRows::Content`] window used to walk every retained row and
+/// column on each paint while the nested surface discarded the offscreen
+/// writes, so its cost grew with total output rather than with the viewport.
+/// The fixture therefore scales `rows` while holding the viewport at `height`;
+/// the clipped implementation's cost should stay near flat across the sweep.
+///
+/// [`TerminalBlockRows::Content`]: crate::terminal_block
+pub struct ClippedTerminalBlockBenchmark {
+    app: App,
+    model: Arc<FairMutex<TerminalModel>>,
+    block_id: BlockId,
+    viewport_origin_y: usize,
+    presenter: TuiPresenter,
+    area: TuiRect,
+}
+
+impl ClippedTerminalBlockBenchmark {
+    /// Builds and primes a long terminal block with `rows` output rows.
+    pub fn new(rows: usize, width: u16, height: u16) -> Self {
+        App::test((), move |app| async move {
+            let mut terminal_model = TerminalModel::mock(None, None);
+            let output = "benchmark terminal output\r\n".repeat(rows);
+            terminal_model.simulate_block("printf benchmark", output.as_str());
+            let block = terminal_model
+                .block_list()
+                .blocks()
+                .iter()
+                .rev()
+                .find(|block| block.finished())
+                .expect("simulated block should exist");
+            let block_id = block.id().clone();
+            let content_height = block_content_rows(block).len();
+            let mut benchmark = Self {
+                app,
+                model: Arc::new(FairMutex::new(terminal_model)),
+                block_id,
+                viewport_origin_y: content_height.saturating_sub(usize::from(height)),
+                presenter: TuiPresenter::new(),
+                area: TuiRect::new(0, 0, width, height),
+            };
+            benchmark.present();
+            benchmark
+        })
+    }
+
+    /// Lays out and paints one clipped frame and returns a cheap checksum.
+    pub fn present(&mut self) -> u64 {
+        let element = TuiClipped::new(
+            TerminalBlockElement::content(self.model.clone(), self.block_id.clone()).finish(),
+        )
+        .with_viewport_origin_y(self.viewport_origin_y)
+        .finish();
+        let frame = self
+            .app
+            .read(|ctx| self.presenter.present_element(element, self.area, ctx));
+        frame.buffer.content.iter().fold(0u64, |checksum, cell| {
+            checksum.wrapping_add(cell.symbol().len() as u64)
+        })
+    }
 }
 
 /// One production-shaped retained transcript benchmark.
