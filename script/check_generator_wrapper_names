@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+#
+# Guards the bundled bootstrap scripts against drifting away from the in-band
+# generator wrapper names in
+# app/src/terminal/model/session/command_executor/in_band_command_executor.rs.
+#
+# THE DEFECT CLASS
+# ----------------
+# To run an in-band generator, the Rust app writes a CALL to a shell function
+# that the bundled bootstrap script DEFINES:
+#
+#   * POSIX shells -> `POSIX_GENERATOR_WRAPPER`
+#     (bash_body.sh, zsh_body.sh, fish.sh)
+#   * PowerShell   -> `POWERSHELL_GENERATOR_WRAPPER`
+#     (pwsh.ps1, which must also EXPORT it -- the call comes from outside the
+#     Warp-Module scope)
+#
+# The binding is by name at runtime, across a language boundary, through a PTY.
+# Nothing in the type system connects the Rust string to the shell function.
+# Rename one side and everything still compiles, every Rust test stays green --
+# because the Rust half is internally self-consistent -- and the failure is
+# invisible until a real session sends a generator command to a function the
+# shell has never heard of.
+#
+# That is not hypothetical. Issue #597: the PowerShell arm alone was rebranded
+# to `Zap-Run-GeneratorCommand` while pwsh.ps1 kept defining
+# `Warp-Run-GeneratorCommand`, so EVERY in-band generator command sent to a
+# PowerShell session invoked a function that did not exist -- warpified remote,
+# Docker sandbox, tmux, remote_tty, and any build with
+# `are_in_band_generators_for_all_sessions_enabled`. Local PowerShell sessions
+# use LocalCommandExecutor and were unaffected, which is part of why it survived.
+# The Rust unit tests had been renamed to match the Rust side, so they agreed
+# with the bug.
+#
+# WHICH SIDE WINS
+# ---------------
+# The SCRIPT is the compatibility surface, so the Rust literal conforms to it.
+# A Rust-side rename reaches users the moment the binary updates; a script-side
+# rename only takes effect once every already-installed copy is refreshed, and
+# there are two places an old copy survives:
+#
+#   * Windows sources a PERMANENT bootstrap file from the install directory
+#     (`bootstrap_file::windows::path_to_permanent_bootstrap_file`), not the
+#     in-memory asset.
+#   * A warpified remote host runs whatever bootstrap it already has.
+#
+# These names are a PROTOCOL surface, not display copy -- the same category as
+# the `WARP_*` env vars, the `warp://` scheme and the `X-Zap-*` headers, all
+# deliberately untouched by the branding purge. `script/check_brand_strings`
+# correctly does not police them, which is why nothing objected to #597.
+#
+# WHAT IS CHECKED
+# ---------------
+# Both directions, so neither side can move alone. Every required spelling is
+# DERIVED from the Rust constants, so a deliberate rename in Rust changes what
+# this script demands of the bootstrap files rather than needing an edit here.
+#
+#   1. THE SCRIPTS DEFINE (AND, FOR PWSH, EXPORT) THE NAME RUST EMITS, and
+#      their history-scrubbing guards match that same name. A guard that is
+#      deleted or left behind on a rename is what makes the call leak into the
+#      user's shell history, so each guard is required individually.
+#
+#   2. NO OTHER SPELLING EXISTS ANYWHERE. Every token shaped like a generator
+#      wrapper -- in the bootstrap scripts AND in Rust sources, tests included
+#      -- is read back out and must be one of the sanctioned names. This is the
+#      half that catches #597's actual shape: a stray hardcoded literal that
+#      drifted from the constants, or a script guard that a rename missed.
+#
+# WHAT IS DELIBERATELY NOT CHECKED
+# --------------------------------
+#   * The rest of the call's SHAPE -- fish's leading space (histignorespace),
+#     PowerShell's `-ErrorAction Ignore` suffix, the `<id> '<command>'` argument
+#     order. Those are asserted by the Rust unit tests, which can see the
+#     formatted string; this script only arbitrates the NAME, which is the part
+#     no test can see across the boundary.
+#   * Whether the wrapper actually works. That needs a live PTY.
+#   * `Warp-Run-GeneratorCommandImpl` and `_warp_run_generator_command_internal`
+#     as such: they are script-internal helpers, never named from Rust. They are
+#     allowed as suffixed/prefixed forms of the sanctioned name precisely so a
+#     rename cannot leave them stranded.
+#
+# Usage:  script/check_generator_wrapper_names
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+EXEC_RS="app/src/terminal/model/session/command_executor/in_band_command_executor.rs"
+PWSH="app/assets/bundled/bootstrap/pwsh.ps1"
+BASH_BODY="app/assets/bundled/bootstrap/bash_body.sh"
+ZSH_BODY="app/assets/bundled/bootstrap/zsh_body.sh"
+FISH="app/assets/bundled/bootstrap/fish.sh"
+
+status=0
+fail() {
+  printf 'check_generator_wrapper_names: FAIL %s\n' "$1" >&2
+  status=1
+}
+
+for f in "$EXEC_RS" "$PWSH" "$BASH_BODY" "$ZSH_BODY" "$FISH"; do
+  [[ -f "$f" ]] || {
+    fail "missing $f -- this check needs updating for the move"
+    exit 1
+  }
+done
+
+# ------------------------------------------------------- read the Rust source
+#
+# The constants are the single source of truth. If either disappears or is
+# reshaped, stop rather than silently checking nothing -- an empty expectation
+# is how a guard turns decorative.
+const_value() { # <const name>
+  sed -n "s/^pub const $1: &str = \"\\([^\"]*\\)\";.*/\\1/p" "$EXEC_RS" | head -1
+}
+
+POSIX_NAME="$(const_value POSIX_GENERATOR_WRAPPER)"
+PWSH_NAME="$(const_value POWERSHELL_GENERATOR_WRAPPER)"
+
+if [[ -z "$POSIX_NAME" || -z "$PWSH_NAME" ]]; then
+  fail "could not read POSIX_GENERATOR_WRAPPER / POWERSHELL_GENERATOR_WRAPPER from $EXEC_RS"
+  printf '       Both must stay \`pub const <NAME>: &str = "...";\` at column 0.\n' >&2
+  exit 1
+fi
+
+# The two names must also still LOOK like their respective shells, or the
+# "no other spelling" scan below would be matching on the wrong shape and
+# quietly pass. This is the extraction's own canary.
+[[ "$POSIX_NAME" == *run_generator_command* ]] ||
+  fail "POSIX_GENERATOR_WRAPPER is \"$POSIX_NAME\", which no longer contains \`run_generator_command\` -- the scan pattern in this script assumes it does and must be updated with it"
+[[ "$PWSH_NAME" == *-Run-GeneratorCommand ]] ||
+  fail "POWERSHELL_GENERATOR_WRAPPER is \"$PWSH_NAME\", which no longer ends in \`-Run-GeneratorCommand\` -- the scan pattern in this script assumes it does and must be updated with it"
+((status == 0)) || exit $status
+
+# --------------------------------- 1. the scripts define/export/guard the name
+require() { # <file> <literal fragment> <why>
+  grep -qF -- "$2" "$1" ||
+    fail "$1 no longer contains \`$2\` ($3) -- update it together with $EXEC_RS"
+}
+
+require_count() { # <file> <literal fragment> <minimum> <why>
+  local n
+  n="$(grep -cF -- "$2" "$1")"
+  ((n >= $3)) ||
+    fail "$1 contains \`$2\` $n time(s), expected at least $3 ($4) -- update it together with $EXEC_RS"
+}
+
+# PowerShell: definition, export, and the three history-scrubbing guards.
+require "$PWSH" "function $PWSH_NAME {" "the PowerShell generator wrapper definition"
+require "$PWSH" "Export-ModuleMember -Function " "the module export list"
+grep -F "Export-ModuleMember -Function " "$PWSH" | grep -qF -- "$PWSH_NAME" ||
+  fail "$PWSH does not export \`$PWSH_NAME\` -- the Rust app calls it from outside Warp-Module, so an unexported function is invisible to it"
+require_count "$PWSH" "'^$PWSH_NAME'" 2 \
+  "the Warp-Preexec skip and the AddToHistoryHandler guard; without them the call leaks into the user's history"
+require "$PWSH" "Clear-History -CommandLine '$PWSH_NAME*'" \
+  "the history scrub for an already-recorded call"
+
+# POSIX: definition plus each shell's own history guard.
+require "$BASH_BODY" "$POSIX_NAME() {" "the bash generator wrapper definition"
+require "$BASH_BODY" "HISTIGNORE=\"*$POSIX_NAME*" "the bash HISTIGNORE entry"
+require "$BASH_BODY" "!= $POSIX_NAME*" "the warp_preexec BASH_COMMAND guard"
+
+require "$ZSH_BODY" "$POSIX_NAME() {" "the zsh generator wrapper definition"
+require "$ZSH_BODY" "*\"$POSIX_NAME\"*" "the zsh add-to-history guard"
+
+require "$FISH" "function $POSIX_NAME" "the fish generator wrapper definition"
+require "$FISH" "\"$POSIX_NAME*\"" "the fish history guard"
+
+# ------------------------------------------ 2. and nothing spells it any other way
+#
+# Read every wrapper-shaped token back out of both sides and check it. This is
+# what catches a rename that moved only SOME sites -- including the #597 shape,
+# where a Rust literal drifted from the script while every Rust test agreed with
+# the drift.
+#
+# `<name>Impl` (PowerShell) and `_<name>_internal` (POSIX) are the scripts' own
+# private helpers; they are accepted only as forms of the sanctioned name, so a
+# rename cannot strand them either.
+#
+# `-I` skips binary files: crates/ carries a fasttext model that matches the
+# POSIX pattern, and grep's "binary file matches" line is both noise and a
+# silent skip of that file's real content.
+check_spellings() { # <label> <sanctioned name> <regex> <include glob or "-"> <files...>
+  local label="$1" name="$2" pattern="$3" include="$4"
+  shift 4
+  local found spelling
+  local -a opts=(-rhoIE)
+  [[ "$include" == "-" ]] || opts+=("--include=$include")
+  found="$(grep "${opts[@]}" "$pattern" "$@" | sort -u)"
+  if [[ -z "$found" ]]; then
+    fail "found no $label tokens in: $* -- the extraction pattern has rotted, and this check is asserting nothing"
+    return
+  fi
+  while IFS= read -r spelling; do
+    [[ -n "$spelling" ]] || continue
+    case "$spelling" in
+      "$name" | "${name}Impl" | "_${name}_internal") ;;
+      *)
+        fail "$label \`$spelling\` is not \`$name\` (from $EXEC_RS) -- one side of the matched pair was renamed alone; see #597"
+        ;;
+    esac
+  done <<<"$found"
+}
+
+# The bootstrap scripts. Comments in these files use the correct name, so
+# scanning them too is a feature: a stale name in a comment is a stale name.
+check_spellings "PowerShell wrapper name" "$PWSH_NAME" \
+  '[A-Za-z]+-Run-GeneratorCommand(Impl)?' - "$PWSH"
+
+check_spellings "POSIX wrapper name" "$POSIX_NAME" \
+  '_?[a-z]+_run_generator_command(_internal)?' - "$BASH_BODY" "$ZSH_BODY" "$FISH"
+
+# The Rust sources, tests included -- a test that agrees with a one-sided rename
+# is exactly what let #597 through. This script is excluded implicitly: it is
+# not a .rs file.
+rust_roots=()
+[[ -d app/src ]] && rust_roots+=(app/src)
+[[ -d crates ]] && rust_roots+=(crates)
+if ((${#rust_roots[@]} == 0)); then
+  fail "neither app/src nor crates exists -- cannot scan the Rust side"
+else
+  check_spellings "Rust-side PowerShell wrapper name" "$PWSH_NAME" \
+    '[A-Za-z]+-Run-GeneratorCommand(Impl)?' '*.rs' "${rust_roots[@]}"
+  check_spellings "Rust-side POSIX wrapper name" "$POSIX_NAME" \
+    '_?[a-z]+_run_generator_command(_internal)?' '*.rs' "${rust_roots[@]}"
+fi
+
+if ((status == 0)); then
+  echo "check_generator_wrapper_names: ok -- bootstrap scripts agree with $EXEC_RS ($PWSH_NAME / $POSIX_NAME)"
+fi
+exit $status

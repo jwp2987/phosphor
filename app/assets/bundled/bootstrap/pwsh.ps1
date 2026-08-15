@@ -713,6 +713,23 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
         }
     }
 
+    # MATCHED PAIR -- this function's NAME is a protocol surface shared with the Rust
+    # app, which builds the call string in `POWERSHELL_GENERATOR_WRAPPER`
+    # (app/src/terminal/model/session/command_executor/in_band_command_executor.rs) and
+    # detects it again there and in
+    # app/src/ai/blocklist/action_model/execute/shell_command.rs. Rename one side alone
+    # and everything still compiles and every Rust test still passes -- the failure is
+    # invisible until a warpified remote / Docker sandbox / tmux session sends a
+    # generator command to a function PowerShell has never heard of. That is #597.
+    #
+    # It is also matched by the three history-scrubbing guards in this file (the
+    # Warp-Preexec skip, the `Clear-History -CommandLine` call, and the
+    # AddToHistoryHandler), so all five sites move together or none do.
+    #
+    # `script/check_generator_wrapper_names` enforces the pairing; run it after any
+    # rename here. Do NOT rebrand this to a Zap- prefix: an already-installed pwsh.ps1
+    # (the permanent bootstrap file on Windows, or the bootstrap on a warpified remote
+    # host) keeps defining the old name long after the app binary has moved on.
     function Warp-Run-GeneratorCommand {
         [CmdletBinding()]
         param(
@@ -956,6 +973,8 @@ $null = New-Module -Name Warp-Module -ScriptBlock {
     # bootstrap logic pasted into the PTY and the output of shell startup files.
     Warp-Precmd -status $global:? -code $global:LASTEXITCODE
 
+    # `Warp-Run-GeneratorCommand` must stay in this export list: the Rust app invokes it
+    # by name from outside the module. See the MATCHED PAIR note at its definition.
     Export-ModuleMember -Function clear, Clear-Host, Get-EpochTime, Warp-Finish-Update, Warp-Handle-DistUpgrade, Warp-Run-GeneratorCommand, Warp-Finish-Bootstrap
 }
 
