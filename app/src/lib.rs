@@ -935,6 +935,15 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
         timer.mark_interval_end("LOG_FILE_SETUP_COMPLETE");
     }
 
+    // Claim a background-only process type before anything else can reach
+    // AppKit, so a headless launch never acquires a Dock tile.
+    #[cfg(target_os = "macos")]
+    if launch_mode.is_headless()
+        && let Err(e) = platform::mac::mark_process_as_background_only()
+    {
+        log::warn!("Failed to mark process as background-only: {e:#}");
+    }
+
     // Adjust resource limits early, before doing other work, to ensure that
     // any children we spawn (like the terminal server) inherit our adjusted
     // rlimits.
@@ -1130,8 +1139,10 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         )
     };
 
+    // A headless invocation has no Dock presence, so it performs no Dock-visible
+    // setup at all (Dock icon, Dock menu, menu bar).
     #[cfg(target_os = "macos")]
-    {
+    if !launch_mode.is_headless() {
         use warpui::platform::mac::AppExt;
 
         let activate_on_launch = !launch_mode.is_integration_test()
@@ -1513,7 +1524,13 @@ fn initialize_app(
 
     ctx.set_default_binding_validator(is_binding_cross_platform);
 
-    if FeatureFlag::Autoupdate.is_enabled() {
+    // On macOS this deletes `Contents/MacOS/old` from inside the installed app
+    // bundle, so it runs behind the same `can_autoupdate` guard as the rest of
+    // the autoupdate machinery: an execution mode that never autoupdates must
+    // not mutate that bundle. The bundled CLI runs the GUI executable from
+    // inside the app bundle, so without this it would rewrite a bundle it does
+    // not own.
+    if FeatureFlag::Autoupdate.is_enabled() && AppExecutionMode::as_ref(ctx).can_autoupdate() {
         // Before: remove_old_executable() was called synchronously to clean up the
         // old executable left over from the previous auto-update. Now: moved onto
         // background_executor — across platforms only macOS actually does anything
