@@ -6,7 +6,7 @@ mod renderer_manager;
 mod wgpu;
 
 pub use self::metal::is_integrated_gpu;
-pub use renderer::{Device, Renderer};
+pub use renderer::{Device, MetalDevice, Renderer};
 pub use renderer_manager::RendererManager;
 
 /// Returns `true` if a low power GPU is available for rendering. Typically, this is true for
@@ -17,12 +17,10 @@ pub fn is_low_power_gpu_available() -> bool {
         if #[cfg(wgpu)] {
             crate::r#async::block_on(crate::rendering::wgpu::is_low_power_gpu_available())
         } else {
-            let devices = ::metal::Device::all();
-            let gpu_count = devices.len();
+            let devices = objc2_metal::MTLCopyAllDevices();
+            let gpu_count = devices.count();
             gpu_count > 1
-                && devices
-                    .iter()
-                    .any(metal::is_integrated_gpu)
+                && (0..gpu_count).any(|i| metal::is_integrated_gpu(&devices.objectAtIndex(i)))
         }
     }
 }
