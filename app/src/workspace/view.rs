@@ -9,7 +9,6 @@ pub(crate) mod left_panel;
 pub(crate) mod onboarding;
 pub(crate) mod zap_launch_modal;
 pub(crate) mod right_panel;
-pub(crate) mod server_file_browser;
 mod startup_directory;
 mod tab_grouping;
 #[cfg(test)]
@@ -363,7 +362,6 @@ use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use warp_core::context_flag::ContextFlag;
-use warp_core::HostId;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_util::path::{user_friendly_path, LineAndColumnArg};
 use warpui::fonts::Weight;
@@ -3706,7 +3704,6 @@ impl Workspace {
                 },
                 LeftPanelDisplayedTab::ZapDrive => ToolPanelView::ZapDrive,
                 LeftPanelDisplayedTab::ConversationListView => ToolPanelView::ConversationListView,
-                LeftPanelDisplayedTab::ServerFileBrowser => ToolPanelView::ServerFileBrowser,
                 LeftPanelDisplayedTab::SkillManager => ToolPanelView::SkillManager,
             };
             lp.restore_active_view_from_snapshot(active_view, ctx);
@@ -5497,21 +5494,6 @@ impl Workspace {
             LeftPanelEvent::ZapDrive(drive_event) => {
                 self.handle_warp_drive_event(drive_event, ctx);
             }
-            LeftPanelEvent::ServerFileBrowser(event) => match event {
-                crate::workspace::view::server_file_browser::ServerFileBrowserEvent::OpenRemoteFile {
-                    remote_path,
-                } => {
-                    #[cfg(feature = "local_tty")]
-                    self.open_remote_file(remote_path.clone(), ctx);
-                    #[cfg(not(feature = "local_tty"))]
-                    let _ = remote_path;
-                }
-                crate::workspace::view::server_file_browser::ServerFileBrowserEvent::CdToDirectory {
-                    path,
-                } => {
-                    self.cd_to_remote_directory(path, ctx);
-                }
-            },
             LeftPanelEvent::OpenFileWithTarget {
                 path,
                 target,
@@ -5647,11 +5629,9 @@ impl Workspace {
     /// line:column jump target).
     ///
     /// Used by the remote file tree (`FileTreeEvent::OpenRemoteFile`), remote
-    /// global search matches, the server file browser (always
-    /// `FileTarget::CodeEditor`, via [`Self::open_remote_file`]), and
-    /// Ctrl/Cmd+clicking a remote file path in the terminal (also always
-    /// `FileTarget::CodeEditor`, since a line:column jump only makes sense in
-    /// the code editor).
+    /// global search matches, and Ctrl/Cmd+clicking a remote file path in the
+    /// terminal (always `FileTarget::CodeEditor`, since a line:column jump only
+    /// makes sense in the code editor).
     #[cfg(feature = "local_tty")]
     pub fn open_remote_file_with_target(
         &mut self,
@@ -7366,24 +7346,6 @@ impl Workspace {
         let cd_command = format!("cd {}", shell_words::quote(path_str));
         input_handle.update(ctx, |input_view, ctx| {
             input_view.replace_buffer_content(&cd_command, ctx);
-        });
-    }
-
-    // cd for the remote file browser: unlike the local cd_to_directory, this
-    // directly executes the command instead of filling the input box. The
-    // reason is that switching the working directory in a remote session
-    // needs to reflect back into session state immediately, and this panel
-    // is a right-click-menu-triggered explicit intent that doesn't need a
-    // second confirmation from the user.
-    fn cd_to_remote_directory(&mut self, path: &str, ctx: &mut ViewContext<Self>) {
-        let Some(input_handle) = self.get_active_input_view_handle(ctx) else {
-            log::warn!("No active input view when trying to cd to remote directory");
-            return;
-        };
-
-        let cd_command = format!("cd -- {}", shell_words::quote(path));
-        input_handle.update(ctx, |input_view, ctx| {
-            input_view.try_execute_command(&cd_command, ctx);
         });
     }
 
@@ -14014,13 +13976,6 @@ impl Workspace {
                 if let Ok(std_path) = StandardizedPath::try_new(indexed_path) {
                     let remote_id = RemoteRepositoryIdentifier::new(host_id.clone(), std_path.clone());
                     let pane_group_id = pane_group.id();
-                    self.left_panel_view.update(ctx, |left_panel, ctx| {
-                        left_panel.navigate_server_file_browser(
-                            host_id.clone(),
-                            indexed_path.to_string(),
-                            ctx,
-                        );
-                    });
                     if let Some(file_tree_view) = self
                         .working_directories_model
                         .as_ref(ctx)
@@ -14926,7 +14881,6 @@ impl Workspace {
 
             let window_id = ctx.window_id();
             let path_if_local_clone = path_if_local.clone();
-            let server_file_browser_session = session.clone();
             ActiveSession::handle(ctx).update(ctx, |active_session, ctx| {
                 active_session.set_session_state(
                     window_id,
@@ -14957,38 +14911,6 @@ impl Workspace {
                 if let (Some(sid), Some(cwd)) = (session_id, pwd.clone()) {
                     RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
                         mgr.navigate_to_directory(sid, cwd.clone(), ctx);
-                    });
-                }
-            }
-
-            // Bind the server file browser to the active remote session.
-            // When the remote server is connected, the client path is fast
-            // and feature-complete. Otherwise fall back to
-            // `Session::execute_command` for basic directory browsing.
-            #[cfg(feature = "local_fs")]
-            if let (Some(sid), Some(cwd), Some(s)) =
-                (session_id, pwd.clone(), server_file_browser_session)
-            {
-                // Guarded by `ServerFileBrowser`, to ensure that when this
-                // feature is disabled via `ZAP_UNSTABLE_FEATURES` we don't
-                // quietly fetch the remote directory after an SSH session
-                // becomes active, avoiding any related background activity.
-                if is_remote
-                    && FeatureFlag::ServerFileBrowser.is_enabled()
-                    && FeatureFlag::SshRemoteServer.is_enabled()
-                {
-                    let host_id = RemoteServerManager::as_ref(ctx)
-                        .host_id_for_session(sid)
-                        .cloned()
-                        .unwrap_or_else(|| HostId::new(format!("ssh-{sid:?}")));
-                    self.left_panel_view.update(ctx, |left_panel, ctx| {
-                        left_panel.set_server_file_browser_root(
-                            host_id,
-                            cwd,
-                            Some(sid),
-                            Some(s),
-                            ctx,
-                        );
                     });
                 }
             }
@@ -17076,9 +16998,6 @@ impl Workspace {
                         ToolPanelView::ConversationListView => {
                             crate::t!("workspace-left-panel-agent-conversations")
                         }
-                        ToolPanelView::ServerFileBrowser => {
-                            crate::t!("workspace-left-panel-server-file-browser")
-                        }
                         ToolPanelView::SkillManager => {
                             crate::t!("workspace-left-panel-skill-manager")
                         }
@@ -17141,9 +17060,6 @@ impl Workspace {
                 ToolPanelView::ZapDrive => crate::t!("workspace-left-panel-warp-drive"),
                 ToolPanelView::ConversationListView => {
                     crate::t!("workspace-left-panel-agent-conversations")
-                }
-                ToolPanelView::ServerFileBrowser => {
-                    crate::t!("workspace-left-panel-server-file-browser")
                 }
                 ToolPanelView::SkillManager => {
                     crate::t!("workspace-left-panel-skill-manager")
@@ -19887,9 +19803,6 @@ impl Workspace {
         }
         if WarpDriveSettings::is_warp_drive_enabled(ctx) {
             views.push(ToolPanelView::ZapDrive);
-        }
-        if FeatureFlag::ServerFileBrowser.is_enabled() && FeatureFlag::SshRemoteServer.is_enabled() {
-            views.push(ToolPanelView::ServerFileBrowser);
         }
         // openWarp-only: the Skill manager has no feature flag and is shown by default in local_fs builds.
         if cfg!(feature = "local_fs") {
