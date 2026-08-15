@@ -62,8 +62,8 @@ use super::config::{
 };
 use super::{
     BUILT_IN_MARK_CELL_ASPECT_RATIO, LogoCell, LogoSurface, ZeroStateAnimationElement,
-    ZeroStateMarkStyles, built_in_mark_contains, fitted_logo_size, logo_frame_at,
-    object_frame_at, star_count_for_size,
+    ZeroStateMarkStyles, built_in_mark_contains, fitted_logo_size, logo_frame_at, object_frame_at,
+    object_frame_at_with_background, star_count_for_size, starfield_emitter_x,
 };
 
 const PANEL_SIZE: TuiSize = TuiSize::new(52, 20);
@@ -92,6 +92,18 @@ fn starfield_density_scales_with_the_full_panel_area() {
     assert_eq!(star_count_for_size(TuiSize::new(1_000, 200)), 6_923);
     assert_eq!(star_count_for_size(TuiSize::new(2_000, 200)), 8_192);
     assert_eq!(star_count_for_size(TuiSize::new(u16::MAX, u16::MAX)), 8_192);
+}
+
+#[test]
+fn starfield_emitter_tracks_the_centered_logo_panel() {
+    assert_eq!(starfield_emitter_x(TuiSize::new(80, 20), 48, 32), 63.5);
+    assert_eq!(starfield_emitter_x(TuiSize::new(120, 20), 48, 32), 83.5);
+    assert_eq!(starfield_emitter_x(TuiSize::new(160, 20), 48, 32), 103.5);
+    assert_eq!(
+        starfield_emitter_x(TuiSize::new(60, 20), 48, 32),
+        29.5,
+        "when the logo is hidden, stars should fall back to the screen center"
+    );
 }
 
 fn logo_cells(frame: &super::LogoFrame) -> Vec<(usize, usize, LogoCell)> {
@@ -200,6 +212,39 @@ fn background_stars_move_between_frames() {
     assert_ne!(star_positions(&initial), star_positions(&advanced));
 }
 
+/// Frame-to-frame occupancy must stay bounded so the mark reads as a rotating
+/// object rather than a shimmering field of noise. The pin's `<= 80` bound
+/// holds for this fork's diamond mark unchanged (its worst adjacent-frame
+/// occupancy change over one revolution at this panel size is 41).
+#[test]
+fn adjacent_builtin_frames_have_bounded_cell_churn() {
+    let config = ZeroStateAnimationConfig::default();
+    let size = TuiSize::new(32, 28);
+    let frames = (0..=76)
+        .map(|frame| {
+            object_frame_at_with_background(Duration::from_millis(frame * 66), size, &config, false)
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let max_changed_cells = frames
+        .windows(2)
+        .map(|frames| {
+            frames[0]
+                .cells
+                .iter()
+                .zip(&frames[1].cells)
+                .filter(|(before, after)| before.is_some() != after.is_some())
+                .count()
+        })
+        .max()
+        .unwrap();
+
+    assert!(
+        max_changed_cells <= 80,
+        "adjacent built-in frames changed occupancy in {max_changed_cells} cells"
+    );
+}
+
 #[test]
 fn quarter_turn_is_narrower_and_exposes_the_side() {
     let face = logo_frame_at(Duration::ZERO, PANEL_SIZE).unwrap();
@@ -254,6 +299,14 @@ fn logo_scales_down_while_preserving_cell_aspect() {
         Some((20, 10))
     );
     assert_eq!(fitted_logo_size(TuiSize::new(100, 40), 4.0), Some((68, 17)));
+    // The pin asserts `(30, 12)` here for its 2.5 wordmark aspect ratio; the
+    // same 32-column layout panel fits `(30, 15)` at this fork's symmetric
+    // 2.0 mark aspect ratio.
+    assert_eq!(
+        fitted_logo_size(TuiSize::new(32, 28), BUILT_IN_MARK_CELL_ASPECT_RATIO),
+        Some((30, 15)),
+        "the layout panel should keep the animation compact"
+    );
 }
 
 #[test]
@@ -499,7 +552,11 @@ fn settings_model_reloads_only_object_changes() {
 
 #[test]
 fn representative_ascii_shapes_rotate_through_front_side_and_back() {
-    for art in [DIAMOND_ART, ROCKET_ART, CHEVRON_ART] {
+    for (name, art) in [
+        ("diamond", DIAMOND_ART),
+        ("rocket", ROCKET_ART),
+        ("chevron", CHEVRON_ART),
+    ] {
         let config = custom_config(art, 4.0, 0.18);
         let face = object_frame_at(Duration::ZERO, PANEL_SIZE, &config).unwrap();
         let edge = object_frame_at(Duration::from_secs(1), PANEL_SIZE, &config).unwrap();
@@ -508,7 +565,8 @@ fn representative_ascii_shapes_rotate_through_front_side_and_back() {
         assert!(logo_cells(&face).len() > 20);
         assert!(
             edge.iter_cells()
-                .any(|(_, _, cell)| cell.surface == LogoSurface::Side)
+                .any(|(_, _, cell)| cell.surface == LogoSurface::Side),
+            "{name} should retain visible side stitches at a quarter turn"
         );
         assert!(
             back.iter_cells()

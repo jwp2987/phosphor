@@ -17,6 +17,13 @@
 //! panel next to text) rather than just swapping the animation element in
 //! place. See `zero_state_animation.rs` for the animation itself and why its
 //! built-in mark isn't Warp's logo.
+//!
+//! The pin's later revamp (`076449fd3`) split that single full-bleed layer in
+//! two: a starfield spanning the whole transcript, and a compact object panel
+//! ([`ANIMATION_PANEL_COLS`]) centered in the space left beside the copy, with
+//! the copy itself given an opaque rectangle so stars do not bleed through it.
+//! That is ported here, minus the pin's vertical centering of the copy — see
+//! [`build_zero_state_layout`] for why.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,7 +40,9 @@ use warp_core::channel::ChannelState;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::animation::AnimationClock;
-use warpui_core::elements::tui::{Modifier, TuiConstrainedBox, TuiElement, TuiFlex, TuiStack, TuiText};
+use warpui_core::elements::tui::{
+    Color, Modifier, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiStack, TuiText,
+};
 use warpui_core::{AppContext, Entity, ModelHandle, TuiView, ViewContext};
 
 use crate::autoupdate::{TuiAutoupdateStatus, TuiAutoupdater, TuiAutoupdaterEvent};
@@ -41,7 +50,7 @@ use crate::tui_builder::TuiUiBuilder;
 use crate::ui::abbreviate_home_prefix;
 use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationElement,
-    ZeroStateMarkStyles,
+    ZeroStateMarkStyles, ZeroStateStarfieldElement,
 };
 
 /// Cap on "What's new" bullets, mirroring the compact zero-state mock.
@@ -60,6 +69,11 @@ const MAX_CHANGELOG_BULLETS: usize = 3;
 /// `LEFT_COLUMN_COLS`. See [`build_zero_state_text_column`] for the full
 /// tradeoff.
 const LEFT_COLUMN_COLS: u16 = 48;
+
+/// Width of the animation region centered in the space beside the copy. This
+/// keeps the mark secondary to the copy and input while leaving enough cells
+/// for its wireframe detail.
+const ANIMATION_PANEL_COLS: u16 = 32;
 
 // ---------------------------------------------------------------------------
 // TuiZeroStateView
@@ -173,10 +187,76 @@ impl TuiView for TuiZeroStateView {
                 background: builder.muted_text_style(),
             },
         )
+        .without_background_stars()
+        .finish();
+        let starfield = ZeroStateStarfieldElement::new(
+            self.clock,
+            builder.muted_text_style(),
+            LEFT_COLUMN_COLS,
+            ANIMATION_PANEL_COLS,
+        )
         .finish();
         let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
-        TuiStack::new().child(animation).child(text_column).finish()
+        build_zero_state_layout(
+            starfield,
+            animation,
+            text_column,
+            builder.transcript_background(),
+        )
     }
+}
+
+/// Centers the mark within the space beside the copy and gives the copy an
+/// opaque rectangle so stars do not bleed through it. Reserving the copy column
+/// before measuring the animation also hides the artwork when a narrow terminal
+/// cannot display both regions.
+///
+/// **Deviation from the pin (`076449fd3`):** upstream also *vertically centers*
+/// the copy block, wrapping it in a `TuiFlex::column` between two flex spacers.
+/// This fork keeps the copy top-anchored. The zero state's text column grows by
+/// several rows as content resolves asynchronously (the changelog bullets, the
+/// project path header — which this fork renders at its natural width outside
+/// the constrained box, so it can also re-wrap — the discovered rules/skills,
+/// and the MCP line). Top-anchored, those arrivals only push rows downward;
+/// centered, each one shifts the entire block up by half its height, and a
+/// previous port measured a two-row jump on the changelog load alone. The
+/// horizontal half of the pin's layout (the reserved copy column, the centered
+/// [`ANIMATION_PANEL_COLS`] panel, the full-bleed starfield) is ported as-is;
+/// only the vertical centering is dropped. See the module doc comment.
+fn build_zero_state_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+    background: Color,
+) -> Box<dyn TuiElement> {
+    let copy_column_reservation = TuiConstrainedBox::new(TuiText::new("").finish())
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+    let animation = TuiConstrainedBox::new(animation)
+        .with_max_cols(ANIMATION_PANEL_COLS)
+        .finish();
+    let animation_region = TuiFlex::row()
+        .flex_child(TuiText::new("").finish())
+        .child(animation)
+        .flex_child(TuiText::new("").finish())
+        .finish();
+    let animation_layer = TuiFlex::row()
+        .child(copy_column_reservation)
+        .flex_child(animation_region)
+        .finish();
+
+    // The container measures to the copy's own rectangle, so the opaque fill
+    // covers exactly the copy and the stack leaves it at the top of the view.
+    let overlay_layer = TuiContainer::new(text_column)
+        .with_background(background)
+        .finish();
+
+    TuiStack::new()
+        .child(starfield)
+        .child(animation_layer)
+        .child(overlay_layer)
+        .finish()
 }
 
 /// Assembles the text column overlaid on top of the animation layer: the

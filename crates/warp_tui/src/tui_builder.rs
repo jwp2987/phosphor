@@ -259,6 +259,11 @@ impl TuiUiBuilder {
         }
     }
 
+    /// Solid form of the transcript's base background for opaque overlays.
+    pub(crate) fn transcript_background(&self) -> Color {
+        cell_color(self.base_background())
+    }
+
     /// Accent-colored border style for focused/primary containers. The design
     /// uses the cyan token at 50%; pre-blend it because terminal cells do not
     /// preserve alpha.

@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use uuid::Uuid;
 use warp::tui_export::{
@@ -7,15 +9,21 @@ use warp::tui_export::{
 };
 use warpui::{EntityIdMap, SingletonEntity};
 use warpui_core::App;
+use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
-    TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
-    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, text_width,
+    Color, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, TuiStyle, TuiText, text_width,
 };
 
 use super::{
-    LEFT_COLUMN_COLS, autoupdate_status_label, build_zero_state_text_column, mcp_status_label,
+    ANIMATION_PANEL_COLS, LEFT_COLUMN_COLS, autoupdate_status_label, build_zero_state_layout,
+    build_zero_state_text_column, mcp_status_label,
 };
 use crate::autoupdate::TuiAutoupdateStatus;
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationElement, ZeroStateMarkStyles,
+    ZeroStateStarfieldElement,
+};
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
     TuiMcpServerSnapshot {
@@ -138,6 +146,150 @@ fn render_to_buffer(
         );
     }
     buffer
+}
+
+/// A stand-in starfield: every cell of an 80x9 region filled, so any cell the
+/// copy rectangle fails to clear is visible as a leftover `*`.
+fn dense_star_layer(width: usize, height: usize) -> Box<dyn TuiElement> {
+    let stars = (0..height)
+        .map(|_| "*".repeat(width))
+        .collect::<Vec<_>>()
+        .join("\n");
+    TuiText::new(stars).finish()
+}
+
+/// The copy block gets an opaque rectangle sized to its own content: stars are
+/// cleared beneath the copy and kept everywhere else.
+///
+/// Adapted from the pin's
+/// `zero_state_copy_content_rectangle_is_centered_and_opaque_without_covering_margins`
+/// (`076449fd3`). The pin centers the copy vertically and therefore asserts the
+/// rectangle at rows 3..=5 of a 9-row view; this fork keeps the copy
+/// top-anchored (see `build_zero_state_layout`), so the same rectangle sits at
+/// rows 0..=2. The opacity and margin assertions are otherwise identical.
+#[test]
+fn zero_state_copy_content_rectangle_is_opaque_without_covering_margins() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let layout = build_zero_state_layout(
+                dense_star_layer(80, 9),
+                TuiText::new("").finish(),
+                TuiText::new("copy here\n\nline").finish(),
+                Color::Red,
+            );
+            let buffer = render_to_buffer(layout, ctx, 80, 9);
+            let lines = buffer.to_lines();
+            assert_eq!(&lines[0][..9], "copy here");
+            assert_eq!(&lines[2][..4], "line");
+            // Inside the copy rectangle: opaque fill, no stars left showing.
+            for y in 0..=2 {
+                for x in 0..9 {
+                    assert_ne!(buffer[(x, y)].symbol(), "*");
+                    assert_eq!(buffer[(x, y)].bg, Color::Red);
+                }
+            }
+            // Outside it: the starfield is untouched and unstyled.
+            assert_eq!(buffer[(9, 0)].symbol(), "*");
+            assert_eq!(buffer[(1, 3)].symbol(), "*");
+            assert_eq!(buffer[(9, 0)].bg, Color::Reset);
+            assert_eq!(buffer[(1, 3)].bg, Color::Reset);
+        });
+    });
+}
+
+#[test]
+fn zero_state_starfield_spans_the_full_width() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let layout = build_zero_state_layout(
+                ZeroStateStarfieldElement::new(
+                    AnimationClock::starting_at(Duration::ZERO),
+                    TuiStyle::default(),
+                    LEFT_COLUMN_COLS,
+                    ANIMATION_PANEL_COLS,
+                )
+                .finish(),
+                TuiText::new("").finish(),
+                TuiText::new("").finish(),
+                Color::Reset,
+            );
+            let buffer = render_to_buffer(layout, ctx, 120, 20);
+            let occupied_columns = buffer
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| {
+                    (cell.symbol() != " ").then_some(index % usize::from(buffer.area.width))
+                })
+                .collect::<Vec<_>>();
+
+            assert!(occupied_columns.iter().any(|column| *column < 30));
+            assert!(occupied_columns.iter().any(|column| *column >= 90));
+        });
+    });
+}
+
+#[test]
+fn zero_state_animation_is_centered_in_remaining_space_and_hidden_when_space_is_tight() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let animation = || {
+                let style = TuiStyle::default();
+                ZeroStateAnimationElement::new(
+                    AnimationClock::starting_at(Duration::ZERO),
+                    Arc::new(ZeroStateAnimationConfig::default()),
+                    ZeroStateMarkStyles {
+                        front: style,
+                        back: style,
+                        side: style,
+                        background: style,
+                    },
+                )
+                .without_background_stars()
+                .finish()
+            };
+            let layout = build_zero_state_layout(
+                TuiText::new("").finish(),
+                animation(),
+                TuiText::new("").finish(),
+                Color::Reset,
+            );
+            let wide_width = 120;
+            let wide = render_to_buffer(layout, ctx, wide_width, 20);
+            let occupied = wide
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| {
+                    (cell.symbol() != " ").then_some(index % usize::from(wide.area.width))
+                })
+                .collect::<Vec<_>>();
+            let remaining_cols = wide_width - LEFT_COLUMN_COLS;
+            let animation_start = LEFT_COLUMN_COLS + (remaining_cols - ANIMATION_PANEL_COLS) / 2;
+            let animation_end = animation_start + ANIMATION_PANEL_COLS;
+
+            assert!(!occupied.is_empty());
+            assert!(
+                occupied
+                    .iter()
+                    .all(|column| *column >= usize::from(animation_start)
+                        && *column < usize::from(animation_end))
+            );
+
+            let layout = build_zero_state_layout(
+                TuiText::new("").finish(),
+                animation(),
+                TuiText::new("").finish(),
+                Color::Reset,
+            );
+            assert!(
+                render_to_buffer(layout, ctx, 60, 20)
+                    .content
+                    .iter()
+                    .all(|cell| cell.symbol() == " ")
+            );
+        });
+    });
 }
 
 /// When the terminal is wide enough, the path header must stay on one row and
