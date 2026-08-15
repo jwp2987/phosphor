@@ -37,9 +37,20 @@
 //! - `auth_check_command` (`codex login status`) — tracked with the rest of the
 //!   `auth_check_command` surface in #289; adding it here alone would be an
 //!   uncallable method.
-//! - `requires_verified_platform_plugin` (`FeatureFlag::CodexPlugin`) — same: no
-//!   caller in this fork's driver. Codex plugin installation still happens, via
-//!   `plugin_manager_for(CLIAgent::Codex)` in `AgentDriver::setup_harness`.
+//! - `requires_verified_platform_plugin` (`FeatureFlag::CodexPlugin`) — **declined,
+//!   not merely unported** (#595; see `DECLINED.md`, "Oz platform plugins"). The pin
+//!   returns `true` here so `setup_harness_plugins` hard-fails the run unless
+//!   `orchestration@codex-warp` is installed and current — the reason given upstream
+//!   being that the unattended launch command bypasses hook trust globally, so it
+//!   would rather fail than run without the orchestration hooks. Those hooks report
+//!   into Oz's server-backed `oz run message *` mailbox, which this fork replaced
+//!   with a local on-disk one (`crates/warp_cli/src/agent_mailbox.rs`), so porting
+//!   the gate would turn a working local Codex launch into a hard failure demanding
+//!   a plugin that cannot function here. The plugin-manager side of that surface
+//!   (`install_platform_plugin` and friends) was removed for the same reason.
+//!   Codex *notification* plugin installation still happens, via
+//!   `plugin_manager_for(CLIAgent::Codex)` in `AgentDriver::setup_harness`, and is
+//!   unaffected — it uses the local OSC 777 protocol, not the Oz platform.
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::fs;
