@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
-use super::{osc52_sequences, tmux_passthrough, write_osc52_sequences};
+use super::{osc52_sequences, write_osc52_sequences};
 
 #[test]
 fn osc52_encodes_utf8_for_clipboard_and_primary() {
@@ -15,12 +15,13 @@ fn osc52_encodes_utf8_for_clipboard_and_primary() {
     );
 }
 
+// The encoder's own contract (`\x1bPtmux;` + doubled escapes + `\x1b\\`) is
+// asserted where the encoder now lives, in
+// `warp_terminal::model::escape_sequences_test::tmux_passthrough_wraps_and_doubles_escapes`.
+// What is left here is the part specific to this module: that *each* of the two
+// OSC 52 targets gets wrapped.
 #[test]
-fn tmux_passthrough_wraps_and_doubles_escape_bytes() {
-    assert_eq!(
-        tmux_passthrough("\x1b]52;c;abc\x07"),
-        "\x1bPtmux;\x1b\x1b]52;c;abc\x07\x1b\\"
-    );
+fn osc52_tmux_passthrough_wraps_each_target() {
     let wrapped = osc52_sequences("x", true);
     assert_eq!(wrapped.matches("\x1bPtmux;").count(), 2);
     assert_eq!(wrapped.matches("\x1b\x1b]52;").count(), 2);

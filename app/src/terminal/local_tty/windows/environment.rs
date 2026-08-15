@@ -6,6 +6,7 @@ use crate::terminal::focus_env::{FOCUS_URL_ENV, TERMINAL_SESSION_UUID_ENV};
 use crate::terminal::local_tty::shell::{extra_path_entries, ssh_socket_dir};
 use itertools::Itertools;
 use warp_core::channel::ChannelState;
+use warp_core::cli_agent_protocol::{WARP_CLI_AGENT_PROTOCOL_VERSION_ENV, WARP_CLIENT_VERSION_ENV};
 use warp_core::features::FeatureFlag;
 use windows::core::{HSTRING, PCWSTR};
 use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
@@ -28,8 +29,6 @@ const SSH_SOCKET_DIR: &str = "SSH_SOCKET_DIR";
 const PATH_APPEND_NAME: &str = "WARP_PATH_APPEND";
 const WSLENV: &str = "WSLENV";
 const HISTIGNORE: &str = "HISTIGNORE";
-const WARP_CLIENT_VERSION_ENV: &str = "WARP_CLIENT_VERSION";
-const WARP_CLI_AGENT_PROTOCOL_VERSION_ENV: &str = "WARP_CLI_AGENT_PROTOCOL_VERSION";
 
 /// Wraps the value of an env var plus its key with preferred casing.
 #[derive(Clone, Debug)]
