@@ -2416,45 +2416,6 @@ here, so this list stays a work ledger rather than a history.
       portable: neither the test nor the `INLINE_MENU_CAN_CLEAR_SELECTED_FLAG`
       carve-out for cut exists here. Porting needs a production change.
 
-## FOLLOW-UP FROM #600 (2026-08-15) — the *other* unconditional plugin install
-
-#600 fixed the local-child-pane call site
-(`app/src/pane_group/pane/local_harness_launch.rs`, now
-`ensure_local_claude_child_plugins`). Tracing the pin's shape for that fix
-surfaced the same divergence at the second call site, which #600 deliberately
-did **not** touch — it is a different pin function and a different failure
-mode. Recorded here rather than as a GitHub issue because the agent that found
-it had no remote-write authority.
-
-- [ ] **`AgentDriver::setup_harness` installs the notification plugin
-      unconditionally** (`app/src/ai/agent_sdk/driver.rs:1125`,
-      `if let Err(e) = manager.install().await`). The pin splits this into
-      `setup_harness_plugins` → `setup_notification_plugin`
-      (`driver.rs:2671-2723` at `02b53fcd8`), which does two things this fork's
-      version does not: it **returns early when `!manager.can_auto_install()`**,
-      and it branches `needs_update()` → `update()`, else `!is_installed()` →
-      `install()`. Two consequences here. First, every third-party-harness
-      launch shells out to a full `plugin marketplace add` + `plugin install`
-      even when the plugin is already current — the same redundant subprocess
-      work #600 removed from the child-pane path. Second, and unlike the
-      child-pane path, `plugin_manager_for` can hand back a manager whose
-      `can_auto_install()` is `false`: `OpenCodePluginManager` and
-      `DeepSeekPluginManager` both return `false` unconditionally, and
-      `CodexPluginManager` returns `FeatureFlag::CodexPlugin.is_enabled()`.
-      For those, `install()` falls through to the trait's default impl, which
-      returns `Err("Auto-install not supported for this agent")` — so this line
-      logs a warning on **every** OpenCode/DeepSeek harness launch, describing
-      a failure that is really "this agent was never auto-installable".
-      Note the marketplace-override guard is *not* part of this one: the pin's
-      `setup_notification_plugin` does not call
-      `has_local_marketplace_override` either, only
-      `ensure_local_claude_child_plugins` does. Port the `can_auto_install` +
-      `needs_update`/`is_installed` shape only. The pin's version also wraps each
-      call in `SetupClientEventReporter::record_result`; that reporter has no
-      definition anywhere in this fork (`grep -r SetupClientEventReporter app/src`
-      is empty), so port the branching and drop the reporting, rather than
-      dragging in a telemetry surface to carry it.
-
 ## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
 
 `ORACLE.md` pins the Warp *commit*, but upstream's `Cargo.toml` pins several
@@ -2501,6 +2462,45 @@ Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly*
 - **`tink-core` / `tink-proto` / `tink-hybrid`** are upstream-only and correctly
   absent: they back `crates/managed_secrets`' envelope encryption, and this fork
   wires `DisabledManagedSecretsClient`.
+
+## FOLLOW-UP FROM #600 (2026-08-15) — the *other* unconditional plugin install
+
+#600 fixed the local-child-pane call site
+(`app/src/pane_group/pane/local_harness_launch.rs`, now
+`ensure_local_claude_child_plugins`). Tracing the pin's shape for that fix
+surfaced the same divergence at the second call site, which #600 deliberately
+did **not** touch — it is a different pin function and a different failure
+mode. Recorded here rather than as a GitHub issue because the agent that found
+it had no remote-write authority.
+
+- [ ] **`AgentDriver::setup_harness` installs the notification plugin
+      unconditionally** (`app/src/ai/agent_sdk/driver.rs:1125`,
+      `if let Err(e) = manager.install().await`). The pin splits this into
+      `setup_harness_plugins` → `setup_notification_plugin`
+      (`driver.rs:2671-2723` at `02b53fcd8`), which does two things this fork's
+      version does not: it **returns early when `!manager.can_auto_install()`**,
+      and it branches `needs_update()` → `update()`, else `!is_installed()` →
+      `install()`. Two consequences here. First, every third-party-harness
+      launch shells out to a full `plugin marketplace add` + `plugin install`
+      even when the plugin is already current — the same redundant subprocess
+      work #600 removed from the child-pane path. Second, and unlike the
+      child-pane path, `plugin_manager_for` can hand back a manager whose
+      `can_auto_install()` is `false`: `OpenCodePluginManager` and
+      `DeepSeekPluginManager` both return `false` unconditionally, and
+      `CodexPluginManager` returns `FeatureFlag::CodexPlugin.is_enabled()`.
+      For those, `install()` falls through to the trait's default impl, which
+      returns `Err("Auto-install not supported for this agent")` — so this line
+      logs a warning on **every** OpenCode/DeepSeek harness launch, describing
+      a failure that is really "this agent was never auto-installable".
+      Note the marketplace-override guard is *not* part of this one: the pin's
+      `setup_notification_plugin` does not call
+      `has_local_marketplace_override` either, only
+      `ensure_local_claude_child_plugins` does. Port the `can_auto_install` +
+      `needs_update`/`is_installed` shape only. The pin's version also wraps each
+      call in `SetupClientEventReporter::record_result`; that reporter has no
+      definition anywhere in this fork (`grep -r SetupClientEventReporter app/src`
+      is empty), so port the branching and drop the reporting, rather than
+      dragging in a telemetry surface to carry it.
 
 ## WINDOWS TUI INSTALLER — deferred 2026-08-15 (maintainer's call)
 
