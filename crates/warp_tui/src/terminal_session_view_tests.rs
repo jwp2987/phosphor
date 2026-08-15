@@ -807,10 +807,11 @@ fn todo_menu_renders_active_list_and_toggles_through_shared_suggestions_mode() {
 
         let rendered = render_session(&mut app, &view, 80, 24).join("\n");
         let completed = rendered.find("✓ Completed task").unwrap();
-        // `•`, not the pin's `●`: this fork's `todo_status_glyph` uses the
-        // narrower bullet for in-progress rows, and this port does not change
-        // the existing glyph vocabulary.
-        let current = rendered.find("• Current task").unwrap();
+        // `●` (U+25CF), matching both pins. The fork had diverged to the
+        // narrower `•` (U+2022), recorded nowhere (#584), while its sibling
+        // arms (`✓`, `■`) matched the pin exactly. The maintainer adopted the
+        // pin's glyph, so this assertion moved with it.
+        let current = rendered.find("● Current task").unwrap();
         let later = rendered.find("◌ Later task").unwrap();
         assert!(rendered.contains("Tasks 1/3"));
         assert!(completed < current && current < later);
