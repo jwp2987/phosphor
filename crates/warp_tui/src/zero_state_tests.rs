@@ -159,36 +159,38 @@ fn dense_star_layer(width: usize, height: usize) -> Box<dyn TuiElement> {
 }
 
 /// The copy block gets an opaque rectangle sized to its own content: stars are
-/// cleared beneath the copy and kept everywhere else.
+/// cleared beneath the copy and kept everywhere else, and the rectangle keeps
+/// `Color::Reset` so it inherits the host terminal background instead of
+/// stamping a concrete RGB fill over it.
 ///
 /// Adapted from the pin's
-/// `zero_state_copy_content_rectangle_is_centered_and_opaque_without_covering_margins`
-/// (`076449fd3`). The pin centers the copy vertically and therefore asserts the
-/// rectangle at rows 3..=5 of a 9-row view; this fork keeps the copy
-/// top-anchored (see `build_zero_state_layout`), so the same rectangle sits at
-/// rows 0..=2. The opacity and margin assertions are otherwise identical.
+/// `zero_state_copy_rectangle_is_opaque_without_changing_the_background_color`
+/// (`076449fd3` + `8c82da6b5`). The pin centers the copy vertically and
+/// therefore asserts the rectangle at rows 3..=5 of a 9-row view; this fork
+/// keeps the copy top-anchored (see `build_zero_state_layout`), so the same
+/// rectangle sits at rows 0..=2. The assertions are otherwise identical.
 #[test]
-fn zero_state_copy_content_rectangle_is_opaque_without_covering_margins() {
+fn zero_state_copy_rectangle_is_opaque_without_changing_the_background_color() {
     App::test((), |app| async move {
         app.read(|ctx| {
             let layout = build_zero_state_layout(
                 dense_star_layer(80, 9),
                 TuiText::new("").finish(),
                 TuiText::new("copy here\n\nline").finish(),
-                Color::Red,
             );
             let buffer = render_to_buffer(layout, ctx, 80, 9);
             let lines = buffer.to_lines();
             assert_eq!(&lines[0][..9], "copy here");
             assert_eq!(&lines[2][..4], "line");
-            // Inside the copy rectangle: opaque fill, no stars left showing.
+            // Inside the copy rectangle: opaque, no stars left showing, and
+            // still the host terminal's own background.
             for y in 0..=2 {
                 for x in 0..9 {
                     assert_ne!(buffer[(x, y)].symbol(), "*");
-                    assert_eq!(buffer[(x, y)].bg, Color::Red);
+                    assert_eq!(buffer[(x, y)].bg, Color::Reset);
                 }
             }
-            // Outside it: the starfield is untouched and unstyled.
+            // Outside it: the starfield is untouched.
             assert_eq!(buffer[(9, 0)].symbol(), "*");
             assert_eq!(buffer[(1, 3)].symbol(), "*");
             assert_eq!(buffer[(9, 0)].bg, Color::Reset);
@@ -211,7 +213,6 @@ fn zero_state_starfield_spans_the_full_width() {
                 .finish(),
                 TuiText::new("").finish(),
                 TuiText::new("").finish(),
-                Color::Reset,
             );
             let buffer = render_to_buffer(layout, ctx, 120, 20);
             let occupied_columns = buffer
@@ -252,7 +253,6 @@ fn zero_state_animation_is_centered_in_remaining_space_and_hidden_when_space_is_
                 TuiText::new("").finish(),
                 animation(),
                 TuiText::new("").finish(),
-                Color::Reset,
             );
             let wide_width = 120;
             let wide = render_to_buffer(layout, ctx, wide_width, 20);
@@ -280,7 +280,6 @@ fn zero_state_animation_is_centered_in_remaining_space_and_hidden_when_space_is_
                 TuiText::new("").finish(),
                 animation(),
                 TuiText::new("").finish(),
-                Color::Reset,
             );
             assert!(
                 render_to_buffer(layout, ctx, 60, 20)

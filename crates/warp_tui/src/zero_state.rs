@@ -197,12 +197,7 @@ impl TuiView for TuiZeroStateView {
         )
         .finish();
         let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
-        build_zero_state_layout(
-            starfield,
-            animation,
-            text_column,
-            builder.transcript_background(),
-        )
+        build_zero_state_layout(starfield, animation, text_column)
     }
 }
 
@@ -227,7 +222,6 @@ fn build_zero_state_layout(
     starfield: Box<dyn TuiElement>,
     animation: Box<dyn TuiElement>,
     text_column: Box<dyn TuiElement>,
-    background: Color,
 ) -> Box<dyn TuiElement> {
     let copy_column_reservation = TuiConstrainedBox::new(TuiText::new("").finish())
         .with_min_cols(LEFT_COLUMN_COLS)
@@ -248,8 +242,12 @@ fn build_zero_state_layout(
 
     // The container measures to the copy's own rectangle, so the opaque fill
     // covers exactly the copy and the stack leaves it at the top of the view.
+    // `Color::Reset` keeps the host terminal's own background while still
+    // registering as a stack-local opaque rectangle, so the stars below are
+    // cleared without introducing a concrete RGB fill (see `TuiStack`'s
+    // opaque-region handling in warpui_core).
     let overlay_layer = TuiContainer::new(text_column)
-        .with_background(background)
+        .with_background(Color::Reset)
         .finish();
 
     TuiStack::new()
