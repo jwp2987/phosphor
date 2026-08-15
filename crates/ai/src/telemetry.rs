@@ -18,7 +18,16 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-#[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+// Unconditionally `allow(dead_code)`: the variants' payload fields are never
+// *read* in any configuration, because `send_telemetry_from_ctx!` type-checks
+// the event in an `if false` branch and discards it (see the module docs above).
+// That is the point of keeping the enum, so the warning has nothing to tell us.
+// This was previously gated on `not(feature = "local_fs")`, which left ~10
+// dead-field warnings in every default build.
+//
+// Deleting the fields instead would mean rewriting the pin's `send_telemetry_*`
+// call sites, which is exactly what the module docs say to preserve.
+#[allow(dead_code)]
 #[derive(Clone)]
 pub enum AITelemetryEvent {
     MerkleTreeSnapshotRebuildSuccess {

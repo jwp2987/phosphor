@@ -26,8 +26,6 @@ use super::super::proto::{
 #[cfg(feature = "local_fs")]
 use super::PendingCodebaseRetrieval;
 #[cfg(feature = "local_fs")]
-use ::ai::index::full_source_code_embedding::RetrievalID;
-#[cfg(feature = "local_fs")]
 use ::ai::index::full_source_code_embedding::manager::RetrieveFileError;
 #[cfg(feature = "local_fs")]
 use warp_util::standardized_path::StandardizedPath;

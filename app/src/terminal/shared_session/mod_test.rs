@@ -1,7 +1,6 @@
 use crate::terminal::model::block::TranscriptScope;
 use super::{decode_scrollback, SharedSessionScrollbackType};
 
-use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::assert_lines_approx_eq;
 use crate::terminal::color::List;
 use crate::terminal::model::test_utils::block_size;

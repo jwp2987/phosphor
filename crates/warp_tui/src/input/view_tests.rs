@@ -227,6 +227,42 @@ fn agent_mode_placeholder_hint_renders_only_while_empty() {
         });
     });
 }
+
+/// The `?` / `/status` overlay already lists the shortcuts, so the ghosted
+/// "? for shortcuts" hint underneath it is redundant and self-contradictory.
+///
+/// The pin suppresses the hint while that sheet is open, but this fork's live
+/// render path did not: the suppression lived only in the unwired copy under
+/// `terminal_session_view::state`, whose tests passed against code nothing
+/// rendered.
+#[test]
+fn placeholder_hint_is_suppressed_while_the_read_only_overlay_is_open() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view(ctx);
+            let line = render_input_buffer(&view, ctx).to_lines()[0].clone();
+            assert!(
+                line.contains("for shortcuts"),
+                "expected the hint before the overlay opens: {line:?}"
+            );
+
+            let suggestions_mode = view.as_ref(ctx).suggestions_mode.clone();
+            suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts),
+                    ctx,
+                )
+            });
+
+            let line = render_input_buffer(&view, ctx).to_lines()[0].clone();
+            assert!(
+                !line.contains("for shortcuts"),
+                "hint should be suppressed while the overlay is open: {line:?}"
+            );
+        });
+    });
+}
+
 #[test]
 fn orchestration_hint_is_ghosted_only_while_tabs_are_available_and_input_is_empty() {
     App::test((), |mut app| async move {
@@ -244,9 +280,15 @@ fn orchestration_hint_is_ghosted_only_while_tabs_are_available_and_input_is_empt
         app.read(|ctx| {
             let line = &render_input_buffer(&view, ctx).to_lines()[0];
             let hint = crate::input_hints::agent_input_hint(true, true);
+            // The zero-state hint with orchestration available is wider than the
+            // test buffer, so the rendered line is the expected text truncated at
+            // the buffer edge -- assert the prefix relationship in that direction
+            // rather than requiring the whole hint to fit.
+            let expected = format!(" {hint}");
+            let rendered = line.trim_end();
             assert!(
-                line.starts_with(&format!(" {hint}")),
-                "unexpected line: {line:?}"
+                expected.starts_with(rendered) && rendered.contains("Shift + ↑ for other agents"),
+                "unexpected line: {line:?} (expected a prefix of {expected:?})"
             );
         });
 

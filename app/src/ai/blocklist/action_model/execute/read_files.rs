@@ -6,7 +6,7 @@ use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 use crate::{
     ai::{
         agent::{
-            AIAgentAction, AIAgentActionResultType, AIAgentActionType, AnyFileContent, FileContext,
+            AIAgentAction, AIAgentActionResultType, AIAgentActionType,
             ReadFilesFailedFile, ReadFilesRequest, ReadFilesResult,
         },
         blocklist::BlocklistAIPermissions,

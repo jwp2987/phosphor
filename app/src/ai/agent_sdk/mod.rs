@@ -18,7 +18,7 @@ use crate::workflows::workflow::Workflow;
 use ai::api_keys::{ApiKeyManager, AwsCredentialsRefreshStrategy};
 use anyhow::Context;
 use warp_cli::{
-    agent::{AgentCommand, AgentMessageCommand, AgentProfileCommand, OutputFormat},
+    agent::{AgentCommand, AgentProfileCommand, OutputFormat},
     mcp::MCPCommand,
     model::ModelCommand,
     CliCommand, GlobalOptions,

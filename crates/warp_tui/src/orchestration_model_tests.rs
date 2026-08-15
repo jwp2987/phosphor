@@ -14,7 +14,7 @@
 
 use warp::tui_export::{
     AIConversationId, BlocklistAIHistoryModel, Harness, StartAgentExecutionMode,
-    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, StartAgentRequest,
+    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, 
     register_tui_session_view_test_singletons,
 };
 use warpui::platform::WindowStyle;

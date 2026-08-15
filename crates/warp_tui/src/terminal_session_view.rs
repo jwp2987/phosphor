@@ -1,7 +1,7 @@
 //! Authenticated terminal-session TUI surface.
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
@@ -2327,7 +2327,7 @@ impl TuiTerminalSessionView {
 
         ctx.notify();
         let future =
-            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| match &target {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _ctx| match &target {
                 TuiConversationRestoreTarget::Local(conversation_id) => {
                     history.load_conversation_data(*conversation_id)
                 }

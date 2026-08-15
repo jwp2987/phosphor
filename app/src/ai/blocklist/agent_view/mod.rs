@@ -22,7 +22,6 @@ pub use agent_view_block::*;
 pub use controller::*;
 pub use ephemeral_message_model::*;
 pub use inline_agent_view_header::*;
-pub use orchestration_pill_bar::{render_orchestration_breadcrumbs, OrchestrationPillBar};
 use warpui::fonts::Properties;
 pub use zero_state_block::*;
 

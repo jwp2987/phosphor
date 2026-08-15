@@ -15,6 +15,16 @@
 //! prompt construction path that breaks byte-level stability will fail an assertion
 //! here.
 
+// `warp_multi_agent_api` is an external pinned proto crate
+// (warpdotdev/warp-proto-apis). Several of its fields carry `[deprecated = true]`
+// in the .proto, but the deprecation is aspirational -- e.g. `InputContext::
+// executed_shell_commands` is marked "TODO: these fields should be _attachments_,
+// not part of the input context" with no replacement field defined yet. The
+// generated Rust structs still require every field to be initialised, so
+// constructing one in a test cannot avoid naming them.
+#![allow(deprecated)]
+
+
 use crate::ai::agent::{MCPContext, MCPServer};
 use api::message;
 use warp_multi_agent_api as api;

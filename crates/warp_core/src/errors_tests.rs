@@ -4,7 +4,7 @@ use log::{Level, Log, Metadata, Record};
 
 // Deliberately explicit (not `use super::*;`) — `errors` also has a private `anyhow` submodule
 // (`AnyhowErrorExt`), and a glob import here would shadow the `anyhow` crate used below.
-use super::{report_error, report_if_error, ReportErrorLogMode, LOG_TARGET};
+use super::{ReportErrorLogMode, LOG_TARGET};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LogEntry {

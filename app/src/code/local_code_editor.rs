@@ -61,7 +61,6 @@ use lsp::{
 use lsp_types::FormattingOptions;
 use markdown_parser::FormattedText;
 use num_traits::SaturatingSub;
-use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 #[cfg(feature = "local_fs")]
 use repo_metadata::repositories::DetectedRepositories;

@@ -2,9 +2,7 @@ use crate::terminal::model::block::TranscriptScope;
 use float_cmp::assert_approx_eq;
 use warpui::App;
 
-use crate::{
-    ai::blocklist::agent_view::AgentViewState,
-    terminal::{
+use crate::terminal::{
         event_listener::ChannelEventListener,
         model::{
             ansi::{self, Handler as _, PreexecValue},
@@ -14,8 +12,7 @@ use crate::{
             },
             test_utils,
         },
-    },
-};
+    };
 
 use super::*;
 

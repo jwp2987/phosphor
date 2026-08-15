@@ -54,7 +54,7 @@ pub(crate) struct TuiCompletionsMenuEvent;
 /// A completion accepted from the popup: the replacement text and the byte span
 /// in the buffer it should overwrite.
 #[derive(Debug, Clone)]
-pub(crate) struct TuiAcceptedCompletion {
+pub struct TuiAcceptedCompletion {
     pub(crate) replacement: String,
     pub(crate) span: Range<usize>,
     /// Whether the caller should insert a trailing space after `replacement`.

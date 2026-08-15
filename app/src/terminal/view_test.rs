@@ -1,4 +1,3 @@
-use crate::terminal::model::block::TranscriptScope;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::pin::pin;

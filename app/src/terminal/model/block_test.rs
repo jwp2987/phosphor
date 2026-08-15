@@ -3,7 +3,6 @@ use std::{collections::HashMap, pin::pin, time::Duration};
 
 use super::*;
 use crate::{
-    ai::blocklist::agent_view::AgentViewState,
     terminal::model::{
         ansi::{Attr, Handler},
         cell::Flags,

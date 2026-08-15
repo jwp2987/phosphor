@@ -32,7 +32,6 @@ use warp_core::ui::appearance::Appearance;
 use warp_core::ui::icons::ICON_DIMENSIONS;
 use warp_editor::render::element::VerticalExpansionBehavior;
 use lsp::LspManagerModel;
-use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warp_util::path::LineAndColumnArg;
 use warpui::elements::Rect;
 use warpui::text::point::Point;

@@ -1,5 +1,4 @@
 use crate::terminal::model::block::TranscriptScope;
-use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::terminal::{
     event_listener::ChannelEventListener,
     model::{

@@ -154,10 +154,14 @@ cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
         mod bundled;
         // `BundledSkill` is the per-host catalog; `BundledSkills` multiplexes the local
-        // one against per-connected-host catalogs keyed by `HostId`. Both are needed
-        // outside this module: the #353 daemon producer serializes a `BundledSkill`,
-        // and `remote_agent_context.rs` inserts/removes remote catalogs on `BundledSkills`.
-        pub use bundled::{BundledSkill, BundledSkills};
+        // one against per-connected-host catalogs keyed by `HostId`. Only `BundledSkill`
+        // is re-exported: the #353 daemon producer serializes one outside this module.
+        //
+        // `BundledSkills` is NOT re-exported. This comment used to claim
+        // `remote_agent_context.rs` operated on it, but that file only references the
+        // like-named `FeatureFlag::BundledSkills`, so the export was unused and the
+        // compiler flagged it. Re-add the export if a real cross-module user appears.
+        pub use bundled::BundledSkill;
         mod skill_manager;
         pub use skill_manager::{
             extract_skill_parent_directory, BundledSkillActivation, SkillManager,

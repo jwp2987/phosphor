@@ -1,3 +1,21 @@
+//! The codebase-embedding index, restored from the pinned oracle by
+//! `ede93eb1 feat(ai): restore the codebase-embedding index core (D2a, unbuilt)`.
+//!
+//! `#![allow(dead_code)]` is deliberate and applies to the whole subtree (lint
+//! levels are inherited by child modules). The restore brought the pin's API
+//! surface across verbatim, but only the paths the app actually drives are wired
+//! up, so roughly ten helpers here are constructed-but-unused: `snapshot::
+//! has_snapshot`, `FragmentMetadata::{empty, is_empty}`, `SerializedTree::
+//! {children, fs_info}`, `PriorityQueue::queued_metadata` and friends.
+//!
+//! They are kept rather than deleted because this fork re-pins against upstream
+//! roughly weekly (see `ORACLE.md`): pruning the pin's helpers would turn every
+//! one of them into a re-pin conflict, for no benefit beyond silencing a lint on
+//! code that is intended to match upstream line-for-line. Revisit if a helper is
+//! still unused after the subsystem is fully wired.
+
+#![allow(dead_code)]
+
 mod changed_files;
 mod chunker;
 mod codebase_index;

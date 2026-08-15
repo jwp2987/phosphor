@@ -1,3 +1,14 @@
+#![allow(dead_code)]
+// Staged port: this module came across from the pinned oracle (see `8c6d3a4c
+// feat(tui): stage warp_tui crate ... (phase 0)` and the `port(tui)` commits) with
+// the upstream API surface intact, but only the paths the TUI actually drives are
+// wired up yet. The unused items here are upstream's, not ours.
+//
+// Kept rather than pruned because this fork re-pins against upstream roughly
+// weekly (`ORACLE.md`); deleting upstream's helpers would turn each one into a
+// re-pin conflict for no gain. Drop this attribute once the module is fully wired
+// and check what is genuinely dead then.
+
 #[cfg(test)]
 use std::rc::Rc;
 use std::sync::{Arc, Weak};
@@ -19,15 +30,6 @@ use crate::transcript_view::TuiTranscriptView;
 use crate::tui_ask_question_view::TuiAskQuestionView;
 use crate::tui_cli_subagent_view::{HAND_BACK_KEY_BINDING, TAKE_CONTROL_KEY_BINDING};
 use crate::tui_permission_prompt::TuiPermissionPrompt;
-
-const ASK_AGENT_HINT: &str = "Ask the agent anything";
-const ORCHESTRATION_HINT: &str = "Shift + ↑ for other agents";
-const SHORTCUTS_HINT: &str = "? for shortcuts";
-const SHELL_MODE_HINT: &str = "! for shell mode";
-const COMMANDS_HINT: &str = "/ for commands";
-const CONVERSATIONS_HINT: &str = "← for conversations";
-const HINT_SEPARATOR: &str = " • ";
-pub(crate) const SHELL_HINT: &str = "Run a shell command • ? for shortcuts • esc for agent mode";
 
 enum TuiTerminalSessionStateSource {
     Session {
@@ -482,6 +484,18 @@ impl TuiTerminalSessionState {
         )
     }
 
+    /// The pin's suppression-aware wrapper around the input hint.
+    ///
+    /// Not yet wired into the live render path: `TuiInputView::…ghost_text`
+    /// (`input/view.rs`) calls `input_hints::agent_input_hint` directly and has
+    /// no equivalent of the read-only-overlay check below, so the rendered hint
+    /// stays visible while the `?` / `/status` overlay is up. Kept — with its
+    /// tests — so that gap stays recorded rather than closing over silently;
+    /// deleting it would take the only assertions of the pin's behaviour with it.
+    ///
+    /// The hint *strings* are no longer duplicated here: this now delegates to
+    /// `crate::input_hints`, the module the live path uses.
+    #[allow(dead_code)]
     pub(crate) fn hint_text(&self) -> Option<String> {
         let state = self.state();
         let TuiInteractionState::Composer(composer) = &state.interaction else {
@@ -493,10 +507,11 @@ impl TuiTerminalSessionState {
             return None;
         }
         Some(match composer.mode {
-            TuiComposerMode::Shell => SHELL_HINT.to_owned(),
-            TuiComposerMode::Agent { .. } => {
-                agent_input_hint(state.transcript_is_empty, state.orchestration_available)
-            }
+            TuiComposerMode::Shell => crate::input_hints::SHELL_HINT.to_owned(),
+            TuiComposerMode::Agent { .. } => crate::input_hints::agent_input_hint(
+                state.transcript_is_empty,
+                state.orchestration_available,
+            ),
         })
     }
 
@@ -625,25 +640,6 @@ impl TuiTerminalSessionState {
         }
         sections
     }
-}
-
-fn agent_input_hint(transcript_is_empty: bool, orchestration_tabs_available: bool) -> String {
-    let mut hints = Vec::with_capacity(5);
-    if transcript_is_empty {
-        hints.push(SHORTCUTS_HINT);
-        if orchestration_tabs_available {
-            hints.push(ORCHESTRATION_HINT);
-        }
-        hints.extend([COMMANDS_HINT, CONVERSATIONS_HINT]);
-    } else {
-        hints.push(ASK_AGENT_HINT);
-        hints.push(SHORTCUTS_HINT);
-        if orchestration_tabs_available {
-            hints.push(ORCHESTRATION_HINT);
-        }
-        hints.extend([SHELL_MODE_HINT, COMMANDS_HINT]);
-    }
-    hints.join(HINT_SEPARATOR)
 }
 
 #[cfg(test)]

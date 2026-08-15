@@ -51,7 +51,7 @@ pub(super) fn upsert_agent_conversation<'a>(
     tasks: impl IntoIterator<Item = &'a api::Task>,
     conversation_data_param: AgentConversationData,
 ) -> Result<(), UpsertConversationError> {
-    use diesel::ExpressionMethods;
+    
     use diesel::QueryDsl;
     use schema::agent_conversations::dsl::*;
     use schema::agent_tasks::dsl as tasks_dsl;

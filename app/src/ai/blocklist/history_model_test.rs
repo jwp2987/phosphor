@@ -3351,7 +3351,7 @@ fn todo_projections_delegate_to_the_conversation() {
 /// #336/#337/#331) and not ported, so only the snapshot-seeding half is covered.
 #[test]
 fn prompt_history_candidates_seeds_from_snapshot() {
-    App::test((), |mut app| async move {
+    App::test((), |app| async move {
         let now = Local::now();
 
         // Persisted snapshot as read from `ai_queries` (oldest-first), including a

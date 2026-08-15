@@ -458,7 +458,21 @@ impl TuiInputView {
         let input_mode = self.input_mode.clone();
         let transcript = self.transcript.clone();
         let orchestration_tabs_available = self.orchestration_tabs_available.clone();
+        let suggestions_mode = self.suggestions_mode.clone();
         element.with_placeholder_ghost_text(move |app| {
+            // Suppress the hint while the read-only shortcuts/status overlay
+            // (opened by `?` / `/status`) is showing: the sheet already lists the
+            // shortcuts, so the ghosted "? for shortcuts" line under it is both
+            // redundant and self-contradictory. Mirrors the pin, whose
+            // `TuiTerminalSessionStateModel::hint_text` does the same check.
+            if suggestions_mode
+                .as_ref(app)
+                .mode()
+                .read_only_menu()
+                .is_some()
+            {
+                return None;
+            }
             let hint = if input_mode_policy::is_shell_mode(input_mode.as_ref(app)) {
                 input_hints::SHELL_HINT.to_owned()
             } else {

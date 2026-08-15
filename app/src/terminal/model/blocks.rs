@@ -5,7 +5,7 @@ use crate::ai::agent::{conversation::AIConversationId, AIAgentActionId};
 use crate::ai::blocklist::SerializedBlockListItem;
 use crate::terminal::block_filter::BlockFilterQuery;
 
-use crate::ai::blocklist::agent_view::{AgentViewDisplayMode, AgentViewState};
+use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::terminal::event::AfterBlockCompletedEvent;
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::ansi;

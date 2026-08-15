@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::path::Path;
-use std::str::FromStr;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Mutex, Once, OnceLock};
 use std::{

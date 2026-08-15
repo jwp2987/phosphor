@@ -1,4 +1,4 @@
-pub use virtual_fs::{Dirs, Stub, VirtualFS};
+pub use virtual_fs::{Stub, VirtualFS};
 
 // `WarpDirs::git_repository_fixture` / `Zap::executable` / `Zap::fixtures` used to be
 // defined here, duplicating `Dirs::git_repository_fixture` / `Zap::executable` /

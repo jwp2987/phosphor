@@ -9,7 +9,6 @@
 //! "ported but never wired" defect this port is fixing, and only an assertion
 //! on the settings model catches that.
 
-use settings::Setting as _;
 use warp_core::features::FeatureFlag;
 use warpui::platform::WindowStyle;
 use warpui::{App, SingletonEntity as _, TypedActionView as _};

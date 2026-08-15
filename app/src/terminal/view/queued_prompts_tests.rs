@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use warpui::{App, SingletonEntity, TypedActionView, ViewContext, ViewHandle};
+use warpui::{App, SingletonEntity, TypedActionView, ViewHandle};
 
 use super::queued_prompts_panel::{
     QueuedPromptsPanelAction, QueuedPromptsPanelEvent, QueuedPromptsPanelView,

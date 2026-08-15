@@ -20,6 +20,18 @@
 //!   file also renders full agent chat messages (a separate, larger,
 //!   unported feature), and pulling in the whole module for two pure
 //!   functions would be a much bigger and unrelated change than a tab bar.
+
+#![allow(dead_code)]
+// Staged port: this module came across from the pinned oracle (see `8c6d3a4c
+// feat(tui): stage warp_tui crate ... (phase 0)` and the `port(tui)` commits) with
+// the upstream API surface intact, but only the paths the TUI actually drives are
+// wired up yet. The unused items here are upstream's, not ours.
+//
+// Kept rather than pruned because this fork re-pins against upstream roughly
+// weekly (`ORACLE.md`); deleting upstream's helpers would turn each one into a
+// re-pin conflict for no gain. Drop this attribute once the module is fully wired
+// and check what is genuinely dead then.
+
 use std::collections::HashMap;
 
 use warp::tui_export::{AIConversationId, ConversationStatus};

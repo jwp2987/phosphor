@@ -11,7 +11,7 @@ use repo_metadata::{
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
-use warpui::{App, Entity, SingletonEntity as _};
+use warpui::{App, Entity};
 use watcher::HomeDirectoryWatcher;
 
 fn cleanup_env_vars(vars: &[&str]) {

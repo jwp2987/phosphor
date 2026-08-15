@@ -9,7 +9,6 @@ use crate::{
             SessionInfo,
         },
     },
-    terminal::shell::ShellType,
 };
 
 #[test]

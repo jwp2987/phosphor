@@ -19,7 +19,6 @@ use super::{bootstrap::BootstrapStage, find::RegexDFAs};
 use warp_terminal::model::{KeyboardModes, KeyboardModesApplyBehavior};
 
 use crate::ai::agent::conversation::AIConversationId;
-use crate::ai::blocklist::agent_view::{AgentViewDisplayMode, AgentViewState};
 use crate::{
     ai::agent::redaction::redact_secrets,
     context_chips::prompt_snapshot::PromptSnapshot,

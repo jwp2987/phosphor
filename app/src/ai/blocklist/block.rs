@@ -342,7 +342,7 @@ impl ActionButtonTheme for RewindButtonTheme {
 }
 
 #[derive(Clone, Default)]
-pub(super) struct TableSectionHandles {
+pub(crate) struct TableSectionHandles {
     pub scroll_handle: ClippedScrollStateHandle,
     pub state_handle: TableStateHandle,
 }
@@ -1008,7 +1008,7 @@ pub struct AIBlock {
     ask_user_question_view: Option<ViewHandle<AskUserQuestionView>>,
 }
 
-struct EmbeddedCodeEditorView {
+pub(crate) struct EmbeddedCodeEditorView {
     view: ViewHandle<CodeEditorView>,
     language: Option<ProgrammingLanguage>,
     length: usize,

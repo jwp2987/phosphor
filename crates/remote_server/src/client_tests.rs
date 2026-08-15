@@ -7,7 +7,7 @@ use crate::proto::{
     GetDiffStateResponse, GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse,
     GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError,
     GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
-    OpenBuffer, OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
+    OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
     ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
     SessionScopedRequest, WriteFileChunkResponse, WriteFileChunkSuccess, client_message,
     git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,

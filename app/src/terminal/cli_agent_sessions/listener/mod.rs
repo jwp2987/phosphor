@@ -1,6 +1,6 @@
 use warpui::{EntityId, ModelContext, ModelHandle, SingletonEntity};
 
-use super::{CLIAgentEvent, CLIAgentSession, CLIAgentSessionsModel};
+use super::{CLIAgentEvent, CLIAgentSessionsModel};
 use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::event::parse_event;
 use crate::terminal::cli_agent_sessions::event::{

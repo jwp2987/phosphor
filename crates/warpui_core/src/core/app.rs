@@ -4875,7 +4875,9 @@ impl UpdateView for AppContext {
         // GUI views live in `window.views`; Zap keeps TUI views in a separate,
         // `tui`-feature-gated `window.tui_views` map (rather than upstream's
         // `StoredView` enum), so remove from whichever map actually holds this view.
-        let mut gui_view: Option<Box<dyn AnyView>> = None;
+        // Declared without an initializer: the block below assigns it
+        // unconditionally, so an `= None` here is a dead store.
+        let mut gui_view: Option<Box<dyn AnyView>>;
         #[cfg(feature = "tui")]
         let mut tui_view: Option<Box<dyn crate::core::view::AnyTuiView>> = None;
         {

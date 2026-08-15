@@ -2,11 +2,11 @@ use warpui_core::keymap::Context;
 use warpui_core::{App, TuiView};
 
 use super::{
-    ASK_AGENT_HINT, BlockingInputSource, COMMANDS_HINT, CONVERSATIONS_HINT, SHELL_HINT,
-    SHELL_MODE_HINT, SHORTCUTS_HINT, TuiBlockSessionState, TuiComposerMode, TuiComposerState,
+    BlockingInputSource, TuiBlockSessionState, TuiComposerMode, TuiComposerState,
     TuiInteractionState, TuiPtyState, TuiTerminalSessionState, TuiTerminalSessionStateResolveError,
-    agent_input_hint, upgrade_terminal_model,
+    upgrade_terminal_model,
 };
+use crate::input_hints::SHELL_HINT;
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::terminal_session_view::{
@@ -76,23 +76,11 @@ fn shell_hint_is_selected_with_additive_orchestration() {
     assert_eq!(state.hint_text().as_deref(), Some(SHELL_HINT));
 }
 
-#[test]
-fn transcript_state_selects_the_applicable_hint_segments() {
-    let zero_state = agent_input_hint(true, false);
-    assert!(zero_state.contains(COMMANDS_HINT));
-    assert!(zero_state.contains(CONVERSATIONS_HINT));
-    assert!(zero_state.contains(SHORTCUTS_HINT));
-    assert!(!zero_state.contains(ASK_AGENT_HINT));
-    assert!(!zero_state.contains(SHELL_MODE_HINT));
-
-    let started = agent_input_hint(false, false);
-    assert!(started.contains(ASK_AGENT_HINT));
-    assert!(started.contains(SHORTCUTS_HINT));
-    assert!(started.contains(SHELL_MODE_HINT));
-    assert!(started.contains(COMMANDS_HINT));
-    assert!(!started.contains(CONVERSATIONS_HINT));
-    assert!(SHELL_HINT.contains(SHORTCUTS_HINT));
-}
+// The hint-segment assertions that lived here moved to `input_hints_tests.rs`
+// alongside the single implementation they exercise. They were asserting against
+// a duplicate copy of the hint strings in this module, which had drifted from the
+// rendered ones -- the copy carried the pin's `? for shortcuts` and the live path
+// did not, so the tests passed while users saw the wrong text.
 
 #[test]
 fn only_composer_interactions_produce_input_hints() {

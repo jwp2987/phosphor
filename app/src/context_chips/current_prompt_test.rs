@@ -2,7 +2,6 @@ use std::{
     any::Any,
     collections::{HashMap, VecDeque},
     sync::Arc,
-    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -24,9 +23,9 @@ use crate::system::SystemInfo;
 use crate::{
     auth::{AuthManager, AuthStateProvider},
     context_chips::{
-        context_chip::{ChipFingerprintInput, Environment, PromptGenerator},
+        context_chip::{Environment, PromptGenerator},
         prompt::Prompt,
-        ChipAvailability, ChipDisabledReason, ChipRuntimeCapabilities, ContextChipKind,
+        ChipAvailability, ChipDisabledReason, ContextChipKind,
     },
     features::FeatureFlag,
     menu::MenuItem,
@@ -36,7 +35,7 @@ use crate::{
             block::BlockMetadata,
             session::{CommandExecutor, ExecuteCommandOptions, SessionId, SessionInfo, Sessions},
         },
-        session_settings::{GithubPrPromptChipDefaultValidation, SessionSettings},
+        session_settings::SessionSettings,
         shell::Shell,
         view::PromptPosition,
         History,

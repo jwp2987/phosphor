@@ -1,4 +1,8 @@
 use super::*;
+// Imported explicitly rather than inherited through `use super::*`: the parent
+// module does not reference `CLIAgentSession` itself, so carrying it there only
+// to satisfy this glob reads as an unused import.
+use crate::terminal::cli_agent_sessions::CLIAgentSession;
 use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::event::{
     CLIAgentEventSource, CLIAgentEventType, CLI_AGENT_NOTIFICATION_SENTINEL,
