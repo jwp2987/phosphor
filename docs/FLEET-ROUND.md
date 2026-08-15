@@ -79,8 +79,18 @@ So:
 - Split by **sub-area**, not by slicing a sorted list in half. `app/src` was 86
   commits split two ways here; it should have been four or five agents split by
   subsystem (`ai/`, `terminal/`, `settings*/`, `workspace|pane_group/`).
-- Prefer ~10-12 agents over 6. The coordinator's review load is per-finding, not
-  per-agent, so more agents cost the coordinator almost nothing.
+- Prefer ~10-12 agents over 6.
+
+**There is no cost being traded away here, which is the part to internalise.**
+Spend is driven by the work done — commits read, diffs reasoned about, code
+written — not by how long it takes. Pushing the same 231 commits through 6
+agents instead of 12 does not make the round cheaper; it makes it later, for the
+same money. The only real overhead of an extra agent is the context it re-derives
+at startup, which is small next to the shard it then works through, and the
+coordinator's review load is per-finding rather than per-agent.
+
+So "should I split this further?" is almost never a cost question. Default to
+splitting.
 
 The one thing that does *not* scale down: every shard still needs a complete
 brief. See the retrofit rule below.
