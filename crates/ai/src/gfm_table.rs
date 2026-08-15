@@ -9,9 +9,31 @@ enum ColumnAlignment {
     Right,
 }
 
-/// Split a table row into cells, handling escaped pipes (`\|`) as literal pipe characters.
+/// Split a table row into cells, handling escaped pipes (`\|`) as literal pipe characters and
+/// treating a pipe inside an inline code span as content rather than a column delimiter.
+///
+/// The code-span rule is a deliberate deviation from GFM, which requires `\|` even inside
+/// backticks and would split `` `a | b` `` into two cells. Models do not escape them: observed
+/// 2026-08-15 from `gpt-oss:20b`, a row reading
+/// `` | **Verify the disk** | `virsh dumpxml HA | grep -E '(source|node-name)'` | … | ``
+/// counted 5 cells against a 3-cell header. Because [`maybe_collect_gfm_table_lines`] ends the
+/// table at the first row whose cell count disagrees with the header, that single row did not
+/// merely render oddly — it terminated the table, and every data row after it fell through to
+/// the caller as raw `| … |` prose under a lone header. Honouring the code span keeps the
+/// command in one cell, which is also what the author meant.
+///
+/// An unterminated backtick run is not a code span, so the naive split is used for that line;
+/// otherwise a single stray backtick would swallow every remaining delimiter on the row.
 fn split_cells_escaped(line: &str) -> Vec<String> {
     let trimmed = line.trim().trim_matches('|');
+    match split_cells_code_span_aware(trimmed) {
+        Some(cells) => cells,
+        None => split_cells_naive(trimmed),
+    }
+}
+
+/// Splits on every unescaped `|`, with no notion of inline code spans.
+fn split_cells_naive(trimmed: &str) -> Vec<String> {
     let mut cells = Vec::new();
     let mut current_cell = String::new();
     let mut chars = trimmed.chars().peekable();
@@ -29,6 +51,50 @@ fn split_cells_escaped(line: &str) -> Vec<String> {
     }
     cells.push(current_cell.trim().to_string());
     cells
+}
+
+/// Splits on unescaped `|` outside inline code spans. Returns `None` when a backtick run is
+/// never closed, since there is then no code span and the caller should fall back.
+fn split_cells_code_span_aware(trimmed: &str) -> Option<Vec<String>> {
+    let mut cells = Vec::new();
+    let mut current_cell = String::new();
+    let mut chars = trimmed.chars().peekable();
+    // Length of the backtick run that opened the span currently being scanned, if any. A span
+    // is closed only by a run of exactly the same length, per CommonMark's code-span rule.
+    let mut open_run: Option<usize> = None;
+
+    while let Some(c) = chars.next() {
+        if c == '`' {
+            let mut run = 1;
+            while chars.peek() == Some(&'`') {
+                chars.next();
+                run += 1;
+            }
+            match open_run {
+                Some(open) if open == run => open_run = None,
+                None => open_run = Some(run),
+                // A run of a different length inside a span is ordinary content.
+                Some(_) => {}
+            }
+            for _ in 0..run {
+                current_cell.push('`');
+            }
+        } else if c == '\\' && chars.peek() == Some(&'|') {
+            current_cell.push('|');
+            chars.next();
+        } else if c == '|' && open_run.is_none() {
+            cells.push(current_cell.trim().to_string());
+            current_cell = String::new();
+        } else {
+            current_cell.push(c);
+        }
+    }
+
+    if open_run.is_some() {
+        return None;
+    }
+    cells.push(current_cell.trim().to_string());
+    Some(cells)
 }
 
 /// Returns true if the line looks like a GFM pipe-table separator row,
@@ -98,9 +164,18 @@ where
     while let Some(next_line) = lines.peek() {
         let is_blank = next_line.trim().is_empty();
         let is_end_of_section = should_stop(next_line);
-        let row_column_count = split_cells_escaped(next_line).len();
-        let has_wrong_column_count = row_column_count != header_column_count;
-        if is_blank || is_end_of_section || has_wrong_column_count {
+        // GFM does NOT end a table at a row whose cell count differs from the header's: "if a
+        // row has fewer cells than the header, empty cells are inserted; if more, the excess is
+        // ignored." A count mismatch is therefore only usable as an end-of-table signal for a
+        // line that does not otherwise look like a row at all. A pipe-delimited line is still a
+        // row, however its cells land — ending the table there is what turned the rest of an
+        // agent's table into raw prose, and code-span-aware splitting alone would not have
+        // saved a row that mismatched for some other reason.
+        let trimmed = next_line.trim();
+        let looks_like_row = trimmed.starts_with('|') || trimmed.ends_with('|');
+        let count_ends_table =
+            !looks_like_row && split_cells_escaped(next_line).len() != header_column_count;
+        if is_blank || is_end_of_section || count_ends_table {
             break;
         }
         table_lines.push(lines.next().expect("peeked line must exist").to_owned());

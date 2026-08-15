@@ -634,8 +634,42 @@ fn parse_table_row<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     Ok((input, parsed_cells))
 }
 
-/// Parse a single table cell, handling escaped pipes (`\|`) as literal pipe characters.
+/// Byte offset, within `haystack`, of the start of a backtick run of exactly `len` backticks.
+///
+/// Searches only as far as the first line ending, because table rows are line-based: a run
+/// closed on a later line does not open a code span in this cell. `None` means the opening run
+/// never closes, so it is ordinary literal backticks rather than a span.
+fn closing_backtick_run(haystack: &str, len: usize) -> Option<usize> {
+    let bytes = haystack.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\n' | b'\r' => return None,
+            b'`' => {
+                let start = i;
+                while i < bytes.len() && bytes[i] == b'`' {
+                    i += 1;
+                }
+                if i - start == len {
+                    return Some(start);
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Parse a single table cell, handling escaped pipes (`\|`) as literal pipe characters and
+/// treating a pipe inside an inline code span as cell content rather than a delimiter.
 /// Stops at newlines since table rows are line-based.
+///
+/// The code-span rule deviates from GFM, which would split `` `a | b` `` across two cells and
+/// require `\|` to prevent it. It matches `warp_ai::gfm_table::split_cells_escaped`, which has
+/// to make the same call one layer up when it decides where the table ends — see the note
+/// there for the agent output that motivated it. The two must agree: if this split a row into
+/// more cells than the collector counted, a table the collector accepted would render with
+/// phantom columns.
 fn parse_table_cell<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     input: &'a str,
 ) -> IResult<&'a str, String, E> {
@@ -644,6 +678,30 @@ fn parse_table_cell<'a, E: ContextError<&'a str> + ParseError<&'a str>>(
     let mut end_index = 0;
 
     while let Some((i, c)) = chars.next() {
+        if c == '`' {
+            // Backticks are one byte each, so `i + run` is a valid byte index.
+            let mut run = 1;
+            while let Some(&(_, '`')) = chars.peek() {
+                chars.next();
+                run += 1;
+            }
+            let after_open = i + run;
+            let span_end = match closing_backtick_run(&input[after_open..], run) {
+                Some(offset) => after_open + offset + run,
+                // Unmatched run: literal backticks, and the pipes after it still delimit.
+                None => after_open,
+            };
+            content.push_str(&input[i..span_end]);
+            while let Some(&(j, _)) = chars.peek() {
+                if j < span_end {
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            end_index = span_end;
+            continue;
+        }
         if c == '|' {
             end_index = i;
             break;

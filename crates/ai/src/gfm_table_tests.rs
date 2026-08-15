@@ -88,3 +88,71 @@ fn format_gfm_table_handles_empty_cells() {
     assert!(result.contains("| B"));
     assert!(result.contains("| C"));
 }
+
+// A pipe inside an inline code span is cell content, not a column delimiter.
+
+/// The verbatim row from a 2026-08-15 `gpt-oss:20b` answer, which rendered as a lone boxed
+/// header followed by every data row as raw `| … |` prose. The row carries two unescaped pipes
+/// inside one code span, so the old splitter counted 5 cells against a 3-cell header and
+/// `maybe_collect_gfm_table_lines` ended the table on it.
+const SCREENSHOT_ROW: &str = "| **Verify where the VM's disk lives** | `virsh dumpxml HA | grep -E '(source|node-name)'` | Shows the exact path. |";
+
+#[test]
+fn pipes_inside_a_code_span_do_not_split_cells() {
+    let cells = super::split_cells_escaped(SCREENSHOT_ROW);
+    assert_eq!(
+        cells.len(),
+        3,
+        "the code span holds the row to the header's 3 columns: {cells:?}"
+    );
+    assert_eq!(
+        cells[1], "`virsh dumpxml HA | grep -E '(source|node-name)'`",
+        "the command must survive intact in one cell"
+    );
+}
+
+#[test]
+fn a_row_with_a_code_span_pipe_no_longer_ends_the_table() {
+    let lines = [
+        "| --- | --- | --- |",
+        SCREENSHOT_ROW,
+        "| **Check host disk usage** | `df -h` | Look for the filesystem. |",
+    ];
+    let mut rest = lines.into_iter().peekable();
+    let collected = super::maybe_collect_gfm_table_lines(
+        "| Step | Command / Tool | Why |",
+        &mut rest,
+        |_| false,
+    )
+    .expect("header + separator form a table");
+
+    assert_eq!(
+        collected.len(),
+        4,
+        "header, separator and BOTH data rows: {collected:?}"
+    );
+    assert_eq!(rest.next(), None, "every row was consumed by the table");
+}
+
+#[test]
+fn an_unterminated_backtick_falls_back_to_the_naive_split() {
+    // One stray backtick is not a code span; without the fallback it would swallow every
+    // remaining delimiter and collapse the row to a single cell.
+    let cells = super::split_cells_escaped("| a ` b | c | d |");
+    assert_eq!(cells, vec!["a ` b", "c", "d"]);
+}
+
+#[test]
+fn a_line_that_is_not_pipe_delimited_still_ends_the_table() {
+    let lines = ["| --- | --- |", "| 1 | 2 |", "Ordinary prose after the table"];
+    let mut rest = lines.into_iter().peekable();
+    let collected = super::maybe_collect_gfm_table_lines("| A | B |", &mut rest, |_| false)
+        .expect("header + separator form a table");
+
+    assert_eq!(collected.len(), 3, "header, separator, one row: {collected:?}");
+    assert_eq!(
+        rest.next(),
+        Some("Ordinary prose after the table"),
+        "the prose line must be left for the caller, not swallowed"
+    );
+}

@@ -3005,3 +3005,4 @@ fn test_parse_html_comment_with_trailing_same_line_content_is_not_block() {
         ])]
     );
 }
+
