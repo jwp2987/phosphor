@@ -17,8 +17,10 @@
 //!   compatibility with the front-end but is never produced here.
 //! - OAuth reopen: Zap does not retain a reopenable per-server authorization
 //!   URL, so `authorization_url` is always `None` (the `Authenticating` row
-//!   shows status without a reopen action). Credential presence uses Zap's
-//!   [`TemplatableMCPServerManager::has_oauth_credentials_for_file_based_server`].
+//!   shows status without a reopen action). Log-out availability uses Zap's
+//!   hash-keyed [`TemplatableMCPServerManager::can_log_out`], since file-based
+//!   OAuth credentials are stored per installation hash here, not per template
+//!   UUID as upstream.
 //! - `resource_count` is `0`: Zap's runtime manager exposes tools but not a
 //!   per-server resource count (the field is unused by the front-end).
 //! - The `ReloadConfig` action is dropped (the front-end never issues it and
@@ -63,7 +65,9 @@ pub struct TuiMcpServerSnapshot {
     pub status: TuiMcpServerStatus,
     pub tool_count: usize,
     pub resource_count: usize,
-    pub has_credentials: bool,
+    /// Whether the `/mcp` menu should offer the Ctrl+R "log out & remove
+    /// credentials" secondary action for this row.
+    pub can_log_out: bool,
     pub authorization_url: Option<String>,
 }
 
@@ -237,7 +241,7 @@ impl TuiMcpManager {
                     // Zap's runtime manager exposes tools but not a per-server
                     // resource count; the front-end does not display it.
                     resource_count: 0,
-                    has_credentials: runtime_manager.has_oauth_credentials_for_file_based_server(hash),
+                    can_log_out: runtime_manager.can_log_out(uuid, hash),
                     // Zap retains no reopenable per-server authorization URL.
                     authorization_url: None,
                 })
