@@ -1,6 +1,8 @@
 use crate::platform::mac::rendering::metal::renderer::Renderer;
 use std::collections::HashMap;
 
+use objc2::runtime::ProtocolObject;
+use objc2_metal::{MTLDevice, MTLPixelFormat};
 use warpui_core::rendering;
 
 pub struct RendererManager {
@@ -16,13 +18,13 @@ impl RendererManager {
         }
     }
 
-    pub fn renderer_for_device(&mut self, device: &metal::Device) -> &mut Renderer {
+    pub fn renderer_for_device(&mut self, device: &ProtocolObject<dyn MTLDevice>) -> &mut Renderer {
         use std::collections::hash_map::Entry::*;
-        match self.renderers.entry(device.registry_id()) {
+        match self.renderers.entry(device.registryID()) {
             Occupied(entry) => entry.into_mut(),
             Vacant(entry) => entry.insert(Renderer::new(
                 device,
-                metal::MTLPixelFormat::BGRA8Unorm,
+                MTLPixelFormat::BGRA8Unorm,
                 rendering::GlyphConfig::default(),
             )),
         }

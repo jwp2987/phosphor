@@ -216,9 +216,13 @@ urlocator = "0.1.4"
 objc = "0.2"
 objc2 = "0.6.3"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSScreen", "objc2-core-foundation"] }
+objc2-av-foundation = { version = "0.3.2", default-features = false }
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std"] }
+objc2-metal = { version = "0.3.2", default-features = false }
+objc2-quartz-core = { version = "0.3.2", default-features = false }
+dispatch2 = { version = "0.3.0", default-features = false, features = ["std", "block2"] }
 once_cell = "1.20.2"
 ordered-float = { version = "3.0.0", features = ["serde"] }
 parking_lot = "0.12.1"

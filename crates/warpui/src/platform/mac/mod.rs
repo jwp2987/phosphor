@@ -1,5 +1,6 @@
 #![allow(deprecated)]
 
+mod alert;
 mod app;
 pub mod clipboard;
 pub mod delegate;
@@ -27,16 +28,21 @@ use geometry::*;
 
 use cocoa::{
     base::{id, nil},
-    foundation::{NSAutoreleasePool, NSString},
+    foundation::NSAutoreleasePool,
 };
 use objc::{msg_send, sel, sel_impl};
+use objc2::rc::Retained;
+use objc2_foundation::NSString;
 
 /// Create an autoreleased NSString from a string reference.
 pub fn make_nsstring<S>(s: S) -> id
 where
     S: AsRef<str>,
 {
-    unsafe { NSString::alloc(nil).init_str(s.as_ref()).autorelease() }
+    // `NSString::from_str` returns a +1-retained `Retained<NSString>`.
+    // `autorelease_ptr` hands that retain count to the innermost autorelease
+    // pool and returns the raw pointer.
+    Retained::autorelease_ptr(NSString::from_str(s.as_ref())).cast()
 }
 
 /// Holds a Cocoa autorelease pool and drains it when the guard is dropped.
