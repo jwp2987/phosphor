@@ -1763,6 +1763,76 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       Comment corrected 2026-08-11. Only `with_semantic_selection_by_style` is
       genuinely absent. **Eleventh in-tree document found contradicting the code.**
 
+## FLAG-DARK FEATURES — implemented, shipped, unreachable (opened 2026-08-15)
+
+**A different category from parity debt, and a much cheaper one.** Everything
+below is already ported and wired in this tree. It does not run because nothing
+can turn it on. Do not size these as porting work.
+
+De-clouding removed Warp's runtime feature-flag service (`app/src/server/experiments/`
+applies server-driven experiment state, and that state never arrives now). What
+replaced it is: `RELEASE_FLAGS`, plus cargo features listed in `app/Cargo.toml`'s
+`default`, plus a one-entry `UNSTABLE_FEATURES` env hook. **`DOGFOOD_FLAGS` and
+`PREVIEW_FLAGS` are never applied by the GUI at all** — only `warp_tui`'s `dev`
+and `local` binaries call `.with_additional_features(DOGFOOD_FLAGS)`. So any flag
+whose only enable path was the backend or a non-default tier is off permanently,
+silently, with no decision recorded anywhere.
+
+### Method — check ALL THREE paths, or you will get this wrong
+
+A flag is reachable in a normal GUI build only via:
+1. membership in `RELEASE_FLAGS`, or
+2. a `#[cfg(feature = "x")]` entry in `app/src/lib.rs`'s `extra_flags` **where `x`
+   is in `app/Cargo.toml`'s `default`**, or
+3. an `UNSTABLE_FEATURES` name (one entry exists: `windows_high_performance_gpu_default`).
+
+**And a reachable flag is still not a visible feature.** Several are ANDed with a
+user setting. `VerticalTabs` was mis-diagnosed here as dark on 2026-08-15 by
+checking only the flag lists: `vertical_tabs` IS in `default` in this fork *and*
+the pin, and the real gate is `app/src/tab.rs:63` —
+`FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::…use_vertical_tabs`,
+a user setting (`appearance.vertical_tabs.enabled`) that defaults to `false`.
+Nothing was wrong; it was switched off. Check the setting too.
+
+### Result: 231 flags, 91 unreachable
+
+Ranked by how much implementation sits behind them (call sites in app code,
+excluding the flag definition itself). None of these is cloud-gated by
+inspection, but each needs confirming before acting:
+
+| flag | call sites | enable path | upstream tier |
+|---|---:|---|---|
+| `GroupedTabs` | 54 | **none at all** | — |
+| `QueueSlashCommand` | 36 | cargo `queue_slash_command`, not in `default` | DOGFOOD |
+| `WarpControlCli` | 25 | **none at all** | DOGFOOD |
+| `EditableMarkdownMermaid` | 23 | cargo, not in `default` | DOGFOOD |
+| `PinnedTabs` | 22 | **none at all** | — |
+| `GitOperationsInCodeReview` | 22 | cargo, not in `default` | PREVIEW |
+| `TerminalLifecycleRecovery` | 16 | **none at all** | DOGFOOD |
+| `OscHyperlinks` | 16 | **none at all** | DOGFOOD |
+| `JupyterNotebookRendering` | 14 | **none at all** | DOGFOOD |
+| `KittyImages` | 9 | **none at all** | — |
+| `ITermImages` | 9 | cargo `iterm_images`, not in `default` | — |
+| `DirectoryTabColors` | 9 | cargo, not in `default` | DOGFOOD |
+
+`GroupedTabs`, `PinnedTabs` and `KittyImages` are the striking ones: substantial
+local terminal features with **no enable path whatsoever** — not a flag list, not
+a cargo feature, not the env hook. `KittyImages`/`ITermImages` are inline image
+protocols, which is a user-visible terminal capability simply switched off.
+
+Full audit output: regenerate with the three-path check above; the 2026-08-15 run
+is not committed (scratch only).
+
+- [ ] **Decide, per flag, which of the 91 should be on.** Cheapest work available
+      in this repo: no porting, no compiling against the pin, just a decision and
+      a line. Start with the table above.
+- [ ] **Record the decision for the ones that stay off.** They currently read as
+      missing features to every audit, and this fleet re-derived several of them
+      from scratch for exactly that reason.
+- [ ] **Fix the category error in existing entries.** Some items tracked elsewhere
+      in this file as "missing subsystems" may be flag-dark rather than unported.
+      Check the three paths before sizing any of them as porting work.
+
 ## UNPORTED UPSTREAM FIXES — 2026-08-15 AUDIT (fleet walk of `0dbd3d56..02b53fcd8`)
 
 Findings from the partial-port sweep now written up as Phase 6.5 of
