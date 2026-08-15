@@ -12,11 +12,12 @@ use warp::settings::{
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
-    AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
-    AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    AIAgentActionId, AIAgentExchangeId, AIAgentTodo, AIAgentTodoList,
+    AIConversationAutoexecuteMode, AIConversationId, AgentViewEntryOrigin, AgentViewState,
+    BlockPadding, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus, Harness,
+    InputType, LLMPreferences, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, TaskId,
+    TuiUpArrowHistoryItemKind, export_conversation_markdown,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -27,7 +28,7 @@ use warpui::{
 use warpui_core::elements::tui::{
     Color, TuiBuffer, TuiBufferExt, TuiConstrainedBox, TuiConstraint, TuiContainer, TuiElement,
     TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiPoint,
-    TuiRect, TuiScene, TuiScreenPosition, TuiSize, TuiStyle, TuiText,
+    TuiRect, TuiScene, TuiScreenPosition, TuiSize, TuiStyle, TuiText, TuiViewportPosition,
 };
 use warpui_core::event::ModifiersState;
 use warpui_core::keymap::{Context, Keystroke, Trigger};
@@ -161,7 +162,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
                         FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
                         FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
                         FooterSegment::DateTime(TuiText::new("1:08pm").finish()),
-                        FooterSegment::AgentTodoList("❒ 1/10".to_owned()),
+                        FooterSegment::AgentTodoList(TuiText::new("❒ 1/10").finish()),
                     ],
                 },
                 &builder,
@@ -659,20 +660,20 @@ fn dispatch_session_event(
     })
 }
 
-/// Locates the footer's active-model label in the rendered buffer, returning
-/// the (column, row) of its first cell. Counts chars (not bytes) so multi-byte
-/// glyphs earlier in the footer row don't shift the column.
-fn model_label_position(buffer: &TuiBuffer, model_name: &str) -> (u16, u16) {
+/// Locates a footer label in the rendered buffer, returning the (column, row)
+/// of its first cell. Counts chars (not bytes) so multi-byte glyphs earlier in
+/// the footer row don't shift the column.
+fn footer_label_position(buffer: &TuiBuffer, label: &str) -> (u16, u16) {
     let lines = buffer.to_lines();
     for (row, line) in lines.iter().enumerate() {
-        if let Some(byte_offset) = line.find(model_name) {
+        if let Some(byte_offset) = line.find(label) {
             let col = line[..byte_offset].chars().count() as u16;
             return (col, row as u16);
         }
     }
     panic!(
-        "model label {:?} not found in rendered footer:\n{}",
-        model_name,
+        "label {:?} not found in rendered footer:\n{}",
+        label,
         lines.join("\n")
     );
 }
@@ -706,6 +707,304 @@ fn toggle_model_menu_action_opens_and_closes_the_inline_model_menu() {
                 "ToggleModelMenu action should close an open inline model menu"
             );
         });
+    });
+}
+
+fn todo(id: &str, title: &str) -> AIAgentTodo {
+    AIAgentTodo::new(id.to_owned().into(), title.to_owned(), String::new())
+}
+
+fn set_selected_todo_list(
+    app: &mut App,
+    view: &ViewHandle<super::TuiTerminalSessionView>,
+    completed: Vec<AIAgentTodo>,
+    pending: Vec<AIAgentTodo>,
+    status: ConversationStatus,
+) -> AIConversationId {
+    view.update(app, |view, ctx| {
+        let conversation_id = view.conversation_selection.update(ctx, |selection, ctx| {
+            selection
+                .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                .expect("test conversation should start")
+        });
+        let terminal_surface_id = view.terminal_surface_id;
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            let conversation = history
+                .conversation_mut(&conversation_id)
+                .expect("selected conversation should exist");
+            conversation.set_todo_lists_for_test(vec![
+                AIAgentTodoList::default()
+                    .with_completed_items(completed)
+                    .with_pending_items(pending),
+            ]);
+            conversation.update_status(status, terminal_surface_id, ctx);
+        });
+        conversation_id
+    })
+}
+
+fn set_enabled_statusline_items(app: &mut App, items: Vec<TuiStatuslineItem>) {
+    app.update(|ctx| {
+        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            settings
+                .tui_statusline
+                .set_value(
+                    TuiStatuslineConfig {
+                        order: items.clone(),
+                        enabled: items,
+                    }
+                    .normalized(),
+                    ctx,
+                )
+                .expect("statusline setting should persist");
+        });
+    });
+}
+
+/// `tui_statusline` persists across tests in this process (see the comment in
+/// `saving_statusline_configuration_persists_and_restores_input_focus`), so
+/// every test that calls `set_enabled_statusline_items` must restore the
+/// default before it ends.
+fn restore_default_statusline(app: &mut App) {
+    app.update(|ctx| {
+        AISettings::handle(ctx).update(ctx, |settings, ctx| {
+            let _ = settings
+                .tui_statusline
+                .set_value(TuiStatuslineConfig::default(), ctx);
+        });
+    });
+}
+
+#[test]
+fn todo_menu_renders_active_list_and_toggles_through_shared_suggestions_mode() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        set_enabled_statusline_items(&mut app, vec![TuiStatuslineItem::AgentTodoList]);
+        set_selected_todo_list(
+            &mut app,
+            &view,
+            vec![todo("done", "Completed task")],
+            vec![todo("current", "Current task"), todo("later", "Later task")],
+            ConversationStatus::InProgress,
+        );
+
+        assert_eq!(render_footer_lines(&mut app, &view, 80), vec!["❒ 1/3"]);
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::ToggleTodoMenu, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Todos)
+            );
+            assert_eq!(
+                view.read_only_menu_viewport.position(),
+                TuiViewportPosition::RowsFromTop(2),
+                "the title and completed row precede the current task"
+            );
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        let completed = rendered.find("✓ Completed task").unwrap();
+        // `•`, not the pin's `●`: this fork's `todo_status_glyph` uses the
+        // narrower bullet for in-progress rows, and this port does not change
+        // the existing glyph vocabulary.
+        let current = rendered.find("• Current task").unwrap();
+        let later = rendered.find("◌ Later task").unwrap();
+        assert!(rendered.contains("Tasks 1/3"));
+        assert!(completed < current && current < later);
+
+        view.update(&mut app, |view, ctx| {
+            view.suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status),
+                    ctx,
+                );
+            });
+            view.handle_action(&TuiTerminalSessionAction::ToggleTodoMenu, ctx);
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Todos)
+            );
+            view.handle_action(&TuiTerminalSessionAction::ToggleTodoMenu, ctx);
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+        });
+        restore_default_statusline(&mut app);
+    });
+}
+
+#[test]
+fn finished_todo_list_remains_visible_and_openable() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        set_enabled_statusline_items(&mut app, vec![TuiStatuslineItem::AgentTodoList]);
+        set_selected_todo_list(
+            &mut app,
+            &view,
+            vec![todo("done", "Completed task")],
+            Vec::new(),
+            ConversationStatus::Success,
+        );
+
+        assert_eq!(render_footer_lines(&mut app, &view, 80), vec!["✓ 1/1"]);
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::ToggleTodoMenu, ctx);
+        });
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        assert!(rendered.contains("Tasks 1/1"));
+        assert!(rendered.contains("✓ Completed task"));
+        restore_default_statusline(&mut app);
+    });
+}
+
+#[test]
+fn todo_updates_preserve_scroll_and_close_the_menu_when_the_list_disappears() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let conversation_id = set_selected_todo_list(
+            &mut app,
+            &view,
+            Vec::new(),
+            vec![todo("current", "Current task")],
+            ConversationStatus::InProgress,
+        );
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::ToggleTodoMenu, ctx);
+            view.read_only_menu_viewport.scroll_to_rows_from_top(4);
+            view.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedTodoList {
+                    terminal_view_id: view.terminal_surface_id,
+                },
+                ctx,
+            );
+            assert_eq!(
+                view.read_only_menu_viewport.position(),
+                TuiViewportPosition::RowsFromTop(4)
+            );
+            view.handle_action(
+                &TuiTerminalSessionAction::ToggleAutoApprove {
+                    show_feedback: false,
+                },
+                ctx,
+            );
+            assert_eq!(
+                view.read_only_menu_viewport.position(),
+                TuiViewportPosition::RowsFromTop(4)
+            );
+
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .unwrap()
+                    .set_todo_lists_for_test(vec![
+                        AIAgentTodoList::default()
+                            .with_pending_items(vec![todo("old", "Old task")]),
+                        AIAgentTodoList::default()
+                            .with_completed_items(vec![todo("done", "Completed task")])
+                            .with_pending_items(vec![todo("new", "New current task")]),
+                    ]);
+            });
+            view.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedTodoList {
+                    terminal_view_id: view.terminal_surface_id,
+                },
+                ctx,
+            );
+            assert_eq!(
+                view.read_only_menu_viewport.position(),
+                TuiViewportPosition::RowsFromTop(2)
+            );
+
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .unwrap()
+                    .set_todo_lists_for_test(Vec::new());
+            });
+            view.handle_history_event(
+                &BlocklistAIHistoryEvent::UpdatedTodoList {
+                    terminal_view_id: view.terminal_surface_id,
+                },
+                ctx,
+            );
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::Closed
+            );
+        });
+    });
+}
+
+#[test]
+fn footer_todo_item_is_a_bounded_click_target() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        set_enabled_statusline_items(&mut app, vec![TuiStatuslineItem::AgentTodoList]);
+        set_selected_todo_list(
+            &mut app,
+            &view,
+            Vec::new(),
+            vec![todo("current", "Current task")],
+            ConversationStatus::InProgress,
+        );
+        let (mut element, scene, buffer) = render_retained_session(&app, &view, 40, 20);
+        let (todo_col, todo_row) = footer_label_position(&buffer, "❒ 0/1");
+        let inside = (todo_col + 1, todo_row);
+        let outside = (todo_col + 6, todo_row);
+
+        dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &mouse_moved(inside.0, inside.1),
+        );
+        assert!(view.read(&app, |view, _| {
+            view.todo_list_mouse.lock().unwrap().is_hovered()
+        }));
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &left_mouse_down(inside.0, inside.1),
+        ));
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &left_mouse_up(inside.0, inside.1),
+        ));
+        assert!(!view.read(&app, |view, _| {
+            view.todo_list_mouse.lock().unwrap().is_clicked()
+        }));
+
+        dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &mouse_moved(outside.0, outside.1),
+        );
+        assert!(!view.read(&app, |view, _| {
+            view.todo_list_mouse.lock().unwrap().is_hovered()
+        }));
+        assert!(!dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene,
+            &left_mouse_down(outside.0, outside.1),
+        ));
+        restore_default_statusline(&mut app);
     });
 }
 
@@ -1154,7 +1453,7 @@ fn footer_model_label_is_a_bounded_click_target() {
                 .clone()
         });
         let (mut element, scene, buffer) = render_retained_session(&app, &view, 80, 40);
-        let (label_col, label_row) = model_label_position(&buffer, &model_name);
+        let (label_col, label_row) = footer_label_position(&buffer, &model_name);
         let inside = (label_col + 1, label_row);
         let outside = (0, label_row);
 
@@ -3048,7 +3347,7 @@ fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
         // ("auto (cost-efficient)") here; BYOP has no built-in model list, so the
         // active model is whatever the user configured -- nothing, in a test app,
         // which yields the grayed-out placeholder from `placeholder_llm_info`. Read
-        // the name the same way `model_label_position`'s caller does instead of
+        // the name the same way `footer_label_position`'s caller does instead of
         // naming a model this fork cannot select.
         let model_name = view.read(&app, |view, ctx| {
             LLMPreferences::as_ref(ctx)

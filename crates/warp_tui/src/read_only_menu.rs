@@ -6,9 +6,9 @@ use warpui_core::AppContext;
 use warpui_core::elements::CrossAxisAlignment;
 use warpui_core::elements::tui::{
     Color, Modifier, TuiConstrainedBox, TuiContainer, TuiElement, TuiEventContext, TuiFlex,
-    TuiLayoutContext, TuiSelectable, TuiSelectionHandle, TuiStyle, TuiText, TuiViewportContent,
-    TuiViewportWindow, TuiViewportedElement, TuiViewportedList, TuiViewportedListState,
-    TuiVisibleViewportItem,
+    TuiLayoutContext, TuiScrollable, TuiScrollableElement, TuiSelectable, TuiSelectionHandle,
+    TuiStyle, TuiText, TuiViewportContent, TuiViewportWindow, TuiViewportedElement,
+    TuiViewportedList, TuiViewportedListState, TuiVisibleViewportItem,
 };
 
 use crate::tui_builder::TuiUiBuilder;
@@ -18,6 +18,7 @@ use crate::tui_builder::TuiUiBuilder;
 pub(crate) enum TuiReadOnlyMenuKind {
     Shortcuts,
     Status,
+    Todos,
 }
 /// One styled text cell in a read-only menu row.
 #[derive(Clone)]
@@ -65,21 +66,21 @@ impl TuiReadOnlyMenuRow {
 
 /// One titled section in a [`TuiReadOnlyMenu`].
 pub(crate) struct TuiReadOnlyMenuSection {
-    title: &'static str,
+    title: String,
     rows: Vec<TuiReadOnlyMenuRow>,
 }
 
 impl TuiReadOnlyMenuSection {
-    pub(crate) fn new(title: &'static str, rows: Vec<TuiReadOnlyMenuRow>) -> Self {
-        Self { title, rows }
+    pub(crate) fn new(title: impl Into<String>, rows: Vec<TuiReadOnlyMenuRow>) -> Self {
+        Self {
+            title: title.into(),
+            rows,
+        }
     }
 }
 #[derive(Clone)]
 enum TuiReadOnlyMenuVisualRow {
-    SectionTitle {
-        title: &'static str,
-        style: TuiStyle,
-    },
+    SectionTitle { title: String, style: TuiStyle },
     Content(TuiReadOnlyMenuRow),
     Spacer,
 }
@@ -87,9 +88,10 @@ enum TuiReadOnlyMenuVisualRow {
 impl TuiReadOnlyMenuVisualRow {
     fn render(&self, background: Color) -> Box<dyn TuiElement> {
         let content = match self {
-            Self::SectionTitle { title, style } => {
-                TuiText::new(*title).with_style(*style).truncate().finish()
-            }
+            Self::SectionTitle { title, style } => TuiText::new(title.clone())
+                .with_style(*style)
+                .truncate()
+                .finish(),
             Self::Content(row) => row.render(),
             Self::Spacer => TuiText::new(" ").finish(),
         };
@@ -162,10 +164,35 @@ impl TuiReadOnlyMenu {
         Self { sections }
     }
 
-    /// Renders the menu as a selectable, copyable list.
+    /// Renders the menu as a selectable, copyable list with a throwaway
+    /// viewport pinned to the top. Only tests build a menu without owning the
+    /// scroll state; the session view keeps a retained viewport so wheel
+    /// scrolling survives element-tree rebuilds.
+    #[cfg(test)]
     pub(crate) fn render(
         self,
         selection: TuiSelectionHandle,
+        builder: &TuiUiBuilder,
+        on_selection_start: impl FnMut(&mut TuiEventContext, &AppContext) + 'static,
+        on_copy: impl FnMut(String, &mut TuiEventContext, &AppContext) + 'static,
+    ) -> Box<dyn TuiElement> {
+        let viewport_state = TuiViewportedListState::new_at_end();
+        viewport_state.scroll_to_rows_from_top(0);
+        self.render_with_viewport(
+            selection,
+            viewport_state,
+            builder,
+            on_selection_start,
+            on_copy,
+        )
+    }
+
+    /// Renders the menu into a caller-owned viewport, so scroll position is
+    /// retained across rebuilds of the element tree.
+    pub(crate) fn render_with_viewport(
+        self,
+        selection: TuiSelectionHandle,
+        viewport_state: TuiViewportedListState,
         builder: &TuiUiBuilder,
         on_selection_start: impl FnMut(&mut TuiEventContext, &AppContext) + 'static,
         on_copy: impl FnMut(String, &mut TuiEventContext, &AppContext) + 'static,
@@ -190,8 +217,6 @@ impl TuiReadOnlyMenu {
             );
         }
         let content_height = u16::try_from(rows.len()).unwrap_or(u16::MAX);
-        let viewport_state = TuiViewportedListState::new_at_end();
-        viewport_state.scroll_to_rows_from_top(0);
         let viewport = TuiViewportedList::new(
             viewport_state,
             TuiReadOnlyMenuContent { rows, background },
@@ -205,10 +230,13 @@ impl TuiReadOnlyMenu {
             .with_semantic_selection_by_style()
             .on_selection_start(on_selection_start)
             .on_copy(on_copy);
+        // Wrapping in a `TuiScrollable` lets the wheel drive `viewport_state`
+        // when the menu is taller than the rows the session view allows it.
+        let scrollable = TuiScrollable::new(selectable.finish_scrollable()).finish();
         let content = TuiFlex::column()
             .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
             .child(
-                TuiConstrainedBox::new(selectable.finish())
+                TuiConstrainedBox::new(scrollable)
                     .with_max_rows(content_height)
                     .finish(),
             )
