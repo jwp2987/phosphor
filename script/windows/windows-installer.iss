@@ -34,10 +34,13 @@
   ((ReleaseChannel == "integration") ? "Integration" : \
   ((ReleaseChannel == "oss") ? "Oss" : \
   "Unknown")))))
-; The mutex keeps the "Zap" name DELIBERATELY through the Phosphor rename. It must match
-; app/src/app_services/windows/single_instance_manager.rs byte for byte, and keeping it
-; stable is what lets a NEW installer detect an OLD running app during the upgrade where
-; that detection matters most. It is an internal IPC token and is never shown to a user.
+// The mutex keeps the "Zap" name DELIBERATELY through the Phosphor rename. It must match
+// app/src/app_services/windows/single_instance_manager.rs byte for byte, and keeping it
+// stable is what lets a NEW installer detect an OLD running app during the upgrade where
+// that detection matters most. It is an internal IPC token and is never shown to a user.
+// NOTE: `//` not `;` -- this region is preprocessor, before any [Section], where a `;`
+// line is not stripped and Inno fails with "'BEGIN' expected". That broke the
+// 2026-08-14 beta build. Comments inside [Setup]/[Files] etc. do use `;`.
 #define AppMutexName "Local\Zap" + ChannelPascalCase + "_SingleInstance"
 
 
