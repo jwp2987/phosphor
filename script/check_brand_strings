@@ -22,16 +22,38 @@
 # noise, and a guard people learn to ignore is worse than no guard. So the
 # match is deliberately narrow:
 #
-#   1. Only the three capitalised brand words, standalone. A hit must not be
-#      preceded by [A-Za-z0-9_.:-] nor followed by [A-Za-z0-9_-]. That single
-#      predicate is what keeps the guard quiet on:
+#   1. Only the three capitalised brand words, and only where the characters
+#      around them say "prose" rather than "symbol". A hit must not be preceded
+#      by [A-Za-z0-9_.:-] nor followed by [A-Z0-9_-]. That predicate keeps the
+#      guard quiet on:
 #        WARP_SKILL_DIRS, WARP.md      (all-caps -- different case, no match)
 #        warp_tui, warpdotdev, warp.dev (lowercase -- no match)
-#        WarpTheme, Warpify, WarpAgent  (followed by a letter)
+#        WarpTheme, WarpAgent, ZapDrive (followed by an UPPERCASE letter)
 #        openWarp, AskWarpAI, SshWarpifyBlock (preceded by a letter)
 #        Harness::Oz, Icon::Zap          (preceded by ':')
 #        dev.warp.Warp, dev.zap.Zap      (preceded by '.')
 #        X-Zap-Client-ID, Zap-Run-GeneratorCommand (adjacent '-')
+#
+#      The asymmetry between the two sides is the point, and it was learned the
+#      hard way. The first version of this guard excluded a following LETTER of
+#      either case, and that is precisely the hole five shipped strings walked
+#      through: "Get Zapping" x2 and "Get Warping" (onboarding's primary
+#      button), "the rest of your Warpified experience" (the SSH banner), and
+#      ja's `session-config-get-warping` = "Warping を開始", which no purge pass
+#      had ever touched. A brand word inflected by an English suffix is still
+#      branding -- arguably the worst kind, because it reads as native product
+#      voice.
+#
+#      What separates those from `WarpTheme` is CASE AT THE BOUNDARY, not a
+#      list of words. Rust identifiers that embed a brand word are CamelCase,
+#      so the next character is uppercase; an inflected English word continues
+#      in lowercase. Every brand-adjacent literal in the tree obeys this:
+#        lowercase continuation, all shipped copy -- Zapping, Warping, Warpified
+#        uppercase continuation, all symbols     -- WarpWindow, WarpHostView,
+#          WarpDrivePrivacySettings, ZapDockTilePlugin, ZapLaunchModal
+#      The leading side needs no such relaxation: nothing in English ends in
+#      "...Warp", so a preceding letter always means an identifier
+#      (openWarp, SourcedRcFileForWarp) and that exclusion stays absolute.
 #
 #   2. In Rust, only inside a string literal, never a comment. An identifier
 #      or a doc comment mentioning Warp is lineage, not branding. The literals
@@ -51,8 +73,13 @@
 #      renaming those orphans every settings row already persisted under them.
 #
 #   5. Tests are excluded: *_test.rs, *_tests.rs, tests/, examples/,
-#      test_data/, and the whole `crates/integration` harness crate. Their
-#      brand strings are arbitrary fixture data, not shipped copy.
+#      test_data/, the `crates/integration` harness crate, and
+#      `app/src/integration_testing`. Their brand strings are arbitrary fixture
+#      data, not shipped copy. `integration_testing` lives under app/src rather
+#      than in tests/, but it is the same thing as `crates/integration` -- its
+#      brand hits are `TestStep::new("Assert the Warpify banner is visible")`
+#      and an `AssertionOutcome::failure` message, which name the mechanism in
+#      text only a test author reads.
 #
 # THE ONE PLACE SHAPE IS NOT ENOUGH
 # ---------------------------------
@@ -67,9 +94,24 @@
 #     "Warp" is allowed when it immediately qualifies a package noun.
 #
 #   - The AGPL-3.0 §13 attribution ("Phosphor is a modified version of Warp")
-#     must stay true. Handled by an in-band marker, NOT a list in this file:
-#     put `# brand-guard: allow <reason>` on or directly above the line. In
-#     Rust the marker is `// brand-guard: allow <reason>`.
+#     must stay true. Handled by an in-band marker, NOT a list in this file.
+#
+# WHERE THE MARKER GOES -- it must land in a COMMENT, never in the text
+# -----------------------------------------------------------------------
+#   Fluent: `# brand-guard: allow <reason>` on the comment line DIRECTLY ABOVE
+#           the message. Fluent has no trailing-comment syntax, so "on the same
+#           line" is not a thing: anything after the `=` is the value the user
+#           reads.
+#   Rust:   `// brand-guard: allow <reason>` on the line ABOVE the statement,
+#           or trailing after the literal's CLOSING quote.
+#
+# An earlier version searched for the marker in the same text it was excusing.
+# That made the marker self-fulfilling: any string whose own content contained
+# the phrase "brand-guard: allow" silenced its own hit, in both Rust and
+# Fluent. It also documented a Rust form ("on or directly above the line") of
+# which only the Fluent half was ever implemented. The marker is now read only
+# from comment context -- the line above the literal, or a `//` comment after
+# it -- so a string can no longer excuse itself.
 #
 # The marker is in-band on purpose. A suppression list inside a guard drifts
 # and is invisible at the point of change; a marker is reviewed in the same
@@ -96,7 +138,11 @@ import re
 import sys
 from pathlib import Path
 
-TOKEN = re.compile(r"(?<![A-Za-z0-9_.:\-])(Zap|Oz|Warp)(?![A-Za-z0-9_\-])")
+# Trailing class excludes UPPERCASE only: a following lowercase letter is an
+# English inflection ("Zapping", "Warpified") and must be caught, while a
+# following uppercase letter is CamelCase ("WarpTheme") and must not be. See
+# rule 1 in the header for why the two sides are deliberately asymmetric.
+TOKEN = re.compile(r"(?<![A-Za-z0-9_.:\-])(Zap|Oz|Warp)(?![A-Z0-9_\-])")
 STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
 MARKER = re.compile(r"brand-guard:\s*allow")
 
@@ -124,6 +170,8 @@ def rust_sources():
             if parts & SKIP_DIR_PARTS:
                 continue
             if p.parts[:2] == ("crates", "integration"):
+                continue
+            if p.parts[:3] == ("app", "src", "integration_testing"):
                 continue
             if p.name.endswith(("_test.rs", "_tests.rs")):
                 continue
@@ -209,9 +257,17 @@ def check_rust():
             if not re.search(r"\s", literal):
                 continue  # rule 3: a token, not a sentence
             lineno = lineno_of(start)
-            # The marker may sit on the opening line or anywhere in the literal's span.
-            span = text[line_starts[lineno - 1] : end]
-            if MARKER.search(span):
+            # The marker is read ONLY from comment context, never from the
+            # literal itself -- otherwise a string containing the phrase
+            # "brand-guard: allow" excuses itself. Two accepted positions: a
+            # `//` comment on the line above the literal opens, or a trailing
+            # `//` comment after the literal's closing quote.
+            above = lines[lineno - 2] if lineno >= 2 else ""
+            eol = text.find("\n", end)
+            after = text[end : len(text) if eol < 0 else eol]
+            if above.lstrip().startswith("//") and MARKER.search(above):
+                continue
+            if "//" in after and MARKER.search(after[after.index("//") :]):
                 continue
             line = lines[lineno - 1] if lineno <= len(lines) else ""
             if MATCH_ARM.match(line):
@@ -243,8 +299,10 @@ def check_fluent():
                 continue
             if not TOKEN.search(value):
                 continue
-            if MARKER.search(line):
-                continue
+            # Comment line directly above ONLY. `MARKER.search(line)` used to
+            # be accepted too, but in Fluent everything after the `=` is the
+            # user-visible value, so that let a message excuse itself simply by
+            # containing the phrase.
             prev = lines[lineno - 2] if lineno >= 2 else ""
             if prev.lstrip().startswith("#") and MARKER.search(prev):
                 continue
@@ -261,11 +319,17 @@ def check_prose():
     targets = sorted(Path("themes").glob("*.yaml"))
     targets += sorted(Path("app/resources/tab_configs").glob("*.toml"))
     for p in targets:
-        for lineno, line in enumerate(p.read_text(errors="replace").splitlines(), 1):
-            if MARKER.search(line):
+        lines = p.read_text(errors="replace").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if not TOKEN.search(line):
                 continue
-            if TOKEN.search(line):
-                hits.append((str(p), lineno, line.strip()))
+            # In these files the comment IS the user-visible part, so a marker
+            # on the same line would be excusing itself. It goes on the line
+            # above, as in the Fluent catalogues.
+            prev = lines[lineno - 2] if lineno >= 2 else ""
+            if prev.lstrip().startswith("#") and MARKER.search(prev):
+                continue
+            hits.append((str(p), lineno, line.strip()))
     return hits
 
 
@@ -287,8 +351,12 @@ if status:
     print(
         "The product is Phosphor and its agent is Phosphor Agent. If a hit above is\n"
         "genuinely not a brand reference -- an upstream attribution, or the name of a\n"
-        "Warp-published package the user has to find -- mark that line with\n"
-        "`brand-guard: allow <reason>` rather than editing this script.",
+        "Warp-published package the user has to find -- mark it with\n"
+        "`brand-guard: allow <reason>` rather than editing this script. The marker must\n"
+        "be in a COMMENT, because a marker inside the text would excuse itself:\n"
+        "  Fluent / themes / tab_configs:  `# brand-guard: allow ...` on the line ABOVE\n"
+        "  Rust:  `// brand-guard: allow ...` on the line above, or trailing after the\n"
+        "         literal's closing quote.",
         file=sys.stderr,
     )
     sys.exit(1)
