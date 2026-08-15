@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::NaiveDate;
@@ -15,7 +16,7 @@ use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
+    PtyIntentEvent, Session, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
     export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
@@ -29,6 +30,7 @@ use warpui_core::elements::tui::{
     TuiEvent, TuiEventContext, TuiLayoutContext, TuiPaintContext, TuiPaintSurface, TuiPoint,
     TuiRect, TuiScene, TuiScreenPosition, TuiSize, TuiStyle, TuiText,
 };
+use warpui_core::r#async::Timer;
 use warpui_core::event::ModifiersState;
 use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::TuiPresenter;
@@ -92,6 +94,28 @@ fn shell_mode_reserves_tab_even_when_attachments_render() {
     assert!(super::attachment_focus_available(false, true));
     assert!(!super::attachment_focus_available(true, true));
     assert!(!super::attachment_focus_available(false, false));
+}
+
+#[test]
+fn shell_completion_source_warmup_loads_path_executables() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let session = Arc::new(Session::test());
+
+        view.update(&mut app, |view, ctx| {
+            view.warm_shell_completion_sources(session.clone(), ctx);
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !session.has_loaded_external_commands() && Instant::now() < deadline {
+            Timer::after(Duration::from_millis(10)).await;
+        }
+
+        assert!(session.has_attempted_to_load_external_commands());
+        assert!(session.has_loaded_external_commands());
+        assert!(session.executable_names().any(|command| command == "git"));
+    });
 }
 
 #[test]

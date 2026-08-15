@@ -13,11 +13,11 @@
 //!   registry `Session::get_env_vars_for_session` needs; wiring one in is a
 //!   separate, larger change than porting this file's completion richness.
 
-use warp::tui_export::{
-    TuiCompletionCandidate, longest_common_prefix, tui_completion_session_context,
-};
+use std::sync::Arc;
+
+use warp::tui_export::{Session, TuiCompletionCandidate, tui_completion_session_context};
 use warp_completer::completer::{
-    CompleterOptions, EngineFileType, Match, SuggestionResults, suggestions,
+    CompleterOptions, EngineFileType, ExplicitTabCompletion, SuggestionResults, suggestions,
 };
 use warp_core::SessionId;
 use warpui_core::r#async::SpawnedFutureHandle;
@@ -44,6 +44,46 @@ struct CompletionRequestSnapshot {
 }
 
 impl TuiTerminalSessionView {
+    /// Warms the sources the completer reads from once a session's shell has
+    /// bootstrapped, so the first Tab press does not pay for a cold engine.
+    ///
+    /// **Partial vs. the oracle.** The pin also warms shell *functions* and
+    /// *builtins* here (`Session::load_all_function_names` /
+    /// `Session::load_all_builtins`, on background-executor tasks). Neither
+    /// loader — nor the deferred-name-set machinery they sit on
+    /// (`additional_function_names`, `additional_builtin_names`,
+    /// `load_deferred_name_set`, `ShellType::shell_command_to_get_all_functions`
+    /// / `_builtins`) — exists in this fork's `Session`. That absence predates
+    /// this port and is not part of the ported commit; function and builtin
+    /// names still come from the bootstrap snapshot, they are simply never
+    /// refreshed in-band afterwards.
+    pub(super) fn warm_shell_completion_sources(
+        &self,
+        session: Arc<Session>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.spawn(
+            async move { session.load_external_commands().await },
+            |_, _, _| {},
+        );
+    }
+
+    /// Defensive retry for a session whose bootstrap warm-up never ran (or
+    /// raced the subscription that triggers it).
+    pub(super) fn ensure_external_commands_are_warming(&self, ctx: &mut ViewContext<Self>) {
+        let Some(session) = self.active_session.as_ref(ctx).session(ctx) else {
+            return;
+        };
+        if session.has_attempted_to_load_external_commands() {
+            return;
+        }
+
+        ctx.spawn(
+            async move { session.load_external_commands().await },
+            |_, _, _| {},
+        );
+    }
+
     /// Tab-completion entry point. When the completions popup is already
     /// open, Tab cycles to the next candidate; otherwise it fetches
     /// candidates for the token under the cursor from the shared completer
@@ -139,74 +179,74 @@ impl TuiTerminalSessionView {
         let Some(results) = results.filter(|results| !results.suggestions.is_empty()) else {
             return;
         };
-        let replacement_range = results.replacement_span.start()..results.replacement_span.end();
-        let append_space_at_buffer_end =
-            request.input.cursor_byte_offset == request.input.buffer_text.len();
-
-        if let Some(suggestion) = results.single_prefix_suggestion() {
-            let acceptance = TuiAcceptedCompletion {
-                replacement: suggestion.replacement().to_owned(),
-                span: replacement_range,
-                append_space: append_space_at_buffer_end
-                    && suggestion.suggestion.file_type != Some(EngineFileType::Directory),
-            };
-            self.input_view.update(ctx, |input, ctx| {
-                input.apply_shell_completion(acceptance, ctx)
-            });
+        // `get` (rather than indexing) also guards the out-of-bounds and
+        // non-UTF8-boundary replacement spans that the old, TUI-local
+        // `should_insert_common_prefix` used to reject explicitly.
+        let Some(query) = request
+            .input
+            .buffer_text
+            .get(results.replacement_span.start()..results.replacement_span.end())
+        else {
             return;
-        }
-
-        let common_prefix = longest_common_prefix(
-            results
-                .suggestions
-                .iter()
-                .filter(|suggestion| {
-                    matches!(
-                        suggestion.match_type,
-                        Match::Prefix {
-                            is_case_sensitive: true
-                        } | Match::Exact {
-                            is_case_sensitive: true
-                        }
-                    )
-                })
-                .map(|suggestion| suggestion.replacement()),
-        )
-        .map(str::to_owned);
-        let menu_input = common_prefix
-            .filter(|prefix| {
-                should_insert_common_prefix(
-                    prefix,
-                    &request.input,
-                    results.replacement_span.start(),
-                    results.replacement_span.distance(),
-                )
-            })
-            .and_then(|prefix| {
+        };
+        let Some(session) = self.active_session.as_ref(ctx).session(ctx) else {
+            return;
+        };
+        let path_separators = session.path_separators();
+        let decision = results.explicit_tab_completion(query, path_separators.all);
+        let (suggestions, replacement_span, menu_input) = match decision {
+            ExplicitTabCompletion::NoAction => return,
+            ExplicitTabCompletion::InsertSingle {
+                suggestion,
+                replacement_span,
+            } => {
                 let acceptance = TuiAcceptedCompletion {
-                    replacement: prefix,
-                    span: replacement_range.clone(),
+                    replacement: suggestion.suggestion.replacement.to_string(),
+                    span: replacement_span.start()..replacement_span.end(),
+                    append_space: request.input.cursor_byte_offset
+                        == request.input.buffer_text.len()
+                        && suggestion.suggestion.file_type != Some(EngineFileType::Directory),
+                };
+                self.input_view.update(ctx, |input, ctx| {
+                    input.apply_shell_completion(acceptance, ctx)
+                });
+                return;
+            }
+            ExplicitTabCompletion::InsertCommonPrefixAndOpen {
+                common_prefix,
+                suggestions,
+                replacement_span,
+            } => {
+                let acceptance = TuiAcceptedCompletion {
+                    replacement: common_prefix,
+                    span: replacement_span.start()..replacement_span.end(),
                     append_space: false,
                 };
                 let did_apply = self.input_view.update(ctx, |input, ctx| {
                     input.apply_shell_completion(acceptance, ctx)
                 });
-                did_apply.then(|| self.input_view.as_ref(ctx).completion_snapshot(ctx))?
-            })
-            .unwrap_or_else(|| request.input.clone());
-        let menu_replacement_range =
-            results.replacement_span.start()..menu_input.cursor_byte_offset;
+                let menu_input = did_apply
+                    .then(|| self.input_view.as_ref(ctx).completion_snapshot(ctx))
+                    .flatten()
+                    .unwrap_or_else(|| request.input.clone());
+                (suggestions, replacement_span, menu_input)
+            }
+            ExplicitTabCompletion::Open {
+                suggestions,
+                replacement_span,
+            } => (suggestions, replacement_span, request.input.clone()),
+        };
+        let menu_replacement_range = replacement_span.start()..menu_input.cursor_byte_offset;
         let append_space_at_buffer_end =
             menu_input.cursor_byte_offset == menu_input.buffer_text.len();
         self.completion_request.menu_snapshot = Some(menu_input);
-        let candidates = results
-            .suggestions
+        let candidates = suggestions
             .into_iter()
-            .map(|matched| TuiCompletionCandidate {
-                display: matched.display().to_owned(),
-                replacement: matched.replacement().to_owned(),
-                description: matched.description(),
-                is_directory: matched.suggestion.file_type == Some(EngineFileType::Directory),
+            .map(|prepared| TuiCompletionCandidate {
+                display: prepared.suggestion.display.to_string(),
+                replacement: prepared.suggestion.replacement.to_string(),
+                description: prepared.suggestion.description.clone(),
+                is_directory: prepared.suggestion.file_type == Some(EngineFileType::Directory),
             })
             .collect::<Vec<_>>();
         self.completions_menu.update(ctx, |menu, ctx| {
@@ -261,21 +301,6 @@ fn completion_request_is_current(
         && current_session_id == Some(request.session_id)
         && current_working_directory == Some(request.current_working_directory.as_str())
         && !has_active_inline_menu
-}
-
-fn should_insert_common_prefix(
-    common_prefix: &str,
-    input: &TuiCompletionInputSnapshot,
-    replacement_start: usize,
-    replacement_distance: usize,
-) -> bool {
-    let Some(current_word) = input
-        .buffer_text
-        .get(replacement_start..input.cursor_byte_offset)
-    else {
-        return false;
-    };
-    common_prefix.len() > replacement_distance && common_prefix.starts_with(current_word)
 }
 
 #[cfg(test)]

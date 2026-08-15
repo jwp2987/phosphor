@@ -367,7 +367,7 @@ fn new_command_executor_for_local_tty_session(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use crate::terminal::shell::ShellType;
 
