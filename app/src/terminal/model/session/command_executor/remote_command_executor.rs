@@ -9,6 +9,7 @@ use itertools::Itertools as _;
 use crate::env_vars::{serialize_variables_for_shell, EnvVarValue};
 use crate::terminal::shell::Shell;
 
+use super::shared::shell_escape_single_quotes;
 use super::{CommandExecutor, CommandOutput, ExecuteCommandOptions};
 
 /// `CommandExecutor` implementation that executes the given `command` in a forked process
@@ -57,7 +58,15 @@ impl CommandExecutor for RemoteCommandExecutor {
             command_str.push(';');
         }
         if let Some(current_directory_path) = current_directory_path {
-            command_str.push_str(&format!("cd '{current_directory_path}' && "));
+            // Ensure the path escapes embedded single quotes from the remote host's serialized
+            // block. Without this a directory whose name contains `'` closes the quoting and the
+            // remainder is interpreted as shell syntax -- injected into a command that runs on the
+            // REMOTE host. Upstream `88c344e2` ("[Security] Fix command injection in remote ssh
+            // sessions") fixed two sites; this fork ported the `history_file` one
+            // (`session.rs`) and missed this one.
+            let escaped_path =
+                shell_escape_single_quotes(current_directory_path, shell.shell_type());
+            command_str.push_str(&format!("cd '{escaped_path}' && "));
         }
         command_str.push_str(command);
 

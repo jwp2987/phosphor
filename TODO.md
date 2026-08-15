@@ -1836,7 +1836,13 @@ session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
       `git log warp/master -- <path>` for the other hot files on the SSH path
       before assuming any of them is at parity.
 
-- [ ] **Restore `reuse_ssh_control_master`.** The pin discovers an existing
+- [ ] **Port `reuse_ssh_control_master` (upstream `0d24d2cf`, "Add setting to
+      enable reusing user's existing control master", #12465).**
+      **Correction 2026-08-15: the fork did not "drop" this**, as this entry
+      first said — it was ADDED upstream after the `0dbd3d56` fork point and was
+      never ported. Same end state, different story, and it means the whole
+      feature has to be brought across rather than resurrected from history.
+      The pin discovers an existing
       ControlMaster for the destination host (`ssh -G`, verified with
       `ssh -O check`) and attaches to it instead of always creating its own;
       it threads the decision through `PtyOptions` (pin
@@ -1846,8 +1852,9 @@ session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
       Consequence beyond the missing feature: this is why the bootstrap scripts
       never emit `external_control_master`, so the ownership signal that
       `a13b9d49` built the `owns_control_master` guard for is dead by
-      construction and **#37 cannot be finished until this is restored**. That
-      commit's TODO reads as unplumbed wiring; it is actually a removed feature.
+      construction and **#37 cannot be finished until this is ported**. That
+      commit's TODO reads as unplumbed wiring; it is actually a feature this
+      fork never took.
 
 - [ ] **Restore the `node --version` per-prompt cache, and the chip gate.** The
       pin caches the resolved version keyed on `"$PWD:$PATH"` in globals that
@@ -1867,13 +1874,30 @@ session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
       in-band and does **not** open an SSH channel, so it is a latency
       regression, not the channel bug.
 
-- [ ] **Escape single quotes in the ControlMaster executor's `cd`.**
-      `remote_command_executor.rs:60` builds `cd '{current_directory_path}' &&`
-      by interpolation. The pin runs the path through
-      `shared::shell_escape_single_quotes(path, shell.shell_type())` first —
-      the fork is simply behind on that fix. A remote directory containing a
-      single quote breaks out of the quoting and corrupts every generator
-      command for that session. Cheap, isolated, independently testable.
+- [x] **Escape single quotes in the ControlMaster executor's `cd`. DONE
+      2026-08-15 — and this was a SECURITY fix, not the cosmetic quoting bug
+      this entry first called it.** `remote_command_executor.rs` built
+      `cd '{current_directory_path}' &&` by interpolation, so a remote directory
+      whose name contains `'` closes the quoting and the remainder is
+      interpreted as shell syntax — injected into a command that runs on the
+      REMOTE host.
+
+      Upstream fixed this in `88c344e2`, "[Security] Fix command injection in
+      remote ssh sessions" (#25354, 2026-05-05), at **two** sites. This fork
+      ported one and missed the other: `session.rs:1409`'s
+      `cat '{escaped_history_file}'` is present, the executor's `cwd` was not.
+      The helper (`shared.rs:27`) and its seven tests were already here — only
+      this call site was missing. Fixed by applying it, matching upstream's
+      change exactly.
+
+      Upstream added no executor-level test (its tests went to `shared_tests.rs`
+      and `session_tests.rs`), because the command string is built inline in an
+      async fn that spawns a process. Not added here either; the helper's own
+      coverage carries it.
+
+      **Its sibling `43f4f483`, "[Security] Fix command injection in code search
+      tools" (#25351), IS fully ported** — `shell_quote_arg` is present and used
+      throughout `grep.rs` and `file_glob.rs`. Checked, no action.
 
 ## REMOTE-SERVER DISTRIBUTION AND BINARY SIZE (opened 2026-08-11)
 
