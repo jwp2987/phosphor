@@ -35,6 +35,7 @@ the treadmill.
 |---|---|
 | **Release** | `2026.07.29.09.05` stable |
 | **Commit** | `02b53fcd8` (2026-07-29 00:14 -0400) |
+| **Commit (full)** | `02b53fcd81ac49adffe5288201e4387abe48f23c` |
 | **Pinned on** | 2026-08-06 |
 | **Tests at pin** | 10,123 |
 

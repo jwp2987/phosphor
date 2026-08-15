@@ -76,11 +76,26 @@ jobs:
       - name: Fetch the pinned oracle commit
         shell: bash
         run: |
-          PIN=$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md | grep -oE '[0-9a-f]{7,}' | head -1)
-          PIN=${PIN:-02b53fcd8}
+          # GitHub only serves fetch-by-SHA for a FULL 40-character sha, so
+          # prefer ORACLE.md's "Commit (full)" row. The abbreviated row is for
+          # humans; fetching it always fails with "couldn't find remote ref",
+          # which is how this step warned-and-skipped on every run from its
+          # introduction until 2026-08-15 while the job still reported green.
+          PIN=$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md | grep -oE '[0-9a-f]{40}' | head -1)
+          if [[ -z "$PIN" ]]; then
+            echo "::error::ORACLE.md has no 40-char '**Commit (full)**' row; cannot fetch the pin"
+            exit 1
+          fi
           echo "pin=$PIN"
-          git fetch --depth=1 --no-tags https://github.com/warpdotdev/warp.git "$PIN" || {
-            echo "::warning::could not fetch pin $PIN; stub check will skip"
+          git fetch --depth=1 --no-tags https://github.com/warpdotdev/warp.git "$PIN"
+          # Deliberately NOT tolerated. check_stub_coverage exits 0 when the pin
+          # object is missing -- a convention that keeps local runs usable and
+          # makes an unfetched oracle indistinguishable from "nothing to check".
+          # In CI the oracle is always reachable, so a failure here is a real
+          # problem and must stop the job rather than silently disarm a guard.
+          git cat-file -e "${PIN}^{commit}" || {
+            echo "::error::pin $PIN fetched but not present; stub coverage would silently skip"
+            exit 1
           }
 
       - name: Cloud boundary (no new imports of dropped-cloud modules)
