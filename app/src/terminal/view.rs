@@ -5809,9 +5809,16 @@ impl TerminalView {
         &mut self,
         cli_subagent_view_id: EntityId,
         event: &CLISubagentViewEvent,
-        _should_forward_windows_ctrl_c: bool,
+        should_forward_windows_ctrl_c: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Only the WindowsCtrlC arm below reads this, and that arm is
+        // cfg(windows) -- so on every other target the parameter is genuinely
+        // unused and needs discarding rather than an underscore prefix, which
+        // would rename it out from under the arm that does use it.
+        #[cfg(not(windows))]
+        let _ = should_forward_windows_ctrl_c;
+
         match event {
             CLISubagentViewEvent::TextSelected => {
                 // A CLI subagent's text selection can't coexist with block list /
