@@ -316,6 +316,22 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
 
     // Prefer taking the background prewarm result; fall back to synchronous init_db() (the original behavior) if unavailable.
     let init_result = match take_prewarmed_db() {
+        // A failed prewarm is recoverable on its own: prewarm and the
+        // synchronous path run the identical `init_db()`, so retry once on this
+        // thread before giving up. The failure that motivated this was a
+        // migration reported as failing that had in fact been applied -- the
+        // retry finds nothing pending and succeeds.
+        //
+        // Without it a single failed init is terminal for the whole process:
+        // `initialize` returns no `WriterHandles`, so there is no
+        // `SyncSender<ModelEvent>`, and every later write fails with "sqlite
+        // sender is unavailable" until the app restarts. That takes down agent
+        // requests entirely, because BYOP preflight persists the conversation
+        // before sending it.
+        Some(Err(err)) => {
+            log::warn!("SQLite prewarm failed ({err:#}); retrying initialization synchronously");
+            init_db()
+        }
         Some(result) => result,
         None => {
             unsafe {
@@ -359,6 +375,16 @@ pub fn initialize(ctx: &mut AppContext) -> (Option<PersistedData>, Option<Writer
                 ctx
             );
             report_db_error("initialization", err, &database_path);
+            // State the consequence. `report_db_error` logs the cause and some
+            // path diagnostics, but nothing said what it costs, so the app
+            // carried on looking healthy while every persisted write -- and so
+            // every agent request -- failed for the rest of the session.
+            log::error!(
+                "SQLite is unavailable for this session: no writer thread was started, so \
+                 persistence is disabled and agent requests will fail in BYOP preflight with \
+                 \"sqlite sender is unavailable\". Restart {} to retry.",
+                warp_core::channel::ChannelState::display_name()
+            );
             (None, None)
         }
     }
