@@ -15804,6 +15804,7 @@ dependencies = [
  "chrono",
  "clap",
  "command",
+ "criterion",
  "ctor",
  "dirs 6.0.0",
  "fs4",
