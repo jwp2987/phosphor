@@ -3508,6 +3508,12 @@ impl CodeEditorModel {
     ) {
         let buffer = self.content().as_ref(ctx);
         let current_selections = self.selection_model.as_ref(ctx).selection_offsets();
+        // NOTE: do not port upstream's `saturating_sub(1)` conversion from 730a4acc0
+        // here -- see the comment on `CodeEditorView::jump_to_line` in vim_handler.rs
+        // (the plain-navigation sibling of this operator-pending/visual path, `d5G`
+        // vs. `5G`). This fork's `Buffer` rows are already 1-indexed for content
+        // because of the leading zero-width `BlockMarker`, so `line_number` (vim's
+        // own 1-indexed count) is used as-is.
         let target_row = line_number.max(1).min(buffer.max_point().row);
         let new_selections = current_selections.mapped(|selection| SelectionOffsets {
             head: Point::new(target_row, 0).to_buffer_char_offset(buffer),
