@@ -33,8 +33,12 @@
 #        dev.warp.Warp, dev.zap.Zap      (preceded by '.')
 #        X-Zap-Client-ID, Zap-Run-GeneratorCommand (adjacent '-')
 #
-#   2. In Rust, only inside a double-quoted literal, never a comment. An
-#      identifier or a doc comment mentioning Warp is lineage, not branding.
+#   2. In Rust, only inside a string literal, never a comment. An identifier
+#      or a doc comment mentioning Warp is lineage, not branding. The literals
+#      are found with a scanner rather than a line regex, because Rust strings
+#      span lines: an earlier line-based draft of this guard silently missed
+#      eight shipped strings, including five "reinstall Warp Agent CLI" errors
+#      broken across a backslash continuation.
 #
 #   3. In Rust, a literal with NO whitespace in it is a token, not copy. Keys,
 #      headers, registry paths, single-instance mutex names, DCS markers and
@@ -126,6 +130,59 @@ def rust_sources():
             yield p
 
 
+def rust_literals(text):
+    """Yield (start_offset, end_offset, contents) for every Rust string literal.
+
+    This is a scanner, not a line regex, because Rust string literals span
+    lines -- both `"...\\` backslash continuations and multi-line `r#"..."#`
+    raw strings. An earlier line-based version of this guard missed ten
+    user-visible "Warp Agent CLI" errors in `warp_tui/src/autoupdate.rs` for
+    exactly that reason, which is the whole argument for scanning properly.
+    Comments and char literals are skipped so a `"` inside either cannot
+    desynchronise the scan for the rest of the file.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif c == "'" and re.match(r"'(?:\\.|[^\\'])'", text[i : i + 4]):
+            i += len(re.match(r"'(?:\\.|[^\\'])'", text[i : i + 4]).group(0))
+        elif c == "r" and (m := re.match(r'r(#*)"', text[i:])):
+            hashes = m.group(1)
+            start = i + len(m.group(0))
+            close = text.find('"' + hashes, start)
+            if close < 0:
+                return
+            yield i, close + 1 + len(hashes), text[start:close]
+            i = close + 1 + len(hashes)
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                elif text[j] == '"':
+                    break
+                else:
+                    j += 1
+            if j >= n:
+                return
+            yield i, j + 1, text[i + 1 : j]
+            i = j + 1
+        else:
+            i += 1
+
+
 def check_rust():
     hits = []
     for p in rust_sources():
@@ -133,23 +190,37 @@ def check_rust():
             text = p.read_text(errors="replace")
         except OSError:
             continue
-        for lineno, line in enumerate(text.splitlines(), 1):
-            stripped = line.lstrip()
-            if stripped.startswith(("//", "/*", "*")):
+        line_starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
+        lines = text.splitlines()
+
+        def lineno_of(off):
+            lo, hi = 0, len(line_starts) - 1
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if line_starts[mid] <= off:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            return lo + 1
+
+        for start, end, literal in rust_literals(text):
+            if not TOKEN.search(literal):
                 continue
-            if MARKER.search(line):
+            if not re.search(r"\s", literal):
+                continue  # rule 3: a token, not a sentence
+            lineno = lineno_of(start)
+            # The marker may sit on the opening line or anywhere in the literal's span.
+            span = text[line_starts[lineno - 1] : end]
+            if MARKER.search(span):
                 continue
+            line = lines[lineno - 1] if lineno <= len(lines) else ""
             if MATCH_ARM.match(line):
-                continue
-            for m in STRING.finditer(line):
-                literal = m.group(1)
-                if not TOKEN.search(literal):
-                    continue
-                if not re.search(r"\s", literal):
-                    continue  # rule 3: a token, not a sentence
-                if COMPARISON.search(line[: m.start()]):
-                    continue  # rule 4
-                hits.append((str(p), lineno, m.group(0)))
+                continue  # rule 4
+            prefix = line[: start - line_starts[lineno - 1]]
+            if COMPARISON.search(prefix):
+                continue  # rule 4
+            flat = " ".join(literal.split())
+            hits.append((str(p), lineno, f'"{flat[:120]}"'))
     return hits
 
 

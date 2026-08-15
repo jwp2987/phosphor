@@ -3223,7 +3223,7 @@ impl ansi::Handler for TerminalModel {
             if value.external_control_master {
                 log::info!(
                     "SSH wrapper attached to an external ControlMaster at {}; \
-                     Warp will not tear it down on session exit",
+                     Phosphor will not tear it down on session exit",
                     value.socket_path.display()
                 );
             }
