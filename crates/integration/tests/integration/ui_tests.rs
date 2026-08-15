@@ -215,6 +215,7 @@ integration_tests! {
     test_osc8_file_scheme_opens_url,
     test_osc8_no_regression_on_url_autodetect,
 
+    test_cycle_active_tab_color_with_keybinding,
     test_active_session_follows_focus,
 
     test_focus_panes_on_hover,

@@ -914,6 +914,104 @@ fn test_set_active_tab_color() {
 }
 
 #[test]
+fn test_cycle_active_tab_color_uses_resolved_color_and_only_mutates_the_active_tab() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            let active = workspace.active_tab_index;
+            let inactive = 0;
+            workspace.tabs[inactive].selected_color =
+                SelectedTabColor::Color(AnsiColorIdentifier::Magenta);
+            workspace.tabs[inactive].in_multi_selection = true;
+            workspace.tabs[active].in_multi_selection = true;
+
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Red),
+                "an uncolored active tab should start at red"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Green),
+                "red should advance to green"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Yellow),
+                "green should advance to yellow"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Blue),
+                "yellow should advance to blue"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Magenta),
+                "blue should advance to magenta"
+            );
+            workspace.tabs[active].default_directory_color = Some(AnsiColorIdentifier::Yellow);
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Cyan),
+                "magenta should advance to cyan"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Cleared,
+                "cyan should advance to an explicit clear"
+            );
+            assert_eq!(
+                workspace.tabs[active].color(),
+                None,
+                "an explicit clear should suppress the directory-derived color"
+            );
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Red),
+                "the invocation after an explicit clear should restart at red"
+            );
+
+            assert_eq!(
+                workspace.tabs[inactive].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Magenta),
+                "the inactive tab should not change"
+            );
+            assert!(workspace.tabs[inactive].in_multi_selection);
+            assert!(workspace.tabs[active].in_multi_selection);
+
+            workspace.tabs[active].selected_color = SelectedTabColor::Unset;
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            assert_eq!(
+                workspace.tabs[active].selected_color,
+                SelectedTabColor::Color(AnsiColorIdentifier::Blue),
+                "a directory-derived yellow should advance to blue"
+            );
+
+            workspace.active_tab_index = workspace.tabs.len();
+            let active_selection = workspace.tabs[active].selected_color;
+            let inactive_selection = workspace.tabs[inactive].selected_color;
+            workspace.handle_action(&WorkspaceAction::CycleActiveTabColor, ctx);
+            workspace.active_tab_index = active;
+            assert_eq!(workspace.tabs[active].selected_color, active_selection);
+            assert_eq!(workspace.tabs[inactive].selected_color, inactive_selection);
+        });
+    });
+}
+
+#[test]
 fn test_workspace_sessions_retrieves_tabs() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);

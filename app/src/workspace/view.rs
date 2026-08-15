@@ -442,8 +442,8 @@ use crate::palette::PaletteMode;
 use crate::search::command_palette::view::{Event as CommandPaletteEvent, View as CommandPalette};
 use crate::server::telemetry::{NotificationsTurnedOnSource, PaletteSource, TabRenameEvent};
 use crate::tab::{
-    tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor,
-    TabBarState, TabComponent, TabData, TabTelemetryAction, MOVE_TO_GROUP_LABEL,
+    next_tab_color, tab_position_id, uses_vertical_tabs, NewSessionMenuItem, PaneNameMenuTarget,
+    SelectedTabColor, TabBarState, TabComponent, TabData, TabTelemetryAction, MOVE_TO_GROUP_LABEL,
     TAB_BAR_BORDER_HEIGHT,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
@@ -19940,6 +19940,16 @@ impl TypedActionView for Workspace {
                 );
             }
             SetActiveTabName(name) => self.set_active_tab_name(name, ctx),
+            CycleActiveTabColor => {
+                // Upstream also redirects to the tab *group*'s colour when the active tab is
+                // grouped. This tree has no group-colour setter (`TabGroup::color` is only ever
+                // read), so every tab — grouped or not — cycles its own colour.
+                let Some(tab_color) = self.tabs.get(self.active_tab_index).map(|tab| tab.color())
+                else {
+                    return;
+                };
+                self.set_tab_color(self.active_tab_index, next_tab_color(tab_color), ctx);
+            }
             SetActiveTabColor(color) => self.set_tab_color(self.active_tab_index, *color, ctx),
             ToggleTabRightClickMenu { tab_index, anchor } => {
                 self.toggle_tab_right_click_menu(*tab_index, *anchor, ctx)
