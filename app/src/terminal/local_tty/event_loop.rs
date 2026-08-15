@@ -247,12 +247,30 @@ where
                 }),
             };
 
-            // Process the bytes read into the buffer.
+            // Process the bytes read into the buffer. Any terminal response
+            // sequences the parser generates (e.g. cursor position / device
+            // status reports) are collected into a buffer and queued onto
+            // `write_list` below, rather than written directly to the PTY
+            // here: a direct write can hit `WouldBlock` if the PTY's write
+            // buffer is full, and `ansi::Processor` does not retry a failed
+            // write, so a direct write silently drops the response.
+            // `write_list`/`pty_write` already retry across `WouldBlock`
+            // (see below), so routing through it is what actually
+            // guarantees delivery.
+            // Upstream: e59c7a491489 "Fix dropped terminal response
+            // sequences when PTY writes block" (#11906). NOT COMPILED --
+            // builds are suspended; verified by reading only.
+            let mut terminal_response_sequences = Vec::new();
             state.parser.parse_bytes(
                 terminal.deref_mut(),
                 &buf[..bytes_in_buffer],
-                &mut self.pty.writer(),
+                &mut terminal_response_sequences,
             );
+            if !terminal_response_sequences.is_empty() {
+                state
+                    .write_list
+                    .push_back(Cow::Owned(terminal_response_sequences));
+            }
 
             bytes_processed += bytes_in_buffer;
             bytes_in_buffer = 0;
@@ -372,9 +390,20 @@ where
 
                     // If there were no events but `poll` returned, that means we hit the timeout.
                     if events.is_empty() {
-                        state
-                            .parser
-                            .finish_sync_output(&mut *self.terminal.lock(), &mut self.pty.writer());
+                        // Same reasoning as the `parse_bytes` call above: route any
+                        // response sequences through `write_list` instead of writing
+                        // directly, so a blocked PTY write queues and retries instead
+                        // of silently dropping them.
+                        let mut terminal_response_sequences = Vec::new();
+                        state.parser.finish_sync_output(
+                            &mut *self.terminal.lock(),
+                            &mut terminal_response_sequences,
+                        );
+                        if !terminal_response_sequences.is_empty() {
+                            state
+                                .write_list
+                                .push_back(Cow::Owned(terminal_response_sequences));
+                        }
                         continue;
                     }
 
