@@ -123,6 +123,68 @@ not change**:
   are approximate by construction; `docs/sweep-verdict-ledger.tsv` is the
   authority on any individual test.
 
+## Phase 2.5 — walk every commit, not just the queue
+
+**The queue cannot see a bug fix.** This is a structural limit, not a bug in
+the generator, and it is worth stating plainly because the queue is otherwise
+so useful that it invites being treated as the whole job.
+
+`generate_repin_queue` keeps only **test-bearing** files, because its purpose is
+to tell you which recorded verdicts went stale — and a verdict is always
+attached to a test. That filter is correct for what it does and badly wrong as a
+definition of the round's scope. On the first real re-pin
+(`02b53fcd8 -> 42effe840`) the numbers were:
+
+| | count |
+|---|---|
+| `.rs` files changed upstream | 602 |
+| of those, test-bearing (what the queue lists) | **194** |
+| invisible to the queue | **408** |
+
+Two thirds of the changed Rust is outside the queue, and a fix landing in
+`app/src/completer/mod.rs` with no accompanying test file is invisible to it in
+exactly the same way whether it is a typo or a security fix. The
+highest-yield findings of the pre-re-pin audit rounds were precisely this class
+— half-ported and unported *bug fixes*, not missing tests — including a shell
+escaping fix (`88c344e2`) that had been ported with its escaping omitted.
+
+So the queue is one of two inputs. The other is a walk of **every commit** in
+the range:
+
+```bash
+git log --reverse --format='%H%x09%ad%x09%s' --date=short <old-pin>..<new-pin>
+```
+
+Shard it by each commit's **primary area** — the top-level directory holding
+most of its changed files — so each agent gets a coherent domain rather than a
+random slice, and so two agents cannot land in the same file:
+
+```bash
+git show --pretty=format: --name-only <sha> \
+  | awk -F/ '{if($1=="app"||$1=="crates") print $1"/"$2; else print $1}' \
+  | sort | uniq -c | sort -rn | head -1
+```
+
+Verify the shards partition the range exactly — every commit assigned once,
+none orphaned — before briefing anyone. A commit silently dropped at
+sharding time is indistinguishable, later, from a commit deliberately judged
+out of scope.
+
+Each commit ends in exactly one bucket, and the buckets are the round's
+ledger:
+
+| verdict | meaning |
+|---|---|
+| **PORTED** | change applied to the fork |
+| **ALREADY-PRESENT** | fork already has it (independently, or via an earlier round) |
+| **CLOUD** | needs dropped cloud infrastructure — out of scope by policy |
+| **N/A** | upstream-only: CI config, release tooling, vendored assets the fork lacks |
+| **SCOPE-DECISION** | a real gap, but closing it is a product call, not a port |
+
+`SCOPE-DECISION` is what makes the gap loop terminate. Without it, agents
+either loop forever on gaps they have no authority to close, or quietly
+close them by inventing scope.
+
 ## Phase 3 — fast-forward what is free
 
 ```bash
@@ -154,6 +216,13 @@ Follow `docs/FLEET-ROUND.md` exactly. The rules that matter most:
   certainly it does.
 - **Keep agent worktrees on a current base.** Branches cut from different
   commits produce merge pain the round did not need.
+- **A re-pin round is not based on `main`.** It runs on its own branch so that
+  nothing reaches `main` until a human says so. Pass that branch as
+  `script/agent-worktree new <slug> <branch> <base>`'s third argument; the base
+  is recorded per-worktree and `refresh`/`status` follow it. Before that was
+  recorded, both subcommands assumed `origin/main` and would have merged `main`
+  into the round's worktrees — succeeding silently, and leaving agents reporting
+  clean trees containing commits the round never authorised.
 - **Never call a failure "pre-existing" without measuring it.**
 
 Every agent brief should carry, verbatim:
