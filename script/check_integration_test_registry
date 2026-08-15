@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Fail if a name listed in `integration_tests!` is not wired into the
+# integration binary's `register_tests()` map.
+#
+# WHY THIS EXISTS
+# ----------------
+# `cargo nextest -p integration (Linux)` was red on every run from the day it
+# was added. 22 of its ~51 failures were not tests at all:
+#
+#     thread 'main' panicked at crates/integration/src/bin/integration.rs:72:9:
+#     test not found for args: Args { inner: [".../integration", "test_sftp_pane_close"] }
+#
+# 18 `test_sftp_*` names and 4 `test_websocket_*` names were still listed in
+# `crates/integration/tests/integration/ui_tests.rs` after the code they drove
+# had been deliberately deleted -- the SSH/SFTP manager in 3c657be07 and the
+# cloud websocket Listener in 26c1ed8b5. Both commits removed the
+# implementations and their `register_test!` lines and missed the name lists.
+# The result was 22 tests that could only ever fail, on a job that therefore
+# could never be green, for months.
+#
+# WHY THE COMPILER CANNOT CATCH THIS
+# -----------------------------------
+# The two sides are joined by a STRING, across a process boundary. The
+# `integration_tests!` macro generates a `#[test]` fn that spawns the
+# `integration` binary with the test's name as `argv[1]`; the binary looks that
+# string up in a `HashMap<&'static str, BoxedBuilderFn>` built by
+# `register_tests()`. A name with no entry type-checks perfectly and fails at
+# runtime, in a child process, as a panic that reads like a real test failure.
+#
+# The macro now also emits `const _: fn() -> Builder = integration::test::<name>;`
+# inside each generated test fn, which makes a name with NO IMPLEMENTATION a
+# compile error. That covers one half. This script covers the other half: an
+# implementation that exists but was never added to (or was removed from)
+# `register_tests()` -- which is still only reachable by string at runtime.
+#
+# HOW IT WORKS
+# ------------
+# Pull every `$name,` entry out of the `integration_tests! { ... }` invocations
+# in `crates/integration/tests/integration/*.rs`, pull every
+# `register_test!(<name>);` out of `crates/integration/src/bin/integration.rs`,
+# and diff the two sets. Text-based and deliberately NOT cfg-aware: a name
+# gated to one platform on either side still counts as present on both, the
+# same approximation `check_settings_registry` and `check_stub_coverage` make.
+# Being cfg-aware here would trade a guard that catches deletions on every
+# platform for one that only catches them on the platform it is run on.
+#
+# Only one direction is a failure. Names registered but not listed are
+# EXPECTED: `register_tests()` deliberately carries entries that no automatic
+# suite runs (`test_with_24_bit_color`, `test_video_recording`,
+# `make_1000_blocks_memory_benchmark`, the `usage_*` scenarios driven by
+# `script/usage-test`). Those are reported as a note, not an error.
+
+set -euo pipefail
+
+# Keep sort(1) and comm(1) on the same collation; comm rejects input sorted
+# under a locale-aware collation it does not share.
+export LC_ALL=C
+
+cd "$(dirname "$0")/.."
+
+REGISTRY_FILE="crates/integration/src/bin/integration.rs"
+LIST_DIR="crates/integration/tests/integration"
+
+for f in "$REGISTRY_FILE" "$LIST_DIR"; do
+    if [[ ! -e "$f" ]]; then
+        echo "check_integration_test_registry: expected $f to exist" >&2
+        exit 1
+    fi
+done
+
+listed=$(mktemp)
+registered=$(mktemp)
+trap 'rm -f "$listed" "$registered"' EXIT
+
+# Names inside `integration_tests! { ... }`. The macro body is a flat list of
+# `name,` lines, optionally preceded by attribute lines; anything that is not a
+# bare `identifier,` (attributes, comments, braces) is skipped.
+awk '
+    /integration_tests!/ { in_macro = 1; next }
+    in_macro && /^\}/    { in_macro = 0; next }
+    in_macro {
+        line = $0
+        sub(/\/\/.*/, "", line)                  # strip trailing line comments
+        gsub(/[ \t]/, "", line)
+        if (line ~ /^[A-Za-z_][A-Za-z0-9_]*,$/) {
+            sub(/,$/, "", line)
+            print line
+        }
+    }
+' "$LIST_DIR"/*.rs | sort -u > "$listed"
+
+grep -oE 'register_test!\([A-Za-z_][A-Za-z0-9_]*\)' "$REGISTRY_FILE" \
+    | sed -E 's/register_test!\((.*)\)/\1/' \
+    | sort -u > "$registered"
+
+if [[ ! -s "$listed" ]]; then
+    echo "check_integration_test_registry: parsed 0 names out of $LIST_DIR -- the" >&2
+    echo "  list format must have changed. Fix this script rather than letting it" >&2
+    echo "  pass vacuously." >&2
+    exit 1
+fi
+if [[ ! -s "$registered" ]]; then
+    echo "check_integration_test_registry: parsed 0 register_test! calls out of" >&2
+    echo "  $REGISTRY_FILE -- the registry format must have changed." >&2
+    exit 1
+fi
+
+missing=$(comm -23 "$listed" "$registered")
+extra=$(comm -13 "$listed" "$registered")
+
+status=0
+if [[ -n "$missing" ]]; then
+    status=1
+    echo "error: integration test name(s) listed but never registered:" >&2
+    echo "$missing" | sed 's/^/  - /' >&2
+    cat >&2 <<EOF
+
+These names appear in an \`integration_tests!\` list under $LIST_DIR
+but have no \`register_test!\` line in $REGISTRY_FILE.
+nextest will generate a test for each of them; every one will spawn the
+integration binary, miss the lookup, and panic with
+
+    test not found for args: Args { ... }
+
+Fix: either add \`register_test!(<name>);\` to \`register_tests()\`, or -- if the
+test's implementation was deliberately removed -- delete the name from the
+\`integration_tests!\` list too. Do not leave it listed.
+EOF
+fi
+
+if [[ -n "$extra" ]]; then
+    # Not a failure -- see header comment for why.
+    echo "note: integration test(s) registered but not in any automatic suite:"
+    echo "$extra" | sed 's/^/  - /'
+fi
+
+if [[ $status -eq 0 ]]; then
+    echo "integration test registry: ok ($(wc -l < "$listed" | tr -d ' ') listed name(s) all registered)"
+fi
+
+exit $status

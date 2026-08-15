@@ -193,6 +193,26 @@ pub fn run_integration_test(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Declares the `#[test]` shims that shell out to the `integration` binary.
+///
+/// Each entry generates two things:
+///
+/// 1. a `#[test]` fn that runs the binary with the test's name as its argument, and
+/// 2. an anonymous const that names the test's builder function directly.
+///
+/// (2) exists because (1) resolves the name at RUNTIME, as a string, in a child
+/// process: `register_tests()` in `src/bin/integration.rs` looks it up in a
+/// `HashMap<&str, _>` and panics with "test not found" on a miss. Nothing tied
+/// this list to that map, so deleting a test's implementation and its
+/// `register_test!` line while leaving its name here produced a test that
+/// compiled, ran, and could only ever fail. That is exactly how 22 permanently
+/// red tests (18 `test_sftp_*`, 4 `test_websocket_*`) survived two deliberate
+/// feature removals — see 3c657be07 and 26c1ed8b5.
+///
+/// The const turns that runtime panic into a compile error: a name with no
+/// `pub fn <name>() -> Builder` in `integration::test` no longer builds. It does
+/// NOT check that the name is wired into `register_tests()`; `script/check_integration_test_registry`
+/// covers that half.
 #[macro_export]
 macro_rules! integration_tests {
 (   $(
@@ -211,6 +231,12 @@ macro_rules! integration_tests {
             #[cfg_attr(not(any(target_os = "macos", feature = "run_on_linux", feature = "run_on_windows")), ignore)]
             #[test]
             fn $name() -> Result<(), String> {
+                // Compile-time proof that this name has an implementation. See
+                // the doc comment above. It lives inside the fn body so that a
+                // `#[cfg(...)]` on the entry gates it too, and so `#[ignore]`
+                // (not a valid attribute on a const item) still leaves it
+                // compiled -- an ignored test is still a name that must resolve.
+                const _: fn() -> ::integration::Builder = ::integration::test::$name;
                 $crate::common::run_integration_test(stringify!($name))
             }
         )*

@@ -374,11 +374,17 @@ pub fn assert_bootstrapping_result(
     pane_index: usize,
     expect_bootstrapped: bool,
 ) -> AssertionOutcome {
-    // Pane-indexed on purpose. This used to ignore `pane_index` and go through
-    // `single_terminal_view_for_tab`, which asserts the tab holds exactly one
-    // terminal -- so every `wait_until_bootstrapped_pane(tab, 1)` in a split-pane
-    // test panicked with "doesn't have a single terminal view" before it could
-    // check anything.
+    // Honour `pane_index`. f8cb92d62 (the SFTP browser feature) swapped this for
+    // `single_terminal_view_for_tab(app, window_id, tab_index)` and renamed the
+    // parameter to `_pane_index` to silence the resulting unused warning, so that
+    // the SFTP popup tests -- whose tab had a non-terminal pane at index 0 -- could
+    // find "the" terminal by type instead of by position. That made this assertion
+    // panic outright ("tab_index=0 doesn't have a single terminal view. Has 2
+    // terminal views instead") for every caller with more than one terminal pane in
+    // the tab, which is every multi-pane test: `wait_until_bootstrapped_pane(0, 1)`
+    // could not wait on pane 1, it could only abort. 3c657be07 then deleted the SFTP
+    // feature and its tests, leaving the workaround behind with nothing left to
+    // serve. It was 14 of the integration job's permanently red tests.
     let terminal_view = terminal_view(app, window_id, tab_index, pane_index);
     let bootstrapped = terminal_view.read(app, |view, ctx| {
         let model = view.model.lock();

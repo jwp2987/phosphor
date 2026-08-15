@@ -195,6 +195,12 @@ integration_tests! {
     #[ignore = "Affected by agent_view feature flag UI changes"]
     test_up_arrow_history_enters_shift_tab_for_workflow,
 
+    // The four `test_websocket_*` entries that stood here were removed in
+    // 26c1ed8b5 ("Phase 5-5 删除 websocket 集成测试") along with the cloud
+    // Listener singleton they drove; that commit deleted
+    // crates/integration/src/test/websockets.rs and their register_test! lines
+    // but left these names behind, so nextest kept generating four tests that
+    // could only ever panic with "test not found".
 
     test_secret_is_obfuscated_on_copy,
     test_secret_tooltip_respects_safe_mode_setting,
@@ -348,7 +354,11 @@ integration_tests! {
     #[ignore = "Manual test: requires real display for frame capture"]
     test_video_recording,
 
-    // SFTP browser popup tests
-
-    // SFTP browser UI integration tests (mock backend)
+    // The eighteen `test_sftp_*` entries that stood here were removed in
+    // 3c657be07 ("remove fork-original SSH Manager feature (Track 3)") along
+    // with app/src/sftp_manager and the SftpPane they drove; that commit
+    // deleted crates/integration/src/test/sftp_browser.rs and their
+    // register_test! lines but left these names behind, so nextest kept
+    // generating eighteen tests that could only ever panic with
+    // "test not found".
 }

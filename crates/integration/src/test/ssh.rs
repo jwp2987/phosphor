@@ -11,7 +11,7 @@ use warp::{
             accept_tmux_install, assert_subshell_banner_is_showing,
             assert_subshell_is_bootstrapped, enter_ssh_command, enter_ssh_password,
             run_exit_command, setup_gcloud_sdk, trigger_subshell_bootstrap,
-            wait_for_password_prompt,
+            util::ssh_test_fixture_available, wait_for_password_prompt,
         },
         terminal::{
             assert_active_block_output_for_single_terminal_in_tab,
@@ -165,6 +165,13 @@ macro_rules! generate_can_bootstrap_legacy_ssh_test_for_shell {
             new_builder()
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
+                    // Every test in this file drives a real ssh into Warp's private
+                    // GCP fixture; skip when it is unreachable rather than fail 40
+                    // seconds later on gcloud's error text. See
+                    // `ssh_test_fixture_available`.
+                    if !ssh_test_fixture_available() {
+                        return false;
+                    }
                     if FeatureFlag::SSHTmuxWrapper.is_enabled() {
                         return false;
                     }
@@ -225,6 +232,13 @@ macro_rules! generate_can_bootstrap_tmux_ssh_test_for_shell {
             let builder = new_builder()
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
+                    // Every test in this file drives a real ssh into Warp's private
+                    // GCP fixture; skip when it is unreachable rather than fail 40
+                    // seconds later on gcloud's error text. See
+                    // `ssh_test_fixture_available`.
+                    if !ssh_test_fixture_available() {
+                        return false;
+                    }
                     if !FeatureFlag::SSHTmuxWrapper.is_enabled() {
                         return false;
                     }
@@ -259,6 +273,13 @@ macro_rules! generate_long_running_block_ssh_test_for_shell {
             new_builder()
                 // TODO(CORE-2333) PowerShell has no SSH wrapper.
                 .set_should_run_test(|| {
+                    // Every test in this file drives a real ssh into Warp's private
+                    // GCP fixture; skip when it is unreachable rather than fail 40
+                    // seconds later on gcloud's error text. See
+                    // `ssh_test_fixture_available`.
+                    if !ssh_test_fixture_available() {
+                        return false;
+                    }
                     let (starter, _) = current_shell_starter_and_version();
                     starter.shell_type() != ShellType::PowerShell
                 })
@@ -307,6 +328,11 @@ pub fn test_ssh_with_shell_override() -> Builder {
     new_builder()
         // TODO(CORE-2333) PowerShell has no SSH wrapper.
         .set_should_run_test(|| {
+            // See `ssh_test_fixture_available` -- skip when Warp's private GCP ssh
+            // fixture is unreachable rather than fail on gcloud's error text.
+            if !ssh_test_fixture_available() {
+                return false;
+            }
             let (starter, _) = current_shell_starter_and_version();
             starter.shell_type() != ShellType::PowerShell
         })

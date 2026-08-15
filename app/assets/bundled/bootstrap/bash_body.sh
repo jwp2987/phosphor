@@ -1220,7 +1220,30 @@ esac
     #
     # If PROMPT_COMMAND is set and it's an array, "join" the array into a newline-delimited string,
     # then overwrite PROMPT_COMMAND
-    if [[ -n $PROMPT_COMMAND && "$(declare -p PROMPT_COMMAND)" =~ "declare -a" ]]; then
+    #
+    # Test the array-ness with `declare -p` ALONE. `[[ -n $PROMPT_COMMAND ]]` expands to
+    # ${PROMPT_COMMAND[0]}, so an array whose FIRST element is empty reads as "unset" and slips
+    # through unflattened. That is not hypothetical: systemd >= 257 ships
+    # /etc/profile.d/80-systemd-osc-context.sh, which deliberately does
+    #     [ -n "$(declare -p PROMPT_COMMAND 2>/dev/null)" ] || PROMPT_COMMAND+=('')
+    #     PROMPT_COMMAND+=(__systemd_osc_context_precmdline)
+    # leaving exactly that shape -- element 0 empty, element 1 foreign -- on every stock
+    # Ubuntu 25.04+ / Fedora 42+ desktop.
+    #
+    # Left unflattened, bash-preexec's `__bp_install` only ever sees element 0 (its
+    # `existing_prompt_command="${PROMPT_COMMAND:-}"` has the same element-0 blindness), so it
+    # overwrites element 0 and appends `__bp_interactive_mode` at the END of the array. The
+    # foreign element then sits BETWEEN `__bp_precmd_invoke_cmd` and `__bp_interactive_mode`,
+    # and the DEBUG trap that fires for it clears `__bp_preexec_interactive_mode` (the trap
+    # resets it whenever it runs for a PROMPT_COMMAND entry). On the install cycle that reset
+    # lands after `__bp_install`'s own trailing `__bp_interactive_mode` call, so the FIRST
+    # command run after bootstrap gets no Preexec hook at all: the block never leaves
+    # BeforeExecution, its output grid never starts, and everything the command prints is
+    # attributed to the command grid instead of the output grid.
+    #
+    # `2>/dev/null` because `declare -p` on an unset variable writes to stderr, which here is
+    # the PTY -- the old `-n` guard was suppressing that as a side effect.
+    if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" =~ "declare -a" ]]; then
         PROMPT_COMMAND_FLATTENED=$(IFS=$'\n'; echo "${PROMPT_COMMAND[*]}")
         unset PROMPT_COMMAND
         PROMPT_COMMAND=$PROMPT_COMMAND_FLATTENED

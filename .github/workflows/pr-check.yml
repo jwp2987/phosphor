@@ -58,6 +58,16 @@ jobs:
   #      not deleted) -- a ledger row still citing a row that has since been
   #      struck is silently wrong the moment the strike lands, not just at the
   #      next re-pin. See script/check_sweep_ledger's header comment.
+  #   7. Phantom integration tests. crates/integration's test names are joined
+  #      to their implementations by a STRING, across a process boundary: the
+  #      `integration_tests!` list generates a `#[test]` that spawns the
+  #      integration binary with the name as argv[1], and the binary looks it
+  #      up in `register_tests()`. Delete a test's implementation and its
+  #      register_test! line but leave the name listed and you get a test that
+  #      compiles, runs, and can only ever panic "test not found". 22 of them
+  #      (18 test_sftp_*, 4 test_websocket_*) survived two deliberate feature
+  #      removals that way and were most of why the integration job had never
+  #      once been green. See script/check_integration_test_registry.
   #
   # This job also runs the packaging scripts' own shell tests. They are bash,
   # need no toolchain, and had no runner at all before -- an unrun test is not
@@ -140,6 +150,10 @@ jobs:
       - name: Sweep verdict ledger (well-formed, no stale DECLINED.md citation)
         shell: bash
         run: ./script/check_sweep_ledger
+
+      - name: Integration test registry (every listed test name is registered)
+        shell: bash
+        run: ./script/check_integration_test_registry
 
       # Pure bash; the wrapper's shell logic has nothing macOS-specific in it,
       # so it runs on the ubuntu runner.

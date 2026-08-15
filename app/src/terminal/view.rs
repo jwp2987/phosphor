@@ -12645,7 +12645,27 @@ impl TerminalView {
         // the title will default to the regular terminal title.
         self.update_pane_configuration(ctx);
 
-        self.ignore_next_set_title_event = true;
+        // Suppress the shell's next title ONLY if the title we just set did not come
+        // from the terminal in the first place.
+        //
+        // This used to be an unconditional `= true`, which silently ate the shell's
+        // first real title. The shell's `warp_set_title_idle_on_precmd` runs *after*
+        // `warp_precmd` in `precmd_functions`, so the OSC-0 that carries the working
+        // directory always lands immediately after the hook that finishes
+        // bootstrapping -- i.e. it was always the swallowed one. A terminal that
+        // bootstraps and then sits idle therefore kept its placeholder pane title
+        // ("bash") instead of "~" until the user happened to run a command, and three
+        // integration tests that assert the post-bootstrap title
+        // (test_restore_snapshot_with_markdown_file, test_restore_snapshot_with_notebooks,
+        // test_open_and_close_settings) could never pass.
+        //
+        // Nothing is lost by honouring it in the terminal-title case:
+        // `update_pane_configuration` re-derives the title from the same priority
+        // order every time (CLI agent > long-running terminal title > conversation >
+        // terminal title), so re-running it for the shell's title cannot demote a
+        // conversation title -- it only refreshes the fallback with a value that is
+        // now correct rather than stale.
+        self.ignore_next_set_title_event = self.is_using_conversation_for_pane_header_title;
 
         let auth_state = AuthStateProvider::as_ref(ctx).get();
         let is_onboarded = auth_state.is_onboarded().unwrap_or(true);
