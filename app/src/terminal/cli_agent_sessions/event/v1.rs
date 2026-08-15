@@ -6,9 +6,16 @@ use super::{CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEv
 
 /// Resolves a CLI agent from the `"agent"` string in a CLI agent event.
 /// Returns `None` if the string doesn't match any known agent.
+///
+/// Matches against *every* prefix an agent answers to, not just its canonical
+/// first one, which is what the pinned oracle does. Agents that ship several
+/// binaries under one identity — `vibe`/`vibe-acp`, `deepseek`/`deepseek-tui`,
+/// and this fork's own TUI, whose `"agent"` value on the wire is `"warp-tui"`
+/// while its canonical prefix is `"warp"` — would otherwise fall through to
+/// `CLIAgent::Unknown`. `CLIAgent::Unknown` needs no special case: its prefix
+/// list is empty, so `contains` can never match it.
 fn resolve_agent(agent: &str) -> Option<CLIAgent> {
-    enum_iterator::all::<CLIAgent>()
-        .find(|a| !matches!(a, CLIAgent::Unknown) && a.command_prefix() == agent)
+    enum_iterator::all::<CLIAgent>().find(|candidate| candidate.command_prefixes().contains(&agent))
 }
 
 pub(super) fn parse(body: &str) -> Option<CLIAgentEvent> {

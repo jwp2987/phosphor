@@ -12157,8 +12157,12 @@ impl TerminalView {
             CLIAgentSessionListener::new(view_id, agent, &model_events_handle, ctx)
         });
         let remote_host = self.active_session_remote_host(ctx);
-        let should_auto_toggle_input =
-            *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start;
+        // Now that this fork's own TUI registers a listener too, the same
+        // `supports_cli_agent_footer()` gate the detection path already applies
+        // has to apply here: a TUI hosting its own agent must not have the GUI's
+        // rich input open itself on top of it.
+        let should_auto_toggle_input = agent.supports_cli_agent_footer()
+            && *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start;
         // Seed context from the event that caused registration before the
         // listener subscribes to future events.
         CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions_model, ctx| {
@@ -12264,7 +12268,7 @@ impl TerminalView {
         }
         let should_open = CLIAgentSessionsModel::as_ref(ctx)
             .session(self.view_id)
-            .is_some_and(|s| s.should_auto_toggle_input);
+            .is_some_and(|s| s.agent.supports_cli_agent_footer() && s.should_auto_toggle_input);
         if should_open && !self.has_active_cli_agent_input_session(ctx) {
             self.open_cli_agent_rich_input(CLIAgentInputEntrypoint::AutoShow, ctx);
         }
@@ -12358,7 +12362,11 @@ impl TerminalView {
             // option menu the agent is showing in the terminal.
             let should_auto_toggle_input = CLIAgentSessionsModel::as_ref(ctx)
                 .session(self.view_id)
-                .is_some_and(|s| s.supports_rich_status() && s.should_auto_toggle_input);
+                .is_some_and(|s| {
+                    s.agent.supports_cli_agent_footer()
+                        && s.supports_rich_status()
+                        && s.should_auto_toggle_input
+                });
             if should_auto_toggle_input {
                 match status {
                     CLIAgentSessionStatus::Blocked { .. } => {

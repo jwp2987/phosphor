@@ -26,6 +26,7 @@ mod agent_message;
 mod alt_screen_view;
 mod attachment_bar;
 mod autoupdate;
+mod cli_agent_osc_event_publisher;
 mod clipboard;
 pub mod input;
 pub mod root_view;

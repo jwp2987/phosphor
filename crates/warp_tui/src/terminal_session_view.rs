@@ -70,6 +70,9 @@ use crate::attachment_bar::{
     FOCUS_ATTACHMENTS_BINDING_NAME, TuiAttachmentBar, TuiAttachmentBarEvent, TuiAttachmentModel,
     TuiAttachmentPasteDisposition,
 };
+use crate::cli_agent_osc_event_publisher::{
+    CliAgentOscEventPublisher, host_supports_cli_agent_notifications,
+};
 use crate::clipboard::copy_to_clipboard;
 use crate::completions_menu::{
     TuiAcceptedCompletion, TuiCompletionsMenuEvent, TuiCompletionsMenuModel,
@@ -725,6 +728,10 @@ pub(crate) struct TuiTerminalSessionView {
     slash_commands_source: ModelHandle<TuiSlashCommandDataSource>,
     conversation_selection: ConversationSelectionHandle,
     ai_action_model: ModelHandle<BlocklistAIActionModel>,
+    /// Set only for the root TUI session, and only when the hosting terminal
+    /// advertises the CLI-agent protocol. See
+    /// [`Self::enable_cli_agent_osc_event_publishing`].
+    cli_agent_osc_event_publisher: Option<ModelHandle<CliAgentOscEventPublisher>>,
     ai_controller: ModelHandle<BlocklistAIController>,
     cli_subagent_controller: ModelHandle<CLISubagentController>,
     cli_subagent_views: HashMap<BlockId, ViewHandle<TuiCLISubagentView>>,
@@ -2223,6 +2230,7 @@ impl TuiTerminalSessionView {
             slash_commands_source,
             conversation_selection,
             ai_action_model: action_model,
+            cli_agent_osc_event_publisher: None,
             ai_controller,
             cli_subagent_controller,
             cli_subagent_views: HashMap::new(),
@@ -2259,6 +2267,34 @@ impl TuiTerminalSessionView {
             view.show_zero_state_ascii_load_failure(failure, ctx);
         }
         view
+    }
+
+    /// Enables CLI-agent lifecycle notifications for the root TUI session.
+    ///
+    /// A no-op unless the hosting terminal advertises the CLI-agent protocol
+    /// (`WARP_CLI_AGENT_PROTOCOL_VERSION` + `WARP_CLIENT_VERSION`), so a TUI
+    /// started outside a Phosphor pane never writes OSC 777 into a terminal
+    /// that would render it as garbage.
+    pub(crate) fn enable_cli_agent_osc_event_publishing(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.cli_agent_osc_event_publisher.is_some() || !host_supports_cli_agent_notifications()
+        {
+            return;
+        }
+        let terminal_surface_id = self.terminal_surface_id;
+        let active_session = self.active_session.clone();
+        let conversation_selection = self.conversation_selection.clone();
+        let action_model = self.ai_action_model.clone();
+        let publisher = ctx.add_model(|ctx| {
+            CliAgentOscEventPublisher::new(
+                terminal_surface_id,
+                active_session,
+                conversation_selection,
+                &action_model,
+                ctx,
+            )
+        });
+        publisher.as_ref(ctx).publish_session_start(ctx);
+        self.cli_agent_osc_event_publisher = Some(publisher);
     }
 
     /// The active front-of-queue blocking interaction, if any.
@@ -3522,6 +3558,16 @@ impl TuiTerminalSessionView {
         self.ai_controller.update(ctx, |controller, ctx| {
             controller.send_user_query_in_conversation(prompt.clone(), conversation_id, None, ctx)
         });
+        // The pin gates this on the controller's `dispatched` return value.
+        // This fork's controller returns `()` and always dispatches (see the
+        // comment above and its twin in `send_subagent_prompt`), so the
+        // notification is unconditional here rather than dropping a real
+        // submission on a bool that does not exist.
+        if let Some(publisher) = &self.cli_agent_osc_event_publisher {
+            publisher
+                .as_ref(ctx)
+                .publish_prompt_submit(prompt.clone(), ctx);
+        }
         if let Some(block_id) = active_long_running_block_id {
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.set_latest_instruction(block_id, prompt, ctx);

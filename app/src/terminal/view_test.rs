@@ -45,7 +45,8 @@ use crate::ai::blocklist::{
 use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::event::{
-    CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource, CLIAgentEventType,
+    CLI_AGENT_NOTIFICATION_SENTINEL, CLIAgentEvent, CLIAgentEventPayload, CLIAgentEventSource,
+    CLIAgentEventType,
 };
 use crate::terminal::cli_agent_sessions::listener::CLIAgentSessionListener;
 use crate::terminal::cli_agent_sessions::{
@@ -6882,6 +6883,43 @@ fn set_phosphor_tui_session(view: &mut TerminalView, ctx: &mut ViewContext<Termi
             },
             ctx,
         );
+    });
+}
+
+/// Ported from the pinned oracle's `warp_tui_listener_does_not_auto_open_rich_input`.
+///
+/// The TUI now registers a real `CLIAgentSessionListener` like any other
+/// plugin-backed agent, so the thing that keeps the GUI's rich input from
+/// opening on top of it is `supports_cli_agent_footer()`, not the absence of a
+/// listener. This asserts both halves: the listener exists, and the auto-open
+/// still doesn't fire.
+#[test]
+fn phosphor_tui_listener_does_not_auto_open_rich_input() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        AISettings::handle(&app).update(&mut app, |settings, ctx| {
+            let _ = settings
+                .auto_open_rich_input_on_cli_agent_start
+                .set_value(true, ctx);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            view.handle_cli_agent_notification(
+                Some(CLI_AGENT_NOTIFICATION_SENTINEL),
+                r#"{"v":1,"agent":"warp-tui","event":"session_start"}"#,
+                ctx,
+            );
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let session = CLIAgentSessionsModel::as_ref(ctx)
+                .session(view.view_id)
+                .expect("Phosphor TUI session should be registered");
+            assert!(session.listener.is_some());
+            assert!(!session.should_auto_toggle_input);
+            assert!(!view.has_active_cli_agent_input_session(ctx));
+        });
     });
 }
 
