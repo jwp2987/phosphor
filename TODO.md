@@ -2416,6 +2416,32 @@ here, so this list stays a work ledger rather than a history.
       portable: neither the test nor the `INLINE_MENU_CAN_CLEAR_SELECTED_FLAG`
       carve-out for cut exists here. Porting needs a production change.
 
+## FOLLOW-UP FROM #595 (2026-08-15) — the plugin manager's other uncalled method
+
+#595 removed the four Oz-platform-plugin methods (`DECLINED.md`, "Oz platform
+plugins"). Tracing their pin-side callers surfaced one residual that is **not**
+declined and is a genuine, if small, divergence. Recorded here rather than as a
+GitHub issue because the agent that found it had no remote-write authority.
+
+- [ ] **`CliAgentPluginManager::has_local_marketplace_override` has no non-test
+      caller, and the call site it belongs at is missing its guard.** The pin
+      calls it in `ensure_local_claude_child_plugins`
+      (`app/src/pane_group/pane/local_harness_launch.rs:35-53` at `02b53fcd8`) to
+      *skip* notification-plugin install/update when a developer has pointed the
+      `claude-code-warp` marketplace at a local checkout — installing re-adds the
+      public marketplace and clobbers the override. This fork's equivalent
+      (`app/src/pane_group/pane/local_harness_launch.rs:261`) calls
+      `manager.install()` unconditionally, so launching a local Claude child pane
+      on a machine with a local marketplace override silently replaces it. The
+      method, its two impls (`claude.rs`, `codex.rs`) and its two tests are all
+      present and correct — only the caller's guard is missing. Unlike the
+      platform-plugin methods this is **local and non-cloud**: it reads
+      `settings.json` / `config.toml` on disk and gates a `claude plugin` /
+      `codex plugin` invocation, with no Oz surface involved, so it was left in
+      place. Fix is ~3 lines at the call site; it needs the same
+      `needs_update()`-else-`is_installed()` shape the pin uses, not a bare
+      `if !override`.
+
 ## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
 
 `ORACLE.md` pins the Warp *commit*, but upstream's `Cargo.toml` pins several
