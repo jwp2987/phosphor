@@ -194,7 +194,7 @@ const SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG: &str =
 /// unsent prompt and returns input to the running command.
 const SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG: &str =
     "TuiSessionCanDetachAgentFromRunningCommand";
-pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
+pub(crate) const SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG: &str = "TuiSessionComposerShortcutsActive";
 pub(crate) const TRIGGER_COMPLETIONS_BINDING_NAME: &str = "tui:session:trigger_completions";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
@@ -939,7 +939,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-v"),
@@ -951,7 +951,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("alt-v"),
@@ -4891,7 +4891,7 @@ impl TuiView for TuiTerminalSessionView {
         if self.input_target().agent_editor_owns_input()
             && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
         {
-            context.set.insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
+            context.set.insert(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG);
             if attachment_focus_available(
                 self.is_shell_mode(ctx),
                 self.attachment_bar.as_ref(ctx).should_render(ctx),

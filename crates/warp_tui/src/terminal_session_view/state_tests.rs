@@ -2,7 +2,7 @@ use warpui_core::keymap::Context;
 use warpui_core::{App, TuiView};
 
 use super::{
-    BlockingInputSource, TuiBlockSessionState, TuiComposerMode, TuiComposerState,
+    BlockingInputSource, TuiAgentEditorState, TuiBlockSessionState, TuiComposerMode,
     TuiInteractionState, TuiPtyState, TuiTerminalSessionState, TuiTerminalSessionStateResolveError,
     upgrade_terminal_model,
 };
@@ -14,9 +14,12 @@ use crate::terminal_session_view::{
 };
 use crate::terminal_use::TuiInputTarget;
 
-fn composer_state(mode: TuiComposerMode, orchestration_available: bool) -> TuiTerminalSessionState {
+fn agent_editor_state(
+    mode: TuiComposerMode,
+    orchestration_available: bool,
+) -> TuiTerminalSessionState {
     TuiTerminalSessionState::Block(TuiBlockSessionState {
-        interaction: TuiInteractionState::Composer(TuiComposerState {
+        interaction: TuiInteractionState::AgentEditor(TuiAgentEditorState {
             mode,
             suggestions_mode: TuiInputSuggestionsMode::Closed,
         }),
@@ -72,7 +75,7 @@ fn resolve_returns_error_after_terminal_model_owner_drops() {
 
 #[test]
 fn shell_hint_is_selected_with_additive_orchestration() {
-    let state = composer_state(TuiComposerMode::Shell, true);
+    let state = agent_editor_state(TuiComposerMode::Shell, true);
     assert_eq!(state.hint_text().as_deref(), Some(SHELL_HINT));
 }
 
@@ -101,7 +104,7 @@ fn only_composer_interactions_produce_input_hints() {
         assert_eq!(state.hint_text(), None);
     }
 
-    let mut state = composer_state(
+    let mut state = agent_editor_state(
         TuiComposerMode::Agent {
             agent_controlled_terminal_use: false,
         },
@@ -112,10 +115,10 @@ fn only_composer_interactions_produce_input_hints() {
         let TuiTerminalSessionState::Block(block) = &mut state else {
             unreachable!();
         };
-        let TuiInteractionState::Composer(composer) = &mut block.interaction else {
+        let TuiInteractionState::AgentEditor(agent_editor) = &mut block.interaction else {
             unreachable!();
         };
-        composer.suggestions_mode =
+        agent_editor.suggestions_mode =
             TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts);
     }
     assert_eq!(state.hint_text(), None);
@@ -124,17 +127,17 @@ fn only_composer_interactions_produce_input_hints() {
         let TuiTerminalSessionState::Block(block) = &mut state else {
             unreachable!();
         };
-        let TuiInteractionState::Composer(composer) = &mut block.interaction else {
+        let TuiInteractionState::AgentEditor(agent_editor) = &mut block.interaction else {
             unreachable!();
         };
-        composer.suggestions_mode =
+        agent_editor.suggestions_mode =
             TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Status);
     }
     assert_eq!(state.hint_text(), None);
 }
 
 #[test]
-fn hierarchy_encodes_input_ownership() {
+fn hierarchy_selects_one_input_surface() {
     assert_eq!(
         alt_screen_state(
             TuiInputTarget::Pty,
@@ -159,15 +162,30 @@ fn hierarchy_encodes_input_ownership() {
         TuiInputTarget::Pty
     );
 
-    let state = composer_state(TuiComposerMode::Shell, false);
+    let state = agent_editor_state(TuiComposerMode::Shell, false);
     assert_eq!(state.input_target(), TuiInputTarget::AgentEditor);
-    assert!(state.composer_owns_input());
+    assert!(state.composer_shortcuts_active());
+}
+
+#[test]
+fn suggestions_overlay_disables_composer_shortcuts_without_changing_the_input_surface() {
+    let mut state = agent_editor_state(TuiComposerMode::Shell, false);
+    let TuiTerminalSessionState::Block(block) = &mut state else {
+        unreachable!();
+    };
+    let TuiInteractionState::AgentEditor(agent_editor) = &mut block.interaction else {
+        unreachable!();
+    };
+    agent_editor.suggestions_mode = TuiInputSuggestionsMode::SlashCommands;
+
+    assert_eq!(state.input_target(), TuiInputTarget::AgentEditor);
+    assert!(!state.composer_shortcuts_active());
 }
 #[test]
 fn alt_screen_can_retain_an_agent_composer() {
     let state = alt_screen_state(
         TuiInputTarget::AgentEditor,
-        TuiInteractionState::Composer(TuiComposerState {
+        TuiInteractionState::AgentEditor(TuiAgentEditorState {
             mode: TuiComposerMode::Agent {
                 agent_controlled_terminal_use: true,
             },
@@ -177,7 +195,7 @@ fn alt_screen_can_retain_an_agent_composer() {
 
     assert!(state.is_alt_screen());
     assert_eq!(state.input_target(), TuiInputTarget::AgentEditor);
-    assert!(state.composer_owns_input());
+    assert!(state.composer_shortcuts_active());
     assert!(state.hint_text().is_some());
 }
 
@@ -186,7 +204,7 @@ fn shell_and_orchestration_contribute_active_shortcut_sections() {
     App::test((), |mut app| async move {
         app.update(crate::keybindings::init);
         app.read(|ctx| {
-            let mut state = composer_state(TuiComposerMode::Shell, true);
+            let mut state = agent_editor_state(TuiComposerMode::Shell, true);
             let TuiTerminalSessionState::Block(block) = &mut state else {
                 unreachable!();
             };
@@ -230,7 +248,7 @@ fn agent_terminal_use_and_orchestration_are_additive() {
     App::test((), |mut app| async move {
         app.update(crate::keybindings::init);
         app.read(|ctx| {
-            let state = composer_state(
+            let state = agent_editor_state(
                 TuiComposerMode::Agent {
                     agent_controlled_terminal_use: true,
                 },
@@ -268,7 +286,7 @@ fn tagged_in_composer_exposes_detach_shortcut() {
     App::test((), |mut app| async move {
         app.update(crate::keybindings::init);
         app.read(|ctx| {
-            let mut state = composer_state(
+            let mut state = agent_editor_state(
                 TuiComposerMode::Agent {
                     agent_controlled_terminal_use: false,
                 },
@@ -317,7 +335,7 @@ fn user_controlled_terminal_use_has_terminal_only_shortcuts() {
             assert_eq!(sections[0].shortcuts[0].description, "hand back control");
             assert!(state.user_owns_running_command());
             assert!(state.can_hand_back_terminal_use());
-            assert!(!state.composer_owns_input());
+            assert!(!state.composer_shortcuts_active());
         });
     });
 }
