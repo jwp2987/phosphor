@@ -23,6 +23,18 @@ use ratatui::crossterm::terminal;
 /// bounds startup latency on terminals (or transports) that never answer.
 const PROBE_DEADLINE: Duration = Duration::from_millis(100);
 
+/// How long to keep reading for the DA1 sentinel *after* the OSC 11 background
+/// reply has already been parsed.
+///
+/// Returning the moment the colour arrives leaves the DA1 reply sitting unread
+/// in the tty, where it is delivered to whatever reads stdin next -- the user's
+/// shell, which prints it as `^[[?62;22;52c` after the TUI exits (#580).
+/// Terminals emit the two replies back to back, so this only has to cover the
+/// gap between them, not a fresh round trip. Bounded separately from
+/// [`PROBE_DEADLINE`] so a terminal that answers OSC 11 and never answers DA1
+/// costs 20ms rather than the full probe deadline.
+const DA1_DRAIN_GRACE: Duration = Duration::from_millis(20);
+
 /// An 8-bit RGB color reported by the terminal.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ProbedRgb {
@@ -391,12 +403,45 @@ pub fn read_terminal_background_reply(_deadline_duration: Duration) -> Option<Pr
     None
 }
 
+/// What the background read loop should do after appending a chunk.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[cfg(any(unix, test))]
+enum ProbeRead {
+    /// The DA1 sentinel arrived: every reply the terminal intends to send has
+    /// been consumed, so stopping here leaves nothing behind in the tty.
+    Sentinel,
+    /// The OSC 11 reply just completed. The answer is in hand, but the DA1
+    /// reply is still in flight and must be drained before returning (#580).
+    Background(ProbedRgb),
+    /// Nothing conclusive yet.
+    Pending,
+}
+
+/// Decides what a freshly-extended reply buffer means.
+///
+/// Split out of the read loop so the ordering rule is testable without a tty:
+/// **the sentinel outranks the colour**. Returning as soon as the colour parses
+/// is the bug behind #580 — it leaves the DA1 reply unread, and the user's
+/// shell prints it as `^[[?62;22;52c` once the TUI exits.
+#[cfg(any(unix, test))]
+fn classify_probe_read(replies: &[u8], background_known: bool) -> ProbeRead {
+    if contains_da1_reply(replies) {
+        return ProbeRead::Sentinel;
+    }
+    if !background_known
+        && let Some(rgb) = parse_complete_background_reply(replies)
+    {
+        return ProbeRead::Background(rgb);
+    }
+    ProbeRead::Pending
+}
+
 #[cfg(unix)]
 fn read_background_reply(deadline_duration: Duration) -> io::Result<Option<ProbedRgb>> {
     use instant::Instant;
 
     let _nonblocking = NonBlockingStdin::enable()?;
-    let deadline = Instant::now() + deadline_duration;
+    let mut deadline = Instant::now() + deadline_duration;
     let mut replies = Vec::new();
     let mut chunk = [0u8; 512];
     let mut background = None;
@@ -425,9 +470,19 @@ fn read_background_reply(deadline_duration: Duration) -> io::Result<Option<Probe
             }
             read => {
                 replies.extend_from_slice(&chunk[..read as usize]);
-                background = parse_complete_background_reply(&replies);
-                if background.is_some() || contains_da1_reply(&replies) {
-                    break;
+                match classify_probe_read(&replies, background.is_some()) {
+                    ProbeRead::Sentinel => break,
+                    ProbeRead::Background(rgb) => {
+                        background = Some(rgb);
+                        // Keep reading for the sentinel rather than returning
+                        // here, but only briefly -- the answer we came for is
+                        // already in hand, so this is purely draining (#580).
+                        let grace = Instant::now() + DA1_DRAIN_GRACE;
+                        if grace < deadline {
+                            deadline = grace;
+                        }
+                    }
+                    ProbeRead::Pending => {}
                 }
             }
         }
