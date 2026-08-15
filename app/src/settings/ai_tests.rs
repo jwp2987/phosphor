@@ -52,6 +52,7 @@ fn tui_statusline_default_matches_figma() {
     assert_eq!(
         config.enabled,
         vec![
+            TuiStatuslineItem::AutoApprove,
             TuiStatuslineItem::Model,
             TuiStatuslineItem::WorkingDirectory,
             TuiStatuslineItem::GitBranch,
@@ -85,6 +86,7 @@ fn tui_statusline_normalization_preserves_custom_order_and_appends_missing_items
             TuiStatuslineItem::AutoQueue,
             TuiStatuslineItem::WorkingDirectory,
             TuiStatuslineItem::GitDiffStatus,
+            TuiStatuslineItem::GitHubPullRequest,
             TuiStatuslineItem::ContextWindowUsage,
             TuiStatuslineItem::Date,
             TuiStatuslineItem::Time12Hour,
@@ -1078,7 +1080,10 @@ fn a_whitespace_only_model_name_falls_back_to_the_id() {
 fn model_from_id_trims() {
     // The settings UI's "add model" path constructs through `from_id`, so it needs the same
     // normalization as the config-load path.
-    assert_eq!(AgentProviderModel::from_id("gpt-oss:20b ".to_string()).id, "gpt-oss:20b");
+    assert_eq!(
+        AgentProviderModel::from_id("gpt-oss:20b ".to_string()).id,
+        "gpt-oss:20b"
+    );
 }
 
 // --- `/cost` token prices (fork-authored: Warp has no client-side price table) ---

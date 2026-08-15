@@ -127,9 +127,9 @@ pub use crate::ai::option_snapshot::{
 };
 // Lets `--set-provider-api-key` / `--clear-provider-api-key` tell already-running
 // Zap processes to re-read the shared keyring after it persists a key.
+pub use crate::ai::skills::{SkillManager, SkillReference};
 #[cfg(not(target_family = "wasm"))]
 pub use crate::ai::tui_api_keys::notify_tui_api_keys_changed;
-pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};
 pub use crate::appearance::Appearance;
 pub use crate::banner::BannerState;
@@ -140,6 +140,7 @@ pub use crate::code::DiffResult;
 pub use crate::code_review::git_status_update::{
     GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
 };
+pub use crate::code_review::github_repo_model::GitHubRepoModel;
 pub use crate::completer::SessionContext;
 pub use crate::persistence::PersistenceWriter;
 pub use crate::prefix::longest_common_prefix;

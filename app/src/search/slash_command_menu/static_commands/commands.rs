@@ -125,6 +125,17 @@ pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand 
     argument: None,
 });
 
+// TUI-only: restores the statusline to its default items and ordering, without opening the
+// `/statusline` picker. Not executable in the GUI (see `execute_slash_command`'s guard).
+pub static RESET_STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/reset-statusline",
+    description: t_static!("slash-cmd-reset-statusline-desc"),
+    icon_path: "bundled/svg/sliders-04.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 /// TUI-only: sets the TUI color theme (`auto`/`light`/`dark`, backed by `TuiTheme`). Not
 /// executable in the GUI (see `execute_slash_command`'s explicit guard); the GUI has its own
 /// theme chooser (`workspace:show_theme_chooser`).
@@ -662,6 +673,7 @@ fn all_commands() -> Vec<StaticCommand> {
         PLAN.clone(),
         RENAME_TAB.clone(),
         STATUSLINE.clone(),
+        RESET_STATUSLINE.clone(),
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
         MODEL.clone(),
@@ -894,6 +906,26 @@ mod tests {
         assert!(!command.auto_enter_ai_mode);
         assert!(command.argument.is_none());
         assert!(command.supports_tui());
+    }
+
+    /// Ported from the pin's `reset_statusline_command_is_always_available_only_in_tui_mode`
+    /// (upstream `62a6b083b`), rewritten against this fork's registry-based surface model:
+    /// upstream declares `SlashCommandSurfaces::TuiOnly` on the `StaticCommand` itself, while
+    /// this fork resolves surfaces by name in `StaticCommand::{supports_tui,is_tui_only}`.
+    #[test]
+    fn reset_statusline_command_is_registered_and_tui_only() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(RESET_STATUSLINE.name)
+            .expect("expected /reset-statusline to be registered");
+        assert_eq!(
+            command.kind(),
+            crate::search::slash_command_menu::static_commands::SlashCommandKind::ResetStatusline
+        );
+        assert_eq!(command.availability, Availability::ALWAYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+        assert!(command.supports_tui());
+        assert!(command.is_tui_only());
     }
 
     #[test]

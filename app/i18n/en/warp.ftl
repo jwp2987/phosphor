@@ -2604,6 +2604,7 @@ slash-cmd-open-file-hint = <path/to/file[:line[:col]]> or "@" to search
 slash-cmd-rename-tab-desc = Rename the current tab
 slash-cmd-rename-tab-hint = <tab name>
 slash-cmd-statusline-desc = Configure the statusline
+slash-cmd-reset-statusline-desc = Reset the statusline to its default items and ordering
 slash-cmd-fork-desc = Fork the current conversation in a new pane or a new tab
 slash-cmd-fork-hint = <optional prompt to send in forked conversation>
 slash-cmd-orchestrate-desc = Spawn one or more local child agents

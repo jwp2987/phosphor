@@ -34,23 +34,25 @@ use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
+use super::statusline::{
+    FooterSegment, FooterSegments, format_statusline_date, format_statusline_time_12_hour,
+    format_statusline_time_24_hour, format_todo_progress, render_status_footer_row,
+    render_statusline_datetime,
+};
 use super::{
     ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, AUTO_APPROVE_DISABLED_HINT,
     AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, ConversationRestoreState,
-    DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment, FooterSegments,
-    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
-    ORCHESTRATE_REQUIRES_CONVERSATION_HINT, ORCHESTRATE_REQUIRES_TASK_HINT,
-    ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, RUNNING_COMMAND_DETACH_HINT,
-    SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
+    DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, INLINE_MENU_TOP_PADDING_ROWS,
+    LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT, ORCHESTRATE_REQUIRES_CONVERSATION_HINT,
+    ORCHESTRATE_REQUIRES_TASK_HINT, ORCHESTRATION_TAB_BAR_FOCUSED_FLAG,
+    RUNNING_COMMAND_DETACH_HINT, SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
     SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
-    cost_command_unavailable_hint, export_file_success_message, format_statusline_date,
-    format_statusline_time_12_hour, format_statusline_time_24_hour, format_todo_progress,
-    log_bundle_success_message, raw_prompt_if_not_blank, render_status_footer_row,
-    render_statusline_datetime,
+    cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
+    raw_prompt_if_not_blank,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -158,6 +160,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
                             additions: 31,
                             deletions: 12,
                         },
+                        FooterSegment::GitHubPullRequest(TuiText::new("PR #123").finish()),
                         FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
                         FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
                         FooterSegment::DateTime(TuiText::new("1:08pm").finish()),
@@ -170,7 +173,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             assert_eq!(
                 render_element(row, ctx, 160).to_lines(),
                 vec![
-                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
+                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | PR #123 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
                         .to_owned()
                 ],
             );
@@ -1543,9 +1546,7 @@ fn bootstrap_renders_starting_shell_above_input() {
             .iter()
             .enumerate()
             .skip(status_index + 1)
-            .find(|(_, line)| {
-                line.contains('▏') || line.contains('▁') || line.contains('─')
-            })
+            .find(|(_, line)| line.contains('▏') || line.contains('▁') || line.contains('─'))
             .map(|(index, _)| index)
             .expect("bootstrap input border should render below the status");
         assert!(status_index < input_index);
