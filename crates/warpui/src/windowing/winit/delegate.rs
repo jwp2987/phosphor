@@ -69,8 +69,14 @@ pub fn open_url_in_system(url: &str) {
     if let Some(window) = web_sys::window() {
         match crate::browser::safe_browser_open_url(url) {
             Some(safe_url) => {
-                // Try to open the URL in a new tab.
-                let _ = window.open_with_url_and_target(&safe_url, "_blank");
+                // Try to open the URL in a new tab. `noopener,noreferrer` stops the opened
+                // page from getting a `window.opener` handle back to this one (reverse
+                // tabnabbing).
+                let _ = window.open_with_url_and_target_and_features(
+                    &safe_url,
+                    "_blank",
+                    "noopener,noreferrer",
+                );
             }
             None => {
                 log::warn!("Skipping browser URL open for invalid or unsafe URL");
@@ -328,7 +334,11 @@ impl platform::Delegate for AppDelegate {
                     if let Some(path) = path.to_str() {
                         // Try to open the path via a file:// URL.
                         let url = format!("file://{path}");
-                        let _ = window.open_with_url(&url);
+                        let _ = window.open_with_url_and_target_and_features(
+                            &url,
+                            "_blank",
+                            "noopener,noreferrer",
+                        );
                     }
                 }
             } else if #[cfg(windows)] {
