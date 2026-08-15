@@ -847,7 +847,10 @@ impl<A: InlineMenuAction, T: 'static + Send + Sync> InlineMenuView<A, T> {
             )
             .finish();
 
-        Some(header)
+        // Clip so trailing controls don't paint past the pane in a narrow split pane.
+        // Upstream `53da563522` "Clip inline menu header to prevent split-pane overflow"
+        // (#10811). NOT COMPILED -- builds are suspended; verified by reading only.
+        Some(Clipped::new(header).finish())
     }
 
     pub fn render_results_only(
