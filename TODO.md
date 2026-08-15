@@ -2349,7 +2349,13 @@ here, so this list stays a work ledger rather than a history.
 
 ### Defects — correctness of the guards and the record
 
-- [ ] **#591 — `user_controlled_alt_screen_...` asserts far less than the pin.**
+- [x] **#591 — `user_controlled_alt_screen_...` asserts far less than the pin.**
+      **FIXED, pending merge** — glyph set restored on `repin-statusline` (forced
+      by the `4431b15ff` port itself), second signal restored on `repin-alttest`
+      (`0c338ccfa`). Note the correction recorded on the issue: the missing
+      `"auto (cost-efficient)"` clause was *inapplicable*, not merely dropped —
+      BYOP has no built-in model list, so the fork reads the active model name
+      dynamically. Original finding below for the record.
       Negated `any`, so the fork's narrower predicate forbids *less*: pin bans
       ten border glyphs + the model label, fork bans `┌` alone. This round's
       `4431b15ff` port replaces box-drawing borders with hairline glyphs, so the
