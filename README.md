@@ -138,7 +138,7 @@ engines that cannot partial-prefill gain nothing from the tail-block design._
   can't orphan results.
 
 ### Terminal UI (TUI)
-- **`zap-tui-oss` — a keyboard-driven terminal frontend**, ported from upstream
+- **`phosphor-tui-oss` — a keyboard-driven terminal frontend**, ported from upstream
   Warp's `warp_tui` crate and rewired onto the BYOP stack (no cloud
   orchestration). It shares the GUI's app identity, so your models, config and
   providers load unchanged; it boots interactive with shell/path Tab-completion
@@ -219,10 +219,9 @@ path into the old directory, and because the copy leaves the original in place i
 will keep silently reading the old one. **API keys cannot be copied this way**:
 OS keychain entries are keyed by service name, so those are re-entered.
 
-Deliberately *not* renamed, and not bugs: the TUI binary (`zap-tui-oss`), the
-`ZAP_LOG_STDOUT` escape hatch, the `warp_*` / `zap_*` crate names, and the
-`WARP_*` build variables. Those are lineage internals with no user-visible
-surface — see `SCOPE.md` layer 4 and
+Deliberately *not* renamed, and not bugs: the `ZAP_LOG_STDOUT` escape hatch, the
+`warp_*` / `zap_*` crate names, and the `WARP_*` build variables. Those are
+lineage internals with no user-visible surface — see `SCOPE.md` layer 4 and
 [`specs/phosphor-rebrand/MERGE-CHECKLIST.md`](specs/phosphor-rebrand/MERGE-CHECKLIST.md),
 which also lists the identifiers that must *stay* on the old name because
 renaming them would silently lose data.

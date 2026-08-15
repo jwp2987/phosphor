@@ -7,7 +7,7 @@ This is the short, practical how-to.
 
 A headless, machine-readable smoke suite that answers "does the running Zap
 app actually do the thing" for both the **GUI** (`warp`/`app`, `--features
-gui`) and the **TUI** (`zap-tui-oss`, `crates/warp_tui`). It is a thin
+gui`) and the **TUI** (`phosphor-tui-oss`, `crates/warp_tui`). It is a thin
 orchestrator (`crates/usage_suite`, bin `usage-suite`) over two existing
 in-process test harnesses — it does not add a new way of driving the app; see
 `SCOPE.md` §1.

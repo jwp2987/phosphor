@@ -6,13 +6,13 @@ authors.workspace = true
 publish.workspace = true
 license.workspace = true
 autobins = false
-default-run = "zap-tui-oss"
+default-run = "phosphor-tui-oss"
 
 # Zap: the OSS-channel bin hand-builds its config (no warp_channel_config needed).
 # The dev/local/stable bins depend on warp_channel_config (absent in Zap) and stay
 # undeclared. See specs/warp-oss-sync/SCOPE.md.
 [[bin]]
-name = "zap-tui-oss"
+name = "phosphor-tui-oss"
 path = "src/bin/oss.rs"
 
 [dependencies]

@@ -10,8 +10,9 @@ host.
 ## App identity (read first)
 - The app is **Phosphor** (`jwp2987/phosphor`). "Zap" is only the **upstream
   ancestor** (`zerx-lab/zap`) — NOT the app name. Do not introduce new "Zap"
-  branding; legacy identifiers (`zap-tui-oss` binary, `zap_*` crates,
-  `SkillProvider::Zap`) stay. See `docs/DESIGN-PHOSPHOR-FORK.md`.
+  branding. The binaries are now `phosphor-oss` / `phosphor-tui-oss`; the
+  legacy identifiers that stay are the `zap_*` crate names, `SkillProvider::Zap`,
+  and the on-disk/keyring identity. See `docs/DESIGN-PHOSPHOR-FORK.md`.
 - **English only** in code/comments/tests/docs (`CLAUDE.local.md`). Exception:
   `app/i18n/zh-CN|ja/*.ftl` are intentional translations — never edit them.
 - The behavioral oracle is the **PINNED** Warp stable `02b53fcd8`, never

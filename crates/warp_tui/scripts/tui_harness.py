@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive PTY test harness for the headless `zap-tui-oss` TUI binary.
+"""Interactive PTY test harness for the headless `phosphor-tui-oss` TUI binary.
 
 Boots the TUI inside a pseudo-terminal, replays a scripted sequence of input
 events, and (with `pyte` installed) captures the emulated screen after each step.
@@ -9,7 +9,7 @@ Enter submits, and that keybindings fire.
 
 Usage:
     # Build the binary first:
-    cargo build -p warp_tui --bin zap-tui-oss
+    cargo build -p warp_tui --bin phosphor-tui-oss
 
     # Default smoke script (type a shell command, submit it):
     python3 crates/warp_tui/scripts/tui_harness.py
@@ -38,10 +38,10 @@ import fcntl
 
 COLS, ROWS = 120, 40
 BIN = os.environ.get(
-    "ZAP_TUI_BIN",
+    "PHOSPHOR_TUI_BIN",
     os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "..", "..", "..", "target", "debug", "zap-tui-oss",
+        "..", "..", "..", "target", "debug", "phosphor-tui-oss",
     ),
 )
 
@@ -89,7 +89,7 @@ def parse_args(argv):
 def main():
     steps = parse_args(sys.argv[1:])
     if not os.path.exists(BIN):
-        sys.exit(f"binary not found: {BIN}\nbuild it: cargo build -p warp_tui --bin zap-tui-oss")
+        sys.exit(f"binary not found: {BIN}\nbuild it: cargo build -p warp_tui --bin phosphor-tui-oss")
 
     screen = stream = None
     if HAVE_PYTE:
@@ -101,7 +101,7 @@ def main():
         os.environ["TERM"] = "xterm-256color"
         os.environ["COLUMNS"] = str(COLS)
         os.environ["LINES"] = str(ROWS)
-        os.execv(BIN, ["zap-tui-oss"])
+        os.execv(BIN, ["phosphor-tui-oss"])
         return  # unreachable
 
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))

@@ -18,7 +18,7 @@ git-fetch-with-cli = true
 rustflags = ["--cfg=web_sys_unstable_apis"]
 
 # Local dev uses the mold linker, which greatly speeds up linking large debug
-# binaries (e.g. zap-tui-oss). Target-specific rustflags fully override
+# binaries (e.g. phosphor-tui-oss). Target-specific rustflags fully override
 # [build].rustflags, so we keep the general symbol-mangling setting here and
 # drop the macOS-only `-headerpad_max_install_names` from [build] (meaningless
 # on Linux).

@@ -164,7 +164,7 @@ harness. Plan:
 2. **No-redundant-work (behavioral):** assert that an unchanged update does not
    rebuild a child view / invalidate layout (e.g. via a counter or an emitted
    event), proving the skip fires.
-3. **Manual:** run `cargo run -p warp_tui` (or `zap-tui-oss`) against a BYOP
+3. **Manual:** run `cargo run -p warp_tui` (or `phosphor-tui-oss`) against a BYOP
    endpoint and eyeball a long streamed response with a large code block + an
    active shimmer, before/after.
 

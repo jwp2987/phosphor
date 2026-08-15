@@ -29,10 +29,11 @@ them — earlier versions were wrong in instructive ways.
 
 <!--
 This project is Phosphor — a BYOP terminal, forked from Warp via Zap/OpenWarp
-and evolving independently. The Zap -> Phosphor change is display/brand only:
-the app id (dev.zap.Zap), on-disk paths, keyring service, and binary names
-(zap-oss) are intentionally unchanged, so internal "zap" identifiers are
-expected. See specs/phosphor-rebrand/SCOPE.md for the layered plan.
+and evolving independently. The Zap -> Phosphor rename went past display/brand:
+the app id (dev.phosphor.Phosphor) and the binary names (phosphor-oss,
+phosphor-tui-oss) have all moved. What stays "zap" is on-disk paths, the keyring
+service, and the `warp_*` / `zap_*` crate names, so internal "zap" identifiers
+are still expected. See specs/phosphor-rebrand/SCOPE.md for the layered plan.
 
 DEV-ENVIRONMENT NOTE — command-signatures stub (address later):
   This working copy may contain a local, gitignored stub at

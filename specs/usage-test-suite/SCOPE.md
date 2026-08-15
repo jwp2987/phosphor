@@ -2,7 +2,7 @@
 
 Status: design only. No implementation code here beyond illustrative snippets.
 Branch context: `edition-2024`. GUI binary = `warp` crate (`app/`) built with
-`--features gui`; TUI binary = `zap-tui-oss` (`crates/warp_tui`) built with
+`--features gui`; TUI binary = `phosphor-tui-oss` (`crates/warp_tui`) built with
 `--features tui`. App id = `Zap` (shared config/secrets/BYOP for both surfaces).
 
 ## 0. Goal (restated)
@@ -63,7 +63,7 @@ layer on top of them, not a new driver.
   state is asserted directly with `app.read(|ctx| …)`.
 - Fully **in-process, no PTY, no shell, no provider, deterministic**. Runs via
   `cargo test -p warp_tui` / `cargo nextest run -p warp_tui`.
-- The `zap-tui-oss` binary itself is a crossterm/real-terminal app; we do **not**
+- The `phosphor-tui-oss` binary itself is a crossterm/real-terminal app; we do **not**
   drive the binary — the view harness is the reliable, headless surface.
 
 ### 1.3 CI today
@@ -344,7 +344,7 @@ separately-marked regions.
   `integration` process launch. Acceptable for a smoke suite (seconds each); the
   binary is built once and cached, so only first build is heavy.
 - **TUI binary itself is untested.** We assert the TUI **view subtree**, not the
-  `zap-tui-oss` crossterm event loop end-to-end. Driving the real TUI binary
+  `phosphor-tui-oss` crossterm event loop end-to-end. Driving the real TUI binary
   headlessly (pty + input script + screen scrape) is possible but out of scope
   and lower-value than the deterministic render-snapshot harness; noted as a
   future extension if event-loop-level coverage is ever needed.

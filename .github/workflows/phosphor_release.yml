@@ -405,7 +405,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
+      # phosphor-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). No CLI build runs in this
@@ -416,14 +416,14 @@ jobs:
       # Without it, it defaults to "debug" and fails to find a target/debug
       # directory that was never created by this --release build.
       - name: Build TUI
-        run: cargo build -p warp_tui --release --bin zap-tui-oss
+        run: cargo build -p warp_tui --release --bin phosphor-tui-oss
         shell: bash
         env:
           CARGO_FULL_PROFILE: release
 
       - name: Package TUI zip
         run: |
-          Copy-Item target/release/zap-tui-oss.exe phosphor-tui.exe
+          Copy-Item target/release/phosphor-tui-oss.exe phosphor-tui.exe
           Compress-Archive -Path phosphor-tui.exe -DestinationPath phosphor-tui-windows-x64.zip
         shell: pwsh
 
@@ -805,7 +805,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
+      # phosphor-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). Reuses the same
@@ -814,14 +814,14 @@ jobs:
       # second full dependency compile or a second cross-toolchain install.
       - name: Build TUI (static musl via zigbuild)
         run: |
-          cargo zigbuild -p warp_tui --profile release-cli --target x86_64-unknown-linux-musl --bin zap-tui-oss
+          cargo zigbuild -p warp_tui --profile release-cli --target x86_64-unknown-linux-musl --bin phosphor-tui-oss
         shell: bash
         env:
           PKG_CONFIG_ALLOW_CROSS: 1
 
       - name: Package TUI tarball
         run: |
-          cp "target/x86_64-unknown-linux-musl/release-cli/zap-tui-oss" phosphor-tui
+          cp "target/x86_64-unknown-linux-musl/release-cli/phosphor-tui-oss" phosphor-tui
           tar czf phosphor-tui-linux-x86_64.tar.gz phosphor-tui
         shell: bash
 
@@ -887,7 +887,7 @@ jobs:
           retention-days: 7
 
       # warp_tui is a non-default workspace member (crates/warp_tui, binary
-      # zap-tui-oss — an internal binary name, like phosphor-oss for the GUI;
+      # phosphor-tui-oss — an internal binary name, like phosphor-oss for the GUI;
       # renamed to phosphor-tui below since that's what users see/download)
       # with no packaged release artifact until now — build/run
       # was source-only (`cargo run -p warp_tui`). Reuses the same
@@ -896,12 +896,12 @@ jobs:
       - name: Build TUI
         id: bundle_tui
         run: |
-          cargo build -p warp_tui --profile release-cli --target ${{ matrix.arch }}-apple-darwin --bin zap-tui-oss
+          cargo build -p warp_tui --profile release-cli --target ${{ matrix.arch }}-apple-darwin --bin phosphor-tui-oss
         shell: bash
 
       - name: Package TUI tarball
         run: |
-          cp "target/${{ matrix.arch }}-apple-darwin/release-cli/zap-tui-oss" phosphor-tui
+          cp "target/${{ matrix.arch }}-apple-darwin/release-cli/phosphor-tui-oss" phosphor-tui
           tar czf phosphor-tui-macos-${{ matrix.arch }}.tar.gz phosphor-tui
         shell: bash
 

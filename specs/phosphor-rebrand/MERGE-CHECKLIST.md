@@ -100,19 +100,23 @@ silent data loss or silent breakage, with no error at the point of failure.
 - `zap://` scheme: Linux registers **both** `phosphor` and `zap`;
   `WARP_SCHEME_NAME="zap"` in `script/macos/bundle` was left untouched. Decide
   and make them consistent.
-- Whether the TUI binary `zap-tui-oss` renames. It was **not** in scope for any
-  branch. The published artifact is already `phosphor-tui`, so the internal name
-  is cosmetic — but `crates/warp_tui/Cargo.toml` and six workflow references
-  move together if it does.
+- ~~Whether the TUI binary `zap-tui-oss` renames.~~ **DECIDED 2026-08-14
+  (maintainer): renames to `phosphor-tui-oss`**, parallel to `phosphor-oss`.
+  Landed together with `crates/warp_tui/Cargo.toml`, `cli_agent.rs`, the
+  `tui_harness.py` dev harness (incl. `ZAP_TUI_BIN` → `PHOSPHOR_TUI_BIN`),
+  `CARGO_BIN_EXE_*` in `worker_dispatch.rs`, and the nine
+  `phosphor_release.yml` references. The published artifact stays
+  `phosphor-tui`, so this is not a user-visible change.
 - Ownership of CI workflows and generic scripts (`script/run`, `script/precheck`,
   `script/wasm/bundle`, `script/check_channel_command_names`) — no branch
   claimed them.
 
 ## Known-stale documentation
 
-`CLAUDE.md:32` and `HANDOFF.md:13` still assert the zap identifiers are
-intentionally unchanged. That predates the 2026-08-13 decision and is now
-actively wrong — fix on merge.
+~~`CLAUDE.md:32` and `HANDOFF.md:13` still assert the zap identifiers are
+intentionally unchanged.~~ **Fixed 2026-08-14**, together with `README.md:141`
+(TUI bullet) and `README.md:222` (the "deliberately not renamed" list, which
+had the TUI binary in it).
 
 ## Before you trust any of this
 

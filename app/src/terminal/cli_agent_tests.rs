@@ -266,7 +266,7 @@ fn test_detect_known_agents() {
                 ("vibe", CLIAgent::Vibe),
                 ("warp", CLIAgent::PhosphorTui),
                 ("warp-dev", CLIAgent::PhosphorTui),
-                ("zap-tui-oss", CLIAgent::PhosphorTui),
+                ("phosphor-tui-oss", CLIAgent::PhosphorTui),
             ] {
                 assert_eq!(
                     CLIAgent::detect(command, None, None, ctx),
@@ -614,13 +614,13 @@ fn test_phosphor_tui_matches_binaries_and_launchers() {
     assert!(CLIAgent::PhosphorTui.matches_command("warp-tui-oss", None));
     assert!(CLIAgent::PhosphorTui.matches_command("run-tui", None));
     // This fork's actual shipped OSS TUI binary.
-    assert!(CLIAgent::PhosphorTui.matches_command("zap-tui-oss", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("phosphor-tui-oss", None));
     // The dev launcher script.
     assert!(CLIAgent::PhosphorTui.matches_command("./script/run-tui", None));
     assert!(CLIAgent::PhosphorTui.matches_command("script/run-tui", None));
     // Absolute / relative paths to the binary.
     assert!(CLIAgent::PhosphorTui.matches_command("/workspace/warp/target/debug/warp-tui", None,));
-    assert!(CLIAgent::PhosphorTui.matches_command("./target/debug/zap-tui-oss", None));
+    assert!(CLIAgent::PhosphorTui.matches_command("./target/debug/phosphor-tui-oss", None));
     assert!(CLIAgent::PhosphorTui.matches_command(
         "/Applications/WarpPreview.app/Contents/MacOS/warp-preview --resume abc",
         None,
@@ -665,7 +665,7 @@ fn test_phosphor_tui_variant_properties() {
             "warp-tui",
             "warp-tui-oss",
             "run-tui",
-            "zap-tui-oss",
+            "phosphor-tui-oss",
         ]
     );
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");

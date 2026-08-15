@@ -177,7 +177,7 @@ pub enum CLIAgent {
     /// `vibe-acp` ACP-mode binary; both resolve to this variant.
     Vibe,
     /// This fork's own headless TUI (`crates/warp_tui`, shipped as the
-    /// `zap-tui-oss` binary). Named `PhosphorTui` rather than the pinned
+    /// `phosphor-tui-oss` binary). Named `PhosphorTui` rather than the pinned
     /// oracle's `WarpTui` per the naming call in #394: the app is Phosphor,
     /// and `display_name()` must not surface "Warp" branding to users (see
     /// `docs/DESIGN-PHOSPHOR-FORK.md` §6). Used to suppress the CLI-agent
@@ -226,9 +226,9 @@ impl CLIAgent {
                 "warp-tui-oss",
                 "run-tui",
                 // This fork's actual shipped OSS TUI binary
-                // (`crates/warp_tui`, `default-run = "zap-tui-oss"`). This is
+                // (`crates/warp_tui`, `default-run = "phosphor-tui-oss"`). This is
                 // the concrete fix for #394.
-                "zap-tui-oss",
+                "phosphor-tui-oss",
             ],
             CLIAgent::Unknown => &[],
         }
