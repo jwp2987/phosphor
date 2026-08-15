@@ -31,8 +31,9 @@ use crate::{
     ai::{
         agent::{
             AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentActionType,
-            AIAgentOutputMessage, AIAgentOutputMessageType, AIIdentifiers, RequestFileEditsResult,
-            UpdatedFileContext, conversation::AIConversationId,
+            AIAgentOutputMessage, AIAgentOutputMessageType, AIIdentifiers, AnyFileContent,
+            FileContext, FileLocations, RequestFileEditsResult, UpdatedFileContext,
+            conversation::AIConversationId,
         },
         blocklist::{
             BlocklistAIPermissions, RequestedEditResolution,
@@ -47,6 +48,11 @@ use crate::{
 };
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
+
+/// How many lines of surrounding context to include on each side of a changed range when
+/// reporting an accepted edit's result back to the LLM. See
+/// `updated_file_contexts_from_editor_buffers`.
+const APPLY_DIFF_RESULT_CONTEXT_LINES: usize = 10;
 
 pub struct RequestFileEditsExecutor {
     active_session: ModelHandle<ActiveSession>,
@@ -282,35 +288,12 @@ impl RequestFileEditsExecutor {
                 // This avoids re-reading files from disk or the remote server.
                 let content_map: HashMap<String, String> = file_contents.iter().cloned().collect();
 
-                let mut file_edited_map = HashMap::new();
-                for (file_location, was_edited) in updated_files.iter() {
-                    file_edited_map.insert(file_location.name.clone(), *was_edited);
-                }
-
                 let _ = result_tx.send(RequestFileEditsResult::Success {
                     diff: diff.unified_diff.clone(),
-                    updated_files: updated_files
-                        .iter()
-                        .map(|(file_location, was_edited)| {
-                            let content = content_map
-                                .get(&file_location.name)
-                                .cloned()
-                                .unwrap_or_default();
-                            let line_count = content.lines().count();
-                            UpdatedFileContext {
-                                was_edited_by_user: *was_edited,
-                                file_context: crate::ai::agent::FileContext {
-                                    file_name: file_location.name.clone(),
-                                    content: crate::ai::agent::AnyFileContent::StringContent(
-                                        content,
-                                    ),
-                                    line_range: None,
-                                    last_modified: None,
-                                    line_count,
-                                },
-                            }
-                        })
-                        .collect(),
+                    updated_files: updated_file_contexts_from_editor_buffers(
+                        &updated_files,
+                        &content_map,
+                    ),
                     deleted_files: deleted_files.clone(),
                     lines_added: diff.lines_added,
                     lines_removed: diff.lines_removed,
@@ -492,6 +475,91 @@ impl RequestFileEditsExecutor {
                 .map(Into::into),
             model_id,
         })
+    }
+}
+
+// NOT COMPILED -- builds are suspended. Ported from upstream `89f61b63ba`
+// ("Limit apply diff results to changed ranges", #11987). Root cause (from
+// upstream's PR description): remote apply-diff support switched the result
+// source to accepted editor-buffer contents, but the success path here
+// converted those buffers directly into `UpdatedFileContext` entries with
+// `line_range: None` -- i.e. the *entire* post-edit file, not just the
+// changed lines -- bypassing the changed-line ranges `CodeDiffView` already
+// computes. That meant every accepted file edit reported the full file back
+// to the LLM as tool-call output instead of the change plus a little
+// context, burning context-window/tokens on unrelated file content on every
+// edit. This fork had the exact same full-file code path (verified by
+// reading, not diffing against a stale copy): `line_range: None`
+// unconditionally, and a `file_edited_map` local that was built and never
+// read (removed here, matching upstream's own diff, which drops the same
+// dead code as part of this change).
+fn updated_file_contexts_from_editor_buffers(
+    updated_files: &[(FileLocations, bool)],
+    content_map: &HashMap<String, String>,
+) -> Vec<UpdatedFileContext> {
+    updated_files
+        .iter()
+        .flat_map(|(file_location, was_edited)| {
+            let content = content_map
+                .get(&file_location.name)
+                .cloned()
+                .unwrap_or_default();
+            let line_count = content.lines().count();
+
+            let mut file_location = file_location.clone();
+            file_location.expand_surrounding_context(APPLY_DIFF_RESULT_CONTEXT_LINES);
+            clamp_to_file_context_range_start(&mut file_location);
+
+            if file_location.lines.is_empty() {
+                return vec![UpdatedFileContext {
+                    was_edited_by_user: *was_edited,
+                    file_context: FileContext {
+                        file_name: file_location.name,
+                        content: AnyFileContent::StringContent(content),
+                        line_range: None,
+                        last_modified: None,
+                        line_count,
+                    },
+                }];
+            }
+
+            let lines = content.lines().collect_vec();
+            file_location
+                .lines
+                .into_iter()
+                .map(|range| {
+                    let start = range.start.saturating_sub(1).min(lines.len());
+                    let end = range.end.saturating_sub(1).min(lines.len());
+                    let fragment = if start >= end {
+                        String::new()
+                    } else {
+                        lines[start..end].join("\n")
+                    };
+
+                    UpdatedFileContext {
+                        was_edited_by_user: *was_edited,
+                        file_context: FileContext {
+                            file_name: file_location.name.clone(),
+                            content: AnyFileContent::StringContent(fragment),
+                            line_range: Some(range),
+                            last_modified: None,
+                            line_count,
+                        },
+                    }
+                })
+                .collect_vec()
+        })
+        .collect()
+}
+
+/// `FileLocations::expand_surrounding_context` can expand a range's start below line 1
+/// (`saturating_sub` on the *pre-expansion* value doesn't guarantee the post-expansion start
+/// stays >= 1 when the original range itself started near the top of the file). Clamp back to a
+/// valid 1-based start before using the range to slice `content.lines()`.
+fn clamp_to_file_context_range_start(file_location: &mut FileLocations) {
+    for range in &mut file_location.lines {
+        range.start = range.start.max(1);
+        range.end = range.end.max(range.start);
     }
 }
 
