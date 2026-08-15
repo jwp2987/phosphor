@@ -3219,6 +3219,26 @@ fn user_controlled_alt_screen_keeps_full_session_input_on_the_pty() {
             "user-controlled alternate screen should not render the agent composer:\n{}",
             lines.join("\n")
         );
+        // Second, independent signal, mirroring the pin. The pin's negative
+        // clause names its cloud default ("auto (cost-efficient)") because that
+        // is what its composer footer always shows; BYOP has no built-in model
+        // list, so the label here is whatever the user configured -- the
+        // grayed-out `placeholder_llm_info` in a test app. Read the name the way
+        // `agent_controlled_alt_screen_keeps_output_and_composer_visible` does
+        // and assert its ABSENCE, so this catches a composer that renders with a
+        // border vocabulary the glyph set above does not yet know about.
+        let model_name = view.read(&app, |view, ctx| {
+            LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone()
+        });
+        assert!(
+            !lines.iter().any(|line| line.contains(&model_name)),
+            "user-controlled alternate screen should not render the composer's \
+             model label ({model_name}):\n{}",
+            lines.join("\n")
+        );
         let hint = view.read(&app, |view, ctx| {
             view.running_command_hint(ctx)
                 .expect("alternate screen should have a running-command hint")
