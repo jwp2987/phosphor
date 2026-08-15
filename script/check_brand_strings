@@ -83,18 +83,40 @@
 #
 # THE ONE PLACE SHAPE IS NOT ENOUGH
 # ---------------------------------
-# Two uses of a standalone "Warp" in the catalogues are legitimate and no
-# string-shape rule can tell them from a regression, because they are correct
-# for reasons that live outside the text:
+# Exactly one use of a standalone "Warp" in the catalogues is legitimate and no
+# string-shape rule can tell it from a regression, because it is correct for a
+# reason that lives outside the text: the AGPL-3.0 §13 attribution ("Phosphor
+# is a modified version of Warp") must stay true. Handled by an in-band marker,
+# NOT a list in this file.
 #
-#   - "Warp plugin" / "Warp extension" / "Warp marketplace" (and the ja/zh
-#     forms) name real third-party packages -- @warp-dot-dev/opencode-warp and
-#     warpdotdev/codex-warp. Renaming them stops the user finding what the
-#     instructions tell them to install. Handled by a phrase rule below:
-#     "Warp" is allowed when it immediately qualifies a package noun.
+# THE PACKAGE-NOUN CARVE-OUT, AND WHY IT IS GONE
+# ----------------------------------------------
+# A second content rule used to live here: "Warp" was allowed whenever it
+# immediately qualified a package noun ("Warp plugin" / "Warp extension" /
+# "Warp marketplace", plus the ja/zh forms). It existed to protect the CLI
+# agent notification plugins, which really are published by Warp
+# (warpdotdev/claude-code-warp, warpdotdev/codex-warp,
+# warpdotdev/gemini-cli-warp, @warp-dot-dev/opencode-warp) and which really do
+# still work in this fork -- they speak the local OSC 777 `warp://cli-agent`
+# protocol, not any Warp server. See the DECLINED.md row "CLI agent
+# notification plugins".
 #
-#   - The AGPL-3.0 §13 attribution ("Phosphor is a modified version of Warp")
-#     must stay true. Handled by an in-band marker, NOT a list in this file.
+# It was removed on 2026-08-15, because the identifier a user must get exactly
+# right is never in the prose to begin with -- it is in the `command` field of
+# the instruction step (`PluginInstructionStep`, Rust source, which this guard
+# does not police and which no rename touches). The prose only ever said "the
+# Warp plugin", which is the product name, not the package name. So the
+# carve-out protected nothing that needed protecting, and meanwhile it was
+# swallowing real regressions: at removal it was hiding 13 unpurged catalogue
+# strings, including zh-CN's `ssh-remote-choice-install-extension-desc`
+# ("安装 Warp 扩展...") -- Phosphor's OWN SSH extension, no third party in
+# sight, matched only because "Warp 扩展" looked like a package noun.
+#
+# The lesson generalises: a carve-out keyed on a WORD SHAPE ("Warp" + noun)
+# cannot distinguish "names someone else's package" from "we forgot to purge
+# this one". If a genuine package name ever does have to appear in shipped
+# copy, use the in-band `brand-guard: allow` marker on that one message, where
+# a reviewer sees it in the same diff. Do not reintroduce a phrase rule.
 #
 # WHERE THE MARKER GOES -- it must land in a COMMENT, never in the text
 # -----------------------------------------------------------------------
@@ -104,6 +126,10 @@
 #           reads.
 #   Rust:   `// brand-guard: allow <reason>` on the line ABOVE the statement,
 #           or trailing after the literal's CLOSING quote.
+#
+# It is now the ONLY content rule in this file. The header used to warn that a
+# THIRD one would mean the shape-based boundary had stopped working; with the
+# package-noun rule retired, treat a SECOND one as that signal.
 #
 # An earlier version searched for the marker in the same text it was excusing.
 # That made the marker self-fulfilling: any string whose own content contained
@@ -115,9 +141,11 @@
 #
 # The marker is in-band on purpose. A suppression list inside a guard drifts
 # and is invisible at the point of change; a marker is reviewed in the same
-# diff as the string it excuses. If this file ever grows a THIRD content rule,
+# diff as the string it excuses. If this file ever grows a SECOND content rule,
 # that is the signal the shape-based boundary has stopped working -- reopen it
-# rather than adding a fourth.
+# rather than adding a third. (It once had two; the second is the retired
+# package-noun rule described above, and retiring it is what this warning
+# looks like when it is heeded.)
 #
 # WHAT THIS GUARD CANNOT SEE
 # --------------------------
@@ -149,16 +177,6 @@ MARKER = re.compile(r"brand-guard:\s*allow")
 # Rule 4: the literal is being matched against, not rendered.
 MATCH_ARM = re.compile(r'^\s*(?:r#)?"(?:[^"\\]|\\.)*"(?:\s*\|\s*(?:r#)?"(?:[^"\\]|\\.)*")*\s*=>')
 COMPARISON = re.compile(r"[=!]=\s*(?:&\s*)?(?:r#)?$")
-
-# Rule "the one place shape is not enough": Warp qualifying a package noun.
-PACKAGE_NOUN = re.compile(
-    r"Warp\s*(?:plugin|extension|marketplace|"
-    r"プラグイン|"          # プラグイン
-    r"拡張機能|"                # 拡張機能 (ja: extension)
-    r"插件|"                            # 插件 (zh: plugin)
-    r"扩展)",                           # 扩展 (zh: extension)
-    re.IGNORECASE,
-)
 
 SKIP_DIR_PARTS = {"target", "node_modules", "test_data", "tests", "examples"}
 
@@ -305,9 +323,6 @@ def check_fluent():
             # containing the phrase.
             prev = lines[lineno - 2] if lineno >= 2 else ""
             if prev.lstrip().startswith("#") and MARKER.search(prev):
-                continue
-            # Strip the legitimate package-noun uses, then re-test.
-            if not TOKEN.search(PACKAGE_NOUN.sub("", value)):
                 continue
             hits.append((str(p), lineno, value.strip()))
     return hits
