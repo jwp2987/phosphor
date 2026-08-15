@@ -185,6 +185,28 @@ ledger:
 either loop forever on gaps they have no authority to close, or quietly
 close them by inventing scope.
 
+### The queue's second blind spot: new tests in already-known files
+
+Measured on the first re-pin, and it is structural rather than a one-off.
+
+`UNCLASSIFIED` is a **whole-file** bucket: it means "no `SCOPE-*.md` row and no
+ledger row exists for this path". So a file that already carries ledger rows can
+never land there — **no matter how many tests upstream adds to it**. Those new
+tests have no ledger row, are not `RE-EXAMINE` (that bucket re-checks rows that
+*exist*), and are not `UNCLASSIFIED` (the file is classified). They appear in no
+bucket at all.
+
+At `02b53fcd8 -> 42effe840` that was **284 tests across 63 files**, invisible to
+the whole queue. The worst offenders were `zero_state_animation_tests.rs`
+(26 -> 59), `request_usage_model_tests.rs` (+20), `driver/snapshot_tests.rs`
+(+20), and `offer_slide_tests.rs` (+18).
+
+Until `generate_repin_queue` grows a per-test "new upstream test, no ledger row"
+section, this has to be done by hand: for every file in the `RE-EXAMINE` bucket,
+diff the *set of test-function names* between the two pins and adjudicate the
+additions. Counting only the rows the queue hands you understates the new debt,
+and understates it silently.
+
 ## Phase 3 — fast-forward what is free
 
 ```bash
