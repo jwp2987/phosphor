@@ -433,7 +433,7 @@ impl IntentionSlide {
 
         let new_settings_modes = FeatureFlag::ZapNewSettingsModes.is_enabled();
         let next_text = if !new_settings_modes && selected_index == 1 {
-            localized("common-get-warping", "Get Zapping")
+            localized("common-get-warping", "Get Started")
         } else {
             localized("common-next", "Next")
         };
