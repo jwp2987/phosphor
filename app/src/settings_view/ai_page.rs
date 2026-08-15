@@ -23,8 +23,9 @@ use crate::settings::InputSettings;
 use crate::settings::{
     AIAutoDetectionEnabled, AICommandDenylist, AISettingsChangedEvent, PromptTemplateDir,
     AgentModeCodingPermissionsType, AgentModeCommandExecutionDenylist,
-    AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled, AwsBedrockAutoLogin,
-    AwsBedrockCredentialsEnabled, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
+    AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled,
+    AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin, AwsBedrockCredentialsEnabled,
+    FileBasedMcpEnabled, GitOperationsAutogenEnabled,
     IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled, MemoryEnabled,
     NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, RuleSuggestionsEnabled,
     ShouldRenderCLIAgentToolbar, ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips,
@@ -196,6 +197,31 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
         )
         .with_group(bindings::BindingGroup::WarpAi)
         .with_enabled(|| FeatureFlag::AgentView.is_enabled())],
+        app,
+    );
+
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::custom(
+                SettingActionPairDescriptions::new(
+                    &crate::t!("toggle-enable-auto-approve-bypasses-command-denylist"),
+                    &crate::t!("toggle-disable-auto-approve-bypasses-command-denylist"),
+                ),
+                builder(SettingsAction::AI(
+                    AISettingsPageAction::ToggleAutoApproveBypassesCommandDenylist,
+                )),
+                SettingActionPairContexts::new(
+                    context.clone()
+                        & id!(flags::IS_ANY_AI_ENABLED)
+                        & !id!(flags::AUTO_APPROVE_BYPASSES_COMMAND_DENYLIST_FLAG),
+                    context.clone()
+                        & id!(flags::IS_ANY_AI_ENABLED)
+                        & id!(flags::AUTO_APPROVE_BYPASSES_COMMAND_DENYLIST_FLAG),
+                ),
+                None,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+        ],
         app,
     );
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
@@ -2498,6 +2524,7 @@ pub enum AISettingsPageAction {
     RefreshAwsBedrockCredentials,
     ToggleFileBasedMcp,
     ToggleIncludeAgentCommandsInHistory,
+    ToggleAutoApproveBypassesCommandDenylist,
     #[cfg(feature = "local_fs")]
     SetConversationLayout(crate::util::file::external_editor::settings::OpenConversationPreference),
     ToggleShowConversationHistory,
@@ -3358,6 +3385,14 @@ impl TypedActionView for AISettingsPageView {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings
                         .include_agent_commands_in_history
+                        .toggle_and_save_value(ctx));
+                });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleAutoApproveBypassesCommandDenylist => {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    report_if_error!(settings
+                        .auto_approve_bypasses_command_denylist
                         .toggle_and_save_value(ctx));
                 });
                 ctx.notify();
@@ -5762,13 +5797,14 @@ struct AIInputWidget {
     // The switch state handle for the "Show Agent shortcut hints" toggle.
     show_agent_zero_state_hints_toggle: SwitchStateHandle,
     include_agent_commands_in_history_toggle: SwitchStateHandle,
+    auto_approve_bypasses_command_denylist_toggle: SwitchStateHandle,
 }
 
 impl SettingsWidget for AIInputWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "oz agent ai input natural language detection autodetection prompt terminal command commands history shell executed execution"
+        "oz agent ai input natural language detection autodetection prompt terminal command commands history shell executed execution auto-approve fast forward denylist permissions"
     }
 
     fn render(
@@ -5849,6 +5885,25 @@ impl SettingsWidget for AIInputWidget {
             &view.local_only_icon_tooltip_states,
             app,
         ));
+
+        widget_children.push(
+            Flex::column()
+                .with_child(render_ai_setting_toggle::<AutoApproveBypassesCommandDenylist>(
+                    crate::t!("settings-ai-auto-approve-bypasses-command-denylist"),
+                    AISettingsPageAction::ToggleAutoApproveBypassesCommandDenylist,
+                    *ai_settings.auto_approve_bypasses_command_denylist,
+                    is_any_ai_enabled,
+                    self.auto_approve_bypasses_command_denylist_toggle.clone(),
+                    &view.local_only_icon_tooltip_states,
+                    app,
+                ))
+                .with_child(render_ai_setting_description(
+                    crate::t!("settings-ai-auto-approve-bypasses-command-denylist-description"),
+                    is_any_ai_enabled,
+                    app,
+                ))
+                .finish(),
+        );
 
         Flex::column().with_children(widget_children).finish()
     }
