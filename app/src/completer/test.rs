@@ -525,3 +525,51 @@ pub fn test_session_context_clone_shares_the_directory_cache() {
         );
     });
 }
+
+/// In a remote/Warpified session a symlink pointing at a directory must be classified as a
+/// directory (so it completes with a trailing separator and is offered for `cd`), while a
+/// symlink to a file completes as a file.
+///
+/// Remote listings go through `ls_script_for_dir`'s `find`, and `find` without `-L` does not
+/// dereference when evaluating `-type`, so a symlink to a directory failed `-type d` and fell
+/// into the *file* bucket. Local sessions were never affected: they use `std::fs::read_dir`,
+/// which resolves the link. Ported from upstream `1b65a8b9` (#14746) alongside the `-L`.
+#[cfg(unix)]
+#[test]
+pub fn test_session_context_follows_symlinked_directories_remotely() {
+    App::test((), |app| async move {
+        VirtualFS::test(
+            "test_session_context_follows_symlinked_directories_remotely",
+            |dirs, mut sandbox| {
+                sandbox.mkdir("real_dir");
+                sandbox.touch(vec![Stub::EmptyFile("real_file.txt")]);
+                sandbox.ln("real_dir", "link_to_dir");
+                sandbox.ln("real_file.txt", "link_to_file");
+
+                let cwd = TypedPathBuf::from(dirs.tests().to_string_lossy().as_bytes());
+                let ctx = test_session_context(Session::test_remote(), cwd.clone(), &app);
+
+                let mut entries = HashSet::<EngineDirEntry>::from_iter(Arc::unwrap_or_clone(
+                    warpui::r#async::block_on(
+                        ctx.path_completion_context()
+                            .expect("Path completion context should exist with active session")
+                            .list_directory_entries(cwd),
+                    ),
+                ));
+                // TODO(CORE-2000): the ls script adds a spurious "." directory when run in the
+                // VirtualFS. Removed here as a temporary workaround, as upstream does.
+                entries.remove(&EngineDirEntry::test_dir("."));
+
+                assert_eq!(
+                    entries,
+                    HashSet::from_iter([
+                        EngineDirEntry::test_dir("real_dir"),
+                        EngineDirEntry::test_file("real_file.txt"),
+                        EngineDirEntry::test_dir("link_to_dir"),
+                        EngineDirEntry::test_file("link_to_file"),
+                    ])
+                );
+            },
+        );
+    });
+}

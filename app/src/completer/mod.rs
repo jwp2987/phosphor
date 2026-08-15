@@ -515,12 +515,19 @@ fn ls_script_for_dir(directory: &TypedPath) -> Option<String> {
     // Separate the two lists with `\0`
     // Ex: `a\0b\0\c\0\0d.txt\0e.txt\0f.txt\0`
     // Then do the same for anything that is not a directory, and call it a 'File'.
+    //
+    // Follow symlinks when classifying entries, so a symlink to a directory completes as a
+    // directory (like a standard terminal). Without `-L`, `find` does not dereference when
+    // evaluating `-type`, so a symlink pointing at a directory fails `-type d`, lands in the
+    // *file* bucket, and is offered without a trailing separator and excluded from `cd`
+    // completions. Local sessions were never affected — they go through `std::fs::read_dir`,
+    // which resolves the link. Ported from upstream `1b65a8b9` (#14746).
     let command = format!(
         r#"
 cd {escaped_dir} && 
-find . -maxdepth 1 -type d -print0 &&
+find -L . -maxdepth 1 -type d -print0 &&
 printf '%b' '\0' &&
-find . -maxdepth 1 -not -type d -print0
+find -L . -maxdepth 1 -not -type d -print0
             "#
     )
     // Ensure all newlines are escaped, and that the command is a single line.

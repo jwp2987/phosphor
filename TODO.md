@@ -1824,10 +1824,17 @@ hatch: it is a path with no upstream future, and turning it on also drops the
 session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
 `apply_file_diffs` / `read_skill` onto a host that cannot serve them.
 
-- [ ] **Port `1b65a8b9` (#14746), "Follow symlinks in Tab path completion
-      (remote/SSH sessions)".** Surfaced by the same `git log warp/master --
-      app/src/completer/mod.rs` that found the root cause above; not yet
-      assessed against the fork.
+- [x] **Port `1b65a8b9` (#14746), "Follow symlinks in Tab path completion
+      (remote/SSH sessions)".** DONE 2026-08-15. Surfaced by the same
+      `git log warp/master -- app/src/completer/mod.rs` that found the root cause
+      above. `-L` added to both `find` invocations in `ls_script_for_dir`, plus
+      upstream's test. **UNRUN** — ported under the build suspension, verified
+      only by reading and `rustfmt --check`.
+
+      That log walk found **three** unported upstream fixes in this one file, of
+      which two are now taken (`01778efe`, `1b65a8b9`). Worth walking
+      `git log warp/master -- <path>` for the other hot files on the SSH path
+      before assuming any of them is at parity.
 
 - [ ] **Restore `reuse_ssh_control_master`.** The pin discovers an existing
       ControlMaster for the destination host (`ssh -G`, verified with
