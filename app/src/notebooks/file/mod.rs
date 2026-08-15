@@ -328,6 +328,11 @@ impl FileNotebookView {
         self.code_source = source;
     }
 
+    #[cfg(feature = "local_fs")]
+    pub fn code_source(&self) -> Option<&CodeSource> {
+        self.code_source.as_ref()
+    }
+
     pub fn title(&self) -> String {
         // `location` is only set once a Session resolves it, so fall back to the raw file path.
         self.location

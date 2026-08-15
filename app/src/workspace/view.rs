@@ -5405,7 +5405,7 @@ impl Workspace {
             FileTarget::MarkdownViewer(layout) => {
                 let session = self.get_active_session(ctx);
 
-                self.open_file_notebook(path.clone(), session, layout, ctx);
+                self.open_file_notebook(path.clone(), session, layout, Some(code_source), ctx);
             }
             FileTarget::EnvEditor => {
                 let editor_value: Option<String> = self
@@ -5743,7 +5743,7 @@ impl Workspace {
                     line_col,
                     CodeSource::Link {
                         path,
-                        range_start: None,
+                        range_start: line_col,
                         range_end: None,
                     },
                     ctx,
@@ -7202,15 +7202,21 @@ impl Workspace {
         path: PathBuf,
         session: Option<Arc<Session>>,
         layout: EditorLayout,
+        #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))] code_source: Option<
+            CodeSource,
+        >,
         ctx: &mut ViewContext<Self>,
     ) {
         // TODO(ben): It might be worth managing file-based notebooks via NotebookManager
         //   (e.g. for open-or-switch behavior). See if it overcomplicates things.
+        // The notebook viewer renders markdown rather than raw lines, but it
+        // hands this source back when the user toggles to the raw code view, so
+        // keeping it preserves the requested line for that view.
         let pane = FilePane::new(
             Some(path),
             session,
             #[cfg(feature = "local_fs")]
-            None,
+            code_source,
             ctx,
         );
 
@@ -9182,7 +9188,11 @@ impl Workspace {
                     *line_col,
                     CodeSource::Link {
                         path: path.clone(),
-                        range_start: None,
+                        // Keep the requested line on the source: consumers that
+                        // re-derive the jump target from the `CodeSource` (e.g.
+                        // `CodePane::pre_attach`) would otherwise open the file
+                        // at the top instead of the requested line.
+                        range_start: *line_col,
                         range_end: None,
                     },
                     ctx,
@@ -11704,7 +11714,7 @@ impl Workspace {
     ) {
         let source = CodeSource::Link {
             path: file_path,
-            range_start: None,
+            range_start: line_and_column,
             range_end: None,
         };
         let pane = CodePane::new(source, line_and_column, ctx);
@@ -13656,7 +13666,13 @@ impl Workspace {
                 #[cfg(feature = "local_fs")]
                 {
                     let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
-                    self.open_file_notebook(path.clone(), Some(session.clone()), layout, ctx);
+                    self.open_file_notebook(
+                        path.clone(),
+                        Some(session.clone()),
+                        layout,
+                        None,
+                        ctx,
+                    );
                 }
             }
             pane_group::Event::MoveToSpace {
@@ -14511,7 +14527,11 @@ impl Workspace {
                     *line_col,
                     CodeSource::Link {
                         path: path.clone(),
-                        range_start: None,
+                        // Keep the requested line on the source: consumers that
+                        // re-derive the jump target from the `CodeSource` (e.g.
+                        // `CodePane::pre_attach`) would otherwise open the file
+                        // at the top instead of the requested line.
+                        range_start: *line_col,
                         range_end: None,
                     },
                     ctx,
