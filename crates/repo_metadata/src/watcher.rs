@@ -452,18 +452,6 @@ impl DirectoryWatcher {
         });
     }
 
-    #[cfg(feature = "local_fs")]
-    fn find_existing_subpath(path: &PathBuf) -> Option<PathBuf> {
-        // Attempt to find a subdirectory that exists in the filesystem.
-        let mut current = path.to_owned();
-        while !current.as_path().exists() {
-            if !current.pop() {
-                return None;
-            }
-        }
-        Some(current)
-    }
-
     /// Routes a single `.git/`-internal path change to the repos it affects,
     /// recording `commit_updated` / `index_lock_detected` / `remote_ref_updated`
     /// on their pending [`RepositoryUpdate`], and separately collecting the
@@ -530,30 +518,31 @@ impl DirectoryWatcher {
             HashSet::new();
 
         {
-            let mut process_upsert_paths = |paths: &HashSet<PathBuf>,
-                                            insert: &mut dyn FnMut(
-                &mut RepositoryUpdate,
-                TargetFile,
-            )| {
-                for path in paths {
-                    if should_ignore_git_path(path) {
-                        continue;
-                    }
-                    // Check if this is a .git/ internal event (e.g. HEAD, index, refs update).
-                    if is_git_internal_path(path) {
-                        self.record_git_internal_path_update(
-                            path,
-                            &mut repo_updates,
-                            &mut repos_to_refresh_tracked_remote_ref,
-                            ctx,
-                        );
-                        continue;
-                    }
+            let mut process_upsert_paths =
+                |paths: &HashSet<PathBuf>,
+                 insert: &mut dyn FnMut(&mut RepositoryUpdate, TargetFile)| {
+                    for path in paths {
+                        if should_ignore_git_path(path) {
+                            continue;
+                        }
+                        // Check if this is a .git/ internal event (e.g. HEAD, index, refs update).
+                        if is_git_internal_path(path) {
+                            self.record_git_internal_path_update(
+                                path,
+                                &mut repo_updates,
+                                &mut repos_to_refresh_tracked_remote_ref,
+                                ctx,
+                            );
+                            continue;
+                        }
 
-                    // For non-git files, use standard path lookup
-                    if let Ok(standardized) =
-                        StandardizedPath::from_local_canonicalized(path.as_path())
-                    {
+                        // Attribute non-git files by their absolute path, not a canonicalized
+                        // one: canonicalizing would follow a below-root symlink (e.g. a
+                        // gitignored `node_modules` entry) into the symlink target's repo and
+                        // misattribute the event. `from_local_absolute_unchecked` is safe here
+                        // because watcher event paths are always absolute.
+                        let standardized =
+                            StandardizedPath::from_local_absolute_unchecked(path.as_path());
                         if let Some(repo_handle) = self.find_containing_directory(&standardized) {
                             let is_ignored =
                                 repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(path));
@@ -562,8 +551,7 @@ impl DirectoryWatcher {
                             insert(repo_update, target_file);
                         }
                     }
-                }
-            };
+                };
 
             // Process added files
             process_upsert_paths(&event.added, &mut |repo_update, target_file| {
@@ -592,21 +580,17 @@ impl DirectoryWatcher {
                     ctx,
                 );
             } else {
-                // Because this file will no longer exist, which will fail canonicalization.
-                // We will just try the directory path instead, which hopefully still exists.
-                if let Some(existing_subpath) = Self::find_existing_subpath(path) {
-                    if let Ok(standardized) =
-                        StandardizedPath::from_local_canonicalized(existing_subpath.as_path())
-                    {
-                        if let Some(repo_handle) = self.find_containing_directory(&standardized) {
-                            // Gitignore checking is pattern-based and doesn't require file existence
-                            let is_ignored =
-                                repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(path));
-                            let target_file = TargetFile::new(path.to_path_buf(), is_ignored);
-                            let repo_update = repo_updates.entry(repo_handle).or_default();
-                            repo_update.deleted.insert(target_file);
-                        }
-                    }
+                // Attribute by the absolute (non-canonicalized) path. Deleted files can't be
+                // canonicalized anyway, and resolving symlinks would route the event to the
+                // symlink target's repo rather than the repo the path lexically belongs to.
+                let standardized = StandardizedPath::from_local_absolute_unchecked(path.as_path());
+                if let Some(repo_handle) = self.find_containing_directory(&standardized) {
+                    // Gitignore checking is pattern-based and doesn't require file existence.
+                    let is_ignored =
+                        repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(path));
+                    let target_file = TargetFile::new(path.to_path_buf(), is_ignored);
+                    let repo_update = repo_updates.entry(repo_handle).or_default();
+                    repo_update.deleted.insert(target_file);
                 }
             }
         }
@@ -634,9 +618,9 @@ impl DirectoryWatcher {
                         ctx,
                     );
                 }
-            } else if let Ok(standardized) =
-                StandardizedPath::from_local_canonicalized(to_path.as_path())
-            {
+            } else {
+                let standardized =
+                    StandardizedPath::from_local_absolute_unchecked(to_path.as_path());
                 if let Some(repo_handle) = self.find_containing_directory(&standardized) {
                     let to_is_ignored =
                         repo_handle.read(ctx, |repo, _| repo.check_gitignore_status(to_path));

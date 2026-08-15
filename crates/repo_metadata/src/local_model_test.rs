@@ -763,6 +763,7 @@ mod tests {
                     &gitignores,
                     &[],
                     &crate::standing_queries::StandingQueryDefinitions::default(),
+                    false,
                 ));
             LocalRepoMetadataModel::apply_file_tree_mutations(&mut root, mutations, false, false);
 
@@ -1640,14 +1641,12 @@ Thumbs.db
         ));
     }
 
-    // The following three tests call `LocalRepoMetadataModel::compute_file_tree_mutations`
-    // directly, as the oracle's do. Adaptation: the oracle's signature at the
-    // pin takes a trailing `lazy_load: bool` (used by
-    // `lazy_root_created_directory_inserted_as_placeholder`, not ported —
-    // see the feature-gap note above) that this fork's version does not
-    // have; this fork's `compute_file_tree_mutations` unconditionally
-    // behaves as the oracle's `lazy_load = false`, so the argument is
-    // dropped rather than invented.
+    // The following tests call `LocalRepoMetadataModel::compute_file_tree_mutations`
+    // directly, as the oracle's do. `compute_file_tree_mutations` now takes the
+    // oracle's trailing `lazy_load: bool` (see
+    // `lazy_root_created_directory_inserted_as_placeholder` below); every
+    // pre-existing call site here passes `false`, preserving this fork's prior
+    // unconditionally-eager compute-phase behavior exactly.
 
     #[test]
     fn added_symlinked_skill_directory_refreshes_provider_without_canonical_tree_mutation() {
@@ -1676,6 +1675,7 @@ Thumbs.db
                     &[],
                     &[],
                     &definitions,
+                    false,
                 ));
 
             assert!(mutations.is_empty());
@@ -1712,6 +1712,7 @@ Thumbs.db
                 &[],
                 &[],
                 &definitions,
+                false,
             ));
 
             assert!(discovered.project_skills().any(|content| {
@@ -1745,6 +1746,7 @@ Thumbs.db
                 &[],
                 &[],
                 &definitions,
+                false,
             ));
 
             assert!(discovered.project_skills().next().is_none());
@@ -2249,6 +2251,7 @@ Thumbs.db
                         &gitignores,
                         &[], /* force_included_paths */
                         &definitions,
+                        false,
                     ));
                 LocalRepoMetadataModel::apply_file_tree_mutations(
                     &mut tree, mutations, false, false,
@@ -2328,6 +2331,7 @@ Thumbs.db
                         &gitignores,
                         &[], /* force_included_paths */
                         &definitions,
+                        false,
                     ));
                 LocalRepoMetadataModel::apply_file_tree_mutations(
                     &mut tree, mutations, false, false,
@@ -2441,6 +2445,7 @@ Thumbs.db
                         &gitignores,
                         &force_included,
                         &definitions,
+                        false,
                     ));
 
                 let incremental_ignored = mutations
@@ -4094,15 +4099,94 @@ Thumbs.db
         });
     }
 
-    // NOT ported: `lazy_root_created_directory_inserted_as_placeholder`. The pin's
-    // `compute_file_tree_mutations` takes an extra `lazy_load: bool` parameter this
-    // fork's version lacks (fork: 4 args, pin: 5) -- the fork always computes a full
-    // `AddDirectorySubtree` mutation and defers the lazy/eager decision entirely to
-    // `apply_file_tree_mutations`, which only *skips* a mutation when the parent is
-    // not yet loaded (`is_parent_loaded_in_entry`). In this test's scenario the new
-    // directory's parent is the (loaded) root itself, so that guard would not fire
-    // and the fork would materialize the full subtree instead of inserting an
-    // unloaded placeholder -- possibly a real laziness gap in the incremental
-    // watcher path, not just an API rename. Needs verification against a running
-    // build before porting or filing; left unported rather than guessed at.
+    /// Ported from the pinned oracle: for a lazy (non-git) root, a directory
+    /// reported as newly added by the watcher must be inserted as an unloaded
+    /// placeholder rather than eagerly materialized. Previously a real
+    /// laziness gap here: `compute_file_tree_mutations` unconditionally
+    /// computed a full `AddDirectorySubtree`, and
+    /// `apply_file_tree_mutations`'s `is_parent_loaded_in_entry` guard only
+    /// skips applying it when the parent itself is unloaded — which does not
+    /// cover a new top-level directory under an already-loaded lazy root.
+    #[test]
+    fn lazy_root_created_directory_inserted_as_placeholder() {
+        VirtualFS::test("lazy_created_dir_placeholder", |dirs, mut vfs| {
+            let repo_path = dirs.tests();
+            vfs.mkdir("newdir/sub")
+                .with_files(vec![Stub::FileWithContent("newdir/sub/file.txt", "x")]);
+
+            let new_dir = repo_path.join("newdir");
+            let nested = repo_path.join("newdir/sub");
+            let new_dir_std = StandardizedPath::try_from_local(&new_dir).unwrap();
+            let nested_std = StandardizedPath::try_from_local(&nested).unwrap();
+
+            let make_root = || {
+                FileTreeEntry::from(Entry::Directory(DirectoryEntry {
+                    path: StandardizedPath::try_from_local(repo_path).unwrap(),
+                    children: Vec::new(),
+                    ignored: false,
+                    loaded: true,
+                }))
+            };
+            let update = RepoUpdate {
+                added: vec![new_dir.clone()],
+                ..Default::default()
+            };
+            let definitions = StandingQueryDefinitions::default();
+
+            // Lazy root: the new directory is an unloaded placeholder and its
+            // subtree is not materialized.
+            let mut lazy_root = make_root();
+            let (lazy_mutations, _, _) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &[],
+                    &[],
+                    &definitions,
+                    true,
+                ));
+            LocalRepoMetadataModel::apply_file_tree_mutations(
+                &mut lazy_root,
+                lazy_mutations,
+                true,
+                false,
+            );
+
+            let placeholder = lazy_root
+                .get(&new_dir_std)
+                .expect("new directory should be present");
+            assert!(
+                !placeholder.loaded(),
+                "lazy root should add the directory as an unloaded placeholder"
+            );
+            assert!(
+                lazy_root.get(&nested_std).is_none(),
+                "lazy root should not materialize the subtree"
+            );
+
+            // Eager root: the same directory is fully materialized.
+            let mut eager_root = make_root();
+            let (eager_mutations, _, _) =
+                block_on(LocalRepoMetadataModel::compute_file_tree_mutations(
+                    &update,
+                    &[],
+                    &[],
+                    &definitions,
+                    false,
+                ));
+            LocalRepoMetadataModel::apply_file_tree_mutations(
+                &mut eager_root,
+                eager_mutations,
+                false,
+                false,
+            );
+            assert!(
+                eager_root.get(&new_dir_std).is_some_and(|e| e.loaded()),
+                "eager root should materialize the directory"
+            );
+            assert!(
+                eager_root.get(&nested_std).is_some(),
+                "eager root should materialize the subtree"
+            );
+        });
+    }
 }

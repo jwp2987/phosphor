@@ -925,6 +925,7 @@ impl LocalRepoMetadataModel {
                                 &gitignores_clone,
                                 &force_included_paths,
                                 &standing_query_definitions,
+                                lazy_load,
                             )
                             .await;
                         (
@@ -1643,11 +1644,17 @@ impl LocalRepoMetadataModel {
     /// Performs all filesystem I/O (`exists()`, `is_dir()`, `build_tree()`,
     /// gitignore checks) and returns a lightweight list of mutations that can
     /// be applied to the tree on the main thread without cloning it.
+    ///
+    /// When `lazy_load` is true (lazy non-git roots), newly added directories
+    /// are emitted as unloaded placeholders rather than fully-materialized
+    /// subtrees, matching the lazy tree model; the directory is materialized
+    /// (and watched) on demand when the user expands it via `load_directory`.
     async fn compute_file_tree_mutations(
         update: &RepoUpdate,
         gitignores: &[Gitignore],
         force_included_paths: &[PathBuf],
         standing_query_definitions: &StandingQueryDefinitions,
+        lazy_load: bool,
     ) -> (
         Vec<FileTreeMutation>,
         StandingQueryResults,
@@ -1680,6 +1687,18 @@ impl LocalRepoMetadataModel {
             let is_ignored = Self::path_is_ignored(path_to_add, gitignores);
 
             if path_to_add.is_dir() {
+                if lazy_load {
+                    // Lazy (non-git) roots are not materialized when a directory
+                    // is created; insert it as an unloaded placeholder and build
+                    // the subtree on demand when the user expands it (see
+                    // `load_directory`).
+                    mutations.push(FileTreeMutation::AddEmptyDirectory {
+                        path: path_to_add.clone(),
+                        is_ignored,
+                    });
+                    continue;
+                }
+
                 // Regression fix, found porting `incremental_deep_event_under_unloaded_ignored_dir_is_collapsed`
                 // from the pinned oracle (see `local_model_test.rs`): an
                 // ignored, non-force-included directory reported by the
