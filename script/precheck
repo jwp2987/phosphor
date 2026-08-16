@@ -233,6 +233,10 @@ if [[ -x ./script/check_channel_command_names ]]; then
     ./script/check_channel_command_names >/dev/null 2>&1 && ok "channel command names" \
         || fail "channel command names -- run ./script/check_channel_command_names for detail"
 fi
+if [[ -x ./script/check_generator_wrapper_names ]]; then
+    ./script/check_generator_wrapper_names >/dev/null 2>&1 && ok "generator wrapper names" \
+        || fail "generator wrapper names -- run ./script/check_generator_wrapper_names for detail"
+fi
 if [[ -x ./script/check_sweep_ledger ]]; then
     ./script/check_sweep_ledger >/dev/null 2>&1 && ok "sweep verdict ledger" \
         || fail "sweep verdict ledger -- run ./script/check_sweep_ledger for detail"

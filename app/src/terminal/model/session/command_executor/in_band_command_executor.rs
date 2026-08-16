@@ -27,6 +27,37 @@ use warp_completer::completer::{CommandExitStatus, CommandOutput};
 
 use super::ExecuteCommandOptions;
 
+/// Name of the in-band generator wrapper defined by the POSIX bootstrap scripts.
+///
+/// MATCHED PAIR -- this literal and the shell function it names must move together.
+/// The function is defined in `app/assets/bundled/bootstrap/bash_body.sh`,
+/// `zsh_body.sh` and `fish.sh`, and those files additionally match on the name to keep
+/// the call out of the user's history (`HISTIGNORE`, the zsh/fish add-to-history
+/// hooks, and bash's `BASH_COMMAND` guard in `warp_preexec`). Nothing in the type
+/// system connects the two sides: rename one and everything still compiles, every
+/// test stays green, and the failure surfaces only as a generator command that
+/// invokes a function the shell has never heard of.
+/// `script/check_generator_wrapper_names` is what actually enforces the pairing.
+pub const POSIX_GENERATOR_WRAPPER: &str = "warp_run_generator_command";
+
+/// Name of the in-band generator wrapper defined by the PowerShell bootstrap script.
+///
+/// MATCHED PAIR -- see [`POSIX_GENERATOR_WRAPPER`]. The function is defined and
+/// exported by `app/assets/bundled/bootstrap/pwsh.ps1`, which also matches on the name
+/// in three history-scrubbing guards.
+///
+/// This is a PROTOCOL surface, not display copy, and it is deliberately still spelled
+/// `Warp-` (see #597): the `.ps1` is the slow-moving half of the pair. On Windows the
+/// app sources a *permanent* bootstrap file from the install directory
+/// (`bootstrap_file::windows::path_to_permanent_bootstrap_file`), and a warpified
+/// remote host runs whatever bootstrap it already has -- so a Rust-side rename reaches
+/// users immediately while a script-side rename only lands once every installed copy
+/// is refreshed. The Rust literal conforms to the script, never the other way round.
+/// Same category as the `WARP_*` env vars, the `warp://` scheme and the `X-Zap-*`
+/// headers, all deliberately untouched by the branding purge;
+/// `script/check_brand_strings` correctly does not police it.
+pub const POWERSHELL_GENERATOR_WRAPPER: &str = "Warp-Run-GeneratorCommand";
+
 #[derive(Clone, Debug)]
 pub struct InBandCommand {
     pub command: String,
@@ -329,7 +360,9 @@ impl InBandCommandExecutor {
 
                 let in_band_command = match shell.shell_type() {
                     ShellType::PowerShell => {
-                        format!("Zap-Run-GeneratorCommand {id} '{escaped_command}' -ErrorAction Ignore")
+                        format!(
+                            "{POWERSHELL_GENERATOR_WRAPPER} {id} '{escaped_command}' -ErrorAction Ignore"
+                        )
                     }
                     ShellType::Fish => {
                         // Add a leading space for in-band commands in fish, which omits them from
@@ -337,10 +370,10 @@ impl InBandCommandExecutor {
                         // specifying command patterns to be omitted from history. Ignoring
                         // commands with a leading space is default, non-configurable behavior in
                         // fish.
-                        format!(" warp_run_generator_command {id} '{escaped_command}'")
+                        format!(" {POSIX_GENERATOR_WRAPPER} {id} '{escaped_command}'")
                     }
                     _ => {
-                        format!("warp_run_generator_command {id} '{escaped_command}'")
+                        format!("{POSIX_GENERATOR_WRAPPER} {id} '{escaped_command}'")
                     }
                 };
 
@@ -382,8 +415,8 @@ impl CommandExecutor for InBandCommandExecutor {
     /// the `pty_controller` passed to this executor during construction.
     ///
     /// The given `command` is executed in the active session using the
-    /// `warp_run_generator_command`/`Zap-Run-GeneratorCommand` shell script API that is declared as
-    /// part of Zap's bootstrap script.
+    /// [`POSIX_GENERATOR_WRAPPER`]/[`POWERSHELL_GENERATOR_WRAPPER`] shell script API that is
+    /// declared as part of Zap's bootstrap script.
     ///
     /// Internally, `command` is added to a queue of commands to be executed serially (this is to
     /// avoid output from multiple commands corrupting one another since the pty is a single
@@ -441,8 +474,10 @@ impl CommandExecutor for InBandCommandExecutor {
 /// fish's command history.  Thus we strip leading whitespace before matching the `command`.
 pub fn is_in_band_command(command: &str) -> bool {
     let trimmed = command.trim_start();
-    trimmed.starts_with("Zap-Run-GeneratorCommand ")
-        || trimmed.starts_with("warp_run_generator_command ")
+    trimmed
+        .strip_prefix(POWERSHELL_GENERATOR_WRAPPER)
+        .or_else(|| trimmed.strip_prefix(POSIX_GENERATOR_WRAPPER))
+        .is_some_and(|rest| rest.starts_with(' '))
 }
 
 #[cfg(test)]

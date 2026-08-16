@@ -219,6 +219,17 @@ if [[ -z $WARP_BOOTSTRAPPED ]]; then
   #
   # Usage:
   #   warp_run_generator_command <command_id> '<command> <arg1> ... <argn>'
+  #
+  # MATCHED PAIR -- this function's NAME is a protocol surface shared with the Rust
+  # app, which builds the call string in `POSIX_GENERATOR_WRAPPER`
+  # (app/src/terminal/model/session/command_executor/in_band_command_executor.rs) and
+  # detects it again there and in
+  # app/src/ai/blocklist/action_model/execute/shell_command.rs. Nothing in the type
+  # system connects the two: rename one side and everything still compiles and every
+  # Rust test still passes, while in-band generators silently invoke a function that
+  # does not exist. That is exactly how #597 happened on the PowerShell side.
+  # The add-to-history guards below match this name too, so they move with it.
+  # `script/check_generator_wrapper_names` enforces the pairing.
   warp_run_generator_command() {
     # Setting this environment variable prevents warp_precmd from emitting the
     # 'Block started' hook to the Rust app.

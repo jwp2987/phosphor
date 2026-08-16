@@ -27,6 +27,9 @@ use crate::terminal::event::BlockMetadataReceivedEvent;
 use crate::terminal::model::block::{
     Block, BlockId, CURSOR_MARKER, formatted_terminal_contents_for_input,
 };
+use crate::terminal::model::session::command_executor::{
+    POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
+};
 use crate::terminal::shell::ShellType;
 use crate::terminal::ssh::util::parse_interactive_ssh_command;
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
@@ -995,8 +998,10 @@ fn command_starts_non_terminating_session(command: &str) -> bool {
 ///
 /// The wrapper protocol looks like: `<wrapper> <generator_id> '<inner_command>'
 /// [extra flags...]`, where:
-/// - `<wrapper>` is `warp_run_generator_command` (POSIX shell) or
-///   `Zap-Run-GeneratorCommand` (PowerShell, case-insensitive).
+/// - `<wrapper>` is [`POSIX_GENERATOR_WRAPPER`] (POSIX shell) or
+///   [`POWERSHELL_GENERATOR_WRAPPER`] (PowerShell, case-insensitive). Both names are
+///   halves of a matched pair with the bundled bootstrap scripts that define them --
+///   see the constants' own doc comments, and `script/check_generator_wrapper_names`.
 /// - `<generator_id>` is a numeric id, not parsed here — just skipped.
 /// - `<inner_command>` is the real command string wrapped in single quotes, which is
 ///   what we return.
@@ -1008,8 +1013,8 @@ fn command_starts_non_terminating_session(command: &str) -> bool {
 fn in_band_generator_command(command: &str) -> Option<String> {
     let tokens = shell_words::split(command.trim_start()).ok()?;
     if tokens.len() >= 3
-        && (tokens[0].eq_ignore_ascii_case("Zap-Run-GeneratorCommand")
-            || tokens[0] == "warp_run_generator_command")
+        && (tokens[0].eq_ignore_ascii_case(POWERSHELL_GENERATOR_WRAPPER)
+            || tokens[0] == POSIX_GENERATOR_WRAPPER)
     {
         Some(tokens[2].clone())
     } else {
