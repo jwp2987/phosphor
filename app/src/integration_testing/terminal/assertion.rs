@@ -371,10 +371,15 @@ pub fn assert_bootstrapping_result(
     app: &App,
     window_id: WindowId,
     tab_index: usize,
-    _pane_index: usize,
+    pane_index: usize,
     expect_bootstrapped: bool,
 ) -> AssertionOutcome {
-    let terminal_view = single_terminal_view_for_tab(app, window_id, tab_index);
+    // Pane-indexed on purpose. This used to ignore `pane_index` and go through
+    // `single_terminal_view_for_tab`, which asserts the tab holds exactly one
+    // terminal -- so every `wait_until_bootstrapped_pane(tab, 1)` in a split-pane
+    // test panicked with "doesn't have a single terminal view" before it could
+    // check anything.
+    let terminal_view = terminal_view(app, window_id, tab_index, pane_index);
     let bootstrapped = terminal_view.read(app, |view, ctx| {
         let model = view.model.lock();
         let input_visible = view.is_input_box_visible(&model, ctx);
