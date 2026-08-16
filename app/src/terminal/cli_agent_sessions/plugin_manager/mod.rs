@@ -141,6 +141,19 @@ pub(crate) async fn run_cli_command_logged(
 ///
 /// Each supported CLI agent has its own implementation that knows how to
 /// check installation state and perform install/update operations.
+///
+/// # No Oz-platform-plugin surface here
+///
+/// The pin's version of this trait carries a second, parallel set of methods for
+/// each agent's *Oz platform* plugin — `install_platform_plugin`,
+/// `update_platform_plugin`, `is_platform_plugin_installed`,
+/// `platform_plugin_needs_update`, installing `oz-harness-support@claude-code-warp`
+/// and `orchestration@codex-warp`. **They are deliberately absent here, not
+/// unported** — those plugins' skills and hooks shell out to `oz harness-support …`
+/// and `oz run message …`, both of which are hosted-backend command surfaces this
+/// fork removed. See `DECLINED.md`, "Oz platform plugins", for the evidence and the
+/// decision; do not re-add these methods without a consumer that can actually use
+/// the skills they install.
 #[async_trait]
 pub(crate) trait CliAgentPluginManager: Send + Sync {
     /// The minimum plugin version required by this Zap build.
@@ -159,18 +172,6 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
     /// Whether the on-disk plugin version is below the minimum required.
     /// Default returns `false` (no filesystem check).
     fn needs_update(&self) -> bool {
-        false
-    }
-
-    /// Whether this agent's Oz platform plugin is already installed.
-    /// Default returns `true` because most agents do not have a platform plugin.
-    fn is_platform_plugin_installed(&self) -> bool {
-        true
-    }
-
-    /// Whether this agent's Oz platform plugin is below the minimum required version.
-    /// Default returns `false` because most agents do not have a platform plugin.
-    fn platform_plugin_needs_update(&self) -> bool {
         false
     }
 
@@ -221,21 +222,6 @@ pub(crate) trait CliAgentPluginManager: Send + Sync {
 
     /// Manual update instructions for the modal UI.
     fn update_instructions(&self) -> &'static PluginInstructions;
-
-    /// Install the Oz platform plugin for this CLI agent, if one exists,
-    /// which provides skills that third-party harnesses can use to interact with
-    /// the Oz platform.
-    /// Default is a no-op — only agents with a platform plugin should override.
-    async fn install_platform_plugin(&self) -> Result<(), PluginInstallError> {
-        Ok(())
-    }
-
-    /// Update the Oz platform plugin for this CLI agent, if one exists.
-    /// Default reuses the install path because most agents do not have a
-    /// platform plugin or need distinct update behavior.
-    async fn update_platform_plugin(&self) -> Result<(), PluginInstallError> {
-        self.install_platform_plugin().await
-    }
 }
 
 /// Returns a plugin manager for the given CLI agent, or `None` if the agent
