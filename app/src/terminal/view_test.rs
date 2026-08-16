@@ -9079,3 +9079,117 @@ fn password_prompt_polling_is_suppressed_for_warpify_compatible_subshells() {
         });
     })
 }
+
+// ---------------------------------------------------------------------------
+// Depth-aware agent-view back button.
+//
+// Ported from the pinned oracle's `app/src/terminal/view_tests.rs`
+// (`back_button_label_names_the_direct_parent_at_depth`,
+// `back_button_label_resolves_token_only_parent_linkage`). The fork's test
+// file is `view_test.rs`, and `start_new_conversation` takes one fewer flag
+// here; the labels come from fluent (`terminal-agent-header-*`), which
+// `initialize_history_persistence_for_tests` pins to English.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn back_button_label_names_the_direct_parent_at_depth() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let (root_id, mid_id, grandchild_id) = history_model.update(&mut app, |history, ctx| {
+            let root_id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+            let mid_id = history.start_new_child_conversation(
+                terminal_view_id,
+                "api-refactor".to_string(),
+                root_id,
+                None,
+                ctx,
+            );
+            let grandchild_id = history.start_new_child_conversation(
+                terminal_view_id,
+                "grandchild".to_string(),
+                mid_id,
+                None,
+                ctx,
+            );
+            (root_id, mid_id, grandchild_id)
+        });
+
+        // A nested parent whose agent name is empty falls back to the
+        // generic wording instead of rendering "for ".
+        let (unnamed_mid_id, nested_under_unnamed_id) =
+            history_model.update(&mut app, |history, ctx| {
+                let unnamed_mid_id = history.start_new_child_conversation(
+                    terminal_view_id,
+                    String::new(),
+                    root_id,
+                    None,
+                    ctx,
+                );
+                let nested_id = history.start_new_child_conversation(
+                    terminal_view_id,
+                    "nested".to_string(),
+                    unnamed_mid_id,
+                    None,
+                    ctx,
+                );
+                (unnamed_mid_id, nested_id)
+            });
+
+        history_model.read(&app, |history, _| {
+            assert_eq!(agent_view_back_button_label(history, None), "for terminal");
+            assert_eq!(
+                agent_view_back_button_label(history, Some(root_id)),
+                "for terminal",
+            );
+            assert_eq!(
+                agent_view_back_button_label(history, Some(mid_id)),
+                "for Orchestrator",
+            );
+            assert_eq!(
+                agent_view_back_button_label(history, Some(grandchild_id)),
+                "for api-refactor",
+            );
+            assert_eq!(
+                agent_view_back_button_label(history, Some(unnamed_mid_id)),
+                "for Orchestrator",
+            );
+            assert_eq!(
+                agent_view_back_button_label(history, Some(nested_under_unnamed_id)),
+                "for parent agent",
+            );
+        });
+    });
+}
+
+/// A child linked to its parent only via a legacy server conversation token
+/// in `parent_agent_id` (no explicit parent conversation id, no run id) must
+/// still resolve the parent through the history model's canonical
+/// resolution, yielding the same back-button label as an id-linked child.
+#[test]
+fn back_button_label_resolves_token_only_parent_linkage() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let child_id = history_model.update(&mut app, |history, ctx| {
+            let root_id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+            history
+                .set_server_conversation_token_for_conversation(root_id, "root-token".to_string());
+            let child_id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+            history
+                .conversation_mut(&child_id)
+                .expect("child conversation exists")
+                .set_parent_agent_id("root-token".to_string());
+            child_id
+        });
+
+        history_model.read(&app, |history, _| {
+            assert_eq!(
+                agent_view_back_button_label(history, Some(child_id)),
+                "for Orchestrator",
+            );
+        });
+    });
+}

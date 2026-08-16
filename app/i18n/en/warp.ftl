@@ -248,6 +248,13 @@ terminal-manage-defaults = Manage defaults
 terminal-free-credits = Free credits
 terminal-cloud-agent-run = Agent run
 terminal-agent-header-for-terminal = for terminal
+# Agent-view back button, depth-aware: ESC goes one level up, so the label
+# names the DIRECT parent. Children of the tree root keep the classic
+# "for Orchestrator"; deeper subagents name their parent agent, or fall back
+# to the generic wording when that parent has no name.
+terminal-agent-header-for-orchestrator = for Orchestrator
+terminal-agent-header-for-parent-agent = for parent agent
+terminal-agent-header-for-parent-named = for { $name }
 ssh-remote-choice-title = Choose your experience for this remote session:
 ssh-remote-choice-install-extension = Install Phosphor's SSH extension
 ssh-remote-choice-install-extension-desc = Install Phosphor's extension to enable agent features like file browsing, code review, and intelligent command completions in this session.
