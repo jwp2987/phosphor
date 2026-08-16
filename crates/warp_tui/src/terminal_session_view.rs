@@ -317,6 +317,8 @@ const STATUSLINE_RESET_HINT: &str = "Statusline reset to defaults.";
 const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline configuration.";
 const COPY_SELECTION_HINT: &str = "copied to clipboard";
 const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
+const COPY_DEBUGGING_ID_HINT: &str = "Debugging id copied — attach it to your Phosphor issue";
+const COPY_DEBUGGING_ID_NO_TOKEN_HINT: &str = "No debugging id for this conversation yet.";
 const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
 const AUTO_APPROVE_ENABLED_HINT: &str = "Auto approve on";
 const AUTO_APPROVE_DISABLED_HINT: &str = "Auto approve off";
@@ -4963,6 +4965,30 @@ impl TuiTerminalSessionView {
                     }
                 } else {
                     self.show_transient_hint("No active conversation to export".to_owned(), ctx);
+                }
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::CopyDebuggingId => {
+                let debugging_payload = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation(ctx)
+                    .and_then(|conversation| conversation.debugging_server_conversation_token())
+                    .map(|token| token.debugging_payload(None));
+                match debugging_payload {
+                    Some(debugging_payload) => match copy_to_clipboard(&debugging_payload) {
+                        Ok(()) => {
+                            self.show_success_hint(COPY_DEBUGGING_ID_HINT.to_owned(), ctx);
+                        }
+                        Err(error) => {
+                            log::warn!("Failed to copy TUI debugging information: {error}");
+                            self.show_error_hint(COPY_FAILED_HINT.to_owned(), ctx);
+                        }
+                    },
+                    None => {
+                        self.show_error_hint(COPY_DEBUGGING_ID_NO_TOKEN_HINT.to_owned(), ctx);
+                    }
                 }
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);

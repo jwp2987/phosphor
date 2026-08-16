@@ -2384,6 +2384,9 @@ slash-cmd-conversations-desc = 会話履歴を開く
 slash-cmd-prompts-desc = 保存済みプロンプトを検索
 slash-cmd-rewind-desc = 会話の前の時点まで巻き戻し
 slash-cmd-export-to-clipboard-desc = 現在の会話を Markdown 形式でクリップボードにエクスポート
+slash-cmd-copy-debugging-id-desc = この会話のデバッグ ID をコピー（Phosphor の issue に添付用）
+slash-cmd-copy-debugging-id-copied = デバッグ ID をクリップボードにコピーしました。Phosphor の issue に添付してください
+slash-cmd-copy-debugging-id-none = この会話にはまだデバッグ ID がありません。
 slash-cmd-export-to-file-desc = 現在の会話を Markdown ファイルにエクスポート
 slash-cmd-export-to-file-hint = <任意のファイル名>
 
