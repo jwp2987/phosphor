@@ -1,6 +1,7 @@
 pub mod app_id;
 pub mod assertions;
 pub mod channel;
+pub mod cli_agent_error_type;
 pub mod cli_agent_protocol;
 pub mod command;
 pub mod context_flag;

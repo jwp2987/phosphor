@@ -2343,6 +2343,28 @@ here, so this list stays a work ledger rather than a history.
       `ConversationStatus::Error` regardless of `error_type`, latching until the
       next `PromptSubmit` (no timer). Two stale comments claiming `Failed` was
       cloud-only were corrected in place.
+- [x] **#596 — cancelling a TUI conversation lights an *error* in the GUI.**
+      **FIXED, pending merge** (`repin-iss596-cancelled`). An interaction defect
+      between two branches of this re-pin, neither wrong alone: the OSC 777
+      publisher (`repin-osc777`) emits `stop_failure` + `error_type:"cancelled"`
+      for `ConversationStatus::Cancelled` — **which is exactly what the new pin
+      `42effe840` emits**, upstream has no cancellation event tag — while the
+      `stop_failure` consumer (`repin-gap-stopfail`) faithfully restores the
+      pin's mapping of every `Failed` to `ConversationStatus::Error`, a red
+      triangle that latches until the next `PromptSubmit`. So the user's own
+      Ctrl-C reads as a persistent error, and the fork's distinct `Cancelled`
+      (gray stop) is never reached from a TUI session.
+      Fixed in the **protocol**, not with a literal in the GUI: new
+      `warp_core::cli_agent_error_type` types the `error_type` classification
+      (`Cancelled` / `Other(&str)`) in the crate both producer and consumer
+      already depend on, and `to_conversation_status()` branches on the variant.
+      **No wire change** — the emitted bytes stay upstream's, so no protocol
+      version bump and no plugin is affected. Follow-ups left open, both in
+      files that arrive from `repin-gap-stopfail`:
+      (a) `notifications/model.rs` still raises a `NotificationCategory::Error`
+      toast for a cancelled turn;
+      (b) the publisher's literal `Some("cancelled")` should become
+      `Some(cli_agent_error_type::CANCELLED)` — byte-identical, hygiene only.
 - [ ] **#586 — shell completions never learn functions or builtins.**
       `Session::load_all_function_names` / `load_all_builtins` and the whole
       deferred name-set machinery exist at the old pin, absent here (verified 0
