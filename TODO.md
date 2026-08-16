@@ -2495,13 +2495,33 @@ moving the pin:
       false history the "common false positives" section exists to prevent.
       **68 further `judgement`-confidence CLOUD rows are unsampled** — the
       sampled hit rate was 28/58.
-- [ ] **#592 — tests added to already-classified files land in no bucket.**
+- [x] **#592 — tests added to already-classified files land in no bucket.**
       `UNCLASSIFIED` is whole-file, so a file with existing ledger rows can
       never surface new upstream tests. Measured this move: **284** across the
       63 files first worked, plus **128** genuine candidates across the 9 files
       a tooling bug had hidden. `terminal_session_view_tests.rs` alone gained
       71 and rewrote 26 of the 84 it kept. Ceiling across the tree: 685.
       Understates new debt silently, every re-pin.
+      **[DONE — `script/generate_repin_queue` grew a `LEDGER COVERAGE GAP`
+      section: per-test, whole-ledger, independent of the file diff (5 of the 7
+      files it reports are in `DECLINED COLLISION`, which never reaches the
+      loop's ledger branch). Currently **17 tests across 7 files**; small
+      because the manual pass this issue prescribes was since done by hand —
+      re-run against only the old pin's 841 ledger rows it reports **170**, so
+      the filters are not vacuous. It also prints a reconciliation block, which
+      turned up a second defect NOT fixed here: `docs/STATE.md`'s "N are not
+      adjudicated" subtracts the ledger's ROW COUNT from the absent-name count
+      instead of differencing the sets, so 273 rows naming tests the fork now
+      has (plus 4 naming tests not at the pin) cancel genuinely unadjudicated
+      ones. It reports 435 where the set difference is 715 — filed as **#603**,
+      not fixed here: it moves a headline number in a generated file.]**
+- [ ] **#603 — `script/state`'s unadjudicated count is a subtraction of totals,
+      not a difference of sets.** `UNADJ=$(( ABSENT - LED_ROWS ))`, so each of
+      the 273 ledger rows naming a test the fork now has (plus 4 naming a test
+      not at the pin) cancels a genuinely unadjudicated one. Published 435;
+      true set difference **715**. Wrong in the optimistic direction, and the
+      error *grows* as rows become `PORTED`/`COVERED-ELSEWHERE` — i.e. as the
+      fork makes progress. Found by #592's reconciliation block.
 - [ ] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
       genuine proper nouns continuing lowercase would fire. `Zapfino` (Apple's
       font, 16 occurrences) survives only because every occurrence sits in a

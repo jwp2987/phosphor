@@ -81,6 +81,7 @@ Work the buckets **in this order**:
 |---|---|---|
 | **DECLINED COLLISION** | the upstream diff touches a name or path `DECLINED.md` has marked | **First.** Read the row before touching anything. |
 | **LEDGER RE-EXAMINE** | `docs/sweep-verdict-ledger.tsv` has per-test verdicts for this file, but the file changed upstream | High — the verdicts are stale, not wrong-by-default |
+| **LEDGER COVERAGE GAP** | a test exists at the new pin, in a file the ledger covers, with **no row of its own** and no same-named fork test | High — no row to re-read, so each one is a *first* adjudication. See the blind-spot section below |
 | **UNCLASSIFIED** | no `SCOPE-*.md` row and no ledger row at the old pin | High — needs a *first* look, not a re-look |
 | **inherited verdict** | `SCOPE-*.md` has a letter (A/B/C/D/MIXED) for the path | Medium — see the trust warning below |
 | **REMOVED AT NEW PIN** | existed at old pin, gone at new | Informational. Retire any ledger rows. |
@@ -107,6 +108,13 @@ not change**:
    happens — so a hit here means a stale CI run.
 3. **A MISSING-SUBSYSTEM row's absent symbol now has a definition** somewhere in
    the fork. The gap it recorded may have been closed by unrelated work.
+
+`LEDGER COVERAGE GAP` is deliberately **not** one of these. All three ask
+whether a row that *exists* is still true; none of them — and no bucket in the
+file-diff loop — can ask whether a row exists at all. It is also independent of
+the diff for a second reason: a file that lands in `DECLINED COLLISION` never
+reaches the ledger branch of that loop, and 5 of the 7 files the section
+currently reports are in exactly that position.
 
 ### What you must not trust silently
 
@@ -187,25 +195,46 @@ close them by inventing scope.
 
 ### The queue's second blind spot: new tests in already-known files
 
-Measured on the first re-pin, and it is structural rather than a one-off.
+**Closed by `LEDGER COVERAGE GAP` (#592) — no longer a manual step.** Kept here
+because the *shape* of the miss is worth knowing, and because the bucket that
+now reports it under-reports in one documented direction.
 
 `UNCLASSIFIED` is a **whole-file** bucket: it means "no `SCOPE-*.md` row and no
 ledger row exists for this path". So a file that already carries ledger rows can
 never land there — **no matter how many tests upstream adds to it**. Those new
 tests have no ledger row, are not `RE-EXAMINE` (that bucket re-checks rows that
-*exist*), and are not `UNCLASSIFIED` (the file is classified). They appear in no
-bucket at all.
+*exist*), and are not `UNCLASSIFIED` (the file is classified). They appeared in
+no bucket at all.
 
 At `02b53fcd8 -> 42effe840` that was **284 tests across 63 files**, invisible to
 the whole queue. The worst offenders were `zero_state_animation_tests.rs`
 (26 -> 59), `request_usage_model_tests.rs` (+20), `driver/snapshot_tests.rs`
 (+20), and `offer_slide_tests.rs` (+18).
 
-Until `generate_repin_queue` grows a per-test "new upstream test, no ledger row"
-section, this has to be done by hand: for every file in the `RE-EXAMINE` bucket,
-diff the *set of test-function names* between the two pins and adjudicate the
-additions. Counting only the rows the queue hands you understates the new debt,
-and understates it silently.
+`generate_repin_queue` now emits a `LEDGER COVERAGE GAP` section that lists them
+by name, per file. A test lands there when all three hold: it exists at the new
+pin, in a file the ledger has at least one row for; the ledger has no row for
+that exact `(pin_file, test)` pair; and **no test of the same name exists in the
+fork**. That third filter is load-bearing — the ledger is a sweep of tests
+*absent* from the fork, so without it every already-ported test in a swept file
+would be reported as a gap. It is a name-level check, so it can hide a real gap
+behind a coincidental name match: the section under-reports rather than crying
+wolf, the same trade the other checkable rules make.
+
+The section prints a reconciliation block under itself: how many pin tests are
+absent from the fork, how many of those carry a ledger row, and how the
+remainder splits between **files the ledger covers** (the bucket) and **files it
+does not** (which reach the queue only as whole files, via `UNCLASSIFIED` or an
+inherited `SCOPE` verdict, and only if the file changed between the two pins).
+Read that split; the bucket alone is not the tree-wide unadjudicated total.
+
+**`docs/STATE.md`'s "N are not adjudicated" is not the same number, and is the
+smaller of the two — that is #603, still open.** It is computed as (absent names) − (ledger *row count*), a
+subtraction of two totals rather than a difference of two sets, so every ledger
+row naming a test that is not in the absent set silently cancels a genuinely
+unadjudicated one. At `42effe840`: 273 rows name a test the fork now has and 4
+name a test that no longer exists at the pin, which is why STATE.md said 435
+where the set difference is 715 names / 716 pairs.
 
 ## Phase 3 — fast-forward what is free
 
