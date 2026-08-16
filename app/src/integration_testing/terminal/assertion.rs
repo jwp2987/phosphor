@@ -513,11 +513,18 @@ pub fn assert_command_executed(
                 let cleaned_last_command = last_command.trim_end_matches("^[i").trim_end();
                 let cleaned_command = command.trim_end();
 
+                // Report which half failed. This used to print only the command
+                // pair, so a block that was still executing produced
+                // "Previous command should be echo foo, instead got echo foo" --
+                // two identical strings and no hint that the state was the
+                // problem.
                 async_assert!(
                     block_is_done && cleaned_last_command == cleaned_command,
-                    "Previous command should be {}, instead got {}",
-                    command,
-                    last_command,
+                    "expected the previous block to be done running {:?}; \
+                     block state = {:?}, block command = {:?}",
+                    cleaned_command,
+                    block.state(),
+                    cleaned_last_command,
                 )
             } else {
                 AssertionOutcome::failure("No block yet".to_string())
