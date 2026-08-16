@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::Local;
+use pathfinder_color::ColorU;
 use smol_str::SmolStr;
 use warp_editor::render::model::LineCount;
 use warp_util::path::EscapeChar;
@@ -19,6 +20,7 @@ use crate::code_review::comments::{
     AttachedReviewComment, AttachedReviewCommentTarget, CommentOrigin, LineDiffContent,
 };
 use crate::server::ids::ServerId;
+use crate::ui_components::icons::Icon;
 use crate::workspaces::team::Team;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::workspaces::workspace::Workspace;
@@ -669,8 +671,9 @@ fn test_phosphor_tui_variant_properties() {
         ]
     );
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
-    assert_eq!(CLIAgent::PhosphorTui.brand_color(), None);
-    assert_eq!(CLIAgent::PhosphorTui.icon(), None);
+    assert_eq!(CLIAgent::PhosphorTui.brand_color(), Some(ColorU::black()));
+    assert_eq!(CLIAgent::PhosphorTui.icon(), Some(Icon::Zap));
+    assert_eq!(CLIAgent::PhosphorTui.brand_icon_color(), ColorU::white());
     assert!(CLIAgent::PhosphorTui.supported_skill_providers().is_empty());
     assert!(!CLIAgent::PhosphorTui.supports_bash_mode());
     assert!(!CLIAgent::PhosphorTui.supports_cli_agent_footer());

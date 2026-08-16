@@ -329,7 +329,10 @@ impl CLIAgent {
             // still drives the toolbar tile; an `Icon::MistralLogo` can be wired
             // up in a follow-up once an officially licensed SVG is available.
             CLIAgent::Vibe => None,
-            CLIAgent::PhosphorTui => None,
+            // This fork's own logo, for its own TUI. `Icon::Zap` is this fork's
+            // rename of the pinned oracle's `Icon::Warp` and resolves to the
+            // same asset.
+            CLIAgent::PhosphorTui => Some(Icon::Zap),
             CLIAgent::Unknown => None,
         }
     }
@@ -422,7 +425,7 @@ impl CLIAgent {
             CLIAgent::Omp => Some(OMP_COLOR),
             CLIAgent::Hermes => Some(HERMES_PURPLE),
             CLIAgent::Vibe => Some(MISTRAL_ORANGE),
-            CLIAgent::PhosphorTui => None,
+            CLIAgent::PhosphorTui => Some(ColorU::black()),
             CLIAgent::Unknown => None,
         }
     }
