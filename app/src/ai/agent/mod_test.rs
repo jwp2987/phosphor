@@ -503,3 +503,40 @@ fn pull_request_number_deserializer_rejects_unsupported_json_types() {
         );
     }
 }
+
+/// A GFM table in an agent reply must parse as a table, not render as its
+/// literal `| cell | cell |` source.
+///
+/// Agent replies went through `parse_markdown` (no GFM tables) while the
+/// notebook/editor path went through `parse_markdown_with_gfm_tables`, so every
+/// table an agent produced rendered as raw pipe-delimited text with the
+/// `|---|---|` separator row visible in the output.
+#[test]
+fn agent_reply_parses_gfm_tables() {
+    let _tables = warp_core::features::FeatureFlag::MarkdownTables.override_enabled(true);
+
+    let reply = "| What you need to know | How to do it |\n\
+                 |---|---|\n\
+                 | Find the PCI ID | run lspci |\n";
+    let text = crate::ai::agent::AgentOutputText::from(reply.to_string());
+    let formatted = text
+        .formatted_text_arc()
+        .expect("agent reply should parse as markdown");
+
+    let tables = formatted
+        .lines
+        .iter()
+        .filter(|line| matches!(line, markdown_parser::FormattedTextLine::Table(_)))
+        .count();
+    assert_eq!(
+        tables, 1,
+        "expected the reply to parse as one table, got lines: {:#?}",
+        formatted.lines
+    );
+
+    let raw = formatted.raw_text();
+    assert!(
+        !raw.contains("|---|"),
+        "the separator row must not survive into rendered output; got: {raw}"
+    );
+}

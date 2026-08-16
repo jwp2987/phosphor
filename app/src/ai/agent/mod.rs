@@ -51,7 +51,10 @@ use crate::terminal::shell::ShellType;
 use crate::terminal::view::block_onboarding::onboarding_agentic_suggestions_block::OnboardingChipType;
 use crate::TelemetryEvent;
 use derivative::Derivative;
-use markdown_parser::{parse_markdown, FormattedTable, FormattedText, FormattedTextInline};
+use markdown_parser::{
+    parse_markdown, parse_markdown_with_gfm_tables, FormattedTable, FormattedText,
+    FormattedTextInline,
+};
 use serde::{Deserialize, Serialize};
 
 use super::llms::LLMId;
@@ -1434,14 +1437,30 @@ impl AgentOutputText {
     }
 
     pub fn reparse_markdown(&mut self) {
-        let parsed_result = parse_markdown(self.markdown_text.as_str());
+        let parsed_result = parse_agent_markdown(self.markdown_text.as_str());
         self.formatted_lines = parsed_result.map(|formatted| formatted.into()).ok();
+    }
+}
+
+/// Parses an agent's markdown reply, honouring [`FeatureFlag::MarkdownTables`].
+///
+/// Agent replies used to go through `parse_markdown` unconditionally, so a GFM
+/// table in a reply was never recognised as one and every row rendered as its
+/// literal `| cell | cell |` source -- separator row included. The flag was
+/// wired into the notebook/editor path (`crates/editor/src/content/buffer.rs`)
+/// and its doc comment still says "in notebooks", but the parser is shared and
+/// an agent reply is the surface most likely to contain a table.
+fn parse_agent_markdown(markdown: &str) -> anyhow::Result<FormattedText> {
+    if warp_core::features::FeatureFlag::MarkdownTables.is_enabled() {
+        parse_markdown_with_gfm_tables(markdown)
+    } else {
+        parse_markdown(markdown)
     }
 }
 
 impl From<String> for AgentOutputText {
     fn from(value: String) -> Self {
-        let parsed_result = parse_markdown(value.as_str());
+        let parsed_result = parse_agent_markdown(value.as_str());
         Self {
             formatted_lines: parsed_result.map(|formatted| formatted.into()).ok(),
             markdown_text: value,
