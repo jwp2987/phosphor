@@ -8,16 +8,17 @@ use instant::Instant;
 use tempfile::TempDir;
 use warp::appearance::Appearance;
 use warp::settings::{
-    AISettings, TuiStatuslineConfig, TuiStatuslineItem, TuiTheme, TuiThemeSettings,
-    TuiZeroStateObject,
+    AISettings, SettingsFileError, TuiStatuslineConfig, TuiStatuslineItem, TuiTheme,
+    TuiThemeSettings, TuiZeroStateObject,
 };
 use warp::terminal::model::ansi::{Handler, InputBufferValue, Mode};
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, TuiMcpServerId, TuiMcpAction, Session, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
-    export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
+    PtyIntentEvent, Session, SizeInfo, SizeUpdate, TaskId, TuiMcpAction, TuiMcpServerId,
+    TuiUpArrowHistoryItemKind, WarpConfig, WarpConfigUpdateEvent, export_conversation_markdown,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -36,6 +37,11 @@ use warpui_core::keymap::{Context, Keystroke, Trigger};
 use warpui_core::presenter::tui::TuiPresenter;
 use warpui_core::{App, AppContext, TuiView, TypedActionView as _, WindowInvalidation};
 
+use super::statusline::{
+    FooterSegment, FooterSegments, format_statusline_date, format_statusline_time_12_hour,
+    format_statusline_time_24_hour, format_todo_progress, render_status_footer_row,
+    render_statusline_datetime,
+};
 use super::{
     ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, AUTO_APPROVE_DISABLED_HINT,
     AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
@@ -43,16 +49,14 @@ use super::{
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT,
     ConversationRestoreState, DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment,
     FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT,
-    LOG_BUNDLE_FAILED_HINT, ORCHESTRATE_REQUIRES_CONVERSATION_HINT, ORCHESTRATE_REQUIRES_TASK_HINT,
-    ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, RUNNING_COMMAND_DETACH_HINT,
-    SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
+    LOG_BUNDLE_FAILED_HINT, ORCHESTRATE_REQUIRES_CONVERSATION_HINT,
+    ORCHESTRATE_REQUIRES_TASK_HINT, ORCHESTRATION_TAB_BAR_FOCUSED_FLAG,
+    RUNNING_COMMAND_DETACH_HINT, SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
     SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG, SHELL_MODE_HINT,
     THEME_INVALID_ARGUMENT_HINT, TuiConversationRestoreOrigin, TuiQueuedFollowUp,
     TuiTerminalSessionAction, TuiTerminalSessionEvent, TuiTerminalSessionView,
-    cost_command_unavailable_hint, export_file_success_message, format_statusline_date,
-    format_statusline_time_12_hour, format_statusline_time_24_hour, format_todo_progress,
-    log_bundle_success_message, raw_prompt_if_not_blank, render_status_footer_row,
-    render_statusline_datetime,
+    cost_command_unavailable_hint, export_file_success_message, log_bundle_success_message,
+    raw_prompt_if_not_blank,
 };
 use crate::autoupdate::TuiAutoupdater;
 use crate::inline_menu::MAX_INLINE_MENU_ROWS;
@@ -75,7 +79,10 @@ use crate::session_registry::{TuiSessionId, TuiSessions};
 use crate::statusline_config_view::TuiStatuslineConfigEvent;
 use crate::terminal_block::{block_content_rows, should_render_terminal_block};
 use crate::terminal_use::TuiInputTarget;
-use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
+use crate::test_fixtures::{
+    add_test_semantic_selection, add_test_terminal_session,
+    add_test_terminal_session_with_settings_file_error,
+};
 use crate::transcript_view::TRANSCRIPT_BLOCK_SPACING;
 use crate::tui_builder::TuiUiBuilder;
 use crate::usage::render_context_usage_entry;
@@ -185,6 +192,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
                             additions: 31,
                             deletions: 12,
                         },
+                        FooterSegment::GitHubPullRequest(TuiText::new("PR #123").finish()),
                         FooterSegment::ContextWindowUsage(render_context_usage_entry(0.426, ctx)),
                         FooterSegment::DateTime(TuiText::new("July 20, 2026").finish()),
                         FooterSegment::DateTime(TuiText::new("1:08pm").finish()),
@@ -197,7 +205,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             assert_eq!(
                 render_element(row, ctx, 160).to_lines(),
                 vec![
-                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
+                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | PR #123 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
                         .to_owned()
                 ],
             );
@@ -1348,6 +1356,19 @@ fn add_focus_test_session(
     (view, session_id)
 }
 
+fn add_focus_test_session_with_settings_file_error(
+    app: &mut App,
+    fixture: &FocusTestFixture,
+    error: SettingsFileError,
+) -> ViewHandle<super::TuiTerminalSessionView> {
+    let (view, manager) =
+        add_test_terminal_session_with_settings_file_error(app, fixture.window_id, Some(error));
+    app.update(|ctx| {
+        TuiSessions::register_session(&fixture.sessions, view.clone(), manager, true, ctx);
+    });
+    view
+}
+
 fn render_element(element: Box<dyn TuiElement>, ctx: &AppContext, width: u16) -> TuiBuffer {
     render_element_with_size(element, ctx, width, 1)
 }
@@ -1399,6 +1420,33 @@ fn render_session(
             .buffer
             .to_lines()
     })
+}
+
+/// Every one of the six editor rows the composer is sized for must actually
+/// render: the input box's `TuiConstrainedBox` budget has to cover the border
+/// rows *and* the padding row inside each border
+/// (`MAX_INPUT_TEXT_ROWS + BORDERED_INPUT_CHROME_ROWS`), otherwise the last
+/// rows scroll out of view. Ported from the pin's
+/// `input_area_renders_all_six_editor_rows`.
+#[test]
+fn input_area_renders_all_six_editor_rows() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("input-0\ninput-1\ninput-2\ninput-3\ninput-4\ninput-5", ctx);
+            });
+        });
+
+        let rendered = render_session(&mut app, &view, 80, 24).join("\n");
+        for row in 0..6 {
+            assert!(
+                rendered.contains(&format!("input-{row}")),
+                "input row {row} should be visible:\n{rendered}"
+            );
+        }
+    });
 }
 
 fn input_text(view: &ViewHandle<super::TuiTerminalSessionView>, ctx: &AppContext) -> String {
@@ -1543,7 +1591,7 @@ fn bootstrap_renders_starting_shell_above_input() {
             .iter()
             .enumerate()
             .skip(status_index + 1)
-            .find(|(_, line)| line.contains('┌') || line.contains('─'))
+            .find(|(_, line)| line.contains('▏') || line.contains('▁') || line.contains('─'))
             .map(|(index, _)| index)
             .expect("bootstrap input border should render below the status");
         assert!(status_index < input_index);
@@ -1676,7 +1724,7 @@ fn long_running_command_keeps_input_hidden() {
         assert!(
             !lines
                 .iter()
-                .any(|line| line.contains('┌') || line.contains('─')),
+                .any(|line| line.chars().any(|glyph| "┌┐└┘─│▁▏▕▔".contains(glyph))),
             "LRC must keep the input editor hidden:\n{}",
             lines.join("\n")
         );
@@ -2338,6 +2386,72 @@ fn zero_state_reload_failure_renders_as_an_error_footer_hint() {
 
         let lines = render_footer_lines(&mut app, &view, 120);
         assert_eq!(lines, vec![super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT]);
+    });
+}
+
+/// Ported from the pin's `settings_reload_failure_renders_as_an_error_footer_hint`
+/// (upstream `73529d1d6`). A failed settings hot-reload reuses the same
+/// transient error slot the zero-state failure above uses; the detailed
+/// diagnostics stay in the log.
+#[test]
+fn settings_reload_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        app.update(|ctx| {
+            WarpConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
+                    SettingsFileError::InvalidSettings(vec!["Theme".to_owned()]),
+                ));
+            });
+        });
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::SETTINGS_INVALID_VALUES_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::SETTINGS_INVALID_VALUES_HINT]);
+    });
+}
+
+/// Ported from the pin's `startup_settings_parse_failure_renders_as_an_error_footer_hint`
+/// (upstream `73529d1d6`). A settings file that failed to parse at startup is
+/// reported by the first session, checked at construction rather than via a
+/// later reload event.
+#[test]
+fn startup_settings_parse_failure_renders_as_an_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let view = add_focus_test_session_with_settings_file_error(
+            &mut app,
+            &fixture,
+            SettingsFileError::FileParseFailed("expected a value".to_owned()),
+        );
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::SETTINGS_PARSE_FAILED_HINT.to_owned(),
+                super::TransientHintTone::Error
+            ))
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::SETTINGS_PARSE_FAILED_HINT]);
     });
 }
 
@@ -3063,7 +3177,7 @@ fn agent_controlled_alt_screen_keeps_output_and_composer_visible() {
             .expect("alternate-screen output should start in the output area");
         let input_row = lines
             .iter()
-            .position(|line| line.contains('┌'))
+            .position(|line| line.contains('▏'))
             .expect("agent-controlled alternate screen should render the composer");
         assert!(
             alt_screen_row < input_row,
@@ -3127,8 +3241,30 @@ fn user_controlled_alt_screen_keeps_full_session_input_on_the_pty() {
             lines.join("\n")
         );
         assert!(
-            !lines.iter().any(|line| line.contains('┌')),
+            !lines
+                .iter()
+                .any(|line| line.chars().any(|glyph| "┌┐└┘─│▁▏▕▔".contains(glyph))),
             "user-controlled alternate screen should not render the agent composer:\n{}",
+            lines.join("\n")
+        );
+        // Second, independent signal, mirroring the pin. The pin's negative
+        // clause names its cloud default ("auto (cost-efficient)") because that
+        // is what its composer footer always shows; BYOP has no built-in model
+        // list, so the label here is whatever the user configured -- the
+        // grayed-out `placeholder_llm_info` in a test app. Read the name the way
+        // `agent_controlled_alt_screen_keeps_output_and_composer_visible` does
+        // and assert its ABSENCE, so this catches a composer that renders with a
+        // border vocabulary the glyph set above does not yet know about.
+        let model_name = view.read(&app, |view, ctx| {
+            LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone()
+        });
+        assert!(
+            !lines.iter().any(|line| line.contains(&model_name)),
+            "user-controlled alternate screen should not render the composer's \
+             model label ({model_name}):\n{}",
             lines.join("\n")
         );
         let hint = view.read(&app, |view, ctx| {

@@ -595,6 +595,12 @@ impl TuiTerminalSessionState {
                 description: "input history",
             });
         }
+        if let Some(key) = binding_hint(AUTO_APPROVE_TOGGLE_BINDING_NAME, context, ctx) {
+            shortcuts.push(TuiShortcut {
+                key,
+                description: "toggle auto-approve",
+            });
+        }
         if state.plan_available
             && let Some(key) = binding_hint(PLAN_TOGGLE_BINDING_NAME, context, ctx)
         {

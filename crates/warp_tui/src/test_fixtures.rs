@@ -3,11 +3,11 @@ use std::any::Any;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
+use warp::settings::SettingsFileError;
 use warp::tui_export::{
-    ActiveSession, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
+    ActiveSession, AgentViewState, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
     ConversationSelection, ConversationSelectionHandle, IgnoredSuggestionsModel,
     ModelEventDispatcher, Sessions, TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
-    AgentViewState,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::semantic_selection::SemanticSelection;
@@ -198,6 +198,17 @@ pub(crate) fn add_test_terminal_session(
     ViewHandle<TuiTerminalSessionView>,
     ModelHandle<Box<dyn TerminalManagerTrait>>,
 ) {
+    add_test_terminal_session_with_settings_file_error(app, window_id, None)
+}
+
+pub(crate) fn add_test_terminal_session_with_settings_file_error(
+    app: &mut App,
+    window_id: WindowId,
+    initial_settings_file_error: Option<SettingsFileError>,
+) -> (
+    ViewHandle<TuiTerminalSessionView>,
+    ModelHandle<Box<dyn TerminalManagerTrait>>,
+) {
     app.update(|ctx| {
         // `TuiTerminalSessionView::new` (via `TuiZeroStateView::new`) reads
         // the zero-state animation config singleton unconditionally, exactly
@@ -211,7 +222,13 @@ pub(crate) fn add_test_terminal_session(
         let surface_init = TerminalSurfaceInit::new_for_test(ctx);
         let terminal_model = surface_init.model.clone();
         let view = ctx.add_typed_action_tui_view(window_id, |ctx| {
-            TuiTerminalSessionView::new(surface_init, TuiExitSummaryHandle::default(), false, ctx)
+            TuiTerminalSessionView::new(
+                surface_init,
+                TuiExitSummaryHandle::default(),
+                false,
+                initial_settings_file_error,
+                ctx,
+            )
         });
         let manager = ctx.add_model(|_| {
             Box::new(TestTerminalManager(terminal_model)) as Box<dyn TerminalManagerTrait>

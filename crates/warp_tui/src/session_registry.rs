@@ -21,8 +21,9 @@ use std::path::PathBuf;
 
 use pathfinder_geometry::vector::Vector2F;
 use warp::tui_export::{
-    AIConversation, AIConversationId, BannerState, BlocklistAIHistoryModel, LocalTtyTerminalManager,
-    ServerConversationToken, TerminalManagerTrait, TerminalSurfaceResult,
+    AIConversation, AIConversationId, BannerState, BlocklistAIHistoryModel,
+    GlobalResourceHandlesProvider, LocalTtyTerminalManager, ServerConversationToken,
+    TerminalManagerTrait, TerminalSurfaceResult,
 };
 use warpui::SingletonEntity;
 use warpui_core::runtime::TuiDriverHandle;
@@ -167,12 +168,25 @@ impl TuiSessions {
         extra_env_vars: HashMap<OsString, OsString>,
         ctx: &mut AppContext,
     ) -> (TuiSessionId, ViewHandle<TuiTerminalSessionView>) {
-        let (exit_summary, keyboard_enhancement_supported) = sessions.read(ctx, |sessions, _| {
-            (
-                sessions.exit_summary.clone(),
-                sessions.keyboard_enhancement_supported,
-            )
-        });
+        let (exit_summary, keyboard_enhancement_supported, is_first_session) =
+            sessions.read(ctx, |sessions, _| {
+                (
+                    sessions.exit_summary.clone(),
+                    sessions.keyboard_enhancement_supported,
+                    sessions.is_empty(),
+                )
+            });
+        // Only the first session reports the startup settings-file failure;
+        // later sessions would repeat a hint about an event the user has
+        // already been told about.
+        let initial_settings_file_error = is_first_session
+            .then(|| {
+                GlobalResourceHandlesProvider::as_ref(ctx)
+                    .get()
+                    .settings_file_error
+                    .clone()
+            })
+            .flatten();
         let mut env_vars = HashMap::<OsString, OsString>::from_iter(std::env::vars_os());
         env_vars.extend(extra_env_vars);
         // The manager uses this internal model for unsupported-shell state; the
@@ -194,6 +208,7 @@ impl TuiSessions {
                         surface_init,
                         exit_summary,
                         keyboard_enhancement_supported,
+                        initial_settings_file_error,
                         ctx,
                     )
                 });

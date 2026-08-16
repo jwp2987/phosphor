@@ -148,6 +148,8 @@ pub enum SlashCommandKind {
     RenameConversation,
     SetTabColor,
     Statusline,
+    /// `/reset-statusline`: TUI-only, restores `TuiStatuslineConfig::default()`.
+    ResetStatusline,
     /// `/theme`: TUI-only, sets `TuiTheme` (auto/light/dark). See #147.
     Theme,
     Fork,
@@ -246,6 +248,7 @@ impl StaticCommand {
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
             "/statusline" => SlashCommandKind::Statusline,
+            "/reset-statusline" => SlashCommandKind::ResetStatusline,
             "/theme" => SlashCommandKind::Theme,
             "/auto-approve" => SlashCommandKind::AutoApprove,
             "/natural-language-detection" => SlashCommandKind::NaturalLanguageDetection,
@@ -314,6 +317,7 @@ impl StaticCommand {
         matches!(
             self.name,
             "/statusline"
+                | "/reset-statusline"
                 | "/auto-approve"
                 | "/natural-language-detection"
                 | "/exit"
@@ -352,6 +356,7 @@ impl StaticCommand {
                 | "/export-to-file"
                 | "/api-keys"
                 | "/statusline"
+                | "/reset-statusline"
                 | "/vim-mode"
                 | "/auto-approve"
                 | "/natural-language-detection"

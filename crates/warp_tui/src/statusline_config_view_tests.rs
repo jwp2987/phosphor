@@ -82,6 +82,7 @@ fn toggle_and_reorder_are_reflected_in_saved_config() {
                 TuiStatuslineItem::WorkingDirectory,
                 TuiStatuslineItem::GitBranch,
                 TuiStatuslineItem::GitDiffStatus,
+                TuiStatuslineItem::GitHubPullRequest,
                 TuiStatuslineItem::ContextWindowUsage,
                 TuiStatuslineItem::Date,
                 TuiStatuslineItem::Time12Hour,
@@ -92,7 +93,8 @@ fn toggle_and_reorder_are_reflected_in_saved_config() {
         assert_eq!(
             saved.enabled,
             [
-                TuiStatuslineItem::AutoApprove,
+                // `AutoApprove` is now default-on, so the picker's first
+                // `Toggle` (on the cursor's initial item) turns it *off*.
                 TuiStatuslineItem::Model,
                 TuiStatuslineItem::WorkingDirectory,
                 TuiStatuslineItem::GitBranch,

@@ -142,7 +142,9 @@ pub use crate::code::DiffResult;
 pub use crate::code_review::git_status_update::{
     GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
 };
+pub use crate::code_review::github_repo_model::GitHubRepoModel;
 pub use crate::completer::SessionContext;
+pub use crate::global_resource_handles::GlobalResourceHandlesProvider;
 pub use crate::persistence::PersistenceWriter;
 pub use crate::prefix::longest_common_prefix;
 pub use crate::search::slash_command_menu::static_commands::commands::{
@@ -223,6 +225,7 @@ pub use crate::tui::{
     TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTemplateVariable, TuiMcpTransport,
     TuiMcpVariableValue,
 };
+pub use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 pub use crate::util::image::{
     MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,
     infer_mime_type, is_supported_image_mime_type, process_image_for_agent,

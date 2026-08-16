@@ -8,12 +8,11 @@ use std::time::Duration;
 
 use crate::report_error::report_error;
 use async_channel::Sender;
-use chrono::{Local, NaiveDateTime};
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::{
-    AISettings, AISettingsChangedEvent, AppEditorSettings, TuiStatuslineConfig, TuiStatuslineItem,
+    AISettings, AISettingsChangedEvent, AppEditorSettings, SettingsFileError, TuiStatuslineConfig,
     TuiTheme, TuiThemeSettings,
 };
 use warp::tui_export::{
@@ -26,8 +25,8 @@ use warp::tui_export::{
     CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
     CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
     CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitRepoModels,
-    GitRepoStatusModel, GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
+    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitHubRepoModel,
+    GitRepoStatusModel, LLMId, LLMPreferences, LLMPreferencesEvent,
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
     ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
     PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
@@ -36,10 +35,11 @@ use warp::tui_export::{
     TerminalSurface, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiMcpServerId,
     TuiMcpVariableValue, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
-    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
-    block_context_from_terminal_model, build_slash_command_mixer, context_usage_report,
-    conversation_cost_report, detect_possible_git_repo, export_conversation_markdown,
-    loaded_subtree_rollup, log_out_tui, maybe_build_ai_query_upsert_event,
+    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD, WarpConfig,
+    WarpConfigUpdateEvent, block_context_from_terminal_model, build_slash_command_mixer,
+    context_usage_report, conversation_cost_report, detect_possible_git_repo,
+    export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
+    maybe_build_ai_query_upsert_event,
     prepare_conversation_block_restoration, record_autodetection_toggle_from_slash_command,
     record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle, tui_conversation_actions_in_order,
@@ -54,8 +54,8 @@ use warpui::SingletonEntity;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{
-    TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
-    TuiSelectionHandle, TuiSize, TuiStyle, TuiText,
+    TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
+    TuiSelectionHandle, TuiSize, TuiText,
 };
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
@@ -96,6 +96,7 @@ use crate::keybindings::{
 use crate::mcp_install_flow::{
     TuiMcpInstallFlowAction, TuiMcpInstallFlowEvent, TuiMcpInstallFlowModel,
 };
+use crate::link::TuiLink;
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{
@@ -131,7 +132,7 @@ use crate::terminal_use::{
     tui_input_target,
 };
 use crate::transcript_view::{TuiTranscriptView, TuiTranscriptViewEvent};
-use crate::transient_hint::{TransientHint, TransientHintTone};
+use crate::transient_hint::TransientHint;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::{
     ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
@@ -139,11 +140,7 @@ use crate::tui_cli_subagent_view::{
 };
 use crate::tui_diff_storage::revert_file_diffs;
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
-use crate::ui::{
-    abbreviate_home_prefix, compact_footer_path, conversation_restore_failed,
-    conversation_restoring,
-};
-use crate::usage::render_context_usage_entry;
+use crate::ui::{abbreviate_home_prefix, conversation_restore_failed, conversation_restoring};
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
 use crate::zero_state_animation::{
@@ -154,6 +151,7 @@ mod input_detection;
 mod shortcuts;
 pub(crate) mod state;
 mod status_menu;
+mod statusline;
 
 use self::input_detection::InputDetectionState;
 use self::state::TuiTerminalSessionStateModel;
@@ -162,6 +160,8 @@ use self::state::TuiTerminalSessionStateModel;
 const INITIAL_INPUT_WIDTH: u16 = 80;
 const INLINE_MENU_TOP_PADDING_ROWS: u16 = 1;
 const MAX_INPUT_TEXT_ROWS: u16 = 6;
+/// Top and bottom border rows plus one padding row inside each border.
+const BORDERED_INPUT_CHROME_ROWS: u16 = 4;
 const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
@@ -176,8 +176,18 @@ pub(crate) const CTRL_C_KILL_CHILD_HINT: &str = "ctrl-c again to kill child agen
 /// as the pin so the hint's wording stays accurate.
 const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
-/// How often a statusline date/time segment repaints itself.
-const STATUSLINE_DATETIME_REPAINT_INTERVAL: Duration = Duration::from_secs(60);
+const SETTINGS_PARSE_FAILED_HINT: &str = "Settings failed to load: invalid syntax.";
+const SETTINGS_INVALID_VALUES_HINT: &str = "Settings failed to load: invalid values.";
+
+/// One-line summary for the footer's transient error slot. The full detail
+/// (the parse error, or the list of rejected keys) stays in the log, written
+/// by `settings::init`.
+fn settings_file_error_hint(error: &SettingsFileError) -> &'static str {
+    match error {
+        SettingsFileError::FileParseFailed(_) => SETTINGS_PARSE_FAILED_HINT,
+        SettingsFileError::InvalidSettings(_) => SETTINGS_INVALID_VALUES_HINT,
+    }
+}
 
 /// Fallback strings for the `/status` status menu.
 const STATUS_UNAVAILABLE: &str = "\u{2014}"; // em dash
@@ -290,6 +300,7 @@ const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
 /// names the mode.
 const SHELL_MODE_HINT: &str = "shell mode";
 const STATUSLINE_SAVED_HINT: &str = "Statusline configuration saved.";
+const STATUSLINE_RESET_HINT: &str = "Statusline reset to defaults.";
 const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline configuration.";
 const COPY_SELECTION_HINT: &str = "copied to clipboard";
 const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
@@ -330,37 +341,6 @@ fn format_status_conversation_id(conversation_id: Option<AIConversationId>) -> S
     conversation_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "None".to_owned())
-}
-fn format_statusline_date(now: NaiveDateTime) -> String {
-    now.format("%B %-d, %Y").to_string()
-}
-fn format_statusline_time_12_hour(now: NaiveDateTime) -> String {
-    now.format("%-I:%M%P").to_string()
-}
-fn format_statusline_time_24_hour(now: NaiveDateTime) -> String {
-    now.format("%H:%M").to_string()
-}
-/// Formats the active AI conversation's to-do progress for the statusline:
-/// `❒` while items remain pending, `✓` once the list is finished.
-fn format_todo_progress(completed: usize, total: usize, finished: bool) -> String {
-    let marker = if finished { "✓" } else { "❒" };
-    format!("{marker} {completed}/{total}")
-}
-/// Renders a self-repainting statusline datetime segment: `formatter` maps
-/// the current local time to display text, and the element schedules its own
-/// repaint every [`STATUSLINE_DATETIME_REPAINT_INTERVAL`] so the footer stays
-/// current without the whole session view re-rendering on a timer.
-fn render_statusline_datetime(
-    formatter: fn(NaiveDateTime) -> String,
-    style: TuiStyle,
-) -> Box<dyn TuiElement> {
-    TuiAnimated::new(STATUSLINE_DATETIME_REPAINT_INTERVAL, move || {
-        TuiText::new(formatter(Local::now().naive_local()))
-            .with_style(style)
-            .truncate()
-            .finish()
-    })
-    .finish()
 }
 fn cost_command_unavailable_hint(
     selected_conversation: Option<(bool, bool)>,
@@ -730,6 +710,8 @@ pub(crate) enum TuiTerminalSessionAction {
     ToggleModelMenu,
     /// Toggle per-conversation auto approve.
     ToggleAutoApprove { show_feedback: bool },
+    /// Open a URL from an interactive statusline item.
+    OpenUrl(String),
     /// Raw user bytes to forward to the foreground PTY process.
     ForwardUserPtyBytes(Vec<u8>),
     /// Ctrl-d while the prompt is focused: exit the TUI immediately when the
@@ -814,6 +796,10 @@ pub(crate) struct TuiTerminalSessionView {
     current_repo_path: Option<LocalOrRemotePath>,
     /// Watcher-backed branch and uncommitted diff metadata for the footer.
     git_repo_status: Option<ModelHandle<GitRepoStatusModel>>,
+    /// GitHub metadata for the current repository, including current-branch PR
+    /// info. Retained only while the `GitHubPullRequest` statusline item is
+    /// enabled -- see `update_github_status_subscription`.
+    github_repo: Option<ModelHandle<GitHubRepoModel>>,
     /// This view's surface id, used to resolve the active model for the footer
     /// the same way the request path does.
     terminal_surface_id: EntityId,
@@ -832,6 +818,8 @@ pub(crate) struct TuiTerminalSessionView {
     /// (not created inline during render) so it survives element-tree rebuilds,
     /// following the GUI's `MouseStateHandle` pattern.
     model_label_hover: MouseStateHandle,
+    /// Hover state for the footer's clickable GitHub pull-request link.
+    github_pr_link: TuiLink,
     keyboard_enhancement_supported: bool,
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
     ai_input_model: ModelHandle<BlocklistAIInputModel>,
@@ -1827,6 +1815,7 @@ impl TuiTerminalSessionView {
         surface_init: TerminalSurfaceInit,
         exit_summary: TuiExitSummaryHandle,
         keyboard_enhancement_supported: bool,
+        initial_settings_file_error: Option<SettingsFileError>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let TerminalSurfaceInit {
@@ -2344,7 +2333,18 @@ impl TuiTerminalSessionView {
                 view.schedule_input_detection(ctx);
             }
             if matches!(event, AISettingsChangedEvent::TuiStatusline { .. }) {
+                // The GitHub subscription is only held while its statusline
+                // item is enabled, so it has to follow the configuration.
+                view.update_github_status_subscription(ctx);
                 ctx.notify();
+            }
+        });
+        // A failed settings hot-reload gets the same transient footer slot as
+        // the startup failure surfaced at the end of this constructor; the
+        // detailed diagnostics stay in the log (`settings::init`).
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), |view, _, event, ctx| {
+            if let WarpConfigUpdateEvent::SettingsErrors(error) = event {
+                view.show_settings_file_error(error, ctx);
             }
         });
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
@@ -2502,10 +2502,12 @@ impl TuiTerminalSessionView {
             active_session,
             current_repo_path: None,
             git_repo_status: None,
+            github_repo: None,
             terminal_surface_id,
             exit_confirmation: ExitConfirmation::default(),
             hidden_response_summary_exchange_ids: HashSet::new(),
             model_label_hover: MouseStateHandle::default(),
+            github_pr_link: TuiLink::default(),
             keyboard_enhancement_supported,
             ai_context_model: context_model,
             ai_input_model,
@@ -2536,6 +2538,8 @@ impl TuiTerminalSessionView {
         // before the subscription above was installed.
         if let Some(session) = view.active_session.as_ref(ctx).session(ctx) {
             view.warm_shell_completion_sources(session, ctx);
+        if let Some(error) = initial_settings_file_error {
+            view.show_settings_file_error(&error, ctx);
         }
         view
     }
@@ -3215,6 +3219,12 @@ impl TuiTerminalSessionView {
         self.show_error_hint(zero_state_ascii_load_failure_hint(failure).to_owned(), ctx);
     }
 
+    /// Surfaces a settings-file load or reload failure as an error-colored
+    /// footer hint. Ported from the pin's `show_settings_file_error`.
+    fn show_settings_file_error(&mut self, error: &SettingsFileError, ctx: &mut ViewContext<Self>) {
+        self.show_error_hint(settings_file_error_hint(error).to_owned(), ctx);
+    }
+
     /// Surfaces a `/usage` or `/cost` result. Mirrors the GUI's toast split: a plain transient
     /// hint when the command could not report anything, success-colored for the report itself.
     fn show_usage_cost_outcome(&mut self, outcome: UsageCostOutcome, ctx: &mut ViewContext<Self>) {
@@ -3425,6 +3435,7 @@ impl TuiTerminalSessionView {
         render_warping_indicator_row(label, elapsed, auto_approve, ctx)
     }
 
+<<<<<<< HEAD
     /// Builds the configured statusline under the input box. Normal mode uses
     /// the persisted item order and visibility (`/statusline`); shell mode
     /// always leads with its mode label and only resolves configured
@@ -3696,6 +3707,7 @@ impl TuiTerminalSessionView {
         self.git_repo_status.as_ref()?.as_ref(ctx).metadata()
     }
 
+=======
     /// Mirrors the GUI `/cost` eligibility checks, then toggles the selected
     /// conversation's completed-response summary.
     fn toggle_response_summary_visibility(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4644,6 +4656,9 @@ impl TuiTerminalSessionView {
             SlashCommandKind::Statusline => {
                 self.open_statusline_config(command.name, ctx);
             }
+            SlashCommandKind::ResetStatusline => {
+                self.reset_statusline(command.name, ctx);
+            }
             SlashCommandKind::Usage => {
                 // Same report as the GUI's `/usage`, off the same context-window fraction the
                 // statusline entry already renders (`selected_conversation_context_usage`).
@@ -5097,7 +5112,7 @@ impl TuiTerminalSessionView {
     ) {
         match event {
             TuiStatuslineConfigEvent::Saved(config) => {
-                self.persist_statusline_config(config.clone(), ctx);
+                self.persist_statusline_config(config.clone(), STATUSLINE_SAVED_HINT, ctx);
             }
             TuiStatuslineConfigEvent::Cancelled => {
                 self.statusline_config_view = None;
@@ -5111,6 +5126,7 @@ impl TuiTerminalSessionView {
     fn persist_statusline_config(
         &mut self,
         config: TuiStatuslineConfig,
+        success_hint: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
         let result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -5119,12 +5135,20 @@ impl TuiTerminalSessionView {
         self.statusline_config_view = None;
         self.focus_current_owner_if_active(ctx);
         match result {
-            Ok(()) => self.show_success_hint(STATUSLINE_SAVED_HINT.to_owned(), ctx),
+            Ok(()) => self.show_success_hint(success_hint.to_owned(), ctx),
             Err(error) => {
                 log::warn!("Failed to persist the TUI statusline config: {error}");
                 self.show_transient_hint(STATUSLINE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
             }
         }
+    }
+
+    /// `/reset-statusline`: restores the default item set and ordering without
+    /// opening the `/statusline` picker.
+    fn reset_statusline(&mut self, command_name: &'static str, ctx: &mut ViewContext<Self>) {
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        self.persist_statusline_config(TuiStatuslineConfig::default(), STATUSLINE_RESET_HINT, ctx);
+        record_static_slash_command_accepted(command_name, true, ctx);
     }
 
     /// Persists the natural-language-detection (NLD) setting to `enabled`, reports the
@@ -5755,10 +5779,11 @@ impl TuiTerminalSessionView {
             TuiConstrainedBox::new(
                 TuiContainer::new(TuiChildView::new(&self.input_view).finish())
                     .with_padding_x(1)
+                    .with_padding_y(1)
                     .with_border_style(border_style)
                     .finish(),
             )
-            .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
+            .with_max_rows(MAX_INPUT_TEXT_ROWS + BORDERED_INPUT_CHROME_ROWS)
             .finish(),
         );
         let footer = if self.orchestration_tabs_focused {
@@ -5871,6 +5896,7 @@ impl TypedActionView for TuiTerminalSessionView {
             TuiTerminalSessionAction::ToggleAutoApprove { show_feedback } => {
                 self.toggle_auto_approve(*show_feedback, ctx)
             }
+            TuiTerminalSessionAction::OpenUrl(url) => ctx.open_url(url),
             TuiTerminalSessionAction::ForwardUserPtyBytes(bytes) => {
                 self.forward_user_pty_bytes(bytes, ctx);
             }
