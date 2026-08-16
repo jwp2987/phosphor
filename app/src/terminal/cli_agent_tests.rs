@@ -12,8 +12,9 @@ use warpui::App;
 use super::cli_agent_search_dirs;
 use super::{
     build_diff_hunk_prompt, build_review_prompt, build_selection_line_range_prompt,
-    build_selection_substring_prompt, CLIAgent, UBER_TEAM_UID,
+    build_selection_substring_prompt, CLIAgent, PHOSPHOR_COLOR, UBER_TEAM_UID,
 };
+use crate::ui_components::icons::Icon;
 use crate::ai::agent::{AgentReviewCommentBatch, DiffSetHunk};
 use crate::code::editor::line::EditorLineLocation;
 use crate::code_review::comments::{
@@ -671,9 +672,8 @@ fn test_phosphor_tui_variant_properties() {
         ]
     );
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
-    assert_eq!(CLIAgent::PhosphorTui.brand_color(), Some(ColorU::black()));
-    assert_eq!(CLIAgent::PhosphorTui.icon(), Some(Icon::Zap));
-    assert_eq!(CLIAgent::PhosphorTui.brand_icon_color(), ColorU::white());
+    assert_eq!(CLIAgent::PhosphorTui.brand_color(), Some(PHOSPHOR_COLOR));
+    assert_eq!(CLIAgent::PhosphorTui.icon(), Some(Icon::PhosphorLogo));
     assert!(CLIAgent::PhosphorTui.supported_skill_providers().is_empty());
     assert!(!CLIAgent::PhosphorTui.supports_bash_mode());
     assert!(!CLIAgent::PhosphorTui.supports_cli_agent_footer());

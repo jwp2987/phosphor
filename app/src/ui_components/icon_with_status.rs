@@ -42,6 +42,7 @@ pub(crate) struct IconWithStatusSizing {
 const DEEPSEEK_LOGO_PATH: &str = "bundled/svg/deepseek.svg";
 const ANTIGRAVITY_LOGO_PATH: &str = "bundled/svg/antigravity.svg";
 const OMP_LOGO_PATH: &str = "bundled/svg/omp.svg";
+const PHOSPHOR_LOGO_PATH: &str = "bundled/svg/phosphor-logo.svg";
 
 pub(crate) fn render_cli_agent_logo(
     agent: CLIAgent,
@@ -52,6 +53,11 @@ pub(crate) fn render_cli_agent_logo(
         CLIAgent::DeepSeek => Some(DEEPSEEK_LOGO_PATH),
         CLIAgent::Antigravity => Some(ANTIGRAVITY_LOGO_PATH),
         CLIAgent::Omp => Some(OMP_LOGO_PATH),
+        // phosphor-logo.svg carries four linear gradients, so it has to go
+        // through the Image branch like the other multi-colour marks. Routed
+        // through `Icon` it would be flat-tinted to a single fill and render
+        // as a white silhouette.
+        CLIAgent::PhosphorTui => Some(PHOSPHOR_LOGO_PATH),
         _ => None,
     };
     if let Some(path) = multi_color_logo_path {

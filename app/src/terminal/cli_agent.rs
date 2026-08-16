@@ -44,6 +44,21 @@ pub(crate) const GEMINI_BLUE: ColorU = ColorU {
 };
 
 /// OpenAI brand color (dark gray/black)
+// Phosphor's own mark. Taken from the top stop of the bezel gradient in
+// `app/assets/bundled/svg/phosphor-logo.svg` -- that asset is a four-gradient
+// SVG with no single dominant fill, so this is a representative sample rather
+// than *the* colour, and it is the one number here worth re-picking by eye.
+// The pin uses a flat black for its equivalent variant; this fork has an
+// actual asset to key on. Note the logo itself renders through the Image
+// branch in `render_cli_agent_logo`, not through this colour -- this drives
+// the surrounding tile only.
+const PHOSPHOR_COLOR: ColorU = ColorU {
+    r: 0x42,
+    g: 0x32,
+    b: 0x28,
+    a: 0xff,
+};
+
 const OPENAI_COLOR: ColorU = ColorU {
     r: 0,
     g: 0,
@@ -329,10 +344,7 @@ impl CLIAgent {
             // still drives the toolbar tile; an `Icon::MistralLogo` can be wired
             // up in a follow-up once an officially licensed SVG is available.
             CLIAgent::Vibe => None,
-            // This fork's own logo, for its own TUI. `Icon::Zap` is this fork's
-            // rename of the pinned oracle's `Icon::Warp` and resolves to the
-            // same asset.
-            CLIAgent::PhosphorTui => Some(Icon::Zap),
+            CLIAgent::PhosphorTui => Some(Icon::PhosphorLogo),
             CLIAgent::Unknown => None,
         }
     }
@@ -425,7 +437,7 @@ impl CLIAgent {
             CLIAgent::Omp => Some(OMP_COLOR),
             CLIAgent::Hermes => Some(HERMES_PURPLE),
             CLIAgent::Vibe => Some(MISTRAL_ORANGE),
-            CLIAgent::PhosphorTui => Some(ColorU::black()),
+            CLIAgent::PhosphorTui => Some(PHOSPHOR_COLOR),
             CLIAgent::Unknown => None,
         }
     }
