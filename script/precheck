@@ -189,7 +189,22 @@ else
     fmt_bad=0
     for f in "${changed[@]}"; do
         [[ -f "$f" ]] || continue
-        if rustfmt --check --config-path .rustfmt.toml "$f" 2>&1 | grep -qE '^error: (expected|unexpected)'; then
+        # Captured before matching: `rustfmt | grep -q` under pipefail returns
+        # 141 when grep exits early on a match, so a REAL parse error reads as
+        # clean. This gate exists to catch exactly that, and it is the gate the
+        # whole fleet relies on in place of compiling.
+        fmt_out="$(rustfmt --check --config-path .rustfmt.toml "$f" 2>&1)"
+        # Match ANY `^error`, not just `expected|unexpected`. rustfmt reports
+        # the three most common bad-patch outcomes with wording the narrower
+        # pattern never saw:
+        #   unclosed brace/paren -> "error: this file contains an unclosed delimiter"
+        #   unterminated string  -> "error[E0765]: unterminated double quote string"
+        #   leftover conflict    -> "error: encountered diff marker"
+        # A file that merely disagrees with rustfmt's style emits `Diff in ...`
+        # and no `error` line at all, so this stays free of false positives.
+        # Measured: the old pattern caught 5 of 11 non-parsing files; this
+        # catches 11 of 11 with no new hit on a merely-misformatted file.
+        if grep -qE '^error' <<<"$fmt_out"; then
             fail "$f does not parse"; fmt_bad=1
         fi
     done

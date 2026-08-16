@@ -96,9 +96,12 @@ grep -rnE --include='*.rs' "${FNDEF}[^)]*\)( *-> *[^{]+)? *${TRIVIAL}" app/src c
         # Correlating cfg attributes properly needs a parser. "Some definition in
         # this file has a real body" is the cheap approximation, and it is the
         # right one: a genuinely gutted stub has NO real definition left.
-        if grep -E "^\s*(pub(\([a-z]+\))? )?(async )?fn ${fname}\(" "$file" 2>/dev/null \
-            | grep -vE '\;\s*$' \
-            | grep -qvE "${TRIVIAL}"; then
+        # Captured before the final match: a trailing `grep -q` under pipefail
+        # SIGPIPEs its upstream and returns 141, which here would read as "no
+        # real definition" and report a live function as a gutted stub.
+        real_defs="$(grep -E "^\s*(pub(\([a-z]+\))? )?(async )?fn ${fname}\(" "$file" 2>/dev/null \
+            | grep -vE '\;\s*$')"
+        if [[ -n "$real_defs" ]] && grep -qvE "${TRIVIAL}" <<<"$real_defs"; then
             continue
         fi
 
