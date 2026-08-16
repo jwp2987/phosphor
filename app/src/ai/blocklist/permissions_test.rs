@@ -780,8 +780,19 @@ fn test_can_autoexecute_command_allowlist_precedence() {
     })
 }
 
+/// Auto-approve bypasses the *user* denylist when
+/// `auto_approve_bypasses_command_denylist` is set.
+///
+/// The pin's test also asserted the other half -- that the **workspace/org**
+/// denylist survives the bypass -- and that half is deliberately not ported.
+/// `UserWorkspaces::current_team()` returns `None` unconditionally in this
+/// fork (cloud teams / org policy declined, `DECLINED.md` #445), so
+/// `ai_autonomy_settings()` always yields defaults and the org denylist is
+/// inert by construction. Asserting on it here would assert nothing --
+/// exactly the fake coverage `script/check_stub_coverage` exists to prevent.
+/// Restore it together with a real local workspace-policy source (#445).
 #[test]
-fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist_but_not_workspace_denylist() {
+fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
             convo_id,
@@ -789,7 +800,6 @@ fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist_but_not_work
             history,
             profile_model,
             terminal_view_id,
-            user_workspaces,
             ..
         } = initialize_permissions_test(&mut app);
 
@@ -802,17 +812,6 @@ fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist_but_not_work
             );
         });
 
-        user_workspaces.update(&mut app, |model, ctx| {
-            model.setup_test_workspace(ctx);
-            model.update_ai_autonomy_settings(
-                |settings| {
-                    settings.execute_commands_denylist = Some(vec![
-                        AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap(),
-                    ]);
-                },
-                ctx,
-            );
-        });
         // Enable auto-approve for this conversation.
         history.update(&mut app, |history, ctx| {
             history.toggle_autoexecute_override(&convo_id, terminal_view_id, ctx);
@@ -832,22 +831,6 @@ fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist_but_not_work
                 user_denylisted,
                 CommandExecutionPermission::Allowed(
                     CommandExecutionPermissionAllowedReason::RunToCompletion
-                )
-            ));
-
-            let workspace_denylisted = model.can_autoexecute_command(
-                &convo_id,
-                "git status",
-                EscapeChar::Backslash,
-                false,
-                None,
-                Some(terminal_view_id),
-                ctx,
-            );
-            assert!(matches!(
-                workspace_denylisted,
-                CommandExecutionPermission::Denied(
-                    CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
                 )
             ));
         });

@@ -471,6 +471,8 @@ fn test_open_file_with_target_event_preserves_requested_line() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // Opening a file registers it with `FileModel` for save support.
+        app.add_singleton_model(warp_files::FileModel::new);
         app.add_singleton_model(|_| CodeManager::default());
         app.add_singleton_model(|_| LocalShellState::NotLoaded);
         app.add_singleton_model(GlobalBufferModel::new);
@@ -521,6 +523,8 @@ fn test_open_file_with_target_event_preserves_requested_line() {
 fn test_open_markdown_viewer_target_preserves_requested_line() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // Opening a file registers it with `FileModel` for save support.
+        app.add_singleton_model(warp_files::FileModel::new);
         let workspace = mock_workspace(&mut app);
         let temp_dir = TempDir::new().expect("failed to create temp dir");
         let markdown_path = temp_dir.path().join("README.md");

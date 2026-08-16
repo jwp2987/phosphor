@@ -6364,6 +6364,12 @@ fn close_find_bar_preserves_options_on_async_find_path() {
 fn cmd_up_in_agent_view_navigates_prompts_and_user_shell_blocks() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // Appending to the conversation persists it, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 
@@ -6530,6 +6536,12 @@ fn cmd_up_in_agent_view_navigates_prompts_and_user_shell_blocks() {
 fn cmd_down_past_newest_transcript_item_scrolls_to_end() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // Appending to the conversation persists it, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 
@@ -6573,6 +6585,12 @@ fn cmd_down_past_newest_transcript_item_scrolls_to_end() {
 fn cmd_down_past_newest_preserves_viewport_when_already_at_end() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // Appending to the conversation persists it, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 
@@ -6611,6 +6629,12 @@ fn cmd_down_past_newest_preserves_viewport_when_already_at_end() {
 fn cmd_down_without_navigation_cursor_is_a_no_op() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // Appending to the conversation persists it, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 
@@ -6657,6 +6681,12 @@ fn cmd_down_without_navigation_cursor_is_a_no_op() {
 fn agent_transcript_navigation_marks_target_user_query() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // Appending to the conversation persists it, which needs
+        // GlobalResourceHandlesProvider registered.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles)
+        });
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
         let terminal = add_window_with_terminal(&mut app, None);
 

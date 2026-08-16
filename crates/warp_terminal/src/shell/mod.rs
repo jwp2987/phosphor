@@ -757,6 +757,11 @@ impl ShellType {
     pub fn shell_command_to_get_all_functions(&self) -> Option<&'static str> {
         match self {
             ShellType::PowerShell => Some(
+                // The `Warp` prefix here names this fork's own `Warp-*` helper
+                // functions in `pwsh.ps1`, not the product; see the doc comment
+                // above. Renaming it would leak `Warp-Precmd` and friends into
+                // the user's completions.
+                // brand-guard: allow matches this fork's own `Warp-*` pwsh helpers, not the product
                 "$names = Get-Command -CommandType Function | Where-Object { \
                 -not $_.Name.StartsWith('Warp') } | Select-Object -ExpandProperty Name; \
                 $text = [string]::Join([Environment]::NewLine, $names); \
