@@ -109,6 +109,30 @@ pub fn enter_notebook_edit_mode_and_set_markdown(
     )
 }
 
+/// Switches the notebook editor to rendered-Mermaid display.
+///
+/// `NotebooksEditorModel`'s `default_mermaid_display_mode` is `Raw` -- at this
+/// fork AND at both pins (`02b53fcd8`, `42effe840`) -- and a Mermaid fence only
+/// becomes a `BlockItem::MermaidDiagram` when the mode is `Rendered`
+/// (`model.rs`'s `is_rendered_mermaid_block`). Read-only markdown *files* flip
+/// it themselves (`notebooks/file/mod.rs`), which is why viewing a `.md`
+/// renders Mermaid while an editable notebook does not. A test that asserts on
+/// a rendered diagram has to establish that state itself.
+pub fn set_notebook_mermaid_display_rendered(tab_index: usize, pane_index: usize) -> TestStep {
+    TestStep::new("Set notebook Mermaid display to rendered").with_action(
+        move |app, window_id, _| {
+            let editor = notebook_editor(app, window_id, tab_index, pane_index);
+            let model = editor.read(app, |editor, _ctx| editor.model().clone());
+            model.update(app, |model, ctx| {
+                model.set_default_mermaid_display_mode(
+                    crate::notebooks::file::MarkdownDisplayMode::Rendered,
+                    ctx,
+                );
+            });
+        },
+    )
+}
+
 pub fn move_notebook_cursor_to_offset(
     tab_index: usize,
     pane_index: usize,

@@ -7,7 +7,7 @@ use warp::{
             assert_notebook_contents, assert_notebook_id, assert_notebook_not_open,
             assert_notebook_open, assert_notebook_renders_mermaid_diagram,
             assert_open_in_warp_banner_open, create_a_personal_notebook,
-            enter_notebook_edit_mode_and_set_markdown, move_notebook_cursor_to_offset,
+            enter_notebook_edit_mode_and_set_markdown, set_notebook_mermaid_display_rendered, move_notebook_cursor_to_offset,
             open_notebook,
         },
         step::new_step_with_default_assertions,
@@ -202,6 +202,7 @@ pub fn test_backspace_inside_rendered_mermaid_block_is_atomic() -> Builder {
                     assert_notebook_id(0, 0, "the notebook"),
                 ),
         )
+        .with_step(set_notebook_mermaid_display_rendered(0, 0))
         .with_step(
             enter_notebook_edit_mode_and_set_markdown(0, 0, markdown)
                 .add_assertion(assert_notebook_contents(0, 0, markdown))
