@@ -19,6 +19,9 @@ pub enum CLIAgentEventType {
     PromptSubmit,
     ToolComplete,
     Stop,
+    /// The agent's turn ended in failure. Carries `payload.error_type` when the
+    /// producer classified the failure.
+    StopFailure,
     PermissionRequest,
     PermissionReplied,
     QuestionAsked,
@@ -60,6 +63,11 @@ pub struct CLIAgentEventPayload {
     pub tool_name: Option<String>,
     pub tool_input_preview: Option<String>,
     pub plugin_version: Option<String>,
+    /// Machine-readable classification of a [`CLIAgentEventType::StopFailure`].
+    /// On Claude Code this comes from the `StopFailure` hook (e.g. `"rate_limit"`).
+    /// Not implemented for Codex. Free-form by design: consumers must treat an
+    /// unrecognised value as "some failure", never switch behaviour on a literal.
+    pub error_type: Option<String>,
 }
 
 /// A parsed event from a CLI agent plugin.

@@ -8217,6 +8217,109 @@ fn cli_session_status_updates_single_child_conversation_without_agent_view() {
     })
 }
 
+// #582: the consumer half of `stop_failure`. Sibling of
+// `cli_session_status_updates_single_child_conversation_without_agent_view`
+// above -- same wiring, failing turn instead of a successful one. Before the
+// `StopFailure` variant existed this event parsed to `Unknown(_)`,
+// `apply_event` returned `None`, and the conversation stayed `InProgress`
+// forever, which is exactly what left the status chip blank on failure.
+#[test]
+fn cli_session_stop_failure_marks_child_conversation_errored() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let child_conversation_id = terminal.update(&mut app, |view, ctx| {
+            let parent_conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    // NOTE(adapted): the oracle passes a 4th `is_cli_agent_transcript: bool`
+                    // here, which feeds `AIConversation::new(is_viewing_shared_session,
+                    // is_cli_agent_transcript)`. This fork's constructor is deliberately
+                    // narrower: #107 was closed NOT_PLANNED on 2026-08-06 as a maintainer
+                    // KEEP-DROPPED decision ("the wider-arity constructor bits have no
+                    // consumer in the fork"), recorded on #11. The oracle's own call passes
+                    // `false`, which is exactly the behaviour the narrow constructor gives,
+                    // so this is faithful -- NOT a workaround, and NOT blocked on #423.
+                    history_model.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            let child_conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+                    // NOTE(adapted): same #107 keep-dropped divergence -- the oracle's 4th
+                    // argument here is the CLI-agent transcript `Option<..>`, passed as
+                    // `None`, which is what the fork's narrower signature already means.
+                    history_model.start_new_child_conversation(
+                        view.view_id,
+                        "Agent 2".to_string(),
+                        parent_conversation_id,
+                        None,
+                        ctx,
+                    )
+                });
+
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view.view_id,
+                    CLIAgentSession {
+                        agent: CLIAgent::Claude,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        should_auto_toggle_input: false,
+                        listener: None,
+                        remote_host: None,
+                        plugin_version: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            });
+
+            child_conversation_id
+        });
+
+        terminal.read(&app, |_view, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&child_conversation_id)
+                .expect("child conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.update_from_event(
+                    view.view_id,
+                    &CLIAgentEvent {
+                        source: CLIAgentEventSource::RichPlugin,
+                        v: 1,
+                        agent: CLIAgent::Claude,
+                        event: CLIAgentEventType::StopFailure,
+                        session_id: None,
+                        cwd: None,
+                        project: None,
+                        payload: CLIAgentEventPayload {
+                            response: Some("You have hit the rate limit".to_owned()),
+                            error_type: Some("rate_limit".to_owned()),
+                            ..Default::default()
+                        },
+                    },
+                    ctx,
+                );
+            });
+        });
+
+        terminal.read(&app, |_view, ctx| {
+            let conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&child_conversation_id)
+                .expect("child conversation should exist");
+            assert_eq!(conversation.status(), &ConversationStatus::Error);
+        });
+    })
+}
+
 #[test]
 fn paste_raw_image_clipboard_in_cli_agent_sends_correct_bytes() {
     fn run_for_agent(agent: CLIAgent) {

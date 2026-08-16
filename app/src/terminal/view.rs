@@ -12377,8 +12377,12 @@ impl TerminalView {
                             ctx,
                         );
                     }
-                    CLIAgentSessionStatus::InProgress | CLIAgentSessionStatus::Success => {
+                    CLIAgentSessionStatus::InProgress
+                    | CLIAgentSessionStatus::Success
+                    | CLIAgentSessionStatus::Failed { .. } => {
                         // Auto-open rich input when the agent resumes or completes.
+                        // A failed turn counts as "completed": the terminal is
+                        // back at the user's disposal, so hand the keyboard back.
                         if !self.has_active_cli_agent_input_session(ctx) {
                             self.open_cli_agent_rich_input(CLIAgentInputEntrypoint::AutoShow, ctx);
                         }
@@ -12409,6 +12413,8 @@ impl TerminalView {
 
         let trigger = if matches!(status, CLIAgentSessionStatus::Blocked { .. }) {
             NotificationsTrigger::NeedsAttention
+        } else if matches!(status, CLIAgentSessionStatus::Failed { .. }) {
+            NotificationsTrigger::AgentTaskCompleted(false)
         } else {
             NotificationsTrigger::AgentTaskCompleted(true)
         };

@@ -742,3 +742,228 @@ fn permission_request_still_populates_summary_and_tool_fields() {
         CLIAgentSessionStatus::Blocked { .. },
     ));
 }
+
+// ---------------------------------------------------------------------------
+// `stop_failure` / `CLIAgentSessionStatus::Failed` (#582).
+//
+// The old pin (`02b53fcd8`) carries the variant but has no test for it at all,
+// so these are written against the pin's *behaviour* rather than ported from
+// pin tests. See the report on #582 for the one pin test that exists (in the
+// NEW pin's `driver_tests.rs`) and why it is not portable here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_stop_failure_notification() {
+    let body = r#"{"v":1,"agent":"claude","event":"stop_failure","session_id":"abc","cwd":"/tmp/proj","project":"proj","query":"write a haiku","response":"You have hit the rate limit","error_type":"rate_limit"}"#;
+    let notif = parse_event(Some("warp://cli-agent"), body).unwrap();
+
+    assert_eq!(notif.event, CLIAgentEventType::StopFailure);
+    assert_eq!(notif.payload.error_type.as_deref(), Some("rate_limit"));
+    assert_eq!(
+        notif.payload.response.as_deref(),
+        Some("You have hit the rate limit")
+    );
+}
+
+#[test]
+fn parse_stop_failure_without_error_type() {
+    // `error_type` is optional on the wire; a producer that omits it must still
+    // parse as a failure rather than falling through to `Unknown`.
+    let body = r#"{"event":"stop_failure"}"#;
+    let notif = parse_event(Some("warp://cli-agent"), body).unwrap();
+
+    assert_eq!(notif.event, CLIAgentEventType::StopFailure);
+    assert!(notif.payload.error_type.is_none());
+}
+
+#[test]
+fn stop_failure_marks_the_session_failed_and_clears_permission_state() {
+    // The consumer half of #582: before it existed, `stop_failure` parsed to
+    // `Unknown(_)`, `apply_event` returned `None`, and no surface ever learned
+    // the agent had failed.
+    let mut session = blocked_claude_session_with_permission_state();
+
+    let event = CLIAgentEvent {
+        v: 1,
+        agent: CLIAgent::Claude,
+        event: CLIAgentEventType::StopFailure,
+        session_id: Some("abc".to_owned()),
+        cwd: None,
+        project: None,
+        payload: CLIAgentEventPayload {
+            query: Some("write a haiku".to_owned()),
+            response: Some("You have hit the rate limit".to_owned()),
+            error_type: Some("rate_limit".to_owned()),
+            ..Default::default()
+        },
+        source: CLIAgentEventSource::RichPlugin,
+    };
+
+    let new_status = session.apply_event(&event);
+
+    assert_eq!(
+        new_status,
+        Some(CLIAgentSessionStatus::Failed {
+            error_type: Some("rate_limit".to_owned()),
+            message: Some("You have hit the rate limit".to_owned()),
+        })
+    );
+    assert_eq!(session.status, new_status.unwrap());
+    // Same hygiene as `Stop`: stale permission text must not leak into the tab
+    // title of a session that is no longer in a permission flow. Refs #269.
+    assert_eq!(session.session_context.summary, None);
+    assert_eq!(session.session_context.tool_name, None);
+    assert_eq!(session.session_context.tool_input_preview, None);
+}
+
+#[test]
+fn stop_failure_without_query_preserves_previous_prompt() {
+    // Fork divergence from the pin, matching `stop_without_query_preserves_previous_prompt`:
+    // the pin assigns `query`/`response` unconditionally, so a failure event that
+    // carries neither would blank the prompt the user is still looking at.
+    let mut session = CLIAgentSession {
+        agent: CLIAgent::Claude,
+        status: CLIAgentSessionStatus::InProgress,
+        session_context: CLIAgentSessionContext {
+            query: Some("explain the diff".to_owned()),
+            response: Some("previous answer".to_owned()),
+            ..Default::default()
+        },
+        input_state: CLIAgentInputState::Closed,
+        should_auto_toggle_input: false,
+        listener: None,
+        remote_host: None,
+        plugin_version: None,
+        draft_text: None,
+        custom_command_prefix: None,
+        received_rich_notification: false,
+    };
+
+    let event = CLIAgentEvent {
+        v: 1,
+        agent: CLIAgent::Claude,
+        event: CLIAgentEventType::StopFailure,
+        session_id: None,
+        cwd: None,
+        project: None,
+        payload: CLIAgentEventPayload {
+            error_type: Some("cancelled".to_owned()),
+            ..Default::default()
+        },
+        source: CLIAgentEventSource::RichPlugin,
+    };
+
+    session.apply_event(&event);
+
+    assert_eq!(
+        session.session_context.query.as_deref(),
+        Some("explain the diff")
+    );
+    assert_eq!(
+        session.session_context.response.as_deref(),
+        Some("previous answer")
+    );
+    assert_eq!(
+        session.status,
+        CLIAgentSessionStatus::Failed {
+            error_type: Some("cancelled".to_owned()),
+            // `message` reflects the *event*, not the retained context: there is
+            // no failure detail on this event, and reusing the previous turn's
+            // answer as the failure message would be a lie.
+            message: None,
+        }
+    );
+}
+
+#[test]
+fn failed_status_latches_until_the_next_prompt() {
+    // Chip semantics: the failure stays on screen until the user actually starts
+    // another turn. No timer, exactly like `Success`. The events that fire in
+    // between (`idle_prompt` when the agent returns to its prompt, and the
+    // `tool_complete` / `permission_replied` pair) must not silently clear it.
+    let mut session = CLIAgentSession {
+        agent: CLIAgent::Claude,
+        status: CLIAgentSessionStatus::Failed {
+            error_type: Some("rate_limit".to_owned()),
+            message: Some("boom".to_owned()),
+        },
+        session_context: CLIAgentSessionContext::default(),
+        input_state: CLIAgentInputState::Closed,
+        should_auto_toggle_input: false,
+        listener: None,
+        remote_host: None,
+        plugin_version: None,
+        draft_text: None,
+        custom_command_prefix: None,
+        received_rich_notification: false,
+    };
+
+    let event_of = |event_type| CLIAgentEvent {
+        v: 1,
+        agent: CLIAgent::Claude,
+        event: event_type,
+        session_id: None,
+        cwd: None,
+        project: None,
+        payload: CLIAgentEventPayload::default(),
+        source: CLIAgentEventSource::RichPlugin,
+    };
+
+    for event_type in [
+        CLIAgentEventType::IdlePrompt,
+        CLIAgentEventType::ToolComplete,
+        CLIAgentEventType::PermissionReplied,
+    ] {
+        assert_eq!(
+            session.apply_event(&event_of(event_type.clone())),
+            None,
+            "{event_type:?} must not clear a failed status"
+        );
+        assert!(matches!(session.status, CLIAgentSessionStatus::Failed { .. }));
+    }
+
+    assert_eq!(
+        session.apply_event(&event_of(CLIAgentEventType::PromptSubmit)),
+        Some(CLIAgentSessionStatus::InProgress),
+        "a new prompt is what clears the failure"
+    );
+}
+
+#[test]
+fn failed_status_maps_to_the_error_conversation_status() {
+    // This is the GUI status chip: `agent_icon.rs` and `vertical_tabs.rs` both
+    // render the session through `to_conversation_status()`, and
+    // `ConversationStatus::Error` is what gives them the red triangle.
+    use crate::ai::agent::conversation::ConversationStatus;
+
+    assert_eq!(
+        CLIAgentSessionStatus::Failed {
+            error_type: Some("rate_limit".to_owned()),
+            message: Some("boom".to_owned()),
+        }
+        .to_conversation_status(),
+        ConversationStatus::Error
+    );
+    // `"cancelled"` is the one `error_type` that DOES steer the mapping.
+    // Upstream has no cancellation event tag, so a cancelled TUI turn is
+    // published as `stop_failure` + `error_type: "cancelled"`; mapping that to
+    // Error put a red triangle on a deliberate Ctrl-C (#596). The classifier
+    // lives in `warp_core::cli_agent_error_type` and matches on a variant, not
+    // on this literal, so a third-party producer's spelling cannot decide it.
+    assert_eq!(
+        CLIAgentSessionStatus::Failed {
+            error_type: Some("cancelled".to_owned()),
+            message: None,
+        }
+        .to_conversation_status(),
+        ConversationStatus::Cancelled
+    );
+    assert_eq!(
+        CLIAgentSessionStatus::Failed {
+            error_type: None,
+            message: None,
+        }
+        .to_conversation_status(),
+        ConversationStatus::Error
+    );
+}

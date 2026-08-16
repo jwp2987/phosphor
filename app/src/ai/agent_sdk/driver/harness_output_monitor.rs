@@ -203,12 +203,16 @@ pub(crate) async fn watch_block_for_errors(
 }
 
 pub(crate) fn should_suppress_runtime_failure(status: Option<&CLIAgentSessionStatus>) -> bool {
-    // On CLIAgentSessionStatus::Failed, the oracle directly updates the task status, so it
-    // doesn't need runtime pattern matching to find the failure. This fork's
-    // `CLIAgentSessionStatus` has no `Failed` variant (see `app/src/terminal/cli_agent_sessions/mod.rs`)
-    // -- it is a structured failure reported by the cloud plugin/hook protocol, which this
-    // BYOP fork does not carry -- so only `Success` is suppressed here.
-    matches!(status, Some(CLIAgentSessionStatus::Success))
+    // On CLIAgentSessionStatus::Failed the session model has already reported the
+    // failure, so runtime pattern matching would only duplicate it.
+    //
+    // NOTE: the previous comment here claimed `Failed` was cloud-only and absent
+    // from this fork. Both halves were wrong -- it arrives over OSC 777, which is
+    // local, and the variant was simply unported (#582). Restored to the pin's set.
+    matches!(
+        status,
+        Some(CLIAgentSessionStatus::Success) | Some(CLIAgentSessionStatus::Failed { .. })
+    )
 }
 
 /// Cap excerpt length so we don't blow up status messages or logs with
