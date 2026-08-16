@@ -42,6 +42,9 @@ fn orchestration_fixture(app: &mut App) -> OrchestrationFixture {
     register_tui_session_view_test_singletons(app);
     app.update(|ctx| add_test_semantic_selection(ctx));
     app.update(crate::autoupdate::TuiAutoupdater::register);
+    // Removing or rewinding a conversation runs the session view's history-event
+    // subscriptions, which reach the revert registry.
+    app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
     let (window_id, _root) = app.update(|ctx| {
         ctx.add_tui_window(
             AddWindowOptions {

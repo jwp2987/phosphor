@@ -552,9 +552,14 @@ fn e_key_dispatches_toggle_expand_all_on_blocked_card() {
         })
         .await;
         seed_two_file_diffs(&mut app, &view);
-        // `TuiPermissionPrompt::new`'s subscription already focused the
-        // selector when `ActionBlockedOnUserConfirmation` fired above, so
-        // the option list (yes/no/Other) owns focus without an explicit step.
+        // The prompt no longer focuses its selector when the action blocks
+        // (upstream 7d93fa468 stopped background blockers stealing focus), so
+        // give the option list focus explicitly before asserting on the marker.
+        // A prompt no longer focuses itself when its action blocks (that would
+        // let a background session steal focus, upstream 7d93fa468), so drive
+        // the focused responder chain by focusing it explicitly.
+        app.read(|ctx| view.as_ref(ctx).permission_prompt.clone())
+            .update(&mut app, |_, ctx| ctx.focus_self());
         present_file_edits_view(&mut app, &view);
         app.read(|ctx| {
             assert!(

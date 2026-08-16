@@ -1633,6 +1633,9 @@ fn focus_test_fixture(app: &mut App) -> FocusTestFixture {
     register_tui_session_view_test_singletons(app);
     app.update(|ctx| add_test_semantic_selection(ctx));
     app.update(TuiAutoupdater::register);
+    // Removing or rewinding a conversation runs the session view's history-event
+    // subscriptions, which reach the revert registry.
+    app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
     let (window_id, _) = app.update(|ctx| {
         ctx.add_tui_window(
             AddWindowOptions {
@@ -4396,9 +4399,6 @@ fn orchestrate_slash_command_requires_active_conversation() {
 
         let fixture = focus_test_fixture(&mut app);
         app.update(TuiPaneGroup::register);
-        // Removing a conversation below runs the session view's history-event
-        // subscriptions, which reach the revert registry.
-        app.update(crate::tui_revert_registry::TuiFileEditRevertRegistry::register);
         let (view, session_id) = add_focus_test_session(&mut app, &fixture, true);
 
         // A TUI session is never conversation-less at rest: `TuiConversationSelection::new`

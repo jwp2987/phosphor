@@ -259,9 +259,13 @@ fn build_view_with_masked_inline_menu(ctx: &mut AppContext) -> ViewHandle<TuiInp
     if !ctx.has_singleton_model::<Appearance>() {
         ctx.add_singleton_model(|_| Appearance::mock());
     }
-    add_test_semantic_selection(ctx);
     let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
     let input_mode = add_test_input_mode(ctx);
+    // Must follow `add_test_input_mode`: it reaches `register_all_settings`,
+    // which registers `SemanticSelection` **unguarded**, while the call below is
+    // guarded. Running the guarded one first registers the mock and makes the
+    // later unguarded registration panic with "called twice".
+    add_test_semantic_selection(ctx);
     let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::ModelSelector);
     let menu = ctx.add_model(|_| TestSecretMenu);
     let (_, view) = ctx.add_tui_window(
@@ -363,9 +367,13 @@ fn ctrl_r_dispatches_selected_mcp_credential_removal() {
         let (window_id, view, expected, accepted) = app.update(|ctx| {
             crate::input::init(ctx);
             ctx.add_singleton_model(|_| Appearance::mock());
-            add_test_semantic_selection(ctx);
             let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
             let input_mode = add_test_input_mode(ctx);
+            // Must follow `add_test_input_mode`: it reaches `register_all_settings`,
+            // which registers `SemanticSelection` **unguarded**, while the call below
+            // is guarded. Running the guarded one first makes the later unguarded
+            // registration panic with "called twice".
+            add_test_semantic_selection(ctx);
             let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Mcp);
             let expected = TuiMcpAction::LogOut(TuiMcpServerId::FileBased(7));
             let menu = TuiInlineMenu::new(TestMcpMenu { action: expected });

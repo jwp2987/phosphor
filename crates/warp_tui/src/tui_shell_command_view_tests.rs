@@ -335,9 +335,6 @@ fn escape_when_not_editing_still_rejects_the_command() {
             (view.action_model.clone(), view.conversation_id)
         });
         action_model.update(&mut app, |model, ctx| {
-            // Blocking the action auto-focuses the permission prompt's
-            // option selector (not the command editor), matching the
-            // read-only reviewing state a real "not editing" Escape targets.
             queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
         });
         // Pump the async preprocess so the action blocks and the prompt is active.
@@ -345,6 +342,13 @@ fn escape_when_not_editing_still_rejects_the_command() {
             app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
         })
         .await;
+        // Focus the prompt, whose option selector (not the command editor) owns
+        // focus in the read-only reviewing state a "not editing" Escape targets.
+        // A prompt no longer focuses itself when its action blocks (that would
+        // let a background session steal focus, upstream 7d93fa468), so drive
+        // the focused responder chain by focusing it explicitly.
+        app.read(|ctx| view.as_ref(ctx).permission_prompt.clone())
+            .update(&mut app, |_, ctx| ctx.focus_self());
         present_shell_view(&mut app, &view);
 
         assert!(dispatch_focused_key(&mut app, &view, "escape"));
@@ -594,9 +598,6 @@ fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
             let view = view.as_ref(ctx);
             (view.action_model.clone(), view.conversation_id)
         });
-        // Blocking the action gives the view (and its permission prompt)
-        // keyboard focus, matching the state a keyboard-only user reaches it
-        // through in practice.
         action_model.update(&mut app, |model, ctx| {
             queue_tui_permission_action(model, action, conversation_id, ctx);
         });
@@ -605,6 +606,11 @@ fn ctrl_t_toggles_the_output_section_like_the_mouse_click_handler() {
             app.read(|ctx| view.as_ref(ctx).permission_prompt.as_ref(ctx).is_active(ctx))
         })
         .await;
+        // A prompt no longer focuses itself when its action blocks (that would
+        // let a background session steal focus, upstream 7d93fa468), so drive
+        // the focused responder chain by focusing it explicitly.
+        app.read(|ctx| view.as_ref(ctx).permission_prompt.clone())
+            .update(&mut app, |_, ctx| ctx.focus_self());
         present_shell_view(&mut app, &view);
 
         assert!(app.read(|ctx| !view.as_ref(ctx).is_expanded()));
