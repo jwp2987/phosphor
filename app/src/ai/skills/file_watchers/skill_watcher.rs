@@ -33,6 +33,7 @@ use repo_metadata::{
     repositories::DetectedRepositories,
     repository::{Repository, SubscriberId},
     DirectoryWatcher, RepoMetadataModel, RepositoryIdentifier, RepositoryUpdate,
+    RepositoryWatchMode,
 };
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
@@ -321,7 +322,9 @@ impl SkillWatcher {
         let subscriber = Box::new(ProjectSkillSubscriber {
             message_tx: self.repository_message_tx.clone(),
         });
-        let start = repo_handle.update(ctx, |repo, ctx| repo.start_watching(subscriber, ctx));
+        let start = repo_handle.update(ctx, |repo, ctx| {
+            repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
+        });
         let subscriber_id = start.subscriber_id;
         self.failed_local_project_watchers
             .insert(repo_path.clone(), (repo_handle.clone(), subscriber_id));
@@ -785,7 +788,9 @@ impl SkillWatcher {
             let subscriber = Box::new(SymlinkSkillSubscriber {
                 message_tx: self.repository_message_tx.clone(),
             });
-            let start = repo_handle.update(ctx, |repo, ctx| repo.start_watching(subscriber, ctx));
+            let start = repo_handle.update(ctx, |repo, ctx| {
+            repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
+        });
             let subscriber_id = start.subscriber_id;
             self.symlink_target_watchers
                 .insert(canonical_dir.clone(), (repo_handle.clone(), subscriber_id));
@@ -1031,7 +1036,9 @@ impl SkillWatcher {
             }
         };
 
-        let start = repo_handle.update(ctx, |repo, ctx| repo.start_watching(subscriber, ctx));
+        let start = repo_handle.update(ctx, |repo, ctx| {
+            repo.start_watching(RepositoryWatchMode::FilesystemOnly, subscriber, ctx)
+        });
         let subscriber_id = start.subscriber_id;
 
         // Store the watcher so it can be cleaned up if the directory is deleted.

@@ -1,8 +1,8 @@
 //! Reusable interaction for TUI tool-call permission requests.
 
 use warp::tui_export::{
-    AIAgentActionId, BlocklistAIActionEvent, BlocklistAIActionModel, OptionFooter, OptionRow,
-    OptionSnapshot, OptionSourceStatus,
+    AIAgentActionId, BlocklistAIActionModel, OptionFooter, OptionRow, OptionSnapshot,
+    OptionSourceStatus,
 };
 use warpui_core::elements::CrossAxisAlignment;
 use warpui_core::elements::tui::{
@@ -144,12 +144,6 @@ impl TuiPermissionPrompt {
         ctx.subscribe_to_model(&action_model, |prompt, _, event, ctx| {
             if event.action_id() != &prompt.action_id {
                 return;
-            }
-            if matches!(
-                event,
-                BlocklistAIActionEvent::ActionBlockedOnUserConfirmation(_)
-            ) {
-                prompt.focus(ctx);
             }
             ctx.emit(TuiPermissionPromptEvent::BlockingStateChanged);
             prompt.invalidate_layout(ctx);

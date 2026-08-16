@@ -125,6 +125,17 @@ pub static STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand 
     argument: None,
 });
 
+// TUI-only: restores the statusline to its default items and ordering, without opening the
+// `/statusline` picker. Not executable in the GUI (see `execute_slash_command`'s guard).
+pub static RESET_STATUSLINE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/reset-statusline",
+    description: t_static!("slash-cmd-reset-statusline-desc"),
+    icon_path: "bundled/svg/sliders-04.svg",
+    availability: Availability::ALWAYS,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 /// TUI-only: sets the TUI color theme (`auto`/`light`/`dark`, backed by `TuiTheme`). Not
 /// executable in the GUI (see `execute_slash_command`'s explicit guard); the GUI has its own
 /// theme chooser (`workspace:show_theme_chooser`).
@@ -416,6 +427,18 @@ pub static EXPORT_TO_CLIPBOARD: LazyLock<StaticCommand> = LazyLock::new(|| Stati
     argument: None,
 });
 
+/// Copies an identifier for the current conversation so the user can attach it to a
+/// Phosphor issue. See `ServerConversationToken::debugging_payload` for what lands on the
+/// clipboard -- a deeplink on dogfood channels, a plain id blob everywhere else.
+pub static COPY_DEBUGGING_ID: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/copy-debugging-id",
+    description: t_static!("slash-cmd-copy-debugging-id-desc"),
+    icon_path: "bundled/svg/copy.svg",
+    availability: Availability::ACTIVE_CONVERSATION,
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub static EXPORT_TO_FILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/export-to-file",
     description: t_static!("slash-cmd-export-to-file-desc"),
@@ -662,8 +685,10 @@ fn all_commands() -> Vec<StaticCommand> {
         PLAN.clone(),
         RENAME_TAB.clone(),
         STATUSLINE.clone(),
+        RESET_STATUSLINE.clone(),
         CONVERSATIONS.clone(),
         EXPORT_TO_CLIPBOARD.clone(),
+        COPY_DEBUGGING_ID.clone(),
         MODEL.clone(),
         API_KEYS.clone(),
     ];
@@ -809,6 +834,30 @@ mod tests {
         }
     }
 
+    /// Adapted from the pin's `copy_debugging_id_command_has_correct_registry_metadata`
+    /// (upstream b4070d6a9). The pin asserts on a stored `kind` field and a
+    /// `SlashCommandSurfaces::GuiAndTui` value; this fork derives both from the command name,
+    /// so the equivalent assertions are `kind()`, `supports_gui()` and `supports_tui()`.
+    #[test]
+    fn copy_debugging_id_command_is_registered_for_gui_and_tui() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(COPY_DEBUGGING_ID.name)
+            .expect("expected /copy-debugging-id to be registered");
+
+        assert_eq!(command.name, "/copy-debugging-id");
+        assert_eq!(command.kind(), SlashCommandKind::CopyDebuggingId);
+        assert!(command.supports_gui());
+        assert!(command.supports_tui());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(command.availability, Availability::ACTIVE_CONVERSATION);
+        assert!(command.argument.is_none());
+        // Available once there is an active conversation, hidden before that.
+        assert!(command.is_active(Availability::ACTIVE_CONVERSATION));
+        assert!(!command.is_active(Availability::ALWAYS));
+    }
+
     /// Ported from Warp's `api_keys_command_is_tui_only_and_has_no_arguments`. Unlike Warp,
     /// `/api-keys` is Zap-native (see the doc comment on `API_KEYS`) and is not restricted to
     /// the TUI surface, so this only checks what still applies: registration, metadata, and TUI
@@ -894,6 +943,26 @@ mod tests {
         assert!(!command.auto_enter_ai_mode);
         assert!(command.argument.is_none());
         assert!(command.supports_tui());
+    }
+
+    /// Ported from the pin's `reset_statusline_command_is_always_available_only_in_tui_mode`
+    /// (upstream `62a6b083b`), rewritten against this fork's registry-based surface model:
+    /// upstream declares `SlashCommandSurfaces::TuiOnly` on the `StaticCommand` itself, while
+    /// this fork resolves surfaces by name in `StaticCommand::{supports_tui,is_tui_only}`.
+    #[test]
+    fn reset_statusline_command_is_registered_and_tui_only() {
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(RESET_STATUSLINE.name)
+            .expect("expected /reset-statusline to be registered");
+        assert_eq!(
+            command.kind(),
+            crate::search::slash_command_menu::static_commands::SlashCommandKind::ResetStatusline
+        );
+        assert_eq!(command.availability, Availability::ALWAYS);
+        assert!(!command.auto_enter_ai_mode);
+        assert!(command.argument.is_none());
+        assert!(command.supports_tui());
+        assert!(command.is_tui_only());
     }
 
     #[test]

@@ -69,7 +69,9 @@ const TAB_CLOSE_BUTTON_OPACITY: Opacity = 60;
 const TAB_CLOSE_BUTTON_WIDTH: f32 = 20.0;
 const MAX_TOOLTIP_LENGTH: usize = 80;
 
-const TAB_INDICATOR_SYNCED_COLOR: u32 = 0x4A93FFFF;
+/// Color of the synchronized-inputs indicator, shared by the horizontal tab bar
+/// and the vertical tabs panel so both surfaces read identically.
+pub(crate) const TAB_INDICATOR_SYNCED_COLOR: u32 = 0x4A93FFFF;
 
 // Width threshold (in px) below which we render an icon-only tab
 const COMPACT_TAB_WIDTH_THRESHOLD: f32 = 42.0;
@@ -100,6 +102,23 @@ impl SelectedTabColor {
             SelectedTabColor::Cleared => None,
             SelectedTabColor::Unset => default,
         }
+    }
+}
+
+/// The next colour in the canonical tab palette after `current`: unset or an
+/// off-palette colour starts at the first option, the last option wraps to an
+/// explicit clear, and the clear then restarts the cycle.
+pub(crate) fn next_tab_color(current: Option<AnsiColorIdentifier>) -> SelectedTabColor {
+    match current.and_then(|color| {
+        TAB_COLOR_OPTIONS
+            .iter()
+            .position(|candidate| *candidate == color)
+    }) {
+        Some(index) if index + 1 < TAB_COLOR_OPTIONS.len() => {
+            SelectedTabColor::Color(TAB_COLOR_OPTIONS[index + 1])
+        }
+        Some(_) => SelectedTabColor::Cleared,
+        None => SelectedTabColor::Color(TAB_COLOR_OPTIONS[0]),
     }
 }
 

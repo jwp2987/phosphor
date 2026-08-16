@@ -1,6 +1,6 @@
 use url::Url;
 
-const DEFAULT_TITLE: &str = "Zap";
+const DEFAULT_TITLE: &str = "Phosphor";
 const BASE_APP_PATH: &str = "/app";
 
 pub fn update_browser_url(url: Option<Url>, force_redirect: bool) {

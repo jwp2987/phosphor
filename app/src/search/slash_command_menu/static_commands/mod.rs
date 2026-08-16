@@ -148,6 +148,8 @@ pub enum SlashCommandKind {
     RenameConversation,
     SetTabColor,
     Statusline,
+    /// `/reset-statusline`: TUI-only, restores `TuiStatuslineConfig::default()`.
+    ResetStatusline,
     /// `/theme`: TUI-only, sets `TuiTheme` (auto/light/dark). See #147.
     Theme,
     Fork,
@@ -188,6 +190,9 @@ pub enum SlashCommandKind {
     Rewind,
     ExportToClipboard,
     ExportToFile,
+    /// `/copy-debugging-id`: copies an identifier for the current conversation for the user
+    /// to attach to a Phosphor issue.
+    CopyDebuggingId,
     /// `/api-keys`: opens the BYOP provider API-key manager. Fork-native -- this fork's entire
     /// identity is BYOP, so unlike most `Other`-kind Zap additions this one *is* TUI-executable
     /// and needs its own dispatch arm, not upstream Warp's hardcoded-~4-provider
@@ -246,6 +251,7 @@ impl StaticCommand {
             "/rename-tab" => SlashCommandKind::RenameTab,
             "/set-tab-color" => SlashCommandKind::SetTabColor,
             "/statusline" => SlashCommandKind::Statusline,
+            "/reset-statusline" => SlashCommandKind::ResetStatusline,
             "/theme" => SlashCommandKind::Theme,
             "/auto-approve" => SlashCommandKind::AutoApprove,
             "/natural-language-detection" => SlashCommandKind::NaturalLanguageDetection,
@@ -276,6 +282,7 @@ impl StaticCommand {
             "/rewind" => SlashCommandKind::Rewind,
             "/export-to-clipboard" => SlashCommandKind::ExportToClipboard,
             "/export-to-file" => SlashCommandKind::ExportToFile,
+            "/copy-debugging-id" => SlashCommandKind::CopyDebuggingId,
             "/api-keys" => SlashCommandKind::ApiKeys,
             "/vim-mode" => SlashCommandKind::VimMode,
             "/usage" => SlashCommandKind::Usage,
@@ -314,6 +321,7 @@ impl StaticCommand {
         matches!(
             self.name,
             "/statusline"
+                | "/reset-statusline"
                 | "/auto-approve"
                 | "/natural-language-detection"
                 | "/exit"
@@ -350,8 +358,10 @@ impl StaticCommand {
                 | "/conversations"
                 | "/export-to-clipboard"
                 | "/export-to-file"
+                | "/copy-debugging-id"
                 | "/api-keys"
                 | "/statusline"
+                | "/reset-statusline"
                 | "/vim-mode"
                 | "/auto-approve"
                 | "/natural-language-detection"

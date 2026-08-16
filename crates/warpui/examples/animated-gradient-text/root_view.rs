@@ -33,7 +33,7 @@ impl RootView {
         let end = ColorU::new(255, 255, 255, 255);
 
         Self {
-            text: "Zap shimmer: 👩‍💻with ligatures — fi fl 🇺🇸".to_string(),
+            text: "Phosphor shimmer: 👩‍💻with ligatures — fi fl 🇺🇸".to_string(),
             font_family,
             font_size: 28.0,
             start,

@@ -1,9 +1,9 @@
 # Tokyo Night (Night variant)
 # Color source: folke/tokyonight.nvim — extras/wezterm/tokyonight_night.toml
 # Licence: MIT (folke/tokyonight.nvim ships an MIT LICENSE at its repo root).
-# Installation (Windows / openWarp OSS):
-#   Copy this file to %APPDATA%\zap\Zap\data\themes\tokyo_night.yaml
-#   After restarting openWarp, select "Tokyo Night" under Settings → Appearance → Themes
+# Installation (Windows / Phosphor OSS):
+#   Copy this file to %APPDATA%\phosphor\Phosphor\data\themes\tokyo_night.yaml
+#   After restarting Phosphor, select "Tokyo Night" under Settings → Appearance → Themes
 ---
 name: Tokyo Night
 background: '#1a1b26'

@@ -2315,6 +2315,456 @@ other way.
       visual claims needing the app running. Text-layout code exists across three
       platform backends, so #316 is not a missing-feature question.
 
+## OPEN ISSUES FROM THE FIRST RE-PIN (2026-08-15) — `02b53fcd8` -> `42effe840`
+
+Filed during the re-pin round and its refutation pass. **Open only** — defects
+found and fixed inside the round are recorded in their commit messages, not
+here, so this list stays a work ledger rather than a history.
+
+### Pin moved 2026-08-15 — what the next round inherits
+
+`ORACLE.md` now records `42effe840` (Warp `2026.08.12` stable). Carried forward
+deliberately, each because finishing it is a reading pass rather than part of
+moving the pin:
+
+- [ ] **435 unadjudicated absent tests.** `docs/STATE.md` counts 2,795 absent at
+      the new pin, 2,360 of them adjudicated in `docs/sweep-verdict-ledger.tsv`.
+      The remainder are tests in files that appeared or changed between the two
+      pins. This is the next round's queue; generate it with
+      `script/generate_repin_queue` rather than by hand.
+- [ ] **`SCOPE-{AI,TERMINAL,REST}.md` are not re-derived at the new pin.** Their
+      verdicts classify the 854 test-bearing files as they were at `02b53fcd8`.
+      Banners now say so explicitly. Files added between the pins have no row at
+      all — do not read "absent from SCOPE" as "no debt".
+- [ ] **`ORACLE.md`'s "Gap at the pin" figures are old-pin figures** (net 2,239 /
+      workload 1,605 / 854 files). Kept because they are the only written
+      statement of net-vs-workload, flagged as historical. `docs/STATE.md` is the
+      live number.
+- [ ] **Brand cleanup is string-literals-only.** `script/check_brand_strings`
+      guards user-visible Rust string literals and is green. Identifiers and
+      comments were never in scope: **~1,820 `Zap` and ~271 `Oz`** occurrences
+      remain in `.rs`. Needs a maintainer decision on wire-value carve-outs
+      first — `Harness::Oz` may be serialized the way `"warp-tui"` is
+      (deliberately not renamed, interop surface), while `MCPProvider::Zap` is
+      internal-only (no serde derives) and safe. Not a find-and-replace.
+
+### Defects — user-visible
+
+- [x] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
+      **FIXED, pending merge** — on `repin-gap-keymarker`. `menu_result_row` now
+      renders the second column when a `Default` row has *either* a description
+      or a `state_suffix` (upstream `bf56c3c18`'s hunk), with a suffix standing
+      alone taking the two-space gutter a description would have had. Two
+      render-level tests added, one per layer:
+      `inline_menu_tests::default_row_state_suffix_renders_with_and_without_a_description`
+      and `model_menu_tests::selectable_key_connected_model_renders_the_suffix`.
+      **The profile menu's `active` marker was invisible for the same reason**
+      (`profile_menu.rs` passes `description: None` on every row) and is fixed by
+      the same change. Original finding below for the record.
+      `inline_menu.rs` emits `state_suffix` nested inside the `description`
+      block, and `model_menu.rs` sets `description` only when `!is_selectable`.
+      **Both existing tests pass** because they assert on
+      `snapshot.rows[].state_suffix`, never on rendered lines — so any fix needs
+      a render-level test or it reverts silently. ~15 lines, three files.
+- [x] **#582 — `CLIAgentEventType::StopFailure` missing**, so agent failure
+      never reaches the GUI status chip — for *every* integration, not just the
+      TUI. Present at the OLD pin, so unported debt. Now asymmetric: the OSC 777
+      publisher ported this round **emits** `stop_failure` with no consumer.
+      ~8 files' exhaustive matches + a call on failure-chip semantics.
+      **FIXED, pending merge** — `repin-gap-stopfail`. The gap was wider than
+      filed: `CLIAgentSessionStatus::Failed` was missing too, so the variant
+      alone had nowhere to land. Four exhaustive matches over the status enum
+      were extended (`to_conversation_status`, `notifications/model.rs`,
+      `terminal/view.rs`, `agent_sdk/driver.rs`) plus the one over the event
+      type. Chip semantics follow the pin exactly: `Failed { .. }` →
+      `ConversationStatus::Error` regardless of `error_type`, latching until the
+      next `PromptSubmit` (no timer). Two stale comments claiming `Failed` was
+      cloud-only were corrected in place.
+- [x] **#596 — cancelling a TUI conversation lights an *error* in the GUI.**
+      **FIXED, pending merge** (`repin-iss596-cancelled`). An interaction defect
+      between two branches of this re-pin, neither wrong alone: the OSC 777
+      publisher (`repin-osc777`) emits `stop_failure` + `error_type:"cancelled"`
+      for `ConversationStatus::Cancelled` — **which is exactly what the new pin
+      `42effe840` emits**, upstream has no cancellation event tag — while the
+      `stop_failure` consumer (`repin-gap-stopfail`) faithfully restores the
+      pin's mapping of every `Failed` to `ConversationStatus::Error`, a red
+      triangle that latches until the next `PromptSubmit`. So the user's own
+      Ctrl-C reads as a persistent error, and the fork's distinct `Cancelled`
+      (gray stop) is never reached from a TUI session.
+      Fixed in the **protocol**, not with a literal in the GUI: new
+      `warp_core::cli_agent_error_type` types the `error_type` classification
+      (`Cancelled` / `Other(&str)`) in the crate both producer and consumer
+      already depend on, and `to_conversation_status()` branches on the variant.
+      **No wire change** — the emitted bytes stay upstream's, so no protocol
+      version bump and no plugin is affected. Follow-ups left open, both in
+      files that arrive from `repin-gap-stopfail`:
+      (a) `notifications/model.rs` still raises a `NotificationCategory::Error`
+      toast for a cancelled turn;
+      (b) the publisher's literal `Some("cancelled")` should become
+      `Some(cli_agent_error_type::CANCELLED)` — byte-identical, hygiene only.
+- [ ] **#586 — shell completions never learn functions or builtins.**
+      `Session::load_all_function_names` / `load_all_builtins` and the whole
+      deferred name-set machinery exist at the old pin, absent here (verified 0
+      hits vs 1-2). Same subsystem as the stale `warp-command-signatures` data
+      this round fixed — that one made completions *wrong*, this makes a class
+      of names invisible.
+- [x] **#585 — the TUI OSS binary still uses the pre-rename app id.**
+      **FIXED, pending merge** — flipped to `("dev","phosphor","Phosphor")` on
+      `repin-gap-appid`. `crates/warp_tui/src/bin/oss.rs:24` was
+      `AppId::new("dev","zap","Zap")` while `app/src/bin/phosphor_oss.rs:30` is
+      `("dev","phosphor","Phosphor")`. GUI read `~/.config/phosphor`, TUI read
+      `~/.config/zap`, different keyring service names — **API keys saved in
+      the GUI were invisible to the TUI.** Shipped that way in
+      `v2026.08.14.1-beta`.
+      *Root cause of the miss:* `specs/phosphor-rebrand/LAYER3-PLAN.md` §1
+      states "`AppId` is set in two places" and tabulates only
+      `channel/state.rs` and `app/src/bin/zap_oss.rs`. There are three; the
+      rename commit `874c2f43d` faithfully executed a plan that was one site
+      short. Plan and inventory corrected in the same branch.
+      *Migration:* none, matching `874c2f43d`'s recorded decision — the
+      maintainer accepted losing local state rather than carrying a keychain
+      migration. This orphans TUI-written state under `dev.zap.Zap` as well;
+      recorded in `README.md`'s storage-identity note.
+
+### Defects found by the fix-refutation pass (2026-08-15)
+
+- [ ] **#601 — every OpenCode/DeepSeek harness launch logs a false install failure.**
+      `driver.rs:1125` calls `manager.install()` with no `can_auto_install()`
+      check. DeepSeek returns `false` unconditionally, OpenCode likewise, Codex
+      behind a flag — so `install()` hits the trait default `Err("Auto-install
+      not supported")` and logs a warning for a *correct* decline. Also masks a
+      genuine Claude failure in the same stream. Distinct from #600: that path
+      needs `has_local_marketplace_override()`, this one needs
+      `can_auto_install()`, and the pin calls each in only one of the two.
+- [ ] **#602 — MCP template variables render unmasked.** `mcp_install_flow.rs`
+      collects them into the shared input with **no** `input_ownership`, while
+      its own `Debug` impl writes `[REDACTED]`. `TuiMcpTemplateVariable` carries
+      no secret flag, so nothing distinguishes an API token from a hostname.
+      Same class as #599; masking primitive arrives with `repin-input`.
+
+### Known-incomplete fixes — verified by refutation, not yet closed
+
+- [ ] **#596's central claim does not hold.** The commit says the cancellation
+      spelling is "written down once and both halves refer to the variant". The
+      **publisher still hardcodes `error_type: Some("cancelled")`**, and the test
+      that appears to guard this only asserts the constant against its own
+      literal. Also the fix moves the *status chip* only — `notifications/model.rs`
+      still files every `Failed` as `NotificationCategory::Error`, so a Ctrl-C
+      still lands in the notification centre as an error.
+- [ ] **#597's fix is sound; its justification is wrong.** The
+      permanent-bootstrap-file argument does not hold — that file is returned
+      only for `BootstrapSessionType::Local` PowerShell (the case #597 never
+      affected), and `WarpifiedRemote` streams the script from the local binary
+      each session rather than using an RC file. The rename direction is still
+      right on its other grounds, but **the wrong evidence is now baked into two
+      permanent doc comments** and should be corrected.
+- [ ] **`check_generator_wrapper_names` is defeated by commenting a line out —
+      8 of 8 `require`/`require_count` checks.** Commenting the pwsh
+      `Export-ModuleMember` line *is* #597's failure mode, and the guard passes.
+      It checks presence, not activeness. It also scans 4 of the 19 files in
+      `app/assets/bundled/bootstrap/`, so a third spelling in `bash.sh` passes.
+- [ ] **`check_brand_strings` residual misses**, exact text:
+      `concat!("Warp", " Agent…")`, `format!("… {} Agent…", "Warp")`,
+      `"Zap-powered completions"`, `"Zap2 is available"`, `"Warp\nAgent"`,
+      `"Warpを再起動してください"` (Rust side only), and **Fluent terms
+      (`-term = Warp Agent`) are not scanned at all** — zero terms today.
+      Worst false positive: a `brand-guard: allow` marker covers one line, so a
+      multi-line Fluent value or a marked message's `.attribute` still fires —
+      which hits its one sanctioned use, the AGPL §13 attribution.
+      **`Zapfino` fires in production code**; green today only because all 16
+      occurrences are in `*_test.rs`. Wider instance: `Ozone`.
+
+### Defects — correctness of the guards and the record
+
+- [x] **#591 — `user_controlled_alt_screen_...` asserts far less than the pin.**
+      **FIXED, pending merge** — glyph set restored on `repin-statusline` (forced
+      by the `4431b15ff` port itself), second signal restored on `repin-alttest`
+      (`0c338ccfa`). Note the correction recorded on the issue: the missing
+      `"auto (cost-efficient)"` clause was *inapplicable*, not merely dropped —
+      BYOP has no built-in model list, so the fork reads the active model name
+      dynamically. Original finding below for the record.
+      Negated `any`, so the fork's narrower predicate forbids *less*: pin bans
+      ten border glyphs + the model label, fork bans `┌` alone. This round's
+      `4431b15ff` port replaces box-drawing borders with hairline glyphs, so the
+      fork's assertion now has almost nothing left to catch. §5.6; recorded in
+      no document and uncommented at the site.
+- [ ] **#593 — 28 ledger rows say CLOUD where `DECLINED.md` says the opposite.**
+      24 are the `grok_*` cluster in `crates/ai/src/api_keys_tests.rs`, which
+      `DECLINED.md:93` claims by name and count while `:250` says explicitly it
+      is ***not*** a cloud drop. Kills the rule-2 tripwire and teaches the exact
+      false history the "common false positives" section exists to prevent.
+      **68 further `judgement`-confidence CLOUD rows are unsampled** — the
+      sampled hit rate was 28/58.
+- [ ] **#592 — tests added to already-classified files land in no bucket.**
+      `UNCLASSIFIED` is whole-file, so a file with existing ledger rows can
+      never surface new upstream tests. Measured this move: **284** across the
+      63 files first worked, plus **128** genuine candidates across the 9 files
+      a tooling bug had hidden. `terminal_session_view_tests.rs` alone gained
+      71 and rewrote 26 of the 84 it kept. Ceiling across the tree: 685.
+      Understates new debt silently, every re-pin.
+- [ ] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
+      genuine proper nouns continuing lowercase would fire. `Zapfino` (Apple's
+      font, 16 occurrences) survives only because every occurrence sits in a
+      `*_test.rs` file or a comment. A font name in production code needs
+      handling.
+
+### Divergences that need a decision, not a fix
+
+- [ ] **#583 — `test_phosphor_tui_variant_properties` asserts `None`** for
+      `brand_color()`/`icon()`; upstream now returns `Some(ColorU::black())` /
+      `Some(Icon::Warp)`. Either give the variant Phosphor branding and update
+      the assertion, or keep `None` with a `DECLINED.md` row and a `keep:`
+      marker. Leaving it stale is the one option that is wrong.
+- [ ] **#584 — `todo_glyph` `InProgress` uses `•` (U+2022)** where both pins use
+      `●` (U+25CF). Sibling arms (`✓`, `■`) match the pin exactly, so it is a
+      single-glyph divergence recorded nowhere. A ported test now pins the
+      character, which is the only thing holding it.
+- [ ] **#594 — `GeminiNotifications` stays out of `default`; promote only after
+      someone runs it.** **The issue's premise is refuted: this is not fork
+      drift.** There is no `gemini_notifications` cargo feature *upstream
+      either* — verified absent from `app/Cargo.toml` at both `02b53fcd8` and
+      `42effe840` — and upstream keeps the flag in `DOGFOOD_FLAGS` alone, with
+      `specs/APP-4067/TECH.md` §8 still listing "**Promote
+      `GeminiNotifications` from dogfood** — after validation" as an open
+      follow-up. The three siblings the issue calls "wired normally"
+      (`hoa_notifications`, `open_code_notifications`, `codex_notifications`)
+      are in upstream's `default` too, at lines 671/672/682 of its
+      `app/Cargo.toml`. So the asymmetry is upstream's, and the FLAG-DARK rule
+      "dark at the pin too → do not fix" applies. Adding it to `default` would
+      have shipped the chip *further than upstream has*.
+- [ ] **What #594 did surface, and what was changed.** Dogfood-only means
+      **unreachable by anyone** in this fork, not "awaiting validation" as it
+      does upstream. Upstream's dogfood channel is a GUI build; here
+      `app/src/bin/phosphor_oss.rs` is the only GUI binary and adds
+      `DEBUG_FLAGS` alone, while `DOGFOOD_FLAGS` reaches only `warp_tui`'s
+      `dev`/`local` binaries — a TUI with no plugin chip — and the schema
+      generators. So the validation upstream is waiting on could never happen
+      here. Fix applied: `gemini_notifications` registered in
+      `UNSTABLE_FEATURES` (`app/src/lib.rs`), i.e. opt-in via
+      `ZAP_UNSTABLE_FEATURES=gemini_notifications` and off for everyone else.
+      **Open work:** actually run it against a real `gemini` session, then
+      decide whether to promote to `default` — and if the answer is no, that
+      becomes a `DECLINED.md` row. No `DECLINED.md` row was added now, because
+      agreeing with the pin is not a non-parity decision.
+- [ ] **#594's trace, for whoever validates it.** Every link exists and was
+      checked: `plugin_manager_for(CLIAgent::Gemini)`
+      (`plugin_manager/mod.rs:281`, ANDed with `HOANotifications`) →
+      `GeminiPluginManager` (`plugin_manager/gemini.rs`, 11 tests in
+      `gemini_tests.rs`) → `gemini extensions install
+      https://github.com/warpdotdev/gemini-cli-warp --consent` → detection at
+      `~/.gemini/extensions/gemini-warp/gemini-extension.json` → the **local**
+      OSC 777 listener. Externally verified rather than assumed: the extension
+      repo is published and public, its manifest `name` is `gemini-warp` (so
+      `EXTENSION_NAME` and the detection path are right) and its `version` is
+      `1.0.0` (so `MINIMUM_PLUGIN_VERSION` matches and a fresh install does not
+      immediately re-show the update chip). Upstream's *other* stated shipping
+      blocker — "Publish `warpdotdev/gemini-warp` to GitHub — must happen
+      before shipping to external users" — is therefore already satisfied. The
+      protocol sentinel is still `warp://cli-agent`
+      (`cli_agent_sessions/event/mod.rs:12`), which the extension emits, so the
+      rebrand did not break the wire. `is_agent_supported`/`create_handler`
+      already accept `CLIAgent::Gemini` under `HOANotifications` alone
+      (`listener/mod.rs:46`, `:69`), so **notifications from a hand-installed
+      extension already work today** — the flag gates only the install/update
+      chip. Two residual risks for the validator: the extension needs Gemini
+      CLI v0.26.0+ and nothing version-checks the CLI (an older CLI fails the
+      install command and falls back to the manual-instructions modal via
+      `record_plugin_auto_failure_and_notify`, degraded but handled); and
+      `plugin_manager_for` is the flag's **only** consumer, so nothing else
+      moves when it flips.
+
+### Consequences of this round's merges — check after integrating
+
+- [ ] **Benchmark debt becomes real.** `repin-misc` adds
+      `benches/transcript_bench.rs` and `benchmark_support.rs`. Two other
+      branches skipped bench hunks as "no bench harness here" — after merge,
+      `a95e6e541`'s `ClippedTerminalBlockBenchmark` and `b462e0132`'s
+      `zero_state_bench.rs` are genuine unported debt.
+- [ ] **`slash_command_is_submitted_as_prompt`** (`app/src/terminal/input/slash_commands/mod.rs:80`)
+      matches `SlashCommandKind::Orchestrate`, which this fork's `kind()` never
+      produces — `/orchestrate` maps to `SlashCommandKind::Other`. Latent
+      unreachable branch; found while confirming `a86400ede` was already present.
+- [ ] **`join_a_workspace()`** (`app/src/integration_testing/assertions.rs:43`)
+      is now unreferenced — the two deleted team command-palette tests were its
+      only consumers. Left deliberately as pin-derived scaffolding.
+- [ ] **`agent-zero-state-title-cloud` (ja)** reads
+      `新規 Phosphor Agent ローカルエージェント会話` — the doubled-noun artifact,
+      but the redundancy sits inside `ローカルエージェント`. Removing it changes
+      meaning, not branding. Needs a translator; the key has no `en` counterpart
+      to follow, and the brand guard cannot see it.
+- [ ] **`input_cut_binding_yields_ctrl_x_to_contextual_menu_clear`** is not
+      portable: neither the test nor the `INLINE_MENU_CAN_CLEAR_SELECTED_FLAG`
+      carve-out for cut exists here. Porting needs a production change.
+
+## FOLLOW-UP FROM #595 (2026-08-15) — the plugin manager's other uncalled method
+
+#595 removed the four Oz-platform-plugin methods (`DECLINED.md`, "Oz platform
+plugins"). Tracing their pin-side callers surfaced one residual that is **not**
+declined and is a genuine, if small, divergence. Recorded here rather than as a
+GitHub issue because the agent that found it had no remote-write authority.
+
+- [ ] **`CliAgentPluginManager::has_local_marketplace_override` has no non-test
+      caller, and the call site it belongs at is missing its guard.** The pin
+      calls it in `ensure_local_claude_child_plugins`
+      (`app/src/pane_group/pane/local_harness_launch.rs:35-53` at `02b53fcd8`) to
+      *skip* notification-plugin install/update when a developer has pointed the
+      `claude-code-warp` marketplace at a local checkout — installing re-adds the
+      public marketplace and clobbers the override. This fork's equivalent
+      (`app/src/pane_group/pane/local_harness_launch.rs:261`) calls
+      `manager.install()` unconditionally, so launching a local Claude child pane
+      on a machine with a local marketplace override silently replaces it. The
+      method, its two impls (`claude.rs`, `codex.rs`) and its two tests are all
+      present and correct — only the caller's guard is missing. Unlike the
+      platform-plugin methods this is **local and non-cloud**: it reads
+      `settings.json` / `config.toml` on disk and gates a `claude plugin` /
+      `codex plugin` invocation, with no Oz surface involved, so it was left in
+      place. Fix is ~3 lines at the call site; it needs the same
+      `needs_update()`-else-`is_installed()` shape the pin uses, not a bare
+      `if !override`.
+
+## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
+
+`ORACLE.md` pins the Warp *commit*, but upstream's `Cargo.toml` pins several
+**external git repos** that move on their own schedule. Nothing in the re-pin
+runbook covered them until now (`docs/pin-migration.md` Phase 3.5 closes that),
+so they have drifted silently since the initial public release.
+
+Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly**
+— this has mostly been tracked — and the exceptions split three ways.
+
+### Real drift — the fork is simply behind
+
+- [ ] **`warp-command-signatures`: `00a032b8` → `fe352669`.** The completion
+      spec data, pulled with `embed-signatures`, compiled into the binary and
+      consumed by `crates/warp_completer`. Set in "Initial public release of
+      Warp" and never touched since. Upstream was already at `29cd61c3` at the
+      **old** pin, so the fork was behind before this pin move — this is
+      pre-existing debt, not something the re-pin created. Recorded in no
+      document: not `DECLINED.md`, not `ORACLE.md`, not `docs/STATE.md`.
+      Consequence: every command whose flags or arguments changed upstream
+      completes against stale data. The bump is a lockfile change plus a build,
+      **not** a source port; the five intermediate revs do not apply as diffs
+      because the fork's base does not match the start of the chain.
+      Repo is reachable (HEAD `d79e09c4` as of 2026-08-15).
+
+- [ ] **`notify-debouncer-full`: `f3afcda30` → `91b719849`.** Same repo
+      (`warpdotdev/notify`), fork behind, undocumented. This is the filesystem
+      watch debouncer — it sits under the directory-watch paths that the
+      `RepositoryWatchMode` work also touches, so check the two together.
+
+### A divergence needing a decision, not a bump
+
+- [ ] **`rmcp`: fork pins `warpdotdev/rmcp` at `c0f65dc44`; upstream has moved
+      to crates.io `version = "1.6"`.** Not a lag — a different sourcing
+      strategy. Decide whether to follow upstream onto the published crate
+      (fewer git deps, `deny.toml`'s `allow-git` gets shorter) or keep the fork
+      pin, and record whichever it is.
+
+### Correct as they stand — do not "fix" these
+
+- **`winit`** differs deliberately and is documented in `Cargo.toml`: the fork
+  carries one extra commit (rust-windowing/winit#4453, Windows dark-mode
+  detection via registry), open and unreviewed upstream since 2025-12-27.
+- **`tink-core` / `tink-proto` / `tink-hybrid`** are upstream-only and correctly
+  absent: they back `crates/managed_secrets`' envelope encryption, and this fork
+  wires `DisabledManagedSecretsClient`.
+
+## FOLLOW-UP FROM #600 (2026-08-15) — the *other* unconditional plugin install
+
+#600 fixed the local-child-pane call site
+(`app/src/pane_group/pane/local_harness_launch.rs`, now
+`ensure_local_claude_child_plugins`). Tracing the pin's shape for that fix
+surfaced the same divergence at the second call site, which #600 deliberately
+did **not** touch — it is a different pin function and a different failure
+mode. Recorded here rather than as a GitHub issue because the agent that found
+it had no remote-write authority.
+
+- [ ] **`AgentDriver::setup_harness` installs the notification plugin
+      unconditionally** (`app/src/ai/agent_sdk/driver.rs:1125`,
+      `if let Err(e) = manager.install().await`). The pin splits this into
+      `setup_harness_plugins` → `setup_notification_plugin`
+      (`driver.rs:2671-2723` at `02b53fcd8`), which does two things this fork's
+      version does not: it **returns early when `!manager.can_auto_install()`**,
+      and it branches `needs_update()` → `update()`, else `!is_installed()` →
+      `install()`. Two consequences here. First, every third-party-harness
+      launch shells out to a full `plugin marketplace add` + `plugin install`
+      even when the plugin is already current — the same redundant subprocess
+      work #600 removed from the child-pane path. Second, and unlike the
+      child-pane path, `plugin_manager_for` can hand back a manager whose
+      `can_auto_install()` is `false`: `OpenCodePluginManager` and
+      `DeepSeekPluginManager` both return `false` unconditionally, and
+      `CodexPluginManager` returns `FeatureFlag::CodexPlugin.is_enabled()`.
+      For those, `install()` falls through to the trait's default impl, which
+      returns `Err("Auto-install not supported for this agent")` — so this line
+      logs a warning on **every** OpenCode/DeepSeek harness launch, describing
+      a failure that is really "this agent was never auto-installable".
+      Note the marketplace-override guard is *not* part of this one: the pin's
+      `setup_notification_plugin` does not call
+      `has_local_marketplace_override` either, only
+      `ensure_local_claude_child_plugins` does. Port the `can_auto_install` +
+      `needs_update`/`is_installed` shape only. The pin's version also wraps each
+      call in `SetupClientEventReporter::record_result`; that reporter has no
+      definition anywhere in this fork (`grep -r SetupClientEventReporter app/src`
+      is empty), so port the branching and drop the reporting, rather than
+      dragging in a telemetry surface to carry it.
+
+## WINDOWS TUI INSTALLER — deferred 2026-08-15 (maintainer's call)
+
+- [ ] Upstream `ddba1684e` / `d9ed47239` ship a signed Inno Setup installer for
+      the TUI and rework TUI autoupdate to download and run it. **Deferred, not
+      declined** — revisit when Windows packaging is worth investing in.
+
+      What it needs, so the next person does not re-derive it: the fork's
+      `script/windows/bundle.ps1` has no `tui` artifact at all; the TUI install
+      layout here is Unix-only (`#[cfg(unix)]`, symlinks); and the commits carry
+      `warp_tui` feature additions that do not exist in this fork
+      (`nld_classifier_v3`, `nld_heuristic_v2`, `voice_input`). So this is a
+      packaging project, not a port.
+
+      Related and already tracked separately: the Windows smoke suite above is
+      at 5/19 with GUI bootstrap as the blocker.
+
+## HOMEBREW-MANAGED TUI UPDATES — SCOPE-DECISION 2026-08-15 (needs a cask identity)
+
+- [ ] Upstream `f4be4f692` (#14899) makes TUI autoupdate package-manager-aware:
+      a `Homebrew` arm on the install-method detection that only *checks* for a
+      newer version and renders `brew upgrade --cask <token>` instead of staging
+      an install, leaving Homebrew-owned files alone. The mechanism is sound and
+      non-cloud, and the fork's `crates/warp_tui/src/autoupdate.rs` still has the
+      pre-change shape it grafts onto (`InstallLayout::detect`,
+      `AutoupdateEligibility::Enabled(layout)`, `check_now`), so the port is
+      mechanically straightforward.
+
+      **It is blocked on a product decision, not on code.** Upstream keys the
+      detection on the binary `warp-tui-stable` sitting under
+      `Caskroom/warp-agent-cli`, and renders that cask token in a user-visible
+      status string. Porting those literals gives this fork permanently dead
+      code whose only tests can never fire, and — worse than dead — a status
+      line telling a Phosphor user to run a `brew` command that installs Warp.
+
+      What is missing, so the next person does not re-derive it:
+
+      1. **No Homebrew distribution exists for this fork at all.** Upstream's
+         companion PRs are a tap (`warpdotdev/homebrew-warp`, cask
+         `warp-agent-cli`) and an automated cask-bump job in
+         `warpdotdev/channel-versions`. Neither has a Phosphor counterpart, and
+         nothing in this tree references a tap, a cask, or `brew` as a
+         distribution channel.
+      2. **The binary name the detector keys on does not exist here.**
+         `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares
+         exactly one bin, `zap-tui-oss`. `src/bin/stable.rs` is present as
+         source but is deliberately undeclared — it needs `warp_channel_config`,
+         which this fork does not have.
+      3. **That name is itself in flux.** Unmerged branches rename
+         `zap-tui-oss` to `phosphor-tui-oss`. Choosing a cask token before that
+         lands means choosing twice.
+
+      To unblock, the maintainer needs to settle three things: whether Phosphor
+      distributes via Homebrew at all; if so, the tap repo and cask token; and
+      the release binary name after the zap→phosphor rename. **Do not invent a
+      cask name to make the port compile** — the token is a public identifier
+      and a user-visible string, not an implementation detail.
+
 ## RE-PIN AUTOMATION -- build during catch-up, pays off at pin N+1
 
 Decided 2026-08-08. The catch-up against `02b53fcd8` is the FIRST pass and is

@@ -30,7 +30,7 @@ pub(crate) fn ensure_warp_watch_roots_exist() {
     let data_dir = warp_data_dir();
     if let Err(err) = fs::create_dir_all(&data_dir) {
         log::warn!(
-            "Failed to create Zap data directory {}: {err}",
+            "Failed to create Phosphor data directory {}: {err}",
             data_dir.display()
         );
     }
@@ -39,7 +39,7 @@ pub(crate) fn ensure_warp_watch_roots_exist() {
     if config_local_dir != data_dir {
         if let Err(err) = fs::create_dir_all(&config_local_dir) {
             log::warn!(
-                "Failed to create Zap config directory {}: {err}",
+                "Failed to create Phosphor config directory {}: {err}",
                 config_local_dir.display()
             );
         }
@@ -246,13 +246,17 @@ impl WarpManagedPathsWatcher {
             let config_local_dir = warp_core::paths::config_local_dir();
             let should_register_config_local_dir = config_local_dir != data_dir;
             let worktrees_dir = data_dir.join("worktrees");
+            // Safe to use for both directory registration and event emission.
+            // If this rejects `worktrees_dir`, every descendant should be rejected too,
+            // so the recursive watcher never prunes an ancestor needed to reach an allowed path.
+            let filter = Arc::new(move |path: &Path| !path.starts_with(&worktrees_dir));
             Self::register_path(
                 ctx,
                 &watcher,
                 data_dir.clone(),
-                WatchFilter::with_filter(Arc::new(move |path| !path.starts_with(&worktrees_dir))),
+                WatchFilter::with_filter(filter.clone(), filter),
                 RecursiveMode::Recursive,
-                "Zap data directory",
+                "Phosphor data directory",
             );
             if should_register_config_local_dir {
                 Self::register_path(
@@ -261,7 +265,7 @@ impl WarpManagedPathsWatcher {
                     config_local_dir.clone(),
                     WatchFilter::accept_all(),
                     RecursiveMode::Recursive,
-                    "Zap config directory",
+                    "Phosphor config directory",
                 );
             }
             if let Some(warp_home_skills_dir) = warp_home_skills_dir() {
@@ -276,7 +280,7 @@ impl WarpManagedPathsWatcher {
                         warp_home_skills_dir,
                         WatchFilter::accept_all(),
                         RecursiveMode::Recursive,
-                        "Zap home skills directory",
+                        "Phosphor home skills directory",
                     );
                 }
             }
@@ -292,11 +296,14 @@ impl WarpManagedPathsWatcher {
                         ctx,
                         &watcher,
                         warp_home_config_dir,
-                        WatchFilter::with_filter(Arc::new(move |path| {
-                            path == warp_home_mcp_config_path
-                        })),
+                        // Watch the config directory non-recursively,
+                        // and ignore events for files other than the MCP config file.
+                        WatchFilter::with_filter(
+                            Arc::new(|_: &Path| true),
+                            Arc::new(move |path: &Path| path == warp_home_mcp_config_path),
+                        ),
                         RecursiveMode::NonRecursive,
-                        "Zap home MCP config directory",
+                        "Phosphor home MCP config directory",
                     );
                 }
             }
@@ -392,7 +399,7 @@ mod tests {
                 assert_eq!(path.config_path, warp_home_mcp_config_path);
             }
             (_, _, None) => {}
-            _ => panic!("Expected Zap MCP path when home directory is available"),
+            _ => panic!("Expected Phosphor MCP path when home directory is available"),
         }
     }
 

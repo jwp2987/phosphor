@@ -221,14 +221,14 @@ fn status_snapshot(status: TuiInlineMenuStatus) -> TuiInlineMenuSnapshot {
 }
 
 #[test]
-fn renders_loading_and_empty_statuses() {
+fn renders_loading_and_empty_statuses_left_aligned() {
     let loading = render(status_snapshot(TuiInlineMenuStatus::Loading(
         "Loading conversations…".to_owned(),
     )));
     assert!(
         loading
             .iter()
-            .any(|line| line.contains("Loading conversations…"))
+            .any(|line| line.starts_with("Loading conversations…"))
     );
 
     let empty = render(status_snapshot(TuiInlineMenuStatus::Empty(
@@ -237,7 +237,7 @@ fn renders_loading_and_empty_statuses() {
     assert!(
         empty
             .iter()
-            .any(|line| line.contains("No conversations found"))
+            .any(|line| line.starts_with("No conversations found"))
     );
 }
 
@@ -353,7 +353,7 @@ fn conversation_like_snapshot_reuses_header_tabs_rows_and_selection() {
     let rendered = lines.join("\n");
     assert!(rendered.contains("Conversations"));
     assert!(rendered.contains("[All]  Pinned"));
-    assert!(!rendered.chars().any(|glyph| "┌┐└┘─│".contains(glyph)));
+    assert!(!rendered.chars().any(|glyph| "┌┐└┘─│▏▕▁▔".contains(glyph)));
     assert!(rendered.contains("Current project  2 minutes ago"));
     assert!(rendered.contains("Archived"));
 }
@@ -451,7 +451,7 @@ fn slash_command_rows_match_figma_layout_and_colors() {
             assert!(
                 !lines
                     .iter()
-                    .any(|line| line.chars().any(|glyph| "┌┐└┘─│".contains(glyph)))
+                    .any(|line| line.chars().any(|glyph| "┌┐└┘─│▏▕▁▔".contains(glyph)))
             );
             assert_eq!(
                 frame.buffer[(0, 0)].bg,
@@ -747,6 +747,63 @@ fn interactive_menu_scrolls_only_within_its_bounds() {
             assert_eq!(*menu.accepted_index.borrow(), None);
         });
     });
+}
+
+/// #587: `state_suffix` used to be emitted from inside the `description` block, so a
+/// `Default` row with a suffix and no description rendered *nothing*. That inverted the
+/// model menu's `(key connected)` marker -- selectable models (no `disabled` description)
+/// lost it and unselectable ones kept it. Asserts on the rendered lines, because the
+/// snapshot-level tests assert on `TuiInlineMenuRow::state_suffix`, which was always right.
+#[test]
+fn default_row_state_suffix_renders_with_and_without_a_description() {
+    let lines = rendered_labels(
+        TuiInlineMenuSnapshot {
+            header: None,
+            rows: vec![
+                TuiInlineMenuRow {
+                    title: "byop:openai:gpt-5".to_owned(),
+                    prefix: None,
+                    description: None,
+                    state_suffix: Some("(key connected)".to_owned()),
+                    is_selectable: true,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+                TuiInlineMenuRow {
+                    title: "byop:openai:o3".to_owned(),
+                    prefix: None,
+                    description: Some("disabled".to_owned()),
+                    state_suffix: Some("(key connected)".to_owned()),
+                    is_selectable: false,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+                TuiInlineMenuRow {
+                    title: "byop:local:llama".to_owned(),
+                    prefix: None,
+                    description: Some("disabled".to_owned()),
+                    state_suffix: None,
+                    is_selectable: false,
+                    style: TuiInlineMenuRowStyle::Default,
+                },
+            ],
+            selected_index: Some(0),
+            scroll_offset: 0,
+            scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+            max_visible_rows: 8,
+            status: None,
+        },
+        4,
+    );
+
+    assert_eq!(
+        lines,
+        vec![
+            // Selectable and key-connected: the marker must render, in the same column a
+            // description would have started in.
+            "byop:openai:gpt-5  (key connected)",
+            "byop:openai:o3  disabled (key connected)",
+            "byop:local:llama  disabled",
+        ]
+    );
 }
 
 #[test]

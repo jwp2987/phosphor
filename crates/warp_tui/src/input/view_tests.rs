@@ -15,9 +15,9 @@ use warp::settings::AISettingsChangedEvent;
 use warp::tui_export::{
     AcceptSlashCommandOrSavedPrompt, BlocklistAIHistoryModel, BlocklistAIInputModel,
     ConversationSelectionEvent, InputConfig, InputModePolicy, InputType, LLMId, PolicyConfigUpdate,
-    SlashCommandId, SlashCommandMixer, TuiUpArrowHistoryItemKind, add_tui_history_test_models,
-    blocklist_ai_history_model_with_queries, register_tui_input_mode_test_settings,
-    register_tui_session_view_test_singletons,
+    SlashCommandId, SlashCommandMixer, TuiMcpAction, TuiMcpServerId, TuiUpArrowHistoryItemKind,
+    add_tui_history_test_models, blocklist_ai_history_model_with_queries,
+    register_tui_input_mode_test_settings, register_tui_session_view_test_singletons,
 };
 use warp_core::features::FeatureFlag;
 use warp_editor::model::CoreEditorModel;
@@ -36,15 +36,16 @@ use warpui_core::{
 };
 
 use super::{
-    INPUT_HANDLES_ESCAPE_FLAG, TuiInputAction, TuiInputView, TuiInputViewEvent,
-    input_keymap_context,
+    INPUT_HANDLES_ESCAPE_FLAG, MCP_MENU_ACTIVE_FLAG, TuiInputAction, TuiInputView,
+    TuiInputViewEvent, input_keymap_context,
 };
 use crate::completions_menu::TuiAcceptedCompletion;
 use crate::editor_element::{TuiEditorAction, TuiEditorElement};
 use crate::editor_interaction::TuiEditorCommand;
 use crate::inline_menu::{
     TuiInlineMenu, TuiInlineMenuAccepted, TuiInlineMenuHandle, TuiInlineMenuHeader,
-    TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot, TuiInlineMenuStatus,
+    TuiInlineMenuInputOwnership, TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot,
+    TuiInlineMenuStatus,
 };
 use crate::input_mode_policy::AI_LOCKED_CONFIG;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
@@ -92,11 +93,206 @@ impl InputModePolicy for TestInputModePolicy {
     }
 }
 
+/// A minimal inline menu that claims masked ownership of the shared editor.
+/// Stands in for the `/api-keys` menu that lands upstack from the pin's
+/// `a3a06f234`; the ownership plumbing is what is under test here.
+struct TestSecretMenu;
+
+impl Entity for TestSecretMenu {
+    type Event = ();
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TestSecretMenu> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ModelSelector
+    }
+
+    fn is_open(&self, _ctx: &AppContext) -> bool {
+        true
+    }
+
+    fn input_ownership(&self, _ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        TuiInlineMenuInputOwnership::InlineMenuMasked
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, _ctx: &mut AppContext) {}
+    fn select_next(&self, _ctx: &mut AppContext) {}
+    fn accept(&self, _ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        None
+    }
+    fn dismiss(&self, _ctx: &mut AppContext) {}
+    fn snapshot(&self, _ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        Some(TuiInlineMenuSnapshot {
+            header: Some(TuiInlineMenuHeader {
+                title: Some("Secret".to_owned()),
+                tabs: Vec::new(),
+            }),
+            rows: Vec::new(),
+            selected_index: None,
+            scroll_offset: 0,
+            scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+            max_visible_rows: 1,
+            status: None,
+        })
+    }
+}
+
+#[test]
+fn masked_inline_menu_input_keeps_copy_and_paste_inside_masked_editor() {
+    App::test((), |mut app| async move {
+        let (view, leaked_event_count) = app.update(|ctx| {
+            let view = build_view_with_masked_inline_menu(ctx);
+            let leaked_event_count = Rc::new(Cell::new(0));
+            let leaked_event_count_for_subscription = leaked_event_count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(
+                    event,
+                    TuiInputViewEvent::Pasted(_)
+                        | TuiInputViewEvent::ClipboardCopySucceeded
+                        | TuiInputViewEvent::ClipboardCopyFailed
+                ) {
+                    leaked_event_count_for_subscription
+                        .set(leaked_event_count_for_subscription.get() + 1);
+                }
+            });
+            (view, leaked_event_count)
+        });
+
+        app.update(|ctx| {
+            type_str(&view, ctx, "top-secret");
+            dispatch(
+                &view,
+                ctx,
+                &[
+                    TuiInputAction::EditorCommand(TuiEditorCommand::SelectAll),
+                    TuiInputAction::EditorCommand(TuiEditorCommand::Copy),
+                    TuiInputAction::Editor(TuiEditorAction::PasteText(
+                        "replacement-secret".to_owned(),
+                    )),
+                ],
+            );
+        });
+        app.read(|ctx| {
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert_eq!(text(&view, ctx), "replacement-secret");
+            assert!(rendered.contains("••••••••••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+        assert_eq!(
+            leaked_event_count.get(),
+            0,
+            "masked copy and paste must not emit composer or clipboard events"
+        );
+    });
+}
+
+#[test]
+fn masked_inline_menu_input_keeps_undo_and_redo_inside_masked_editor() {
+    App::test((), |mut app| async move {
+        let view = app.update(build_view_with_masked_inline_menu);
+
+        app.update(|ctx| {
+            type_str(&view, ctx, "top-secret");
+            dispatch(
+                &view,
+                ctx,
+                &[
+                    TuiInputAction::EditorCommand(TuiEditorCommand::SelectAll),
+                    TuiInputAction::Editor(TuiEditorAction::PasteText(
+                        "replacement-secret".to_owned(),
+                    )),
+                    TuiInputAction::EditorCommand(TuiEditorCommand::Undo),
+                ],
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(text(&view, ctx), "top-secret");
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert!(rendered.contains("••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+
+        app.update(|ctx| {
+            dispatch(
+                &view,
+                ctx,
+                &[TuiInputAction::EditorCommand(TuiEditorCommand::Redo)],
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(text(&view, ctx), "replacement-secret");
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert!(rendered.contains("••••••••••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+    });
+}
+
+#[test]
+fn masked_inline_menu_input_suppresses_composer_modes() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view_with_masked_inline_menu(ctx);
+            type_str(&view, ctx, "!?");
+            assert_eq!(text(&view, ctx), "!?");
+            assert!(!view.as_ref(ctx).is_shell_mode(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ModelSelector
+            );
+        });
+    });
+}
+
+fn build_view_with_masked_inline_menu(ctx: &mut AppContext) -> ViewHandle<TuiInputView> {
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
+    let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
+    let input_mode = add_test_input_mode(ctx);
+    // Must follow `add_test_input_mode`: it reaches `register_all_settings`,
+    // which registers `SemanticSelection` **unguarded**, while the call below is
+    // guarded. Running the guarded one first registers the mock and makes the
+    // later unguarded registration panic with "called twice".
+    add_test_semantic_selection(ctx);
+    let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::ModelSelector);
+    let menu = ctx.add_model(|_| TestSecretMenu);
+    let (_, view) = ctx.add_tui_window(
+        AddWindowOptions {
+            window_style: WindowStyle::NotStealFocus,
+            ..Default::default()
+        },
+        move |ctx| {
+            TuiInputView::new_for_test(
+                input_model,
+                input_mode,
+                suggestions_mode,
+                vec![TuiInlineMenu::new(menu)],
+                |_| false,
+                ctx,
+            )
+        },
+    );
+    view
+}
+
 #[test]
 fn input_escape_context_is_present_only_while_escape_is_handled() {
-    let closed = input_keymap_context(false, false, false);
+    let closed = input_keymap_context(false, false, false, false);
     assert!(closed.set.contains("TuiInputView"));
     assert!(!closed.set.contains(INPUT_HANDLES_ESCAPE_FLAG));
+    assert!(!closed.set.contains(MCP_MENU_ACTIVE_FLAG));
     assert!(
         !closed
             .set
@@ -108,9 +304,10 @@ fn input_escape_context_is_present_only_while_escape_is_handled() {
             .contains(crate::keybindings::KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG)
     );
 
-    let open = input_keymap_context(true, true, true);
+    let open = input_keymap_context(true, true, true, true);
     assert!(open.set.contains("TuiInputView"));
     assert!(open.set.contains(INPUT_HANDLES_ESCAPE_FLAG));
+    assert!(open.set.contains(MCP_MENU_ACTIVE_FLAG));
     assert!(
         open.set
             .contains(crate::keybindings::PLAN_TOGGLE_AVAILABLE_FLAG)
@@ -119,6 +316,107 @@ fn input_escape_context_is_present_only_while_escape_is_handled() {
         open.set
             .contains(crate::keybindings::KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG)
     );
+}
+
+/// An inline menu that only offers a secondary action, standing in for the
+/// `/mcp` menu's Ctrl+R log-out path.
+#[derive(Clone)]
+struct TestMcpMenu {
+    action: TuiMcpAction,
+}
+
+impl TuiInlineMenuHandle for TestMcpMenu {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::Mcp
+    }
+
+    fn is_open(&self, _ctx: &AppContext) -> bool {
+        true
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, _ctx: &mut AppContext) {}
+
+    fn select_next(&self, _ctx: &mut AppContext) {}
+
+    fn accept(&self, _ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        None
+    }
+
+    fn accept_secondary(&self, _ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        Some(TuiInlineMenuAccepted::Mcp(self.action))
+    }
+
+    fn dismiss(&self, _ctx: &mut AppContext) {}
+
+    fn snapshot(&self, _ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        None
+    }
+}
+
+#[test]
+fn ctrl_r_dispatches_selected_mcp_credential_removal() {
+    App::test((), |mut app| async move {
+        let (window_id, view, expected, accepted) = app.update(|ctx| {
+            crate::input::init(ctx);
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
+            let input_mode = add_test_input_mode(ctx);
+            // Must follow `add_test_input_mode`: it reaches `register_all_settings`,
+            // which registers `SemanticSelection` **unguarded**, while the call below
+            // is guarded. Running the guarded one first makes the later unguarded
+            // registration panic with "called twice".
+            add_test_semantic_selection(ctx);
+            let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::Mcp);
+            let expected = TuiMcpAction::LogOut(TuiMcpServerId::FileBased(7));
+            let menu = TuiInlineMenu::new(TestMcpMenu { action: expected });
+            let (window_id, view) = ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                move |ctx| {
+                    TuiInputView::new_for_test(
+                        input_model,
+                        input_mode,
+                        suggestions_mode,
+                        vec![menu],
+                        |_| false,
+                        ctx,
+                    )
+                },
+            );
+            view.update(ctx, |_, ctx| ctx.focus_self());
+
+            let accepted = Rc::new(RefCell::new(Vec::new()));
+            let accepted_for_subscription = accepted.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if let TuiInputViewEvent::AcceptedMcp(action) = event {
+                    accepted_for_subscription.borrow_mut().push(*action);
+                }
+            });
+            (window_id, view, expected, accepted)
+        });
+
+        let handled = app
+            .dispatch_keystroke(
+                window_id,
+                &[view.id()],
+                &Keystroke::parse("ctrl-r").expect("valid keystroke"),
+                false,
+            )
+            .expect("keystroke dispatch succeeds");
+
+        assert!(handled);
+        assert_eq!(accepted.borrow().as_slice(), &[expected]);
+    });
 }
 
 fn add_suggestions_mode(
@@ -937,6 +1235,7 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedConversation(_)
                 | TuiInputViewEvent::AcceptedModel(_)
                 | TuiInputViewEvent::AcceptedMcp(_)
+                | TuiInputViewEvent::AcceptedMcpInstall(_)
                 | TuiInputViewEvent::AcceptedPromptAndCommandHistory(..)
                 | TuiInputViewEvent::AcceptedCompletion(_)
                 | TuiInputViewEvent::AcceptedProfile(_)
@@ -2630,13 +2929,13 @@ fn keymap_context_flags_shell_mode() {
             let view = build_view(ctx);
             assert_eq!(
                 view.as_ref(ctx).keymap_context(ctx),
-                input_keymap_context(false, false, false)
+                input_keymap_context(false, false, false, false)
             );
 
             type_str(&view, ctx, "!");
             assert_eq!(
                 view.as_ref(ctx).keymap_context(ctx),
-                input_keymap_context(true, false, false)
+                input_keymap_context(true, false, false, false)
             );
         });
     });

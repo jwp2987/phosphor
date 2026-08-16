@@ -166,6 +166,30 @@ impl NotificationsModel {
                         ctx,
                     );
                 }
+                CLIAgentSessionStatus::Failed {
+                    error_type,
+                    message,
+                } => {
+                    let title = session_context
+                        .display_title()
+                        .unwrap_or_else(|| format!("{} failed", agent.display_name()));
+                    let body = match (message.as_deref(), error_type.as_deref()) {
+                        (Some(msg), Some(kind)) => format!("{kind}: {msg}"),
+                        (Some(msg), None) => msg.to_owned(),
+                        (None, Some(kind)) => kind.to_owned(),
+                        (None, None) => "The agent encountered an error.".to_owned(),
+                    };
+                    self.add_notification(
+                        title,
+                        body,
+                        NotificationCategory::Error,
+                        NotificationSourceAgent::CLI(*agent),
+                        NotificationOrigin::CLISession(*terminal_view_id),
+                        *terminal_view_id,
+                        vec![],
+                        ctx,
+                    );
+                }
                 CLIAgentSessionStatus::Blocked { message } => {
                     let title = session_context
                         .display_title()

@@ -11,7 +11,9 @@ use repo_metadata::repositories::{DetectedRepositories, DetectedRepositoriesEven
 use repo_metadata::repository::{
     BufferingRepositorySubscriber, RepositorySubscriber, SubscriberId,
 };
-use repo_metadata::{CanonicalizedPath, DirectoryWatcher, Repository, RepositoryUpdate};
+use repo_metadata::{
+    CanonicalizedPath, DirectoryWatcher, Repository, RepositoryUpdate, RepositoryWatchMode,
+};
 use settings::Setting as _;
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
@@ -315,7 +317,11 @@ impl RepoOutlines {
             };
             let debounced =
                 BufferingRepositorySubscriber::new(inner, REPO_WATCHER_DEBOUNCE_DURATION);
-            repo.start_watching(Box::new(debounced), ctx)
+            repo.start_watching(
+                RepositoryWatchMode::FilesystemOnly,
+                Box::new(debounced),
+                ctx,
+            )
         });
         let subscriber_id = start.subscriber_id;
 

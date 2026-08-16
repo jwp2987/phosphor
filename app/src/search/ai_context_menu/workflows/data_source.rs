@@ -2,6 +2,7 @@ use super::search_item::WorkflowSearchItem;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::StoredObjectModel;
 use crate::search::ai_context_menu::mixer::AIContextMenuSearchableAction;
+use crate::search::ai_context_menu::safe_truncate;
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::{DataSourceRunErrorWrapper, SyncDataSource};
 use crate::workspaces::user_workspaces::UserWorkspaces;
@@ -65,7 +66,12 @@ impl SyncDataSource for WorkflowDataSource {
                 None
             } else {
                 Some(if content_preview.len() > 200 {
-                    format!("{}...", &content_preview[..197])
+                    // Truncate at a valid UTF-8 char boundary to avoid panicking when a
+                    // multi-byte character straddles the byte-197 cut point.
+                    let mut truncated = content_preview;
+                    safe_truncate(&mut truncated, 197);
+                    truncated.push_str("...");
+                    truncated
                 } else {
                     content_preview
                 })

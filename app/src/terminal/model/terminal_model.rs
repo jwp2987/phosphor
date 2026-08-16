@@ -1545,6 +1545,7 @@ impl TerminalModel {
         if self.handled_exit {
             return;
         }
+        log::debug!("Terminal model exiting: reason={reason:?}");
         let transition = self.plan_lifecycle_transition(LifecycleInput::Exit, None, None, None);
 
         self.handled_exit = true;
@@ -3222,7 +3223,7 @@ impl ansi::Handler for TerminalModel {
             if value.external_control_master {
                 log::info!(
                     "SSH wrapper attached to an external ControlMaster at {}; \
-                     Warp will not tear it down on session exit",
+                     Phosphor will not tear it down on session exit",
                     value.socket_path.display()
                 );
             }

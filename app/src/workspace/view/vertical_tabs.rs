@@ -33,7 +33,7 @@ use crate::pane_group::TerminalPane;
 use crate::pane_group::{
     CodePane, NotebookPane, PaneGroup, PaneId, TabBarHoverIndex, WorkflowPane,
 };
-use crate::tab::{tab_position_id, SelectedTabColor, TabData};
+use crate::tab::{tab_position_id, SelectedTabColor, TabData, TAB_INDICATOR_SYNCED_COLOR};
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::TerminalView;
 use crate::themes::theme::Fill as ThemeFill;
@@ -44,6 +44,7 @@ use crate::util::color::Opacity;
 use crate::workspace::action::WorkspaceAction;
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
 use crate::workspace::hoa_onboarding::HoaOnboardingStep;
+use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_settings::{
     TabSettings, VerticalTabsCompactSubtitle, VerticalTabsDisplayGranularity,
     VerticalTabsPrimaryInfo, VerticalTabsTabItemMode, VerticalTabsViewMode,
@@ -2565,6 +2566,77 @@ fn render_title_indicator(theme: &WarpTheme) -> Box<dyn Element> {
     .finish()
 }
 
+/// Whether a row should surface the synchronized-inputs indicator. Mirrors the
+/// horizontal tab bar's `Indicator::Synced` gating in `tab.rs`: the row's tab is
+/// receiving broadcast keystrokes and tab indicators are enabled. Restricted to
+/// terminal rows because syncing only broadcasts to terminal panes.
+fn shows_synced_inputs_indicator(
+    is_terminal_row: bool,
+    are_inputs_synced: bool,
+    show_tab_indicators: bool,
+) -> bool {
+    is_terminal_row && are_inputs_synced && show_tab_indicators
+}
+
+fn row_shows_synced_inputs_indicator(props: &PaneProps<'_>, app: &AppContext) -> bool {
+    shows_synced_inputs_indicator(
+        matches!(props.typed, TypedPane::Terminal(_)),
+        SyncedInputState::as_ref(app)
+            .should_sync_this_pane_group(props.pane_group_id, props.window_id()),
+        *TabSettings::as_ref(app).show_indicators.value(),
+    )
+}
+
+/// Link icon marking a row whose tab has synchronized inputs enabled. Uses the
+/// same icon and color as the horizontal tab bar's `Indicator::Synced`.
+fn render_synced_inputs_indicator() -> Box<dyn Element> {
+    ConstrainedBox::new(
+        UiIcon::LinkHorizontal
+            .to_warpui_icon(ColorU::from_u32(TAB_INDICATOR_SYNCED_COLOR).into())
+            .finish(),
+    )
+    .with_width(BADGE_ICON_SIZE)
+    .with_height(BADGE_ICON_SIZE)
+    .finish()
+}
+
+/// Row title line with its trailing indicators — the synchronized-inputs link
+/// icon followed by the unread-activity dot — pinned to the right edge. Returns
+/// `title` untouched when the row has no indicator to show.
+fn render_row_title_line(
+    title: Box<dyn Element>,
+    shows_synced_inputs: bool,
+    shows_activity_indicator: bool,
+    theme: &WarpTheme,
+) -> Box<dyn Element> {
+    if !shows_synced_inputs && !shows_activity_indicator {
+        return title;
+    }
+
+    let mut indicators = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_spacing(4.);
+    if shows_synced_inputs {
+        indicators.add_child(render_synced_inputs_indicator());
+    }
+    if shows_activity_indicator {
+        indicators.add_child(render_title_indicator(theme));
+    }
+
+    Flex::row()
+        .with_main_axis_size(MainAxisSize::Max)
+        .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(Shrinkable::new(1., title).finish())
+        .with_child(
+            Container::new(indicators.finish())
+                .with_margin_left(4.)
+                .finish(),
+        )
+        .finish()
+}
+
 fn render_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {
     let effective_subtitle = props.subtitle.clone();
     let appearance = Appearance::as_ref(app);
@@ -3019,6 +3091,12 @@ impl<'a> PaneProps<'a> {
             is_pane_being_renamed,
             pane_rename_editor,
         })
+    }
+
+    /// Window this row is rendered in. Sourced from the detail hover state,
+    /// which is always built for the window owning the vertical tabs panel.
+    fn window_id(&self) -> WindowId {
+        self.detail_hover_state.window_id
     }
 
     fn displayed_title(&self) -> &str {
@@ -3512,21 +3590,12 @@ fn render_terminal_row_content(
         }
     };
 
-    let first_line_element = if has_unread_activity(&props.typed, app) {
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_child(Shrinkable::new(1., first_line).finish())
-            .with_child(
-                Container::new(render_title_indicator(theme))
-                    .with_margin_left(4.)
-                    .finish(),
-            )
-            .finish()
-    } else {
-        first_line
-    };
+    let first_line_element = render_row_title_line(
+        first_line,
+        row_shows_synced_inputs_indicator(props, app),
+        has_unread_activity(&props.typed, app),
+        theme,
+    );
 
     let mut content = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
@@ -3741,24 +3810,30 @@ fn render_summary_tab_item(
     let mut text_col = Flex::column()
         .with_main_axis_size(MainAxisSize::Min)
         .with_cross_axis_alignment(CrossAxisAlignment::Start);
-    text_col.add_child(
-        render_title_override(
-            &props,
-            12.,
+    let title_region = render_title_override(
+        &props,
+        12.,
+        main_text_color,
+        ClipConfig::end(),
+        appearance,
+        app,
+    )
+    .unwrap_or_else(|| {
+        render_text_line(
+            &primary_line_text,
             main_text_color,
             ClipConfig::end(),
             appearance,
-            app,
         )
-        .unwrap_or_else(|| {
-            render_text_line(
-                &primary_line_text,
-                main_text_color,
-                ClipConfig::end(),
-                appearance,
-            )
-        }),
-    );
+    });
+    // Summary rows carry no unread-activity dot in this fork, so the synced-inputs
+    // link icon is the only trailing indicator they can show.
+    text_col.add_child(render_row_title_line(
+        title_region,
+        row_shows_synced_inputs_indicator(&props, app),
+        false,
+        theme,
+    ));
 
     if !summary.working_directories.is_empty() {
         text_col.add_child(
@@ -6177,22 +6252,13 @@ fn render_compact_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn El
             (title, subtitle)
         };
 
-    // Title row with optional indicator
-    let title_row = if has_indicator {
-        Flex::row()
-            .with_main_axis_size(MainAxisSize::Max)
-            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
-            .with_cross_axis_alignment(CrossAxisAlignment::Center)
-            .with_child(Shrinkable::new(1., title_element).finish())
-            .with_child(
-                Container::new(render_title_indicator(theme))
-                    .with_margin_left(4.)
-                    .finish(),
-            )
-            .finish()
-    } else {
-        title_element
-    };
+    // Title row with optional indicators
+    let title_row = render_row_title_line(
+        title_element,
+        row_shows_synced_inputs_indicator(&props, app),
+        has_indicator,
+        theme,
+    );
 
     // Assemble text column: title + optional subtitle
     // Top-align the icon when there are two lines of content; center for single-line rows.

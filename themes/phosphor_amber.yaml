@@ -6,7 +6,7 @@
 # (symlinks) keep a cool steel cast so listings stay legible against the warm
 # body text — the one deliberate break from strict monochrome.
 # Installation (Windows):
-#   Copy this file to %APPDATA%\zap\Zap\data\themes\phosphor_amber.yaml
+#   Copy this file to %APPDATA%\phosphor\Phosphor\data\themes\phosphor_amber.yaml
 #   After restarting Phosphor, select "Phosphor Amber" under
 #   Settings → Appearance → Themes.
 ---

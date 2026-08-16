@@ -26,6 +26,10 @@ mod agent_message;
 mod alt_screen_view;
 mod attachment_bar;
 mod autoupdate;
+#[cfg(feature = "test-util")]
+#[doc(hidden)]
+pub mod benchmark_support;
+mod cli_agent_osc_event_publisher;
 mod clipboard;
 pub mod input;
 pub mod root_view;
@@ -50,6 +54,7 @@ mod input_mode_policy;
 mod input_suggestions_mode;
 mod keybindings;
 mod link;
+mod mcp_install_flow;
 mod mcp_menu;
 mod model_menu;
 mod option_selector;
@@ -73,7 +78,7 @@ mod terminal_block;
 mod terminal_content_element;
 mod terminal_session_view;
 mod terminal_use;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 mod test_fixtures;
 mod tool_call_labels;
 mod transcript_view;

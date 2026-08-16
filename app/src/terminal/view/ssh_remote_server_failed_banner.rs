@@ -16,7 +16,7 @@ use crate::{terminal::model::session::SessionId, ui_components::icons::Icon, App
 
 const BANNER_BODY: &str =
     "While advanced features like file browsing and code review are currently \
-    disabled, the rest of your Warpified experience is fully available.";
+    disabled, the rest of your Phosphorized experience is fully available.";
 
 #[derive(Clone, Debug)]
 pub enum SshRemoteServerFailedBannerAction {

@@ -59,6 +59,70 @@ impl FileBasedMCPManager {
         self.config_diagnostics_by_path.get(config_path)
     }
 
+    /// Owned snapshots of every current config diagnostic, in a stable order.
+    ///
+    /// The TUI reports one row per unhealthy config file rather than the single
+    /// "is the one config file broken" answer `config_diagnostic` gives, because
+    /// several providers' config files are read at once and any subset of them
+    /// can be broken independently.
+    #[cfg(any(feature = "tui", test))]
+    pub fn config_diagnostics(&self) -> Vec<FileMCPConfigDiagnostic> {
+        self.config_diagnostics_by_path
+            .values()
+            .cloned()
+            .sorted_by(|left, right| {
+                left.config_path.cmp(&right.config_path).then_with(|| {
+                    provider_sort_key(left.provider).cmp(&provider_sort_key(right.provider))
+                })
+            })
+            .collect()
+    }
+
+    /// Every file-based installation paired with all config sources that
+    /// currently reference it, so a row can name each file it came from.
+    ///
+    /// Two providers can define the same server; the installation is deduped by
+    /// content hash but its sources are not, which is what lets the menu say
+    /// "Claude global, Codex · my-repo" on one row.
+    #[cfg(any(feature = "tui", test))]
+    pub fn file_based_servers_with_sources(&self) -> Vec<FileBasedMCPServerWithSources> {
+        self.file_based_servers
+            .iter()
+            .sorted_by_key(|(hash, _)| **hash)
+            .map(|(hash, installation)| {
+                let mut sources = self
+                    .file_based_servers_by_root
+                    .iter()
+                    .flat_map(|(root_path, provider_map)| {
+                        provider_map
+                            .iter()
+                            .filter(|(_, hashes)| hashes.contains(hash))
+                            .map(|(provider, _)| FileBasedMCPServerSource {
+                                provider: *provider,
+                                root_path: root_path.clone(),
+                                scope: Self::scope_for_source(root_path, *provider),
+                            })
+                    })
+                    .collect_vec();
+                sources.sort_by(|left, right| {
+                    left.root_path.cmp(&right.root_path).then_with(|| {
+                        provider_sort_key(left.provider).cmp(&provider_sort_key(right.provider))
+                    })
+                });
+                FileBasedMCPServerWithSources {
+                    installation: installation.clone(),
+                    sources,
+                }
+            })
+            .collect()
+    }
+
+    /// Returns a file-based installation by its stable content hash.
+    #[cfg(any(feature = "tui", test))]
+    pub fn installation_by_hash(&self, hash: u64) -> Option<&TemplatableMCPServerInstallation> {
+        self.file_based_servers.get(&hash)
+    }
+
     /// Handle an event from [`FileMCPWatcher`].
     fn handle_watcher_event(&mut self, event: &FileMCPWatcherEvent, ctx: &mut ModelContext<Self>) {
         match event {
@@ -272,20 +336,13 @@ impl FileBasedMCPManager {
     /// global, even if they also happen to be referenced from a global location (in which
     /// case this returns `true` due to the global reference).
     fn is_global_server(&self, hash: u64) -> bool {
-        let home_dir = dirs::home_dir();
         self.file_based_servers_by_root
             .iter()
             .any(|(root_path, provider_map)| {
                 provider_map.iter().any(|(provider, hashes)| {
-                    if !hashes.contains(&hash) {
-                        return false;
-                    }
-                    match provider {
-                        MCPProvider::Zap => Self::is_global_warp_root(root_path),
-                        MCPProvider::Claude | MCPProvider::Codex | MCPProvider::Agents => {
-                            home_dir.as_ref().is_some_and(|home| root_path == home)
-                        }
-                    }
+                    hashes.contains(&hash)
+                        && Self::scope_for_source(root_path, *provider)
+                            == FileBasedMCPServerScope::Global
                 })
             })
     }
@@ -305,6 +362,33 @@ impl FileBasedMCPManager {
 
     fn is_global_warp_root(root_path: &Path) -> bool {
         warp_managed_mcp_config_path().is_some_and(|path| root_path == path.root_path.as_path())
+    }
+
+    /// Whether a `(root, provider)` config source is global or project-scoped.
+    ///
+    /// This is the single definition [`Self::is_global_server`] and the TUI
+    /// catalog both read, so a row's rendered scope label can never disagree
+    /// with the auto-start decision made for the same server.
+    fn scope_for_source(root_path: &Path, provider: MCPProvider) -> FileBasedMCPServerScope {
+        match provider {
+            MCPProvider::Zap => {
+                if Self::is_global_warp_root(root_path) {
+                    FileBasedMCPServerScope::Global
+                } else {
+                    FileBasedMCPServerScope::Project
+                }
+            }
+            MCPProvider::Claude | MCPProvider::Codex | MCPProvider::Agents => {
+                if dirs::home_dir()
+                    .as_ref()
+                    .is_some_and(|home| root_path == home)
+                {
+                    FileBasedMCPServerScope::Global
+                } else {
+                    FileBasedMCPServerScope::Project
+                }
+            }
+        }
     }
 
     fn spawn_file_based_servers(
@@ -448,6 +532,41 @@ impl FileBasedMCPManager {
         }
         Some(discovery_root)
     }
+}
+
+#[cfg(any(feature = "tui", test))]
+fn provider_sort_key(provider: MCPProvider) -> u8 {
+    match provider {
+        MCPProvider::Zap => 0,
+        MCPProvider::Claude => 1,
+        MCPProvider::Codex => 2,
+        MCPProvider::Agents => 3,
+    }
+}
+
+/// Whether a file-based config source is a global one (the user's home dir, or
+/// the managed Zap config root) or a project one (inside a repository).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileBasedMCPServerScope {
+    Global,
+    Project,
+}
+
+/// One config file that defines a file-based server.
+#[cfg(any(feature = "tui", test))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileBasedMCPServerSource {
+    pub provider: MCPProvider,
+    pub root_path: PathBuf,
+    pub scope: FileBasedMCPServerScope,
+}
+
+/// A file-based installation together with every config source defining it.
+#[cfg(any(feature = "tui", test))]
+#[derive(Clone, Debug)]
+pub struct FileBasedMCPServerWithSources {
+    pub installation: TemplatableMCPServerInstallation,
+    pub sources: Vec<FileBasedMCPServerSource>,
 }
 
 pub enum FileBasedMCPManagerEvent {

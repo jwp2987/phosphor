@@ -11,13 +11,14 @@
 // re-pin conflict for no gain. Drop this attribute once the module is fully wired
 // and check what is genuinely dead then.
 
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
 use parking_lot::FairMutex;
+#[cfg(test)]
+use warp::tui_export::AIBlockModel;
 use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIBlockModelImpl, AIConversationId, BlockHeightItem,
     BlockIndex, BlockPadding, BlockSpacing, BlocklistAIActionModel, BlocklistAIHistoryEvent,
@@ -395,6 +396,19 @@ impl TuiTranscriptView {
                 ctx,
             )
         });
+        self.attach_agent_block(view, command_block_index, ctx);
+    }
+
+    /// Subscribes to a freshly built agent block, registers it in the
+    /// transcript's block list, and announces it if it arrives already
+    /// blocking. Split out of [`Self::insert_agent_block`] so tests can attach
+    /// a block model of their own through the same path.
+    fn attach_agent_block(
+        &mut self,
+        view: ViewHandle<TuiAIBlock>,
+        command_block_index: Option<BlockIndex>,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let view_id = view.id();
         ctx.subscribe_to_view(&view, move |transcript, _, event, ctx| match event {
             TuiAIBlockEvent::LayoutInvalidated => {
@@ -421,6 +435,11 @@ impl TuiTranscriptView {
                 );
             }
         });
+        // A block can arrive already blocked (a restored or replayed exchange
+        // whose action is awaiting confirmation). Nothing else will announce
+        // that: the action event that created the blocker fired before this
+        // view existed, so the session view would never focus it.
+        let has_initial_blocker = view.as_ref(ctx).active_blocking_child(ctx).is_some();
         self.agent_blocks.borrow_mut().insert(view_id, view);
         let item = RichContentItem::new(Some(RichContentType::AIBlock), view_id, None, false);
         let mut model = self.model.lock();
@@ -430,7 +449,43 @@ impl TuiTranscriptView {
                 .insert_rich_content_before_block_index(item, command_block_index),
             None => model.block_list_mut().append_rich_content(item, false),
         }
+        drop(model);
+        if has_initial_blocker {
+            ctx.emit(TuiTranscriptViewEvent::BlockingStateChanged);
+        }
         ctx.notify();
+    }
+
+    /// Appends an agent block over a caller-supplied block model, through the
+    /// same [`Self::attach_agent_block`] path production uses.
+    ///
+    /// `insert_agent_block` builds its model with `AIBlockModelImpl::new`,
+    /// which needs a persisted exchange; tests that need a block carrying a
+    /// specific already-blocked action supply the model directly instead.
+    #[cfg(test)]
+    pub(super) fn append_agent_block_for_test(
+        &mut self,
+        conversation_id: AIConversationId,
+        exchange_id: AIAgentExchangeId,
+        block_model: Rc<dyn AIBlockModel<View = TuiAIBlock>>,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<TuiAIBlock> {
+        let action_model = self.action_model.clone();
+        let model_events = self.model_events.clone();
+        let terminal_model = self.model.clone();
+        let view = ctx.add_typed_action_tui_view(|ctx| {
+            TuiAIBlock::new(
+                conversation_id,
+                exchange_id,
+                block_model,
+                action_model,
+                &model_events,
+                terminal_model,
+                ctx,
+            )
+        });
+        self.attach_agent_block(view.clone(), None, ctx);
+        view
     }
 
     /// Materializes a shared restoration plan as TUI agent-block views.

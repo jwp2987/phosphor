@@ -17,6 +17,13 @@
 //! panel next to text) rather than just swapping the animation element in
 //! place. See `zero_state_animation.rs` for the animation itself and why its
 //! built-in mark isn't Warp's logo.
+//!
+//! The pin's later revamp (`076449fd3`) split that single full-bleed layer in
+//! two: a starfield spanning the whole transcript, and a compact object panel
+//! ([`ANIMATION_PANEL_COLS`]) centered in the space left beside the copy, with
+//! the copy itself given an opaque rectangle so stars do not bleed through it.
+//! That is ported here, minus the pin's vertical centering of the copy — see
+//! [`build_zero_state_layout`] for why.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,15 +32,22 @@ use std::time::Duration;
 use ai::project_context::model::{
     ProjectContextModel, ProjectContextModelEvent, ProjectRulesResult,
 };
+use warp::settings::{TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
 use warp::tui_export::{
     ActiveSession, ActiveSessionEvent, ChangelogModel, ChangelogModelEvent, ChangelogState,
-    SkillManager, TuiMcpConfigState, TuiMcpManager, TuiMcpServerStatus,
+    SkillManager, TuiMcpManager, TuiMcpServerStatus,
 };
 use warp_core::channel::ChannelState;
+use warp_core::settings::Setting;
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::animation::AnimationClock;
-use warpui_core::elements::tui::{Modifier, TuiConstrainedBox, TuiElement, TuiFlex, TuiStack, TuiText};
+use warpui_core::elements::tui::{
+    Cell, Color, Modifier, TuiClipBounds, TuiConstrainedBox, TuiConstraint, TuiContainer,
+    TuiElement, TuiEvent, TuiEventContext, TuiFlex, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiPresentationContext, TuiScreenPoint, TuiScreenPosition, TuiScreenRect,
+    TuiSize, TuiText,
+};
 use warpui_core::{AppContext, Entity, ModelHandle, TuiView, ViewContext};
 
 use crate::autoupdate::{TuiAutoupdateStatus, TuiAutoupdater, TuiAutoupdaterEvent};
@@ -41,7 +55,7 @@ use crate::tui_builder::TuiUiBuilder;
 use crate::ui::abbreviate_home_prefix;
 use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationElement,
-    ZeroStateMarkStyles,
+    ZeroStateInteractionHandle, ZeroStateMarkStyles, ZeroStateStarfieldElement,
 };
 
 /// Cap on "What's new" bullets, mirroring the compact zero-state mock.
@@ -61,6 +75,52 @@ const MAX_CHANGELOG_BULLETS: usize = 3;
 /// tradeoff.
 const LEFT_COLUMN_COLS: u16 = 48;
 
+/// Width of the animation region centered in the space beside the copy. This
+/// keeps the mark secondary to the copy and input while leaving enough cells
+/// for its wireframe detail.
+const ANIMATION_PANEL_COLS: u16 = 32;
+
+/// Which zero-state sections are currently switched on, snapshotted from
+/// [`TuiZeroStateSettings`] so a render pass never re-reads the settings model.
+///
+/// The pin also carries a `signed_in_user` toggle for its "Signed in as …"
+/// account line; this fork dropped that line with the cloud backend, so there
+/// is no field for it here. The title and version lines are always shown and
+/// have no toggle in either.
+#[derive(Clone, Copy)]
+struct ZeroStateSectionVisibility {
+    changelog: bool,
+    project_info: bool,
+    mcp: bool,
+    animation: bool,
+}
+
+impl Default for ZeroStateSectionVisibility {
+    fn default() -> Self {
+        Self {
+            changelog: true,
+            project_info: true,
+            mcp: true,
+            animation: true,
+        }
+    }
+}
+
+impl ZeroStateSectionVisibility {
+    fn from_settings(ctx: &AppContext) -> Self {
+        if !ctx.has_singleton_model::<TuiZeroStateSettings>() {
+            return Self::default();
+        }
+        let settings = TuiZeroStateSettings::as_ref(ctx);
+        Self {
+            changelog: *settings.show_changelog.value(),
+            project_info: *settings.show_project_info.value(),
+            mcp: *settings.show_mcp.value(),
+            animation: *settings.show_animation.value(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // TuiZeroStateView
 // ---------------------------------------------------------------------------
@@ -75,12 +135,15 @@ const LEFT_COLUMN_COLS: u16 = 48;
 pub(crate) struct TuiZeroStateView {
     clock: AnimationClock,
     animation_config: Arc<ZeroStateAnimationConfig>,
+    interaction: ZeroStateInteractionHandle,
     active_session: ModelHandle<ActiveSession>,
+    section_visibility: ZeroStateSectionVisibility,
 }
 
 impl TuiZeroStateView {
     pub(crate) fn new(
         active_session: ModelHandle<ActiveSession>,
+        interaction: ZeroStateInteractionHandle,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         // Subscribe to events that change what the zero state displays so
@@ -138,10 +201,40 @@ impl TuiZeroStateView {
             },
         );
 
+        // Toggling a section applies to the live zero state; no restart.
+        if ctx.has_singleton_model::<TuiZeroStateSettings>() {
+            ctx.subscribe_to_model(&TuiZeroStateSettings::handle(ctx), |view, _, event, ctx| {
+                match event {
+                    TuiZeroStateSettingsChangedEvent::TuiZeroStateShowChangelogSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowProjectInfoSetting {
+                        ..
+                    }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowMcpSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateShowAnimationSetting { .. } => {
+                        view.section_visibility = ZeroStateSectionVisibility::from_settings(ctx);
+                        ctx.notify();
+                    }
+                    // The animation config model already subscribes to these
+                    // three and re-snapshots the shape itself.
+                    TuiZeroStateSettingsChangedEvent::TuiZeroStateObjectSetting { .. }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateRotationPeriodSecondsSetting {
+                        ..
+                    }
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateExtrusionDepthSetting { .. }
+                    // Handled by the driver, wired in `session::init`.
+                    | TuiZeroStateSettingsChangedEvent::TuiZeroStateFreezeAnimationWhenUnfocusedSetting {
+                        ..
+                    } => {}
+                }
+            });
+        }
+
         Self {
             clock: AnimationClock::starting_at(Duration::ZERO),
             animation_config: animation_config_snapshot,
+            interaction,
             active_session,
+            section_visibility: ZeroStateSectionVisibility::from_settings(ctx),
         }
     }
 }
@@ -163,9 +256,21 @@ impl TuiView for TuiZeroStateView {
                 .ok()
                 .map(|cwd| cwd.to_string_lossy().into_owned())
         });
+        let text_column = build_zero_state_text_column_with_visibility(
+            cwd.as_deref(),
+            &builder,
+            self.section_visibility,
+            ctx,
+        );
+        if !self.section_visibility.animation {
+            // Copy-only: no reserved animation panel beside the copy and no
+            // starfield behind it.
+            return opaque_zero_state_overlay(text_column);
+        }
         let animation = ZeroStateAnimationElement::new(
             self.clock,
             self.animation_config.clone(),
+            self.interaction.clone(),
             ZeroStateMarkStyles {
                 front: builder.accent_text_style(),
                 back: builder.primary_text_style(),
@@ -173,9 +278,293 @@ impl TuiView for TuiZeroStateView {
                 background: builder.muted_text_style(),
             },
         )
+        .without_background_stars()
         .finish();
-        let text_column = build_zero_state_text_column(cwd.as_deref(), &builder, ctx);
-        TuiStack::new().child(animation).child(text_column).finish()
+        let starfield = ZeroStateStarfieldElement::new(
+            self.clock,
+            builder.muted_text_style(),
+            LEFT_COLUMN_COLS,
+            ANIMATION_PANEL_COLS,
+        )
+        .finish();
+        build_zero_state_layout(starfield, animation, text_column)
+    }
+}
+
+/// Centers the mark within the space beside the copy and gives the copy an
+/// opaque rectangle so stars do not bleed through it. Reserving the copy column
+/// before measuring the animation also hides the artwork when a narrow terminal
+/// cannot display both regions.
+///
+/// **Deviation from the pin (`076449fd3`):** upstream also *vertically centers*
+/// the copy block, wrapping it in a `TuiFlex::column` between two flex spacers.
+/// This fork keeps the copy top-anchored. The zero state's text column grows by
+/// several rows as content resolves asynchronously (the changelog bullets, the
+/// project path header — which this fork renders at its natural width outside
+/// the constrained box, so it can also re-wrap — the discovered rules/skills,
+/// and the MCP line). Top-anchored, those arrivals only push rows downward;
+/// centered, each one shifts the entire block up by half its height, and a
+/// previous port measured a two-row jump on the changelog load alone. The
+/// horizontal half of the pin's layout (the reserved copy column, the centered
+/// [`ANIMATION_PANEL_COLS`] panel, the full-bleed starfield) is ported as-is;
+/// only the vertical centering is dropped. See the module doc comment.
+fn build_zero_state_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+) -> Box<dyn TuiElement> {
+    let copy_column_reservation = TuiConstrainedBox::new(TuiText::new("").finish())
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+    let animation = TuiConstrainedBox::new(animation)
+        .with_max_cols(ANIMATION_PANEL_COLS)
+        .finish();
+    let animation_region = TuiFlex::row()
+        .flex_child(TuiText::new("").finish())
+        .child(animation)
+        .flex_child(TuiText::new("").finish())
+        .finish();
+    let animation_layer = TuiFlex::row()
+        .child(copy_column_reservation)
+        .flex_child(animation_region)
+        .finish();
+
+    ZeroStateLayers::new(
+        starfield,
+        animation_layer,
+        opaque_zero_state_overlay(text_column),
+    )
+    .finish()
+}
+
+/// The generic-`TuiStack` composition [`build_zero_state_layout`] replaces.
+/// Kept as the reference implementation the direct compositor is checked
+/// against, so a divergence between the two is a test failure rather than a
+/// silent rendering change.
+#[cfg(test)]
+fn build_zero_state_stack_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+) -> Box<dyn TuiElement> {
+    use warpui_core::elements::tui::TuiStack;
+
+    let copy_column_reservation = TuiConstrainedBox::new(TuiText::new("").finish())
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+    let animation = TuiConstrainedBox::new(animation)
+        .with_max_cols(ANIMATION_PANEL_COLS)
+        .finish();
+    let animation_region = TuiFlex::row()
+        .flex_child(TuiText::new("").finish())
+        .child(animation)
+        .flex_child(TuiText::new("").finish())
+        .finish();
+    let animation_layer = TuiFlex::row()
+        .child(copy_column_reservation)
+        .flex_child(animation_region)
+        .finish();
+    let overlay_layer = TuiContainer::new(text_column)
+        .with_background(Color::Reset)
+        .finish();
+    TuiStack::new()
+        .child(starfield)
+        .child(animation_layer)
+        .child(overlay_layer)
+        .finish()
+}
+
+/// The copy's opaque rectangle. The container measures to the copy's own
+/// content, so the fill covers exactly the copy and the layers leave it at the
+/// top of the view. `Color::Reset` keeps the host terminal's own background
+/// while still clearing the stars beneath, rather than stamping a concrete RGB
+/// fill over them.
+fn opaque_zero_state_overlay(text_column: Box<dyn TuiElement>) -> Box<dyn TuiElement> {
+    ZeroStateOpaqueOverlay::new(
+        TuiContainer::new(text_column)
+            .with_background(Color::Reset)
+            .finish(),
+    )
+    .finish()
+}
+
+/// Clears its own rectangle before painting the copy. Painted directly onto
+/// the shared surface (rather than composited from a scratch layer by
+/// `TuiStack`), a `Color::Reset` background alone would leave the starfield's
+/// glyphs showing through the blank cells; this restores the stack's
+/// opaque-rectangle semantics without its per-layer buffers.
+struct ZeroStateOpaqueOverlay {
+    child: Box<dyn TuiElement>,
+    size: Option<TuiSize>,
+}
+
+impl ZeroStateOpaqueOverlay {
+    fn new(child: Box<dyn TuiElement>) -> Self {
+        Self { child, size: None }
+    }
+}
+
+impl TuiElement for ZeroStateOpaqueOverlay {
+    fn layout(
+        &mut self,
+        constraint: TuiConstraint,
+        ctx: &mut TuiLayoutContext,
+        app: &AppContext,
+    ) -> TuiSize {
+        let size = self.child.layout(constraint, ctx, app);
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, ctx: &mut TuiLayoutContext, app: &AppContext) {
+        self.child.after_layout(ctx, app);
+    }
+
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        if let Some(size) = self.size {
+            for y in 0..size.height {
+                for x in 0..size.width {
+                    surface.set_cell(origin.offset(i32::from(x), i32::from(y)), Cell::default());
+                }
+            }
+        }
+        self.child.render(origin, surface, ctx);
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.child.origin()
+    }
+
+    fn present(&mut self, ctx: &mut TuiPresentationContext<'_>) {
+        self.child.present(ctx);
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &TuiEvent,
+        event_ctx: &mut TuiEventContext<'_>,
+        app: &AppContext,
+    ) -> bool {
+        self.child.dispatch_event(event, event_ctx, app)
+    }
+}
+
+/// A zero-state-specific stack whose children are known to paint sparsely or
+/// explicitly fill their visible rectangle. Painting them directly avoids the
+/// generic stack's full-screen scratch buffers and transparency scans.
+struct ZeroStateLayers {
+    children: [Box<dyn TuiElement>; 3],
+    child_sizes: [TuiSize; 3],
+    size: Option<TuiSize>,
+    origin: Option<TuiScreenPoint>,
+}
+
+impl ZeroStateLayers {
+    fn new(
+        starfield: Box<dyn TuiElement>,
+        animation: Box<dyn TuiElement>,
+        overlay: Box<dyn TuiElement>,
+    ) -> Self {
+        Self {
+            children: [starfield, animation, overlay],
+            child_sizes: [TuiSize::ZERO; 3],
+            size: None,
+            origin: None,
+        }
+    }
+}
+
+impl TuiElement for ZeroStateLayers {
+    fn layout(
+        &mut self,
+        constraint: TuiConstraint,
+        ctx: &mut TuiLayoutContext,
+        app: &AppContext,
+    ) -> TuiSize {
+        let mut content_size = TuiSize::ZERO;
+        for (child, child_size) in self.children.iter_mut().zip(&mut self.child_sizes) {
+            *child_size = child.layout(constraint, ctx, app);
+            content_size = TuiSize::new(
+                content_size.width.max(child_size.width),
+                content_size.height.max(child_size.height),
+            );
+        }
+        let size = constraint.clamp(content_size);
+        self.size = Some(size);
+        size
+    }
+
+    fn after_layout(&mut self, ctx: &mut TuiLayoutContext, app: &AppContext) {
+        for child in &mut self.children {
+            child.after_layout(ctx, app);
+        }
+    }
+
+    fn render(
+        &mut self,
+        origin: TuiScreenPosition,
+        surface: &mut TuiPaintSurface<'_>,
+        ctx: &mut TuiPaintContext,
+    ) {
+        let screen_origin = ctx.scene_point(origin);
+        self.origin = Some(screen_origin);
+        let Some(size) = self.size else {
+            return;
+        };
+        if size.width == 0 || size.height == 0 {
+            return;
+        }
+
+        for (child, child_size) in self.children.iter_mut().zip(self.child_sizes) {
+            let child_size = TuiSize::new(
+                child_size.width.min(size.width),
+                child_size.height.min(size.height),
+            );
+            let child_bounds = TuiScreenRect::new(screen_origin, child_size);
+            ctx.with_scene_layer(
+                TuiClipBounds::BoundedByActiveLayerAnd(child_bounds),
+                |ctx| child.render(origin, surface, ctx),
+            );
+        }
+    }
+
+    fn size(&self) -> Option<TuiSize> {
+        self.size
+    }
+
+    fn origin(&self) -> Option<TuiScreenPoint> {
+        self.origin
+    }
+
+    fn present(&mut self, ctx: &mut TuiPresentationContext<'_>) {
+        for child in &mut self.children {
+            child.present(ctx);
+        }
+    }
+
+    fn dispatch_event(
+        &mut self,
+        event: &TuiEvent,
+        event_ctx: &mut TuiEventContext<'_>,
+        app: &AppContext,
+    ) -> bool {
+        for child in self.children.iter_mut().rev() {
+            if child.dispatch_event(event, event_ctx, app) {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -189,16 +578,35 @@ impl TuiView for TuiZeroStateView {
 /// Both [`TuiZeroStateView::render`] and the regression tests call this
 /// function so a change to how `render` composes the column is caught by the
 /// test suite.
+#[cfg(test)]
 fn build_zero_state_text_column(
     cwd: Option<&str>,
     builder: &TuiUiBuilder,
+    app: &AppContext,
+) -> Box<dyn TuiElement> {
+    build_zero_state_text_column_with_visibility(
+        cwd,
+        builder,
+        ZeroStateSectionVisibility::default(),
+        app,
+    )
+}
+
+/// As [`build_zero_state_text_column`], with the caller's section visibility.
+/// A hidden section contributes no rows at all — no orphaned header and no
+/// spacer row — so with every toggle off only the title and version remain.
+fn build_zero_state_text_column_with_visibility(
+    cwd: Option<&str>,
+    builder: &TuiUiBuilder,
+    visibility: ZeroStateSectionVisibility,
     app: &AppContext,
 ) -> Box<dyn TuiElement> {
     // Compute project context once — find_applicable_project_rules walks the
     // directory tree and clones rule file contents, so resolving it once
     // avoids a redundant allocation on every zero-state re-render (pwd
     // change, changelog load, MCP update, PathIndexed, skill change).
-    let (path_header_text, project_rules) = match cwd {
+    let project_cwd = visibility.project_info.then_some(cwd).flatten();
+    let (path_header_text, project_rules) = match project_cwd {
         Some(cwd) => {
             let cwd_path = LocalOrRemotePath::Local(PathBuf::from(cwd));
             let rules = ProjectContextModel::as_ref(app).find_applicable_project_rules(&cwd_path);
@@ -211,20 +619,12 @@ fn build_zero_state_text_column(
     // Title, version, and changelog — constrained to LEFT_COLUMN_COLS so
     // changelog bullets (which lack `.truncate()`) do not wrap against the
     // column's full natural width.
-    let constrained_top = TuiConstrainedBox::new(render_top_section(builder, app).finish())
-        .with_min_cols(LEFT_COLUMN_COLS)
-        .with_max_cols(LEFT_COLUMN_COLS)
-        .finish();
-
-    // Project context body (rules / skills / placeholder) and MCP — also
-    // constrained to LEFT_COLUMN_COLS, keeping those rows stable.
-    let rules_ref = project_rules.flatten();
-    let constrained_bottom = TuiConstrainedBox::new(
-        render_bottom_section(cwd, rules_ref.as_ref(), builder, app).finish(),
-    )
-    .with_min_cols(LEFT_COLUMN_COLS)
-    .with_max_cols(LEFT_COLUMN_COLS)
-    .finish();
+    let constrained_top =
+        TuiConstrainedBox::new(render_top_section(builder, visibility, app).finish())
+            .with_min_cols(LEFT_COLUMN_COLS)
+            .with_max_cols(LEFT_COLUMN_COLS)
+            .finish();
+    let mut column = TuiFlex::column().child(constrained_top);
 
     // The project path header lives outside the LEFT_COLUMN_COLS-constrained
     // boxes so it can use the column's full natural width: it wraps onto
@@ -236,18 +636,25 @@ fn build_zero_state_text_column(
         let path_header = TuiText::new(path_header_text)
             .with_style(header_style)
             .finish();
-        TuiFlex::column()
-            .child(constrained_top)
-            .child(blank_row())
-            .child(path_header)
-            .child(constrained_bottom)
-            .finish()
-    } else {
-        TuiFlex::column()
-            .child(constrained_top)
-            .child(constrained_bottom)
-            .finish()
+        column = column.child(blank_row()).child(path_header);
     }
+
+    // Project context body (rules / skills / placeholder) and MCP — also
+    // constrained to LEFT_COLUMN_COLS, keeping those rows stable. Omitted
+    // entirely when both sections are hidden, so no empty box is reserved.
+    if project_cwd.is_some() || visibility.mcp {
+        let rules_ref = project_rules.flatten();
+        let constrained_bottom = TuiConstrainedBox::new(
+            render_bottom_section(project_cwd, rules_ref.as_ref(), visibility, builder, app)
+                .finish(),
+        )
+        .with_min_cols(LEFT_COLUMN_COLS)
+        .with_max_cols(LEFT_COLUMN_COLS)
+        .finish();
+        column = column.child(constrained_bottom);
+    }
+
+    column.finish()
 }
 
 /// Top section of the text column: title, version, and changelog bullets.
@@ -255,21 +662,29 @@ fn build_zero_state_text_column(
 /// Wrapped in a [`TuiConstrainedBox`] with `min = max = LEFT_COLUMN_COLS` by
 /// the caller so that changelog bullets (which lack `.truncate()`) do not
 /// word-wrap against the column's full natural width.
-fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
+fn render_top_section(
+    builder: &TuiUiBuilder,
+    visibility: ZeroStateSectionVisibility,
+    app: &AppContext,
+) -> TuiFlex {
     let title_style = builder.accent_text_style().add_modifier(Modifier::BOLD);
     let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
     let muted = builder.muted_text_style();
 
     let mut column = TuiFlex::column()
         .child(
-            TuiText::new("Warp Agent")
+            TuiText::new("Phosphor Agent")
                 .with_style(title_style)
                 .truncate()
                 .finish(),
         )
         .child(render_version_line(builder, app));
 
-    let bullets = changelog_bullets(app);
+    let bullets = if visibility.changelog {
+        changelog_bullets(app)
+    } else {
+        Vec::new()
+    };
     if !bullets.is_empty() {
         column = column.child(blank_row()).child(
             TuiText::new("What's new")
@@ -304,6 +719,7 @@ fn render_top_section(builder: &TuiUiBuilder, app: &AppContext) -> TuiFlex {
 fn render_bottom_section(
     cwd: Option<&str>,
     rules: Option<&ProjectRulesResult>,
+    visibility: ZeroStateSectionVisibility,
     builder: &TuiUiBuilder,
     app: &AppContext,
 ) -> TuiFlex {
@@ -313,7 +729,11 @@ fn render_bottom_section(
     } else {
         column
     };
-    render_mcp_section(column, builder, app)
+    if visibility.mcp {
+        render_mcp_section(column, builder, app)
+    } else {
+        column
+    }
 }
 
 /// Returns the abbreviated path text displayed as the project section header.
@@ -342,16 +762,6 @@ fn render_mcp_section(mut column: TuiFlex, builder: &TuiUiBuilder, app: &AppCont
             .truncate()
             .finish(),
     );
-    if matches!(snapshot.config_state, TuiMcpConfigState::Missing) {
-        column = column.child(
-            TuiText::new(abbreviate_home_prefix(
-                &snapshot.config_path.display().to_string(),
-            ))
-            .with_style(builder.dim_text_style())
-            .truncate()
-            .finish(),
-        );
-    }
 
     let (label, is_error) = mcp_status_label(snapshot);
     let style = if is_error {
@@ -362,51 +772,91 @@ fn render_mcp_section(mut column: TuiFlex, builder: &TuiUiBuilder, app: &AppCont
     column.child(TuiText::new(label).with_style(style).truncate().finish())
 }
 
+#[derive(Default)]
+struct McpStatusCounts {
+    running: usize,
+    starting: usize,
+    authenticating: usize,
+    stopping: usize,
+    failed: usize,
+    offline: usize,
+    available: usize,
+}
+
+impl McpStatusCounts {
+    fn record(&mut self, status: &TuiMcpServerStatus) {
+        match status {
+            TuiMcpServerStatus::Available => self.available += 1,
+            TuiMcpServerStatus::Offline => self.offline += 1,
+            TuiMcpServerStatus::Starting => self.starting += 1,
+            TuiMcpServerStatus::Authenticating => self.authenticating += 1,
+            TuiMcpServerStatus::Running => self.running += 1,
+            TuiMcpServerStatus::Stopping => self.stopping += 1,
+            TuiMcpServerStatus::Failed { .. } => self.failed += 1,
+        }
+    }
+}
+
+/// The zero state's one-line MCP summary. There is no longer a single config
+/// file whose health can be reported, so an unhealthy config is one more count
+/// in the line rather than a state that replaces it.
 fn mcp_status_label(snapshot: &warp::tui_export::TuiMcpSnapshot) -> (String, bool) {
-    match &snapshot.config_state {
-        TuiMcpConfigState::Invalid { .. } => ("Config error · run /mcp".to_string(), true),
-        TuiMcpConfigState::Missing => ("Not configured · /mcp".to_string(), false),
-        TuiMcpConfigState::Ready if snapshot.servers.is_empty() => {
-            ("No servers configured · run /mcp".to_string(), false)
-        }
-        TuiMcpConfigState::Ready => {
-            let mut running = 0;
-            let mut starting = 0;
-            let mut authenticating = 0;
-            let mut stopping = 0;
-            let mut failed = 0;
-            let mut offline = 0;
-            for server in &snapshot.servers {
-                match &server.status {
-                    TuiMcpServerStatus::Offline => offline += 1,
-                    TuiMcpServerStatus::Starting => starting += 1,
-                    TuiMcpServerStatus::Authenticating => authenticating += 1,
-                    TuiMcpServerStatus::Running => running += 1,
-                    TuiMcpServerStatus::Stopping => stopping += 1,
-                    TuiMcpServerStatus::Failed { .. } => failed += 1,
-                }
-            }
-            let mut parts = Vec::new();
-            if running > 0 {
-                parts.push(format!("{running} connected"));
-            }
-            if starting > 0 {
-                parts.push(format!("{starting} starting"));
-            }
-            if authenticating > 0 {
-                parts.push(format!("{authenticating} needs auth"));
-            }
-            if stopping > 0 {
-                parts.push(format!("{stopping} stopping"));
-            }
-            if failed > 0 {
-                parts.push(format!("{failed} failed"));
-            }
-            if offline > 0 {
-                parts.push(format!("{offline} offline"));
-            }
-            (format!("{} · /mcp", parts.join(" · ")), false)
-        }
+    if snapshot.servers.is_empty() && snapshot.diagnostics.is_empty() {
+        return ("No servers available · run /mcp".to_owned(), false);
+    }
+    let mut counts = McpStatusCounts::default();
+    for server in &snapshot.servers {
+        counts.record(&server.status);
+    }
+    let McpStatusCounts {
+        running,
+        starting,
+        authenticating,
+        stopping,
+        failed,
+        offline,
+        available,
+    } = counts;
+    let mut parts = Vec::new();
+    if running > 0 {
+        parts.push(format!("{running} connected"));
+    }
+    if starting > 0 {
+        parts.push(format!("{starting} starting"));
+    }
+    if authenticating > 0 {
+        parts.push(format!("{authenticating} needs auth"));
+    }
+    if stopping > 0 {
+        parts.push(format!("{stopping} stopping"));
+    }
+    if failed > 0 {
+        parts.push(format!("{failed} failed"));
+    }
+    if offline > 0 {
+        parts.push(format!("{offline} offline"));
+    }
+    if available > 0 {
+        parts.push(format!("{available} available"));
+    }
+    if !snapshot.diagnostics.is_empty() {
+        parts.push(format!("{} config errors", snapshot.diagnostics.len()));
+    }
+    (
+        format!("{} · /mcp", parts.join(" · ")),
+        !snapshot.diagnostics.is_empty(),
+    )
+}
+
+/// User-facing copy for each visible background updater status.
+fn autoupdate_status_label(status: TuiAutoupdateStatus) -> Option<&'static str> {
+    match status {
+        TuiAutoupdateStatus::Idle => None,
+        TuiAutoupdateStatus::Checking => Some("checking for updates…"),
+        TuiAutoupdateStatus::Updating => Some("updating…"),
+        TuiAutoupdateStatus::UpToDate => Some("up to date"),
+        TuiAutoupdateStatus::Failed => Some("automatic update failed"),
+        TuiAutoupdateStatus::PendingRestart => Some("update installed, restart to apply"),
     }
 }
 
@@ -423,20 +873,17 @@ fn render_version_line(builder: &TuiUiBuilder, app: &AppContext) -> Box<dyn TuiE
             .truncate()
             .finish();
     };
-    let suffix = match TuiAutoupdater::as_ref(app).status() {
-        TuiAutoupdateStatus::Idle => None,
-        TuiAutoupdateStatus::Checking => Some(("checking for updates…", muted)),
-        TuiAutoupdateStatus::Updating => Some(("updating…", muted)),
-        TuiAutoupdateStatus::UpToDate => Some(("up to date", muted)),
-        // The one state worth drawing attention to: an update is staged and
-        // a restart picks it up.
-        TuiAutoupdateStatus::PendingRestart => Some((
-            "update installed, restart to apply",
-            builder.success_glyph_style(),
-        )),
-    };
-    let Some((label, style)) = suffix else {
+    let status = TuiAutoupdater::as_ref(app).status();
+    let Some(label) = autoupdate_status_label(status) else {
         return TuiText::new(version).with_style(muted).truncate().finish();
+    };
+    let style = match status {
+        TuiAutoupdateStatus::Idle => unreachable!("idle status has no label"),
+        TuiAutoupdateStatus::Checking
+        | TuiAutoupdateStatus::Updating
+        | TuiAutoupdateStatus::UpToDate => muted,
+        TuiAutoupdateStatus::Failed => builder.error_text_style(),
+        TuiAutoupdateStatus::PendingRestart => builder.success_glyph_style(),
     };
     // Like the bullet rows below: the version reports its natural width and
     // the suffix wraps against the remaining column width.
@@ -482,7 +929,10 @@ fn render_project_context_body(
     let mut rule_files: Vec<String> = Vec::new();
     if let Some(rules) = rules {
         for rule in &rules.active_rules {
-            if let Some(name) = rule.path.file_name().map(|n| n.to_string_lossy().into_owned())
+            if let Some(name) = rule
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
                 && !rule_files.iter().any(|file| *file == name)
             {
                 rule_files.push(name);
@@ -565,6 +1015,30 @@ fn changelog_bullets(app: &AppContext) -> Vec<String> {
 /// A one-row spacer between sections.
 fn blank_row() -> Box<dyn TuiElement> {
     TuiText::new(" ").truncate().finish()
+}
+
+/// Benchmark access to the zero state's layout seam.
+///
+/// The zero-state benchmark builds its own view rather than the real
+/// [`TuiZeroStateView`], which would drag in the settings, session, changelog
+/// and MCP models it reads. What it must not also re-implement is the layout:
+/// [`build_zero_state_layout`] and the two column widths are private, so a
+/// copy in `benchmark_support` would be free to drift from the composition it
+/// claims to measure. These re-exports are gated on `test-util`, which is not
+/// a default feature, so nothing here reaches a production build.
+#[cfg(feature = "test-util")]
+pub(crate) const BENCHMARK_COPY_COLS: u16 = LEFT_COLUMN_COLS;
+
+#[cfg(feature = "test-util")]
+pub(crate) const BENCHMARK_ANIMATION_PANEL_COLS: u16 = ANIMATION_PANEL_COLS;
+
+#[cfg(feature = "test-util")]
+pub(crate) fn benchmark_zero_state_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+) -> Box<dyn TuiElement> {
+    build_zero_state_layout(starfield, animation, text_column)
 }
 
 #[cfg(test)]

@@ -242,6 +242,18 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
     #
     # Usage:
     #   warp_run_generator_command <command_id> '<command> <arg1> ... <argn>'
+    #
+    # MATCHED PAIR -- this function's NAME is a protocol surface shared with the Rust
+    # app, which builds the call string in `POSIX_GENERATOR_WRAPPER`
+    # (app/src/terminal/model/session/command_executor/in_band_command_executor.rs) and
+    # detects it again there and in
+    # app/src/ai/blocklist/action_model/execute/shell_command.rs. Nothing in the type
+    # system connects the two: rename one side and everything still compiles and every
+    # Rust test still passes, while in-band generators silently invoke a function that
+    # does not exist. That is exactly how #597 happened on the PowerShell side.
+    # The HISTIGNORE entry and the warp_preexec BASH_COMMAND guard below match this
+    # name too, so they move with it. `script/check_generator_wrapper_names` enforces
+    # the pairing.
     warp_run_generator_command() {
       # Setting this environment variable prevents warp_precmd from emitting the
       # 'Block started' hook to the Rust app.
@@ -986,7 +998,7 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
-            local zsh_env_script=$(printf '%s' 'unsetopt ZLE; unset RCS; unset GLOBAL_RCS; WARP_SESSION_ID="$(command -p date +%s)$RANDOM"; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg' | command -p od -An -v -tx1 | command -p tr -d ' \n')
+            local zsh_env_script=$(printf '%s' 'unsetopt ZLE RCS GLOBAL_RCS; WARP_SESSION_ID="$(command -p date +%s)$RANDOM"; WARP_USING_WINDOWS_CON_PTY=@@USING_CON_PTY_BOOLEAN@@; WARP_HONOR_PS1='$WARP_HONOR_PS1'; _hostname=$(command -pv hostname >/dev/null 2>&1 && command -p hostname 2>/dev/null || command -p uname -n); _user=$(command -pv whoami >/dev/null 2>&1 && command -p whoami 2>/dev/null || echo $USER); _msg=$(printf "{\"hook\": \"InitShell\", \"value\": {\"session_id\": $WARP_SESSION_ID, \"shell\": \"zsh\", \"user\": \"%s\", \"hostname\": \"%s\"}}" "$_user" "$_hostname" | command -p od -An -v -tx1 | command -p tr -d '"'"' \n'"'"'); printf '"'"'\e]9278;d;%s\x07'"'"' $_msg; unset _hostname _user _msg' | command -p od -An -v -tx1 | command -p tr -d ' \n')
 
             # Keep remote commands up-to-date with shell.rs & bash.sh.
             # Note that in this command, we're passing a string to the remote shell. Any variable expansions need to be

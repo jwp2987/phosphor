@@ -966,6 +966,13 @@ impl AIConversation {
         self.server_conversation_token.as_ref()
     }
 
+    /// The token to identify this conversation by when reporting a problem: its own, or the
+    /// one it was forked from, since a fork's first turns are only recorded under the parent.
+    pub fn debugging_server_conversation_token(&self) -> Option<&ServerConversationToken> {
+        self.server_conversation_token()
+            .or_else(|| self.forked_from_server_conversation_token())
+    }
+
     /// Returns the server-assigned run identifier as a string.
     pub fn run_id(&self) -> Option<String> {
         self.task_id.map(|id| id.to_string())
@@ -2724,6 +2731,15 @@ impl AIConversation {
                                     &task_id,
                                     &self.task_store,
                                 );
+                                // A computer-use subagent finishing normally ends its background
+                                // session; restore the user's keyboard focus so it no longer
+                                // targets the driven window. Scoped to this conversation so a
+                                // concurrent background session in another conversation is left
+                                // intact. Idempotent and a no-op when this conversation has no
+                                // active background session (e.g. other subagent types). The
+                                // ctrl-c / cancel path, where no SubagentResult is produced, is
+                                // handled in `BlocklistAIController::cancel_conversation_progress`.
+                                computer_use::end_background_session(&self.id.to_string());
                             }
                         }
                         Some(api::message::Message::ModelUsed(model_used)) => {
@@ -3212,8 +3228,10 @@ impl AIConversation {
         &self.todo_lists
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_todo_lists_for_test(&mut self, todo_lists: Vec<AIAgentTodoList>) {
+    /// Replaces the conversation's todo lists directly, bypassing the normal
+    /// todo-operation replay, for projection tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_todo_lists_for_test(&mut self, todo_lists: Vec<AIAgentTodoList>) {
         self.todo_lists = todo_lists;
     }
 

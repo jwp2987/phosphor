@@ -128,6 +128,8 @@ pub(crate) struct TuiEditorElement {
     /// Whether to elide the buffer's final empty line (see
     /// [`Self::hide_trailing_empty_line`]).
     hide_trailing_empty_line: bool,
+    /// Whether buffer characters are painted as fixed-width mask glyphs.
+    masked: bool,
     styles: TuiEditorStyles,
     trailing_ghost_text: Option<(String, TuiStyle)>,
     /// Resolves the empty-buffer placeholder hint against fresh app state
@@ -205,6 +207,7 @@ impl TuiEditorElement {
             viewport_rows: None,
             line_number_gutter: false,
             hide_trailing_empty_line: false,
+            masked: false,
             styles: TuiEditorStyles::default(),
             trailing_ghost_text: None,
             placeholder_ghost_text_provider: None,
@@ -332,6 +335,12 @@ impl TuiEditorElement {
     /// so the two stay consistent.
     pub(crate) fn hide_trailing_empty_line(mut self) -> Self {
         self.hide_trailing_empty_line = true;
+        self
+    }
+
+    /// Conceals buffer text while preserving the backing editor model for editing.
+    pub(crate) fn masked(mut self) -> Self {
+        self.masked = true;
         self
     }
 
@@ -526,6 +535,11 @@ impl TuiEditorElement {
                 let content = lattice
                     .row_text(row, chars)
                     .expect("buffer display rows have source text");
+                let content = if self.masked {
+                    "•".repeat(content.chars().count())
+                } else {
+                    content
+                };
                 let style = self
                     .styles
                     .line_overrides
@@ -888,7 +902,10 @@ impl TuiElement for TuiEditorElement {
                     handler(TuiEditorAction::PasteText(text.clone()), event_ctx);
                     return true;
                 }
-                TuiEvent::ScrollWheel { .. }
+                TuiEvent::FocusGained
+                | TuiEvent::FocusLost
+                | TuiEvent::ModifierKeyChanged { .. }
+                | TuiEvent::ScrollWheel { .. }
                 | TuiEvent::LeftMouseDown { .. }
                 | TuiEvent::LeftMouseUp { .. }
                 | TuiEvent::LeftMouseDragged { .. }

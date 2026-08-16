@@ -35,7 +35,7 @@ const UNSUPPORTED_TMUX_VERSION_ERROR: &str =
     "The tmux version available on the remote machine is below 3.0. Please install tmux 3.0 or greater using a different method and try again.";
 const TMUX_FAILED_ERROR: &str =
     "tmux failed to execute on the remote machine. Please re-install tmux and try again.";
-const WARPIFY_TIMEOUT_ERROR: &str = "Warpifying the session hit a timeout.";
+const WARPIFY_TIMEOUT_ERROR: &str = "Phosphorizing the session hit a timeout.";
 const UNSUPPORTED_SHELL_ERROR: &str =
     "Unsupported shell. Please set bash, zsh, or fish as your default shell and try again.";
 const TMUX_INSTALL_FAILED_ERROR: &str =
@@ -82,7 +82,7 @@ impl WarpificationUnavailableReason {
                 if *is_tmux_install {
                     "tmux Install Timeout"
                 } else {
-                    "SSH Warpify Timeout"
+                    "SSH Phosphorize Timeout"
                 }
             }
             WarpificationUnavailableReason::UnsupportedShell { .. } => "Unsupported Shell",
@@ -174,7 +174,7 @@ impl SshErrorBlock {
         appearance: &Appearance,
     ) -> Box<dyn Element> {
         let header_contents = warpify::render::build_header_row(
-            "Error Warpifying session",
+            "Error Phosphorizing session",
             Icon::new(UiIcon::AlertTriangle.into(), theme.ui_error_color()),
             theme,
             appearance,

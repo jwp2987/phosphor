@@ -157,12 +157,25 @@ fn test_insert_hidden_child_agent_pane_keeps_focus_and_active_session() {
             // note in this test's module doc / the porting report for detail.
             assert_eq!(panes.pane_count(), initial_tree_pane_count);
             assert_eq!(panes.pane_ids().count(), initial_content_pane_count + 1);
+            assert_eq!(panes.terminal_pane_ids().count(), 2);
             assert_eq!(panes.visible_pane_count(), initial_visible_count);
             assert!(panes.has_pane_id(child_pane_id.into()));
 
             // The new child pane should remain hidden and not affect visible ordering.
             assert_eq!(panes.pane_id_by_index(0), Some(parent_pane_id));
             assert_eq!(panes.pane_id_by_index(1), None);
+            // The hidden child terminal stays *registered* (2 terminal pane ids
+            // above) but must not be *visible*: that split is exactly what the
+            // integration-test getters got wrong.
+            let visible_terminal_views = panes.visible_terminal_views(ctx);
+            assert_eq!(visible_terminal_views.len(), 1);
+            assert_eq!(
+                visible_terminal_views[0].id(),
+                panes
+                    .terminal_view_from_pane_id(parent_pane_id, ctx)
+                    .unwrap()
+                    .id()
+            );
 
             // Creating a hidden child pane should not steal focus or active session.
             assert_eq!(panes.focused_pane_id(ctx), parent_pane_id);
@@ -1173,6 +1186,105 @@ fn test_focused_pane_is_synchronized_with_application_focus() {
             // effect queue doesn't get processed or further modified before we
             // enqueue this event on the effect queue.
             ctx.emit(Event::OpenPromptEditor);
+        });
+    });
+}
+
+/// APP-5243: closing a file pane only hides it while undo-close is available, and the same view is
+/// reattached without reopening its file. Releasing the file on close would therefore leave a
+/// restored pane rendering content that can never update again. The file is released only once the
+/// pane is permanently discarded.
+///
+/// Fork drift from the pin:
+/// - The pin's `mock_pane_group` is its own harness; this fork's wraps
+///   `workspace::view::tests::{initialize_app, mock_workspace}` (see the helper above). The two
+///   lines that build the group are inlined here so `FileModel` -- which the workspace harness does
+///   not register -- can be added before the workspace window is built, exactly where the pin adds
+///   it.
+/// - `PaneGroup::file_notebook_panes` does not exist in this fork (it is a separate, unrelated pin
+///   gap; the fork has only `code_panes`). The test module is a child of `pane_group`, so it uses
+///   the same private `panes_of::<FilePane>()` + `id()` + `file_view()` the pin's accessor is
+///   defined as, which is the identical lookup.
+/// - This fork's `FilePane::new` takes `Option<PathBuf>` rather than the pin's
+///   `Option<LocalOrRemotePath>`; a local path is passed directly.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_undo_close_keeps_a_file_pane_watching_its_file() {
+    use warp_files::FileModel;
+
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        app.add_singleton_model(FileModel::new);
+        let workspace = crate::workspace::view::tests::mock_workspace(&mut app);
+        let pane_group = workspace
+            .read(&app, |workspace, _| workspace.tab_views().next().cloned())
+            .expect("mock_workspace has an initial tab");
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("notes.md");
+        std::fs::write(&path, "# before").expect("write file");
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane = FilePane::new(Some(path.clone()), None, None, ctx);
+            panes.add_pane_with_direction(Direction::Right, pane, true, ctx);
+        });
+
+        let (file_pane_id, file_view) = pane_group.read(&app, |panes, ctx| {
+            panes
+                .panes_of::<FilePane>()
+                .map(|pane| (pane.id(), pane.file_view(ctx)))
+                .next()
+                .expect("the file pane should exist")
+        });
+
+        // Let the read settle so the pane is fully loaded and watching.
+        let loaded = file_view.update(&mut app, |view, ctx| {
+            let file_id = view.file_id_for_test().expect("the file should be open");
+            let future_handle = FileModel::as_ref(ctx)
+                .get_future_handle(file_id)
+                .expect("Loading future should be present");
+            ctx.await_spawned_future(future_handle.future_id())
+        });
+        loaded.await;
+
+        // Close the way the pane header's close button does, which is the path that reaches
+        // `BackingView::close` before the pane group hides the pane.
+        file_view.update(&mut app, BackingView::close);
+        pane_group.update(&mut app, |panes, ctx| {
+            assert!(
+                panes.is_pane_hidden_for_close(file_pane_id),
+                "closing should hide the pane for undo rather than discard it"
+            );
+            assert!(
+                panes.restore_closed_pane(file_pane_id, ctx),
+                "the closed pane should be restorable"
+            );
+        });
+
+        app.read(|ctx| {
+            let file_id = file_view
+                .as_ref(ctx)
+                .file_id_for_test()
+                .expect("a restored pane should still hold its file open");
+            assert!(
+                FileModel::as_ref(ctx).file_path(file_id).is_some(),
+                "a restored pane should still be tracked by the file model"
+            );
+        });
+
+        // Permanently discarding the pane does release it.
+        pane_group.update(&mut app, |panes, ctx| {
+            panes.close_pane(file_pane_id, ctx);
+            panes.cleanup_closed_pane(file_pane_id, ctx);
+        });
+
+        app.read(|ctx| {
+            assert!(
+                file_view.as_ref(ctx).file_id_for_test().is_none(),
+                "a permanently discarded pane should release its file"
+            );
         });
     });
 }

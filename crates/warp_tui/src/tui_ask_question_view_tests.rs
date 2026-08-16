@@ -115,6 +115,12 @@ fn queue_question_action(app: &mut App, view: &ViewHandle<TuiAskQuestionView>) {
     action_model.update(app, |model, ctx| {
         queue_tui_permission_action(model, action, conversation_id, ctx);
     });
+    // The view no longer focuses its own selector when the action blocks —
+    // that let a background session steal focus (QUALITY-1333). The session
+    // view owns that decision now, so tests that drive the view through the
+    // focused responder chain focus the selector explicitly.
+    let selector = app.read(|ctx| view.as_ref(ctx).selector.clone());
+    selector.update(app, |_, ctx| ctx.focus_self());
 }
 
 fn present_active_view(app: &mut App, view: &ViewHandle<TuiAskQuestionView>) {
@@ -173,18 +179,18 @@ fn active_card_matches_question_panel_structure() {
         assert_eq!(
             lines,
             [
-                "┌──────────────────────────────────────────────────────────────────────────────┐",
-                "│                                                                              │",
-                "│ ■ Agent questions                                                 ← 1 of 2 → │",
-                "│                                                                              │",
-                "│ Which targets should be tested? (select all that apply)                      │",
-                "│ (1) [ ] Stable                                                               │",
-                "│ (2) [ ] Nightly                                                              │",
-                "│ (3) [ ] Other…                                                               │",
-                "│                                                                              │",
-                "│ Shift + Enter to advance Enter or number to select Ctrl + C to cancel questi │",
-                "│                                                                              │",
-                "└──────────────────────────────────────────────────────────────────────────────┘",
+                "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁",
+                "▏                                                                              ▕",
+                "▏ ■ Agent questions                                                 ← 1 of 2 → ▕",
+                "▏                                                                              ▕",
+                "▏ Which targets should be tested? (select all that apply)                      ▕",
+                "▏ (1) [ ] Stable                                                               ▕",
+                "▏ (2) [ ] Nightly                                                              ▕",
+                "▏ (3) [ ] Other…                                                               ▕",
+                "▏                                                                              ▕",
+                "▏ Shift + Enter to advance Enter or number to select Ctrl + C to cancel questi ▕",
+                "▏                                                                              ▕",
+                "▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔",
             ]
         );
     });

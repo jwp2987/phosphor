@@ -15,6 +15,8 @@ use std::{
 
 use crate::ai::llms::{LLMId, LLMPreferences};
 use crate::ai::mcp::{JSONMCPServer, MCPServerState};
+use crate::ai::skills::SkillManager;
+use ai::skills::{parse_skills_dirs_env, read_skills_for_skills_dirs, resolve_skills_dirs};
 
 use crate::ai::agent_sdk::driver::harness::{
     harness_model_env_vars, task_env_vars, HarnessKind, HarnessRunner, SavePoint,
@@ -298,7 +300,7 @@ pub enum AgentDriverError {
     MCPMissingVariables,
     #[error("Agent profile \"{0}\" not found")]
     ProfileError(String),
-    #[error("Local user state is unavailable. Restart Zap and try again.")]
+    #[error("Local user state is unavailable. Restart Phosphor and try again.")]
     NotLoggedIn,
     #[error("Saved prompt not found for id {0}")]
     AIWorkflowNotFound(String),
@@ -310,6 +312,15 @@ pub enum AgentDriverError {
     EnvironmentNotFound(String),
     #[error("Environment setup failed: {0}")]
     EnvironmentSetupFailed(String),
+    /// The shell process exited while an environment setup command was
+    /// running (e.g. the command ran `exit`), so the run cannot continue.
+    /// `command` is the (secret-redacted) command that was in flight (or
+    /// most recently submitted) when the shell died.
+    #[error(
+        "The shell exited during setup command `{command}`, so the run could not continue. \
+         Check the setup commands for this environment."
+    )]
+    SetupCommandExitedShell { command: String },
 
     #[error("Could not resolve working directory {}", path.display())]
     InvalidWorkingDirectory {
@@ -432,6 +443,37 @@ impl AgentDriver {
         })
     }
 
+    /// Builds a driver over an already-created terminal driver, skipping
+    /// [`Self::new`]'s auth check, secret/env-var assembly, and terminal
+    /// session creation.
+    ///
+    /// Test-only scaffolding (the pin carries the same constructor
+    /// unconditionally; here it is `#[cfg(test)]` so the production surface is
+    /// unchanged). It exists so tests can reach driver methods that read
+    /// `self.working_dir` — notably [`Self::load_skills_dirs`], whose whole
+    /// contract is that relative `WARP_SKILL_DIRS` entries resolve against the
+    /// driver's working directory rather than the process's.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        working_dir: PathBuf,
+        terminal_driver: ModelHandle<terminal::TerminalDriver>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        ctx.subscribe_to_model(&terminal_driver, |me, event, _| {
+            me.handle_terminal_driver_event(event);
+        });
+        Self {
+            terminal_driver,
+            working_dir,
+            secrets: Arc::new(HashMap::new()),
+            output_format: OutputFormat::default(),
+            task_id: None,
+            harness: None,
+            idle_on_complete: None,
+            third_party_harness_model_config: None,
+        }
+    }
+
     pub fn set_output_format(&mut self, output_format: OutputFormat) {
         self.output_format = output_format;
     }
@@ -476,7 +518,11 @@ impl AgentDriver {
                 // the viewer can connect, receive scrollback, and see the error.
                 if let (Some(idle_timeout), true) = (
                     idle_on_complete,
-                    matches!(err, AgentDriverError::EnvironmentSetupFailed(_)),
+                    matches!(
+                        err,
+                        AgentDriverError::EnvironmentSetupFailed(_)
+                            | AgentDriverError::SetupCommandExitedShell { .. }
+                    ),
                 ) {
                     let timeout = idle_timeout.min(SETUP_FAILED_IDLE_TIMEOUT);
                     log::info!("Environment setup failed; keeping session alive for {timeout:?}");
@@ -909,6 +955,45 @@ impl AgentDriver {
         })
     }
 
+    /// Load skills from the `WARP_SKILL_DIRS` environment variable as personal (home) tier skills.
+    ///
+    /// `WARP_SKILL_DIRS` is a comma-separated list of paths; each entry is itself a skills directory
+    /// whose **direct children** are expected to be skill folders containing `SKILL.md`. Relative
+    /// entries are resolved against the driver's working directory — not the process's current
+    /// working directory, which environment preparation may have changed (e.g. by cd-ing into a
+    /// cloned repo). Skills loaded this way behave identically to `~/.agents/skills` personal
+    /// skills—always in scope, regardless of the current working directory.
+    ///
+    /// Invalid, missing, or unreadable entries are skipped with a warning; an unset or empty
+    /// variable is a no-op.
+    async fn load_skills_dirs(foreground: &ModelSpawner<Self>) {
+        let dirs = parse_skills_dirs_env();
+        if dirs.is_empty() {
+            return;
+        }
+        log::info!(
+            "WARP_SKILL_DIRS: loading skills from {} directories",
+            dirs.len()
+        );
+        let load_result = foreground
+            .spawn(move |me, ctx| {
+                let dirs = resolve_skills_dirs(&me.working_dir, dirs);
+                let skills = read_skills_for_skills_dirs(&dirs);
+                if skills.is_empty() {
+                    log::info!("WARP_SKILL_DIRS: no skills found");
+                } else {
+                    log::info!("WARP_SKILL_DIRS: loaded {} skill(s)", skills.len());
+                }
+                SkillManager::handle(ctx).update(ctx, |manager, ctx| {
+                    manager.add_skills_dirs_skills(skills, ctx);
+                });
+            })
+            .await;
+        if let Err(err) = load_result {
+            log::warn!("Failed to load WARP_SKILL_DIRS skills: {err}");
+        }
+    }
+
     /// Runs the agent to completion.
     /// Driving the agent mostly requires main-thread UI framework updates, but using `async` and
     /// a `ModelSpawner` lets us express the high-level process linearly rather than in a
@@ -990,6 +1075,9 @@ impl AgentDriver {
                 .spawn(|me, ctx| me.start_profile_mcp_servers(ctx))
                 .await?
                 .await?;
+
+            // Skill loading is Oz-only; third-party harnesses have their own skill systems.
+            Self::load_skills_dirs(&foreground).await;
         }
 
         // Run the harness with a prompt
@@ -1044,7 +1132,9 @@ impl AgentDriver {
     }
 
     /// Sets up the third-party harness by subscribing to CLI session events and
-    /// installing the Zap plugin and platform plugin, if applicable.
+    /// installing the notification plugin, if applicable. (The pin also installs
+    /// an Oz platform plugin here; see `setup_notification_plugin` for why that
+    /// half is absent.)
     ///
     /// Returns a oneshot receiver that fires when the harness should exit
     /// (either immediately on completion or after the idle-on-complete timeout).
@@ -1062,15 +1152,68 @@ impl AgentDriver {
             .await?;
 
         // Install plugins before running the harness command.
-        let plugin_manager: Option<Box<dyn CliAgentPluginManager>> =
-            plugin_manager_for(harness.cli_agent());
-        if let Some(manager) = plugin_manager {
-            if let Err(e) = manager.install().await {
-                log::warn!("Plugin installation failed (continuing): {e}");
-            }
+        if let Some(manager) = plugin_manager_for(harness.cli_agent()) {
+            Self::setup_notification_plugin(manager.as_ref()).await;
         }
 
         Ok(exit_rx)
+    }
+
+    /// Brings the notification plugin up to date before a third-party harness
+    /// runs, so the harness's stop/blocked notifications reach this app -- but
+    /// only for the agents whose plugin this build can actually install, and
+    /// only when the on-disk plugin is missing or stale.
+    ///
+    /// Ported from the pin's `setup_notification_plugin`
+    /// (`driver.rs:2697-2722`, `02b53fcd8`) for #601. Two things the pin does
+    /// here are deliberately absent. It threads a `SetupClientEventReporter`
+    /// through and wraps each call in `record_result`; that type has no
+    /// definition anywhere in this fork, so the branching is ported and the
+    /// reporting is dropped rather than dragging in an absent surface. And the
+    /// pin's caller, `setup_harness_plugins`, goes on to install each agent's
+    /// *Oz platform* plugin, which this fork does not have a call site for and
+    /// is removing outright (#595) -- only the notification half of that
+    /// function is ported, because only the notification plugin does anything
+    /// here.
+    ///
+    /// # Why `can_auto_install` is the guard
+    ///
+    /// `plugin_manager_for` hands back a manager for every agent that has one,
+    /// including the ones whose plugin is manual-install-only:
+    /// `OpenCodePluginManager` and `DeepSeekPluginManager` return `false`
+    /// unconditionally, and `CodexPluginManager` returns
+    /// `FeatureFlag::CodexPlugin.is_enabled()`. Those managers do not override
+    /// `install`, so the bare call this replaced fell through to the trait's
+    /// default impl and returned "Auto-install not supported for this agent" --
+    /// which is not a failure at all, it is the agent declining. Logged as a
+    /// warning on *every* OpenCode and DeepSeek harness launch, it also drowned
+    /// the one warning on this line that does mean something: a real Claude
+    /// install failure, in the same stream, with no way to tell them apart.
+    /// Declining early keeps that channel meaning "something went wrong".
+    ///
+    /// # Why the `needs_update`/`is_installed` branching
+    ///
+    /// Without it this path ran a full `claude plugin marketplace add` +
+    /// `claude plugin install` -- two subprocesses, one of them a network fetch
+    /// -- on every third-party-harness launch, current plugin or not. The same
+    /// redundant work was removed from the local-child-pane call site in #600.
+    /// The marketplace-override guard that came with it is *not* duplicated
+    /// here on purpose: the pin's `setup_notification_plugin` does not call
+    /// `has_local_marketplace_override`, only its
+    /// `ensure_local_claude_child_plugins` does.
+    async fn setup_notification_plugin(manager: &dyn CliAgentPluginManager) {
+        if !manager.can_auto_install() {
+            return;
+        }
+        if manager.needs_update() {
+            if let Err(e) = manager.update().await {
+                log::warn!("Plugin update failed (continuing): {e}");
+            }
+        } else if !manager.is_installed()
+            && let Err(e) = manager.install().await
+        {
+            log::warn!("Plugin installation failed (continuing): {e}");
+        }
     }
 
     /// Configure a third-party harness for execution. This will set `self.harness` and
@@ -1654,7 +1797,9 @@ impl AgentDriver {
 
                     // Drive idle-on-complete timer for the harness exit signal.
                     match status {
-                        CLIAgentSessionStatus::Success | CLIAgentSessionStatus::Blocked { .. } => {
+                        CLIAgentSessionStatus::Success
+                        | CLIAgentSessionStatus::Failed { .. }
+                        | CLIAgentSessionStatus::Blocked { .. } => {
                             harness_exit.complete_with_optional_idle(me.idle_on_complete, ());
                         }
                         CLIAgentSessionStatus::InProgress => {

@@ -655,7 +655,7 @@ impl PrivacySettings {
         match (cloud_telemetry_value, cloud_crash_reporting_value) {
             (Some(is_telemetry_enabled), Some(is_crash_reporting_enabled)) => {
                 log::info!(
-                    "Zap Drive privacy preferences are set, using those for telemetry={is_telemetry_enabled}, \
+                    "Phosphor Drive privacy preferences are set, using those for telemetry={is_telemetry_enabled}, \
                     crash_reporting={is_crash_reporting_enabled}"
                 );
                 self.set_is_telemetry_enabled(is_telemetry_enabled, ctx);
@@ -663,7 +663,7 @@ impl PrivacySettings {
             }
             _ => {
                 log::info!(
-                    "Zap Drive privacy preferences are not set, syncing local PrivacySettings values to \
+                    "Phosphor Drive privacy preferences are not set, syncing local PrivacySettings values to \
                     WarpDrivePrivacySettings and cloud. telemetry={}, crash_reporting={}",
                     self.is_telemetry_enabled,
                     self.is_crash_reporting_enabled

@@ -882,7 +882,7 @@ pub fn run_tui_worker_if_requested() -> Option<Result<()>> {
     let args = warp_cli::Args::from_env();
     let Some(warp_cli::Command::Worker(worker)) = args.command() else {
         return Some(Err(anyhow!(
-            "Recognized a Zap worker invocation, but failed to parse its worker command"
+            "Recognized a Phosphor worker invocation, but failed to parse its worker command"
         )));
     };
     Some(run_worker_command(worker))
@@ -933,6 +933,15 @@ fn init_common(launch_mode: &LaunchMode, timer: Option<&mut IntervalTimer>) -> R
 
     if let Some(timer) = timer {
         timer.mark_interval_end("LOG_FILE_SETUP_COMPLETE");
+    }
+
+    // Claim a background-only process type before anything else can reach
+    // AppKit, so a headless launch never acquires a Dock tile.
+    #[cfg(target_os = "macos")]
+    if launch_mode.is_headless()
+        && let Err(e) = platform::mac::mark_process_as_background_only()
+    {
+        log::warn!("Failed to mark process as background-only: {e:#}");
     }
 
     // Adjust resource limits early, before doing other work, to ensure that
@@ -1130,8 +1139,10 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
         )
     };
 
+    // A headless invocation has no Dock presence, so it performs no Dock-visible
+    // setup at all (Dock icon, Dock menu, menu bar).
     #[cfg(target_os = "macos")]
-    {
+    if !launch_mode.is_headless() {
         use warpui::platform::mac::AppExt;
 
         let activate_on_launch = !launch_mode.is_integration_test()
@@ -1513,7 +1524,13 @@ fn initialize_app(
 
     ctx.set_default_binding_validator(is_binding_cross_platform);
 
-    if FeatureFlag::Autoupdate.is_enabled() {
+    // On macOS this deletes `Contents/MacOS/old` from inside the installed app
+    // bundle, so it runs behind the same `can_autoupdate` guard as the rest of
+    // the autoupdate machinery: an execution mode that never autoupdates must
+    // not mutate that bundle. The bundled CLI runs the GUI executable from
+    // inside the app bundle, so without this it would rewrite a bundle it does
+    // not own.
+    if FeatureFlag::Autoupdate.is_enabled() && AppExecutionMode::as_ref(ctx).can_autoupdate() {
         // Before: remove_old_executable() was called synchronously to clean up the
         // old executable left over from the previous auto-update. Now: moved onto
         // background_executor — across platforms only macOS actually does anything
@@ -2895,6 +2912,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::CycleNextCommandSuggestion,
         #[cfg(feature = "multi_workspace")]
         FeatureFlag::MultiWorkspace,
+        #[cfg(feature = "osc_hyperlinks")]
+        FeatureFlag::OscHyperlinks,
         #[cfg(feature = "ime_marked_text")]
         FeatureFlag::ImeMarkedText,
         #[cfg(feature = "partial_next_command_suggestions")]
@@ -3236,14 +3255,52 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
 }
 
 /// Mapping from unstable feature names accepted by `ZAP_UNSTABLE_FEATURES` to
-/// FeatureFlag. Features registered here are hidden by default in release builds
-/// and appear only once the corresponding token is set; dev builds enable them by
-/// default via the debug_assertions branch and don't need this variable.
+/// FeatureFlag. Features registered here are hidden by default and appear only
+/// once the corresponding token is set.
+///
+/// Note this is an *additional* enable path, not the only one, and it is not
+/// implied by a debug build: `enabled_features()` has no blanket
+/// `debug_assertions` branch that turns these on (it enables only
+/// `SshRemoteServer` that way), so a `cargo run` build sees exactly what a
+/// release build does unless the variable or a cargo feature says otherwise.
+/// `docs/pin-migration.md` Phase 6.7 counts this list as one of the three paths
+/// by which a flag can be reachable in a normal GUI build.
 const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     (
         "windows_high_performance_gpu_default",
         FeatureFlag::WindowsHighPerformanceGpuDefault,
     ),
+    // The Gemini CLI extension install/update chip, gated on
+    // `FeatureFlag::GeminiNotifications`.
+    //
+    // **This is not fork drift, so it deliberately does NOT go in
+    // `app/Cargo.toml`'s `default`.** Upstream has no `gemini_notifications`
+    // cargo feature either -- not at `02b53fcd8` and not at `42effe840` -- and
+    // keeps the flag in `DOGFOOD_FLAGS` alone. Its own `specs/APP-4067/TECH.md`
+    // still lists "Promote `GeminiNotifications` from dogfood -- after
+    // validation" as an open follow-up. Its `HOANotifications`,
+    // `OpenCodeNotifications` and `CodexNotifications` siblings are default-on
+    // upstream too, so the asymmetry is upstream's, not this fork's, and
+    // matching the siblings would ship the chip further than upstream has.
+    //
+    // What IS fork-specific is that dogfood-only means unreachable by anyone
+    // here. Upstream's dogfood channel is a GUI build, so its team can exercise
+    // the chip and eventually promote it. In this fork `bin/phosphor_oss.rs` is
+    // the only GUI binary and it adds `DEBUG_FLAGS` alone; `DOGFOOD_FLAGS`
+    // reaches only `warp_tui`'s `dev`/`local` binaries (a TUI, which has no
+    // plugin chip) and the schema generators. So the validation upstream is
+    // waiting on could never happen here, and `GeminiPluginManager` plus its six
+    // `cli-agent-plugin-gemini-*` catalogue strings would stay permanently dead.
+    //
+    // This entry restores that validation path and nothing more: it is off
+    // unless `ZAP_UNSTABLE_FEATURES=gemini_notifications` is set. The rest of
+    // the path is present and was traced end to end -- the install command
+    // matches the published `warpdotdev/gemini-cli-warp` extension, whose
+    // manifest `name` (`gemini-warp`) and `version` (`1.0.0`) match
+    // `EXTENSION_NAME` and `MINIMUM_PLUGIN_VERSION`, and the consumer is the
+    // local OSC 777 listener, which already accepts `CLIAgent::Gemini` under
+    // `HOANotifications` alone. See TODO.md, issue #594.
+    ("gemini_notifications", FeatureFlag::GeminiNotifications),
 ];
 
 #[cfg(test)]

@@ -116,9 +116,9 @@ impl WarpifySuccessBlock {
         let auto_warpify_snippet = auto_warpify_snippet.map(|(output_grid, can_write_to_rc)| {
             AutoWarpifySnippet {
                 description: (if !output_grid.is_empty() {
-                    "Run the following to automatically Warpify in the future:"
+                    "Run the following to automatically Phosphorize in the future:"
                 } else {
-                    "In remote subshells, Zap runs commands in the background to power completions, syntax highlighting, and other features."
+                    "In remote subshells, Phosphor runs commands in the background to power completions, syntax highlighting, and other features."
                 }).into(),
                 output_grid: output_grid.into(),
                 selection_handle: Default::default(),
@@ -156,7 +156,7 @@ impl WarpifySuccessBlock {
 
     pub fn render_title_ui(&self, theme: &WarpTheme, appearance: &Appearance) -> Box<dyn Element> {
         let header_contents = render::build_header_row(
-            "Session Warpified",
+            "Session Phosphorized",
             Icon::new(UiIcon::Zap.into(), theme.active_ui_detail()),
             theme,
             appearance,

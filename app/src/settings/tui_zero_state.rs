@@ -169,6 +169,59 @@ define_settings_group!(TuiZeroStateSettings, settings: [
         toml_path: "appearance.zero_state.extrusion_depth",
         description: "Normalized half-depth of the extruded TUI zero-state object, from 0.02 through 0.5.",
     },
+    // Per-section visibility toggles. Each defaults to true so the zero state
+    // keeps rendering every section unless a section is explicitly turned off.
+    // The title and version lines are always shown and have no toggle.
+    //
+    // The pin also has `show_signed_in_user`, gating the "Signed in as …"
+    // account line. That line is Warp-account state this fork dropped along
+    // with the cloud backend, so there is nothing for the toggle to hide and
+    // it is deliberately not ported.
+    show_changelog: TuiZeroStateShowChangelogSetting {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "appearance.zero_state.show_changelog",
+        description: "Whether the TUI zero state shows the \"What's new\" changelog section.",
+    },
+    show_project_info: TuiZeroStateShowProjectInfoSetting {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "appearance.zero_state.show_project_info",
+        description: "Whether the TUI zero state shows the project path and its discovered rules and skills.",
+    },
+    show_mcp: TuiZeroStateShowMcpSetting {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "appearance.zero_state.show_mcp",
+        description: "Whether the TUI zero state shows the MCP section.",
+    },
+    show_animation: TuiZeroStateShowAnimationSetting {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "appearance.zero_state.show_animation",
+        description: "Whether the TUI zero state shows the rotating object and its starfield.",
+    },
+    freeze_animation_when_unfocused: TuiZeroStateFreezeAnimationWhenUnfocusedSetting {
+        type: bool,
+        default: false,
+        supported_platforms: SupportedPlatforms::DESKTOP,
+        sync_to_cloud: SyncToCloud::Never,
+        private: false,
+        toml_path: "appearance.zero_state.freeze_animation_when_unfocused",
+        description: "Whether the TUI zero-state animation stops repainting while the terminal is unfocused.",
+    },
 ]);
 
 #[cfg(test)]

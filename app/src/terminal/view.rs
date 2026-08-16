@@ -192,6 +192,7 @@ use crate::ai::agent::{
     FinishedAIAgentOutput, RenderableAIError, StaticQueryType,
 };
 use crate::ai::blocklist::agent_view::agent_input_footer::toolbar_item::AgentToolbarItemKind;
+use crate::ai::blocklist::agent_view::orchestration_conversation_links::pane_group_id_containing_terminal_view;
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use crate::ai::blocklist::suggested_rule_modal::SuggestedRuleAndId;
 use crate::ai::blocklist::{model::AIBlockModelImpl, ClientIdentifiers};
@@ -303,7 +304,9 @@ use crate::terminal::warpify::{
 use crate::terminal::ShellLaunchData;
 use crate::terminal::writeable_pty::{PtyIntent, PtyIntentEvent, TerminalSurface};
 use crate::terminal::{element_size_at_last_frame, HistoryEntry};
-use crate::terminal::{height_in_range_approx, heights_approx_gt, SizeUpdate};
+use crate::terminal::{
+    height_in_range_approx, heights_approx_gt, heights_approx_gte, SizeUpdate,
+};
 use crate::terminal::{heights_approx_eq, CellSizeAndWindowPadding};
 use crate::terminal::{AudibleBell, SizeUpdateReason};
 use crate::terminal::{BlockListSettings, BlockListSettingsChangedEvent};
@@ -386,7 +389,7 @@ use warpui::event::ModifiersState;
 use warpui::keymap::Keystroke;
 use warpui::notification::{NotificationSendError, RequestPermissionsOutcome, UserNotification};
 use warpui::platform::{Cursor, OperatingSystem};
-use warpui::r#async::Timer;
+use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::windowing::WindowManager;
 
 use warpui::assets::asset_cache::{AssetCache, AssetCacheEvent};
@@ -457,7 +460,9 @@ use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
 use crate::terminal::model::blocks::{BlockFilter, BlockList};
-use crate::terminal::model::blocks::{BlockHeight, BlockHeightItem, BlockHeightSummary, Gap};
+use crate::terminal::model::blocks::{
+    AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
+};
 use crate::terminal::model::escape_sequences::{self, EscCodes, ToEscapeSequence, C1};
 use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::index::{Point, Side};
@@ -651,6 +656,14 @@ const BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(7);
 /// a user needing to type in one or many secret manager passwords
 /// during the bootstrap period.
 const ENV_VAR_BOOTSTRAP_FAILED_DURATION: Duration = Duration::from_secs(60);
+/// How long the slow-bootstrap banner stays visible after it first appears
+/// before it auto-dismisses. The banner used to persist until the user
+/// dismissed it manually or bootstrap finished, but in workflows where
+/// bootstrap will never complete (e.g. a shell that `exec`s into `expect`
+/// before Warp's shell integration runs), nothing ever clears it. Auto-
+/// dismissal keeps the warning informational without turning it into a
+/// permanent fixture.
+const SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION: Duration = Duration::from_secs(30);
 /// Repaint interval for the live elapsed-duration counter shown on a still-executing
 /// block's label. See issue #426.
 const LIVE_COMMAND_DURATION_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
@@ -797,16 +810,16 @@ impl NotificationsTrigger {
     pub fn discovery_banner_copy(&self) -> &'static str {
         match self {
             NotificationsTrigger::LongRunningCommand(..) => {
-                "Zap can notify you when long-running commands finish."
+                "Phosphor can notify you when long-running commands finish."
             }
             NotificationsTrigger::AgentTaskCompleted(..) => {
-                "Zap can notify you when an agent finishes responding."
+                "Phosphor can notify you when an agent finishes responding."
             }
             NotificationsTrigger::NeedsAttention => {
-                "Zap can notify you when a command or agent needs your attention."
+                "Phosphor can notify you when a command or agent needs your attention."
             }
             NotificationsTrigger::PasswordPrompt => {
-                "Zap can notify you when you're prompted to enter a password."
+                "Phosphor can notify you when you're prompted to enter a password."
             }
         }
     }
@@ -2285,6 +2298,12 @@ type TerminalViewCallback = Box<dyn FnOnce(&mut TerminalView, &mut ViewContext<T
 type ConversationFinishedCallback =
     Box<dyn FnOnce(&mut TerminalView, FinishReason, &mut ViewContext<TerminalView>)>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentTranscriptNavigationDirection {
+    Previous,
+    Next,
+}
+
 #[derive(Debug, Clone)]
 pub struct TerminalDropTargetData {
     pub terminal_view: WeakViewHandle<TerminalView>,
@@ -2357,6 +2376,14 @@ pub struct TerminalView {
 
     selected_blocks: SelectedBlocks,
 
+    /// Focused navigable transcript item in the active agent view (prompt or user shell block).
+    agent_transcript_selection: Option<AgentTranscriptNavigableItem>,
+
+    /// The AI block currently flagged as the transcript navigation target (i.e. rendering the
+    /// user-query navigation ring). Tracked so the flag can be cheaply cleared or moved when the
+    /// navigation cursor changes.
+    agent_transcript_marked_ai_block: Option<EntityId>,
+
     // Whether any session contains blocks from a remote session. Cached to improve performance.
     // Blocks don't necessarily need to be finished for this to be true (e.g. it's true for
     // an empty ssh session where just the active block is remote).
@@ -2417,6 +2444,13 @@ pub struct TerminalView {
     enter_agent_view_after_ssh_bootstrap: bool,
     slow_bootstrap_banner: ViewHandle<Banner<TerminalAction>>,
     is_slow_bootstrap_banner_open: bool,
+    /// Timer that auto-dismisses the slow-bootstrap banner after
+    /// [`SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION`]. Held so it can be
+    /// aborted when the banner is hidden for any other reason (manual
+    /// dismissal, successful bootstrap completion) — letting an in-flight
+    /// timer fire afterwards would be a no-op since `hide_slow_bootstrap_banner`
+    /// is idempotent, but aborting avoids spurious work.
+    slow_bootstrap_banner_auto_dismiss_handle: Option<SpawnedFutureHandle>,
 
     /// The handle to any currently hovered secret. Used to determine whether the
     /// secret gets a special hovered treatment.
@@ -3051,6 +3085,11 @@ impl TerminalView {
                 } => {
                     // Prompt suggestions should not follow the user back to terminal view.
                     me.clear_prompt_suggestions(ctx);
+                    // The transcript navigation cursor is agent-view-scoped; drop it so its
+                    // visual feedback doesn't linger into the terminal view or a re-entered
+                    // agent view.
+                    me.agent_transcript_selection = None;
+                    me.sync_agent_transcript_navigation_target(ctx);
                     // For ambient agent sessions, pop the pane stack to return to the parent terminal.
                     if *was_ambient_agent {
                         if let Some(pane_stack) =
@@ -3894,6 +3933,7 @@ impl TerminalView {
             )
             .with_icon(icons::Icon::ArrowLeft)
             .with_size(ButtonSize::Small)
+            .with_max_label_width(BACK_BUTTON_LABEL_MAX_WIDTH)
             .with_keybinding(
                 KeystrokeSource::Fixed(Keystroke {
                     key: "escape".to_string(),
@@ -3934,6 +3974,8 @@ impl TerminalView {
             open_secret_tool_tip: None,
             hovered_block_index: None,
             selected_blocks: Default::default(),
+            agent_transcript_selection: None,
+            agent_transcript_marked_ai_block: None,
             block_list_mouse_states,
             any_session_contains_remote_blocks: false,
             any_session_contains_restored_remote_blocks: false,
@@ -3955,6 +3997,7 @@ impl TerminalView {
             enter_agent_view_after_ssh_bootstrap: false,
             slow_bootstrap_banner,
             is_slow_bootstrap_banner_open: false,
+            slow_bootstrap_banner_auto_dismiss_handle: None,
             incompatible_configuration_banner,
             is_incompatible_configuration_banner_open: false,
             emacs_bindings_banner,
@@ -4360,6 +4403,53 @@ impl TerminalView {
     fn can_pop_nested_ambient_agent_view(&self, _ctx: &AppContext) -> bool {
         // openWarp: ambient_agent has been removed; a nested agent view never exists.
         false
+    }
+
+    /// If the active conversation is a child agent, navigate to its DIRECT
+    /// parent (one level up, so repeated ESC walks up an orchestration tree)
+    /// and return `true`; otherwise return `false` so the caller can run
+    /// the normal exit-agent-view flow. Cross-tab and swap-target cases
+    /// are handled by the workspace's focus path; falls back to emitting
+    /// a swap event when the parent has no visible owner. Runs before
+    /// any can-exit gating so long-running children can still navigate back.
+    fn try_navigate_to_parent_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+        if !FeatureFlag::AgentView.is_enabled() {
+            return false;
+        }
+        let active_conv_id = self
+            .agent_view_controller
+            .as_ref(ctx)
+            .agent_view_state()
+            .active_conversation_id();
+        let Some(active_conv_id) = active_conv_id else {
+            return false;
+        };
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let parent_id = history
+            .conversation(&active_conv_id)
+            .and_then(|c| history.resolved_parent_conversation_id_for_conversation(c));
+        let Some(parent_id) = parent_id else {
+            return false;
+        };
+        // Only focus the parent's terminal view when it is actually visible
+        // in some pane group. A mid-tree parent lives in a *hidden* child
+        // pane (off-tree), which the workspace focus path cannot reach —
+        // swap it into this pane instead, mirroring pill-bar navigation.
+        let visible_parent_view_id = history
+            .terminal_view_id_for_conversation(&parent_id)
+            .filter(|view_id| pane_group_id_containing_terminal_view(*view_id, ctx).is_some());
+
+        if let Some(parent_terminal_view_id) = visible_parent_view_id {
+            // Defer so it runs after in-flight event handling completes.
+            ctx.dispatch_typed_action_deferred(WorkspaceAction::FocusTerminalViewInWorkspace {
+                terminal_view_id: parent_terminal_view_id,
+            });
+        } else {
+            ctx.emit(Event::SwapPaneToConversation {
+                conversation_id: parent_id,
+            });
+        }
+        true
     }
 
     /// Exits the active agent, either:
@@ -5551,8 +5641,23 @@ impl TerminalView {
                 ai_render_context.exchange_ids = Some(HashSet::new());
             }
             BlocklistAIHistoryEvent::UpdatedStreamingExchange {
-                conversation_id, ..
+                exchange_id,
+                conversation_id,
+                ..
             } => {
+                // Streaming exchanges can gain a displayable user query after mount. Keep the
+                // navigable-user-query flag in sync so Cmd-Up treats the segment as a stop once
+                // the query is renderable.
+                if let Some(ai_block) = self.ai_block_for_exchange(exchange_id).cloned() {
+                    let is_user_query = ai_block.as_ref(ctx).has_user_input(ctx);
+                    self.model
+                        .lock()
+                        .block_list_mut()
+                        .set_agent_transcript_user_query_for_rich_content(
+                            ai_block.id(),
+                            is_user_query,
+                        );
+                }
                 self.update_context_blocks_and_exchanges(ctx);
                 self.maybe_send_lrc_queued_prompts_after_subagent_handoff(*conversation_id, ctx);
             }
@@ -6852,21 +6957,21 @@ impl TerminalView {
                 .get_pending_action(app)
                 .map(|action| match &action.action {
                     AIAgentActionType::RequestCommandOutput { command, .. } => {
-                        format!("Oz needs your permission to run `{command}`")
+                        format!("Phosphor Agent needs your permission to run `{command}`")
                     }
                     AIAgentActionType::ReadFiles(..) => {
-                        "Oz needs your permission to read files".to_string()
+                        "Phosphor Agent needs your permission to read files".to_string()
                     }
                     AIAgentActionType::RequestFileEdits { .. } => {
-                        "Oz needs your permission to edit a file".to_string()
+                        "Phosphor Agent needs your permission to edit a file".to_string()
                     }
                     AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
-                        "Oz needs your permission to interact with a running shell command"
+                        "Phosphor Agent needs your permission to interact with a running shell command"
                             .to_string()
                     }
-                    _ => "Oz needs your confirmation to continue".to_string(),
+                    _ => "Phosphor Agent needs your confirmation to continue".to_string(),
                 })
-                .unwrap_or("Oz needs your confirmation to continue".to_string());
+                .unwrap_or("Phosphor Agent needs your confirmation to continue".to_string());
             return Some(AIBlockNotificationSummary {
                 success: false,
                 title,
@@ -9164,11 +9269,11 @@ impl TerminalView {
 
         let a11y_message = match &warpify_keybinding {
             Some(keystroke) => format!(
-                "You can press {} to Warpify this {} for more Zap features.",
+                "You can press {} to Phosphorize this {} for more Phosphor features.",
                 keystroke.displayed(),
                 lowercase_title
             ),
-            None => format!("You can Warpify this {lowercase_title} for more Zap features."),
+            None => format!("You can Phosphorize this {lowercase_title} for more Phosphor features."),
         };
 
         model
@@ -9331,7 +9436,7 @@ impl TerminalView {
 
         let a11y_content = AccessibilityContent::new(
             banner_title,
-            "Make sure you have enabled access for Zap notifications in System Preferences.",
+            "Make sure you have enabled access for Phosphor notifications in System Preferences.",
             WarpA11yRole::TextRole,
         );
         ctx.emit_a11y_content(a11y_content);
@@ -10355,12 +10460,13 @@ impl TerminalView {
     }
 
     /// Sends telemetry if an AI-requested command caused the shell to exit, and returns the
-    /// conversation that requested it (if any) so the caller can finalize it as a failure
-    /// via `BlocklistAIController::fail_conversation_due_to_shell_exit` (#341).
+    /// conversation that requested it (if any) along with the (secret-redacted) command text,
+    /// so the caller can finalize it as a failure via
+    /// `BlocklistAIController::fail_conversation_due_to_shell_exit` (#341).
     fn maybe_send_agent_exited_shell_telemetry(
         &self,
         ctx: &mut ViewContext<Self>,
-    ) -> Option<AIConversationId> {
+    ) -> Option<(AIConversationId, String)> {
         let model = self.model.lock();
         let block_list = model.block_list();
         let blocks = block_list.blocks();
@@ -10399,23 +10505,47 @@ impl TerminalView {
         });
         send_telemetry_from_ctx!(
             TelemetryEvent::AgentExitedShellProcess {
-                command,
+                command: command.clone(),
                 server_output_id,
             },
             ctx
         );
-        conversation_id
+        conversation_id.map(|conversation_id| (conversation_id, command))
     }
 
-    /// Updates the agent view back button's disabled state and tooltip based on whether
-    /// the user can exit agent mode, and shows a tooltip explaining when exiting is blocked.
+    /// Updates the agent view back button's disabled state, tooltip and label.
+    /// For child agents ESC navigates one level up instead of exiting in place,
+    /// so the label names the direct parent (see [`agent_view_back_button_label`]);
+    /// the tooltip still explains when exiting is blocked.
     pub(crate) fn update_agent_view_back_button_state(&mut self, ctx: &mut ViewContext<Self>) {
-        let disabled_reason = self
-            .can_exit_agent_view_for_terminal_view(ctx)
-            .err()
-            .map(|e| e.to_string());
+        let active_conv_id = self
+            .agent_view_controller
+            .as_ref(ctx)
+            .agent_view_state()
+            .active_conversation_id();
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        // Upstream derives this from `label != "for terminal"`, relying on the
+        // label being a literal. Phosphor's labels come from fluent, so that
+        // comparison would be false under every non-English locale and the
+        // button would never disable. Resolve the parent directly instead —
+        // same predicate ("a parent resolved"), locale-independent.
+        let is_child_agent = active_conv_id
+            .and_then(|id| history.conversation(&id))
+            .and_then(|c| history.resolved_parent_conversation_id_for_conversation(c))
+            .is_some();
+        let label = agent_view_back_button_label(history, active_conv_id);
+
+        // Never disable for child agents: the swap-back path can't be blocked.
+        let disabled_reason = if is_child_agent {
+            None
+        } else {
+            self.can_exit_agent_view_for_terminal_view(ctx)
+                .err()
+                .map(|e| e.to_string())
+        };
 
         self.agent_view_back_button.update(ctx, |button, ctx| {
+            button.set_label(label, ctx);
             button.set_disabled(disabled_reason.is_some(), ctx);
             button.set_tooltip(disabled_reason, ctx);
         });
@@ -10478,15 +10608,20 @@ impl TerminalView {
             }
             ModelEvent::Exit { reason } => {
                 if !self.manual_pty_shutdown_requested
-                    && let Some(conversation_id) = self.maybe_send_agent_exited_shell_telemetry(ctx)
+                    && let Some((conversation_id, command)) =
+                        self.maybe_send_agent_exited_shell_telemetry(ctx)
                 {
                     // The agent's command caused the shell to exit. Finalize the
-                    // conversation as a failure (with a message) before the pane is
-                    // torn down, so status consumers report the failure instead of
-                    // "Cancelled by user" (which the pane-close cancellation would
-                    // otherwise produce).
+                    // conversation as a failure (with a message naming the command)
+                    // before the pane is torn down, so status consumers report the
+                    // failure instead of "Cancelled by user" (which the pane-close
+                    // cancellation would otherwise produce).
                     self.ai_controller.update(ctx, |controller, ctx| {
-                        controller.fail_conversation_due_to_shell_exit(conversation_id, ctx);
+                        controller.fail_conversation_due_to_shell_exit(
+                            conversation_id,
+                            command,
+                            ctx,
+                        );
                     });
                 }
 
@@ -12095,8 +12230,12 @@ impl TerminalView {
             CLIAgentSessionListener::new(view_id, agent, &model_events_handle, ctx)
         });
         let remote_host = self.active_session_remote_host(ctx);
-        let should_auto_toggle_input =
-            *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start;
+        // Now that this fork's own TUI registers a listener too, the same
+        // `supports_cli_agent_footer()` gate the detection path already applies
+        // has to apply here: a TUI hosting its own agent must not have the GUI's
+        // rich input open itself on top of it.
+        let should_auto_toggle_input = agent.supports_cli_agent_footer()
+            && *AISettings::as_ref(ctx).auto_open_rich_input_on_cli_agent_start;
         // Seed context from the event that caused registration before the
         // listener subscribes to future events.
         CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions_model, ctx| {
@@ -12202,7 +12341,7 @@ impl TerminalView {
         }
         let should_open = CLIAgentSessionsModel::as_ref(ctx)
             .session(self.view_id)
-            .is_some_and(|s| s.should_auto_toggle_input);
+            .is_some_and(|s| s.agent.supports_cli_agent_footer() && s.should_auto_toggle_input);
         if should_open && !self.has_active_cli_agent_input_session(ctx) {
             self.open_cli_agent_rich_input(CLIAgentInputEntrypoint::AutoShow, ctx);
         }
@@ -12296,7 +12435,11 @@ impl TerminalView {
             // option menu the agent is showing in the terminal.
             let should_auto_toggle_input = CLIAgentSessionsModel::as_ref(ctx)
                 .session(self.view_id)
-                .is_some_and(|s| s.supports_rich_status() && s.should_auto_toggle_input);
+                .is_some_and(|s| {
+                    s.agent.supports_cli_agent_footer()
+                        && s.supports_rich_status()
+                        && s.should_auto_toggle_input
+                });
             if should_auto_toggle_input {
                 match status {
                     CLIAgentSessionStatus::Blocked { .. } => {
@@ -12307,8 +12450,12 @@ impl TerminalView {
                             ctx,
                         );
                     }
-                    CLIAgentSessionStatus::InProgress | CLIAgentSessionStatus::Success => {
+                    CLIAgentSessionStatus::InProgress
+                    | CLIAgentSessionStatus::Success
+                    | CLIAgentSessionStatus::Failed { .. } => {
                         // Auto-open rich input when the agent resumes or completes.
+                        // A failed turn counts as "completed": the terminal is
+                        // back at the user's disposal, so hand the keyboard back.
                         if !self.has_active_cli_agent_input_session(ctx) {
                             self.open_cli_agent_rich_input(CLIAgentInputEntrypoint::AutoShow, ctx);
                         }
@@ -12339,6 +12486,8 @@ impl TerminalView {
 
         let trigger = if matches!(status, CLIAgentSessionStatus::Blocked { .. }) {
             NotificationsTrigger::NeedsAttention
+        } else if matches!(status, CLIAgentSessionStatus::Failed { .. }) {
+            NotificationsTrigger::AgentTaskCompleted(false)
         } else {
             NotificationsTrigger::AgentTaskCompleted(true)
         };
@@ -12442,6 +12591,8 @@ impl TerminalView {
         // doing the decoration to ensure we don't erroneously apply error
         // underlines to valid commands.
         let input = self.input().clone();
+        let session_clone = session.clone();
+        let session_clone2 = session.clone();
         ctx.spawn(
             async move { session.load_external_commands().await },
             move |me, _, ctx| {
@@ -12454,6 +12605,21 @@ impl TerminalView {
                 me.refresh_warp_prompt(ctx);
             },
         );
+
+        // Functions and builtins that the bootstrap snapshot could not afford to
+        // enumerate are collected here, off the critical path: unlike the
+        // executables above nothing waits on them, so they are detached rather
+        // than sequenced into input decoration. Both are no-ops for every shell
+        // whose bootstrap already reports the complete set — which today is all
+        // four of them; see `Session::load_all_function_names` for what this
+        // fork has not taken from the pin, and why.
+        ctx.background_executor()
+            .spawn(async move { session_clone.load_all_function_names().await })
+            .detach();
+
+        ctx.background_executor()
+            .spawn(async move { session_clone2.load_all_builtins().await })
+            .detach();
 
         // If we were waiting for a successful warpification, it's come. Stop the timeout.
         self.warpify_state.abort_ssh_warpify_timeout();
@@ -14417,10 +14583,32 @@ impl TerminalView {
     }
 
     fn hide_slow_bootstrap_banner(&mut self, ctx: &mut ViewContext<Self>) {
+        if let Some(handle) = self.slow_bootstrap_banner_auto_dismiss_handle.take() {
+            handle.abort();
+        }
         if self.is_slow_bootstrap_banner_open {
             self.is_slow_bootstrap_banner_open = false;
             ctx.notify();
         }
+    }
+
+    /// Schedule a timer that auto-dismisses the slow-bootstrap banner after
+    /// `duration`. Exposed as a method (rather than inlined) so tests can
+    /// trigger the same scheduling path with a short duration.
+    fn start_slow_bootstrap_banner_auto_dismiss_timer(
+        &self,
+        duration: Duration,
+        ctx: &mut ViewContext<Self>,
+    ) -> SpawnedFutureHandle {
+        ctx.spawn(
+            async move {
+                Timer::after(duration).await;
+            },
+            |me, _, ctx| {
+                me.slow_bootstrap_banner_auto_dismiss_handle = None;
+                me.hide_slow_bootstrap_banner(ctx);
+            },
+        )
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -14564,6 +14752,17 @@ impl TerminalView {
         if !self.is_login_shell_bootstrapped {
             log::warn!("Showing bootstrap slow toast");
             self.is_slow_bootstrap_banner_open = true;
+            // Replace any prior auto-dismiss timer (defensive — the banner
+            // should only open once per session, but if the path is ever
+            // exercised twice we don't want to leak a SpawnedFutureHandle).
+            if let Some(handle) = self.slow_bootstrap_banner_auto_dismiss_handle.take() {
+                handle.abort();
+            }
+            self.slow_bootstrap_banner_auto_dismiss_handle =
+                Some(self.start_slow_bootstrap_banner_auto_dismiss_timer(
+                    SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION,
+                    ctx,
+                ));
             ctx.notify();
         }
 
@@ -14608,7 +14807,9 @@ impl TerminalView {
 
         let new_size = size_update.new_size.pane_size_px();
         if new_size.x() == 0. || new_size.y() == 0. {
-            log::info!("Tried to resize with size {new_size:?}. Skipping resize");
+            // This can recur on every layout pass (e.g. while a pane is collapsed),
+            // so keep it at debug to avoid flooding release logs at frame rate.
+            log::debug!("Tried to resize with size {new_size:?}. Skipping resize");
             return;
         }
 
@@ -18531,6 +18732,11 @@ impl TerminalView {
             self.close_context_menu(ctx, true);
         }
 
+        if !is_shift_down && self.should_use_agent_transcript_navigation(ctx) {
+            self.navigate_agent_transcript(AgentTranscriptNavigationDirection::Previous, ctx);
+            return;
+        }
+
         if let Some(selected_block_index) = self.selected_blocks.tail() {
             let new_block_index = self
                 .model
@@ -18585,6 +18791,12 @@ impl TerminalView {
         if self.is_context_menu_open() {
             self.close_context_menu(ctx, true);
         }
+
+        if !is_shift_down && self.should_use_agent_transcript_navigation(ctx) {
+            self.navigate_agent_transcript(AgentTranscriptNavigationDirection::Next, ctx);
+            return;
+        }
+
         let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
         let is_inverted_blocklist = input_mode.is_inverted_blocklist();
         let is_most_recent_block_visible = {
@@ -18708,6 +18920,9 @@ impl TerminalView {
         block_index: BlockIndex,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.agent_transcript_selection =
+            Some(AgentTranscriptNavigableItem::ShellBlock(block_index));
+        self.sync_agent_transcript_navigation_target(ctx);
         self.change_block_selections(
             |selected_blocks| {
                 selected_blocks.reset_to_single(block_index);
@@ -18718,6 +18933,8 @@ impl TerminalView {
     }
 
     fn clear_selected_blocks(&mut self, ctx: &mut ViewContext<Self>) {
+        self.agent_transcript_selection = None;
+        self.sync_agent_transcript_navigation_target(ctx);
         self.change_block_selections(
             |selected_blocks| {
                 selected_blocks.reset();
@@ -18725,6 +18942,198 @@ impl TerminalView {
             ctx,
         );
         ctx.notify();
+    }
+
+    /// The mounted [`AIBlock`] rendering the given exchange, if any.
+    fn ai_block_for_exchange(
+        &self,
+        exchange_id: &AIAgentExchangeId,
+    ) -> Option<&ViewHandle<AIBlock>> {
+        self.rich_content_views.iter().find_map(|rich_content| {
+            let ai_metadata = rich_content.ai_block_metadata()?;
+            (ai_metadata.exchange_id == *exchange_id).then_some(&ai_metadata.ai_block_handle)
+        })
+    }
+
+    fn should_use_agent_transcript_navigation(&self, ctx: &AppContext) -> bool {
+        FeatureFlag::AgentView.is_enabled() && self.agent_view_controller.as_ref(ctx).is_active()
+    }
+
+    fn navigate_agent_transcript(
+        &mut self,
+        direction: AgentTranscriptNavigationDirection,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let navigable_items = {
+            let model = self.model.lock();
+            model.block_list().agent_transcript_navigable_items()
+        };
+        if navigable_items.is_empty() {
+            return;
+        }
+
+        let current = self.agent_transcript_selection.or_else(|| {
+            self.selected_blocks
+                .tail()
+                .map(AgentTranscriptNavigableItem::ShellBlock)
+        });
+
+        let target = match direction {
+            AgentTranscriptNavigationDirection::Previous => match current {
+                Some(current) => match navigable_items.iter().position(|item| *item == current) {
+                    // Stay on the oldest item, matching ordinary block navigation.
+                    Some(0) => Some(current),
+                    Some(index) => Some(navigable_items[index - 1]),
+                    // Absent/stale cursor: start from the newest navigable item.
+                    None => navigable_items.last().copied(),
+                },
+                None => navigable_items.last().copied(),
+            },
+            AgentTranscriptNavigationDirection::Next => {
+                // Without a cursor the user is already past the newest stop, so there is
+                // nothing more recent to move to: do nothing, matching ordinary block
+                // navigation. Selecting the newest stop here would make repeated Cmd-Down
+                // presses oscillate between selecting and clearing it.
+                let Some(current) = current else {
+                    return;
+                };
+                let next = navigable_items
+                    .iter()
+                    .position(|item| *item == current)
+                    .and_then(|index| navigable_items.get(index + 1).copied());
+                if next.is_none() {
+                    self.scroll_to_end_of_blocklist_if_not_at_end(ctx);
+                    self.clear_selected_blocks(ctx);
+                    ctx.focus(&self.input);
+                    ctx.notify();
+                    return;
+                }
+                next
+            }
+        };
+
+        let Some(target) = target else {
+            return;
+        };
+        self.apply_agent_transcript_selection(target, direction, ctx);
+    }
+
+    fn apply_agent_transcript_selection(
+        &mut self,
+        target: AgentTranscriptNavigableItem,
+        direction: AgentTranscriptNavigationDirection,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        self.agent_transcript_selection = Some(target);
+        match target {
+            AgentTranscriptNavigableItem::ShellBlock(block_index) => {
+                self.reset_selection_to_single_block(block_index, ctx);
+                self.scroll_to_if_not_visible(block_index, ctx);
+            }
+            AgentTranscriptNavigableItem::AiBlock { view_id } => {
+                self.change_block_selections(
+                    |selected_blocks| {
+                        selected_blocks.reset();
+                    },
+                    ctx,
+                );
+                self.scroll_to_rich_content_view(view_id, ctx);
+            }
+        }
+        self.sync_agent_transcript_navigation_target(ctx);
+
+        let (delta, is_cmd_down) = match direction {
+            AgentTranscriptNavigationDirection::Previous => (BlockSelectionDelta::Previous, false),
+            AgentTranscriptNavigationDirection::Next => (BlockSelectionDelta::Next, true),
+        };
+        send_telemetry_from_ctx!(
+            TelemetryEvent::BlockSelection(BlockSelectionDetails {
+                cardinality: self.selected_blocks.cardinality(),
+                delta,
+                is_cmd_down,
+                is_shift_down: false,
+            }),
+            ctx
+        );
+
+        self.tips_completed.update(ctx, |tips, ctx| {
+            mark_feature_used_and_write_to_user_defaults(
+                Tip::Hint(TipHint::BlockSelect),
+                tips,
+                ctx,
+            );
+            ctx.notify();
+        });
+        ctx.notify();
+    }
+
+    /// Cmd-Down past the newest navigable transcript item should land the user on the true end
+    /// of the blocklist (latest content), not wherever the last stop left the viewport.
+    fn scroll_to_end_of_blocklist_if_not_at_end(&mut self, ctx: &mut ViewContext<Self>) {
+        let is_at_end = {
+            let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
+            let model = self.model.lock();
+            let viewport = self.viewport_state(model.block_list(), input_mode, ctx);
+            heights_approx_gte(
+                viewport.scroll_top_in_lines(),
+                viewport.max_scroll_top_in_lines(),
+            )
+        };
+        if !is_at_end {
+            self.update_scroll_position_locking(ScrollPositionUpdate::AfterEnd, ctx);
+        }
+    }
+
+    /// The AI rich-content view currently targeted by agent-view transcript navigation.
+    /// `None` outside an active agent view or when the cursor is on a shell block.
+    fn agent_transcript_navigated_ai_block(&self, app: &AppContext) -> Option<EntityId> {
+        if !self.should_use_agent_transcript_navigation(app) {
+            return None;
+        }
+        match self.agent_transcript_selection {
+            Some(AgentTranscriptNavigableItem::AiBlock { view_id }) => Some(view_id),
+            _ => None,
+        }
+    }
+
+    /// Propagates the transcript navigation cursor to the targeted [`AIBlock`], which renders a
+    /// navigation ring around its user-query row. Clears the flag from the previously targeted
+    /// block when the cursor moves or resets.
+    fn sync_agent_transcript_navigation_target(&mut self, ctx: &mut ViewContext<Self>) {
+        let target = self.agent_transcript_navigated_ai_block(ctx);
+        if target == self.agent_transcript_marked_ai_block {
+            return;
+        }
+        for rich_content in self.rich_content_views.iter() {
+            let Some(ai_metadata) = rich_content.ai_block_metadata() else {
+                continue;
+            };
+            let handle = &ai_metadata.ai_block_handle;
+            let should_mark = Some(handle.id()) == target;
+            let was_marked = Some(handle.id()) == self.agent_transcript_marked_ai_block;
+            if should_mark != was_marked {
+                handle.update(ctx, |ai_block, ctx| {
+                    ai_block.set_agent_transcript_navigation_target(should_mark, ctx);
+                });
+            }
+        }
+        self.agent_transcript_marked_ai_block = target;
+    }
+
+    fn scroll_to_rich_content_view(&mut self, view_id: EntityId, ctx: &mut ViewContext<Self>) {
+        let Some(index) = self
+            .model
+            .lock()
+            .block_list()
+            .removable_blocklist_item_position(&RemovableBlocklistItem::RichContent(view_id))
+            .copied()
+        else {
+            return;
+        };
+        self.update_scroll_position_locking(
+            ScrollPositionUpdate::ScrollToTopOfRichContent { index },
+            ctx,
+        );
     }
 
     /// Clears selected text across all types of blocks and handles side effects (i.e. Agent Mode
@@ -20010,6 +20419,12 @@ impl TerminalView {
                 if FeatureFlag::AgentView.is_enabled()
                     && self.agent_view_controller.as_ref(ctx).is_active()
                 {
+                    // For child agents, ESC navigates one level up first;
+                    // run this before any can-exit gating.
+                    if self.try_navigate_to_parent_conversation(ctx) {
+                        return;
+                    }
+
                     // Disable escape completely for ambient agents without a parent terminal.
                     if self.can_exit_agent_view_for_terminal_view(ctx).is_err() {
                         return;
@@ -21108,6 +21523,11 @@ impl TerminalView {
             ScrollPositionUpdate::ScrollToTopOfRichContent { index },
             ctx,
         );
+    }
+
+    #[cfg(any(test, feature = "integration_tests"))]
+    pub fn agent_transcript_selection_for_test(&self) -> Option<AgentTranscriptNavigableItem> {
+        self.agent_transcript_selection
     }
 
     #[cfg(any(test, feature = "integration_tests"))]
@@ -24562,7 +24982,7 @@ impl TypedActionView for TerminalView {
                 WarpA11yRole::TextareaRole,
             )),
             ShowWarpifySettings => Custom(AccessibilityContent::new_without_help(
-                "Opened Warpify Settings",
+                "Opened Phosphorize Settings",
                 WarpA11yRole::ButtonRole,
             )),
             OpenFilesPalette { .. } => Custom(AccessibilityContent::new_without_help(
@@ -25651,7 +26071,12 @@ impl TypedActionView for TerminalView {
                 ctx.notify();
             }
             ExitAgentView => {
-                if self.can_exit_agent_view_for_terminal_view(ctx).is_ok() {
+                // Match the back button's parent-naming affordance for child
+                // agents: navigate one level up before falling back to the
+                // in-place exit flow.
+                if self.try_navigate_to_parent_conversation(ctx) {
+                    ctx.notify();
+                } else if self.can_exit_agent_view_for_terminal_view(ctx).is_ok() {
                     self.exit_agent_view(ctx);
                     ctx.notify();
                 }
@@ -26811,6 +27236,46 @@ fn is_rich_input_chip_in_cli_toolbar(app: &AppContext) -> bool {
         .iter()
         .chain(sel.right_items().iter())
         .any(|item| matches!(item, AgentToolbarItemKind::RichInput))
+}
+
+/// Maximum pixel width of the back-button label before it ellipsizes
+/// (pixel-based, via the button's label clip), keeping the pane header
+/// compact for long parent-agent names.
+const BACK_BUTTON_LABEL_MAX_WIDTH: f32 = 160.;
+
+/// Returns the agent-view back button label. ESC navigates one level up, so
+/// the label names the direct parent: children of the tree root keep the
+/// classic "for Orchestrator" wording, nested subagents name their parent
+/// agent (falling back to a generic label), and non-child conversations exit
+/// back to the terminal. Long parent names are ellipsized pixel-based by the
+/// button itself ([`BACK_BUTTON_LABEL_MAX_WIDTH`]).
+fn agent_view_back_button_label(
+    history: &BlocklistAIHistoryModel,
+    active_conversation_id: Option<AIConversationId>,
+) -> String {
+    let parent_id = active_conversation_id
+        .and_then(|id| history.conversation(&id))
+        .and_then(|c| history.resolved_parent_conversation_id_for_conversation(c));
+    let Some(parent_id) = parent_id else {
+        return crate::t!("terminal-agent-header-for-terminal");
+    };
+    let parent = history.conversation(&parent_id);
+    // An unloaded parent can't be classified; keep the classic wording.
+    let parent_is_root = parent.is_none_or(|parent| {
+        history
+            .resolved_parent_conversation_id_for_conversation(parent)
+            .is_none()
+    });
+    if parent_is_root {
+        return crate::t!("terminal-agent-header-for-orchestrator");
+    }
+    match parent
+        .and_then(|parent| parent.agent_name())
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => crate::t!("terminal-agent-header-for-parent-named", name = name),
+        None => crate::t!("terminal-agent-header-for-parent-agent"),
+    }
 }
 
 #[cfg(test)]

@@ -131,6 +131,53 @@ fn detects_da1_reply_sentinel() {
 }
 
 #[test]
+fn background_reply_alone_does_not_end_the_read() {
+    // Regression for #580. The colour has arrived but the DA1 sentinel has not,
+    // so the loop must keep draining: returning here leaves DA1 unread in the
+    // tty and the user's shell prints it as `^[[?62;22;52c` after the TUI exits.
+    let replies = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07";
+    assert_eq!(
+        classify_probe_read(replies, false),
+        ProbeRead::Background(ProbedRgb {
+            r: 0x1e,
+            g: 0x1e,
+            b: 0x2e
+        })
+    );
+}
+
+#[test]
+fn da1_sentinel_outranks_the_background_reply() {
+    // Both in one chunk -- the terminal answered fully, so the loop stops and
+    // nothing is left behind. The sentinel must win regardless of whether the
+    // background has already been recorded.
+    let replies = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07\x1b[?62;22;52c";
+    assert_eq!(classify_probe_read(replies, false), ProbeRead::Sentinel);
+    assert_eq!(classify_probe_read(replies, true), ProbeRead::Sentinel);
+}
+
+#[test]
+fn a_known_background_does_not_re_trigger_the_drain_window() {
+    // Once the colour is recorded, later chunks that still lack DA1 are
+    // Pending: re-reporting Background would push the drain deadline out again
+    // on every read and unbound the very latency the grace window bounds.
+    let replies = b"\x1b]11;rgb:1e1e/1e1e/2e2e\x07\x1b[?1;2R";
+    assert_eq!(classify_probe_read(replies, true), ProbeRead::Pending);
+}
+
+#[test]
+fn an_incomplete_background_reply_is_not_an_answer() {
+    // Unterminated OSC 11 -- no BEL, no ST. Treating a partial read as the
+    // final answer would start the drain window early and could return a
+    // truncated colour.
+    assert_eq!(
+        classify_probe_read(b"\x1b]11;rgb:1e1e/1e1e/2e", false),
+        ProbeRead::Pending
+    );
+    assert_eq!(classify_probe_read(b"", false), ProbeRead::Pending);
+}
+
+#[test]
 fn colorfgbg_heuristic() {
     assert_eq!(colorfgbg_luminance("15;0"), BackgroundLuminance::Dark);
     assert_eq!(colorfgbg_luminance("0;15"), BackgroundLuminance::Light);

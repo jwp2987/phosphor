@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+# Fail if a user-visible string calls this product Zap, Oz, or Warp.
+#
+# WHY THIS EXISTS
+# ---------------
+# The fork shipped three names for one thing. On `repin` before this guard:
+# "Zap Agent" x25, "Warp Agent" x23, "Phosphor Agent" x7, plus 141 occurrences
+# of Oz. Upstream's own "Oz Agent" -> "Warp Agent" rename (42effe840) is what
+# surfaced it, and every port from the pin drags more of Warp's copy in.
+#
+# This is not housekeeping. docs/DESIGN-PHOSPHOR-FORK.md §6: AGPL-3.0 §7
+# declines trademark grants, so shipping Warp's name on this fork's UI is a
+# licensing problem, not just an inconsistent one.
+#
+# WHAT IT CHECKS, AND WHAT IT DELIBERATELY DOES NOT
+# -------------------------------------------------
+# Only text that reaches a human: Rust string literals in shipped source, and
+# the VALUE side of the Fluent catalogues. `warp` is also 24 crate names, 22
+# workspace dependencies, hundreds of Rust identifiers, the `WARP_*` env vars,
+# the OSC/DCS payloads, the `warpify` shell hooks, and every legitimate
+# reference to upstream in docs/. A blanket search over any of those produces
+# noise, and a guard people learn to ignore is worse than no guard. So the
+# match is deliberately narrow:
+#
+#   1. Only the three capitalised brand words, and only where the characters
+#      around them say "prose" rather than "symbol". A hit must not be preceded
+#      by [A-Za-z0-9_.:-] nor followed by [A-Z0-9_-]. That predicate keeps the
+#      guard quiet on:
+#        WARP_SKILL_DIRS, WARP.md      (all-caps -- different case, no match)
+#        warp_tui, warpdotdev, warp.dev (lowercase -- no match)
+#        WarpTheme, WarpAgent, ZapDrive (followed by an UPPERCASE letter)
+#        openWarp, AskWarpAI, SshWarpifyBlock (preceded by a letter)
+#        Harness::Oz, Icon::Zap          (preceded by ':')
+#        dev.warp.Warp, dev.zap.Zap      (preceded by '.')
+#        X-Zap-Client-ID, Zap-Run-GeneratorCommand (adjacent '-')
+#
+#      The asymmetry between the two sides is the point, and it was learned the
+#      hard way. The first version of this guard excluded a following LETTER of
+#      either case, and that is precisely the hole five shipped strings walked
+#      through: "Get Zapping" x2 and "Get Warping" (onboarding's primary
+#      button), "the rest of your Warpified experience" (the SSH banner), and
+#      ja's `session-config-get-warping` = "Warping を開始", which no purge pass
+#      had ever touched. A brand word inflected by an English suffix is still
+#      branding -- arguably the worst kind, because it reads as native product
+#      voice.
+#
+#      What separates those from `WarpTheme` is CASE AT THE BOUNDARY, not a
+#      list of words. Rust identifiers that embed a brand word are CamelCase,
+#      so the next character is uppercase; an inflected English word continues
+#      in lowercase. Every brand-adjacent literal in the tree obeys this:
+#        lowercase continuation, all shipped copy -- Zapping, Warping, Warpified
+#        uppercase continuation, all symbols     -- WarpWindow, WarpHostView,
+#          WarpDrivePrivacySettings, ZapDockTilePlugin, ZapLaunchModal
+#      The leading side needs no such relaxation: nothing in English ends in
+#      "...Warp", so a preceding letter always means an identifier
+#      (openWarp, SourcedRcFileForWarp) and that exclusion stays absolute.
+#
+#   2. In Rust, only inside a string literal, never a comment. An identifier
+#      or a doc comment mentioning Warp is lineage, not branding. The literals
+#      are found with a scanner rather than a line regex, because Rust strings
+#      span lines: an earlier line-based draft of this guard silently missed
+#      eight shipped strings, including five "reinstall Warp Agent CLI" errors
+#      broken across a backslash continuation.
+#
+#   3. In Rust, a literal with NO whitespace in it is a token, not copy. Keys,
+#      headers, registry paths, single-instance mutex names, DCS markers and
+#      bare app-identity names ("Zap" in `paths.rs`'s legacy directory map)
+#      are all single tokens; user-visible copy is at minimum a two-word label.
+#
+#   4. In Rust, a literal in a match-arm pattern or on the right of == / != is
+#      an input being RECOGNISED, not output being SHOWN. That is what keeps
+#      `SettingsSection::from_str`'s "Oz" | "Zap Agent" legacy aliases legal --
+#      renaming those orphans every settings row already persisted under them.
+#
+#   5. Tests are excluded: *_test.rs, *_tests.rs, tests/, examples/,
+#      test_data/, the `crates/integration` harness crate, and
+#      `app/src/integration_testing`. Their brand strings are arbitrary fixture
+#      data, not shipped copy. `integration_testing` lives under app/src rather
+#      than in tests/, but it is the same thing as `crates/integration` -- its
+#      brand hits are `TestStep::new("Assert the Warpify banner is visible")`
+#      and an `AssertionOutcome::failure` message, which name the mechanism in
+#      text only a test author reads.
+#
+# THE ONE PLACE SHAPE IS NOT ENOUGH
+# ---------------------------------
+# Exactly one use of a standalone "Warp" in the catalogues is legitimate and no
+# string-shape rule can tell it from a regression, because it is correct for a
+# reason that lives outside the text: the AGPL-3.0 §13 attribution ("Phosphor
+# is a modified version of Warp") must stay true. Handled by an in-band marker,
+# NOT a list in this file.
+#
+# THE PACKAGE-NOUN CARVE-OUT, AND WHY IT IS GONE
+# ----------------------------------------------
+# A second content rule used to live here: "Warp" was allowed whenever it
+# immediately qualified a package noun ("Warp plugin" / "Warp extension" /
+# "Warp marketplace", plus the ja/zh forms). It existed to protect the CLI
+# agent notification plugins, which really are published by Warp
+# (warpdotdev/claude-code-warp, warpdotdev/codex-warp,
+# warpdotdev/gemini-cli-warp, @warp-dot-dev/opencode-warp) and which really do
+# still work in this fork -- they speak the local OSC 777 `warp://cli-agent`
+# protocol, not any Warp server. See the DECLINED.md row "CLI agent
+# notification plugins".
+#
+# It was removed on 2026-08-15, because the identifier a user must get exactly
+# right is never in the prose to begin with -- it is in the `command` field of
+# the instruction step (`PluginInstructionStep`, Rust source, which this guard
+# does not police and which no rename touches). The prose only ever said "the
+# Warp plugin", which is the product name, not the package name. So the
+# carve-out protected nothing that needed protecting, and meanwhile it was
+# swallowing real regressions: at removal it was hiding 13 unpurged catalogue
+# strings, including zh-CN's `ssh-remote-choice-install-extension-desc`
+# ("安装 Warp 扩展...") -- Phosphor's OWN SSH extension, no third party in
+# sight, matched only because "Warp 扩展" looked like a package noun.
+#
+# The lesson generalises: a carve-out keyed on a WORD SHAPE ("Warp" + noun)
+# cannot distinguish "names someone else's package" from "we forgot to purge
+# this one". If a genuine package name ever does have to appear in shipped
+# copy, use the in-band `brand-guard: allow` marker on that one message, where
+# a reviewer sees it in the same diff. Do not reintroduce a phrase rule.
+#
+# WHERE THE MARKER GOES -- it must land in a COMMENT, never in the text
+# -----------------------------------------------------------------------
+#   Fluent: `# brand-guard: allow <reason>` on the comment line DIRECTLY ABOVE
+#           the message. Fluent has no trailing-comment syntax, so "on the same
+#           line" is not a thing: anything after the `=` is the value the user
+#           reads.
+#   Rust:   `// brand-guard: allow <reason>` on the line ABOVE the statement,
+#           or trailing after the literal's CLOSING quote.
+#
+# It is now the ONLY content rule in this file. The header used to warn that a
+# THIRD one would mean the shape-based boundary had stopped working; with the
+# package-noun rule retired, treat a SECOND one as that signal.
+#
+# An earlier version searched for the marker in the same text it was excusing.
+# That made the marker self-fulfilling: any string whose own content contained
+# the phrase "brand-guard: allow" silenced its own hit, in both Rust and
+# Fluent. It also documented a Rust form ("on or directly above the line") of
+# which only the Fluent half was ever implemented. The marker is now read only
+# from comment context -- the line above the literal, or a `//` comment after
+# it -- so a string can no longer excuse itself.
+#
+# The marker is in-band on purpose. A suppression list inside a guard drifts
+# and is invisible at the point of change; a marker is reviewed in the same
+# diff as the string it excuses. If this file ever grows a SECOND content rule,
+# that is the signal the shape-based boundary has stopped working -- reopen it
+# rather than adding a third. (It once had two; the second is the retired
+# package-noun rule described above, and retiring it is what this warning
+# looks like when it is heeded.)
+#
+# WHAT THIS GUARD CANNOT SEE
+# --------------------------
+# Copy assembled at runtime from a non-literal source, and strings that reach
+# the user through a channel this scope does not cover (packaging metadata,
+# .desktop entries, generated changelogs). Those still need a human.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "brand strings: skipped (python3 not available)"
+    exit 0
+fi
+
+python3 - "$@" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+# Trailing class excludes UPPERCASE only: a following lowercase letter is an
+# English inflection ("Zapping", "Warpified") and must be caught, while a
+# following uppercase letter is CamelCase ("WarpTheme") and must not be. See
+# rule 1 in the header for why the two sides are deliberately asymmetric.
+TOKEN = re.compile(r"(?<![A-Za-z0-9_.:\-])(Zap|Oz|Warp)(?![A-Z0-9_\-])")
+STRING = re.compile(r'"((?:[^"\\]|\\.)*)"')
+MARKER = re.compile(r"brand-guard:\s*allow")
+
+# Rule 4: the literal is being matched against, not rendered.
+MATCH_ARM = re.compile(r'^\s*(?:r#)?"(?:[^"\\]|\\.)*"(?:\s*\|\s*(?:r#)?"(?:[^"\\]|\\.)*")*\s*=>')
+COMPARISON = re.compile(r"[=!]=\s*(?:&\s*)?(?:r#)?$")
+
+SKIP_DIR_PARTS = {"target", "node_modules", "test_data", "tests", "examples"}
+
+
+def rust_sources():
+    for root in ("app/src", "crates"):
+        for p in sorted(Path(root).rglob("*.rs")):
+            parts = set(p.parts)
+            if parts & SKIP_DIR_PARTS:
+                continue
+            if p.parts[:2] == ("crates", "integration"):
+                continue
+            if p.parts[:3] == ("app", "src", "integration_testing"):
+                continue
+            if p.name.endswith(("_test.rs", "_tests.rs")):
+                continue
+            yield p
+
+
+def rust_literals(text):
+    """Yield (start_offset, end_offset, contents) for every Rust string literal.
+
+    This is a scanner, not a line regex, because Rust string literals span
+    lines -- both `"...\\` backslash continuations and multi-line `r#"..."#`
+    raw strings. An earlier line-based version of this guard missed ten
+    user-visible "Warp Agent CLI" errors in `warp_tui/src/autoupdate.rs` for
+    exactly that reason, which is the whole argument for scanning properly.
+    Comments and char literals are skipped so a `"` inside either cannot
+    desynchronise the scan for the rest of the file.
+    """
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+        elif c == "/" and i + 1 < n and text[i + 1] == "*":
+            depth, i = 1, i + 2
+            while i < n and depth:
+                if text.startswith("/*", i):
+                    depth, i = depth + 1, i + 2
+                elif text.startswith("*/", i):
+                    depth, i = depth - 1, i + 2
+                else:
+                    i += 1
+        elif c == "'" and re.match(r"'(?:\\.|[^\\'])'", text[i : i + 4]):
+            i += len(re.match(r"'(?:\\.|[^\\'])'", text[i : i + 4]).group(0))
+        elif c == "r" and (m := re.match(r'r(#*)"', text[i:])):
+            hashes = m.group(1)
+            start = i + len(m.group(0))
+            close = text.find('"' + hashes, start)
+            if close < 0:
+                return
+            yield i, close + 1 + len(hashes), text[start:close]
+            i = close + 1 + len(hashes)
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                elif text[j] == '"':
+                    break
+                else:
+                    j += 1
+            if j >= n:
+                return
+            yield i, j + 1, text[i + 1 : j]
+            i = j + 1
+        else:
+            i += 1
+
+
+def check_rust():
+    hits = []
+    for p in rust_sources():
+        try:
+            text = p.read_text(errors="replace")
+        except OSError:
+            continue
+        line_starts = [0] + [m.end() for m in re.finditer(r"\n", text)]
+        lines = text.splitlines()
+
+        def lineno_of(off):
+            lo, hi = 0, len(line_starts) - 1
+            while lo < hi:
+                mid = (lo + hi + 1) // 2
+                if line_starts[mid] <= off:
+                    lo = mid
+                else:
+                    hi = mid - 1
+            return lo + 1
+
+        for start, end, literal in rust_literals(text):
+            if not TOKEN.search(literal):
+                continue
+            if not re.search(r"\s", literal):
+                continue  # rule 3: a token, not a sentence
+            lineno = lineno_of(start)
+            # The marker is read ONLY from comment context, never from the
+            # literal itself -- otherwise a string containing the phrase
+            # "brand-guard: allow" excuses itself. Two accepted positions: a
+            # `//` comment on the line above the literal opens, or a trailing
+            # `//` comment after the literal's closing quote.
+            above = lines[lineno - 2] if lineno >= 2 else ""
+            eol = text.find("\n", end)
+            after = text[end : len(text) if eol < 0 else eol]
+            if above.lstrip().startswith("//") and MARKER.search(above):
+                continue
+            if "//" in after and MARKER.search(after[after.index("//") :]):
+                continue
+            line = lines[lineno - 1] if lineno <= len(lines) else ""
+            if MATCH_ARM.match(line):
+                continue  # rule 4
+            prefix = line[: start - line_starts[lineno - 1]]
+            if COMPARISON.search(prefix):
+                continue  # rule 4
+            flat = " ".join(literal.split())
+            hits.append((str(p), lineno, f'"{flat[:120]}"'))
+    return hits
+
+
+FTL_ID = re.compile(r"^(\s*\.?[A-Za-z][A-Za-z0-9_-]*\s*=\s*)(.*)$")
+
+
+def check_fluent():
+    hits = []
+    for p in sorted(Path("app/i18n").glob("*/*.ftl")):
+        lines = p.read_text(errors="replace").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            m = FTL_ID.match(line)
+            if m:
+                value = m.group(2)
+            elif line[:1].isspace():
+                value = line  # continuation of a multi-line value
+            else:
+                continue
+            if not TOKEN.search(value):
+                continue
+            # Comment line directly above ONLY. `MARKER.search(line)` used to
+            # be accepted too, but in Fluent everything after the `=` is the
+            # user-visible value, so that let a message excuse itself simply by
+            # containing the phrase.
+            prev = lines[lineno - 2] if lineno >= 2 else ""
+            if prev.lstrip().startswith("#") and MARKER.search(prev):
+                continue
+            hits.append((str(p), lineno, value.strip()))
+    return hits
+
+
+def check_prose():
+    """Files the user opens by hand, where the comment IS the user-visible part."""
+    hits = []
+    targets = sorted(Path("themes").glob("*.yaml"))
+    targets += sorted(Path("app/resources/tab_configs").glob("*.toml"))
+    for p in targets:
+        lines = p.read_text(errors="replace").splitlines()
+        for lineno, line in enumerate(lines, 1):
+            if not TOKEN.search(line):
+                continue
+            # In these files the comment IS the user-visible part, so a marker
+            # on the same line would be excusing itself. It goes on the line
+            # above, as in the Fluent catalogues.
+            prev = lines[lineno - 2] if lineno >= 2 else ""
+            if prev.lstrip().startswith("#") and MARKER.search(prev):
+                continue
+            hits.append((str(p), lineno, line.strip()))
+    return hits
+
+
+status = 0
+for label, hits in (
+    ("Rust string literal", check_rust()),
+    ("Fluent message value", check_fluent()),
+    ("shipped prose file", check_prose()),
+):
+    if not hits:
+        continue
+    status = 1
+    print(f"error: {len(hits)} user-visible {label}(s) name the product Zap/Oz/Warp:", file=sys.stderr)
+    for path, lineno, text in hits:
+        print(f"  {path}:{lineno}  {text[:140]}", file=sys.stderr)
+    print(file=sys.stderr)
+
+if status:
+    print(
+        "The product is Phosphor and its agent is Phosphor Agent. If a hit above is\n"
+        "genuinely not a brand reference -- an upstream attribution, or the name of a\n"
+        "Warp-published package the user has to find -- mark it with\n"
+        "`brand-guard: allow <reason>` rather than editing this script. The marker must\n"
+        "be in a COMMENT, because a marker inside the text would excuse itself:\n"
+        "  Fluent / themes / tab_configs:  `# brand-guard: allow ...` on the line ABOVE\n"
+        "  Rust:  `// brand-guard: allow ...` on the line above, or trailing after the\n"
+        "         literal's closing quote.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+print("check_brand_strings: ok -- no user-visible string names Zap, Oz, or Warp")
+PY

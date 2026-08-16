@@ -2,6 +2,17 @@
 
 Oracle pin: `02b53fcd8` (Warp `2026.07.29.09.05` stable), per `ORACLE.md`. **Not** `warp/master`.
 
+> **The pin has moved; this file has not been re-derived.** These verdicts
+> classify the 854 test-bearing files as they existed at `02b53fcd8`, which
+> stopped being the pin on 2026-08-15 — `ORACLE.md` now records
+> `42effe840` (Warp `2026.08.12` stable). Re-deriving the classification is a
+> full reading pass (Phase 2/4 of `docs/pin-migration.md`), not part of moving
+> the pin, so it is deliberately deferred rather than half-done. Files added or
+> changed between the two pins have **no row here at all**; for those, and for
+> any current count, use `docs/sweep-verdict-ledger.tsv` (2,360 adjudicated
+> rows at the new pin) and `docs/STATE.md`.
+
+
 **Slice.** Every test file at the pin *except* those under `app/src/ai/`, `crates/ai/`,
 `app/src/terminal/`, `crates/warp_terminal/`, `crates/warp_tui/` (covered by two sibling audits).
 

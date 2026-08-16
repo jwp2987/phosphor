@@ -22,6 +22,7 @@ use crate::completions_menu::{TuiAcceptedCompletion, TuiCompletionsMenuModel};
 use crate::conversation_menu::TuiConversationMenuModel;
 use crate::exchange_menu::{TuiExchangeMenuAction, TuiExchangeMenuModel};
 use crate::input_suggestions_mode::TuiInputSuggestionsMode;
+use crate::mcp_install_flow::{TuiMcpInstallFlowAction, TuiMcpInstallFlowModel};
 use crate::mcp_menu::TuiMcpMenuModel;
 use crate::model_menu::TuiModelMenuModel;
 use crate::profile_menu::TuiProfileMenuModel;
@@ -80,8 +81,8 @@ impl TuiInlineMenuHandle for ModelHandle<TuiMcpMenuModel> {
         None
     }
 
-    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
-        None
+    fn input_argument_hint_text(&self, ctx: &AppContext) -> Option<&'static str> {
+        self.as_ref(ctx).input_hint_text(ctx)
     }
 
     fn select_previous(&self, ctx: &mut AppContext) {
@@ -93,8 +94,71 @@ impl TuiInlineMenuHandle for ModelHandle<TuiMcpMenuModel> {
     }
 
     fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
-        self.update(ctx, |model, ctx| model.accept_selected(ctx))
+        self.as_ref(ctx)
+            .accept_selected(ctx)
             .map(TuiInlineMenuAccepted::Mcp)
+    }
+
+    fn accept_secondary(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.as_ref(ctx)
+            .logout_selected(ctx)
+            .map(TuiInlineMenuAccepted::Mcp)
+    }
+
+    fn dismiss(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.dismiss(ctx));
+    }
+
+    fn snapshot(&self, ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        self.as_ref(ctx).snapshot(ctx)
+    }
+
+    fn select_by_snapshot_index(&self, index: usize, ctx: &mut AppContext) -> bool {
+        self.update(ctx, |model, ctx| model.select_at_snapshot_index(index, ctx))
+    }
+
+    fn scroll_by_delta(&self, delta: isize, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.scroll_by_delta(delta, ctx));
+    }
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TuiMcpInstallFlowModel> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::McpInstall
+    }
+
+    fn is_open(&self, ctx: &AppContext) -> bool {
+        self.as_ref(ctx).is_open(ctx)
+    }
+
+    /// The install flow takes MCP template values, which are routinely API
+    /// tokens, so its free-text steps mask the shared editor (#602). The model
+    /// decides per step; see `mcp_install_flow`'s module docs for why every
+    /// free-text variable is masked rather than only the ones that look secret.
+    fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.as_ref(ctx).input_ownership(ctx)
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, ctx: &AppContext) -> Option<&'static str> {
+        self.as_ref(ctx).input_hint_text(ctx)
+    }
+
+    fn select_previous(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_previous(ctx));
+    }
+
+    fn select_next(&self, ctx: &mut AppContext) {
+        self.update(ctx, |model, ctx| model.select_next(ctx));
+    }
+
+    fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        self.as_ref(ctx)
+            .accept(ctx)
+            .map(TuiInlineMenuAccepted::McpInstall)
     }
 
     fn dismiss(&self, ctx: &mut AppContext) {
@@ -356,6 +420,7 @@ pub(crate) enum TuiInlineMenuAccepted {
     Conversation(AgentConversationEntryId),
     Model(LLMId),
     Mcp(TuiMcpAction),
+    McpInstall(TuiMcpInstallFlowAction),
     /// A row accepted from the up-arrow prompt-and-command history menu.
     PromptAndCommandHistory(TuiPromptAndCommandHistoryRow),
     /// A shell command/path completion accepted from the Tab-completion popup.
@@ -367,6 +432,29 @@ pub(crate) enum TuiInlineMenuAccepted {
     /// An exchange accepted from the `/fork-from` or `/rewind` picker, with the
     /// action the picker was opened for.
     Exchange(AIAgentExchangeId, TuiExchangeMenuAction),
+}
+
+/// Who owns the shared TUI editor while an inline menu is active.
+///
+/// The variants are exhaustive so ownership and masking cannot disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TuiInlineMenuInputOwnership {
+    /// The composer owns editor behavior; the menu only observes input and handles menu actions.
+    Composer,
+    /// The inline menu owns ordinary plaintext editor behavior.
+    InlineMenuPlainText,
+    /// The inline menu owns editor behavior, with masked rendering and clipboard export disabled.
+    InlineMenuMasked,
+}
+
+impl TuiInlineMenuInputOwnership {
+    pub(crate) fn inline_menu_owns_input(self) -> bool {
+        matches!(self, Self::InlineMenuPlainText | Self::InlineMenuMasked)
+    }
+
+    pub(crate) fn is_masked(self) -> bool {
+        matches!(self, Self::InlineMenuMasked)
+    }
 }
 
 /// Type alias for mouse-interaction callbacks stored in the element tree.
@@ -384,6 +472,10 @@ pub(crate) trait TuiInlineMenuHandle {
     fn mode(&self) -> TuiInputSuggestionsMode;
     /// Returns whether this menu is open.
     fn is_open(&self, ctx: &AppContext) -> bool;
+    /// Returns who owns the shared editor while this menu is active.
+    fn input_ownership(&self, _ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        TuiInlineMenuInputOwnership::Composer
+    }
     /// Opens the menu when it supports explicit opening.
     fn open(&self, _ctx: &mut AppContext) {}
     /// Returns the input range highlighted by this menu.
@@ -396,6 +488,10 @@ pub(crate) trait TuiInlineMenuHandle {
     fn select_next(&self, ctx: &mut AppContext);
     /// Accepts the selected row.
     fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted>;
+    /// Accepts the selected row's optional secondary action.
+    fn accept_secondary(&self, _ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        None
+    }
     /// Dismisses the menu.
     fn dismiss(&self, ctx: &mut AppContext);
     /// Returns the menu's presentation snapshot.
@@ -441,6 +537,10 @@ impl TuiInlineMenu {
 
     pub(crate) fn mode(&self) -> TuiInputSuggestionsMode {
         self.handle.mode()
+    }
+
+    pub(crate) fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.handle.input_ownership(ctx)
     }
 
     /// Renders the menu without mouse interactions (used in tests and other
@@ -503,6 +603,14 @@ impl TuiInlineMenu {
 
     pub(crate) fn accept(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
         let result = self.handle.accept(ctx);
+        if result.is_some() {
+            reset_hover_states(&self.item_mouse_states);
+        }
+        result
+    }
+
+    pub(crate) fn accept_secondary(&self, ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        let result = self.handle.accept_secondary(ctx);
         if result.is_some() {
             reset_hover_states(&self.item_mouse_states);
         }
@@ -866,6 +974,11 @@ impl TuiInlineMenuHandle for ModelHandle<TuiApiKeysMenuModel> {
     fn is_open(&self, ctx: &AppContext) -> bool {
         self.as_ref(ctx).is_open(ctx)
     }
+    /// The only menu here that takes secret input: its key-entry state masks the shared
+    /// editor. Every other menu keeps the defaulted `Composer` ownership.
+    fn input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.as_ref(ctx).input_ownership(ctx)
+    }
     fn open(&self, ctx: &mut AppContext) {
         self.update(ctx, |model, ctx| model.open(ctx));
     }
@@ -1166,6 +1279,11 @@ fn build_inline_menu(
         .rows
         .iter()
         .filter(|row| row.style == TuiInlineMenuRowStyle::InlineMenuItem)
+        // Descriptionless rows are dropped rather than measured on their suffix alone, and
+        // that is deliberate: this feeds the two-column widths, and an `InlineMenuItem` row
+        // renders its second column only when it has a description (see `show_description`
+        // in `menu_result_row`), so such a row contributes no second-column text to measure.
+        // The `Default` rows the model menu builds never reach here at all.
         .filter_map(|row| {
             let mut description = row.description.clone()?;
             if let Some(suffix) = &row.state_suffix {
@@ -1410,15 +1528,10 @@ pub(crate) fn keep_selected_visible(
 }
 
 fn menu_status_row(label: &str, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
-    TuiContainer::new(
-        TuiText::new(label.to_owned())
-            .with_style(builder.dim_text_style())
-            .truncate()
-            .finish(),
-    )
-    .with_padding_left(1)
-    .with_padding_right(1)
-    .finish()
+    TuiText::new(label.to_owned())
+        .with_style(builder.dim_text_style())
+        .truncate()
+        .finish()
 }
 
 fn menu_scroll_indicator_row(label: &str, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
@@ -1456,7 +1569,11 @@ fn menu_result_row(
         }
     };
     let show_description = match row.style {
-        TuiInlineMenuRowStyle::Default => row.description.is_some(),
+        // A `state_suffix` is second-column content in its own right: the model menu's
+        // `(key connected)` and the profile menu's `active` markers ride on rows that have
+        // no description at all, so gating the whole second column on `description` hid
+        // exactly the rows the marker is about (#587).
+        TuiInlineMenuRowStyle::Default => row.description.is_some() || row.state_suffix.is_some(),
         TuiInlineMenuRowStyle::InlineMenuItem => {
             slash_command_columns.show_second && row.description.is_some()
         }
@@ -1520,21 +1637,34 @@ fn menu_result_row(
                 )
                 .finish(),
         });
-    if let Some(description) = row.description.as_ref().filter(|_| show_description) {
-        let description_prefix = match row.style {
-            TuiInlineMenuRowStyle::Default => format!("  {description}"),
-            TuiInlineMenuRowStyle::InlineMenuItem => description.clone(),
-        };
-        let mut description_spans = vec![(description_prefix, description_style)];
+    if show_description {
+        let mut description_spans = Vec::new();
+        if let Some(description) = row.description.as_ref() {
+            let description_prefix = match row.style {
+                TuiInlineMenuRowStyle::Default => format!("  {description}"),
+                TuiInlineMenuRowStyle::InlineMenuItem => description.clone(),
+            };
+            description_spans.push((description_prefix, description_style));
+        }
         if let Some(suffix) = &row.state_suffix {
             let suffix_style = if is_selected {
                 builder.slash_command_selection_state_suffix_style()
             } else {
                 builder.success_glyph_style()
             };
-            description_spans.push((format!(" {suffix}"), suffix_style));
+            // Following a description the suffix is separated from it by a single space.
+            // Standing alone it *is* the second column, so a `Default` row gives it the same
+            // two-space gutter a description would have had -- otherwise a key-connected model
+            // sits one column left of the `disabled` rows above and below it.
+            let suffix_text = match (row.style, description_spans.is_empty()) {
+                (TuiInlineMenuRowStyle::Default, true) => format!("  {suffix}"),
+                _ => format!(" {suffix}"),
+            };
+            description_spans.push((suffix_text, suffix_style));
         }
-        content = content.child(TuiText::from_spans(description_spans).truncate().finish());
+        if !description_spans.is_empty() {
+            content = content.child(TuiText::from_spans(description_spans).truncate().finish());
+        }
     }
     let mut container = TuiContainer::new(content.finish());
     if is_selected {

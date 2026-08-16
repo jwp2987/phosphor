@@ -186,8 +186,6 @@ integration_tests! {
     #[ignore]
     test_ask_warp_ai_keybinding_for_selected_block,
 
-    test_create_folder_from_command_palette,
-
     test_tab_behavior_setting,
 
     test_private_public_settings_routing_with_flag_enabled,
@@ -215,6 +213,7 @@ integration_tests! {
     test_osc8_file_scheme_opens_url,
     test_osc8_no_regression_on_url_autodetect,
 
+    test_cycle_active_tab_color_with_keybinding,
     test_active_session_follows_focus,
 
     test_focus_panes_on_hover,
@@ -239,7 +238,6 @@ integration_tests! {
 
     test_open_workflow_in_pane,
     test_create_personal_workflow_pane_from_command_palette,
-    test_create_team_workflow_pane_from_command_palette,
 
     // TODO(alokedesai): Fix this on the latest version of Bash.
     #[ignore]

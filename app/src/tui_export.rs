@@ -104,8 +104,10 @@ pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, 
 // orchestration tab bar snapshot; kept separate from the (unported)
 // cloud-runner "RunAgents" orchestration family.
 pub use crate::ai::blocklist::orchestration_topology::{
-    OrchestrationParticipantKind, OrderedOrchestrationDescendant,
-    descendant_conversations_in_pill_order, orchestration_root_conversation_id,
+    LoadedSubtreeRollup, OrchestrationParticipantKind, OrderedOrchestrationDescendant,
+    aggregated_orchestrator_status, child_conversations_in_pill_order,
+    descendant_conversation_ids_in_spawn_order, descendant_conversations_in_pill_order,
+    loaded_subtree_rollup, orchestration_root_conversation_id,
     orchestrator_agent_id_for_conversation, resolve_orchestration_participant,
 };
 pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
@@ -127,9 +129,9 @@ pub use crate::ai::option_snapshot::{
 };
 // Lets `--set-provider-api-key` / `--clear-provider-api-key` tell already-running
 // Zap processes to re-read the shared keyring after it persists a key.
+pub use crate::ai::skills::{SkillManager, SkillReference};
 #[cfg(not(target_family = "wasm"))]
 pub use crate::ai::tui_api_keys::notify_tui_api_keys_changed;
-pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};
 pub use crate::appearance::Appearance;
 pub use crate::banner::BannerState;
@@ -140,7 +142,9 @@ pub use crate::code::DiffResult;
 pub use crate::code_review::git_status_update::{
     GitRepoModels, GitRepoStatusModel, GitStatusMetadata,
 };
+pub use crate::code_review::github_repo_model::GitHubRepoModel;
 pub use crate::completer::SessionContext;
+pub use crate::global_resource_handles::GlobalResourceHandlesProvider;
 pub use crate::persistence::PersistenceWriter;
 pub use crate::prefix::longest_common_prefix;
 pub use crate::search::slash_command_menu::static_commands::commands::{
@@ -198,8 +202,8 @@ pub use crate::terminal::model::blocks::{
 pub use crate::terminal::model::escape_sequences::{KeystrokeWithDetails, ToEscapeSequence};
 pub use crate::terminal::model::grid::grid_handler::{GridHandler, TermMode};
 pub use crate::terminal::model::rich_content::RichContentType;
-pub use crate::terminal::model::session::Sessions;
 pub use crate::terminal::model::session::active_session::{ActiveSession, ActiveSessionEvent};
+pub use crate::terminal::model::session::{Session, Sessions, SessionsEvent};
 pub use crate::terminal::model::terminal_model::BlockIndex;
 pub use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 pub use crate::terminal::shared_session::IsSharedSessionCreator;
@@ -216,9 +220,12 @@ pub use crate::themes::default_themes::{dark_theme, light_theme};
 pub use crate::throttle::throttle;
 pub use crate::tui::log_out_tui;
 pub use crate::tui::{
-    TuiMcpAction, TuiMcpConfigState, TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId,
-    TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport,
+    TuiMcpAction, TuiMcpConfigDiagnostic, TuiMcpFileScope, TuiMcpFileSource, TuiMcpInstallRequest,
+    TuiMcpManager, TuiMcpManagerEvent, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerSource,
+    TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTemplateVariable, TuiMcpTransport,
+    TuiMcpVariableValue,
 };
+pub use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 pub use crate::util::image::{
     MAX_IMAGE_COUNT_FOR_QUERY, MAX_IMAGE_SIZE_BYTES, MIME_SNIFF_BYTES, ProcessImageResult,
     infer_mime_type, is_supported_image_mime_type, process_image_for_agent,

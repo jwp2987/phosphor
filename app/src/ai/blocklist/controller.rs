@@ -3212,7 +3212,7 @@ impl BlocklistAIController {
                         conversation_data.id,
                         request_params.model.clone(),
                         is_queued_prompt,
-                        "Zap couldn't save the BYOP conversation state needed to send this \
+                        "Phosphor couldn't save the BYOP conversation state needed to send this \
                          request. Check that conversation persistence is enabled and that there \
                          is enough disk space, then try again."
                             .to_owned(),
@@ -3391,6 +3391,14 @@ impl BlocklistAIController {
         reason: CancellationReason,
         ctx: &mut ModelContext<Self>,
     ) {
+        // Restore the user's keyboard focus if a background computer-use session is still active
+        // for this conversation. ctrl-c / stop / pane-close all funnel through here, and on
+        // cancellation the computer-use subagent never produces a normal SubagentResult, so the
+        // normal-completion teardown in `Conversation` is skipped. Scoped to this conversation so a
+        // concurrent background session in another conversation is left intact; idempotent and a
+        // no-op when this conversation has no active background session.
+        computer_use::end_background_session(&conversation_id.to_string());
+
         // Cancel any pending auto-resume for this conversation.
         if let Some(handle) = self.pending_auto_resume_handles.remove(&conversation_id) {
             handle.abort();
@@ -3418,7 +3426,8 @@ impl BlocklistAIController {
     ///
     /// Invoked from the terminal view's shell-exit handler before the pane is
     /// torn down. The conversation is moved into a terminal `Error` state with a
-    /// shell-exit message so that status consumers report a failure (with an
+    /// shell-exit message (naming the secret-redacted `command` that exited the
+    /// shell) so that status consumers report a failure (with an
     /// explanation) instead of "Cancelled by user", and so a subsequent
     /// pane-close cancellation -- which is guarded by `is_in_progress` -- becomes
     /// a no-op and cannot overwrite the failure.
@@ -3427,10 +3436,12 @@ impl BlocklistAIController {
     pub fn fail_conversation_due_to_shell_exit(
         &mut self,
         conversation_id: AIConversationId,
+        command: String,
         ctx: &mut ModelContext<Self>,
     ) {
         let terminal_view_id = self.terminal_view_id;
         let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let shell_exit_error = RenderableAIError::AgentExitedShell { command };
 
         // Only act on conversations that are still running. A finished
         // conversation (e.g. the agent already completed) must not be
@@ -3454,9 +3465,10 @@ impl BlocklistAIController {
             .stream_ids_for_conversation(conversation_id, ctx);
         let had_in_flight_stream = !stream_ids.is_empty();
         for stream_id in &stream_ids {
+            let error = shell_exit_error.clone();
             history_model.update(ctx, |history_model, ctx| {
                 history_model.mark_response_stream_completed_with_error(
-                    RenderableAIError::AgentExitedShell,
+                    error,
                     /* recovery_pending */ false,
                     stream_id,
                     conversation_id,
@@ -3490,7 +3502,7 @@ impl BlocklistAIController {
                     terminal_view_id,
                     conversation_id,
                     ConversationStatus::Error,
-                    Some(RenderableAIError::AgentExitedShell.to_string()),
+                    Some(shell_exit_error.to_string()),
                     ctx,
                 );
             });

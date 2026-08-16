@@ -622,7 +622,7 @@ impl LongRunningCommandSubmissionMode {
     settings_value::SettingsValue,
 )]
 #[schemars(
-    description = "A configurable item in the Zap Agent CLI statusline.",
+    description = "A configurable item in the Phosphor Agent CLI statusline.",
     rename_all = "snake_case"
 )]
 #[serde(rename_all = "snake_case")]
@@ -633,6 +633,9 @@ pub enum TuiStatuslineItem {
     WorkingDirectory,
     GitBranch,
     GitDiffStatus,
+    /// Current-branch GitHub pull request, resolved through the local `gh` CLI
+    /// (`GitHubRepoModel`) -- no Warp backend is involved.
+    GitHubPullRequest,
     ContextWindowUsage,
     Date,
     #[schemars(rename = "time_12_hour")]
@@ -643,13 +646,14 @@ pub enum TuiStatuslineItem {
 }
 
 impl TuiStatuslineItem {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::AutoApprove,
         Self::AutoQueue,
         Self::Model,
         Self::WorkingDirectory,
         Self::GitBranch,
         Self::GitDiffStatus,
+        Self::GitHubPullRequest,
         Self::ContextWindowUsage,
         Self::Date,
         Self::Time12Hour,
@@ -665,6 +669,7 @@ impl TuiStatuslineItem {
             Self::WorkingDirectory => "Working directory",
             Self::GitBranch => "Git branch",
             Self::GitDiffStatus => "Git diff status",
+            Self::GitHubPullRequest => "GitHub pull request",
             Self::ContextWindowUsage => "Context window usage",
             Self::Date => "Date",
             Self::Time12Hour => "Time (12 hour format)",
@@ -695,6 +700,7 @@ impl Default for TuiStatuslineConfig {
         Self {
             order: TuiStatuslineItem::ALL.to_vec(),
             enabled: vec![
+                TuiStatuslineItem::AutoApprove,
                 TuiStatuslineItem::Model,
                 TuiStatuslineItem::WorkingDirectory,
                 TuiStatuslineItem::GitBranch,
@@ -709,7 +715,9 @@ impl TuiStatuslineConfig {
     pub fn normalized(&self) -> Self {
         let mut order = Vec::with_capacity(TuiStatuslineItem::ALL.len());
         for item in self.order.iter().copied().chain(TuiStatuslineItem::ALL) {
-            if !order.contains(&item) {
+            // A persisted order may name an item that is no longer in the
+            // catalog; `ALL` is the authority on what the statusline can show.
+            if TuiStatuslineItem::ALL.contains(&item) && !order.contains(&item) {
                 order.push(item);
             }
         }
@@ -2012,7 +2020,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Never,
         private: false,
         toml_path: "agents.statusline",
-        description: "Controls the order and visibility of Zap Agent CLI statusline items.",
+        description: "Controls the order and visibility of Phosphor Agent CLI statusline items.",
     },
     // This is not a user-visible setting - it's merely a one-time flag to track if the user has
     // explicitly interacted with voice input. We use this to determine whether we should show a toast
@@ -2162,7 +2170,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "cloud_platform.third_party_api_keys.aws_bedrock_credentials_enabled",
-        description: "Whether Zap should use your local AWS credentials for Bedrock-enabled requests.",
+        description: "Whether Phosphor should use your local AWS credentials for Bedrock-enabled requests.",
     }
     // Whether to automatically run the AWS login command when Bedrock credentials are expired.
     //
@@ -2291,7 +2299,7 @@ define_settings_group!(AISettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok",
-        description: "Whether Zap credits can be used even when providing your own API key.",
+        description: "Whether Phosphor credits can be used even when providing your own API key.",
     }
 
     should_render_use_agent_footer_for_user_commands: ShouldRenderUseAgentToolbarForUserCommands {
@@ -2487,6 +2495,17 @@ define_settings_group!(AISettings, settings: [
         private: false,
         toml_path: "agents.warp_agent.input.include_agent_commands_in_history",
         description: "Whether agent-executed commands are included in command history.",
+    }
+
+    // Whether fast forward / auto-approve can run commands that match the command denylist.
+    auto_approve_bypasses_command_denylist: AutoApproveBypassesCommandDenylist {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "agents.warp_agent.other.auto_approve_bypasses_command_denylist",
+        description: "Whether auto-approve bypasses the command denylist.",
     }
 
     // Controls whether the conversation history view appears in the tools panel.

@@ -301,8 +301,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_can_auto_bootstrap);
 
     register_test!(test_ask_warp_ai_keybinding_for_selected_block);
-    register_test!(test_create_folder_from_command_palette);
-
     register_test!(test_tab_behavior_setting);
 
     register_test!(test_private_public_settings_routing_with_flag_enabled);
@@ -332,6 +330,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
 
     register_test!(test_context_chips_prompt_at_bootstrap);
 
+    register_test!(test_cycle_active_tab_color_with_keybinding);
     register_test!(test_active_session_follows_focus);
 
     register_test!(test_focus_panes_on_hover);
@@ -357,7 +356,6 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     // Workflow tests
     register_test!(test_open_workflow_in_pane);
     register_test!(test_create_personal_workflow_pane_from_command_palette);
-    register_test!(test_create_team_workflow_pane_from_command_palette);
 
     register_test!(test_block_filtering_keybinding);
     register_test!(test_block_filtering_keybinding_with_long_running_command);

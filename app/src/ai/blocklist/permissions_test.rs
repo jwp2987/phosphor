@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 
+use settings::Setting as _;
 use warp_util::path::EscapeChar;
-use warpui::{App, EntityId, ModelHandle};
+use warpui::{App, EntityId, ModelHandle, SingletonEntity};
 
 use warp_core::execution_mode::ExecutionMode;
 
@@ -29,7 +30,7 @@ use crate::{
     cloud_object::model::persistence::ObjectStoreModel,
     cloud_object::update_manager::UpdateManager,
     network::NetworkStatus,
-    settings::{AgentModeCommandExecutionPredicate, PrivacySettings},
+    settings::{AISettings, AgentModeCommandExecutionPredicate, PrivacySettings},
     test_util::settings::initialize_settings_for_tests_with_mode,
     workspaces::{user_workspaces::UserWorkspaces, workspace::SandboxedAgentSettings},
     GlobalResourceHandles, GlobalResourceHandlesProvider, LaunchMode,
@@ -779,8 +780,19 @@ fn test_can_autoexecute_command_allowlist_precedence() {
     })
 }
 
+/// Auto-approve bypasses the *user* denylist when
+/// `auto_approve_bypasses_command_denylist` is set.
+///
+/// The pin's test also asserted the other half -- that the **workspace/org**
+/// denylist survives the bypass -- and that half is deliberately not ported.
+/// `UserWorkspaces::current_team()` returns `None` unconditionally in this
+/// fork (cloud teams / org policy declined, `DECLINED.md` #445), so
+/// `ai_autonomy_settings()` always yields defaults and the org denylist is
+/// inert by construction. Asserting on it here would assert nothing --
+/// exactly the fake coverage `script/check_stub_coverage` exists to prevent.
+/// Restore it together with a real local workspace-policy source (#445).
 #[test]
-fn test_can_autoexecute_command_denylist_beats_run_to_completion() {
+fn test_can_autoexecute_command_auto_approve_bypasses_user_denylist() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
             convo_id,
@@ -800,14 +812,13 @@ fn test_can_autoexecute_command_denylist_beats_run_to_completion() {
             );
         });
 
-        // Toggle run-to-completion override for this conversation.
+        // Enable auto-approve for this conversation.
         history.update(&mut app, |history, ctx| {
             history.toggle_autoexecute_override(&convo_id, terminal_view_id, ctx);
         });
 
-        // Despite run-to-completion, denylist must take precedence and deny execution.
         permissions.read(&app, |model, ctx| {
-            let result = model.can_autoexecute_command(
+            let user_denylisted = model.can_autoexecute_command(
                 &convo_id,
                 "rm important.txt",
                 EscapeChar::Backslash,
@@ -816,11 +827,10 @@ fn test_can_autoexecute_command_denylist_beats_run_to_completion() {
                 Some(terminal_view_id),
                 ctx,
             );
-            assert!(!result.is_allowed());
             assert!(matches!(
-                result,
-                CommandExecutionPermission::Denied(
-                    CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                user_denylisted,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::RunToCompletion
                 )
             ));
         });
@@ -828,7 +838,74 @@ fn test_can_autoexecute_command_denylist_beats_run_to_completion() {
 }
 
 #[test]
-fn test_can_autoexecute_command_run_to_completion_allows_non_denylisted() {
+fn test_can_autoexecute_command_auto_approve_respects_local_denylist_when_bypass_disabled() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            history,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.add_to_command_denylist(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .auto_approve_bypasses_command_denylist
+                    .set_value(false, ctx)
+                    .expect("setting should update");
+            });
+        });
+        history.update(&mut app, |history, ctx| {
+            history.toggle_autoexecute_override(&convo_id, terminal_view_id, ctx);
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let denied = model.can_autoexecute_command(
+                &convo_id,
+                "rm important.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(matches!(
+                denied,
+                CommandExecutionPermission::Denied(
+                    CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                )
+            ));
+
+            let allowed = model.can_autoexecute_command(
+                &convo_id,
+                "echo hello",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(matches!(
+                allowed,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::RunToCompletion
+                )
+            ));
+        });
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_auto_approve_allows_non_denylisted() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
             convo_id,
@@ -1237,6 +1314,7 @@ fn test_sandboxed_denylist_used_in_sandboxed_mode() {
     App::test((), |mut app| async move {
         let PermissionsTestState {
             convo_id,
+            history,
             permissions,
             user_workspaces,
             terminal_view_id,
@@ -1269,6 +1347,17 @@ fn test_sandboxed_denylist_used_in_sandboxed_mode() {
             );
         });
 
+        history.update(&mut app, |history, ctx| {
+            history.toggle_autoexecute_override(&convo_id, terminal_view_id, ctx);
+        });
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .auto_approve_bypasses_command_denylist
+                    .set_value(false, ctx)
+                    .expect("setting should update");
+            });
+        });
         permissions.read(&app, |model, ctx| {
             // "git status" should be allowed: the regular denylist is not consulted in
             // sandboxed mode, so only the sandboxed denylist ("rm .*") applies.
@@ -1281,10 +1370,12 @@ fn test_sandboxed_denylist_used_in_sandboxed_mode() {
                 Some(terminal_view_id),
                 ctx,
             );
-            assert!(
-                result.is_allowed(),
-                "git status should be allowed in sandboxed mode (regular denylist bypassed)"
-            );
+            assert!(matches!(
+                result,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::RunToCompletion
+                )
+            ));
 
             // "rm file.txt" should be denied by the sandboxed denylist.
             let result = model.can_autoexecute_command(

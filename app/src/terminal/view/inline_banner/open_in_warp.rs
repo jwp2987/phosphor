@@ -50,7 +50,7 @@ impl OpenInWarpBannerState {
 fn file_title_text(openable_path: &OpenablePath) -> String {
     match openable_path.file_type {
         OpenableFileType::Markdown => {
-            "Did you know that Zap can directly display Markdown files?".to_string()
+            "Did you know that Phosphor can directly display Markdown files?".to_string()
         }
         OpenableFileType::Code | OpenableFileType::Text => {
             cfg_if::cfg_if! {
@@ -61,13 +61,13 @@ fn file_title_text(openable_path: &OpenablePath) -> String {
 
                     match language.as_ref().map(|language| language.display_name()) {
                         Some(display_name) => {
-                            format!("Did you know that Zap can directly edit {display_name} files?")
+                            format!("Did you know that Phosphor can directly edit {display_name} files?")
                         }
-                        None => "Did you know that Zap can directly edit code?".to_string(),
+                        None => "Did you know that Phosphor can directly edit code?".to_string(),
                     }
                 } else {
                     // The `languages` crate is not available on WASM, so use a fallback message.
-                    "Did you know that Zap can directly edit code?".to_string()
+                    "Did you know that Phosphor can directly edit code?".to_string()
                 }
             }
         }
@@ -80,8 +80,8 @@ pub fn render_open_in_warp_banner(
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     let button_text = match state.target.file_type {
-        OpenableFileType::Markdown => "View in Zap",
-        OpenableFileType::Code | OpenableFileType::Text => "Edit in Zap",
+        OpenableFileType::Markdown => "View in Phosphor",
+        OpenableFileType::Code | OpenableFileType::Text => "Edit in Phosphor",
     };
 
     let open_button = InlineBannerTextButton {

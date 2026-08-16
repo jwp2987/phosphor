@@ -277,7 +277,46 @@ The table below lists all 67 crates grouped by topic. Each row is **one sentence
 - **Delete** unused parameters outright rather than prefixing with `_`, and update call sites accordingly.
 - Use inline format args for macros like `println!` / `format!` (`"{x}"` rather than `"{}", x`) to satisfy `uninlined_format_args`.
 - **Never use a `_` wildcard** in `match` statements (unless truly needed); keep matches exhaustive.
+
+### 5.2.1 Comments
+Comments have a cost. They carry a maintenance burden, because they must be kept in sync
+with the code they describe. It is tempting to assume that more comments is always better,
+but be judicious about when a comment is actually necessary because the code cannot speak
+for itself.
+- **Minimalist Comments**: Assume the reader is a Senior Software Engineer. Never comment
+  to explain WHAT or HOW code works if self-documenting names accomplish that.
+- **Strictly "Why" Only**: Reserve inline comments strictly for non-obvious business
+  rationale, workarounds for third-party bugs, complex algorithms, unidiomatic code, or
+  unexpected edge cases.
+- **No Line-by-Line Narrations**: Never add comments restating the syntax (e.g., omit
+  `// Initialize array`, `// Loop over users`).
+- **Clean Docstrings**: Keep doc comments concise. Document public APIs, arguments, types,
+  and returns. Do not narrate the method's internal implementation steps.
+- **Single-source of documentation**: For items/members that have a doc comment explaining
+  their purpose, you do not need to repeat that explanation anywhere else. A good example
+  is a float const specifying an amount of spacing. You may use a doc comment on the
+  declaration if necessary, but do not repeat that where the const is *referenced*. Another
+  example is function call sites. Function doc comments explain what they do. Do not repeat
+  the explanation at the call site.
+- **Don't enumerate function call sites in doc comments**: Function doc comments should
+  document their behavior and NOT their callers, e.g. it should never say things like,
+  "this is used by [certain callers]" or "this is used when...".
+- **No "transformation comments"**: Do not add comments that explain *your edits*. Comments
+  only need explain the *current state* of the code. Explanations of edits belong in pull
+  request comments instead. You shouldn't add comments with phrases like, "this used to do
+  so-and-so".
 - Don't delete/change existing comments for unrelated changes.
+- **These rules never override §5.10.** A comment that justifies a deliberate divergence
+  from Warp — *why* the behavior change is acceptable — is required by §5.10 and is exactly
+  the "why" a comment is for. Likewise a comment recording that a port was adapted to this
+  fork's API shape. Neither is noise; do not delete either one under "Minimalist Comments".
+- **Wrap comments at 100 columns, by hand.** `.rustfmt.toml` here sets only
+  `edition = "2024"`, so rustfmt's default `max_width = 100` applies. Fill that width rather
+  than wrapping early at a narrower column, so comments span as few lines as possible.
+  Nothing will do this for you: rustfmt does not reflow comments (`wrap_comments` is
+  nightly-only and unset), this repo has never been rustfmt-clean, and `script/precheck`
+  runs `rustfmt --check` on changed files only as a *parse* check — it reports nothing about
+  line width.
 
 ### 5.3 Terminal model lock (high priority!)
 - Calling `TerminalModel::lock()` is extremely prone to deadlock (manifests as a frozen UI / beachball on macOS).

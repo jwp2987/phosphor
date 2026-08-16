@@ -14,7 +14,7 @@ use serde::Serialize;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
-use warp_core::channel::ChannelState;
+use warp_core::channel::{Channel, ChannelState};
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 
@@ -25,7 +25,10 @@ use crate::{
     ai::{blocklist::SessionContext, llms::LLMId},
 };
 
-use super::{AIAgentInput, MCPContext, MCPServer, RequestMetadata, RunningCommand, Suggestions};
+use super::{
+    AIAgentInput, MCPContext, MCPServer, RequestMetadata, RunningCommand, ServerOutputId,
+    Suggestions,
+};
 use crate::ai::blocklist::{BlocklistAIPermissions, RequestInput};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::facts::{AIFact, AIFactObjectModel};
@@ -56,6 +59,38 @@ impl ServerConversationToken {
 
     pub fn debug_link(&self) -> String {
         format!("{}://debug/maa/{}", ChannelState::url_scheme(), self.as_str())
+    }
+
+    /// The artifact `/copy-debugging-id` puts on the clipboard for this conversation.
+    ///
+    /// On dogfood channels this is the `debug_link()` deeplink, which the running app can
+    /// open directly (`load_ai_conversation` resolves `<scheme>://debug/maa/<token>`). On
+    /// user-facing channels it is a plain JSON id blob instead, because a deeplink is only
+    /// actionable on the machine that produced it -- what a user pastes into a Phosphor
+    /// issue needs to identify the conversation, not open it.
+    pub fn debugging_payload(&self, request_id: Option<&ServerOutputId>) -> String {
+        self.debugging_payload_for_channel(request_id, ChannelState::channel())
+    }
+
+    fn debugging_payload_for_channel(
+        &self,
+        request_id: Option<&ServerOutputId>,
+        channel: Channel,
+    ) -> String {
+        if channel.is_dogfood() {
+            match request_id {
+                Some(request_id) => format!("{}?request={request_id}", self.debug_link()),
+                None => self.debug_link(),
+            }
+        } else {
+            match request_id {
+                Some(request_id) => format!(
+                    "{{\"request_id\":\"{request_id}\",\"conversation_id\":\"{}\"}}",
+                    self.as_str()
+                ),
+                None => format!("{{\"conversation_id\":\"{}\"}}", self.as_str()),
+            }
+        }
     }
 
     pub fn conversation_link(&self) -> String {

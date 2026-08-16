@@ -77,7 +77,7 @@ const EDITOR_MARGIN: f32 = 16.;
 const LOGO_SIZE: f32 = 20.;
 
 
-const ZERO_STATE_HELP_TEXT: &str = "Shift + ctrl + space a block or text selection to ask Zap AI.";
+const ZERO_STATE_HELP_TEXT: &str = "Shift + ctrl + space a block or text selection to ask Phosphor AI.";
 const SCRIPT_ZERO_STATE_PROMPT: &str = "Write a script to connect to an AWS EC2 instance.";
 const GIT_ZERO_STATE_PROMPT: &str = "How do I undo the most recent commits in git?";
 const FILES_ZERO_STATE_PROMPT: &str = "How do I find all files containing specific text?";
@@ -658,14 +658,14 @@ impl AIAssistantPanelView {
         let time_now = Local::now();
 
         result.push_str(&format!(
-            "## Zap AI Transcript ({})\n\n",
+            "## Phosphor AI Transcript ({})\n\n",
             time_now.format("%x %l:%M %p")
         ));
 
         for part in transcript {
             result.push_str(&format!("Prompt: {}\n\n", part.raw_user_prompt().trim()));
             result.push_str(&format!(
-                "Zap AI: {}\n\n",
+                "Phosphor AI: {}\n\n",
                 part.raw_assistant_answer().trim()
             ));
         }

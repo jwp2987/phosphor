@@ -30,7 +30,7 @@ use super::SessionInfo;
 
 pub use in_band_command_executor::{
     is_in_band_command, InBandCommand, InBandCommandCancelledEvent, InBandCommandExecutor,
-    InBandCommandOutputReceiver,
+    InBandCommandOutputReceiver, POSIX_GENERATOR_WRAPPER, POWERSHELL_GENERATOR_WRAPPER,
 };
 #[cfg(feature = "local_tty")]
 pub use local_command_executor::LocalCommandExecutor;
@@ -367,7 +367,7 @@ fn new_command_executor_for_local_tty_session(
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use crate::terminal::shell::ShellType;
 

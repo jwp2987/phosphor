@@ -1,17 +1,23 @@
 use std::ffi::OsString;
 use std::fs;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::LazyLock;
 
+use async_trait::async_trait;
 use tempfile::TempDir;
 use warp_cli::agent::Harness;
 
 use super::{
     build_local_claude_child_command, build_local_codex_child_command,
     build_local_opencode_child_command, codex_launch_precondition, compose_child_agent_prompt,
-    local_claude_child_prompt, normalize_local_child_harness, prepare_local_harness_child_launch,
-    split_orchestrate_tasks, validate_local_harness_shell,
+    ensure_local_claude_child_plugins, local_claude_child_prompt, normalize_local_child_harness,
+    prepare_local_harness_child_launch, split_orchestrate_tasks, validate_local_harness_shell,
 };
 use crate::ai::local_harness_setup::{
     LOCAL_CODEX_HARNESS_DISABLED_MESSAGE, LocalHarnessSetupState,
+};
+use crate::terminal::cli_agent_sessions::plugin_manager::{
+    CliAgentPluginManager, PluginInstallError, PluginInstructions,
 };
 use crate::terminal::shell::ShellType;
 
@@ -47,10 +53,12 @@ impl Drop for EnvVarGuard {
 /// Writes a no-op executable named `name` into `bin_dir` so `PATH`-based CLI
 /// presence checks (`validate_cli_installed`) succeed without a real install.
 /// Mirrors the pin's `write_fake_cli` (`local_harness_launch_tests.rs:63-86`,
-/// `02b53fcd8`). Being a no-op script also matters for
-/// `plugin_manager_for(..).install()`, which the Claude launch path invokes:
-/// the fake `claude` binary makes that call a harmless, instant no-op instead
-/// of a real plugin-marketplace network round trip.
+/// `02b53fcd8`). Being a no-op script also matters for the plugin setup the
+/// Claude launch path runs (`ensure_local_claude_child_plugins`): with `HOME`
+/// pointed at a temp dir there is no `~/.claude`, so the plugin reads as
+/// absent and `install()` is reached, and the fake `claude` binary makes that
+/// call a harmless, instant no-op instead of a real plugin-marketplace network
+/// round trip.
 fn write_fake_cli(bin_dir: &std::path::Path, name: &str) {
     let executable_name = if cfg!(windows) {
         format!("{name}.cmd")
@@ -389,4 +397,137 @@ async fn prepare_local_claude_child_no_anthropic_model_when_empty() {
             .env_vars
             .contains_key(&OsString::from("ANTHROPIC_MODEL"))
     );
+}
+
+/// A `CliAgentPluginManager` whose on-disk state is fixed by the test, which
+/// records whether `ensure_local_claude_child_plugins` reached `install` or
+/// `update`.
+///
+/// There is no pin test to port here: at `02b53fcd8` the pin's
+/// `ensure_local_claude_child_plugins` has no test of its own, and neither do
+/// its callers exercise it -- `local_harness_launch_tests.rs` there covers the
+/// prompt, the harness normalizer and the Codex preconditions only. That is
+/// how the fork lost the guard silently in the first place, so #600 adds the
+/// coverage rather than just the code.
+struct FakePluginManager {
+    has_local_override: bool,
+    needs_update: bool,
+    is_installed: bool,
+    installs: AtomicUsize,
+    updates: AtomicUsize,
+}
+
+impl FakePluginManager {
+    fn new(has_local_override: bool, needs_update: bool, is_installed: bool) -> Self {
+        Self {
+            has_local_override,
+            needs_update,
+            is_installed,
+            installs: AtomicUsize::new(0),
+            updates: AtomicUsize::new(0),
+        }
+    }
+
+    /// `(installs, updates)` observed so far.
+    fn calls(&self) -> (usize, usize) {
+        (
+            self.installs.load(Ordering::SeqCst),
+            self.updates.load(Ordering::SeqCst),
+        )
+    }
+}
+
+static FAKE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
+    title: "",
+    subtitle: "",
+    steps: Vec::new(),
+    post_install_notes: Vec::new(),
+});
+
+#[async_trait]
+impl CliAgentPluginManager for FakePluginManager {
+    fn minimum_plugin_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn can_auto_install(&self) -> bool {
+        true
+    }
+
+    fn is_installed(&self) -> bool {
+        self.is_installed
+    }
+
+    fn needs_update(&self) -> bool {
+        self.needs_update
+    }
+
+    fn has_local_marketplace_override(&self) -> bool {
+        self.has_local_override
+    }
+
+    async fn install(&self) -> Result<(), PluginInstallError> {
+        self.installs.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn update(&self) -> Result<(), PluginInstallError> {
+        self.updates.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn install_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+
+    fn update_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+}
+
+/// The guard #600 restores. A developer who has pointed the
+/// `claude-code-warp` marketplace at a local checkout must not have it
+/// silently replaced by the public one just because a local Claude child pane
+/// launched. Both CLI paths would clobber it, so neither may run -- note this
+/// case is deliberately also `needs_update` *and* not installed, i.e. the
+/// state that most strongly invites an install.
+#[tokio::test]
+async fn local_child_plugin_setup_skips_the_cli_entirely_when_the_marketplace_is_overridden() {
+    let manager = FakePluginManager::new(true, true, false);
+
+    ensure_local_claude_child_plugins(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
+}
+
+#[tokio::test]
+async fn local_child_plugin_setup_installs_when_the_plugin_is_absent() {
+    let manager = FakePluginManager::new(false, false, false);
+
+    ensure_local_claude_child_plugins(&manager).await;
+
+    assert_eq!(manager.calls(), (1, 0));
+}
+
+/// An outdated plugin takes the update path, not the install path: `update()`
+/// refreshes the marketplace clone first, which a plain `install()` does not.
+#[tokio::test]
+async fn local_child_plugin_setup_updates_when_the_plugin_is_outdated() {
+    let manager = FakePluginManager::new(false, true, true);
+
+    ensure_local_claude_child_plugins(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 1));
+}
+
+/// The second half of #600. Before it, this path shelled out to
+/// `claude plugin marketplace add` + `claude plugin install` on every single
+/// child-pane launch, current plugin or not.
+#[tokio::test]
+async fn local_child_plugin_setup_touches_nothing_when_the_plugin_is_current() {
+    let manager = FakePluginManager::new(false, false, true);
+
+    ensure_local_claude_child_plugins(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
 }

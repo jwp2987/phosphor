@@ -12,7 +12,10 @@ pub use conversion::{
 pub use parse_skill::{
     parse_bundled_skill, parse_skill, parse_skill_content_at_location, ParsedSkill,
 };
-pub use read_skills::read_skills;
+pub use read_skills::{
+    parse_skills_dirs_env, read_skills, read_skills_for_skills_dirs, resolve_skills_dirs,
+    WARP_SKILL_DIRS_ENV,
+};
 pub use skill_provider::{
     get_provider_for_path, home_skills_path, provider_parent_directory_for_skills_root,
     provider_rank, SkillProvider, SkillProviderDefinition, SkillScope, SKILL_PROVIDER_DEFINITIONS,

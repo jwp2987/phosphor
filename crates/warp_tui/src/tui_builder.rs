@@ -9,7 +9,8 @@ use pathfinder_color::ColorU;
 use warp::tui_export::Appearance;
 use warp_core::ui::color::Opacity;
 use warp_core::ui::color::blend::Blend;
-use warp_core::ui::theme::{Fill as ThemeFill, WarpTheme};
+use warp_core::ui::theme::color::internal_colors;
+use warp_core::ui::theme::{ColorScheme, Fill as ThemeFill, WarpTheme};
 use warpui::SingletonEntity;
 use warpui_core::AppContext;
 use warpui_core::elements::tui::{
@@ -21,6 +22,20 @@ use warpui_core::runtime::ProbedRgb;
 use crate::orchestrated_agent_identity_styling::{AgentIdentity, agent_identity_palette};
 use crate::tab_bar::TuiTabBarStyles;
 use crate::terminal_background::TuiHostTerminalBackground;
+
+/// The scheme-aware halves of the TUI design palette that this fork actually
+/// consumes.
+///
+/// The pin's version carries a third role, `brand_accent`, read by its
+/// `brand_accent_style()`. Both of that method's call sites are the signed-out
+/// welcome (`ui.rs`) and the first-run zero state (`zero_state.rs`), neither of
+/// which exists here, so carrying the field would only produce a never-read
+/// struct member. Add it back with its first real consumer.
+#[derive(Clone, Copy, Debug)]
+struct TuiDesignPalette {
+    brand_primary: ColorU,
+    agent_colors: [ColorU; 7],
+}
 
 /// Theme-derived styles and components for the TUI, mirroring the GUI's
 /// `UiBuilder` (minus fonts, which terminal cells don't have). Cheap to
@@ -46,6 +61,38 @@ impl TuiUiBuilder {
         }
     }
 
+    /// The scheme-aware design palette, declared per color scheme by the TUI
+    /// Figma palette rather than derived from the theme's ANSI slots (which
+    /// already match the design and are deliberately left alone).
+    fn design_palette(&self) -> TuiDesignPalette {
+        match self.warp_theme.inferred_color_scheme() {
+            ColorScheme::LightOnDark => TuiDesignPalette {
+                brand_primary: ColorU::from_u32(0xD2B5FFFF),
+                agent_colors: [
+                    ColorU::from_u32(0xD0D1FEFF),
+                    ColorU::from_u32(0xA5D5FEFF),
+                    ColorU::from_u32(0xFF8FFDFF),
+                    ColorU::from_u32(0xD2B5FFFF),
+                    ColorU::from_u32(0xFF8AA6FF),
+                    ColorU::from_u32(0xE2FFD4FF),
+                    ColorU::from_u32(0xFBDC79FF),
+                ],
+            },
+            ColorScheme::DarkOnLight => TuiDesignPalette {
+                brand_primary: ColorU::from_u32(0x9C58F0FF),
+                agent_colors: [
+                    ColorU::from_u32(0x20A5BAFF),
+                    ColorU::from_u32(0x008EC4FF),
+                    ColorU::from_u32(0x523C79FF),
+                    ColorU::from_u32(0x9C58F0FF),
+                    ColorU::from_u32(0xFF8AA6FF),
+                    ColorU::from_u32(0x33770BFF),
+                    ColorU::from_u32(0xC79A18FF),
+                ],
+            },
+        }
+    }
+
     /// Style for primary response/body text: the theme foreground at the
     /// theme's main-text strength (the GUI's `text_main` recipe). This remains
     /// readable on light and custom themes where the ANSI white slot would
@@ -53,6 +100,13 @@ impl TuiUiBuilder {
     pub(crate) fn primary_text_style(&self) -> TuiStyle {
         TuiStyle::default()
             .fg(self.foreground_text_color(self.warp_theme.details().main_text_opacity))
+    }
+
+    /// Regular-weight `neutral_7` text used for trailing tool-call details.
+    pub(crate) fn neutral_7_text_style(&self) -> TuiStyle {
+        TuiStyle::default().fg(cell_color(ThemeFill::Solid(internal_colors::neutral_7(
+            &self.warp_theme,
+        ))))
     }
 
     /// The theme foreground over the transcript's base background at
@@ -274,10 +328,10 @@ impl TuiUiBuilder {
         )))
     }
 
-    /// The warping indicator's base fill: the terminal palette's bright
-    /// magenta, corresponding to the design's Lilac-200.
+    /// The warping indicator's base fill: Lilac-200 in dark themes and
+    /// Lilac-600 in light themes.
     fn warping_base_fill(&self) -> ThemeFill {
-        ThemeFill::from(self.warp_theme.terminal_colors().bright.magenta)
+        ThemeFill::Solid(self.design_palette().brand_primary)
     }
 
     /// The warping indicator's base color as a solid color, for per-glyph
@@ -346,7 +400,7 @@ impl TuiUiBuilder {
     /// The deterministic agent identity palette for this theme. See
     /// [`crate::orchestrated_agent_identity_styling`].
     pub(crate) fn agent_identity_palette(&self) -> Vec<AgentIdentity> {
-        agent_identity_palette(self.warp_theme.terminal_colors())
+        agent_identity_palette(&self.design_palette().agent_colors)
     }
 
     /// Bold magenta text for a selected option-selector row.

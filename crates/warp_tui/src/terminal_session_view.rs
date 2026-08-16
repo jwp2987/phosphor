@@ -8,39 +8,41 @@ use std::time::Duration;
 
 use crate::report_error::report_error;
 use async_channel::Sender;
-use chrono::{Local, NaiveDateTime};
 use instant::Instant;
 use parking_lot::FairMutex;
 use warp::editor::{CodeEditorModel, CodeEditorModelEvent};
 use warp::settings::{
-    AISettings, AISettingsChangedEvent, AppEditorSettings, TuiStatuslineConfig, TuiStatuslineItem,
+    AISettings, AISettingsChangedEvent, AppEditorSettings, SettingsFileError, TuiStatuslineConfig,
     TuiTheme, TuiThemeSettings,
 };
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
-    AIAgentPtyWriteMode, AIConversation, AIConversationId, AcceptSlashCommandOrSavedPrompt,
-    ActiveSession, ActiveSessionEvent, AgentConversationEntryId, AgentConversationListEntryState,
-    AgentConversationsModel, AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState,
-    Appearance, BlockId, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel,
-    CLISubagentController, CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY,
-    CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
+    AIAgentPtyWriteMode, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
+    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent,
+    AgentConversationEntryId, AgentConversationListEntryState, AgentConversationsModel,
+    AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState, Appearance, BlockId,
+    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
+    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
+    BlocklistAIInputModel, CLISubagentController, CLISubagentEvent, CLISubagentTarget,
+    COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
     CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitRepoModels,
-    GitRepoStatusModel, GitStatusMetadata, LLMId, LLMPreferences, LLMPreferencesEvent,
-    LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
-    ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
-    PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
-    ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference, SlashCommandKind,
-    SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
-    TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
+    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitHubRepoModel,
+    GitRepoStatusModel, LLMId, LLMPreferences,
+    LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
+    LoadedConversationData, ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput,
+    PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
+    ServerConversationToken, SessionsEvent, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
+    SkillReference, SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand,
+    TerminalModel, TerminalSurface, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager,
+    TuiMcpServerId, TuiMcpVariableValue, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
-    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
-    block_context_from_terminal_model, build_slash_command_mixer, context_usage_report,
-    conversation_cost_report, detect_possible_git_repo, export_conversation_markdown, log_out_tui,
-    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
-    record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
-    record_static_slash_command_accepted, saved_prompt_text_for_id,
+    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD, WarpConfig,
+    WarpConfigUpdateEvent, block_context_from_terminal_model, build_slash_command_mixer,
+    context_usage_report, conversation_cost_report, detect_possible_git_repo,
+    export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
+    maybe_build_ai_query_upsert_event,
+    prepare_conversation_block_restoration, record_autodetection_toggle_from_slash_command,
+    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle, tui_conversation_actions_in_order,
     tui_set_active_profile,
 };
@@ -53,8 +55,8 @@ use warpui::SingletonEntity;
 use warpui_core::r#async::{SpawnedFutureHandle, Timer};
 use warpui_core::elements::MouseStateHandle;
 use warpui_core::elements::tui::{
-    TuiAnimated, TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
-    TuiSelectionHandle, TuiSize, TuiStyle, TuiText,
+    TuiChildView, TuiConstrainedBox, TuiContainer, TuiElement, TuiFlex, TuiHoverable,
+    TuiSelectionHandle, TuiSize, TuiText, TuiViewportedListState,
 };
 use warpui_core::keymap::macros::*;
 use warpui_core::keymap::{self, EditableBinding, FixedBinding};
@@ -69,6 +71,9 @@ use crate::alt_screen_view::AltScreenElement;
 use crate::attachment_bar::{
     FOCUS_ATTACHMENTS_BINDING_NAME, TuiAttachmentBar, TuiAttachmentBarEvent, TuiAttachmentModel,
     TuiAttachmentPasteDisposition,
+};
+use crate::cli_agent_osc_event_publisher::{
+    CliAgentOscEventPublisher, host_supports_cli_agent_notifications,
 };
 use crate::clipboard::copy_to_clipboard;
 use crate::completions_menu::{
@@ -89,12 +94,17 @@ use crate::keybindings::{
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, PLAN_TOGGLE_BINDING_NAME,
     TUI_BINDING_GROUP, binding_hint,
 };
+use crate::mcp_install_flow::{
+    TuiMcpInstallFlowAction, TuiMcpInstallFlowEvent, TuiMcpInstallFlowModel,
+};
+use crate::link::TuiLink;
 use crate::mcp_menu::{TuiMcpMenuEvent, TuiMcpMenuModel};
 use crate::orchestration_model::TuiOrchestrationModel;
 use crate::orchestration_tab_bar::{
     ORCHESTRATION_TAB_BAR_FOCUSED_FLAG, TuiOrchestrationSnapshot,
     TuiOrchestrationTabNavigationAction, orchestration_tab_bar_config,
-    register_orchestration_surface_bindings,
+    register_orchestration_surface_bindings, render_orchestration_child_selected_tab_footer,
+    render_orchestration_tab_footer,
 };
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use ai::agent::action_result::RequestFileEditsResult;
@@ -123,7 +133,7 @@ use crate::terminal_use::{
     tui_input_target,
 };
 use crate::transcript_view::{TuiTranscriptView, TuiTranscriptViewEvent};
-use crate::transient_hint::{TransientHint, TransientHintTone};
+use crate::transient_hint::TransientHint;
 use crate::tui_builder::TuiUiBuilder;
 use crate::tui_cli_subagent_view::{
     ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
@@ -131,21 +141,20 @@ use crate::tui_cli_subagent_view::{
 };
 use crate::tui_diff_storage::revert_file_diffs;
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
-use crate::ui::{
-    abbreviate_home_prefix, compact_footer_path, conversation_restore_failed,
-    conversation_restoring,
-};
-use crate::usage::render_context_usage_entry;
+use crate::ui::{abbreviate_home_prefix, conversation_restore_failed, conversation_restoring};
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
 use crate::zero_state::TuiZeroStateView;
 use crate::zero_state_animation::{
     ZeroStateAnimationConfig, ZeroStateAnimationConfigEvent, ZeroStateAnimationLoadFailure,
+    ZeroStateInteractionHandle,
 };
 mod completions;
 mod input_detection;
 mod shortcuts;
 pub(crate) mod state;
 mod status_menu;
+mod statusline;
+mod todo_menu;
 
 use self::input_detection::InputDetectionState;
 use self::state::TuiTerminalSessionStateModel;
@@ -153,11 +162,19 @@ use self::state::TuiTerminalSessionStateModel;
 /// Width used before the first layout pass pushes the real terminal width into the editor.
 const INITIAL_INPUT_WIDTH: u16 = 80;
 const INLINE_MENU_TOP_PADDING_ROWS: u16 = 1;
+/// Rows a read-only menu may occupy above the input before it starts
+/// scrolling inside its own viewport.
+const MAX_READ_ONLY_MENU_ROWS: u16 = 10;
 const MAX_INPUT_TEXT_ROWS: u16 = 6;
+/// Top and bottom border rows plus one padding row inside each border.
+const BORDERED_INPUT_CHROME_ROWS: u16 = 4;
 const AUTO_APPROVE_FEEDBACK_DURATION: Duration = Duration::from_secs(3);
 
 /// The footer hint shown while the ctrl-c exit confirmation is armed.
 const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
+/// The footer hint shown while the ctrl-c kill-child window is armed.
+/// Replaces the exit hint when viewing a child agent conversation.
+pub(crate) const CTRL_C_KILL_CHILD_HINT: &str = "ctrl-c again to kill child agent";
 /// The footer hint shown while the agent is manually tagged into a running
 /// command, telling the user how to give input back to the command. Ported
 /// from the pin (`02b53fcd8`, `RUNNING_COMMAND_DETACH_HINT`) as part of #390 --
@@ -165,8 +182,25 @@ const CTRL_C_EXIT_HINT: &str = "ctrl-c again to exit";
 /// as the pin so the hint's wording stays accurate.
 const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
-/// How often a statusline date/time segment repaints itself.
-const STATUSLINE_DATETIME_REPAINT_INTERVAL: Duration = Duration::from_secs(60);
+const SETTINGS_PARSE_FAILED_HINT: &str = "Settings failed to load: invalid syntax.";
+const SETTINGS_INVALID_VALUES_HINT: &str = "Settings failed to load: invalid values.";
+
+/// One-line summary for the footer's transient error slot. The full detail
+/// (the parse error, or the list of rejected keys) stays in the log, written
+/// by `settings::init`.
+fn settings_file_error_hint(error: &SettingsFileError) -> &'static str {
+    match error {
+        SettingsFileError::FileParseFailed(_) => SETTINGS_PARSE_FAILED_HINT,
+        SettingsFileError::InvalidSettings(_) => SETTINGS_INVALID_VALUES_HINT,
+    }
+}
+
+fn todo_menu_is_open(mode: TuiInputSuggestionsMode) -> bool {
+    matches!(
+        mode,
+        TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Todos)
+    )
+}
 
 /// Fallback strings for the `/status` status menu.
 const STATUS_UNAVAILABLE: &str = "\u{2014}"; // em dash
@@ -194,7 +228,7 @@ const SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG: &str =
 /// unsent prompt and returns input to the running command.
 const SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG: &str =
     "TuiSessionCanDetachAgentFromRunningCommand";
-pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
+pub(crate) const SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG: &str = "TuiSessionComposerShortcutsActive";
 pub(crate) const TRIGGER_COMPLETIONS_BINDING_NAME: &str = "tui:session:trigger_completions";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
@@ -279,9 +313,12 @@ const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
 /// names the mode.
 const SHELL_MODE_HINT: &str = "shell mode";
 const STATUSLINE_SAVED_HINT: &str = "Statusline configuration saved.";
+const STATUSLINE_RESET_HINT: &str = "Statusline reset to defaults.";
 const STATUSLINE_PERSISTENCE_FAILED_HINT: &str = "Could not save the statusline configuration.";
 const COPY_SELECTION_HINT: &str = "copied to clipboard";
 const COPY_FAILED_HINT: &str = "failed to copy to clipboard";
+const COPY_DEBUGGING_ID_HINT: &str = "Debugging id copied — attach it to your Phosphor issue";
+const COPY_DEBUGGING_ID_NO_TOKEN_HINT: &str = "No debugging id for this conversation yet.";
 const LOG_BUNDLE_FAILED_HINT: &str = "Failed to create log bundle (check logs)";
 const AUTO_APPROVE_ENABLED_HINT: &str = "Auto approve on";
 const AUTO_APPROVE_DISABLED_HINT: &str = "Auto approve off";
@@ -320,37 +357,6 @@ fn format_status_conversation_id(conversation_id: Option<AIConversationId>) -> S
         .map(|id| id.to_string())
         .unwrap_or_else(|| "None".to_owned())
 }
-fn format_statusline_date(now: NaiveDateTime) -> String {
-    now.format("%B %-d, %Y").to_string()
-}
-fn format_statusline_time_12_hour(now: NaiveDateTime) -> String {
-    now.format("%-I:%M%P").to_string()
-}
-fn format_statusline_time_24_hour(now: NaiveDateTime) -> String {
-    now.format("%H:%M").to_string()
-}
-/// Formats the active AI conversation's to-do progress for the statusline:
-/// `❒` while items remain pending, `✓` once the list is finished.
-fn format_todo_progress(completed: usize, total: usize, finished: bool) -> String {
-    let marker = if finished { "✓" } else { "❒" };
-    format!("{marker} {completed}/{total}")
-}
-/// Renders a self-repainting statusline datetime segment: `formatter` maps
-/// the current local time to display text, and the element schedules its own
-/// repaint every [`STATUSLINE_DATETIME_REPAINT_INTERVAL`] so the footer stays
-/// current without the whole session view re-rendering on a timer.
-fn render_statusline_datetime(
-    formatter: fn(NaiveDateTime) -> String,
-    style: TuiStyle,
-) -> Box<dyn TuiElement> {
-    TuiAnimated::new(STATUSLINE_DATETIME_REPAINT_INTERVAL, move || {
-        TuiText::new(formatter(Local::now().naive_local()))
-            .with_style(style)
-            .truncate()
-            .finish()
-    })
-    .finish()
-}
 fn cost_command_unavailable_hint(
     selected_conversation: Option<(bool, bool)>,
 ) -> Option<&'static str> {
@@ -362,176 +368,73 @@ fn cost_command_unavailable_hint(
     }
 }
 
-/// One resolved item in the footer's configured presentation order.
-enum FooterSegment {
-    /// Vim mode label (NOR/INS/VIS/V-L/REP), shown when vim mode is enabled.
-    /// Always the leading segment when present, ahead of shell-mode/model.
-    Vim(&'static str),
-    ShellMode,
-    ActiveIndicator(&'static str),
-    Model(Box<dyn TuiElement>),
-    WorkingDirectory(String),
-    GitBranch(String),
-    /// The selected conversation's context-window usage. BYOP has no cloud
-    /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
-    /// wraps Zap's informational context-% entry (`crate::usage`).
-    ContextWindowUsage(Box<dyn TuiElement>),
-    GitDiff {
-        additions: usize,
-        deletions: usize,
-    },
-    /// A configured date/time item (`Date`, `Time12Hour`, `Time24Hour`).
-    DateTime(Box<dyn TuiElement>),
-    /// The selected AI conversation's active to-do list progress
-    /// (`format_todo_progress`), shown while that list is non-empty.
-    AgentTodoList(String),
-}
 
-impl FooterSegment {
-    /// Two-tier separator, matching the pin's Figma-group structure: " • "
-    /// joins segments within the same group (working-directory/git-branch;
-    /// date/time; consecutive active indicators; anything touching
-    /// shell-mode, which always stays plain), " | " joins segments across
-    /// different groups. Every other pairing among the "big set" of
-    /// unrelated single-segment groups (active indicator, model, working
-    /// directory, git branch, context-window usage, git diff, date/time,
-    /// agent to-do list -- each its own group when not paired with its
-    /// git-branch/date-time sibling) therefore falls through to " | ".
-    fn separator_to(&self, next: &Self) -> &'static str {
-        match (self, next) {
-            // A leading vim indicator is joined to the shell-mode/model
-            // segment right after it with a plain space, matching the
-            // shell-mode-to-cwd relationship below.
-            (Self::Vim(_), Self::ShellMode | Self::Model(_)) => " ",
-            // Only a shell-mode label directly preceding the working directory
-            // gets a plain space; a leading Model label falls through to the
-            // default " • " below so model and cwd don't visually run
-            // together (fixes a missing divider present in an earlier
-            // revision of this port — see warp upstream 311deab98).
-            (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
-            (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
-            (Self::ActiveIndicator(_), Self::ActiveIndicator(_)) => " • ",
-            (
-                Self::WorkingDirectory(_) | Self::GitBranch(_),
-                Self::WorkingDirectory(_) | Self::GitBranch(_),
-            )
-            | (Self::DateTime(_), Self::DateTime(_))
-            | (Self::ShellMode, _)
-            | (_, Self::ShellMode) => " • ",
-            (
-                Self::Vim(_)
-                | Self::ActiveIndicator(_)
-                | Self::Model(_)
-                | Self::WorkingDirectory(_)
-                | Self::GitBranch(_)
-                | Self::ContextWindowUsage(_)
-                | Self::GitDiff { .. }
-                | Self::DateTime(_)
-                | Self::AgentTodoList(_),
-                Self::Vim(_)
-                | Self::ActiveIndicator(_)
-                | Self::Model(_)
-                | Self::WorkingDirectory(_)
-                | Self::GitBranch(_)
-                | Self::ContextWindowUsage(_)
-                | Self::GitDiff { .. }
-                | Self::DateTime(_)
-                | Self::AgentTodoList(_),
-            ) => " | ",
-        }
+
+
+
+/// The Enter-key hint for an MCP row's primary action, or `None` when the
+/// action is not one Enter performs from the menu.
+fn mcp_primary_action_hint(action: TuiMcpAction) -> Option<&'static str> {
+    match action {
+        TuiMcpAction::Enable(_) => Some("to install and enable"),
+        TuiMcpAction::Start(_) => Some("to start"),
+        TuiMcpAction::Stop(_) => Some("to stop"),
+        TuiMcpAction::Retry(_) => Some("to retry"),
+        TuiMcpAction::ReopenAuthorization(_) => Some("to authenticate"),
+        TuiMcpAction::LogOut(_) => None,
     }
 }
 
-/// Resolved segments for the footer's left-aligned status row.
-struct FooterSegments {
-    ordered: Vec<FooterSegment>,
-}
-
-/// Builds the status row from resolved segments. Working directory follows a
-/// leading shell-mode or model label with a plain space; an immediately
-/// following branch uses ` ↬ ` as the relationship marker. Items in
-/// different Figma groups use ` | `; other adjacent pairs use ` • `. The
-/// first item never receives a separator. Every child truncates to a single
-/// row, so the row lays out one row tall.
-fn render_status_footer_row(segments: FooterSegments, builder: &TuiUiBuilder) -> TuiFlex {
-    let muted = builder.muted_text_style();
-    let mut row = TuiFlex::row();
-    let mut segments = segments.ordered.into_iter().peekable();
-    while let Some(segment) = segments.next() {
-        let separator = segments.peek().map(|next| segment.separator_to(next));
-        match segment {
-            FooterSegment::Vim(label) => {
-                row = row.child(
-                    TuiText::new(label)
-                        .with_style(builder.accent_border_style())
-                        .truncate()
-                        .finish(),
-                );
-            }
-            FooterSegment::ShellMode => {
-                row = row.child(
-                    TuiText::new(SHELL_MODE_HINT)
-                        .with_style(builder.shell_command_accent_style())
-                        .truncate()
-                        .finish(),
-                );
-            }
-            FooterSegment::ActiveIndicator(label) => {
-                row = row.child(
-                    TuiText::new(label)
-                        .with_style(builder.success_glyph_style())
-                        .truncate()
-                        .finish(),
-                );
-            }
-            FooterSegment::Model(model)
-            | FooterSegment::ContextWindowUsage(model)
-            | FooterSegment::DateTime(model) => {
-                row = row.child(model);
-            }
-            FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
-                row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
-            }
-            FooterSegment::AgentTodoList(progress) => {
-                row = row.child(TuiText::new(progress).with_style(muted).truncate().finish());
-            }
-            FooterSegment::GitDiff {
-                additions,
-                deletions,
-            } => {
-                if additions > 0 {
-                    row = row.child(
-                        TuiText::new(format!("+{additions}"))
-                            .with_style(builder.diff_added_style())
-                            .truncate()
-                            .finish(),
-                    );
-                }
-                if deletions > 0 {
-                    if additions > 0 {
-                        row = row.child(TuiText::new(" ").truncate().finish());
-                    }
-                    row = row.child(
-                        TuiText::new(format!("-{deletions}"))
-                            .with_style(builder.diff_removed_style())
-                            .truncate()
-                            .finish(),
-                    );
-                }
-            }
-        }
-        if let Some(separator) = separator {
-            row = row.child(
-                TuiText::new(separator)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
-        }
+/// The `/mcp` menu's controls row, which replaces the statusline while the menu
+/// is open. Each control is omitted when the selected row cannot perform it.
+fn render_mcp_menu_footer(
+    builder: &TuiUiBuilder,
+    primary_action: Option<TuiMcpAction>,
+    can_log_out: bool,
+) -> TuiFlex {
+    let mut spans = Vec::new();
+    if let Some(hint) = primary_action.and_then(mcp_primary_action_hint) {
+        spans.extend([
+            ("Enter".to_owned(), builder.primary_text_style()),
+            (format!(" {hint}  "), builder.muted_text_style()),
+        ]);
     }
-
-    row
+    if can_log_out {
+        spans.extend([
+            ("Ctrl+R".to_owned(), builder.primary_text_style()),
+            (
+                " to log out & remove credentials  ".to_owned(),
+                builder.muted_text_style(),
+            ),
+        ]);
+    }
+    spans.extend([
+        ("Esc".to_owned(), builder.primary_text_style()),
+        (" to close".to_owned(), builder.muted_text_style()),
+    ]);
+    TuiFlex::row().child(TuiText::from_spans(spans).truncate().finish())
 }
+
+/// The install flow's controls row, which replaces the statusline while the
+/// flow is collecting values. Escape cancels, leaving nothing installed.
+fn render_mcp_install_footer(
+    builder: &TuiUiBuilder,
+    primary_action_hint: Option<&'static str>,
+) -> TuiFlex {
+    let mut spans = Vec::new();
+    if let Some(hint) = primary_action_hint {
+        spans.extend([
+            ("Enter".to_owned(), builder.primary_text_style()),
+            (format!(" {hint}  "), builder.muted_text_style()),
+        ]);
+    }
+    spans.extend([
+        ("Esc".to_owned(), builder.primary_text_style()),
+        (" to cancel".to_owned(), builder.muted_text_style()),
+    ]);
+    TuiFlex::row().child(TuiText::from_spans(spans).truncate().finish())
+}
+
 /// Entry point that requested conversation restoration.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TuiConversationRestoreOrigin {
@@ -650,11 +553,15 @@ pub(crate) enum TuiTerminalSessionAction {
     /// command can drive this without re-porting the mechanism (AGENTS §5.10).
     #[allow(dead_code)]
     ToggleResponseSummaryVisibility,
+    /// Toggle the selected conversation's active TODO list above the input.
+    ToggleTodoMenu,
     /// Click on the footer's active-model label: toggles the inline model
     /// picker (the same menu `/model` surfaces).
     ToggleModelMenu,
     /// Toggle per-conversation auto approve.
     ToggleAutoApprove { show_feedback: bool },
+    /// Open a URL from an interactive statusline item.
+    OpenUrl(String),
     /// Raw user bytes to forward to the foreground PTY process.
     ForwardUserPtyBytes(Vec<u8>),
     /// Ctrl-d while the prompt is focused: exit the TUI immediately when the
@@ -700,9 +607,15 @@ pub(crate) struct TuiTerminalSessionView {
     attachment_bar: ViewHandle<TuiAttachmentBar>,
     inline_menus: Vec<TuiInlineMenu>,
     suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
-    /// Retained selection state for the shared read-only menu (shortcuts/status),
+    /// Retained selection state for the shared read-only menu (shortcuts/status/todos),
     /// so a mouse-drag selection over it survives across re-renders.
     read_only_menu_selection: TuiSelectionHandle,
+    /// Retained scroll state for the shared read-only menu, so wheel scrolling
+    /// survives the element-tree rebuild every re-render performs.
+    read_only_menu_viewport: TuiViewportedListState,
+    /// The selected conversation and active TODO-list generation currently
+    /// displayed by an open TODO menu.
+    open_todo_menu_list_key: Option<(AIConversationId, usize)>,
     /// Resolves a fresh session-interaction projection on demand; only
     /// consumed by the `?`-opened shortcuts menu today.
     session_state: TuiTerminalSessionStateModel,
@@ -722,9 +635,14 @@ pub(crate) struct TuiTerminalSessionView {
     completion_request: completions::CompletionRequestState,
     skills_menu: ModelHandle<TuiSkillMenuModel>,
     mcp_menu: ModelHandle<TuiMcpMenuModel>,
+    mcp_install_flow: ModelHandle<TuiMcpInstallFlowModel>,
     slash_commands_source: ModelHandle<TuiSlashCommandDataSource>,
     conversation_selection: ConversationSelectionHandle,
     ai_action_model: ModelHandle<BlocklistAIActionModel>,
+    /// Set only for the root TUI session, and only when the hosting terminal
+    /// advertises the CLI-agent protocol. See
+    /// [`Self::enable_cli_agent_osc_event_publishing`].
+    cli_agent_osc_event_publisher: Option<ModelHandle<CliAgentOscEventPublisher>>,
     ai_controller: ModelHandle<BlocklistAIController>,
     cli_subagent_controller: ModelHandle<CLISubagentController>,
     cli_subagent_views: HashMap<BlockId, ViewHandle<TuiCLISubagentView>>,
@@ -734,12 +652,20 @@ pub(crate) struct TuiTerminalSessionView {
     current_repo_path: Option<LocalOrRemotePath>,
     /// Watcher-backed branch and uncommitted diff metadata for the footer.
     git_repo_status: Option<ModelHandle<GitRepoStatusModel>>,
+    /// GitHub metadata for the current repository, including current-branch PR
+    /// info. Retained only while the `GitHubPullRequest` statusline item is
+    /// enabled -- see `update_github_status_subscription`.
+    github_repo: Option<ModelHandle<GitHubRepoModel>>,
     /// This view's surface id, used to resolve the active model for the footer
     /// the same way the request path does.
     terminal_surface_id: EntityId,
     /// Armed by a ctrl-c press; a second press while armed exits the TUI.
     /// The footer shows [`CTRL_C_EXIT_HINT`] while armed.
     exit_confirmation: ExitConfirmation,
+    /// When set, the `exit_confirmation` window was armed to kill this child
+    /// rather than exit the TUI. The footer shows [`CTRL_C_KILL_CHILD_HINT`]
+    /// while armed, and a second ctrl-c within the window kills the child.
+    child_kill_armed_conversation: Option<AIConversationId>,
     /// Last-response exchanges whose completed summary has been hidden with
     /// `/cost`. A later response has a new exchange ID and starts visible,
     /// matching the GUI's per-last-block state.
@@ -748,6 +674,10 @@ pub(crate) struct TuiTerminalSessionView {
     /// (not created inline during render) so it survives element-tree rebuilds,
     /// following the GUI's `MouseStateHandle` pattern.
     model_label_hover: MouseStateHandle,
+    /// Hover state for the footer's clickable GitHub pull-request link.
+    github_pr_link: TuiLink,
+    /// Hover and click state for the configured TODO statusline control.
+    todo_list_mouse: MouseStateHandle,
     keyboard_enhancement_supported: bool,
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
     ai_input_model: ModelHandle<BlocklistAIInputModel>,
@@ -778,6 +708,9 @@ pub(crate) struct TuiTerminalSessionView {
     /// The `/statusline` configuration picker, mounted in place of the input
     /// box while open.
     statusline_config_view: Option<ViewHandle<TuiStatuslineConfigView>>,
+    /// Session-owned zero-state drag/flick state, kept outside the view so it
+    /// survives the element rebuild every repaint performs.
+    zero_state_interaction: ZeroStateInteractionHandle,
     zero_state_view: ViewHandle<TuiZeroStateView>,
     /// Workflow metadata for a command accepted from the up-arrow
     /// prompt-and-command history menu (issue #387), consumed the next time
@@ -939,7 +872,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-v"),
@@ -951,7 +884,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("alt-v"),
@@ -1052,6 +985,56 @@ impl TuiTerminalSessionView {
         }
     }
 
+    /// Restores a child conversation's persisted transcript onto this fresh
+    /// background child surface.
+    ///
+    /// This mirrors the surface-restoration half of
+    /// [`Self::replace_conversation_surface`] but for a newly created child
+    /// session that has no previous conversation to clear. It reuses the shared
+    /// block-restoration plan, action-result restoration, history association,
+    /// and transcript restoration. It deliberately does **not** relaunch the
+    /// child or resend its prompt — the child keeps its persisted status.
+    ///
+    /// Ported from `40ac1d4b1`; the pin's "or create a server task" clause is
+    /// moot here, this fork has no task creation to avoid.
+    pub(crate) fn restore_orchestrated_child_conversation(
+        &mut self,
+        conversation: AIConversation,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let conversation_id = conversation.id();
+        let restoration_plan = {
+            let mut terminal_model = self.terminal_model.lock();
+            prepare_conversation_block_restoration(&conversation, &mut terminal_model)
+        };
+
+        self.ai_action_model.update(ctx, |actions, _| {
+            actions.restore_action_results_from_exchanges(restoration_plan.exchanges().collect());
+        });
+
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.restore_conversations(self.terminal_surface_id, vec![conversation], ctx);
+        });
+
+        self.transcript.update(ctx, |transcript, ctx| {
+            transcript.restore_conversation(conversation_id, restoration_plan, ctx);
+        });
+
+        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+            history.set_active_conversation_id(conversation_id, self.terminal_surface_id, ctx);
+        });
+
+        self.conversation_selection.update(ctx, |selection, ctx| {
+            selection.select_existing_conversation(
+                conversation_id,
+                AgentViewEntryOrigin::RestoreExistingConversation,
+                ctx,
+            );
+        });
+
+        ctx.notify();
+    }
+
     /// Resolves live semantic orchestration state for this session.
     fn compute_orchestration_tab_snapshot(
         &self,
@@ -1087,8 +1070,93 @@ impl TuiTerminalSessionView {
             focus_changed = true;
             self.focus_current_owner(ctx);
         }
+        // Disarm the child-kill window when the child is no longer reachable.
+        if !tabs_are_available && self.child_kill_armed_conversation.is_some() {
+            self.exit_confirmation.disarm();
+            self.child_kill_armed_conversation = None;
+            focus_changed = true;
+        }
         if availability_changed || focus_changed {
             ctx.notify();
+        }
+    }
+
+    /// If the orchestration snapshot shows a child conversation selected (not
+    /// the tree root), returns that child's conversation id. Used by the
+    /// unfocused-bar armed-kill window while viewing a child conversation.
+    fn is_child_conversation_selected(&self, ctx: &AppContext) -> Option<AIConversationId> {
+        let snapshot = self.compute_orchestration_tab_snapshot(ctx)?;
+        (snapshot.selected_conversation_id != snapshot.root_conversation_id)
+            .then_some(snapshot.selected_conversation_id)
+    }
+
+    /// The kill target while the bar is focused, with its loaded-descendant
+    /// count: a selected child tab of the rendered level, or the drilled-in
+    /// anchor itself when it occupies the main-tab slot (anchor != root). The
+    /// root tab is never a kill target. Drives the bar-focused single-press
+    /// kill path and its footer.
+    fn bar_focused_kill_target(&self, ctx: &AppContext) -> Option<(AIConversationId, usize)> {
+        let snapshot = self.compute_orchestration_tab_snapshot(ctx)?;
+        if snapshot.selected_conversation_id != snapshot.anchor_conversation_id {
+            let nested_descendants = snapshot
+                .children
+                .iter()
+                .find(|child| child.conversation_id == snapshot.selected_conversation_id)
+                .and_then(|child| child.subtree_rollup.as_ref())
+                .map(|rollup| rollup.descendant_count)
+                .unwrap_or_default();
+            return Some((snapshot.selected_conversation_id, nested_descendants));
+        }
+        // A drilled-in anchor only exists under multi-level orchestration
+        // (flag off keeps anchor == root), so single-press subtree kill
+        // cannot reach flag-off trees.
+        if snapshot.anchor_conversation_id == snapshot.root_conversation_id {
+            return None;
+        }
+        let nested_descendants = loaded_subtree_rollup(
+            BlocklistAIHistoryModel::as_ref(ctx),
+            snapshot.anchor_conversation_id,
+        )
+        .map(|rollup| rollup.descendant_count)
+        .unwrap_or_default();
+        Some((snapshot.anchor_conversation_id, nested_descendants))
+    }
+
+    /// Kills a child agent and (with multi-level orchestration enabled) its
+    /// entire loaded subtree, deepest-first: cancels in-flight work, deletes
+    /// the conversations from history, drops their retained TUI sessions, and
+    /// returns focus to the root orchestration agent.
+    fn kill_child_agent(&mut self, conversation_id: AIConversationId, ctx: &mut ViewContext<Self>) {
+        // Clear any armed kill or exit window.
+        self.exit_confirmation.disarm();
+        self.child_kill_armed_conversation = None;
+        // Return tab bar to unfocused state before the session is removed so
+        // the focus fall-back lands on the right surface.
+        self.orchestration_tabs_focused = false;
+        // Resolve the root session id BEFORE the kill clears the snapshot.
+        // We bypass `focus_conversation_session` because after the child is
+        // deleted the parent is no longer an orchestration root (no children),
+        // and that helper gates on the root check.
+        let root_session_id = self
+            .compute_orchestration_tab_snapshot(ctx)
+            .and_then(|snapshot| {
+                let history = BlocklistAIHistoryModel::as_ref(ctx);
+                TuiSessions::as_ref(ctx)
+                    .session_ids_by_conversation(history)
+                    .get(&snapshot.root_conversation_id)
+                    .copied()
+            });
+        // Cancel + delete + remove sessions via the orchestration model.
+        TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+            model.kill_child_agent_subtree(conversation_id, ctx);
+        });
+        // Focus the root session directly using the pre-kill resolved id.
+        if let Some(session_id) = root_session_id {
+            TuiSessions::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.focus_session(session_id, ctx);
+            });
+        } else {
+            self.set_orchestration_tab_focus(false, ctx);
         }
     }
 
@@ -1608,6 +1676,8 @@ impl TuiTerminalSessionView {
         surface_init: TerminalSurfaceInit,
         exit_summary: TuiExitSummaryHandle,
         keyboard_enhancement_supported: bool,
+        initial_settings_file_error: Option<SettingsFileError>,
+        default_autoexecute_mode: AIConversationAutoexecuteMode,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
         let TerminalSurfaceInit {
@@ -1628,6 +1698,9 @@ impl TuiTerminalSessionView {
             .set_agent_view_state(AgentViewState::Inactive);
 
         let terminal_surface_id: EntityId = ctx.view_id();
+        // Kept alive past the `BlocklistAIContextModel::new` move below so the
+        // shell-completion warm-up can subscribe to session bootstraps.
+        let sessions_for_completions = sessions.clone();
         let active_session =
             ctx.add_model(|ctx| ActiveSession::new(sessions.clone(), model_events.clone(), ctx));
         let model_for_conversation_selection = model.clone();
@@ -1635,6 +1708,7 @@ impl TuiTerminalSessionView {
             Box::new(TuiConversationSelection::new(
                 terminal_surface_id,
                 model_for_conversation_selection,
+                default_autoexecute_mode,
                 ctx,
             )) as Box<dyn ConversationSelection>
         });
@@ -1786,10 +1860,24 @@ impl TuiTerminalSessionView {
         ctx.subscribe_to_model(&skills_menu, |_, _, _: &TuiSkillMenuEvent, ctx| {
             ctx.notify();
         });
-        let mcp_menu = ctx.add_model(|ctx| TuiMcpMenuModel::new(suggestions_mode.clone(), ctx));
+        let mcp_menu = ctx.add_model(|ctx| {
+            TuiMcpMenuModel::new(input_editor_model.clone(), suggestions_mode.clone(), ctx)
+        });
         ctx.subscribe_to_model(&mcp_menu, |_, _, event, ctx| {
             let TuiMcpMenuEvent::Updated = event;
             ctx.notify();
+        });
+        let mcp_install_flow = ctx.add_model(|_| {
+            TuiMcpInstallFlowModel::new(input_editor_model.clone(), suggestions_mode.clone())
+        });
+        ctx.subscribe_to_model(&mcp_install_flow, |view, _, event, ctx| match event {
+            TuiMcpInstallFlowEvent::Updated => ctx.notify(),
+            // Cancelling or finishing the flow returns to the catalog it was
+            // started from, so the user does not lose their place.
+            TuiMcpInstallFlowEvent::Dismissed => {
+                view.mcp_menu.update(ctx, |menu, ctx| menu.open(ctx));
+                ctx.notify();
+            }
         });
         let prompt_and_command_history_menu = ctx.add_model(|ctx| {
             TuiPromptAndCommandHistoryMenuModel::new(
@@ -1845,8 +1933,8 @@ impl TuiTerminalSessionView {
         // The footer's conversations callout depends on whether the input is
         // empty, so content changes must invalidate this parent view as well as
         // the input child. Typing after ctrl-c also disarms the pending exit
-        // confirmation; the ctrl-c buffer clear leaves the buffer empty, so the
-        // window it arms survives its own clear.
+        // confirmation (and any child-kill window); the ctrl-c buffer clear
+        // leaves the buffer empty, so the window it arms survives its own clear.
         let editor_for_footer = input_editor_model.clone();
         ctx.subscribe_to_model(&input_editor_model, move |view, _, event, ctx| {
             let CodeEditorModelEvent::ContentChanged { origin } = event else {
@@ -1859,6 +1947,7 @@ impl TuiTerminalSessionView {
                 .is_empty();
             if !is_empty {
                 view.exit_confirmation.disarm();
+                view.child_kill_armed_conversation = None;
             }
             view.handle_input_content_changed(origin.from_user(), ctx);
             ctx.notify();
@@ -1892,6 +1981,7 @@ impl TuiTerminalSessionView {
             TuiInlineMenu::new(model_menu.clone()),
             TuiInlineMenu::new(skills_menu.clone()),
             TuiInlineMenu::new(mcp_menu.clone()),
+            TuiInlineMenu::new(mcp_install_flow.clone()),
             TuiInlineMenu::new(prompt_and_command_history_menu.clone()),
             TuiInlineMenu::new(completions_menu.clone()),
             TuiInlineMenu::new(profile_menu.clone()),
@@ -1987,6 +2077,9 @@ impl TuiTerminalSessionView {
             TuiInputViewEvent::AcceptedMcp(action) => {
                 view.handle_accepted_mcp_action(*action, ctx);
             }
+            TuiInputViewEvent::AcceptedMcpInstall(action) => {
+                view.handle_accepted_mcp_install_action(action.clone(), ctx);
+            }
             TuiInputViewEvent::AcceptedPromptAndCommandHistory(text, kind) => {
                 view.handle_accepted_prompt_and_command_history(text.clone(), kind.clone(), ctx);
             }
@@ -2034,8 +2127,19 @@ impl TuiTerminalSessionView {
             view.handle_completion_editor_changed(ctx);
             ctx.notify();
         });
-        ctx.subscribe_to_model(&suggestions_mode, |view, _, _, ctx| {
+        ctx.subscribe_to_model(&suggestions_mode, |view, _, event, ctx| {
             view.read_only_menu_selection.clear();
+            view.open_todo_menu_list_key = match event.mode.read_only_menu() {
+                Some(TuiReadOnlyMenuKind::Todos) => view.active_todo_menu_list_key(ctx),
+                Some(TuiReadOnlyMenuKind::Shortcuts | TuiReadOnlyMenuKind::Status) | None => None,
+            };
+            let scroll_top = event
+                .mode
+                .read_only_menu()
+                .map(|kind| view.read_only_menu_initial_scroll_top(kind, ctx))
+                .unwrap_or_default();
+            view.read_only_menu_viewport
+                .scroll_to_rows_from_top(scroll_top);
             ctx.notify();
         });
         // The warping indicator between the transcript and the input box
@@ -2048,6 +2152,8 @@ impl TuiTerminalSessionView {
         );
         ctx.subscribe_to_model(&conversation_selection, |view, _, _, ctx| {
             view.refresh_exit_summary(ctx);
+            view.sync_open_todo_menu_list(ctx);
+            ctx.notify();
         });
 
         // Trigger the changelog fetch once at startup so `TuiZeroStateView`
@@ -2078,6 +2184,12 @@ impl TuiTerminalSessionView {
                 ctx.notify();
             }
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
+            // Defensive retry: a session whose bootstrap warm-up was skipped
+            // (or raced the subscription below) still gets its PATH executables
+            // loaded after the first command finishes.
+            ModelEvent::AfterBlockCompleted(_) => {
+                view.ensure_external_commands_are_warming(ctx);
+            }
             ModelEvent::BlockMetadataReceived(_)
             | ModelEvent::BackgroundBlockStarted
             | ModelEvent::TerminalClear
@@ -2097,7 +2209,18 @@ impl TuiTerminalSessionView {
                 view.schedule_input_detection(ctx);
             }
             if matches!(event, AISettingsChangedEvent::TuiStatusline { .. }) {
+                // The GitHub subscription is only held while its statusline
+                // item is enabled, so it has to follow the configuration.
+                view.update_github_status_subscription(ctx);
                 ctx.notify();
+            }
+        });
+        // A failed settings hot-reload gets the same transient footer slot as
+        // the startup failure surfaced at the end of this constructor; the
+        // detailed diagnostics stay in the log (`settings::init`).
+        ctx.subscribe_to_model(&WarpConfig::handle(ctx), |view, _, event, ctx| {
+            if let WarpConfigUpdateEvent::SettingsErrors(error) = event {
+                view.show_settings_file_error(error, ctx);
             }
         });
         ctx.subscribe_to_model(&LLMPreferences::handle(ctx), |_, _, event, ctx| {
@@ -2109,6 +2232,30 @@ impl TuiTerminalSessionView {
                 ctx.notify();
             }
         });
+        // Warm the completion sources as soon as the active session's shell has
+        // bootstrapped, so the first Tab press does not pay for a cold engine.
+        ctx.subscribe_to_model(
+            &sessions_for_completions,
+            |view, sessions, event, ctx| match event {
+                SessionsEvent::SessionBootstrapped(bootstrap_event)
+                    if view.active_session.as_ref(ctx).session_id(ctx)
+                        == Some(bootstrap_event.session_id) =>
+                {
+                    let Some(session) = sessions.as_ref(ctx).get(bootstrap_event.session_id) else {
+                        report_error!(
+                            "Could not find active TUI session after its bootstrap event",
+                            extra: { "session_id" => ?bootstrap_event.session_id }
+                        );
+                        return;
+                    };
+                    view.abort_shell_completion(ctx);
+                    view.warm_shell_completion_sources(session, ctx);
+                }
+                SessionsEvent::SessionBootstrapped(_)
+                | SessionsEvent::SessionInitialized { .. }
+                | SessionsEvent::EnvironmentVariablesUpdated { .. } => {}
+            },
+        );
         ctx.subscribe_to_model(&active_session, |view, _, event, ctx| match event {
             ActiveSessionEvent::UpdatedPwd => {
                 view.abort_shell_completion(ctx);
@@ -2171,8 +2318,14 @@ impl TuiTerminalSessionView {
             |_, _| {},
         );
         ctx.spawn_stream_local(terminal_resize_rx, Self::handle_terminal_resize, |_, _| {});
-        let zero_state_view =
-            ctx.add_tui_view(|ctx| TuiZeroStateView::new(active_session.clone(), ctx));
+        let zero_state_interaction = ZeroStateInteractionHandle::default();
+        let zero_state_view = {
+            let interaction = zero_state_interaction.clone();
+            let zero_state_active_session = active_session.clone();
+            ctx.add_tui_view(move |ctx| {
+                TuiZeroStateView::new(zero_state_active_session, interaction, ctx)
+            })
+        };
         let orchestration_tab_bar = ctx.add_typed_action_tui_view(|_| TuiTabBarView::empty());
         // Surface a zero-state ASCII-art load/reload failure (bad or missing
         // `TuiZeroStateObject::AsciiFile`) as a footer hint rather than
@@ -2201,6 +2354,10 @@ impl TuiTerminalSessionView {
             &ai_input_model,
             &suggestions_mode,
         );
+        // Read-only menus render top-anchored, not bottom-anchored like the
+        // transcript, so the retained viewport starts pinned to row 0.
+        let read_only_menu_viewport = TuiViewportedListState::new_at_end();
+        read_only_menu_viewport.scroll_to_rows_from_top(0);
         let mut view = Self {
             transcript,
             input_view,
@@ -2208,6 +2365,8 @@ impl TuiTerminalSessionView {
             inline_menus,
             suggestions_mode,
             read_only_menu_selection: TuiSelectionHandle::default(),
+            read_only_menu_viewport,
+            open_todo_menu_list_key: None,
             session_state,
             conversation_menu,
             model_menu,
@@ -2220,19 +2379,24 @@ impl TuiTerminalSessionView {
             completion_request: completions::CompletionRequestState::default(),
             skills_menu,
             mcp_menu,
+            mcp_install_flow,
             slash_commands_source,
             conversation_selection,
             ai_action_model: action_model,
+            cli_agent_osc_event_publisher: None,
             ai_controller,
             cli_subagent_controller,
             cli_subagent_views: HashMap::new(),
             active_session,
             current_repo_path: None,
             git_repo_status: None,
+            github_repo: None,
             terminal_surface_id,
             exit_confirmation: ExitConfirmation::default(),
             hidden_response_summary_exchange_ids: HashSet::new(),
             model_label_hover: MouseStateHandle::default(),
+            github_pr_link: TuiLink::default(),
+            todo_list_mouse: MouseStateHandle::default(),
             keyboard_enhancement_supported,
             ai_context_model: context_model,
             ai_input_model,
@@ -2249,16 +2413,54 @@ impl TuiTerminalSessionView {
             exit_summary,
             active_blocker_view_id: None,
             statusline_config_view: None,
+            zero_state_interaction,
             zero_state_view,
             pending_history_command_workflow_data: None,
             orchestration_tab_bar,
             orchestration_tabs_focused: false,
+            child_kill_armed_conversation: None,
             agent_terminal_control_lock: false,
         };
         if let Some(failure) = initial_zero_state_load_failure {
             view.show_zero_state_ascii_load_failure(failure, ctx);
         }
+        // Late-subscriber path: the session may already have bootstrapped
+        // before the subscription above was installed.
+        if let Some(session) = view.active_session.as_ref(ctx).session(ctx) {
+            view.warm_shell_completion_sources(session, ctx);
+        }
+        if let Some(error) = initial_settings_file_error {
+            view.show_settings_file_error(&error, ctx);
+        }
         view
+    }
+
+    /// Enables CLI-agent lifecycle notifications for the root TUI session.
+    ///
+    /// A no-op unless the hosting terminal advertises the CLI-agent protocol
+    /// (`WARP_CLI_AGENT_PROTOCOL_VERSION` + `WARP_CLIENT_VERSION`), so a TUI
+    /// started outside a Phosphor pane never writes OSC 777 into a terminal
+    /// that would render it as garbage.
+    pub(crate) fn enable_cli_agent_osc_event_publishing(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.cli_agent_osc_event_publisher.is_some() || !host_supports_cli_agent_notifications()
+        {
+            return;
+        }
+        let terminal_surface_id = self.terminal_surface_id;
+        let active_session = self.active_session.clone();
+        let conversation_selection = self.conversation_selection.clone();
+        let action_model = self.ai_action_model.clone();
+        let publisher = ctx.add_model(|ctx| {
+            CliAgentOscEventPublisher::new(
+                terminal_surface_id,
+                active_session,
+                conversation_selection,
+                &action_model,
+                ctx,
+            )
+        });
+        publisher.as_ref(ctx).publish_session_start(ctx);
+        self.cli_agent_osc_event_publisher = Some(publisher);
     }
 
     /// The active front-of-queue blocking interaction, if any.
@@ -2371,7 +2573,7 @@ impl TuiTerminalSessionView {
             Some(LoadedConversationData::CLIAgent(_)) => {
                 self.fail_conversation_restore(
                     request_id,
-                    "The Warp TUI only supports Oz/Warp conversations.".to_owned(),
+                    "The Phosphor TUI only supports Phosphor Agent conversations.".to_owned(),
                     ctx,
                 );
                 return;
@@ -2406,6 +2608,49 @@ impl TuiTerminalSessionView {
         self.replace_conversation_surface(*conversation, origin, ctx);
     }
 
+    /// Discards the retained child-agent sessions of a previously restored
+    /// parent tree before a different parent replaces it, without cancelling or
+    /// deleting the underlying local processes.
+    fn discard_replaced_child_agent_sessions(
+        &self,
+        previous_parent_conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !ctx.has_singleton_model::<TuiOrchestrationModel>()
+            || !ctx.has_singleton_model::<TuiSessions>()
+        {
+            return;
+        }
+        TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+            model.discard_restored_descendant_sessions(previous_parent_conversation_id, ctx);
+        });
+    }
+
+    /// Eagerly materializes retained TUI sessions for every supported,
+    /// locally-known descendant of the just-restored parent conversation, so
+    /// restored child agents appear in the orchestration tab bar. Both restore
+    /// entry points (startup `--resume` and the conversations menu) converge
+    /// here, so both restore the same descendant tree.
+    fn restore_child_agent_sessions(
+        &self,
+        parent_conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if !ctx.has_singleton_model::<TuiOrchestrationModel>()
+            || !ctx.has_singleton_model::<TuiSessions>()
+        {
+            return;
+        }
+        let Some(root_session_id) =
+            TuiSessions::as_ref(ctx).session_id_for_surface(self.terminal_surface_id)
+        else {
+            return;
+        };
+        TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+            model.restore_descendant_sessions(parent_conversation_id, root_session_id, ctx);
+        });
+    }
+
     /// Replaces the visible conversation and completes the restore state transition.
     fn replace_conversation_surface(
         &mut self,
@@ -2418,6 +2663,14 @@ impl TuiTerminalSessionView {
             .as_ref(ctx)
             .selected_conversation_id(ctx);
         if let Some(previous_conversation_id) = previous_conversation_id {
+            // When a different parent replaces the current tree, drop the prior
+            // tree's retained child-session projections first (idempotent for a
+            // re-restore of the same parent, which is left untouched here and
+            // deduplicated by `restore_descendant_sessions`).
+            if previous_conversation_id != conversation.id() {
+                self.discard_replaced_child_agent_sessions(previous_conversation_id, ctx);
+            }
+
             self.transcript.update(ctx, |transcript, ctx| {
                 transcript.clear_for_replacement(ctx);
             });
@@ -2465,6 +2718,11 @@ impl TuiTerminalSessionView {
                 ctx,
             );
         });
+
+        // Restore the parent's child-agent tree so restored children appear in
+        // the orchestration tab bar. The parent stays focused; children are
+        // materialized as background sessions.
+        self.restore_child_agent_sessions(conversation_id, ctx);
 
         self.conversation_restore_state = ConversationRestoreState::Idle;
         self.refresh_exit_summary(ctx);
@@ -2590,7 +2848,18 @@ impl TuiTerminalSessionView {
         }
         let is_focused = self.is_focused_session(ctx);
         if is_focused {
-            self.update_process_input_focus(ctx);
+            // A redraw must not re-run the full focus reconciliation: doing so
+            // re-focuses whatever `focus_current_owner` picks, which stomps any
+            // nested focus an interaction surface has delegated to a child (the
+            // statusline picker's rows, a blocker's option selector). The only
+            // case a wakeup has to correct is a command that became
+            // long-running while the hidden composer still held focus — editor
+            // keys such as Enter would otherwise be intercepted instead of
+            // reaching the running process.
+            let pty_owns_input = self.input_target().pty_owns_input();
+            if pty_owns_input && self.input_view.is_focused(ctx) {
+                self.focus_current_owner(ctx);
+            }
             ctx.notify();
         }
         is_focused
@@ -2631,9 +2900,13 @@ impl TuiTerminalSessionView {
             BlocklistAIHistoryEvent::AppendedExchange { .. }
                 | BlocklistAIHistoryEvent::UpdatedStreamingExchange { .. }
                 | BlocklistAIHistoryEvent::UpdatedConversationStatus { .. }
+                | BlocklistAIHistoryEvent::UpdatedTodoList { .. }
                 | BlocklistAIHistoryEvent::UpdatedAutoexecuteOverride { .. }
         ) {
             ctx.notify();
+        }
+        if matches!(event, BlocklistAIHistoryEvent::UpdatedTodoList { .. }) {
+            self.sync_open_todo_menu_list(ctx);
         }
 
         if matches!(event, BlocklistAIHistoryEvent::RestoredConversations { .. }) {
@@ -2841,6 +3114,12 @@ impl TuiTerminalSessionView {
         self.show_error_hint(zero_state_ascii_load_failure_hint(failure).to_owned(), ctx);
     }
 
+    /// Surfaces a settings-file load or reload failure as an error-colored
+    /// footer hint. Ported from the pin's `show_settings_file_error`.
+    fn show_settings_file_error(&mut self, error: &SettingsFileError, ctx: &mut ViewContext<Self>) {
+        self.show_error_hint(settings_file_error_hint(error).to_owned(), ctx);
+    }
+
     /// Surfaces a `/usage` or `/cost` result. Mirrors the GUI's toast split: a plain transient
     /// hint when the command could not report anything, success-colored for the report itself.
     fn show_usage_cost_outcome(&mut self, outcome: UsageCostOutcome, ctx: &mut ViewContext<Self>) {
@@ -2857,10 +3136,22 @@ impl TuiTerminalSessionView {
         self.show_success_hint(COPY_SELECTION_HINT.to_owned(), ctx);
     }
 
-    /// Handles a ctrl-c press: a second press within [`CTRL_C_EXIT_WINDOW`]
-    /// exits the TUI; otherwise one contextual action runs — cancel the running
-    /// conversation if there is one, else clear the input — and the exit
-    /// confirmation is (re-)armed, surfacing [`CTRL_C_EXIT_HINT`] in the footer.
+    /// Handles a ctrl-c press.
+    ///
+    /// Priority order:
+    /// 1. Cancel in-flight conversation restore.
+    /// 2. Dismiss an open read-only sheet, then handle terminal-use takeover.
+    /// 3. **Kill-child path (tab-bar focused + child tab selected):** a single
+    ///    ctrl-c immediately kills the selected child agent and returns focus to
+    ///    the root/main orchestration agent.
+    /// 4. **Kill-child path (viewing a child conversation without tab focus):**
+    ///    the first ctrl-c arms a 1-second kill window and shows a child-kill
+    ///    footer hint; a second ctrl-c within the window kills the child agent.
+    /// 5. **Exit path (root/main agent or no orchestration):** a second press
+    ///    within [`CTRL_C_EXIT_WINDOW`] exits the TUI; otherwise one contextual
+    ///    action runs — cancel the running conversation if there is one, else
+    ///    clear the input — and the exit confirmation is (re-)armed, surfacing
+    ///    [`CTRL_C_EXIT_HINT`] in the footer.
     fn handle_interrupt(&mut self, ctx: &mut ViewContext<Self>) {
         if self.cancel_conversation_restore(ctx) {
             return;
@@ -2886,9 +3177,51 @@ impl TuiTerminalSessionView {
         });
         if self.handle_terminal_use_interrupt(ctx) {
             self.exit_confirmation.disarm();
+            self.child_kill_armed_conversation = None;
             ctx.notify();
             return;
         }
+
+        // Path 1: tab-bar focused + killable tab selected (a level child, or
+        // the drilled-in anchor occupying the main-tab slot) → single ctrl-c
+        // kills that agent and its loaded subtree, per kill_child_agent. The
+        // root tab is never a kill target, matching the footers.
+        if self.orchestration_tabs_focused
+            && let Some((child_id, _)) = self.bar_focused_kill_target(ctx)
+        {
+            self.kill_child_agent(child_id, ctx);
+            return;
+        }
+
+        // Path 2: tab-bar not focused, viewing a child conversation.
+        // First ctrl-c arms the kill window; second within ~1s kills the child.
+        if !self.orchestration_tabs_focused
+            && let Some(child_id) = self.is_child_conversation_selected(ctx)
+        {
+            let now = Instant::now();
+            if self.child_kill_armed_conversation == Some(child_id)
+                && self.exit_confirmation.should_exit(now)
+            {
+                // Second ctrl-c: kill the child and return to main agent.
+                self.kill_child_agent(child_id, ctx);
+                return;
+            }
+            // First ctrl-c: arm the kill window with the child-specific hint.
+            self.child_kill_armed_conversation = Some(child_id);
+            let window_expires_at = self.exit_confirmation.arm(now);
+            ctx.spawn(Timer::after(CTRL_C_EXIT_WINDOW), move |view, _, ctx| {
+                if view.exit_confirmation.disarm_expired(window_expires_at) {
+                    view.child_kill_armed_conversation = None;
+                    ctx.notify();
+                }
+            });
+            ctx.notify();
+            return;
+        }
+
+        // Path 3 (original): root/main agent or no orchestration.
+        // Ensure any stale kill window is cleared before the normal exit path.
+        self.child_kill_armed_conversation = None;
         let now = Instant::now();
         if self.exit_confirmation.should_exit(now) {
             ctx.terminate_app(TerminationMode::ForceTerminate, None);
@@ -2929,7 +3262,7 @@ impl TuiTerminalSessionView {
 
     /// Cancels the surface's running conversation (in-flight stream or pending
     /// tool actions), returning whether there was one to cancel.
-    fn cancel_active_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
+    pub(crate) fn cancel_active_conversation(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         let terminal_surface_id = ctx.view_id();
         self.ai_controller.update(ctx, |controller, ctx| {
             let conversation_id = BlocklistAIHistoryModel::as_ref(ctx)
@@ -2997,257 +3330,9 @@ impl TuiTerminalSessionView {
         render_warping_indicator_row(label, elapsed, auto_approve, ctx)
     }
 
-    /// Builds the configured statusline under the input box. Normal mode uses
-    /// the persisted item order and visibility (`/statusline`); shell mode
-    /// always leads with its mode label and only resolves configured
-    /// working-directory and git items. A replacing hint — the ctrl-c exit
-    /// confirmation while armed, the conversation-list loading hint, or an
-    /// active transient notice — occupies the whole row instead. An empty
-    /// resolved configuration consumes no row.
-    fn render_footer(&self, ctx: &AppContext) -> TuiFlex {
-        let builder = TuiUiBuilder::from_app(ctx);
-        let muted = builder.muted_text_style();
 
-        // Replacing hints occupy the entire status row, in the existing
-        // priority order: ctrl-c → loading → transient.
-        if self.exit_confirmation.is_armed() {
-            return TuiFlex::row().child(
-                TuiText::new(CTRL_C_EXIT_HINT)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
-        }
-        if matches!(
-            &self.conversation_restore_state,
-            ConversationRestoreState::Loading {
-                origin: TuiConversationRestoreOrigin::ConversationList,
-                ..
-            }
-        ) {
-            return TuiFlex::row().child(
-                TuiText::new(LOADING_CONVERSATION_HINT)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
-        }
-        if let Some((transient, tone)) = self.transient_hint.current() {
-            let style = match tone {
-                TransientHintTone::Muted => muted,
-                TransientHintTone::Success => builder.success_glyph_style(),
-                TransientHintTone::Error => builder.error_text_style(),
-            };
-            return TuiFlex::row().child(
-                TuiText::new(transient)
-                    .with_style(style)
-                    .truncate()
-                    .finish(),
-            );
-        }
-        // While the agent is manually tagged into a running command, the
-        // detach hint replaces the normal statusline the same way the hints
-        // above do. Ported from the pin's `footer_hint` priority order
-        // (`02b53fcd8`, `RUNNING_COMMAND_DETACH_HINT`) for #390.
-        if self
-            .terminal_model
-            .lock()
-            .block_list()
-            .active_block()
-            .is_agent_tagged_in()
-        {
-            return TuiFlex::row().child(
-                TuiText::new(RUNNING_COMMAND_DETACH_HINT)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
-        }
-        let shell_mode = self.is_shell_mode(ctx);
-        let config = AISettings::as_ref(ctx).tui_statusline.normalized();
-        let git_metadata = self.git_status_metadata(ctx);
-        let mut ordered = Vec::new();
-        if let Some(vim_label) = self.vim_mode_indicator(ctx) {
-            ordered.push(FooterSegment::Vim(vim_label));
-        }
-        if shell_mode {
-            ordered.push(FooterSegment::ShellMode);
-        }
-        for item in config.order.iter().copied() {
-            if !config.is_enabled(item) {
-                continue;
-            }
-            let segment = match item {
-                TuiStatuslineItem::AutoApprove => (!shell_mode
-                    && self
-                        .conversation_selection
-                        .as_ref(ctx)
-                        .pending_query_autoexecute_override(ctx)
-                        .is_autoexecute_any_action())
-                .then_some(FooterSegment::ActiveIndicator("Auto-approve")),
-                // Zap has no persistent "auto-queue" mode (`/queue` holds a
-                // single specific prompt instead — see `TuiStatuslineItem`'s
-                // doc comment), so this indicates a queued follow-up prompt.
-                TuiStatuslineItem::AutoQueue => (!shell_mode && self.queued_follow_up.is_some())
-                    .then_some(FooterSegment::ActiveIndicator("Queued")),
-                TuiStatuslineItem::Model => (!shell_mode).then(|| {
-                    let model_name = LLMPreferences::as_ref(ctx)
-                        .get_active_base_model(ctx, Some(self.terminal_surface_id))
-                        .display_name
-                        .clone();
-                    // The active-model label is clickable: a left click
-                    // toggles the inline model picker (the same menu
-                    // `/model` surfaces). The hover state lives on a
-                    // retained [`MouseStateHandle`] so it survives
-                    // element-tree rebuilds, and the click dispatches a
-                    // typed action since the element pass only has an
-                    // immutable [`AppContext`] — mirroring the usage entry.
-                    let model_label_hovered = self
-                        .model_label_hover
-                        .lock()
-                        .is_ok_and(|state| state.is_hovered());
-                    let model_label_style = if model_label_hovered {
-                        builder.primary_text_style()
-                    } else {
-                        builder.muted_text_style()
-                    };
-                    FooterSegment::Model(
-                        TuiHoverable::new(
-                            self.model_label_hover.clone(),
-                            TuiText::new(model_name)
-                                .with_style(model_label_style)
-                                .truncate()
-                                .finish(),
-                        )
-                        .on_click(|event_ctx, _| {
-                            event_ctx
-                                .dispatch_typed_action(TuiTerminalSessionAction::ToggleModelMenu);
-                        })
-                        .finish(),
-                    )
-                }),
-                TuiStatuslineItem::WorkingDirectory => self
-                    .current_working_directory(ctx)
-                    .map(|cwd| FooterSegment::WorkingDirectory(compact_footer_path(&cwd))),
-                TuiStatuslineItem::GitBranch => git_metadata
-                    .map(|metadata| FooterSegment::GitBranch(metadata.current_branch_name.clone())),
-                TuiStatuslineItem::GitDiffStatus => git_metadata.and_then(|metadata| {
-                    let stats = metadata.stats_against_head;
-                    (stats.total_additions > 0 || stats.total_deletions > 0).then_some(
-                        FooterSegment::GitDiff {
-                            additions: stats.total_additions,
-                            deletions: stats.total_deletions,
-                        },
-                    )
-                }),
-                // Selected conversation's context-window occupancy, hidden
-                // until any usage has been reported (and hidden in shell
-                // mode, where it is stale AI-conversation metadata). BYOP
-                // has no cloud credits/cost, so this reuses Zap's existing
-                // informational context-% entry (`crate::usage`) rather than
-                // upstream's clickable credits⇄cost toggle.
-                TuiStatuslineItem::ContextWindowUsage => (!shell_mode)
-                    .then(|| self.selected_conversation_context_usage(ctx))
-                    .flatten()
-                    .map(|fraction| {
-                        FooterSegment::ContextWindowUsage(render_context_usage_entry(fraction, ctx))
-                    }),
-                TuiStatuslineItem::Date => Some(FooterSegment::DateTime(
-                    render_statusline_datetime(format_statusline_date, builder.muted_text_style()),
-                )),
-                TuiStatuslineItem::Time12Hour => {
-                    Some(FooterSegment::DateTime(render_statusline_datetime(
-                        format_statusline_time_12_hour,
-                        builder.muted_text_style(),
-                    )))
-                }
-                TuiStatuslineItem::Time24Hour => {
-                    Some(FooterSegment::DateTime(render_statusline_datetime(
-                        format_statusline_time_24_hour,
-                        builder.muted_text_style(),
-                    )))
-                }
-                TuiStatuslineItem::AgentTodoList => (!shell_mode)
-                    .then(|| {
-                        self.conversation_selection
-                            .as_ref(ctx)
-                            .selected_conversation(ctx)
-                    })
-                    .flatten()
-                    .and_then(|conversation| conversation.active_todo_list())
-                    .filter(|todo_list| !todo_list.is_empty())
-                    .map(|todo_list| {
-                        FooterSegment::AgentTodoList(format_todo_progress(
-                            todo_list.completed_items().len(),
-                            todo_list.len(),
-                            todo_list.is_finished(),
-                        ))
-                    }),
-            };
-            if let Some(segment) = segment {
-                ordered.push(segment);
-            }
-        }
-        render_status_footer_row(FooterSegments { ordered }, &builder)
-    }
 
-    /// Returns a brief vim mode label for the footer (NOR/INS/VIS/V-L/REP)
-    /// when vim mode is enabled, or `None` when vim mode is disabled.
-    fn vim_mode_indicator(&self, ctx: &AppContext) -> Option<&'static str> {
-        use vim::vim::{MotionType, VimMode};
-        let mode = self.input_view.as_ref(ctx).vim_mode(ctx)?;
-        match mode {
-            VimMode::Normal => Some("NOR"),
-            VimMode::Visual(MotionType::Charwise) => Some("VIS"),
-            VimMode::Visual(MotionType::Linewise) => Some("V-L"),
-            VimMode::Replace => Some("REP"),
-            // Insert mode is shown with a label, matching the GUI vim status indicator.
-            VimMode::Insert => Some("INS"),
-        }
-    }
 
-    /// Updates the watcher-backed git-status subscription after repository
-    /// detection completes for the active working directory.
-    fn update_git_status_subscription(
-        &mut self,
-        repo_path: Option<LocalOrRemotePath>,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        if self.current_repo_path == repo_path && self.git_repo_status.is_some() {
-            return;
-        }
-        self.current_repo_path = repo_path.clone();
-        self.git_repo_status = None;
-
-        let Some(repo_path) = repo_path else {
-            ctx.notify();
-            return;
-        };
-        // Zap's git-status singleton keys on a local `&Path` (BYOP has no remote repos).
-        let local_repo_path = match &repo_path {
-            LocalOrRemotePath::Local(path) => path.clone(),
-            LocalOrRemotePath::Remote(_) => {
-                ctx.notify();
-                return;
-            }
-        };
-        match GitRepoModels::handle(ctx)
-            .update(ctx, |models, ctx| models.subscribe(&local_repo_path, ctx))
-        {
-            Ok(handle) => {
-                ctx.subscribe_to_model(&handle, |_, _, _, ctx| ctx.notify());
-                self.git_repo_status = Some(handle);
-            }
-            Err(error) => {
-                log::warn!("Unable to subscribe TUI footer to git status: {error}");
-            }
-        }
-        ctx.notify();
-    }
-
-    fn git_status_metadata<'a>(&self, ctx: &'a AppContext) -> Option<&'a GitStatusMetadata> {
-        self.git_repo_status.as_ref()?.as_ref(ctx).metadata()
-    }
 
     /// Mirrors the GUI `/cost` eligibility checks, then toggles the selected
     /// conversation's completed-response summary.
@@ -3297,6 +3382,100 @@ impl TuiTerminalSessionView {
             .hidden_response_summary_exchange_ids
             .contains(&exchange_id))
         .then(|| render_response_summary(duration, block_credits, ctx))
+    }
+
+    fn has_active_todo_list(&self, ctx: &AppContext) -> bool {
+        self.active_todo_menu_list_key(ctx).is_some()
+    }
+
+    /// Identifies the TODO list an open TODO menu is currently showing: the
+    /// selected conversation plus how many lists it has accumulated. A new list
+    /// (the agent replanning) bumps the count, which is what tells
+    /// [`Self::sync_open_todo_menu_list`] to re-anchor the scroll position.
+    fn active_todo_menu_list_key(&self, ctx: &AppContext) -> Option<(AIConversationId, usize)> {
+        let selection = self.conversation_selection.as_ref(ctx);
+        let conversation_id = selection.selected_conversation_id(ctx)?;
+        let conversation = selection.selected_conversation(ctx)?;
+        conversation
+            .active_todo_list()
+            .filter(|todo_list| !todo_list.is_empty())?;
+        Some((conversation_id, conversation.todo_lists().len()))
+    }
+
+    /// Where a freshly opened read-only menu anchors its viewport. The TODO
+    /// menu skips past the completed rows (and the section title) so the
+    /// in-progress task is the first thing visible; the other menus start at
+    /// the top.
+    fn read_only_menu_initial_scroll_top(
+        &self,
+        kind: TuiReadOnlyMenuKind,
+        ctx: &AppContext,
+    ) -> usize {
+        match kind {
+            TuiReadOnlyMenuKind::Shortcuts | TuiReadOnlyMenuKind::Status => 0,
+            TuiReadOnlyMenuKind::Todos => self
+                .conversation_selection
+                .as_ref(ctx)
+                .selected_conversation(ctx)
+                .and_then(AIConversation::active_todo_list)
+                .filter(|todo_list| !todo_list.pending_items().is_empty())
+                .map(|todo_list| todo_list.completed_items().len().saturating_add(1))
+                .unwrap_or_default(),
+        }
+    }
+
+    fn close_todo_menu_if_unavailable(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.has_active_todo_list(ctx) {
+            return;
+        }
+        self.suggestions_mode.update(ctx, |mode, ctx| {
+            mode.close_if_active(
+                TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Todos),
+                ctx,
+            );
+        });
+    }
+
+    /// Keeps an open TODO menu pointed at the live list: re-anchors the scroll
+    /// position when the agent starts a new list, and closes the menu when the
+    /// list it was showing goes away. Item-level edits within the same list
+    /// leave the user's scroll position alone.
+    fn sync_open_todo_menu_list(&mut self, ctx: &mut ViewContext<Self>) {
+        if !todo_menu_is_open(self.suggestions_mode.as_ref(ctx).mode()) {
+            self.open_todo_menu_list_key = None;
+            return;
+        }
+        let key = self.active_todo_menu_list_key(ctx);
+        let Some(key) = key else {
+            self.open_todo_menu_list_key = None;
+            self.close_todo_menu_if_unavailable(ctx);
+            return;
+        };
+        if self.open_todo_menu_list_key.as_ref() != Some(&key) {
+            self.open_todo_menu_list_key = Some(key);
+            let scroll_top =
+                self.read_only_menu_initial_scroll_top(TuiReadOnlyMenuKind::Todos, ctx);
+            self.read_only_menu_viewport
+                .scroll_to_rows_from_top(scroll_top);
+        }
+    }
+
+    /// Toggles the read-only TODO menu above the input, from the footer's
+    /// clickable to-do progress control. A conversation with no active list has
+    /// nothing to show, so the toggle is inert.
+    fn toggle_todo_menu(&mut self, ctx: &mut ViewContext<Self>) {
+        if !self.has_active_todo_list(ctx) {
+            return;
+        }
+        let todo_mode = TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Todos);
+        self.suggestions_mode.update(ctx, |mode, ctx| {
+            if mode.mode() == todo_mode {
+                mode.close_if_active(todo_mode, ctx);
+            } else {
+                mode.set_mode(todo_mode, ctx);
+            }
+        });
+        self.sync_open_todo_menu_list(ctx);
     }
 
     /// Toggles the inline model picker from the footer's active-model label —
@@ -3511,6 +3690,16 @@ impl TuiTerminalSessionView {
         self.ai_controller.update(ctx, |controller, ctx| {
             controller.send_user_query_in_conversation(prompt.clone(), conversation_id, None, ctx)
         });
+        // The pin gates this on the controller's `dispatched` return value.
+        // This fork's controller returns `()` and always dispatches (see the
+        // comment above and its twin in `send_subagent_prompt`), so the
+        // notification is unconditional here rather than dropping a real
+        // submission on a bool that does not exist.
+        if let Some(publisher) = &self.cli_agent_osc_event_publisher {
+            publisher
+                .as_ref(ctx)
+                .publish_prompt_submit(prompt.clone(), ctx);
+        }
         if let Some(block_id) = active_long_running_block_id {
             self.cli_subagent_controller.update(ctx, |controller, ctx| {
                 controller.set_latest_instruction(block_id, prompt, ctx);
@@ -3947,10 +4136,84 @@ impl TuiTerminalSessionView {
         self.profile_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
     }
     fn handle_accepted_mcp_action(&mut self, action: TuiMcpAction, ctx: &mut ViewContext<Self>) {
-        TuiMcpManager::handle(ctx).update(ctx, |model, ctx| {
-            model.apply_action(action, ctx);
-        });
+        match action {
+            TuiMcpAction::Enable(id) => {
+                let request = TuiMcpManager::handle(ctx)
+                    .update(ctx, |model, ctx| model.prepare_install(id, ctx));
+                match request {
+                    Ok(request) => {
+                        self.mcp_menu.update(ctx, |menu, ctx| menu.dismiss(ctx));
+                        if request.variables.is_empty() {
+                            self.install_and_enable_mcp(request.id, request.name, Vec::new(), ctx);
+                        } else if !self
+                            .mcp_install_flow
+                            .update(ctx, |flow, ctx| flow.start(request, ctx))
+                        {
+                            self.show_error_hint(
+                                "Unable to open the MCP installation flow".to_owned(),
+                                ctx,
+                            );
+                        }
+                    }
+                    Err(message) => self.show_error_hint(message, ctx),
+                }
+            }
+            TuiMcpAction::Start(_)
+            | TuiMcpAction::Stop(_)
+            | TuiMcpAction::Retry(_)
+            | TuiMcpAction::LogOut(_)
+            | TuiMcpAction::ReopenAuthorization(_) => {
+                TuiMcpManager::handle(ctx).update(ctx, |model, ctx| {
+                    model.apply_action(action, ctx);
+                });
+            }
+        }
         ctx.notify();
+    }
+
+    fn handle_accepted_mcp_install_action(
+        &mut self,
+        action: TuiMcpInstallFlowAction,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        match action {
+            TuiMcpInstallFlowAction::ProvideValue { key, value } => {
+                let result = self
+                    .mcp_install_flow
+                    .update(ctx, |flow, ctx| flow.apply_value(key, value, ctx));
+                match result {
+                    Ok(Some(completion)) => {
+                        self.mcp_install_flow
+                            .update(ctx, |flow, ctx| flow.dismiss(ctx));
+                        self.install_and_enable_mcp(
+                            completion.id,
+                            completion.name,
+                            completion.values,
+                            ctx,
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(message) => self.show_error_hint(message, ctx),
+                }
+            }
+        }
+        ctx.notify();
+    }
+
+    fn install_and_enable_mcp(
+        &mut self,
+        id: TuiMcpServerId,
+        name: String,
+        values: Vec<TuiMcpVariableValue>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let result = TuiMcpManager::handle(ctx).update(ctx, |manager, ctx| {
+            manager.install_and_enable(id, values, ctx)
+        });
+        match result {
+            Ok(_) => self.show_success_hint(format!("{name} installed and starting"), ctx),
+            Err(message) => self.show_error_hint(message, ctx),
+        }
     }
 
     /// Handles a mouse-click accept on the inline menu: selects the row at
@@ -4067,6 +4330,19 @@ impl TuiTerminalSessionView {
                     self.show_transient_hint(NEW_CONVERSATION_COMMAND_RUNNING_HINT.to_owned(), ctx);
                     return;
                 }
+                // Starting a new conversation abandons the current one; take its
+                // whole orchestration subtree down with it rather than leaving
+                // orphaned child agents (and, here, their hidden PTY sessions)
+                // running with no bar left to reach them from.
+                if let Some(conversation_id) = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
+                {
+                    TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.kill_descendant_agents(conversation_id, ctx);
+                    });
+                }
                 self.cancel_active_conversation(ctx);
                 let terminal_surface_id = ctx.view_id();
                 self.transcript.update(ctx, |transcript, ctx| {
@@ -4099,6 +4375,9 @@ impl TuiTerminalSessionView {
             }
             SlashCommandKind::Statusline => {
                 self.open_statusline_config(command.name, ctx);
+            }
+            SlashCommandKind::ResetStatusline => {
+                self.reset_statusline(command.name, ctx);
             }
             SlashCommandKind::Usage => {
                 // Same report as the GUI's `/usage`, off the same context-window fraction the
@@ -4157,7 +4436,8 @@ impl TuiTerminalSessionView {
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
             SlashCommandKind::Mcp => {
-                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                // The menu clears the input itself: it owns the line as its
+                // search field for as long as it is open.
                 self.mcp_menu.update(ctx, |menu, ctx| menu.open(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
             }
@@ -4250,6 +4530,30 @@ impl TuiTerminalSessionView {
                     }
                 } else {
                     self.show_transient_hint("No active conversation to export".to_owned(), ctx);
+                }
+                self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+                record_static_slash_command_accepted(command.name, true, ctx);
+            }
+            SlashCommandKind::CopyDebuggingId => {
+                let debugging_payload = self
+                    .conversation_selection
+                    .as_ref(ctx)
+                    .selected_conversation(ctx)
+                    .and_then(|conversation| conversation.debugging_server_conversation_token())
+                    .map(|token| token.debugging_payload(None));
+                match debugging_payload {
+                    Some(debugging_payload) => match copy_to_clipboard(&debugging_payload) {
+                        Ok(()) => {
+                            self.show_success_hint(COPY_DEBUGGING_ID_HINT.to_owned(), ctx);
+                        }
+                        Err(error) => {
+                            log::warn!("Failed to copy TUI debugging information: {error}");
+                            self.show_error_hint(COPY_FAILED_HINT.to_owned(), ctx);
+                        }
+                    },
+                    None => {
+                        self.show_error_hint(COPY_DEBUGGING_ID_NO_TOKEN_HINT.to_owned(), ctx);
+                    }
                 }
                 self.input_view.update(ctx, |input, ctx| input.clear(ctx));
                 record_static_slash_command_accepted(command.name, true, ctx);
@@ -4552,7 +4856,7 @@ impl TuiTerminalSessionView {
     ) {
         match event {
             TuiStatuslineConfigEvent::Saved(config) => {
-                self.persist_statusline_config(config.clone(), ctx);
+                self.persist_statusline_config(config.clone(), STATUSLINE_SAVED_HINT, ctx);
             }
             TuiStatuslineConfigEvent::Cancelled => {
                 self.statusline_config_view = None;
@@ -4566,6 +4870,7 @@ impl TuiTerminalSessionView {
     fn persist_statusline_config(
         &mut self,
         config: TuiStatuslineConfig,
+        success_hint: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
         let result = AISettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -4574,12 +4879,20 @@ impl TuiTerminalSessionView {
         self.statusline_config_view = None;
         self.focus_current_owner_if_active(ctx);
         match result {
-            Ok(()) => self.show_success_hint(STATUSLINE_SAVED_HINT.to_owned(), ctx),
+            Ok(()) => self.show_success_hint(success_hint.to_owned(), ctx),
             Err(error) => {
                 log::warn!("Failed to persist the TUI statusline config: {error}");
                 self.show_transient_hint(STATUSLINE_PERSISTENCE_FAILED_HINT.to_owned(), ctx);
             }
         }
+    }
+
+    /// `/reset-statusline`: restores the default item set and ordering without
+    /// opening the `/statusline` picker.
+    fn reset_statusline(&mut self, command_name: &'static str, ctx: &mut ViewContext<Self>) {
+        self.input_view.update(ctx, |input, ctx| input.clear(ctx));
+        self.persist_statusline_config(TuiStatuslineConfig::default(), STATUSLINE_RESET_HINT, ctx);
+        record_static_slash_command_accepted(command_name, true, ctx);
     }
 
     /// Persists the natural-language-detection (NLD) setting to `enabled`, reports the
@@ -4842,7 +5155,7 @@ impl TuiView for TuiTerminalSessionView {
         if self.input_target().agent_editor_owns_input()
             && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
         {
-            context.set.insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
+            context.set.insert(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG);
             if attachment_focus_available(
                 self.is_shell_mode(ctx),
                 self.attachment_bar.as_ref(ctx).should_render(ctx),
@@ -4884,6 +5197,7 @@ impl TuiView for TuiTerminalSessionView {
             )
         };
         if alt_screen_active {
+            self.zero_state_interaction.set_visible(false);
             let terminal_content = TuiTerminalContentElement::new(
                 self.terminal_resize_tx.clone(),
                 AltScreenElement::new(self.terminal_model.clone()).finish(),
@@ -4970,7 +5284,9 @@ impl TuiView for TuiTerminalSessionView {
         // slot; the first accepted submission produces a visible block, which
         // swaps the transcript back in.
         let mut content = TuiFlex::column();
-        if self.transcript.as_ref(ctx).is_empty() {
+        let transcript_is_empty = self.transcript.as_ref(ctx).is_empty();
+        self.zero_state_interaction.set_visible(transcript_is_empty);
+        if transcript_is_empty {
             content = content.flex_child(TuiChildView::new(&self.zero_state_view).finish());
         } else {
             content = content.flex_child(TuiChildView::new(&self.transcript).finish());
@@ -5122,10 +5438,18 @@ impl TuiView for TuiTerminalSessionView {
                     TuiReadOnlyMenuKind::Status => {
                         Some(status_menu::menu(self.compute_status_info(ctx), &builder))
                     }
+                    TuiReadOnlyMenuKind::Todos => self
+                        .conversation_selection
+                        .as_ref(ctx)
+                        .selected_conversation(ctx)
+                        .and_then(|conversation| {
+                            todo_menu::active_todo_menu(conversation, &builder)
+                        }),
                 };
                 if let Some(menu) = menu {
-                    let menu = menu.render(
+                    let menu = menu.render_with_viewport(
                         self.read_only_menu_selection.clone(),
+                        self.read_only_menu_viewport.clone(),
                         &builder,
                         |event_ctx, _| {
                             event_ctx.dispatch_typed_action(
@@ -5139,9 +5463,13 @@ impl TuiView for TuiTerminalSessionView {
                         },
                     );
                     content = content.child(
-                        TuiContainer::new(menu)
-                            .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
-                            .finish(),
+                        TuiConstrainedBox::new(
+                            TuiContainer::new(menu)
+                                .with_padding_top(INLINE_MENU_TOP_PADDING_ROWS)
+                                .finish(),
+                        )
+                        .with_max_rows(MAX_READ_ONLY_MENU_ROWS + INLINE_MENU_TOP_PADDING_ROWS)
+                        .finish(),
                     );
                 }
             }
@@ -5210,14 +5538,43 @@ impl TuiTerminalSessionView {
             TuiConstrainedBox::new(
                 TuiContainer::new(TuiChildView::new(&self.input_view).finish())
                     .with_padding_x(1)
+                    .with_padding_y(1)
                     .with_border_style(border_style)
                     .finish(),
             )
-            .with_max_rows(MAX_INPUT_TEXT_ROWS + 2)
+            .with_max_rows(MAX_INPUT_TEXT_ROWS + BORDERED_INPUT_CHROME_ROWS)
             .finish(),
         );
-        let footer = self.render_footer(ctx).finish();
+        let footer = if self.orchestration_tabs_focused {
+            self.render_orchestration_tab_footer(builder, ctx)
+        } else {
+            self.render_footer(ctx).finish()
+        };
         content.child(TuiConstrainedBox::new(footer).with_max_rows(1).finish())
+    }
+
+    /// Footer shown while orchestration tabs own keyboard focus.
+    ///
+    /// The dispatch above is new here, not part of the ported commit: this
+    /// fork built `render_orchestration_tab_footer` but never routed the
+    /// composer footer through it, so while the `Agents:` bar had focus the
+    /// row still showed the ordinary session footer. The pin routes it in
+    /// `append_composer_and_footer`'s equivalent; without the routing the
+    /// kill hint below would be unreachable.
+    fn render_orchestration_tab_footer(
+        &self,
+        builder: &TuiUiBuilder,
+        ctx: &AppContext,
+    ) -> Box<dyn TuiElement> {
+        // Show the kill hint when a killable tab is selected -- a level child
+        // or the drilled-in anchor -- so the user knows that a single ctrl-c
+        // will terminate that agent (naming its nested blast radius when it
+        // orchestrates a subtree).
+        if let Some((_, nested_descendants)) = self.bar_focused_kill_target(ctx) {
+            render_orchestration_child_selected_tab_footer(builder, nested_descendants)
+        } else {
+            render_orchestration_tab_footer(builder)
+        }
     }
 
     fn handle_typeahead_event(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5294,10 +5651,12 @@ impl TypedActionView for TuiTerminalSessionView {
             TuiTerminalSessionAction::ToggleResponseSummaryVisibility => {
                 self.toggle_response_summary_visibility(ctx)
             }
+            TuiTerminalSessionAction::ToggleTodoMenu => self.toggle_todo_menu(ctx),
             TuiTerminalSessionAction::ToggleModelMenu => self.toggle_model_menu(ctx),
             TuiTerminalSessionAction::ToggleAutoApprove { show_feedback } => {
                 self.toggle_auto_approve(*show_feedback, ctx)
             }
+            TuiTerminalSessionAction::OpenUrl(url) => ctx.open_url(url),
             TuiTerminalSessionAction::ForwardUserPtyBytes(bytes) => {
                 self.forward_user_pty_bytes(bytes, ctx);
             }
@@ -5346,15 +5705,15 @@ impl TypedActionView for TuiTerminalSessionView {
                 self.set_orchestration_tab_focus(false, ctx)
             }
             TuiTerminalSessionAction::FocusMainOrchestrationTab => {
-                let main_tab_key = self.orchestration_tab_bar.as_ref(ctx).main_tab_key();
-                if let Some(key) = main_tab_key {
+                let root_key = self.orchestration_tab_bar.as_ref(ctx).tree_root_key();
+                if let Some(key) = root_key {
                     self.switch_to_orchestration_tab(Some(key), false, ctx);
                 } else {
                     self.set_orchestration_tab_focus(false, ctx);
                 }
             }
             TuiTerminalSessionAction::NavigateOrchestrationTabs(action) => {
-                let key = action.target(self.orchestration_tab_bar.as_ref(ctx));
+                let key = action.target(self.orchestration_tab_bar.as_ref(ctx), ctx);
                 self.switch_to_orchestration_tab(key, true, ctx);
             }
         }

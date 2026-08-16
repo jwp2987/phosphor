@@ -338,7 +338,7 @@ impl ResourceCenterView {
                 if FeatureFlag::AvatarInTabBar.is_enabled() {
                     String::new()
                 } else {
-                    "Zap Essentials".to_string()
+                    "Phosphor Essentials".to_string()
                 }
             }
         };

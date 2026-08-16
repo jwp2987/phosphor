@@ -38,7 +38,7 @@ async fn main() {
 
     let args = Args::parse();
 
-    println!("Serving Zap on http://localhost:{}", args.port);
+    println!("Serving Phosphor on http://localhost:{}", args.port);
     serve(make_router(&args.directory), args.port).await
 }
 

@@ -20,17 +20,25 @@
 //!   variant to read `base_url` off the typed secret, so it was added to
 //!   `warp_managed_secrets` and this test is now ported verbatim below.
 //!
-//! No further porting opportunity in this file.
+//! The two `warp_skill_dirs_env_*` tests at the end were added later, from
+//! upstream `c7ab9c028` — see that section's comment.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::channel::oneshot;
+use tempfile::TempDir;
 use warp_cli::agent::Harness;
 use warp_cli::mcp::MCPSpec;
 use warp_cli::{OZ_CLI_ENV, OZ_HARNESS_ENV, OZ_PARENT_RUN_ID_ENV, OZ_RUN_ID_ENV};
 use warp_managed_secrets::ManagedSecretValue;
+use warpui::{App, SingletonEntity as _};
 
 use super::{
     build_secret_env_vars, AgentDriver, IdleTimeoutSender,
@@ -42,6 +50,12 @@ use crate::ai::agent_sdk::driver::harness::task_env_vars;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::mcp::parsing::normalize_mcp_json;
 use crate::ai::mcp::JSONTransportType;
+use crate::ai::skills::SkillManager;
+use crate::test_util::add_window_with_terminal;
+use crate::test_util::terminal::initialize_app_for_terminal_view;
+use crate::terminal::cli_agent_sessions::plugin_manager::{
+    CliAgentPluginManager, PluginInstallError, PluginInstructions,
+};
 
 #[test]
 fn test_normalize_single_cli_server() {
@@ -676,4 +690,308 @@ fn inline_mcp_spec_resolves_secret_placeholders_before_rendering() {
         }
         other => panic!("expected CLI server, got {other:?}"),
     }
+}
+
+// ── WARP_SKILL_DIRS (upstream c7ab9c028) ─────────────────────────────────────
+//
+// The unit tests in `crates/ai/src/skills/read_skills_test.rs` cover
+// `resolve_skills_dirs` in isolation. These two cover the part only the driver
+// can answer: that `load_skills_dirs` passes `me.working_dir` — and not the
+// process cwd, which environment preparation may have changed — into that
+// resolution, and that what comes back lands in the home/personal bucket.
+//
+// This fork's driver has no skill-loading *phase* to hook (`load_global_skills`
+// was never ported, see DECLINED.md), so `load_skills_dirs` is called directly,
+// exactly as upstream's tests do — upstream's tests never go through
+// `run_internal` either, so the placement divergence does not reach them.
+
+/// Write a minimal SKILL.md at `{skills_dir}/{name}/SKILL.md`.
+/// This is the flat layout expected by `WARP_SKILL_DIRS` (no `.agents/skills` wrapper).
+fn write_flat_skill(skills_dir: &Path, name: &str) {
+    let skill_dir = skills_dir.join(name);
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: Skill {name}.\n---\n\n# {name}\n"),
+    )
+    .unwrap();
+}
+
+/// Verifies that `load_skills_dirs` reads skills from the `WARP_SKILL_DIRS` environment
+/// variable and registers them in the personal (home) bucket so they are always in scope,
+/// regardless of the current working directory.
+#[test]
+#[serial_test::serial]
+fn warp_skill_dirs_env_loads_skills_as_home_tier() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let temp = TempDir::new().unwrap();
+        let working_dir = dunce::canonicalize(temp.path()).unwrap();
+
+        // Create two separate flat skills directories (no .agents/skills prefix).
+        let skills_dir_a = working_dir.join("extra-skills-a");
+        let skills_dir_b = working_dir.join("extra-skills-b");
+        write_flat_skill(&skills_dir_a, "env-skill-a1");
+        write_flat_skill(&skills_dir_a, "env-skill-a2");
+        write_flat_skill(&skills_dir_b, "env-skill-b1");
+
+        // Point WARP_SKILL_DIRS at both directories.
+        let skills_dirs_value = format!("{},{}", skills_dir_a.display(), skills_dir_b.display());
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WARP_SKILL_DIRS", &skills_dirs_value) };
+
+        let terminal_view = add_window_with_terminal(&mut app, None);
+        let driver_handle = app.add_model(|ctx| {
+            let terminal_driver =
+                super::terminal::TerminalDriver::create_from_existing_view(terminal_view, ctx);
+            AgentDriver::new_for_test(working_dir.clone(), terminal_driver, ctx)
+        });
+
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        driver_handle.update(&mut app, |_, ctx| {
+            let spawner = ctx.spawner();
+            ctx.spawn(
+                async move {
+                    AgentDriver::load_skills_dirs(&spawner).await;
+                    let _ = done_tx.send(());
+                },
+                |_, _, _| {},
+            );
+        });
+        done_rx.await.expect("loading task should complete");
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WARP_SKILL_DIRS") };
+
+        // Skills from WARP_SKILL_DIRS are home-tier, so they appear for any working directory.
+        // Use None cwd — home skills are included regardless of is_cloud_environment.
+        let skill_names = SkillManager::handle(&app).read(&app, |manager: &SkillManager, ctx| {
+            manager
+                .get_skills_for_working_directory(None, ctx)
+                .into_iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+        });
+
+        assert!(
+            skill_names.contains(&"env-skill-a1".to_string()),
+            "'env-skill-a1' from WARP_SKILL_DIRS should be loaded; got: {skill_names:?}"
+        );
+        assert!(
+            skill_names.contains(&"env-skill-a2".to_string()),
+            "'env-skill-a2' from WARP_SKILL_DIRS should be loaded; got: {skill_names:?}"
+        );
+        assert!(
+            skill_names.contains(&"env-skill-b1".to_string()),
+            "'env-skill-b1' from WARP_SKILL_DIRS should be loaded; got: {skill_names:?}"
+        );
+
+        // Verify the skills have Home scope (personal tier).
+        let scope_check = SkillManager::handle(&app).read(&app, |manager: &SkillManager, ctx| {
+            use ai::skills::SkillScope;
+            manager
+                .get_skills_for_working_directory(None, ctx)
+                .into_iter()
+                .filter(|s| s.name.starts_with("env-skill-"))
+                .all(|s| s.scope == SkillScope::Home)
+        });
+        assert!(
+            scope_check,
+            "all WARP_SKILL_DIRS skills must have SkillScope::Home"
+        );
+    });
+}
+
+/// Verifies that relative `WARP_SKILL_DIRS` entries are resolved against the driver's
+/// working directory rather than the process's current working directory (which
+/// `prepare_environment` may have changed).
+#[test]
+#[serial_test::serial]
+fn warp_skill_dirs_env_relative_entries_resolve_against_working_dir() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let temp = TempDir::new().unwrap();
+        let working_dir = dunce::canonicalize(temp.path()).unwrap();
+
+        // Create a flat skills directory inside the working dir and reference it by
+        // relative path only. No `rel-skills` directory exists under the process cwd,
+        // so this only loads if resolution is anchored at the driver's working dir.
+        write_flat_skill(&working_dir.join("rel-skills"), "env-skill-rel");
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::set_var("WARP_SKILL_DIRS", "rel-skills") };
+
+        let terminal_view = add_window_with_terminal(&mut app, None);
+        let driver_handle = app.add_model(|ctx| {
+            let terminal_driver =
+                super::terminal::TerminalDriver::create_from_existing_view(terminal_view, ctx);
+            AgentDriver::new_for_test(working_dir.clone(), terminal_driver, ctx)
+        });
+
+        let (done_tx, done_rx) = oneshot::channel::<()>();
+        driver_handle.update(&mut app, |_, ctx| {
+            let spawner = ctx.spawner();
+            ctx.spawn(
+                async move {
+                    AgentDriver::load_skills_dirs(&spawner).await;
+                    let _ = done_tx.send(());
+                },
+                |_, _, _| {},
+            );
+        });
+        done_rx.await.expect("loading task should complete");
+
+        // TODO: Audit that the environment access only happens in single-threaded code.
+        unsafe { std::env::remove_var("WARP_SKILL_DIRS") };
+
+        let skill_names = SkillManager::handle(&app).read(&app, |manager: &SkillManager, ctx| {
+            manager
+                .get_skills_for_working_directory(None, ctx)
+                .into_iter()
+                .map(|s| s.name.clone())
+                .collect::<Vec<_>>()
+        });
+
+        assert!(
+            skill_names.contains(&"env-skill-rel".to_string()),
+            "'env-skill-rel' should load via a relative WARP_SKILL_DIRS entry resolved against the driver's working dir; got: {skill_names:?}"
+        );
+    });
+}
+
+/// A `CliAgentPluginManager` whose capability and on-disk state are fixed by
+/// the test, recording whether `setup_notification_plugin` reached `install`
+/// or `update`.
+///
+/// There is no pin test to port here. At `02b53fcd8`,
+/// `setup_notification_plugin` and its caller `setup_harness_plugins` appear
+/// in exactly one file -- `app/src/ai/agent_sdk/driver.rs`, their own
+/// definition -- and the pin's `driver_tests.rs` does not mention either. That
+/// is how the fork lost the capability check silently in the first place, so
+/// #601 adds the coverage along with the code.
+///
+/// `has_local_marketplace_override` is deliberately left at its trait default:
+/// this call site never consults it, and #600's
+/// `ensure_local_claude_child_plugins` is the only place that does.
+struct FakePluginManager {
+    can_auto_install: bool,
+    needs_update: bool,
+    is_installed: bool,
+    installs: AtomicUsize,
+    updates: AtomicUsize,
+}
+
+impl FakePluginManager {
+    fn new(can_auto_install: bool, needs_update: bool, is_installed: bool) -> Self {
+        Self {
+            can_auto_install,
+            needs_update,
+            is_installed,
+            installs: AtomicUsize::new(0),
+            updates: AtomicUsize::new(0),
+        }
+    }
+
+    /// `(installs, updates)` observed so far.
+    fn calls(&self) -> (usize, usize) {
+        (
+            self.installs.load(Ordering::SeqCst),
+            self.updates.load(Ordering::SeqCst),
+        )
+    }
+}
+
+static FAKE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
+    title: "",
+    subtitle: "",
+    steps: Vec::new(),
+    post_install_notes: Vec::new(),
+});
+
+#[async_trait]
+impl CliAgentPluginManager for FakePluginManager {
+    fn minimum_plugin_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn can_auto_install(&self) -> bool {
+        self.can_auto_install
+    }
+
+    fn is_installed(&self) -> bool {
+        self.is_installed
+    }
+
+    fn needs_update(&self) -> bool {
+        self.needs_update
+    }
+
+    async fn install(&self) -> Result<(), PluginInstallError> {
+        self.installs.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn update(&self) -> Result<(), PluginInstallError> {
+        self.updates.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn install_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+
+    fn update_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+}
+
+/// The check #601 restores. `plugin_manager_for` returns managers for agents
+/// whose plugin was never auto-installable -- OpenCode and DeepSeek always,
+/// Codex when its feature flag is off -- and those do not override `install`,
+/// so calling it reaches the trait default and returns "Auto-install not
+/// supported for this agent". That is the agent declining, not a failure, and
+/// warning about it on every launch is what made a real install failure
+/// unreadable. Note this manager is deliberately also `needs_update` *and*
+/// not installed: the state that most strongly invites a call.
+#[tokio::test]
+async fn notification_plugin_setup_touches_nothing_when_the_agent_cannot_auto_install() {
+    let manager = FakePluginManager::new(false, true, false);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
+}
+
+#[tokio::test]
+async fn notification_plugin_setup_installs_when_the_plugin_is_absent() {
+    let manager = FakePluginManager::new(true, false, false);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (1, 0));
+}
+
+/// An outdated plugin takes the update path, not the install path: `update()`
+/// refreshes the marketplace clone first, which a plain `install()` does not.
+#[tokio::test]
+async fn notification_plugin_setup_updates_when_the_plugin_is_outdated() {
+    let manager = FakePluginManager::new(true, true, true);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 1));
+}
+
+/// The second half of #601. Before it, every third-party-harness launch shelled
+/// out to `plugin marketplace add` + `plugin install` even with the plugin
+/// already current.
+#[tokio::test]
+async fn notification_plugin_setup_touches_nothing_when_the_plugin_is_current() {
+    let manager = FakePluginManager::new(true, false, true);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
 }

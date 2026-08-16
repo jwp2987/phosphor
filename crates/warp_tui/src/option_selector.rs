@@ -1737,7 +1737,10 @@ impl TuiElement for SelectorInputElement {
                 true
             }
             TuiEvent::Paste { .. } => false,
-            TuiEvent::LeftMouseDown { .. }
+            TuiEvent::FocusGained
+            | TuiEvent::FocusLost
+            | TuiEvent::ModifierKeyChanged { .. }
+            | TuiEvent::LeftMouseDown { .. }
             | TuiEvent::LeftMouseUp { .. }
             | TuiEvent::LeftMouseDragged { .. }
             | TuiEvent::MiddleMouseDown { .. }

@@ -97,7 +97,7 @@ impl LLMProvider {
             LLMProvider::OpenAI => Some(Icon::OpenAILogo),
             LLMProvider::Anthropic => Some(Icon::ClaudeLogo),
             LLMProvider::Google => Some(Icon::GeminiLogo),
-            LLMProvider::Xai => None,
+            LLMProvider::Xai => Some(Icon::GrokLogo),
             LLMProvider::Unknown => None,
         }
     }

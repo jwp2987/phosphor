@@ -66,7 +66,12 @@ pub struct RemoteServerIdentityArgs {
 #[derive(Debug, Default, Clone, clap::Args)]
 pub struct GlobalOptions {
     /// API key for server authentication.
-    #[arg(long = "api-key", global = true, env = "WARP_API_KEY")]
+    #[arg(
+        long = "api-key",
+        global = true,
+        env = "WARP_API_KEY",
+        hide_env_values = true
+    )]
     pub api_key: Option<String>,
 
     /// Set the output format.
@@ -84,10 +89,10 @@ pub struct GlobalOptions {
 #[derive(Debug, Default, Parser, Clone)]
 #[command(
     name = "oz",
-    display_name = "Oz",
+    display_name = "Phosphor",
     about = r#"Phosphor local agent CLI
 
-The Oz CLI is a tool for running and managing local coding agents.
+The Phosphor CLI is a tool for running and managing local coding agents.
 Use the CLI to:
 * Launch and inspect local agents
 * Manage local runs

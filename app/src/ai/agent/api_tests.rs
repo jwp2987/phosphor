@@ -8,7 +8,8 @@
 use settings::manager::SettingsManager;
 use warpui::{App, SingletonEntity};
 
-use super::collect_user_rules;
+use super::{collect_user_rules, ServerConversationToken};
+use crate::ai::agent::ServerOutputId;
 use crate::ai::facts::{AIFact, AIFactObject, AIFactObjectModel, AIMemory};
 use crate::auth::AuthStateProvider;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
@@ -135,4 +136,55 @@ fn collect_user_rules_handles_unnamed_rules() {
         assert_eq!(rules[0].1, "unnamed content");
         assert_eq!(rules[1].0.as_deref(), Some("named"));
     });
+}
+
+// --- `/copy-debugging-id` payload gating (upstream b4070d6a9) ---
+
+/// On dogfood channels the clipboard artifact is the deeplink, which the running app can
+/// open. `debug_link()` reads the process-wide channel for its URL scheme, so the expected
+/// value is derived from the same source rather than hardcoded.
+#[test]
+fn debugging_payload_is_link_on_dogfood_channels() {
+    use warp_core::channel::Channel;
+
+    let token = ServerConversationToken::new("conversation-token".to_owned());
+    let request_id = ServerOutputId::new("request-id".to_owned());
+    let expected_link = token.debug_link();
+
+    for channel in [Channel::Dev, Channel::Local] {
+        assert_eq!(
+            token.debugging_payload_for_channel(None, channel),
+            expected_link
+        );
+        assert_eq!(
+            token.debugging_payload_for_channel(Some(&request_id), channel),
+            format!("{expected_link}?request=request-id")
+        );
+    }
+}
+
+/// On every user-facing channel the artifact is a plain id blob instead: that is what a
+/// user can paste into a Phosphor issue, where a deeplink would be meaningless.
+#[test]
+fn debugging_payload_is_id_on_non_dogfood_channels() {
+    use warp_core::channel::Channel;
+
+    let token = ServerConversationToken::new("conversation-token".to_owned());
+    let request_id = ServerOutputId::new("request-id".to_owned());
+
+    for channel in [
+        Channel::Stable,
+        Channel::Preview,
+        Channel::Integration,
+        Channel::Oss,
+    ] {
+        assert_eq!(
+            token.debugging_payload_for_channel(None, channel),
+            "{\"conversation_id\":\"conversation-token\"}"
+        );
+        assert_eq!(
+            token.debugging_payload_for_channel(Some(&request_id), channel),
+            "{\"request_id\":\"request-id\",\"conversation_id\":\"conversation-token\"}"
+        );
+    }
 }

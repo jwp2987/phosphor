@@ -28,6 +28,22 @@ fn create_test_request_limit_info(
     }
 }
 
+/// The pin's `auto_approve_denylist_bypass_defaults_on_and_is_available_in_gui_and_tui_settings`
+/// also asserts the setting is exposed on both the GUI and TUI `SettingSurfaces`.
+/// `SettingSurfaces`/`SettingsMode` are deliberately dropped in this fork (see
+/// `DECLINED.md`), so there is no surface set to assert on and this test carries a
+/// different name rather than claiming that coverage. The default and the TOML path
+/// are the portable half.
+#[test]
+fn auto_approve_denylist_bypass_defaults_on() {
+    let setting = AutoApproveBypassesCommandDenylist::new(None);
+    assert!(*setting.value());
+    assert_eq!(
+        AutoApproveBypassesCommandDenylist::toml_path(),
+        Some("agents.warp_agent.other.auto_approve_bypasses_command_denylist")
+    );
+}
+
 #[test]
 fn tui_statusline_default_matches_figma() {
     let config = TuiStatuslineConfig::default();
@@ -35,6 +51,7 @@ fn tui_statusline_default_matches_figma() {
     assert_eq!(
         config.enabled,
         vec![
+            TuiStatuslineItem::AutoApprove,
             TuiStatuslineItem::Model,
             TuiStatuslineItem::WorkingDirectory,
             TuiStatuslineItem::GitBranch,
@@ -68,6 +85,7 @@ fn tui_statusline_normalization_preserves_custom_order_and_appends_missing_items
             TuiStatuslineItem::AutoQueue,
             TuiStatuslineItem::WorkingDirectory,
             TuiStatuslineItem::GitDiffStatus,
+            TuiStatuslineItem::GitHubPullRequest,
             TuiStatuslineItem::ContextWindowUsage,
             TuiStatuslineItem::Date,
             TuiStatuslineItem::Time12Hour,
@@ -1061,7 +1079,10 @@ fn a_whitespace_only_model_name_falls_back_to_the_id() {
 fn model_from_id_trims() {
     // The settings UI's "add model" path constructs through `from_id`, so it needs the same
     // normalization as the config-load path.
-    assert_eq!(AgentProviderModel::from_id("gpt-oss:20b ".to_string()).id, "gpt-oss:20b");
+    assert_eq!(
+        AgentProviderModel::from_id("gpt-oss:20b ".to_string()).id,
+        "gpt-oss:20b"
+    );
 }
 
 // --- `/cost` token prices (fork-authored: Warp has no client-side price table) ---

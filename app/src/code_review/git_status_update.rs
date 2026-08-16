@@ -13,7 +13,7 @@ use {
     repo_metadata::{
         repositories::DetectedRepositories,
         repository::{RepositorySubscriber, SubscriberId},
-        Repository, RepositoryUpdate,
+        Repository, RepositoryUpdate, RepositoryWatchMode,
     },
     std::{collections::HashMap, time::Duration},
     warpui::{r#async::SpawnedFutureHandle, ModelHandle, WeakModelHandle},
@@ -224,6 +224,7 @@ impl GitRepoStatusModel {
         let (throttled_tx, throttled_rx) = async_channel::unbounded();
         let start = repository_model.update(ctx, |repo, ctx| {
             repo.start_watching(
+                RepositoryWatchMode::GitRepository,
                 Box::new(GitStatusRepositorySubscriber {
                     repository_update_tx,
                 }),

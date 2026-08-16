@@ -9,9 +9,13 @@ use pathfinder_geometry::{
 use settings::Setting as _;
 use warp::integration_testing::terminal::{
     assert_command_executed_for_single_terminal_in_tab, assert_focused_editor_in_tab,
-    assert_long_running_block_executing_for_single_terminal_in_tab,
+    assert_input_editor_contents, assert_long_running_block_executing_for_single_terminal_in_tab,
 };
-use warp::integration_testing::view_getters::{terminal_view, workspace_view};
+use warp::search::command_palette::mixer::CommandPaletteItemAction;
+use warp::themes::theme::AnsiColorIdentifier;
+use warp::workspace::WorkspaceAction;
+use warp::integration_testing::command_palette::assert_command_palette_is_closed;
+use warp::integration_testing::view_getters::{command_palette_view, terminal_view, workspace_view};
 use warp::integration_testing::window::{
     add_and_save_window, assert_num_windows_open, save_active_window_id,
 };
@@ -35,9 +39,10 @@ use warp::{
 use warpui::{
     async_assert, async_assert_eq,
     event::{Event, ModifiersState},
-    integration::{AssertionOutcome, TestStep},
+    integration::{AssertionCallback, AssertionOutcome, TestStep},
+    keymap::DescriptionContext,
     windowing::WindowManager,
-    SingletonEntity, WindowId,
+    EntityId, SingletonEntity, WindowId,
 };
 
 use crate::{util::skip_if_powershell_core_2303, Builder};
@@ -47,6 +52,11 @@ use super::new_builder;
 const SOURCE_WINDOW_KEY: &str = "source window";
 const TARGET_WINDOW_KEY: &str = "target window";
 const DETACHED_WINDOW_KEY: &str = "detached window";
+const CYCLE_TAB_COLOR_BINDING: &str = "workspace:cycle_active_tab_color";
+const CYCLE_TAB_COLOR_LABEL: &str = "Cycle current tab color";
+const CYCLE_TAB_COLOR_DISPLAY_LABEL: &str = "Cycle Current Tab Color";
+const CYCLE_TAB_COLOR_SENTINEL: &str = "cycle-color-sentinel";
+const CYCLE_TAB_COLOR_TERMINAL_ID: &str = "cycle tab color terminal id";
 
 fn tab_position_id(tab_index: usize) -> String {
     format!("tab_position_{tab_index}")
@@ -163,6 +173,120 @@ fn assert_total_tab_count(
 
 fn drag_tabs_feature_enabled() -> bool {
     cfg!(feature = "drag_tabs_to_windows")
+}
+
+fn assert_tab_color(expected: Option<AnsiColorIdentifier>) -> AssertionCallback {
+    Box::new(move |app, window_id| {
+        let workspace = workspace_view(app, window_id);
+        workspace.read(app, |workspace, _| {
+            async_assert_eq!(
+                workspace.get_tab_color(0),
+                expected,
+                "active tab color should match the expected cycle state"
+            )
+        })
+    })
+}
+
+fn with_cycle_tab_color_invariants(
+    step: TestStep,
+    expected: Option<AnsiColorIdentifier>,
+) -> TestStep {
+    step.add_assertion(assert_tab_color(expected))
+        .add_assertion(assert_focused_tab_index(0))
+        .add_assertion(assert_focused_pane_index(0, 0))
+        .add_assertion(assert_focused_editor_in_tab(0))
+        .add_assertion(assert_input_editor_contents(0, CYCLE_TAB_COLOR_SENTINEL))
+        .add_named_assertion_with_data_from_prior_step(
+            "Focused terminal view remains unchanged",
+            |app, window_id, data| {
+                let original_id = *data
+                    .get::<_, EntityId>(CYCLE_TAB_COLOR_TERMINAL_ID)
+                    .expect("initial terminal view id should be saved");
+                let current_id = terminal_view(app, window_id, 0, 0).id();
+                async_assert_eq!(current_id, original_id)
+            },
+        )
+}
+
+fn assert_selected_cycle_tab_color_binding() -> AssertionCallback {
+    Box::new(move |app, window_id| {
+        let palette = command_palette_view(app, window_id);
+        palette.read(app, |palette, ctx| {
+            let Some(result) = palette.selected_search_result(ctx) else {
+                return AssertionOutcome::failure(
+                    "command palette should have a selected result".to_string(),
+                );
+            };
+            let CommandPaletteItemAction::AcceptBinding { binding } = result.accept_result() else {
+                return AssertionOutcome::failure(
+                    "selected result should be an editable binding".to_string(),
+                );
+            };
+            let has_cycle_action = matches!(
+                binding
+                    .action
+                    .as_ref()
+                    .and_then(|action| action.as_any().downcast_ref::<WorkspaceAction>()),
+                Some(WorkspaceAction::CycleActiveTabColor)
+            );
+            async_assert!(
+                binding.name == CYCLE_TAB_COLOR_BINDING
+                    && binding.description.in_context(DescriptionContext::Default)
+                        == CYCLE_TAB_COLOR_DISPLAY_LABEL
+                    && has_cycle_action,
+                "selected result should be the exact cycle-tab-color binding"
+            )
+        })
+    })
+}
+
+pub fn test_cycle_active_tab_color_with_keybinding() -> Builder {
+    new_builder()
+        .with_setup(|_utils| {
+            warp::integration_testing::create_file_with_contents(
+                format!(r#""{CYCLE_TAB_COLOR_BINDING}": ctrl-alt-shift-U"#).as_bytes(),
+                &warp::integration_testing::keybindings::keybinding_file_path(),
+            );
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(with_cycle_tab_color_invariants(
+            new_step_with_default_assertions("Seed terminal input and capture focused terminal")
+                .with_typed_characters(&[CYCLE_TAB_COLOR_SENTINEL])
+                .with_action(|app, window_id, data| {
+                    data.insert(
+                        CYCLE_TAB_COLOR_TERMINAL_ID,
+                        terminal_view(app, window_id, 0, 0).id(),
+                    );
+                }),
+            None,
+        ))
+        .with_step(with_cycle_tab_color_invariants(
+            new_step_with_default_assertions("Cycle active tab from no color to red")
+                .with_keystrokes(&["ctrl-alt-shift-U"]),
+            Some(AnsiColorIdentifier::Red),
+        ))
+        .with_step(with_cycle_tab_color_invariants(
+            new_step_with_default_assertions("Cycle active tab from red to green")
+                .with_keystrokes(&["ctrl-alt-shift-U"]),
+            Some(AnsiColorIdentifier::Green),
+        ))
+        .with_step(
+            TestStep::new("Select exact cycle color action in Command Palette")
+                .with_keystrokes(&[cmd_or_ctrl_shift("p")])
+                .with_typed_characters(&[CYCLE_TAB_COLOR_LABEL])
+                .add_assertion(assert_selected_cycle_tab_color_binding())
+                .add_assertion(assert_tab_color(Some(AnsiColorIdentifier::Green)))
+                .add_assertion(assert_focused_tab_index(0))
+                .add_assertion(assert_focused_pane_index(0, 0))
+                .add_assertion(assert_input_editor_contents(0, CYCLE_TAB_COLOR_SENTINEL)),
+        )
+        .with_step(with_cycle_tab_color_invariants(
+            TestStep::new("Run cycle color action from Command Palette")
+                .with_keystrokes(&["enter"])
+                .add_assertion(assert_command_palette_is_closed()),
+            Some(AnsiColorIdentifier::Yellow),
+        ))
 }
 
 pub fn test_active_session_follows_focus() -> Builder {

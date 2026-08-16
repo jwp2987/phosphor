@@ -65,7 +65,7 @@ impl Entity for SshWarpifyBlock {
 impl SshWarpifyBlock {
     fn render_title_ui(&self, theme: &WarpTheme, appearance: &Appearance) -> Box<dyn Element> {
         let icon = Icon::new(UiIcon::Zap.into(), theme.active_ui_detail());
-        warpify::render::header_row("Warpifying SSH Session...", icon, theme, appearance)
+        warpify::render::header_row("Phosphorizing SSH Session...", icon, theme, appearance)
     }
 }
 
@@ -78,7 +78,7 @@ pub fn warpify_description(
 
     let description = FormattedText::new(vec![FormattedTextLine::Line(vec![
         FormattedTextFragment::plain_text(
-            "Bring Zap's features to your remote session. Blocks, full text editing, auto-complete, Oz, and more. "
+            "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Phosphor Agent, and more. "
         ),
         FormattedTextFragment::hyperlink(crate::t!("common-learn-more"), SSH_DOCS_URL),
     ])]);

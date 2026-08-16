@@ -123,6 +123,90 @@ not change**:
   are approximate by construction; `docs/sweep-verdict-ledger.tsv` is the
   authority on any individual test.
 
+## Phase 2.5 — walk every commit, not just the queue
+
+**The queue cannot see a bug fix.** This is a structural limit, not a bug in
+the generator, and it is worth stating plainly because the queue is otherwise
+so useful that it invites being treated as the whole job.
+
+`generate_repin_queue` keeps only **test-bearing** files, because its purpose is
+to tell you which recorded verdicts went stale — and a verdict is always
+attached to a test. That filter is correct for what it does and badly wrong as a
+definition of the round's scope. On the first real re-pin
+(`02b53fcd8 -> 42effe840`) the numbers were:
+
+| | count |
+|---|---|
+| `.rs` files changed upstream | 602 |
+| of those, test-bearing (what the queue lists) | **194** |
+| invisible to the queue | **408** |
+
+Two thirds of the changed Rust is outside the queue, and a fix landing in
+`app/src/completer/mod.rs` with no accompanying test file is invisible to it in
+exactly the same way whether it is a typo or a security fix. The
+highest-yield findings of the pre-re-pin audit rounds were precisely this class
+— half-ported and unported *bug fixes*, not missing tests — including a shell
+escaping fix (`88c344e2`) that had been ported with its escaping omitted.
+
+So the queue is one of two inputs. The other is a walk of **every commit** in
+the range:
+
+```bash
+git log --reverse --format='%H%x09%ad%x09%s' --date=short <old-pin>..<new-pin>
+```
+
+Shard it by each commit's **primary area** — the top-level directory holding
+most of its changed files — so each agent gets a coherent domain rather than a
+random slice, and so two agents cannot land in the same file:
+
+```bash
+git show --pretty=format: --name-only <sha> \
+  | awk -F/ '{if($1=="app"||$1=="crates") print $1"/"$2; else print $1}' \
+  | sort | uniq -c | sort -rn | head -1
+```
+
+Verify the shards partition the range exactly — every commit assigned once,
+none orphaned — before briefing anyone. A commit silently dropped at
+sharding time is indistinguishable, later, from a commit deliberately judged
+out of scope.
+
+Each commit ends in exactly one bucket, and the buckets are the round's
+ledger:
+
+| verdict | meaning |
+|---|---|
+| **PORTED** | change applied to the fork |
+| **ALREADY-PRESENT** | fork already has it (independently, or via an earlier round) |
+| **CLOUD** | needs dropped cloud infrastructure — out of scope by policy |
+| **N/A** | upstream-only: CI config, release tooling, vendored assets the fork lacks |
+| **SCOPE-DECISION** | a real gap, but closing it is a product call, not a port |
+
+`SCOPE-DECISION` is what makes the gap loop terminate. Without it, agents
+either loop forever on gaps they have no authority to close, or quietly
+close them by inventing scope.
+
+### The queue's second blind spot: new tests in already-known files
+
+Measured on the first re-pin, and it is structural rather than a one-off.
+
+`UNCLASSIFIED` is a **whole-file** bucket: it means "no `SCOPE-*.md` row and no
+ledger row exists for this path". So a file that already carries ledger rows can
+never land there — **no matter how many tests upstream adds to it**. Those new
+tests have no ledger row, are not `RE-EXAMINE` (that bucket re-checks rows that
+*exist*), and are not `UNCLASSIFIED` (the file is classified). They appear in no
+bucket at all.
+
+At `02b53fcd8 -> 42effe840` that was **284 tests across 63 files**, invisible to
+the whole queue. The worst offenders were `zero_state_animation_tests.rs`
+(26 -> 59), `request_usage_model_tests.rs` (+20), `driver/snapshot_tests.rs`
+(+20), and `offer_slide_tests.rs` (+18).
+
+Until `generate_repin_queue` grows a per-test "new upstream test, no ledger row"
+section, this has to be done by hand: for every file in the `RE-EXAMINE` bucket,
+diff the *set of test-function names* between the two pins and adjudicate the
+additions. Counting only the rows the queue hands you understates the new debt,
+and understates it silently.
+
 ## Phase 3 — fast-forward what is free
 
 ```bash
@@ -139,6 +223,63 @@ possible progress and they shrink the queue before anyone spends thought on it.
 
 It is a **snapshot, not a gate**. Regenerate it; do not trust a stale copy.
 
+## Phase 3.5 — move the git-pinned dependencies too
+
+**The pin is not only a Warp commit.** Upstream's `Cargo.toml` pins external git
+repositories by exact rev, and those repos move on their own schedule. Nothing
+in Phases 0–3 looks at them: the queue diffs `*.rs`, the identity manifest
+compares blobs under `app/src` and `crates`, and a dependency rev lives in
+neither. So they drift silently, and the drift is invisible to every gate —
+`cargo` is perfectly happy to keep building the old rev forever.
+
+This was found the hard way at the first re-pin: `warp-command-signatures` was
+still at the rev set in "Initial public release of Warp", two pins back. It is
+the completion-spec data, pulled with `embed-signatures` and compiled into the
+binary, so every command whose flags changed upstream had been completing
+against stale data — with nothing anywhere recording that as a known gap.
+
+### The check
+
+```bash
+for dep in $(grep -oE '^[a-z0-9_-]+ = \{ git' Cargo.toml | cut -d' ' -f1); do
+    fork=$(grep -E "^$dep = \{ git" Cargo.toml \
+           | grep -oE 'rev = "[0-9a-f]+"' | grep -oE '[0-9a-f]+')
+    up=$(git show <new-pin>:Cargo.toml \
+         | grep -E "^$dep = \{ git" \
+         | grep -oE 'rev = "[0-9a-f]+"' | grep -oE '[0-9a-f]+')
+    [ "$fork" != "$up" ] && printf '%-32s fork=%.9s upstream=%.9s\n' "$dep" "$fork" "$up"
+done
+```
+
+Run it against **both** pins, not just the new one. A dep that already differed
+at the old pin is pre-existing debt rather than something this move introduced,
+and saying which it is takes one extra command.
+
+### Classify every difference — there are three kinds, and only one is a bump
+
+| kind | what it looks like | what to do |
+|---|---|---|
+| **drift** | same repo URL, fork's rev is an ancestor of upstream's | bump the rev, regenerate the lockfile, build. Record it. |
+| **divergence** | different repo, or upstream moved to a published crate | a **decision**, not a bump. Record which way you went and why. |
+| **deliberate** | the fork pins its own fork on purpose | leave it alone — and confirm the reason is still written down in `Cargo.toml` next to the pin |
+
+At the first re-pin the split was 17 identical, 2 drift
+(`warp-command-signatures`, `notify-debouncer-full`), 1 divergence (`rmcp` — the
+fork pins a git fork, upstream moved to crates.io `1.6`), 1 deliberate (`winit`,
+carrying an unmerged Windows dark-mode fix), and 3 correctly absent (`tink-*`,
+which back cloud-coupled envelope encryption).
+
+### Two traps
+
+- **A stale rev is not a missing feature, and porting will not fix it.** The
+  intermediate revs generally do not apply as diffs, because the fork's base
+  does not match the start of the chain. Bump the pin; do not try to port the
+  data repo's history.
+- **A deliberate fork pin must say so where the pin is**, in a comment on the
+  dependency line. If the reason lives only in a commit message, the next
+  re-pin "fixes" it back to upstream and silently reintroduces whatever bug the
+  fork carried a patch for.
+
 ## Phase 4 — port, as a fleet round
 
 Follow `docs/FLEET-ROUND.md` exactly. The rules that matter most:
@@ -154,6 +295,13 @@ Follow `docs/FLEET-ROUND.md` exactly. The rules that matter most:
   certainly it does.
 - **Keep agent worktrees on a current base.** Branches cut from different
   commits produce merge pain the round did not need.
+- **A re-pin round is not based on `main`.** It runs on its own branch so that
+  nothing reaches `main` until a human says so. Pass that branch as
+  `script/agent-worktree new <slug> <branch> <base>`'s third argument; the base
+  is recorded per-worktree and `refresh`/`status` follow it. Before that was
+  recorded, both subcommands assumed `origin/main` and would have merged `main`
+  into the round's worktrees — succeeding silently, and leaving agents reporting
+  clean trees containing commits the round never authorised.
 - **Never call a failure "pre-existing" without measuring it.**
 
 Every agent brief should carry, verbatim:
@@ -324,7 +472,10 @@ normal GUI build via exactly three paths, and you must check all of them:
 
 1. membership in `RELEASE_FLAGS`;
 2. a `#[cfg(feature = "x")] FeatureFlag::Y` entry **where `x` is in `default`**;
-3. an `UNSTABLE_FEATURES` name (one entry exists).
+3. an `UNSTABLE_FEATURES` name (two entries exist:
+   `windows_high_performance_gpu_default` and `gemini_notifications`), reachable
+   only when `ZAP_UNSTABLE_FEATURES` names it — a debug build does **not** imply
+   it.
 
 ### Four traps in this check specifically
 

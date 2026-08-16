@@ -1,52 +1,95 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use uuid::Uuid;
 use warp::tui_export::{
-    TuiMcpConfigState, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot,
-    TuiMcpTransport, register_tui_session_view_test_singletons,
+    TuiMcpConfigDiagnostic, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerSource,
+    TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport, register_tui_session_view_test_singletons,
 };
 use warpui::{EntityIdMap, SingletonEntity};
 use warpui_core::App;
+use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
-    TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
-    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, text_width,
+    Color, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, TuiStyle, TuiText, text_width,
 };
 
-use super::{LEFT_COLUMN_COLS, build_zero_state_text_column, mcp_status_label};
+use super::{
+    ANIMATION_PANEL_COLS, LEFT_COLUMN_COLS, autoupdate_status_label, build_zero_state_layout,
+    build_zero_state_stack_layout, build_zero_state_text_column, mcp_status_label,
+};
+use crate::autoupdate::TuiAutoupdateStatus;
+use crate::zero_state_animation::{
+    ZeroStateAnimationConfig, ZeroStateAnimationElement, ZeroStateInteractionHandle,
+    ZeroStateMarkStyles, ZeroStateStarfieldElement,
+};
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
     TuiMcpServerSnapshot {
-        id: TuiMcpServerId(id),
-        installation_uuid: Uuid::from_u128(id as u128),
+        id: TuiMcpServerId::FileBased(id),
+        installation_uuid: Some(Uuid::from_u128(id as u128)),
         name: format!("server-{id}"),
-        transport: TuiMcpTransport::Stdio,
+        description: None,
+        source: TuiMcpServerSource::FileBased {
+            sources: Vec::new(),
+        },
+        transport: Some(TuiMcpTransport::Stdio),
         status,
         tool_count: 2,
         resource_count: 0,
-        has_credentials: false,
+        can_log_out: false,
         authorization_url: None,
     }
 }
 
-#[test]
-fn mcp_summary_keeps_missing_config_action_short() {
-    let snapshot = TuiMcpSnapshot {
+fn diagnostic(message: &str) -> TuiMcpConfigDiagnostic {
+    TuiMcpConfigDiagnostic {
+        provider: "Claude".to_owned(),
         config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Missing,
-        servers: Vec::new(),
+        message: message.to_owned(),
+    }
+}
+
+#[test]
+fn failed_autoupdate_status_has_visible_label() {
+    assert_eq!(
+        autoupdate_status_label(TuiAutoupdateStatus::Failed),
+        Some("automatic update failed")
+    );
+}
+
+#[test]
+fn mcp_summary_keeps_the_empty_catalog_action_short() {
+    let snapshot = TuiMcpSnapshot::default();
+
+    assert_eq!(
+        mcp_status_label(&snapshot),
+        ("No servers available · run /mcp".to_string(), false)
+    );
+}
+
+#[test]
+fn mcp_summary_counts_available_entries_separately() {
+    let snapshot = TuiMcpSnapshot {
+        diagnostics: Vec::new(),
+        servers: vec![
+            server(1, TuiMcpServerStatus::Running),
+            server(2, TuiMcpServerStatus::Available),
+            server(3, TuiMcpServerStatus::Available),
+        ],
     };
 
     assert_eq!(
         mcp_status_label(&snapshot),
-        ("Not configured · /mcp".to_string(), false)
+        ("1 connected · 2 available · /mcp".to_string(), false)
     );
 }
 
 #[test]
 fn mcp_summary_reports_mixed_runtime_states() {
     let snapshot = TuiMcpSnapshot {
-        config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Ready,
+        diagnostics: Vec::new(),
         servers: vec![
             server(1, TuiMcpServerStatus::Running),
             server(2, TuiMcpServerStatus::Starting),
@@ -73,18 +116,26 @@ fn mcp_summary_reports_mixed_runtime_states() {
 }
 
 #[test]
-fn mcp_summary_marks_config_errors() {
+fn mcp_summary_marks_config_errors_alongside_healthy_servers() {
     let snapshot = TuiMcpSnapshot {
-        config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Invalid {
-            message: "invalid JSON".to_string(),
-        },
+        diagnostics: vec![diagnostic("invalid JSON")],
         servers: Vec::new(),
     };
 
     assert_eq!(
         mcp_status_label(&snapshot),
-        ("Config error · run /mcp".to_string(), true)
+        ("1 config errors · /mcp".to_string(), true)
+    );
+
+    // A broken config no longer hides the servers that did parse.
+    let mixed = TuiMcpSnapshot {
+        diagnostics: vec![diagnostic("invalid JSON")],
+        servers: vec![server(1, TuiMcpServerStatus::Running)],
+    };
+
+    assert_eq!(
+        mcp_status_label(&mixed),
+        ("1 connected · 1 config errors · /mcp".to_string(), true)
     );
 }
 
@@ -127,6 +178,192 @@ fn render_to_buffer(
         );
     }
     buffer
+}
+
+/// A stand-in starfield: every cell of an 80x9 region filled, so any cell the
+/// copy rectangle fails to clear is visible as a leftover `*`.
+fn dense_star_layer(width: usize, height: usize) -> Box<dyn TuiElement> {
+    let stars = (0..height)
+        .map(|_| "*".repeat(width))
+        .collect::<Vec<_>>()
+        .join("\n");
+    TuiText::new(stars).finish()
+}
+
+fn static_zero_state_layers(
+    width: u16,
+    height: u16,
+) -> (
+    Box<dyn TuiElement>,
+    Box<dyn TuiElement>,
+    Box<dyn TuiElement>,
+) {
+    (
+        dense_star_layer(usize::from(width), usize::from(height)),
+        TuiText::new("animation").finish(),
+        TuiText::new("copy here\n\nsecond line").finish(),
+    )
+}
+
+/// `ZeroStateLayers` (the direct compositor) must paint byte-for-byte what the
+/// generic `TuiStack` composition it replaced painted, at every size.
+#[test]
+fn direct_zero_state_layers_match_scratch_composition() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            for (width, height) in [(60, 12), (80, 24), (120, 40), (240, 80)] {
+                let (stars, animation, overlay) = static_zero_state_layers(width, height);
+                let direct = render_to_buffer(
+                    build_zero_state_layout(stars, animation, overlay),
+                    ctx,
+                    width,
+                    height,
+                );
+                let (stars, animation, overlay) = static_zero_state_layers(width, height);
+                let scratch = render_to_buffer(
+                    build_zero_state_stack_layout(stars, animation, overlay),
+                    ctx,
+                    width,
+                    height,
+                );
+                assert_eq!(direct, scratch, "layout differs at {width}x{height}");
+            }
+        });
+    });
+}
+
+/// The copy block gets an opaque rectangle sized to its own content: stars are
+/// cleared beneath the copy and kept everywhere else, and the rectangle keeps
+/// `Color::Reset` so it inherits the host terminal background instead of
+/// stamping a concrete RGB fill over it.
+///
+/// Adapted from the pin's
+/// `zero_state_copy_rectangle_is_opaque_without_changing_the_background_color`
+/// (`076449fd3` + `8c82da6b5`). The pin centers the copy vertically and
+/// therefore asserts the rectangle at rows 3..=5 of a 9-row view; this fork
+/// keeps the copy top-anchored (see `build_zero_state_layout`), so the same
+/// rectangle sits at rows 0..=2. The assertions are otherwise identical.
+#[test]
+fn zero_state_copy_rectangle_is_opaque_without_changing_the_background_color() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let layout = build_zero_state_layout(
+                dense_star_layer(80, 9),
+                TuiText::new("").finish(),
+                TuiText::new("copy here\n\nline").finish(),
+            );
+            let buffer = render_to_buffer(layout, ctx, 80, 9);
+            let lines = buffer.to_lines();
+            assert_eq!(&lines[0][..9], "copy here");
+            assert_eq!(&lines[2][..4], "line");
+            // Inside the copy rectangle: opaque, no stars left showing, and
+            // still the host terminal's own background.
+            for y in 0..=2 {
+                for x in 0..9 {
+                    assert_ne!(buffer[(x, y)].symbol(), "*");
+                    assert_eq!(buffer[(x, y)].bg, Color::Reset);
+                }
+            }
+            // Outside it: the starfield is untouched.
+            assert_eq!(buffer[(9, 0)].symbol(), "*");
+            assert_eq!(buffer[(1, 3)].symbol(), "*");
+            assert_eq!(buffer[(9, 0)].bg, Color::Reset);
+            assert_eq!(buffer[(1, 3)].bg, Color::Reset);
+        });
+    });
+}
+
+#[test]
+fn zero_state_starfield_spans_the_full_width() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let layout = build_zero_state_layout(
+                ZeroStateStarfieldElement::new(
+                    AnimationClock::starting_at(Duration::ZERO),
+                    TuiStyle::default(),
+                    LEFT_COLUMN_COLS,
+                    ANIMATION_PANEL_COLS,
+                )
+                .finish(),
+                TuiText::new("").finish(),
+                TuiText::new("").finish(),
+            );
+            let buffer = render_to_buffer(layout, ctx, 120, 20);
+            let occupied_columns = buffer
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| {
+                    (cell.symbol() != " ").then_some(index % usize::from(buffer.area.width))
+                })
+                .collect::<Vec<_>>();
+
+            assert!(occupied_columns.iter().any(|column| *column < 30));
+            assert!(occupied_columns.iter().any(|column| *column >= 90));
+        });
+    });
+}
+
+#[test]
+fn zero_state_animation_is_centered_in_remaining_space_and_hidden_when_space_is_tight() {
+    App::test((), |app| async move {
+        app.read(|ctx| {
+            let animation = || {
+                let style = TuiStyle::default();
+                ZeroStateAnimationElement::new(
+                    AnimationClock::starting_at(Duration::ZERO),
+                    Arc::new(ZeroStateAnimationConfig::default()),
+                    ZeroStateInteractionHandle::default(),
+                    ZeroStateMarkStyles {
+                        front: style,
+                        back: style,
+                        side: style,
+                        background: style,
+                    },
+                )
+                .without_background_stars()
+                .finish()
+            };
+            let layout = build_zero_state_layout(
+                TuiText::new("").finish(),
+                animation(),
+                TuiText::new("").finish(),
+            );
+            let wide_width = 120;
+            let wide = render_to_buffer(layout, ctx, wide_width, 20);
+            let occupied = wide
+                .content
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cell)| {
+                    (cell.symbol() != " ").then_some(index % usize::from(wide.area.width))
+                })
+                .collect::<Vec<_>>();
+            let remaining_cols = wide_width - LEFT_COLUMN_COLS;
+            let animation_start = LEFT_COLUMN_COLS + (remaining_cols - ANIMATION_PANEL_COLS) / 2;
+            let animation_end = animation_start + ANIMATION_PANEL_COLS;
+
+            assert!(!occupied.is_empty());
+            assert!(
+                occupied
+                    .iter()
+                    .all(|column| *column >= usize::from(animation_start)
+                        && *column < usize::from(animation_end))
+            );
+
+            let layout = build_zero_state_layout(
+                TuiText::new("").finish(),
+                animation(),
+                TuiText::new("").finish(),
+            );
+            assert!(
+                render_to_buffer(layout, ctx, 60, 20)
+                    .content
+                    .iter()
+                    .all(|cell| cell.symbol() == " ")
+            );
+        });
+    });
 }
 
 /// When the terminal is wide enough, the path header must stay on one row and

@@ -103,7 +103,7 @@ pub fn bump() -> anyhow::Result<()> {
 pub fn bump_or_log() {
     if let Err(error) = bump() {
         log::warn!(
-            "A secret was saved, but signalling running Zap processes to reload it failed: \
+            "A secret was saved, but signalling running Phosphor processes to reload it failed: \
              {error:#}"
         );
     }

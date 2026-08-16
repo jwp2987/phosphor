@@ -472,6 +472,7 @@ crash_reporting = [
 ]
 default = [
     "agent_mode",
+    "osc_hyperlinks",
     "render_continuous_block_selections_with_single_border",
     "settings_import",
     "shared_with_me",
@@ -800,6 +801,7 @@ ssh_drag_and_drop = []
 permanent_autosuggestion_hint = []
 cycle_next_command_suggestion = []
 multi_workspace = []
+osc_hyperlinks = []
 ime_marked_text = []
 partial_next_command_suggestions = []
 drive_objects_as_context = []

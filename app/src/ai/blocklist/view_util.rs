@@ -149,7 +149,7 @@ pub fn failed_output_presentation(
         RenderableAIError::Other { error_message, .. } => {
             FailedOutputPresentation::Message(format!("{ERROR_APOLOGY_TEXT}\n\n{error_message}"))
         }
-        RenderableAIError::AgentExitedShell => {
+        RenderableAIError::AgentExitedShell { .. } => {
             // Carries its own complete user-facing copy via Display.
             FailedOutputPresentation::Message(error.to_string())
         }

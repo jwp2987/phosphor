@@ -738,6 +738,60 @@ impl ShellType {
         }
     }
 
+    /// The in-band shell command that enumerates *every* function name visible
+    /// in a bootstrapped session, or `None` when the shell has no need of one.
+    ///
+    /// Only PowerShell needs one. Bash, Zsh and Fish each report their complete
+    /// function list during bootstrap itself — `compgen -A function`,
+    /// `builtin print -l -- ${(ok)functions}` and `functions -an` respectively
+    /// (see `app/assets/bundled/bootstrap/{bash_body.sh,zsh_body.sh,fish.sh}`)
+    /// — so a second enumeration would return names the session already has.
+    /// Inventing a command for them would cost an extra in-band round trip per
+    /// session and buy nothing, which is why this is a per-shell method rather
+    /// than one constant.
+    ///
+    /// The `Warp` prefix filter is deliberate and must not be rebranded: it
+    /// excludes the shell integration's *own* helper functions, which are still
+    /// declared as `Warp-*` in `pwsh.ps1`. Matching on any other prefix would
+    /// leak `Warp-Precmd` and friends into the user's completions.
+    pub fn shell_command_to_get_all_functions(&self) -> Option<&'static str> {
+        match self {
+            ShellType::PowerShell => Some(
+                // The `Warp` prefix here names this fork's own `Warp-*` helper
+                // functions in `pwsh.ps1`, not the product; see the doc comment
+                // above. Renaming it would leak `Warp-Precmd` and friends into
+                // the user's completions.
+                // brand-guard: allow matches this fork's own `Warp-*` pwsh helpers, not the product
+                "$names = Get-Command -CommandType Function | Where-Object { \
+                -not $_.Name.StartsWith('Warp') } | Select-Object -ExpandProperty Name; \
+                $text = [string]::Join([Environment]::NewLine, $names); \
+                $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($text); \
+                [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
+            ),
+            ShellType::Bash | ShellType::Zsh | ShellType::Fish => None,
+        }
+    }
+
+    /// The in-band shell command that enumerates *every* builtin (cmdlet) name
+    /// visible in a bootstrapped session, or `None` when the shell has no need
+    /// of one.
+    ///
+    /// As with [`Self::shell_command_to_get_all_functions`], only PowerShell
+    /// needs one: `compgen -b`, `builtin print -l -- ${(ok)builtins}` and
+    /// `builtin -n` already deliver the full set at bootstrap for Bash, Zsh and
+    /// Fish.
+    pub fn shell_command_to_get_all_builtins(&self) -> Option<&'static str> {
+        match self {
+            ShellType::PowerShell => Some(
+                "$names = Get-Command -CommandType Cmdlet | Select-Object -ExpandProperty Name; \
+                $text = [string]::Join([Environment]::NewLine, $names); \
+                $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($text); \
+                [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)",
+            ),
+            ShellType::Bash | ShellType::Zsh | ShellType::Fish => None,
+        }
+    }
+
     pub fn force_in_band_command_executor(&self) -> bool {
         // TODO: Remove this function once we have confidence in using a local executor in
         // powershell.

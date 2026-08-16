@@ -1,6 +1,8 @@
 use crate::terminal::shell::ShellType;
 use repo_metadata::repositories::{DetectedRepositories, RepoDetectionSource};
-use repo_metadata::{RepoMetadataEvent, RepoMetadataModel, RepositoryIdentifier};
+use repo_metadata::{
+    RepoMetadataEvent, RepoMetadataModel, RepositoryIdentifier, RepositoryWatchMode,
+};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -2957,7 +2959,11 @@ impl ServerModel {
             repo_root: repo_local,
         };
         let start = repository.update(ctx, |repository, ctx| {
-            repository.start_watching(Box::new(subscriber), ctx)
+            repository.start_watching(
+                RepositoryWatchMode::GitRepository,
+                Box::new(subscriber),
+                ctx,
+            )
         });
         // The registration future reports scan failure; a failed scan leaves the
         // subscription inert, so drop the watch and fall back rather than

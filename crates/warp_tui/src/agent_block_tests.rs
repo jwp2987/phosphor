@@ -16,9 +16,9 @@ use warp::tui_export::{
     AIBlockModel, AIBlockOutputStatus, AIConversationId, AIRequestType, AgentOutputImage,
     AgentOutputImageLayout, AgentOutputMermaidDiagram, AgentOutputTable, Appearance,
     FailedOutputPresentation, LLMId, MessageId, OutputStatusUpdateCallback, ReceivedMessageDisplay,
-    RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared, SummarizationType,
-    RejectedToolCallKind, TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
-    rejected_tool_call_text, should_show_failed_output_usage_notice,
+    RejectedToolCallKind, RenderableAIError, RequestCommandOutputResult, ServerOutputId, Shared,
+    SummarizationType, TaskId, TerminalModel, TodoOperation, TodoStatus, UserQueryMode,
+    queue_tui_permission_action, rejected_tool_call_text, should_show_failed_output_usage_notice,
 };
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::theme::Fill as ThemeFill;
@@ -630,7 +630,8 @@ fn agent_block_renders_tool_calls_in_message_order() {
                     .collect::<Vec<_>>(),
                 vec!["", "before", "", "○ Open code review", "", "after"],
             );
-            // A pending tool call renders a dim grey glyph and a dim label.
+            // A pending tool call keeps its dim grey glyph, but renders the
+            // action in bold foreground and its details in regular neutral_7.
             assert_eq!(
                 frame.buffer[(0, 3)].fg,
                 expected_tool_call_text_color(app_ctx)
@@ -638,9 +639,20 @@ fn agent_block_renders_tool_calls_in_message_order() {
             assert!(frame.buffer[(0, 3)].modifier.contains(Modifier::DIM));
             assert_eq!(
                 frame.buffer[(2, 3)].fg,
-                expected_tool_call_text_color(app_ctx)
+                TuiUiBuilder::from_app(app_ctx)
+                    .primary_text_style()
+                    .fg
+                    .unwrap()
             );
-            assert!(frame.buffer[(2, 3)].modifier.contains(Modifier::DIM));
+            assert!(frame.buffer[(2, 3)].modifier.contains(Modifier::BOLD));
+            assert_eq!(
+                frame.buffer[(7, 3)].fg,
+                TuiUiBuilder::from_app(app_ctx)
+                    .neutral_7_text_style()
+                    .fg
+                    .unwrap()
+            );
+            assert!(!frame.buffer[(7, 3)].modifier.contains(Modifier::BOLD));
         });
     });
 }
@@ -1010,6 +1022,133 @@ fn ask_user_question_action_registers_a_stateful_child_view() {
     });
 }
 
+/// A restored or replayed exchange materializes its question view *after* the
+/// action already blocked, so no further action event will announce it. The
+/// materializing pass must emit `BlockingStateChanged` itself — without it the
+/// session view never learns it has a blocker to focus.
+#[test]
+fn materializing_an_already_blocked_question_notifies_the_owner() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let action = ask_user_question_action("ask-1", "Which one?");
+        let action_id = action.id.clone();
+        let conversation_id = AIConversationId::new();
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: Vec::new(),
+                status: AIBlockOutputStatus::Pending,
+            },
+        );
+        let blocking_state_changes = Rc::new(Cell::new(0));
+        let changes_for_subscription = blocking_state_changes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&block, move |_, event, _| match event {
+                TuiAIBlockEvent::BlockingStateChanged => {
+                    changes_for_subscription.set(changes_for_subscription.get() + 1);
+                }
+                TuiAIBlockEvent::LayoutInvalidated
+                | TuiAIBlockEvent::ReplacementGuidanceSubmitted { .. } => {}
+            });
+        });
+        let action_model = block.read(&app, |block, _| block.action_model.clone());
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+        // The block renders no action yet, so its action-model subscription
+        // ignores the blocking event entirely.
+        assert!(app.read(|ctx| {
+            action_model
+                .as_ref(ctx)
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_blocked())
+        }));
+        assert_eq!(blocking_state_changes.get(), 0);
+
+        block.update(&mut app, |block, ctx| {
+            block.replace_model(
+                block.conversation_id,
+                Rc::new(FakeAgentBlockModel {
+                    inputs: Vec::new(),
+                    status: complete_output_messages(vec![action_message("message-1", action)]),
+                }),
+            );
+            let action_model = block.action_model.clone();
+            block.sync_action_views(&action_model, ctx);
+        });
+
+        assert_eq!(blocking_state_changes.get(), 1);
+        assert!(block.read(&app, |block, ctx| {
+            let Some(TuiToolCallView::AskQuestion(view)) = block.action_views.get(&action_id)
+            else {
+                return false;
+            };
+            view.as_ref(ctx).is_awaiting_answers(ctx)
+        }));
+    });
+}
+
+/// The permission-prompt half of the same guarantee: a generic tool call that
+/// is already blocked when its view is materialized must announce itself.
+#[test]
+fn materializing_an_already_blocked_permission_prompt_notifies_the_owner() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let action = test_action("generic-1");
+        let action_id = action.id.clone();
+        let conversation_id = AIConversationId::new();
+        let block = test_agent_block(
+            &mut app,
+            FakeAgentBlockModel {
+                inputs: Vec::new(),
+                status: AIBlockOutputStatus::Pending,
+            },
+        );
+        let blocking_state_changes = Rc::new(Cell::new(0));
+        let changes_for_subscription = blocking_state_changes.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&block, move |_, event, _| match event {
+                TuiAIBlockEvent::BlockingStateChanged => {
+                    changes_for_subscription.set(changes_for_subscription.get() + 1);
+                }
+                TuiAIBlockEvent::LayoutInvalidated
+                | TuiAIBlockEvent::ReplacementGuidanceSubmitted { .. } => {}
+            });
+        });
+        let action_model = block.read(&app, |block, _| block.action_model.clone());
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action.clone(), conversation_id, ctx);
+        });
+        assert!(app.read(|ctx| {
+            action_model
+                .as_ref(ctx)
+                .get_action_status(&action_id)
+                .is_some_and(|status| status.is_blocked())
+        }));
+        assert_eq!(blocking_state_changes.get(), 0);
+
+        block.update(&mut app, |block, ctx| {
+            block.replace_model(
+                block.conversation_id,
+                Rc::new(FakeAgentBlockModel {
+                    inputs: Vec::new(),
+                    status: complete_output_messages(vec![action_message("message-1", action)]),
+                }),
+            );
+            let action_model = block.action_model.clone();
+            block.sync_action_views(&action_model, ctx);
+        });
+
+        assert_eq!(blocking_state_changes.get(), 1);
+        assert!(block.read(&app, |block, ctx| {
+            let Some(TuiToolCallView::Generic(view)) = block.action_views.get(&action_id) else {
+                return false;
+            };
+            view.as_ref(ctx).active_permission_prompt(ctx).is_some()
+        }));
+    });
+}
+
 #[test]
 fn streamed_ask_user_question_payload_replaces_the_initial_empty_child_view() {
     App::test((), |mut app| async move {
@@ -1210,12 +1349,15 @@ fn agent_block_preserves_and_renders_code_sections_in_order() {
                 TuiRect::new(0, 0, 40, 3),
                 app_ctx,
             );
-            assert!(
+            assert_eq!(
                 frame
                     .buffer
                     .to_lines()
-                    .iter()
-                    .any(|line| line.contains("println!"))
+                    .into_iter()
+                    .map(|line| line.trim_end().to_owned())
+                    .filter(|line| !line.is_empty())
+                    .collect::<Vec<_>>(),
+                vec!["println!(\"hi\");"]
             );
 
             let rendered = render_block_lines(block, 40, app_ctx);
@@ -1826,7 +1968,7 @@ fn task_list_renders_header_and_status_glyph_rows() {
                 vec![
                     "≡ Tasks 4 ▾",
                     "  ✓ Compile list",
-                    "  • Determine duplications",
+                    "  ● Determine duplications",
                     "  ◌ Create suggestions",
                     "  ■ Old task",
                 ],

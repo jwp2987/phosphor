@@ -83,3 +83,64 @@ fn snapshot_shows_key_connected_suffix_only_for_connected_models() {
         });
     });
 }
+
+/// #587: the suffix above reached the snapshot correctly all along -- it was the *rendering*
+/// that dropped it, because `menu_result_row` emitted `state_suffix` from inside the
+/// `description` block and a selectable model has no description. This runs the real menu
+/// snapshot through the real `render_inline_menu` and asserts on the produced lines.
+#[test]
+fn selectable_key_connected_model_renders_the_suffix() {
+    use warpui_core::elements::tui::{TuiBufferExt, TuiRect};
+    use warpui_core::presenter::tui::TuiPresenter;
+
+    use crate::inline_menu::render_inline_menu;
+    use crate::tui_builder::TuiUiBuilder;
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        app.update(|ctx| {
+            add_test_semantic_selection(ctx);
+            let editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
+            let mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
+            mode.update(ctx, |mode, ctx| {
+                mode.set_mode(TuiInputSuggestionsMode::ModelSelector, ctx);
+            });
+            let menu = ctx.add_model(|_| {
+                TuiModelMenuModel::new_for_test(
+                    editor,
+                    mode,
+                    vec![
+                        (LLMId::from("byop:p1:model-a"), true, true),
+                        (LLMId::from("byop:p1:model-b"), true, false),
+                    ],
+                    0,
+                )
+            });
+
+            let snapshot = menu.as_ref(ctx).snapshot(ctx).expect("menu should be open");
+            let mut presenter = TuiPresenter::new();
+            let frame = presenter.present_element(
+                render_inline_menu(&snapshot, &TuiUiBuilder::from_app(ctx)),
+                TuiRect::new(0, 0, 60, 3),
+                ctx,
+            );
+            let lines = frame
+                .buffer
+                .to_lines()
+                .into_iter()
+                .map(|line| line.trim_end().to_owned())
+                .collect::<Vec<_>>();
+
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line == "byop:p1:model-a  (key connected)"),
+                "selectable key-connected model must render the marker, got {lines:?}"
+            );
+            assert!(
+                lines.iter().any(|line| line == "byop:p1:model-b"),
+                "model without a connected key must render no marker, got {lines:?}"
+            );
+        });
+    });
+}

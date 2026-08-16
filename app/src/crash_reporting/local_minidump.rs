@@ -200,7 +200,7 @@ fn send_crash_report(
         .map(|path| path.display().to_string())
         .unwrap_or_else(|| "<no dump path>".to_string());
     log::error!(
-        "openWarp: local minidump captured (message: {message}, dump bytes: {dump_size}, path: {dump_path}, tags: {tags:?})"
+        "Phosphor: local minidump captured (message: {message}, dump bytes: {dump_size}, path: {dump_path}, tags: {tags:?})"
     );
 }
 

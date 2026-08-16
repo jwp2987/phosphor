@@ -200,7 +200,7 @@ impl TuiTerminalSessionStateModel {
                                         agent_controlled_terminal_use: false,
                                     }
                                 };
-                                TuiInteractionState::Composer(TuiComposerState {
+                                TuiInteractionState::AgentEditor(TuiAgentEditorState {
                                     mode,
                                     suggestions_mode: suggestions_mode.as_ref(ctx).mode(),
                                 })
@@ -287,13 +287,16 @@ pub(crate) struct TuiBlockSessionState {
 pub(super) enum TuiInteractionState {
     Blocking(BlockingInputSource),
     StartingShell,
-    Composer(TuiComposerState),
+    AgentEditor(TuiAgentEditorState),
     Pty(TuiPtyState),
 }
 
-/// Composer state, which cannot exist under alt-screen, blocking, or PTY input.
+/// State for the agent-editor surface, which cannot coexist with blocking or PTY input.
+///
+/// The active inline menu separately resolves whether it or the composer owns
+/// the shared editor's behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct TuiComposerState {
+pub(super) struct TuiAgentEditorState {
     pub(super) mode: TuiComposerMode,
     pub(super) suggestions_mode: TuiInputSuggestionsMode,
 }
@@ -395,7 +398,7 @@ impl TuiTerminalSessionState {
         match self.interaction() {
             TuiInteractionState::Blocking(source) => Some(source),
             TuiInteractionState::StartingShell
-            | TuiInteractionState::Composer(_)
+            | TuiInteractionState::AgentEditor(_)
             | TuiInteractionState::Pty(_) => None,
         }
     }
@@ -415,7 +418,7 @@ impl TuiTerminalSessionState {
             }
         };
         Self::Block(TuiBlockSessionState {
-            interaction: TuiInteractionState::Composer(TuiComposerState {
+            interaction: TuiInteractionState::AgentEditor(TuiAgentEditorState {
                 mode,
                 suggestions_mode,
             }),
@@ -438,7 +441,7 @@ impl TuiTerminalSessionState {
                     }
                 },
                 TuiInteractionState::StartingShell => TuiInputTarget::Disabled,
-                TuiInteractionState::Composer(_) => TuiInputTarget::AgentEditor,
+                TuiInteractionState::AgentEditor(_) => TuiInputTarget::AgentEditor,
                 TuiInteractionState::Pty(_) => TuiInputTarget::Pty,
             },
         }
@@ -474,10 +477,11 @@ impl TuiTerminalSessionState {
         self.state().agent_is_tagged_in
     }
 
-    pub(crate) fn composer_owns_input(&self) -> bool {
+    /// Returns whether composer shortcuts are active without a suggestions overlay.
+    pub(crate) fn composer_shortcuts_active(&self) -> bool {
         matches!(
             self.interaction(),
-            TuiInteractionState::Composer(TuiComposerState {
+            TuiInteractionState::AgentEditor(TuiAgentEditorState {
                 suggestions_mode,
                 ..
             }) if !suggestions_mode.is_visible()
@@ -498,15 +502,15 @@ impl TuiTerminalSessionState {
     #[allow(dead_code)]
     pub(crate) fn hint_text(&self) -> Option<String> {
         let state = self.state();
-        let TuiInteractionState::Composer(composer) = &state.interaction else {
+        let TuiInteractionState::AgentEditor(agent_editor) = &state.interaction else {
             return None;
         };
         // Suppress this hint while the read-only shortcuts/status overlay
         // (opened by `?` / `/status`) is showing.
-        if composer.suggestions_mode.read_only_menu().is_some() {
+        if agent_editor.suggestions_mode.read_only_menu().is_some() {
             return None;
         }
-        Some(match composer.mode {
+        Some(match agent_editor.mode {
             TuiComposerMode::Shell => crate::input_hints::SHELL_HINT.to_owned(),
             TuiComposerMode::Agent { .. } => crate::input_hints::agent_input_hint(
                 state.transcript_is_empty,
@@ -516,10 +520,10 @@ impl TuiTerminalSessionState {
     }
 
     pub(crate) fn read_only_menu(&self) -> Option<TuiReadOnlyMenuKind> {
-        let TuiInteractionState::Composer(composer) = self.interaction() else {
+        let TuiInteractionState::AgentEditor(agent_editor) = self.interaction() else {
             return None;
         };
-        composer.suggestions_mode.read_only_menu()
+        agent_editor.suggestions_mode.read_only_menu()
     }
 
     pub(crate) fn shortcut_sections(
@@ -528,7 +532,7 @@ impl TuiTerminalSessionState {
         ctx: &AppContext,
     ) -> Vec<TuiShortcutSection> {
         let state = self.state();
-        let composer = match &state.interaction {
+        let agent_editor = match &state.interaction {
             TuiInteractionState::Blocking(BlockingInputSource::LongRunningCommand) => {
                 return vec![TuiShortcutSection {
                     title: "Terminal",
@@ -552,14 +556,14 @@ impl TuiTerminalSessionState {
                     }],
                 }];
             }
-            TuiInteractionState::Composer(composer) => composer,
+            TuiInteractionState::AgentEditor(agent_editor) => agent_editor,
         };
 
         let mut shortcuts = vec![TuiShortcut {
             key: "?".to_owned(),
             description: "shortcuts",
         }];
-        match composer.mode {
+        match agent_editor.mode {
             TuiComposerMode::Agent { .. } => shortcuts.extend([
                 TuiShortcut {
                     key: "/".to_owned(),
@@ -585,10 +589,16 @@ impl TuiTerminalSessionState {
                 description: "toggle auto-approve",
             });
         }
-        if matches!(composer.mode, TuiComposerMode::Agent { .. }) {
+        if matches!(agent_editor.mode, TuiComposerMode::Agent { .. }) {
             shortcuts.push(TuiShortcut {
                 key: "↑".to_owned(),
                 description: "input history",
+            });
+        }
+        if let Some(key) = binding_hint(AUTO_APPROVE_TOGGLE_BINDING_NAME, context, ctx) {
+            shortcuts.push(TuiShortcut {
+                key,
+                description: "toggle auto-approve",
             });
         }
         if state.plan_available
@@ -605,7 +615,7 @@ impl TuiTerminalSessionState {
             shortcuts,
         }];
         if matches!(
-            composer.mode,
+            agent_editor.mode,
             TuiComposerMode::Agent {
                 agent_controlled_terminal_use: true
             }

@@ -50,7 +50,7 @@ use crate::zero_state::TuiZeroStateView;
 
 /// `usage_tui_zero_state_render`: a fresh session's zero-state view renders the
 /// product title. Builds the real `TuiZeroStateView` against the singleton
-/// graph a live session provisions and asserts the "Warp Agent" header appears
+/// graph a live session provisions and asserts the "Phosphor Agent" header appears
 /// in the rendered buffer (mirrors the outcome of
 /// `terminal_session_view_tests::zero_state_renders_with_only_zero_height_bootstrap_blocks`,
 /// but rendered directly so no shell bootstrap is required).
@@ -79,14 +79,20 @@ fn usage_tui_zero_state_render() {
                 |_| TestHostView,
             );
             let view =
-                ctx.add_tui_view(window_id, |ctx| TuiZeroStateView::new(active_session, ctx));
+                ctx.add_tui_view(window_id, |ctx| {
+                    TuiZeroStateView::new(
+                        active_session,
+                        crate::zero_state_animation::ZeroStateInteractionHandle::default(),
+                        ctx,
+                    )
+                });
             (window_id, view)
         });
 
         let lines = present_view_lines(&mut app, window_id, &view, 120, 40);
         assert!(
-            lines.iter().any(|line| line.contains("Warp Agent")),
-            "fresh zero-state view should render the Warp Agent title;\ngot lines:\n{}",
+            lines.iter().any(|line| line.contains("Phosphor Agent")),
+            "fresh zero-state view should render the Phosphor Agent title;\ngot lines:\n{}",
             lines.join("\n")
         );
     });

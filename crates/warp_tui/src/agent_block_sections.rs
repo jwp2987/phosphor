@@ -19,8 +19,8 @@ use warpui_core::elements::tui::{
 
 use crate::agent_block::{CollapsibleSectionStates, TuiAIBlockAction};
 use crate::tool_call_labels::{
-    ResolvedCommandBlock, mcp_server_name_for_action, tool_call_display_state,
-    tool_call_label_with_server,
+    ResolvedCommandBlock, mcp_server_name_for_action, styled_tool_call_label_spans,
+    tool_call_display_state, tool_call_label_with_server,
 };
 use crate::tui_builder::TuiUiBuilder;
 
@@ -95,7 +95,6 @@ pub(crate) fn render_fallback_tool_call_section(
     let builder = TuiUiBuilder::from_app(app);
     let state = tool_call_display_state(status, output_streaming, block.map(|block| block.state));
     let glyph_style = state.glyph_style(&builder);
-    let label_style = state.label_style(&builder);
     let server_name = mcp_server_name_for_action(&action.action, app);
     let label = tool_call_label_with_server(
         action,
@@ -110,7 +109,7 @@ pub(crate) fn render_fallback_tool_call_section(
                 .with_style(glyph_style)
                 .finish(),
         )
-        .child(TuiText::new(label).with_style(label_style).finish())
+        .child(TuiText::from_spans(styled_tool_call_label_spans(&label, &builder)).finish())
         .finish()
 }
 
@@ -208,7 +207,7 @@ pub(crate) fn render_todo_list_section(
 
     let mut rows = TuiFlex::column();
     for (title, status) in todos {
-        let (glyph, glyph_style) = todo_glyph(status, &builder);
+        let (glyph, glyph_style) = todo_status_glyph(status, &builder);
         let title_style = match status {
             TodoStatus::Pending | TodoStatus::InProgress | TodoStatus::Completed => {
                 builder.primary_text_style()
@@ -254,10 +253,13 @@ pub(crate) fn render_todo_list_section(
 /// The status glyph and its style for one task row. Pending and in-progress
 /// glyphs follow the TUI Figma design; terminal states reuse the tool-call
 /// glyph vocabulary (see `tool_call_glyph`).
-fn todo_glyph(status: &TodoStatus, builder: &TuiUiBuilder) -> (&'static str, TuiStyle) {
+pub(crate) fn todo_status_glyph(
+    status: &TodoStatus,
+    builder: &TuiUiBuilder,
+) -> (&'static str, TuiStyle) {
     match status {
         TodoStatus::Pending => ("◌", builder.primary_text_style()),
-        TodoStatus::InProgress => ("•", builder.attention_glyph_style()),
+        TodoStatus::InProgress => ("●", builder.attention_glyph_style()),
         TodoStatus::Completed => ("✓", builder.success_glyph_style()),
         TodoStatus::Cancelled | TodoStatus::Stopped => ("■", builder.muted_text_style()),
     }

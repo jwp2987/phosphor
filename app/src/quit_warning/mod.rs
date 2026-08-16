@@ -438,7 +438,7 @@ impl<'a> QuitWarningDialog<'a> {
             QuitScope::Tabs(tabs) if tabs.len() == 1 => "Close tab?".to_string(),
             QuitScope::Tabs(_) => "Close tabs?".to_string(),
             QuitScope::Window(_) => "Close window?".to_string(),
-            QuitScope::App => "Quit Zap?".to_string(),
+            QuitScope::App => "Quit Phosphor?".to_string(),
             QuitScope::EditorTab { .. } => crate::t!("quit-warning-save-changes-title"),
         };
 

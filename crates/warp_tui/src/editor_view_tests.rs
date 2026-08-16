@@ -6,10 +6,10 @@ use warp_editor::model::{CoreEditorModel, PlainTextEditorModel};
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, EntityIdMap};
 use warpui_core::elements::tui::{
-    TuiBuffer, TuiBufferExt, TuiConstraint, TuiLayoutContext, TuiPaintContext, TuiPaintSurface,
-    TuiRect, TuiScreenPosition, TuiSize,
+    TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
+    TuiPaintSurface, TuiRect, TuiScreenPosition, TuiSize, TuiText,
 };
-use warpui_core::keymap::Trigger;
+use warpui_core::keymap::{Keystroke, Trigger};
 use warpui_core::{App, TuiView as _, TypedActionView as _};
 
 use super::{TuiEditorView, TuiEditorViewAction};
@@ -264,7 +264,11 @@ fn keybinding_initializer_registers_line_start_for_input_and_editor() {
                     .collect::<HashSet<_>>()
             })
         };
-        let expected = HashSet::from(["home".to_string(), "ctrl-a".to_string()]);
+        let expected = HashSet::from([
+            "home".to_string(),
+            "ctrl-a".to_string(),
+            "cmd-left".to_string(),
+        ]);
         assert_eq!(triggers_for("tui:input:move_to_line_start"), expected);
         assert_eq!(triggers_for("tui:editor:move_to_line_start"), expected);
         let kill_to_line_end = HashSet::from(["ctrl-k".to_string()]);
@@ -289,7 +293,150 @@ fn keybinding_initializer_registers_line_start_for_input_and_editor() {
                 "alt-enter".to_string(),
             ])
         );
+        let copy = HashSet::from([
+            "ctrl-shift-C".to_string(),
+            "alt-w".to_string(),
+            "cmd-c".to_string(),
+        ]);
+        assert_eq!(triggers_for("tui:input:copy"), copy);
+        assert_eq!(triggers_for("tui:editor:copy"), copy);
+        let cut = HashSet::from(["ctrl-x".to_string(), "cmd-x".to_string()]);
+        assert_eq!(triggers_for("tui:input:cut"), cut);
+        assert_eq!(triggers_for("tui:editor:cut"), cut);
         assert!(app.read(|ctx| ctx.get_binding_by_name("tui:editor:move_up").is_none()));
+    });
+}
+
+#[test]
+fn shared_editor_registers_additive_cmd_bindings() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+
+        let triggers_for = |name: &str| {
+            app.read(|ctx| {
+                ctx.get_key_bindings()
+                    .filter(|binding| binding.name == name)
+                    .filter_map(|binding| match binding.trigger {
+                        Trigger::Keystrokes(keys) => keys.first().map(|key| key.normalized()),
+                        Trigger::Empty | Trigger::Standard(_) | Trigger::Custom(_) => None,
+                    })
+                    .collect::<HashSet<_>>()
+            })
+        };
+        let expected = [
+            ("select_all", "cmd-a"),
+            ("copy", "cmd-c"),
+            ("paste", "cmd-v"),
+            ("cut", "cmd-x"),
+            ("undo", "cmd-z"),
+            ("redo", "shift-cmd-Z"),
+            ("move_to_line_start", "cmd-left"),
+            ("move_to_line_end", "cmd-right"),
+            ("select_to_line_start", "shift-cmd-left"),
+            ("select_to_line_end", "shift-cmd-right"),
+            ("kill_to_line_start", "cmd-backspace"),
+        ];
+        for target in ["input", "editor"] {
+            for (name, key) in expected {
+                let triggers = triggers_for(&format!("tui:{target}:{name}"));
+                assert!(
+                    triggers.contains(key),
+                    "{key} must be registered for the TUI {target} editor; found {triggers:?}"
+                );
+            }
+
+            // Existing bindings remain alongside the new cmd chords.
+            assert!(
+                triggers_for(&format!("tui:{target}:copy")).contains("ctrl-shift-C"),
+                "the existing copy binding must remain registered"
+            );
+            assert!(
+                triggers_for(&format!("tui:{target}:undo")).contains("ctrl-z"),
+                "the existing undo binding must remain registered"
+            );
+        }
+    });
+}
+
+#[test]
+fn cmd_bindings_dispatch_expected_editor_commands() {
+    struct CommandRecorder {
+        commands: Vec<TuiEditorCommand>,
+    }
+
+    impl warpui_core::Entity for CommandRecorder {
+        type Event = ();
+    }
+
+    impl warpui_core::TuiView for CommandRecorder {
+        fn ui_name() -> &'static str {
+            TuiEditorView::ui_name()
+        }
+
+        fn render(&self, _app: &warpui_core::AppContext) -> Box<dyn TuiElement> {
+            Box::new(TuiText::new(""))
+        }
+    }
+
+    impl warpui_core::TypedActionView for CommandRecorder {
+        type Action = TuiEditorViewAction;
+
+        fn handle_action(
+            &mut self,
+            action: &Self::Action,
+            _ctx: &mut warpui_core::ViewContext<Self>,
+        ) {
+            if let TuiEditorViewAction::Command(command) = action {
+                self.commands.push(*command);
+            }
+        }
+    }
+
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        let (window_id, recorder) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| CommandRecorder {
+                    commands: Vec::new(),
+                },
+            )
+        });
+
+        for (key, expected) in [
+            ("cmd-a", TuiEditorCommand::SelectAll),
+            ("cmd-c", TuiEditorCommand::Copy),
+            ("cmd-v", TuiEditorCommand::Paste),
+            ("cmd-x", TuiEditorCommand::Cut),
+            ("cmd-z", TuiEditorCommand::Undo),
+            ("cmd-shift-Z", TuiEditorCommand::Redo),
+        ] {
+            let handled = app
+                .dispatch_keystroke(
+                    window_id,
+                    &[recorder.id()],
+                    &Keystroke::parse(key).expect("valid cmd editor binding"),
+                    false,
+                )
+                .expect("keystroke dispatch succeeds");
+            assert!(handled, "{key} must dispatch an editor command");
+
+            let actual = recorder.read(&app, |recorder, _| {
+                recorder
+                    .commands
+                    .last()
+                    .copied()
+                    .expect("the binding dispatches a command")
+            });
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected),
+                "{key} dispatched {actual:?}, expected {expected:?}"
+            );
+        }
     });
 }
 
@@ -392,7 +539,6 @@ fn actions_edit_the_single_line_buffer() {
         assert_eq!(editor.read(&app, |editor, ctx| editor.text(ctx)), "Xge");
     });
 }
-
 
 #[test]
 fn clipboard_actions_copy_and_cut_only_the_selection() {

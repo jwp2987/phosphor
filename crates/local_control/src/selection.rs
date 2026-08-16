@@ -23,7 +23,7 @@ pub fn select_instance(
             .ok_or_else(|| {
                 ControlError::new(
                     ErrorCode::NoInstance,
-                    format!("no Zap instance with id {}", instance_id.0),
+                    format!("no Phosphor instance with id {}", instance_id.0),
                 )
             }),
         InstanceSelector::Pid(pid) => records
@@ -33,7 +33,7 @@ pub fn select_instance(
             .ok_or_else(|| {
                 ControlError::new(
                     ErrorCode::NoInstance,
-                    format!("no Zap instance with pid {pid}"),
+                    format!("no Phosphor instance with pid {pid}"),
                 )
             }),
     }
@@ -43,12 +43,12 @@ fn select_active(records: &[InstanceRecord]) -> Result<InstanceRecord, ControlEr
     match records {
         [] => Err(ControlError::new(
             ErrorCode::NoInstance,
-            "no local Zap control instances were discovered",
+            "no local Phosphor control instances were discovered",
         )),
         [record] => Ok(record.clone()),
         _ => Err(ControlError::new(
             ErrorCode::AmbiguousInstance,
-            "multiple local Zap control instances were discovered; pass --instance",
+            "multiple local Phosphor control instances were discovered; pass --instance",
         )),
     }
 }

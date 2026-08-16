@@ -880,23 +880,13 @@ impl CodebaseIndexManager {
                 )
         });
 
-        // Fork drift: this fork's `notify` rev gives `WatchFilter` a single
-        // predicate, where the pin's took a descend filter and an emit filter
-        // (see `crates/repo_metadata/src/entry.rs:1069`). The pin passed the
-        // same closure twice, so the surviving predicate is exactly the pin's —
-        // but it now gates descent only, and a change to an ignored file inside
-        // an already-watched directory is still delivered.
-        //
-        // Consequences, and why this is not papered over:
-        // * `.git` internals churn constantly, so those are filtered back out on
-        //   the way in by `Self::group_file_events`.
-        // * A gitignored file would need this root's `Gitignore` set to filter,
-        //   which the manager does not hold. It is left to the tree diff, which
-        //   already rejects such a path with `DiffMerkleTreeError::Ignored` (a
-        //   non-actionable error, skipped rather than reported). So the index
-        //   contents are the pin's; the cost is a debounced no-op diff per
-        //   ignored write, where the pin did no work at all.
-        let watch_filter = WatchFilter::with_filter(filter);
+        // Passed twice, exactly as the pin does: `WatchFilter` takes a descend
+        // predicate and an emit predicate, and for the code index they are the
+        // same question. This closed a drift that existed while the fork's
+        // `notify` rev carried only one predicate — descent was gated but a
+        // write to an ignored file inside an already-watched directory was
+        // still delivered, costing a debounced no-op diff the pin never did.
+        let watch_filter = WatchFilter::with_filter(filter.clone(), filter);
         self.watcher.update(ctx, |watcher, _ctx| {
             std::mem::drop(watcher.register_path(
                 root_path,

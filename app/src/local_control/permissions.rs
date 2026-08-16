@@ -26,7 +26,7 @@ pub(super) fn ensure_feature_enabled() -> Result<(), ControlError> {
     }
     Err(ControlError::new(
         ErrorCode::LocalControlDisabled,
-        "Warp control CLI is disabled by feature flag",
+        "Phosphor control CLI is disabled by feature flag",
     ))
 }
 

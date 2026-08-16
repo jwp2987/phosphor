@@ -205,10 +205,10 @@ fn oss_open_installer() -> Result<()> {
     autoupdate_dir.push("autoupdate");
 
     let dmg = find_latest_dmg(&autoupdate_dir).ok_or_else(|| {
-        anyhow!("openWarp: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
+        anyhow!("Phosphor: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
     })?;
 
-    log::info!("openWarp: preparing to open installer dmg {dmg:?}");
+    log::info!("Phosphor: preparing to open installer dmg {dmg:?}");
 
     let pid = std::process::id();
     let quoted_dmg = shell_escape::escape(dmg.to_string_lossy());
@@ -461,7 +461,7 @@ async fn oss_download_dmg(
     on_progress: ProgressCallback,
 ) -> Result<DownloadReady> {
     log::info!(
-        "openWarp: downloading update dmg, version {} on channel {channel}",
+        "Phosphor: downloading update dmg, version {} on channel {channel}",
         &version_info.version
     );
 
@@ -889,7 +889,7 @@ fn update_url(channel: Channel, version: &str) -> String {
                 return found.browser_download_url.clone();
             }
             log::warn!(
-                "openWarp: cached release tag {} has no asset named {asset}, falling back to the tag URL",
+                "Phosphor: cached release tag {} has no asset named {asset}, falling back to the tag URL",
                 release.tag_name
             );
         }

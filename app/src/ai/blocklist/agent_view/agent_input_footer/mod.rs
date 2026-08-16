@@ -2397,7 +2397,7 @@ async fn write_install_log(agent: CLIAgent, err: &PluginInstallError) -> Option<
     let log_path = env::temp_dir().join("warp-plugin-install.log");
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC");
     let contents = format!(
-        "Zap plugin installation — {agent:?}\n\
+        "Phosphor plugin installation — {agent:?}\n\
          {now}\n\
          \n\
          {log}",

@@ -1,15 +1,16 @@
 mod v1;
 
 use serde::Deserialize;
+/// Sentinel title that identifies structured CLI agent events sent via OSC 777.
+/// The `"agent"` field in the JSON body distinguishes which agent sent it.
+/// Re-exported from the shared protocol crate so producers (this fork's TUI)
+/// and consumers (this listener) cannot drift apart.
+pub use warp_core::cli_agent_protocol::CLI_AGENT_NOTIFICATION_SENTINEL;
 
 use crate::terminal::CLIAgent;
 
 #[cfg_attr(not(feature = "local_tty"), allow(dead_code))]
 type EventParser = fn(&str) -> Option<CLIAgentEvent>;
-
-/// Sentinel title that identifies structured CLI agent events sent via OSC 777.
-/// The `"agent"` field in the JSON body distinguishes which agent sent it.
-pub const CLI_AGENT_NOTIFICATION_SENTINEL: &str = "warp://cli-agent";
 
 /// The event type encoded in the `"event"` field of the JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,9 @@ pub enum CLIAgentEventType {
     PromptSubmit,
     ToolComplete,
     Stop,
+    /// The agent's turn ended in failure. Carries `payload.error_type` when the
+    /// producer classified the failure.
+    StopFailure,
     PermissionRequest,
     PermissionReplied,
     QuestionAsked,
@@ -59,6 +63,11 @@ pub struct CLIAgentEventPayload {
     pub tool_name: Option<String>,
     pub tool_input_preview: Option<String>,
     pub plugin_version: Option<String>,
+    /// Machine-readable classification of a [`CLIAgentEventType::StopFailure`].
+    /// On Claude Code this comes from the `StopFailure` hook (e.g. `"rate_limit"`).
+    /// Not implemented for Codex. Free-form by design: consumers must treat an
+    /// unrecognised value as "some failure", never switch behaviour on a literal.
+    pub error_type: Option<String>,
 }
 
 /// A parsed event from a CLI agent plugin.
@@ -106,7 +115,7 @@ pub fn parse_event(title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
         None => {
             log::error!(
                 "Received CLI agent event with unsupported schema version \
-                 {version}. The CLI agent plugin or Zap may need to be updated."
+                 {version}. The CLI agent plugin or Phosphor may need to be updated."
             );
             None
         }

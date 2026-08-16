@@ -914,10 +914,16 @@ impl From<BootstrapSessionType> for SessionType {
 pub struct Session {
     info: SessionInfo,
     external_commands: Arc<OnceCell<HashSet<SmolStr>>>,
+    /// Function names collected asynchronously after bootstrap via an in-band command.
+    additional_function_names: OnceCell<HashSet<SmolStr>>,
+    /// builtin/cmdlet names collected asynchronously after bootstrap via an in-band command.
+    additional_builtin_names: OnceCell<HashSet<SmolStr>>,
     /// The command executor for this session. Behind a `RwLock` so it can be
     /// swapped after a remote server reconnect (via `set_command_executor`).
     command_executor: RwLock<Arc<dyn CommandExecutor>>,
     load_external_commands_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
+    load_all_function_names_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
+    load_all_builtins_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     command_case_sensitivity: TopLevelCommandCaseSensitivity,
     /// The authoritative session type, initially derived from the
     /// [`BootstrapSessionType`] in `SessionInfo` and updated by [`Sessions`]
@@ -942,8 +948,12 @@ impl Session {
         Self {
             info: session_info,
             external_commands: Arc::new(OnceCell::new()),
+            additional_function_names: OnceCell::new(),
+            additional_builtin_names: OnceCell::new(),
             command_executor: RwLock::new(command_executor),
             load_external_commands_future: Default::default(),
+            load_all_function_names_future: Default::default(),
+            load_all_builtins_future: Default::default(),
             command_case_sensitivity,
             session_type: Mutex::new(session_type),
         }
@@ -1051,11 +1061,19 @@ impl Session {
     }
 
     pub fn builtin_names(&self) -> impl Iterator<Item = &str> {
-        self.info.builtins.iter().map(Deref::deref)
+        self.info
+            .builtins
+            .iter()
+            .chain(self.additional_builtin_names.get().into_iter().flatten())
+            .map(Deref::deref)
     }
 
     pub fn function_names(&self) -> impl Iterator<Item = &str> {
-        self.info.function_names.iter().map(Deref::deref)
+        self.info
+            .function_names
+            .iter()
+            .chain(self.additional_function_names.get().into_iter().flatten())
+            .map(Deref::deref)
     }
 
     pub fn executable_names(&self) -> impl Iterator<Item = &str> {
@@ -1119,6 +1137,124 @@ impl Session {
     /// Returns `true` if external commands have finished loading for this `Session`.
     pub fn has_loaded_external_commands(&self) -> bool {
         self.external_commands.get().is_some()
+    }
+
+    /// Asynchronously collects all function names via an in-band shell command.
+    ///
+    /// A no-op for every shell whose bootstrap already reports its complete
+    /// function list — see [`ShellType::shell_command_to_get_all_functions`].
+    ///
+    /// **What this currently adds, and what it is waiting on (#586).** At the
+    /// pin this loader is one half of a pair: `pwsh.ps1` enumerates only the
+    /// modules that ship with PowerShell (`Get-Command -CommandType Function
+    /// -Module $corePsModules`) so that bootstrap stays fast, and everything
+    /// else arrives here afterwards. This fork has **not** taken that bootstrap
+    /// narrowing, deliberately: `Session::execute_command` reaches a local
+    /// PowerShell through `LocalCommandExecutor`, which passes `-NoProfile`, so
+    /// a deferred pass cannot see functions the user defined in their profile —
+    /// narrowing the bootstrap would drop those from completion for good. Until
+    /// that is resolved, this loader is additive-only and will usually find
+    /// nothing new on a local session, because the wide bootstrap already
+    /// carries the same names. Do not narrow `pwsh.ps1` without first making
+    /// profile-defined functions recoverable here.
+    pub async fn load_all_function_names(&self) {
+        let Some(command) = self
+            .info
+            .shell
+            .shell_type()
+            .shell_command_to_get_all_functions()
+        else {
+            return;
+        };
+        self.load_deferred_name_set(
+            command,
+            &self.info.function_names,
+            &self.additional_function_names,
+            &self.load_all_function_names_future,
+            "function",
+        )
+        .await;
+    }
+
+    /// Asynchronously collects all builtin (cmdlet) names via an in-band shell command.
+    ///
+    /// A no-op for every shell whose bootstrap already reports its complete
+    /// builtin list — see [`ShellType::shell_command_to_get_all_builtins`], and
+    /// subject to the same bootstrap coupling described on
+    /// [`Self::load_all_function_names`].
+    pub async fn load_all_builtins(&self) {
+        let Some(command) = self
+            .info
+            .shell
+            .shell_type()
+            .shell_command_to_get_all_builtins()
+        else {
+            return;
+        };
+        self.load_deferred_name_set(
+            command,
+            &self.info.builtins,
+            &self.additional_builtin_names,
+            &self.load_all_builtins_future,
+            "builtin",
+        )
+        .await;
+    }
+
+    /// Shared helper for [`Self::load_all_function_names`] and [`Self::load_all_builtins`].
+    ///
+    /// Runs `command` in-band, keeps only the names the bootstrap snapshot in
+    /// `existing` did not already carry, and stores them in `storage`. As with
+    /// `load_external_commands`, concurrent callers share a single execution via
+    /// `future_cell`, so calling either loader more than once per session costs
+    /// at most one in-band command.
+    async fn load_deferred_name_set(
+        &self,
+        command: &'static str,
+        existing: &HashSet<SmolStr>,
+        storage: &OnceCell<HashSet<SmolStr>>,
+        future_cell: &OnceCell<Shared<BoxFuture<'static, ()>>>,
+        label: &'static str,
+    ) {
+        let (load_future, receiver) = (async {
+            let result = self
+                .execute_command(command, None, None, ExecuteCommandOptions::default())
+                .await;
+
+            let new_names: HashSet<SmolStr> = match result {
+                Ok(output) if output.status == CommandExitStatus::Success => {
+                    match output.to_string() {
+                        Ok(output_string) => output_string
+                            .lines()
+                            .filter(|name| !name.is_empty() && !existing.contains(*name))
+                            .map(Into::into)
+                            .collect(),
+                        Err(e) => {
+                            log::warn!("Failed to decode {label} names output: {e:#}");
+                            HashSet::new()
+                        }
+                    }
+                }
+                Ok(_) => {
+                    log::warn!("In-band command for {label} names returned non-success status");
+                    HashSet::new()
+                }
+                Err(e) => {
+                    log::warn!("Failed to load {label} names: {e:#}");
+                    HashSet::new()
+                }
+            };
+
+            if storage.set(new_names).is_err() {
+                log::warn!("Additional {label} names were already set for this session.");
+            }
+        })
+        .remote_handle();
+
+        match future_cell.try_insert(receiver.boxed().shared()) {
+            Ok(_) => load_future.await,
+            Err((existing_receiver, _)) => existing_receiver.clone().await,
+        };
     }
 
     /// Asynchronously loads the external commands.
@@ -1216,9 +1352,11 @@ impl Session {
             .into_iter()
             .flatten()
             .chain(&self.info.function_names)
+            .chain(self.additional_function_names.get().into_iter().flatten())
             .chain(self.info.aliases.keys())
             .chain(self.info.abbreviations.keys())
             .chain(&self.info.builtins)
+            .chain(self.additional_builtin_names.get().into_iter().flatten())
             .chain(&self.info.keywords)
             .map(Deref::deref)
     }
@@ -1587,7 +1725,7 @@ pub fn get_local_hostname() -> Result<String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-util"))]
 pub mod testing {
     use super::{command_executor::testing::TestCommandExecutor, *};
 
@@ -1740,6 +1878,10 @@ pub mod testing {
                 load_external_commands_future: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
+                additional_function_names: Default::default(),
+                load_all_function_names_future: Default::default(),
+                additional_builtin_names: Default::default(),
+                load_all_builtins_future: Default::default(),
             }
         }
 
@@ -1755,6 +1897,10 @@ pub mod testing {
                 load_external_commands_future: Default::default(),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
+                additional_function_names: Default::default(),
+                load_all_function_names_future: Default::default(),
+                additional_builtin_names: Default::default(),
+                load_all_builtins_future: Default::default(),
             }
         }
 

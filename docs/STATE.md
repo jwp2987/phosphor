@@ -5,11 +5,11 @@ derived from a primary source at run time; if one is wrong, its source is wrong.
 Decisions live in `DECLINED.md`, lessons in `HANDOFF.md`, evidence in
 `docs/sweep/`. See that script's header for why this is generated.
 
-Pin: `02b53fcd8` (see `ORACLE.md` — never measure against `warp/master`).
+Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measure against `warp/master`).
 
 ## Is it verified?
 
-Last fully green `script/precheck`: **never** — no green `script/precheck` has been recorded
+Last fully green `script/precheck`: `4f07433348c81312b92fd12d468a532b04b0b9b8` (2026-08-15 22:01) — **0 commit(s) since**
 
 | guard | |
 |---|---|
@@ -26,29 +26,29 @@ any individual test.
 
 | | count |
 |---|---:|
-| Pin tests | 10026 |
-| Fork tests | 9739 |
-| Shared | 7785 |
-| Absent from fork | 2241 |
+| Pin tests | 10860 |
+| Fork tests | 10189 |
+| Shared | 8065 |
+| Absent from fork | 2795 |
 
-Of the absent, **1843 are adjudicated** in the ledger and 398 are not.
-Cloud accounts for 1130 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~153 non-cloud), so the figures below
+Of the absent, **2360 are adjudicated** in the ledger and 435 are not.
+Cloud accounts for 1164 of the adjudicated; the unadjudicated remainder is
+*projected* at the same ratio (~220 non-cloud), so the figures below
 carry that estimate.
 
-- **~89.9% of the pin's non-cloud tests exist here** (7785 of ~8651)
-- **~96.2% are present or deliberately resolved** (adding 417 declined, 65 divergent, 58 covered-elsewhere)
+- **~85.0% of the pin's non-cloud tests exist here** (8065 of ~9481)
+- **~92.9% are present or deliberately resolved** (adding 598 declined, 87 divergent, 67 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
-| CLOUD | 1130 |
-| DECLINED | 417 |
-| MISSING-SUBSYSTEM | 50 |
-| DIVERGENT | 65 |
-| COVERED-ELSEWHERE | 58 |
-| UNPARSED | 5 |
+| CLOUD | 1164 |
+| DECLINED | 598 |
+| MISSING-SUBSYSTEM | 233 |
+| DIVERGENT | 87 |
+| COVERED-ELSEWHERE | 67 |
+| UNPARSED | 0 |
 
 Per `TODO.md`'s definition of done, a test is resolved when it is ported,
 declined, covered elsewhere, or divergent *because* this fork is BYOP.
@@ -63,7 +63,7 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 
 | source | open work | authority |
 |---|---:|---|
-| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **50 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **33 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
+| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **233 tests** | primary; a test is open until ported/declined/covered/divergent |
+| `TODO.md` checkboxes | **82 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> **Check the gap:** the ledger has 50 open tests; `TODO.md` tracks 47 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
+> **Check the gap:** the ledger has 233 open tests; `TODO.md` tracks 96 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**

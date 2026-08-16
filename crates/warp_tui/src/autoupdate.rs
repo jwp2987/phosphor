@@ -166,8 +166,8 @@ impl VersionLease {
             .map(|layout| {
                 Self::acquire(&layout)
                     .context(
-                        "failed to protect this managed Warp Agent CLI version; retry the \
-                         command, or reinstall Warp Agent CLI if the problem persists",
+                        "failed to protect this managed Phosphor Agent CLI version; retry the \
+                         command, or reinstall Phosphor Agent CLI if the problem persists",
                     )
                     .map(Some)
             })
@@ -187,8 +187,8 @@ impl VersionLease {
 
         if !is_complete_version_dir(layout, &layout.running_version_dir) {
             bail!(
-                "the managed Warp Agent CLI version at {:?} was retired while this process was \
-                 starting; retry the command, or reinstall Warp Agent CLI if the problem persists",
+                "the managed Phosphor Agent CLI version at {:?} was retired while this process was \
+                 starting; retry the command, or reinstall Phosphor Agent CLI if the problem persists",
                 layout.running_version_dir
             );
         }
@@ -240,7 +240,7 @@ impl UpdateOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TuiAutoupdateStatus {
     /// Nothing to show: updates are disabled for this process, or no check
-    /// has produced a stable result yet (e.g. the first check failed).
+    /// has produced a stable result yet.
     Idle,
     /// Fetching the latest version for this channel.
     Checking,
@@ -248,6 +248,8 @@ pub(crate) enum TuiAutoupdateStatus {
     Updating,
     /// The running build is the channel's latest version.
     UpToDate,
+    /// The most recent check or update attempt failed.
+    Failed,
     /// A newer version is staged and takes effect on the next launch.
     PendingRestart,
 }
@@ -368,8 +370,9 @@ impl TuiAutoupdater {
     /// show progress: a lightweight version check, then — only when a newer
     /// version needs staging — the download/install phase.
     fn check_now(&mut self, layout: InstallLayout, ctx: &mut ModelContext<Self>) {
-        // Where the status settles when this pass fails or is skipped: the
-        // previous pass's stable status, never the transient `Checking`.
+        // Where the status settles when this pass is skipped because another
+        // process is installing, and the status to preserve once an update is
+        // pending restart.
         let fallback_status = self.status;
         self.set_status(TuiAutoupdateStatus::Checking, ctx);
         let check_layout = layout.clone();
@@ -405,27 +408,12 @@ impl TuiAutoupdater {
     ) {
         match &result {
             Ok(outcome) => log::info!("TUI autoupdate check finished: {outcome:?}"),
-            // Fail quietly and let the next poll retry; transient
-            // network errors (e.g. waking from sleep) are common here.
+            // Let the next poll retry; transient network errors (e.g. waking
+            // from sleep) are common here.
             Err(error) => log::warn!("TUI autoupdate check failed: {error:#}"),
         }
         self.report_outcome(&result, ctx);
-        let status = match &result {
-            Ok(UpdateOutcome::UpToDate { .. }) => TuiAutoupdateStatus::UpToDate,
-            Ok(UpdateOutcome::PendingRestart { .. } | UpdateOutcome::Installed { .. }) => {
-                TuiAutoupdateStatus::PendingRestart
-            }
-            // Skipped/failed checks aren't surfaced; settle back on the
-            // previous stable status and let the next poll retry.
-            Ok(UpdateOutcome::Locked) | Err(_) => fallback_status,
-        };
-        // Once an update is staged, only a restart clears it: never downgrade
-        // from `PendingRestart` (e.g. on a server-side version rollback).
-        let status = if fallback_status == TuiAutoupdateStatus::PendingRestart {
-            TuiAutoupdateStatus::PendingRestart
-        } else {
-            status
-        };
+        let status = settled_status(&result, fallback_status);
         self.set_status(status, ctx);
         ctx.spawn(
             async { Timer::after(CHECK_INTERVAL).await },
@@ -456,6 +444,28 @@ impl TuiAutoupdater {
             },
         };
         send_telemetry_from_ctx!(event, ctx);
+    }
+}
+
+fn settled_status(
+    result: &Result<UpdateOutcome>,
+    fallback_status: TuiAutoupdateStatus,
+) -> TuiAutoupdateStatus {
+    // Once an update is staged, only a restart clears it: never downgrade
+    // from `PendingRestart` (e.g. on a failed check or server-side rollback).
+    if fallback_status == TuiAutoupdateStatus::PendingRestart {
+        return TuiAutoupdateStatus::PendingRestart;
+    }
+
+    match result {
+        Ok(UpdateOutcome::UpToDate { .. }) => TuiAutoupdateStatus::UpToDate,
+        Ok(UpdateOutcome::PendingRestart { .. } | UpdateOutcome::Installed { .. }) => {
+            TuiAutoupdateStatus::PendingRestart
+        }
+        // Skipped because another process is installing: keep the previous
+        // stable status and let the next poll retry.
+        Ok(UpdateOutcome::Locked) => fallback_status,
+        Err(_) => TuiAutoupdateStatus::Failed,
     }
 }
 
@@ -513,7 +523,7 @@ async fn check_for_update(layout: InstallLayout) -> Result<CheckDecision> {
         VersionDirState::Invalid => {
             bail!(
                 "refusing to replace incomplete or invalid installed TUI version at \
-                 {version_dir:?}; remove that directory or reinstall Warp Agent CLI, then retry"
+                 {version_dir:?}; remove that directory or reinstall Phosphor Agent CLI, then retry"
             );
         }
         VersionDirState::Complete | VersionDirState::Missing => {}
@@ -536,7 +546,7 @@ async fn install_update(layout: InstallLayout, latest_version: String) -> Result
         VersionDirState::Invalid => {
             bail!(
                 "refusing to replace incomplete or invalid installed TUI version at \
-                 {version_dir:?}; remove that directory or reinstall Warp Agent CLI, then retry"
+                 {version_dir:?}; remove that directory or reinstall Phosphor Agent CLI, then retry"
             );
         }
     };
@@ -557,7 +567,7 @@ async fn install_update(layout: InstallLayout, latest_version: String) -> Result
             VersionDirState::Invalid => {
                 bail!(
                     "refusing to replace incomplete or invalid installed TUI version at \
-                     {version_dir:?}; remove that directory or reinstall Warp Agent CLI, then retry"
+                     {version_dir:?}; remove that directory or reinstall Phosphor Agent CLI, then retry"
                 );
             }
         }
@@ -634,10 +644,10 @@ async fn fetch_latest_version(client: &http_client::Client) -> Result<String> {
         Err(error) => {
             let releases_base_url = ChannelState::releases_base_url();
             if releases_base_url.is_empty() {
-                return Err(error.context("failed to fetch channel versions from the Warp server"));
+                return Err(error.context("failed to fetch channel versions from the Phosphor server"));
             }
             log::warn!(
-                "Failed to fetch channel versions from the Warp server ({error:#}); \
+                "Failed to fetch channel versions from the Phosphor server ({error:#}); \
                  falling back to GCP JSON storage"
             );
             // The nonce busts any CDN/browser-style caching of the JSON file.
@@ -664,7 +674,11 @@ async fn fetch_latest_version(client: &http_client::Client) -> Result<String> {
 
 /// Picks this channel's latest version out of the channel-versions payload.
 fn latest_version_for_channel(versions: &ChannelVersions) -> Result<String> {
-    let channel_version = match ChannelState::channel() {
+    latest_version_for(ChannelState::channel(), versions)
+}
+
+fn latest_version_for(channel: Channel, versions: &ChannelVersions) -> Result<String> {
+    let channel_version = match channel {
         Channel::Dev => &versions.dev,
         Channel::Preview => &versions.preview,
         Channel::Stable => &versions.stable,
@@ -672,7 +686,7 @@ fn latest_version_for_channel(versions: &ChannelVersions) -> Result<String> {
             bail!("no TUI release artifacts exist for the {channel} channel")
         }
     };
-    Ok(channel_version.version_info().version)
+    Ok(channel_version.version_info().tui_version().to_owned())
 }
 
 /// The Warp Agent CLI artifact endpoint for a release channel.

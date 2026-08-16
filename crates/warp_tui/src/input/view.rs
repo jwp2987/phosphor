@@ -49,13 +49,16 @@ use crate::editor_interaction::{
     apply_editor_action, apply_editor_clipboard_action, apply_editor_paste, follow_editor_cursor,
 };
 use crate::exchange_menu::TuiExchangeMenuAction;
-use crate::inline_menu::{TuiInlineMenu, TuiInlineMenuAccepted, active_inline_menu};
+use crate::inline_menu::{
+    TuiInlineMenu, TuiInlineMenuAccepted, TuiInlineMenuInputOwnership, active_inline_menu,
+};
 use crate::input_hints;
 use crate::input_mode_policy::{self, AI_LOCKED_CONFIG, SHELL_LOCKED_CONFIG};
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::keybindings::{
     KEYBOARD_ENHANCEMENT_AVAILABLE_FLAG, PLAN_TOGGLE_AVAILABLE_FLAG, TUI_BINDING_GROUP,
 };
+use crate::mcp_install_flow::TuiMcpInstallFlowAction;
 use crate::read_only_menu::TuiReadOnlyMenuKind;
 use crate::transcript_view::TuiTranscriptView;
 use crate::tui_builder::TuiUiBuilder;
@@ -67,6 +70,10 @@ use crate::tui_builder::TuiUiBuilder;
 /// order. Inline menus take priority; later input modes should be handled only
 /// after the menu branch.
 const INPUT_HANDLES_ESCAPE_FLAG: &str = "TuiInputHandlesEscape";
+/// Keymap-context flag set while the `/mcp` inline menu owns the input, so the
+/// Ctrl+R log-out binding exists only there and never shadows a plain input.
+pub(crate) const MCP_MENU_ACTIVE_FLAG: &str = "TuiMcpMenuActive";
+pub(crate) const MCP_LOGOUT_BINDING_NAME: &str = "tui:input:mcp_logout";
 // ─────────────────────────────────────────────────────────────────────────────
 // Keybindings
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,6 +109,14 @@ pub fn init(app: &mut AppContext) {
         .with_context_predicate(id!("TuiInputView") & id!(INPUT_HANDLES_ESCAPE_FLAG))
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("escape"),
+        EditableBinding::new(
+            MCP_LOGOUT_BINDING_NAME,
+            "Log out of the selected MCP server and remove its credentials",
+            TuiInputAction::LogOutSelectedMcp,
+        )
+        .with_context_predicate(id!("TuiInputView") & id!(MCP_MENU_ACTIVE_FLAG))
+        .with_group(TUI_BINDING_GROUP)
+        .with_key_binding("ctrl-r"),
     ]);
 }
 
@@ -126,6 +141,8 @@ pub enum TuiInputViewEvent {
     AcceptedModel(LLMId),
     /// The user selected an action from the MCP menu.
     AcceptedMcp(TuiMcpAction),
+    /// The user advanced the explicit MCP installation flow.
+    AcceptedMcpInstall(TuiMcpInstallFlowAction),
     /// Shift+Up should move focus from the first visual row to the region above.
     MoveFocusUp,
     /// The user accepted a row from the up-arrow prompt-and-command history
@@ -166,6 +183,8 @@ pub enum TuiInputAction {
     Submit,
     /// Handle contextual input Escape behavior, prioritizing an open inline menu.
     HandleEscape,
+    /// Log out of the selected MCP server and remove its stored credentials.
+    LogOutSelectedMcp,
     /// Apply an editing command shared with generic TUI editors.
     EditorCommand(TuiEditorCommand),
     /// Place the cursor at `offset` without starting a drag selection
@@ -417,6 +436,7 @@ impl TuiInputView {
     /// it directly to exercise mouse dispatch.
     fn render_element(&self, ctx: &AppContext) -> TuiEditorElement {
         let builder = TuiUiBuilder::from_app(ctx);
+        let input_ownership = self.active_inline_menu_input_ownership(ctx);
         let mut styles = TuiEditorStyles::default();
         if let Some(range) = self
             .inline_menus
@@ -442,6 +462,9 @@ impl TuiInputView {
                 .vim_visual_selection_ranges(motion_type, ctx);
             element = element.with_selection_ranges(ranges);
         }
+        if input_ownership.is_masked() {
+            element = element.masked();
+        }
         if let Some(hint_text) = self
             .inline_menus
             .iter()
@@ -455,6 +478,15 @@ impl TuiInputView {
         // provider on every layout pass instead of being snapshotted here.
         // Shell mode teaches how to exit; agent mode adapts to the transcript
         // state.
+        //
+        // An inline menu that owns the shared editor gets no composer
+        // placeholder at all -- the hint would describe composer behavior the
+        // menu has taken over. (Upstream expresses this as an if/else around
+        // the provider; an early return is the same thing without re-indenting
+        // this fork's larger closure.)
+        if input_ownership.inline_menu_owns_input() {
+            return element;
+        }
         let input_mode = self.input_mode.clone();
         let transcript = self.transcript.clone();
         let orchestration_tabs_available = self.orchestration_tabs_available.clone();
@@ -557,7 +589,12 @@ impl TuiInputView {
     /// from the pin, which selects the glyph rather than gating the whole row.
     fn prompt_row(&self, ctx: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(ctx);
-        let (prefix_text, prefix_style) = if self.is_shell_mode(ctx) {
+        // An inline menu that owns the shared editor is not the composer, so it
+        // must not wear the composer's shell-mode `!` prefix.
+        let inline_menu_owns_input = self
+            .active_inline_menu_input_ownership(ctx)
+            .inline_menu_owns_input();
+        let (prefix_text, prefix_style) = if self.is_shell_mode(ctx) && !inline_menu_owns_input {
             ("!", builder.shell_command_accent_style())
         } else {
             (">", builder.accent_text_style())
@@ -617,6 +654,7 @@ impl TuiView for TuiInputView {
                 || (vim_mode_enabled
                     && (!matches!(vim_state.mode, VimMode::Normal)
                         || !vim_state.showcmd.is_empty())),
+            self.suggestions_mode.as_ref(ctx).mode() == TuiInputSuggestionsMode::Mcp,
             self.plan_toggle_available(ctx),
             self.keyboard_enhancement_supported,
         )
@@ -646,6 +684,7 @@ impl TuiView for TuiInputView {
 
 fn input_keymap_context(
     input_handles_escape: bool,
+    mcp_menu_active: bool,
     plan_toggle_available: bool,
     keyboard_enhancement_supported: bool,
 ) -> keymap::Context {
@@ -653,6 +692,9 @@ fn input_keymap_context(
     context.set.insert(TuiInputView::ui_name());
     if input_handles_escape {
         context.set.insert(INPUT_HANDLES_ESCAPE_FLAG);
+    }
+    if mcp_menu_active {
+        context.set.insert(MCP_MENU_ACTIVE_FLAG);
     }
     if plan_toggle_available {
         context.set.insert(PLAN_TOGGLE_AVAILABLE_FLAG);
@@ -667,6 +709,11 @@ impl TypedActionView for TuiInputView {
 
     fn handle_action(&mut self, action: &TuiInputAction, ctx: &mut ViewContext<Self>) {
         if self.handle_inline_menu_action(action, ctx) {
+            return;
+        }
+        let input_ownership = self.active_inline_menu_input_ownership(ctx);
+        if input_ownership.inline_menu_owns_input() {
+            self.handle_inline_menu_owned_input_action(action, input_ownership, ctx);
             return;
         }
         let outcome = match action {
@@ -747,6 +794,9 @@ impl TypedActionView for TuiInputView {
                 self.handle_escape(ctx);
                 TuiEditorInteractionOutcome::FollowCursor
             }
+            // Handled entirely in `handle_inline_menu_action`; reaching here
+            // means no MCP menu was open, so the viewport must not move.
+            TuiInputAction::LogOutSelectedMcp => TuiEditorInteractionOutcome::PreserveViewport,
             TuiInputAction::EditorCommand(command) => {
                 self.close_read_only_menu(ctx);
                 if matches!(*command, TuiEditorCommand::SelectUp) && self.can_focus_above(ctx) {
@@ -894,6 +944,77 @@ impl TypedActionView for TuiInputView {
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl TuiInputView {
+    /// Applies an input action while an inline menu owns the shared editor.
+    ///
+    /// Composer-only behavior is deliberately absent here: no shell-mode `!`
+    /// or shortcuts-sheet `?` triggers, no vim routing, no read-only-menu
+    /// dismissal, no history menus, and no `Pasted` bubbling out to the
+    /// session. Only plain editing applies. Masked ownership additionally
+    /// drops clipboard *export* (copy/cut), so concealed text cannot be read
+    /// back out of the buffer; inbound paste still works.
+    fn handle_inline_menu_owned_input_action(
+        &mut self,
+        action: &TuiInputAction,
+        input_ownership: TuiInlineMenuInputOwnership,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let outcome = match action {
+            TuiInputAction::Editor(action) => {
+                apply_editor_action(&self.model, action, self.editor_behavior, ctx)
+            }
+            TuiInputAction::EditorCommand(command) => {
+                self.editor_state
+                    .apply_command(&self.model, *command, self.editor_behavior, ctx)
+            }
+            TuiInputAction::SetCursor { offset } => {
+                self.model.update(ctx, |model, ctx| {
+                    model.select_at(*offset, false, ctx);
+                    model.end_selection(ctx);
+                });
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            // These menu-policy actions were handled by
+            // `handle_inline_menu_action` before input ownership was resolved.
+            // `LogOutSelectedMcp` joins them: it drives the MCP menu, and an
+            // inline menu that owns the input suppresses every menu trigger.
+            TuiInputAction::Submit
+            | TuiInputAction::HandleEscape
+            | TuiInputAction::LogOutSelectedMcp => {
+                TuiEditorInteractionOutcome::PreserveViewport
+            }
+        };
+        let outcome = match outcome {
+            TuiEditorInteractionOutcome::Clipboard(_) if input_ownership.is_masked() => {
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            TuiEditorInteractionOutcome::Clipboard(action) => {
+                match apply_editor_clipboard_action(&self.model, action, ctx) {
+                    Ok(true) => ctx.emit(TuiInputViewEvent::ClipboardCopySucceeded),
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::error!("Failed to copy TUI input selection: {error}");
+                        ctx.emit(TuiInputViewEvent::ClipboardCopyFailed);
+                    }
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            // Inbound only (OS clipboard -> buffer), so masking does not
+            // suppress it. This variant has no upstream counterpart: the pin
+            // routes paste through `TuiEditorAction::PasteText` instead.
+            TuiEditorInteractionOutcome::Paste => {
+                if let Err(error) = apply_editor_paste(&self.model, self.editor_behavior, ctx) {
+                    log::error!("Failed to paste into TUI input: {error}");
+                }
+                TuiEditorInteractionOutcome::FollowCursor
+            }
+            outcome => outcome,
+        };
+        if outcome == TuiEditorInteractionOutcome::FollowCursor {
+            self.follow_cursor(ctx);
+        }
+        ctx.notify();
+    }
+
     // ── Read helpers ──────────────────────────────────────────────────────────
     fn open_inline_menu(&self, mode: TuiInputSuggestionsMode, ctx: &mut ViewContext<Self>) {
         if let Some(menu) = self.inline_menus.iter().find(|menu| menu.mode() == mode) {
@@ -1126,6 +1247,9 @@ impl TuiInputView {
             TuiInlineMenuAccepted::Mcp(action) => {
                 ctx.emit(TuiInputViewEvent::AcceptedMcp(action));
             }
+            TuiInlineMenuAccepted::McpInstall(action) => {
+                ctx.emit(TuiInputViewEvent::AcceptedMcpInstall(action));
+            }
             TuiInlineMenuAccepted::PromptAndCommandHistory(row) => {
                 ctx.emit(TuiInputViewEvent::AcceptedPromptAndCommandHistory(
                     row.text, row.kind,
@@ -1156,6 +1280,7 @@ impl TuiInputView {
             TuiInputAction::EditorCommand(TuiEditorCommand::MoveUp | TuiEditorCommand::MoveDown)
                 | TuiInputAction::Submit
                 | TuiInputAction::HandleEscape
+                | TuiInputAction::LogOutSelectedMcp
         ) {
             return false;
         }
@@ -1180,6 +1305,12 @@ impl TuiInputView {
             TuiInputAction::Submit => {
                 if let Some(accepted) = inline_menu.accept(ctx) {
                     self.route_inline_menu_acceptance(accepted, ctx);
+                }
+            }
+            TuiInputAction::LogOutSelectedMcp => {
+                if let Some(TuiInlineMenuAccepted::Mcp(action)) = inline_menu.accept_secondary(ctx)
+                {
+                    ctx.emit(TuiInputViewEvent::AcceptedMcp(action));
                 }
             }
             TuiInputAction::HandleEscape => return self.handle_escape(ctx),
@@ -1243,6 +1374,14 @@ impl TuiInputView {
             self.suggestions_mode.as_ref(ctx).mode(),
             ctx,
         )
+    }
+
+    /// Resolves the shared editor owner from the one active inline menu.
+    fn active_inline_menu_input_ownership(&self, ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        self.active_inline_menu(ctx)
+            .map_or(TuiInlineMenuInputOwnership::Composer, |menu| {
+                menu.input_ownership(ctx)
+            })
     }
 
     /// Closes the shared read-only menu (shortcuts/status) if it is open,

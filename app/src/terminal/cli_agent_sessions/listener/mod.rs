@@ -50,6 +50,7 @@ pub fn is_agent_supported(agent: &CLIAgent) -> bool {
             | CLIAgent::DeepSeek
             | CLIAgent::Antigravity
             | CLIAgent::Omp
+            | CLIAgent::PhosphorTui
     )
 }
 
@@ -64,6 +65,8 @@ fn create_handler(agent: &CLIAgent) -> Option<Box<dyn CLIAgentSessionHandler>> {
         // natively. Droid can be supported by user-configured hooks or future
         // integrations that emit the same events. We don't ship install flows
         // for these agents — we just listen.
+        // This fork's own TUI emits the same OSC 777 events directly, with no
+        // external plugin needed (`warp_tui::cli_agent_osc_event_publisher`).
         CLIAgent::Claude
         | CLIAgent::OpenCode
         | CLIAgent::Gemini
@@ -71,18 +74,18 @@ fn create_handler(agent: &CLIAgent) -> Option<Box<dyn CLIAgentSessionHandler>> {
         | CLIAgent::Droid
         | CLIAgent::Pi
         | CLIAgent::Omp
+        | CLIAgent::PhosphorTui
         | CLIAgent::Antigravity => Some(Box::new(DefaultSessionListener)),
         CLIAgent::Codex => Some(Box::new(CodexSessionHandler)),
         CLIAgent::DeepSeek => Some(Box::new(DeepSeekSessionHandler)),
-        // Hermes, Vibe and this fork's own TUI don't emit the structured OSC 777
-        // events this listener parses, and have no known plugin/hook integration.
+        // Hermes and Vibe don't emit the structured OSC 777 events this
+        // listener parses, and have no known plugin/hook integration.
         CLIAgent::Amp
         | CLIAgent::Copilot
         | CLIAgent::CursorCli
         | CLIAgent::Goose
         | CLIAgent::Hermes
         | CLIAgent::Vibe
-        | CLIAgent::PhosphorTui
         | CLIAgent::Unknown => None,
     }
 }

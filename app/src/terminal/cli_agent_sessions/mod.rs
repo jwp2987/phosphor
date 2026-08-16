@@ -5,6 +5,7 @@ pub(crate) mod plugin_manager;
 
 use std::collections::{HashMap, HashSet};
 
+use warp_core::cli_agent_error_type::CLIAgentErrorType;
 use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::blocklist::InputConfig;
@@ -18,7 +19,19 @@ use event::{CLIAgentEvent, CLIAgentEventSource, CLIAgentEventType};
 pub enum CLIAgentSessionStatus {
     InProgress,
     Success,
-    Blocked { message: Option<String> },
+    /// The agent's turn ended in failure. Terminal in exactly the way `Success`
+    /// is: it latches until the next event that moves the session back to
+    /// `InProgress` (a new `PromptSubmit`), so the failure stays visible on the
+    /// status chip instead of being wiped by a timer the user may never see.
+    Failed {
+        /// Producer's classification of the failure, when it supplied one.
+        error_type: Option<String>,
+        /// Human-readable detail, taken from the event's `response`.
+        message: Option<String>,
+    },
+    Blocked {
+        message: Option<String>,
+    },
 }
 
 impl CLIAgentSessionStatus {
@@ -27,6 +40,30 @@ impl CLIAgentSessionStatus {
         match self {
             CLIAgentSessionStatus::InProgress => ConversationStatus::InProgress,
             CLIAgentSessionStatus::Success => ConversationStatus::Success,
+            // A cancelled turn is not a failed turn: the user pressed Ctrl-C and
+            // nothing went wrong, so it gets the neutral gray stop rather than
+            // the red error triangle -- and, unlike `Error`, it is not something
+            // the user has to go read. Refs #596.
+            //
+            // The classification comes from `warp_core::cli_agent_error_type`,
+            // not from a string literal spelled out here. `error_type` is
+            // free-form producer text and matching a literal in the GUI would
+            // pin this consumer to one producer's spelling with nothing keeping
+            // the two in step; the shared crate is where the producer's spelling
+            // is *defined*, so both halves move together or neither does.
+            CLIAgentSessionStatus::Failed { error_type, .. }
+                if error_type
+                    .as_deref()
+                    .is_some_and(|kind| CLIAgentErrorType::from_wire(kind).is_cancellation()) =>
+            {
+                ConversationStatus::Cancelled
+            }
+            // Every other `Failed` maps to `Error`, whatever `error_type` says
+            // -- including a classification nobody here recognises. Unrecognised
+            // means "some failure", never "benign". See the pin's mapping, which
+            // has only this arm because the pin's `error_type` has no consumer
+            // at all.
+            CLIAgentSessionStatus::Failed { .. } => ConversationStatus::Error,
             CLIAgentSessionStatus::Blocked { message } => ConversationStatus::Blocked {
                 blocked_action: message.clone().unwrap_or_default(),
             },
@@ -210,6 +247,24 @@ impl CLIAgentSession {
                 }
                 self.clear_permission_scoped_state();
                 CLIAgentSessionStatus::Success
+            }
+            CLIAgentEventType::StopFailure => {
+                // Same "don't clobber what the payload omits" guard as `Stop`
+                // above -- a fork divergence from the pin (which assigns
+                // unconditionally), introduced in 2fe1e963e so an event whose
+                // payload carries only the failure does not blank the prompt
+                // the user is looking at.
+                if event.payload.query.is_some() {
+                    self.session_context.query = event.payload.query.clone();
+                }
+                if event.payload.response.is_some() {
+                    self.session_context.response = event.payload.response.clone();
+                }
+                self.clear_permission_scoped_state();
+                CLIAgentSessionStatus::Failed {
+                    error_type: event.payload.error_type.clone(),
+                    message: event.payload.response.clone(),
+                }
             }
             CLIAgentEventType::PermissionRequest => {
                 self.session_context.summary = event.payload.summary.clone();

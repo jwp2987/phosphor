@@ -525,6 +525,11 @@ fn skill_menu_blocks_slash_command_activation() {
 }
 
 #[test]
+fn mcp_install_flow_blocks_slash_command_activation() {
+    assert_explicit_menu_blocks_slash_commands(TuiInputSuggestionsMode::McpInstall);
+}
+
+#[test]
 fn accepting_a_result_does_not_disable_input_driven_lifecycle() {
     App::test((), |mut app| async move {
         app.add_singleton_model(|_| Appearance::mock());

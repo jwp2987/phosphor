@@ -123,9 +123,11 @@ fn pill_bar_scrollable_finite_under_capped_drag_preview() {
 /// The data layer that `OrchestrationPillBar::pill_specs` reads must
 /// surface restored orchestration children before any pane has been created.
 ///
-/// `pill_specs` (defined privately on `OrchestrationPillBar`) walks
-/// `descendant_conversation_ids_in_spawn_order(history, orchestrator_id)` and
-/// then `filter_map(|id| history.conversation(&id))`. The
+/// `pill_specs` (defined privately on `OrchestrationPillBar`) walks the
+/// anchor's children — `child_conversations_in_pill_order`, which is
+/// `descendant_conversation_ids_in_spawn_order` restricted to one level —
+/// and then `filter_map(|id| history.conversation(&id))`. This test asserts
+/// against the underlying spawn-order walk, which both share. The
 /// `history.conversation(&id)` lookup must return `Some` for restored
 /// children even before the parent's hidden pane materializes, or the pill
 /// bar renders nothing. This test asserts both layers work after
@@ -265,9 +267,9 @@ fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
             .add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &conversations));
 
         history_model.read(&app, |model, _| {
-            // pill_specs walks `descendant_conversation_ids_in_spawn_order`
-            // first. This index must be populated for restored children at
-            // app startup, before any pane materializes.
+            // The parent → children index `pill_specs` walks must be
+            // populated for restored children at app startup, before any pane
+            // materializes.
             let descendants = descendant_conversation_ids_in_spawn_order(model, parent_id);
             assert_eq!(
                 descendants,
@@ -276,7 +278,7 @@ fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
             );
 
             // pill_specs then collects pill specs via
-            // `descendants.into_iter().filter_map(|id| history.conversation(&id))`.
+            // `children.into_iter().filter_map(|id| history.conversation(&id))`.
             // The child must be hydrated eagerly so this lookup succeeds and
             // the pill bar renders; otherwise the filter_map would drop the
             // child (because `conversation(&child_id)` returned `None`) and
@@ -320,4 +322,181 @@ fn navigation_action_for_orchestrator_pill_switches_in_place() {
             conversation_id: actual_id,
         } if actual_id == conversation_id
     ));
+}
+
+// ---- Drill-down anchoring and breadcrumbs (`306257bfe`) --------------------
+//
+// Two of the pin's drill-down tests are not ported:
+//
+// * `breadcrumbs_resolve_token_only_parent_linkage_after_restore` exercises
+//   the legacy *server-token* parent fallback in
+//   `BlocklistAIHistoryModel::resolved_parent_conversation_id_from_refs`.
+//   This fork resolves parents through the run-id/agent-id index only — there
+//   are no server conversation tokens to fall back to — so the scenario the
+//   test constructs cannot occur here.
+// * `conversation_server_token_assignment_rerenders_the_pill_bar` covers the
+//   history subscription this port *does* carry (as
+//   `ConversationAgentIdAssigned`, the local equivalent of the pin's
+//   `ConversationServerTokenAssigned`). Its fixture needs a live
+//   `AgentViewController`, whose only construction pattern in this tree pulls
+//   in `crate::cloud_object::{model::persistence::ObjectStoreModel,
+//   update_manager::UpdateManager}` — a new import of a dropped-cloud module,
+//   which `script/check_cloud_boundary` rejects. Left untested rather than
+//   built on a cloud import; the subscription itself is a one-line arm.
+
+/// Builds a 3-level tree (root → mid → grandchild) and returns the history
+/// handle plus the ids.
+fn build_three_level_tree(
+    app: &mut warpui::App,
+) -> (
+    ModelHandle<BlocklistAIHistoryModel>,
+    AIConversationId,
+    AIConversationId,
+    AIConversationId,
+) {
+    use warpui::EntityId;
+
+    let terminal_view_id = EntityId::new();
+    let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+    let root_id = history_model.update(app, |history, ctx| {
+        history.start_new_conversation(terminal_view_id, false, false, ctx)
+    });
+    let mid_id = history_model.update(app, |history, ctx| {
+        history.start_new_child_conversation(
+            terminal_view_id,
+            "mid".to_string(),
+            root_id,
+            None,
+            ctx,
+        )
+    });
+    let grandchild_id = history_model.update(app, |history, ctx| {
+        history.start_new_child_conversation(
+            terminal_view_id,
+            "grandchild".to_string(),
+            mid_id,
+            None,
+            ctx,
+        )
+    });
+    (history_model, root_id, mid_id, grandchild_id)
+}
+
+#[test]
+fn breadcrumb_ids_show_only_root_when_parent_is_root() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let (history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(breadcrumb_ids(history, mid_id), (Some(root_id), None));
+        });
+    });
+}
+
+#[test]
+fn breadcrumb_ids_show_root_and_parent_when_two_levels_deep() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let (history_model, root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(
+                breadcrumb_ids(history, grandchild_id),
+                (Some(root_id), Some(mid_id)),
+            );
+        });
+    });
+}
+
+#[test]
+fn breadcrumb_ids_are_empty_at_the_root() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let (history_model, root_id, _mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        history_model.read(&app, |history, _| {
+            assert_eq!(breadcrumb_ids(history, root_id), (None, None));
+        });
+    });
+}
+
+#[test]
+fn drill_down_anchor_is_the_parent_level_for_a_leaf() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let (_history_model, _root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
+        app.read(|ctx| {
+            let grandchild = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&grandchild_id)
+                .expect("grandchild conversation exists");
+            assert_eq!(
+                drill_down_anchor_id(grandchild_id, grandchild, ctx),
+                mid_id,
+                "a leaf anchors its parent's level so sibling navigation stays symmetric",
+            );
+        });
+    });
+}
+
+#[test]
+fn drill_down_anchor_is_the_node_itself_when_it_has_children() {
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        let (_history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
+        app.read(|ctx| {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let root = history
+                .conversation(&root_id)
+                .expect("root conversation exists");
+            let mid = history
+                .conversation(&mid_id)
+                .expect("mid conversation exists");
+            assert_eq!(drill_down_anchor_id(root_id, root, ctx), root_id);
+            assert_eq!(
+                drill_down_anchor_id(mid_id, mid, ctx),
+                mid_id,
+                "a node with children anchors its own level",
+            );
+        });
+    });
+}
+
+/// With a single orchestration level the drill-down anchoring must match the
+/// historical root-anchored behavior exactly: both the root and its leaf
+/// children anchor the root's level.
+#[test]
+fn drill_down_anchor_matches_root_anchoring_at_depth_one() {
+    use warpui::{App, EntityId};
+
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        let root_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_child_conversation(
+                terminal_view_id,
+                "child".to_string(),
+                root_id,
+                None,
+                ctx,
+            )
+        });
+
+        app.read(|ctx| {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+            let root = history
+                .conversation(&root_id)
+                .expect("root conversation exists");
+            let child = history
+                .conversation(&child_id)
+                .expect("child conversation exists");
+            assert_eq!(drill_down_anchor_id(root_id, root, ctx), root_id);
+            assert_eq!(drill_down_anchor_id(child_id, child, ctx), root_id);
+        });
+    });
 }

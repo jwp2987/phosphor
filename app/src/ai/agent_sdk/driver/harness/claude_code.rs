@@ -352,9 +352,10 @@ impl ClaudeHarnessRunner {
     /// but the local half of the decision (did this run actually finish cleanly)
     /// stands on its own and is what these tests exercise.
     ///
-    /// Adaptation: this fork's `CLIAgentSessionStatus` has no `Failed` variant (the
-    /// pin's does), so the "don't preserve" set collapses to `InProgress` and
-    /// `Blocked` -- session states that mean the run is not actually finished.
+    /// The "don't preserve" set is the pin's: `InProgress` and `Blocked` mean the
+    /// run is not actually finished, and `Failed` means there is no clean state
+    /// worth resuming from. (An earlier revision of this comment recorded `Failed`
+    /// as absent from the fork; that was the unported #582 gap, now closed.)
     async fn should_preserve_parent_bridge(
         &self,
         cleanup_disposition: HarnessCleanupDisposition,
@@ -369,7 +370,9 @@ impl ClaudeHarnessRunner {
 
         !matches!(
             super::cli_agent_session_status(&self.terminal_driver, foreground).await,
-            Some(CLIAgentSessionStatus::InProgress) | Some(CLIAgentSessionStatus::Blocked { .. })
+            Some(CLIAgentSessionStatus::InProgress)
+                | Some(CLIAgentSessionStatus::Blocked { .. })
+                | Some(CLIAgentSessionStatus::Failed { .. })
         )
     }
 
@@ -472,7 +475,7 @@ impl HarnessRunner for ClaudeHarnessRunner {
         let claude_version = self.resolve_claude_version(foreground).await;
 
         let _ = (foreground, conversation_id, block_id, claude_version);
-        log::debug!("Skipping Claude transcript and block snapshot export in Zap");
+        log::debug!("Skipping Claude transcript and block snapshot export in Phosphor");
 
         Ok(())
     }

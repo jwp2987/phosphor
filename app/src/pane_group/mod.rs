@@ -2460,7 +2460,7 @@ impl PaneGroup {
             Banner::<PaneGroupAction>::new_permanently_dismissible(
                 BannerTextContent::formatted_text(vec![
                     FormattedTextFragment::plain_text(
-                        "Zap doesn't currently support your default shell, falling back to zsh.  ",
+                        "Phosphor doesn't currently support your default shell, falling back to zsh.  ",
                     ),
                     FormattedTextFragment::hyperlink(
                         crate::t!("common-learn-more"),
@@ -6146,6 +6146,17 @@ impl PaneGroup {
         self.panes_of::<TerminalPane>()
             .filter(|p| !self.is_pane_hidden_for_close(p.terminal_pane_id().into()))
             .map(|p| p.terminal_view(ctx))
+            .collect()
+    }
+
+    /// Returns terminal views from layout-tree-visible panes only.
+    /// Unlike `terminal_views()`, this excludes off-tree child agent panes
+    /// and panes hidden for any reason (temporary replacement, child agent, etc.).
+    pub fn visible_terminal_views(&self, ctx: &AppContext) -> Vec<ViewHandle<TerminalView>> {
+        self.panes
+            .visible_pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| self.terminal_view_from_pane_id(pane_id, ctx))
             .collect()
     }
 

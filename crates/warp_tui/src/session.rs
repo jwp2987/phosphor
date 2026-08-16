@@ -13,9 +13,10 @@ use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use clap::error::ErrorKind;
 use inquire::{InquireError, Password, PasswordDisplayMode};
-use warp::settings::TuiThemeSettings;
-use warp::tui_export::{Appearance, ServerConversationToken};
+use warp::settings::{TuiThemeSettings, TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
+use warp::tui_export::{AIConversationAutoexecuteMode, Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
+use warp_core::settings::Setting as _;
 use warpui::SingletonEntity as _;
 use warpui_core::platform::{TerminationMode, WindowStyle};
 use warpui_core::runtime::spawn_tui_driver;
@@ -38,6 +39,9 @@ const CLI_VERSION: &str = match option_env!("GIT_RELEASE_TAG") {
     None => "v0.0.0.0.0.0",
 };
 
+// Crossterm 0.29 drops associated text in all-key mode, which breaks AltGr and dead-key input.
+const REPORT_MODIFIER_KEY_LIFECYCLE: bool = false;
+
 #[derive(Debug, Parser)]
 #[command(name = "warp", version = CLI_VERSION)]
 struct TuiArgs {
@@ -45,8 +49,17 @@ struct TuiArgs {
     #[arg(long)]
     resume: Option<String>,
 
+    /// Enable auto-approve by default for new conversations.
+    #[arg(long)]
+    auto_approve: bool,
+
     /// API key for non-interactive authentication.
-    #[arg(long, env = "WARP_API_KEY")]
+    // `hide_env_values` keeps `--help` from rendering the RESOLVED value of
+    // WARP_API_KEY into the terminal, scrollback, and anything capturing help
+    // output. Deliberately diverges from the pin, which leaves this unguarded
+    // here while guarding the identical argument in warp_cli (9dcef6a88). See
+    // DECLINED.md and #588.
+    #[arg(long, env = "WARP_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 
     /// Securely store a model-provider API key for Warp Agent CLI.
@@ -208,7 +221,7 @@ pub fn run() -> Result<()> {
                 // coalesced by the watcher's debounce.
                 if let Err(error) = warp::tui_export::notify_tui_api_keys_changed() {
                     log::warn!(
-                        "API key was saved, but signalling running Zap processes to \
+                        "API key was saved, but signalling running Phosphor processes to \
                          reload it failed: {error:#}"
                     );
                 }
@@ -218,11 +231,27 @@ pub fn run() -> Result<()> {
         );
     }
     let resume_token = args.resume.map(parse_resume_token).transpose()?;
+    // `--auto-approve` only sets the mode new conversations *start* in. It does
+    // not widen what auto-approve means: this fork's `can_ask_user_question`
+    // still surfaces every `ask_user_question` regardless of the conversation's
+    // autoexecute mode (DECLINED.md #373), so a question is never swallowed.
+    let default_autoexecute_mode = if args.auto_approve {
+        AIConversationAutoexecuteMode::RunToCompletion
+    } else {
+        AIConversationAutoexecuteMode::RespectUserSettings
+    };
     let exit_summary = TuiExitSummaryHandle::default();
     let exit_summary_for_app = exit_summary.clone();
     let result = warp::run_tui(
         args.api_key,
-        Box::new(move |ctx| init(resume_token, exit_summary_for_app, ctx)),
+        Box::new(move |ctx| {
+            init(
+                resume_token,
+                default_autoexecute_mode,
+                exit_summary_for_app,
+                ctx,
+            )
+        }),
     );
     if result.is_ok()
         && let Some(token) = exit_summary.token()
@@ -237,6 +266,7 @@ pub fn run() -> Result<()> {
 /// Creates the login-gated root and starts the headless draw and input driver.
 fn init(
     resume_token: Option<ServerConversationToken>,
+    default_autoexecute_mode: AIConversationAutoexecuteMode,
     exit_summary: TuiExitSummaryHandle,
     ctx: &mut AppContext,
 ) {
@@ -279,10 +309,39 @@ fn init(
         },
         |_| RootTuiView::new(),
     );
-    match spawn_tui_driver(ctx, window_id, root.clone(), Some(probe)) {
+    let freeze_repaints_when_unfocused = *TuiZeroStateSettings::as_ref(ctx)
+        .freeze_animation_when_unfocused
+        .value();
+    match spawn_tui_driver(
+        ctx,
+        window_id,
+        root.clone(),
+        Some(probe),
+        REPORT_MODIFIER_KEY_LIFECYCLE,
+        freeze_repaints_when_unfocused,
+    ) {
         Ok(driver) => {
             let sessions =
-                ctx.add_singleton_model(|_| TuiSessions::new(driver, exit_summary, resume_token));
+                ctx.add_singleton_model(|_| {
+                    TuiSessions::new(driver, exit_summary, resume_token, default_autoexecute_mode)
+                });
+            let sessions_for_zero_state_settings = sessions.clone();
+            ctx.subscribe_to_model(
+                &TuiZeroStateSettings::handle(ctx),
+                move |settings, event, ctx| {
+                    let TuiZeroStateSettingsChangedEvent::TuiZeroStateFreezeAnimationWhenUnfocusedSetting {
+                        ..
+                    } = event
+                    else {
+                        return;
+                    };
+                    let freeze = *settings.as_ref(ctx).freeze_animation_when_unfocused.value();
+                    sessions_for_zero_state_settings.update(ctx, |sessions, _| {
+                        sessions.set_freeze_repaints_when_unfocused(freeze);
+                    });
+                    ctx.invalidate_all_views();
+                },
+            );
             let orchestration = TuiOrchestrationModel::register(ctx);
             TuiSessions::wire_orchestration(&sessions, &orchestration, ctx);
             TuiPaneGroup::register(ctx);
@@ -336,6 +395,9 @@ fn create_terminal_session_after_login(
         std::env::current_dir().ok(),
         ctx,
     );
+    surface.update(ctx, |view, ctx| {
+        view.enable_cli_agent_osc_event_publishing(ctx);
+    });
     if let Some(token) = resume_token {
         surface.update(ctx, |view, ctx| {
             view.restore_conversation(
