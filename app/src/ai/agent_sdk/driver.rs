@@ -443,6 +443,37 @@ impl AgentDriver {
         })
     }
 
+    /// Builds a driver over an already-created terminal driver, skipping
+    /// [`Self::new`]'s auth check, secret/env-var assembly, and terminal
+    /// session creation.
+    ///
+    /// Test-only scaffolding (the pin carries the same constructor
+    /// unconditionally; here it is `#[cfg(test)]` so the production surface is
+    /// unchanged). It exists so tests can reach driver methods that read
+    /// `self.working_dir` — notably [`Self::load_skills_dirs`], whose whole
+    /// contract is that relative `WARP_SKILL_DIRS` entries resolve against the
+    /// driver's working directory rather than the process's.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        working_dir: PathBuf,
+        terminal_driver: ModelHandle<terminal::TerminalDriver>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        ctx.subscribe_to_model(&terminal_driver, |me, event, _| {
+            me.handle_terminal_driver_event(event);
+        });
+        Self {
+            terminal_driver,
+            working_dir,
+            secrets: Arc::new(HashMap::new()),
+            output_format: OutputFormat::default(),
+            task_id: None,
+            harness: None,
+            idle_on_complete: None,
+            third_party_harness_model_config: None,
+        }
+    }
+
     pub fn set_output_format(&mut self, output_format: OutputFormat) {
         self.output_format = output_format;
     }
