@@ -12591,6 +12591,8 @@ impl TerminalView {
         // doing the decoration to ensure we don't erroneously apply error
         // underlines to valid commands.
         let input = self.input().clone();
+        let session_clone = session.clone();
+        let session_clone2 = session.clone();
         ctx.spawn(
             async move { session.load_external_commands().await },
             move |me, _, ctx| {
@@ -12603,6 +12605,21 @@ impl TerminalView {
                 me.refresh_warp_prompt(ctx);
             },
         );
+
+        // Functions and builtins that the bootstrap snapshot could not afford to
+        // enumerate are collected here, off the critical path: unlike the
+        // executables above nothing waits on them, so they are detached rather
+        // than sequenced into input decoration. Both are no-ops for every shell
+        // whose bootstrap already reports the complete set — which today is all
+        // four of them; see `Session::load_all_function_names` for what this
+        // fork has not taken from the pin, and why.
+        ctx.background_executor()
+            .spawn(async move { session_clone.load_all_function_names().await })
+            .detach();
+
+        ctx.background_executor()
+            .spawn(async move { session_clone2.load_all_builtins().await })
+            .detach();
 
         // If we were waiting for a successful warpification, it's come. Stop the timeout.
         self.warpify_state.abort_ssh_warpify_timeout();
