@@ -316,14 +316,30 @@ impl<T: SyncQueueTaskTrait> SyncQueue<T> {
     /// causing receivers to resolve to `Err(Canceled)`. The currently executing task
     /// (if any) is aborted via its `AbortHandle`.
     pub fn cancel_all(&self) {
-        // Abort the currently executing task, if any.
-        if let Some(handle) = self.active_task_handle.lock().unwrap().take() {
+        // Take the active handle and drain the pending tasks in a single
+        // `task_map` critical section. The processor claims a task by removing
+        // it from the map and installing its `AbortHandle` under this same
+        // lock, so holding it here means no task can move from pending to
+        // running while we cancel. Doing these as two separate critical
+        // sections let the abort below wake the processor, which then pulled
+        // the next pending task out of the map before `clear()` ran — that task
+        // escaped cancellation and delivered a result to a receiver that should
+        // have seen `Err(Canceled)`.
+        let active_handle = {
+            let mut task_map = self.task_map.lock().unwrap();
+            let active_handle = self.active_task_handle.lock().unwrap().take();
+
+            // Dropping the QueuedTask entries drops their oneshot senders,
+            // signaling cancellation to receivers.
+            task_map.clear();
+            active_handle
+        };
+
+        // Abort outside the critical section: `abort()` wakes the processor's
+        // waker, and we do not want to hold a lock it may need across that.
+        if let Some(handle) = active_handle {
             handle.abort();
         }
-
-        // Drain all pending tasks from the map. Dropping the QueuedTask entries
-        // drops their oneshot senders, signaling cancellation to receivers.
-        self.task_map.lock().unwrap().clear();
     }
 
     async fn retry_with_backoff<Fut>(
@@ -368,19 +384,31 @@ impl<T: SyncQueueTaskTrait> SyncQueue<T> {
         broadcast_sender: Option<BroadcastSender<BroadcastResult<T>>>,
     ) {
         while let Some(task_id) = receiver.next().await {
-            // Remove the task from the map. If it's missing, it was cancelled.
-            let Some(mut queued_task) = task_map.lock().unwrap().remove(&task_id) else {
-                continue;
+            // Claim the task: remove it from the map and publish its
+            // `AbortHandle` in one `task_map` critical section. `cancel_all`
+            // holds the same lock while it takes the active handle and clears
+            // the map, so a task is always either still pending (and gets
+            // dropped) or already running (and gets aborted) — it can never be
+            // invisible to both halves of a concurrent cancellation.
+            //
+            // Wrap the task in Abortable so cancel_all can abort it.
+            // Rate limiting is inside the abortable so cancellation also
+            // interrupts a task waiting for a rate-limit token.
+            let (mut queued_task, abort_registration) = {
+                let mut task_map = task_map.lock().unwrap();
+
+                // If it's missing, it was cancelled.
+                let Some(queued_task) = task_map.remove(&task_id) else {
+                    continue;
+                };
+
+                let (abort_handle, abort_registration) = AbortHandle::new_pair();
+                *active_task_handle.lock().unwrap() = Some(abort_handle);
+                (queued_task, abort_registration)
             };
 
             let retry_options = queued_task.retry_options;
             let rate_limit_config = rate_limit_config.clone();
-
-            // Wrap the task in Abortable so cancel_all can abort it.
-            // Rate limiting is inside the abortable so cancellation also
-            // interrupts a task waiting for a rate-limit token.
-            let (abort_handle, abort_registration) = AbortHandle::new_pair();
-            *active_task_handle.lock().unwrap() = Some(abort_handle);
 
             let abortable_result = Abortable::new(
                 async {
