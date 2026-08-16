@@ -7,6 +7,10 @@
 use super::integration_tests;
 
 integration_tests! {
+    // SFTP (`app/src/sftp_manager/`, removed in Track 3 -- see DECLINED.md) and the
+    // session-sharing websocket layer are not in this fork, so the 22 builders these
+    // names referred to do not exist. Listing them here made nextest run them and the
+    // integration binary panic "test not found"; they are removed, not skipped.
     test_add_many_sessions,
     test_ctrl_tab_session_switching,
     test_hover_over_menu,
@@ -194,10 +198,6 @@ integration_tests! {
     #[ignore = "Affected by agent_view feature flag UI changes"]
     test_up_arrow_history_enters_shift_tab_for_workflow,
 
-    test_websocket_begins_on_startup,
-    test_websocket_does_not_begin_on_startup,
-    test_websocket_begins_after_joining_a_team,
-    test_websocket_begins_after_creating_an_object,
 
     test_secret_is_obfuscated_on_copy,
     test_secret_tooltip_respects_safe_mode_setting,
@@ -352,24 +352,6 @@ integration_tests! {
     test_video_recording,
 
     // SFTP browser popup tests
-    test_sftp_pane_opens_in_workspace,
-    test_sftp_pane_focus_and_keyboard,
-    test_sftp_pane_close,
-    test_sftp_pane_tab_switch,
-    test_sftp_pane_disconnected_render,
 
     // SFTP browser UI integration tests (mock backend)
-    test_sftp_mock_backend_connected,
-    test_sftp_toolbar_refresh,
-    test_sftp_toolbar_new_folder,
-    test_sftp_toolbar_upload,
-    test_sftp_toolbar_up,
-    test_sftp_click_file_row_selects,
-    test_sftp_right_click_opens_menu,
-    test_sftp_ctx_menu_delete,
-    test_sftp_ctx_menu_rename,
-    test_sftp_breadcrumb_root_click,
-    test_sftp_keyboard_backspace_up,
-    test_sftp_keyboard_delete,
-    test_sftp_keyboard_escape_close_dialog,
 }

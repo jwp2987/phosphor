@@ -124,18 +124,19 @@ pub fn single_terminal_pane_view_for_tab(
     tab_index: usize,
 ) -> ViewHandle<PaneView<TerminalView>> {
     pane_group_view(app, window_id, tab_index).read(app, |pane_group, _ctx| {
-        let terminal_pane_indices = pane_group
+        // Resolve by PaneId, never by an index into `visible_pane_ids()`:
+        // that list has hidden panes filtered out, while the `_at_pane_index`
+        // getters index the unfiltered pane list. Enumerating one and indexing
+        // the other silently returns the wrong pane once anything is hidden.
+        let terminal_pane_ids = pane_group
             .visible_pane_ids()
             .into_iter()
-            .enumerate()
-            .filter_map(|(pane_index, pane_id)| {
-                pane_id.is_terminal_pane().then_some(pane_index)
-            })
+            .filter(|pane_id| pane_id.is_terminal_pane())
             .collect::<Vec<_>>();
-        let num_terminal_views = terminal_pane_indices.len();
+        let num_terminal_views = terminal_pane_ids.len();
         assert_eq!(num_terminal_views, 1, "window_id={window_id}, tab_index={tab_index} doesn't have a single terminal pane view. Has {num_terminal_views} pane views instead");
         pane_group
-            .terminal_pane_view_at_pane_index(terminal_pane_indices[0])
+            .terminal_pane_view_from_pane_id(terminal_pane_ids[0])
             .unwrap()
             .to_owned()
     })

@@ -5920,6 +5920,19 @@ impl PaneGroup {
             .map(|session| session.terminal_view(ctx))
     }
 
+    /// Given a pane ID, retrieve its backing terminal *pane* view, if the pane is
+    /// a terminal pane. Prefer this over `terminal_pane_view_at_pane_index` when
+    /// the caller already has a `PaneId`: the index form indexes the unfiltered
+    /// pane list, so an index taken from `visible_pane_ids()` (hidden panes
+    /// filtered out) resolves to the wrong pane as soon as anything is hidden.
+    pub fn terminal_pane_view_from_pane_id(
+        &self,
+        pane_id: impl Into<PaneId>,
+    ) -> Option<ViewHandle<self::pane::terminal_pane::TerminalPaneView>> {
+        self.terminal_session_by_id(pane_id)
+            .map(|session| session.pane_view())
+    }
+
     /// Given a pane ID, retrieve its backing code view, if the pane is a code pane.
     pub fn code_view_from_pane_id(
         &self,
