@@ -1279,6 +1279,11 @@ fn build_inline_menu(
         .rows
         .iter()
         .filter(|row| row.style == TuiInlineMenuRowStyle::InlineMenuItem)
+        // Descriptionless rows are dropped rather than measured on their suffix alone, and
+        // that is deliberate: this feeds the two-column widths, and an `InlineMenuItem` row
+        // renders its second column only when it has a description (see `show_description`
+        // in `menu_result_row`), so such a row contributes no second-column text to measure.
+        // The `Default` rows the model menu builds never reach here at all.
         .filter_map(|row| {
             let mut description = row.description.clone()?;
             if let Some(suffix) = &row.state_suffix {
@@ -1564,7 +1569,11 @@ fn menu_result_row(
         }
     };
     let show_description = match row.style {
-        TuiInlineMenuRowStyle::Default => row.description.is_some(),
+        // A `state_suffix` is second-column content in its own right: the model menu's
+        // `(key connected)` and the profile menu's `active` markers ride on rows that have
+        // no description at all, so gating the whole second column on `description` hid
+        // exactly the rows the marker is about (#587).
+        TuiInlineMenuRowStyle::Default => row.description.is_some() || row.state_suffix.is_some(),
         TuiInlineMenuRowStyle::InlineMenuItem => {
             slash_command_columns.show_second && row.description.is_some()
         }
@@ -1628,21 +1637,34 @@ fn menu_result_row(
                 )
                 .finish(),
         });
-    if let Some(description) = row.description.as_ref().filter(|_| show_description) {
-        let description_prefix = match row.style {
-            TuiInlineMenuRowStyle::Default => format!("  {description}"),
-            TuiInlineMenuRowStyle::InlineMenuItem => description.clone(),
-        };
-        let mut description_spans = vec![(description_prefix, description_style)];
+    if show_description {
+        let mut description_spans = Vec::new();
+        if let Some(description) = row.description.as_ref() {
+            let description_prefix = match row.style {
+                TuiInlineMenuRowStyle::Default => format!("  {description}"),
+                TuiInlineMenuRowStyle::InlineMenuItem => description.clone(),
+            };
+            description_spans.push((description_prefix, description_style));
+        }
         if let Some(suffix) = &row.state_suffix {
             let suffix_style = if is_selected {
                 builder.slash_command_selection_state_suffix_style()
             } else {
                 builder.success_glyph_style()
             };
-            description_spans.push((format!(" {suffix}"), suffix_style));
+            // Following a description the suffix is separated from it by a single space.
+            // Standing alone it *is* the second column, so a `Default` row gives it the same
+            // two-space gutter a description would have had -- otherwise a key-connected model
+            // sits one column left of the `disabled` rows above and below it.
+            let suffix_text = match (row.style, description_spans.is_empty()) {
+                (TuiInlineMenuRowStyle::Default, true) => format!("  {suffix}"),
+                _ => format!(" {suffix}"),
+            };
+            description_spans.push((suffix_text, suffix_style));
         }
-        content = content.child(TuiText::from_spans(description_spans).truncate().finish());
+        if !description_spans.is_empty() {
+            content = content.child(TuiText::from_spans(description_spans).truncate().finish());
+        }
     }
     let mut container = TuiContainer::new(content.finish());
     if is_selected {
