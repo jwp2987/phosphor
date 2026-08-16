@@ -33,13 +33,35 @@ the treadmill.
 
 | | |
 |---|---|
-| **Release** | `2026.07.29.09.05` stable |
-| **Commit** | `02b53fcd8` (2026-07-29 00:14 -0400) |
-| **Commit (full)** | `02b53fcd81ac49adffe5288201e4387abe48f23c` |
-| **Pinned on** | 2026-08-06 |
-| **Tests at pin** | 10,123 |
+| **Release** | `2026.08.12` stable |
+| **Commit** | `42effe840` (2026-08-11 20:51 -0400) |
+| **Commit (full)** | `42effe84055f891405b32914af333f14127ec381` |
+| **Pinned on** | 2026-08-15 |
+| **Tests at pin** | 10,860 |
 
-Compare against it with `git ... 02b53fcd8` in place of `warp/master`.
+Compare against it with `git ... 42effe840` in place of `warp/master`.
+
+**On the release string.** `2026-08-12` is a Wednesday and the pin is the tip of
+the preceding evening (Tuesday 20:51 -0400 = Wednesday 00:51 UTC), which is
+exactly the "cut from the previous day's tip" rule below. The `HH.MM` build
+stamp of that release is **not recorded here because it cannot be checked** —
+tag publication stopped 2026-06-09, so there is no artifact to read it from, and
+inventing one would put a number in this table that no one can verify. The
+commit is the authoritative identifier; the release string is the human label.
+
+**On the test count.** 10,860 is `script/state`'s measure — unique test-fn names
+under `#[test]` / `#[tokio::test]` / `#[async_std::test]`. The same measure gives
+**10,026** at the old pin, so the step is **+834**. The previous row in this
+table read 10,123, which was produced by a different, unrecorded method and never
+matched `docs/STATE.md`'s generated 10,026. Do not read `10,860 − 10,123` as the
+step; the two numbers are not the same measurement.
+
+## Pin history
+
+| release | commit | pinned on | tests at pin |
+|---|---|---|---|
+| `2026.08.12` stable | `42effe84055f891405b32914af333f14127ec381` | 2026-08-15 | 10,860 |
+| `2026.07.29.09.05` stable | `02b53fcd81ac49adffe5288201e4387abe48f23c` | 2026-08-06 | 10,026 (10,123 as originally recorded, see above) |
 
 ### Why a commit and not a tag
 
@@ -57,7 +79,19 @@ day's tip (the `2026-06-03` tag points at a `2026-06-02` commit), which is how
 **If tags resume, pin to the tag** — it is exact, and dating a release point is
 an approximation.
 
-## Gap at the pin — 2026-08-06
+## Gap at the pin — 2026-08-06 (measured at the OLD pin `02b53fcd8`)
+
+> **These figures have not been re-derived at `42effe840`.** They come from the
+> per-file SCOPE classification of the 854 test-bearing files at the *old* pin,
+> which is a full reading pass, not a generated number — re-running it is Phase
+> 2/4 work of the next round, not part of moving the pin. They are kept here
+> because the *shape* they describe (net ≠ workload) is still the point, and
+> deleting them would lose the only written statement of that distinction.
+>
+> **For current numbers, read `docs/STATE.md`** — it is generated from the tree
+> and the ledger on every run and is the authority when the two disagree. As of
+> the `42effe840` move the ledger carries **2,360 adjudicated rows** with **0
+> unadjudicated**, of which `MISSING-SUBSYSTEM` is **233**.
 
 Measured by **test-function count**, not filename, and classified **per file by
 reading source imports** — not by path. Every test-bearing file at the pin (854)

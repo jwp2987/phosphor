@@ -366,9 +366,25 @@ arm is the same story. Nothing to file.
 produces a gap that never shrinks no matter how much lands. That is why sustained
 porting felt like no progress.
 
-The oracle is now pinned to **Warp `2026.07.29.09.05` stable = `02b53fcd8`**, and
-the policy is to track the **latest stable**, never `master`/`dev`/`preview`. Use
-that commit in place of `warp/master` in every diff, grep and measurement.
+The oracle is pinned to **Warp `2026.08.12` stable = `42effe840`** (moved
+2026-08-15 from `02b53fcd8`, the first real re-pin), and the policy is to track
+the **latest stable**, never `master`/`dev`/`preview`. Use that commit in place
+of `warp/master` in every diff, grep and measurement.
+
+**Expect the gap to grow at a re-pin, and do not report it as a regression.**
+`docs/STATE.md` went from 2,241 absent to **2,795** the moment the pin moved,
+because the target gained 834 tests (10,026 -> 10,860 by `script/state`'s
+measure). That is the deal `ORACLE.md` makes on purpose. 2,360 of the absent are
+adjudicated in the ledger; the **435 unadjudicated** are the files that appeared
+or changed between the two pins and are the next round's queue.
+
+**Three scripts read the pin from `ORACLE.md`, and two of them used to lie about
+it.** `script/state` matched the *literal* string `02b53fcd8` and fell back to it,
+and `script/generate_pin_identity_manifest` had the same hardcoded fallback — so
+after a pin move both would have kept measuring the old oracle while labelling
+the output with the new pin, silently. Both now read the `**Commit (full)**` row
+and exit non-zero if it is missing (`.github/workflows/pr-check.yml` already
+did). If you add a fourth reader, do the same; do not add a default.
 
 ## The scope is measured, not estimated — `SCOPE-*.md`
 

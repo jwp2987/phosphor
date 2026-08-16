@@ -52,8 +52,16 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PIN="$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{7,}' | head -1)"
-PIN="${PIN:-02b53fcd8}"
+# Prefer the 40-char "Commit (full)" row; fall back to the abbreviated one.
+# There is deliberately NO hardcoded default: this used to fall back to the
+# literal 02b53fcd8, so after a re-pin it would regenerate the manifest against
+# the *old* oracle and label it with the new pin's number.
+PIN="$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)"
+[[ -z "$PIN" ]] && PIN="$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{7,}' | head -1)"
+if [[ -z "$PIN" ]]; then
+    echo "generate_pin_identity_manifest: no pin in ORACLE.md" >&2
+    exit 1
+fi
 
 if ! git cat-file -e "${PIN}^{commit}" 2>/dev/null; then
     echo "pin identity manifest: skipped (pin ${PIN} not fetched; run 'git fetch warp ${PIN}')"

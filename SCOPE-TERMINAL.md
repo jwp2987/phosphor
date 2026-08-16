@@ -9,6 +9,17 @@ and `crates/warp_tui/` **as it exists at the pinned oracle**.
 | Fork side | `origin/main` @ `4f33fcf9c` |
 | Method | test-**function**-name set comparison, file by file. No path matching. |
 
+> **The pin has moved; this file has not been re-derived.** These verdicts
+> classify the 854 test-bearing files as they existed at `02b53fcd8`, which
+> stopped being the pin on 2026-08-15 — `ORACLE.md` now records
+> `42effe840` (Warp `2026.08.12` stable). Re-deriving the classification is a
+> full reading pass (Phase 2/4 of `docs/pin-migration.md`), not part of moving
+> the pin, so it is deliberately deferred rather than half-done. Files added or
+> changed between the two pins have **no row here at all**; for those, and for
+> any current count, use `docs/sweep-verdict-ledger.tsv` (2,360 adjudicated
+> rows at the new pin) and `docs/STATE.md`.
+
+
 > **Counts here are stale, and verdict A means less than it looks (2026-08-10, #2 sweep).**
 > The fork side was measured at `4f33fcf9c`; a lot has landed since, so every `miss`
 > column reads high. Spot-checked examples: `input/view_tests.rs` says 22 missing, is

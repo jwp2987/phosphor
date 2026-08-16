@@ -2321,6 +2321,33 @@ Filed during the re-pin round and its refutation pass. **Open only** — defects
 found and fixed inside the round are recorded in their commit messages, not
 here, so this list stays a work ledger rather than a history.
 
+### Pin moved 2026-08-15 — what the next round inherits
+
+`ORACLE.md` now records `42effe840` (Warp `2026.08.12` stable). Carried forward
+deliberately, each because finishing it is a reading pass rather than part of
+moving the pin:
+
+- [ ] **435 unadjudicated absent tests.** `docs/STATE.md` counts 2,795 absent at
+      the new pin, 2,360 of them adjudicated in `docs/sweep-verdict-ledger.tsv`.
+      The remainder are tests in files that appeared or changed between the two
+      pins. This is the next round's queue; generate it with
+      `script/generate_repin_queue` rather than by hand.
+- [ ] **`SCOPE-{AI,TERMINAL,REST}.md` are not re-derived at the new pin.** Their
+      verdicts classify the 854 test-bearing files as they were at `02b53fcd8`.
+      Banners now say so explicitly. Files added between the pins have no row at
+      all — do not read "absent from SCOPE" as "no debt".
+- [ ] **`ORACLE.md`'s "Gap at the pin" figures are old-pin figures** (net 2,239 /
+      workload 1,605 / 854 files). Kept because they are the only written
+      statement of net-vs-workload, flagged as historical. `docs/STATE.md` is the
+      live number.
+- [ ] **Brand cleanup is string-literals-only.** `script/check_brand_strings`
+      guards user-visible Rust string literals and is green. Identifiers and
+      comments were never in scope: **~1,820 `Zap` and ~271 `Oz`** occurrences
+      remain in `.rs`. Needs a maintainer decision on wire-value carve-outs
+      first — `Harness::Oz` may be serialized the way `"warp-tui"` is
+      (deliberately not renamed, interop surface), while `MCPProvider::Zap` is
+      internal-only (no serde derives) and safe. Not a find-and-replace.
+
 ### Defects — user-visible
 
 - [x] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
