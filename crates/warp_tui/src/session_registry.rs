@@ -21,9 +21,9 @@ use std::path::PathBuf;
 
 use pathfinder_geometry::vector::Vector2F;
 use warp::tui_export::{
-    AIConversation, AIConversationId, BannerState, BlocklistAIHistoryModel,
-    GlobalResourceHandlesProvider, LocalTtyTerminalManager, ServerConversationToken,
-    TerminalManagerTrait, TerminalSurfaceResult,
+    AIConversation, AIConversationAutoexecuteMode, AIConversationId, BannerState,
+    BlocklistAIHistoryModel, GlobalResourceHandlesProvider, LocalTtyTerminalManager,
+    ServerConversationToken, TerminalManagerTrait, TerminalSurfaceResult,
 };
 use warpui::SingletonEntity;
 use warpui_core::runtime::TuiDriverHandle;
@@ -124,6 +124,9 @@ pub(crate) struct TuiSessions {
     sessions: Vec<TuiSession>,
     focused_session_id: Option<TuiSessionId>,
     resume_token: Option<ServerConversationToken>,
+    /// Launch-wide autoexecute default (`--auto-approve`), handed to every
+    /// session this container creates.
+    default_autoexecute_mode: AIConversationAutoexecuteMode,
 }
 
 impl Entity for TuiSessions {
@@ -168,14 +171,19 @@ impl TuiSessions {
         extra_env_vars: HashMap<OsString, OsString>,
         ctx: &mut AppContext,
     ) -> (TuiSessionId, ViewHandle<TuiTerminalSessionView>) {
-        let (exit_summary, keyboard_enhancement_supported, is_first_session) =
-            sessions.read(ctx, |sessions, _| {
-                (
-                    sessions.exit_summary.clone(),
-                    sessions.keyboard_enhancement_supported,
-                    sessions.is_empty(),
-                )
-            });
+        let (
+            exit_summary,
+            keyboard_enhancement_supported,
+            is_first_session,
+            default_autoexecute_mode,
+        ) = sessions.read(ctx, |sessions, _| {
+            (
+                sessions.exit_summary.clone(),
+                sessions.keyboard_enhancement_supported,
+                sessions.is_empty(),
+                sessions.default_autoexecute_mode,
+            )
+        });
         // Only the first session reports the startup settings-file failure;
         // later sessions would repeat a hint about an event the user has
         // already been told about.
@@ -208,7 +216,7 @@ impl TuiSessions {
                         surface_init,
                         exit_summary,
                         keyboard_enhancement_supported,
-                        initial_settings_file_error,
+    default_autoexecute_mode, initial_settings_file_error,
                         ctx,
                     )
                 });
@@ -394,6 +402,7 @@ impl TuiSessions {
         driver: TuiDriverHandle,
         exit_summary: TuiExitSummaryHandle,
         resume_token: Option<ServerConversationToken>,
+        default_autoexecute_mode: AIConversationAutoexecuteMode,
     ) -> Self {
         let keyboard_enhancement_supported = driver.keyboard_enhancement_supported();
         Self {
@@ -403,6 +412,7 @@ impl TuiSessions {
             sessions: Vec::new(),
             focused_session_id: None,
             resume_token,
+            default_autoexecute_mode,
         }
     }
 
@@ -416,6 +426,7 @@ impl TuiSessions {
             sessions: Vec::new(),
             focused_session_id: None,
             resume_token: None,
+            default_autoexecute_mode: AIConversationAutoexecuteMode::RespectUserSettings,
         }
     }
 

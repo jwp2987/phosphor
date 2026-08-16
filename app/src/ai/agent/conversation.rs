@@ -3221,8 +3221,10 @@ impl AIConversation {
         &self.todo_lists
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_todo_lists_for_test(&mut self, todo_lists: Vec<AIAgentTodoList>) {
+    /// Replaces the conversation's todo lists directly, bypassing the normal
+    /// todo-operation replay, for projection tests.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_todo_lists_for_test(&mut self, todo_lists: Vec<AIAgentTodoList>) {
         self.todo_lists = todo_lists;
     }
 

@@ -5,9 +5,10 @@ use std::sync::Arc;
 use parking_lot::FairMutex;
 use warp::settings::SettingsFileError;
 use warp::tui_export::{
-    ActiveSession, AgentViewState, Appearance, BlocklistAIActionModel, BlocklistAIHistoryModel,
-    ConversationSelection, ConversationSelectionHandle, IgnoredSuggestionsModel,
-    ModelEventDispatcher, Sessions, TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
+    AIConversationAutoexecuteMode, ActiveSession, AgentViewState, Appearance,
+    BlocklistAIActionModel, BlocklistAIHistoryModel, ConversationSelection,
+    ConversationSelectionHandle, IgnoredSuggestionsModel, ModelEventDispatcher, Sessions,
+    TerminalManagerTrait, TerminalModel, TerminalSurfaceInit,
 };
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::semantic_selection::SemanticSelection;
@@ -136,6 +137,7 @@ pub(crate) fn add_test_conversation_selection(ctx: &mut AppContext) -> Conversat
         Box::new(TuiConversationSelection::new(
             terminal_surface_id,
             terminal_model,
+            AIConversationAutoexecuteMode::RespectUserSettings,
             ctx,
         )) as Box<dyn ConversationSelection>
     })
@@ -226,7 +228,7 @@ pub(crate) fn add_test_terminal_session_with_settings_file_error(
                 surface_init,
                 TuiExitSummaryHandle::default(),
                 false,
-                initial_settings_file_error,
+    AIConversationAutoexecuteMode::RespectUserSettings, initial_settings_file_error,
                 ctx,
             )
         });

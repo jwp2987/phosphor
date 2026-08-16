@@ -1841,7 +1841,7 @@ fn task_list_renders_header_and_status_glyph_rows() {
                 vec![
                     "≡ Tasks 4 ▾",
                     "  ✓ Compile list",
-                    "  • Determine duplications",
+                    "  ● Determine duplications",
                     "  ◌ Create suggestions",
                     "  ■ Old task",
                 ],
