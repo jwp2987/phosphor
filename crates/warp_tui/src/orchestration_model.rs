@@ -103,7 +103,7 @@ pub(crate) const ORCHESTRATOR_TAB_LABEL: &str = "orchestrator";
 /// The pin carries a third, cloud-only variant pair for remote child launch
 /// (`BeginRemoteChildLaunch`/`FinishRemoteChildLaunch`); those are declined
 /// here (`DECLINED.md` #290) and `is_remote_child` is permanently false.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TuiOrchestrationEvent {
     /// Cancel the child's in-flight work through its own session view, then
     /// finish the teardown that was interrupted to get here.
@@ -111,15 +111,6 @@ pub(crate) enum TuiOrchestrationEvent {
         session_id: TuiSessionId,
         conversation_id: AIConversationId,
     },
-    /// Drop a retained child session from the registry.
-    RemoveChildSession(TuiSessionId),
-}
-
-/// Session-lifecycle requests the orchestration model asks the session owner
-/// ([`TuiSessions`]) to carry out. Trimmed to the restore-only subset this
-/// fork builds: the pin's launch/remote variants route through cloud-coupled
-/// task creation (see the module doc).
-pub(crate) enum TuiOrchestrationEvent {
     /// Materialize a restored local Oz child on a fresh background terminal
     /// session hosted by `root_session_id`, without relaunching it.
     RestoreLocalChildSession {
@@ -130,6 +121,7 @@ pub(crate) enum TuiOrchestrationEvent {
     /// conversation record and any underlying process are left alone.
     RemoveChildSession(TuiSessionId),
 }
+
 
 /// The TUI's orchestration singleton. See the module doc above for what was
 /// cut relative to the pin.
