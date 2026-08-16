@@ -1132,7 +1132,9 @@ impl AgentDriver {
     }
 
     /// Sets up the third-party harness by subscribing to CLI session events and
-    /// installing the Zap plugin and platform plugin, if applicable.
+    /// installing the notification plugin, if applicable. (The pin also installs
+    /// an Oz platform plugin here; see `setup_notification_plugin` for why that
+    /// half is absent.)
     ///
     /// Returns a oneshot receiver that fires when the harness should exit
     /// (either immediately on completion or after the idle-on-complete timeout).
@@ -1150,15 +1152,68 @@ impl AgentDriver {
             .await?;
 
         // Install plugins before running the harness command.
-        let plugin_manager: Option<Box<dyn CliAgentPluginManager>> =
-            plugin_manager_for(harness.cli_agent());
-        if let Some(manager) = plugin_manager {
-            if let Err(e) = manager.install().await {
-                log::warn!("Plugin installation failed (continuing): {e}");
-            }
+        if let Some(manager) = plugin_manager_for(harness.cli_agent()) {
+            Self::setup_notification_plugin(manager.as_ref()).await;
         }
 
         Ok(exit_rx)
+    }
+
+    /// Brings the notification plugin up to date before a third-party harness
+    /// runs, so the harness's stop/blocked notifications reach this app -- but
+    /// only for the agents whose plugin this build can actually install, and
+    /// only when the on-disk plugin is missing or stale.
+    ///
+    /// Ported from the pin's `setup_notification_plugin`
+    /// (`driver.rs:2697-2722`, `02b53fcd8`) for #601. Two things the pin does
+    /// here are deliberately absent. It threads a `SetupClientEventReporter`
+    /// through and wraps each call in `record_result`; that type has no
+    /// definition anywhere in this fork, so the branching is ported and the
+    /// reporting is dropped rather than dragging in an absent surface. And the
+    /// pin's caller, `setup_harness_plugins`, goes on to install each agent's
+    /// *Oz platform* plugin, which this fork does not have a call site for and
+    /// is removing outright (#595) -- only the notification half of that
+    /// function is ported, because only the notification plugin does anything
+    /// here.
+    ///
+    /// # Why `can_auto_install` is the guard
+    ///
+    /// `plugin_manager_for` hands back a manager for every agent that has one,
+    /// including the ones whose plugin is manual-install-only:
+    /// `OpenCodePluginManager` and `DeepSeekPluginManager` return `false`
+    /// unconditionally, and `CodexPluginManager` returns
+    /// `FeatureFlag::CodexPlugin.is_enabled()`. Those managers do not override
+    /// `install`, so the bare call this replaced fell through to the trait's
+    /// default impl and returned "Auto-install not supported for this agent" --
+    /// which is not a failure at all, it is the agent declining. Logged as a
+    /// warning on *every* OpenCode and DeepSeek harness launch, it also drowned
+    /// the one warning on this line that does mean something: a real Claude
+    /// install failure, in the same stream, with no way to tell them apart.
+    /// Declining early keeps that channel meaning "something went wrong".
+    ///
+    /// # Why the `needs_update`/`is_installed` branching
+    ///
+    /// Without it this path ran a full `claude plugin marketplace add` +
+    /// `claude plugin install` -- two subprocesses, one of them a network fetch
+    /// -- on every third-party-harness launch, current plugin or not. The same
+    /// redundant work was removed from the local-child-pane call site in #600.
+    /// The marketplace-override guard that came with it is *not* duplicated
+    /// here on purpose: the pin's `setup_notification_plugin` does not call
+    /// `has_local_marketplace_override`, only its
+    /// `ensure_local_claude_child_plugins` does.
+    async fn setup_notification_plugin(manager: &dyn CliAgentPluginManager) {
+        if !manager.can_auto_install() {
+            return;
+        }
+        if manager.needs_update() {
+            if let Err(e) = manager.update().await {
+                log::warn!("Plugin update failed (continuing): {e}");
+            }
+        } else if !manager.is_installed()
+            && let Err(e) = manager.install().await
+        {
+            log::warn!("Plugin installation failed (continuing): {e}");
+        }
     }
 
     /// Configure a third-party harness for execution. This will set `self.harness` and

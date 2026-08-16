@@ -27,8 +27,11 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::LazyLock;
 use std::time::Duration;
 
+use async_trait::async_trait;
 use futures::channel::oneshot;
 use tempfile::TempDir;
 use warp_cli::agent::Harness;
@@ -50,6 +53,9 @@ use crate::ai::mcp::JSONTransportType;
 use crate::ai::skills::SkillManager;
 use crate::test_util::add_window_with_terminal;
 use crate::test_util::terminal::initialize_app_for_terminal_view;
+use crate::terminal::cli_agent_sessions::plugin_manager::{
+    CliAgentPluginManager, PluginInstallError, PluginInstructions,
+};
 
 #[test]
 fn test_normalize_single_cli_server() {
@@ -853,4 +859,139 @@ fn warp_skill_dirs_env_relative_entries_resolve_against_working_dir() {
             "'env-skill-rel' should load via a relative WARP_SKILL_DIRS entry resolved against the driver's working dir; got: {skill_names:?}"
         );
     });
+}
+
+/// A `CliAgentPluginManager` whose capability and on-disk state are fixed by
+/// the test, recording whether `setup_notification_plugin` reached `install`
+/// or `update`.
+///
+/// There is no pin test to port here. At `02b53fcd8`,
+/// `setup_notification_plugin` and its caller `setup_harness_plugins` appear
+/// in exactly one file -- `app/src/ai/agent_sdk/driver.rs`, their own
+/// definition -- and the pin's `driver_tests.rs` does not mention either. That
+/// is how the fork lost the capability check silently in the first place, so
+/// #601 adds the coverage along with the code.
+///
+/// `has_local_marketplace_override` is deliberately left at its trait default:
+/// this call site never consults it, and #600's
+/// `ensure_local_claude_child_plugins` is the only place that does.
+struct FakePluginManager {
+    can_auto_install: bool,
+    needs_update: bool,
+    is_installed: bool,
+    installs: AtomicUsize,
+    updates: AtomicUsize,
+}
+
+impl FakePluginManager {
+    fn new(can_auto_install: bool, needs_update: bool, is_installed: bool) -> Self {
+        Self {
+            can_auto_install,
+            needs_update,
+            is_installed,
+            installs: AtomicUsize::new(0),
+            updates: AtomicUsize::new(0),
+        }
+    }
+
+    /// `(installs, updates)` observed so far.
+    fn calls(&self) -> (usize, usize) {
+        (
+            self.installs.load(Ordering::SeqCst),
+            self.updates.load(Ordering::SeqCst),
+        )
+    }
+}
+
+static FAKE_INSTRUCTIONS: LazyLock<PluginInstructions> = LazyLock::new(|| PluginInstructions {
+    title: "",
+    subtitle: "",
+    steps: Vec::new(),
+    post_install_notes: Vec::new(),
+});
+
+#[async_trait]
+impl CliAgentPluginManager for FakePluginManager {
+    fn minimum_plugin_version(&self) -> &'static str {
+        "1.0.0"
+    }
+
+    fn can_auto_install(&self) -> bool {
+        self.can_auto_install
+    }
+
+    fn is_installed(&self) -> bool {
+        self.is_installed
+    }
+
+    fn needs_update(&self) -> bool {
+        self.needs_update
+    }
+
+    async fn install(&self) -> Result<(), PluginInstallError> {
+        self.installs.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn update(&self) -> Result<(), PluginInstallError> {
+        self.updates.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn install_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+
+    fn update_instructions(&self) -> &'static PluginInstructions {
+        &FAKE_INSTRUCTIONS
+    }
+}
+
+/// The check #601 restores. `plugin_manager_for` returns managers for agents
+/// whose plugin was never auto-installable -- OpenCode and DeepSeek always,
+/// Codex when its feature flag is off -- and those do not override `install`,
+/// so calling it reaches the trait default and returns "Auto-install not
+/// supported for this agent". That is the agent declining, not a failure, and
+/// warning about it on every launch is what made a real install failure
+/// unreadable. Note this manager is deliberately also `needs_update` *and*
+/// not installed: the state that most strongly invites a call.
+#[tokio::test]
+async fn notification_plugin_setup_touches_nothing_when_the_agent_cannot_auto_install() {
+    let manager = FakePluginManager::new(false, true, false);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
+}
+
+#[tokio::test]
+async fn notification_plugin_setup_installs_when_the_plugin_is_absent() {
+    let manager = FakePluginManager::new(true, false, false);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (1, 0));
+}
+
+/// An outdated plugin takes the update path, not the install path: `update()`
+/// refreshes the marketplace clone first, which a plain `install()` does not.
+#[tokio::test]
+async fn notification_plugin_setup_updates_when_the_plugin_is_outdated() {
+    let manager = FakePluginManager::new(true, true, true);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 1));
+}
+
+/// The second half of #601. Before it, every third-party-harness launch shelled
+/// out to `plugin marketplace add` + `plugin install` even with the plugin
+/// already current.
+#[tokio::test]
+async fn notification_plugin_setup_touches_nothing_when_the_plugin_is_current() {
+    let manager = FakePluginManager::new(true, false, true);
+
+    AgentDriver::setup_notification_plugin(&manager).await;
+
+    assert_eq!(manager.calls(), (0, 0));
 }
