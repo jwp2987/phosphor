@@ -46,13 +46,17 @@ grep -rn --include='*.rs' -E '^\s*use crate::(server|cloud_object)::' app/src \
     | grep -vE '^app/src/(server|cloud_object)/' \
     | sed -E 's/^([^:]+):[0-9]+:\s*/\1 /' \
     | sed -E 's/\s+$//' \
-    | sort -u > "$current" || true
+    | LC_ALL=C sort -u > "$current" || true
 
 expected="$(mktemp)"
-grep -vE '^\s*(#|$)' "$ALLOWLIST_FILE" | sort -u > "$expected"
+grep -vE '^\s*(#|$)' "$ALLOWLIST_FILE" | LC_ALL=C sort -u > "$expected"
 
-added="$(comm -23 "$current" "$expected")"
-removed="$(comm -13 "$current" "$expected")"
+# `sort` and `comm` must agree on collation. Without LC_ALL=C they do not:
+# comm printed "input is not in sorted order" and returned wrong set
+# differences, reporting byte-identical lines as BOTH a new import and a
+# stale allowlist entry. Same defect `script/state` carried.
+added="$(LC_ALL=C comm -23 "$current" "$expected")"
+removed="$(LC_ALL=C comm -13 "$current" "$expected")"
 
 status=0
 

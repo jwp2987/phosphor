@@ -69,11 +69,11 @@ app/src/ai/document/ai_document_model_tests.rs use crate::cloud_object::model::p
 app/src/ai/execution_profiles/mod.rs use crate::cloud_object::UniquePer;
 app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, UpdateSource};
 app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType};
+app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject as _};
 app/src/ai/execution_profiles/profiles.rs use crate::server::ids::SyncId;
 app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
 app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::{StoredObjectMetadata, StoredObjectPermissions};
+app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::{Owner, StoredObjectMetadata, StoredObjectPermissions};
 app/src/ai/execution_profiles/profiles_tests.rs use crate::server::ids::{ServerId, SyncId};
 app/src/ai/facts/mod.rs use crate::server::ids::SyncId;
 app/src/ai/facts/view/mod.rs use crate::server::ids::SyncId;

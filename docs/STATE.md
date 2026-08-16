@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `8c60dafc2635ea0274bc1fd7535743fd956e4d0f` (2026-08-16 00:14) — **3 commit(s) since**
+Last fully green `script/precheck`: `8c60dafc2635ea0274bc1fd7535743fd956e4d0f` (2026-08-16 00:14) — **6 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,17 +27,17 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10860 |
-| Fork tests | 10189 |
-| Shared | 8065 |
-| Absent from fork | 2795 |
+| Fork tests | 10194 |
+| Shared | 8066 |
+| Absent from fork | 2794 |
 
-Of the absent, **2360 are adjudicated** in the ledger and 435 are not.
+Of the absent, **2360 are adjudicated** in the ledger and 434 are not.
 Cloud accounts for 1164 of the adjudicated; the unadjudicated remainder is
-*projected* at the same ratio (~220 non-cloud), so the figures below
+*projected* at the same ratio (~219 non-cloud), so the figures below
 carry that estimate.
 
-- **~85.0% of the pin's non-cloud tests exist here** (8065 of ~9481)
-- **~92.9% are present or deliberately resolved** (adding 598 declined, 87 divergent, 67 covered-elsewhere)
+- **~85.0% of the pin's non-cloud tests exist here** (8066 of ~9481)
+- **~93.0% are present or deliberately resolved** (adding 598 declined, 87 divergent, 67 covered-elsewhere)
 
 ## Ledger
 
