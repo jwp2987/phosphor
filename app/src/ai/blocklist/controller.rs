@@ -3212,7 +3212,7 @@ impl BlocklistAIController {
                         conversation_data.id,
                         request_params.model.clone(),
                         is_queued_prompt,
-                        "Zap couldn't save the BYOP conversation state needed to send this \
+                        "Phosphor couldn't save the BYOP conversation state needed to send this \
                          request. Check that conversation persistence is enabled and that there \
                          is enough disk space, then try again."
                             .to_owned(),

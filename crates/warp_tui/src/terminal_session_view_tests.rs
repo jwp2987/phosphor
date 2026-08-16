@@ -1768,7 +1768,7 @@ fn zero_state_running_command_hint_shows_attachment() {
 
         let lines = render_session(&mut app, &view, 80, 40);
         assert!(
-            lines.iter().any(|line| line.contains("Warp Agent")),
+            lines.iter().any(|line| line.contains("Phosphor Agent")),
             "zero state should remain visible:\n{}",
             lines.join("\n")
         );
@@ -1839,8 +1839,8 @@ fn zero_state_renders_with_only_zero_height_bootstrap_blocks() {
         let lines = frame.buffer.to_lines();
         let title_row = lines
             .iter()
-            .position(|line| line.contains("Warp Agent"))
-            .expect("zero state should render the Warp Agent title");
+            .position(|line| line.contains("Phosphor Agent"))
+            .expect("zero state should render the Phosphor Agent title");
         assert!(
             title_row < 28,
             "zero-state title should render in the transcript area:\n{}",

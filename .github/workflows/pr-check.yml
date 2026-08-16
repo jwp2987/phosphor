@@ -110,6 +110,21 @@ jobs:
         shell: bash
         run: ./script/check_declined_collisions
 
+      # Ports arrive as PRs and each one drags more of Warp's copy in, so this
+      # has to run on every PR or it is voluntary. The explicit python3 check
+      # is deliberate: check_brand_strings prints "skipped" and exits 0 when
+      # python3 is absent, which on a runner would read as a pass. That is the
+      # same silent-disarm shape the oracle fetch above used to have as a
+      # `::warning::`, and it is not being repeated here.
+      - name: Brand strings (no user-visible string names Zap/Oz/Warp)
+        shell: bash
+        run: |
+          command -v python3 >/dev/null || {
+            echo "::error::python3 missing; check_brand_strings would self-skip"
+            exit 1
+          }
+          ./script/check_brand_strings
+
       - name: Settings registry (test harness matches production registration)
         shell: bash
         run: ./script/check_settings_registry

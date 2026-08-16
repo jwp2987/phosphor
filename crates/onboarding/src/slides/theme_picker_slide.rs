@@ -250,7 +250,7 @@ impl ThemePickerSlide {
 
         let theme_picker_last = FeatureFlag::ZapNewSettingsModes.is_enabled();
         let next_label = if theme_picker_last {
-            localized("common-get-warping", "Get Warping")
+            localized("common-get-warping", "Get Started")
         } else {
             localized("common-next", "Next")
         };
@@ -549,7 +549,7 @@ impl ThemePickerSlide {
                 ui_builder
                     .span(localized(
                         "auth-local-privacy-note",
-                        "Zap stores onboarding choices locally on this device.",
+                        "Phosphor stores onboarding choices locally on this device.",
                     ))
                     .with_style(disclaimer_styles)
                     .build()

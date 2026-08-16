@@ -29,7 +29,7 @@ pub enum StartupArgsForwardingError {
     #[error("should not forward arguments after an auto-update")]
     IgnoredAfterAutoUpdate,
     /// There's no instance of Zap already running.
-    #[error("there is no other instance of Zap")]
+    #[error("there is no other instance of Phosphor")]
     NoExistingInstance,
     #[error("failed to construct url")]
     CouldNotCreateUrl(#[from] url::ParseError),

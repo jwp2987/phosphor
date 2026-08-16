@@ -898,7 +898,7 @@ impl AIDocumentView {
         // openWarp localization: plan no longer pushes to the cloud notebook, and this
         // menu entry has been removed. The enum variant is kept only so old keybinding
         // configs don't fail deserialization; this is a no-op.
-        log::debug!("AIDocumentAction::CreateWarpDriveNotebook is a no-op in openWarp");
+        log::debug!("AIDocumentAction::CreateWarpDriveNotebook is a no-op in Phosphor");
     }
 
     /// Export the current content as a markdown file.
@@ -1120,7 +1120,7 @@ impl TypedActionView for AIDocumentView {
                 // that used to emit a ViewInWarpDrive event to jump to the cloud
                 // notebook is now fully unreachable. The enum variant is kept only so
                 // old keybindings don't fail deserialization; this is a no-op.
-                log::debug!("AIDocumentAction::ShowInWarpDrive is a no-op in openWarp");
+                log::debug!("AIDocumentAction::ShowInWarpDrive is a no-op in Phosphor");
             }
             AIDocumentAction::AttachToActiveSession => {
                 ctx.emit(AIDocumentEvent::AttachPlanAsContext(self.document_id));

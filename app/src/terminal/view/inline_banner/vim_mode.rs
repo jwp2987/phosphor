@@ -46,7 +46,7 @@ pub fn render_vim_mode_banner(
         InlineBannerStyle::LowPriority,
         appearance,
         InlineBannerContent {
-            title: "Enable Zap's Vim keybindings?".to_string(),
+            title: "Enable Phosphor's Vim keybindings?".to_string(),
             buttons,
             close_button: Some(close_button),
             ..Default::default()

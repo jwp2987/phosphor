@@ -105,15 +105,15 @@ pub(super) fn validate_local_harness_shell(shell_type: Option<ShellType>) -> Res
 /// (`crates/warp_cli/src/agent_mailbox.rs`) keyed by `OZ_RUN_ID`; see that
 /// module's doc comment for why `oz run` could not be ported and this is a
 /// new command under the existing `agent` surface instead.
-const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Zap.
+const LOCAL_CLAUDE_CHILD_ORCHESTRATION_INSTRUCTIONS: &str = r#"You are a local Claude Code child agent launched by a lead agent in Phosphor.
 
-Coordinate with the lead agent through the Oz CLI messaging environment:
+Coordinate with the lead agent through the Phosphor CLI messaging environment:
 - Your run id is in OZ_RUN_ID.
 - The lead agent id is in OZ_PARENT_RUN_ID.
-- The Oz CLI command is in OZ_CLI.
+- The Phosphor CLI command is in OZ_CLI.
 
 If OZ_CLI, OZ_RUN_ID, or OZ_PARENT_RUN_ID is missing, report that blocker in your final response.
-Do not use Claude Code Agent or SendMessage tools to contact the lead agent; use the Oz CLI commands below.
+Do not use Claude Code Agent or SendMessage tools to contact the lead agent; use the Phosphor CLI commands below.
 Do not ask to inspect help before messaging. The command shapes below are complete.
 
 Send a message to the lead agent at start, when blocked, and when complete:
@@ -229,7 +229,7 @@ pub(super) async fn prepare_local_harness_child_launch(
     }
     validate_local_harness_shell(shell_type)?;
     let command = match harness {
-        Harness::Oz => unreachable!("normalize_local_child_harness filters out Oz"),
+        Harness::Oz => unreachable!("normalize_local_child_harness filters out Harness::Oz"),
         Harness::Unknown => unreachable!("normalize_local_child_harness filters out Unknown"),
         Harness::Claude => {
             let working_dir = startup_directory

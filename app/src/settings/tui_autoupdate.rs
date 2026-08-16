@@ -16,6 +16,6 @@ define_settings_group!(TuiAutoupdateSettings, settings: [
         private: false,
         storage_key: "TuiAutoupdateEnabled",
         toml_path: "general.autoupdate_enabled",
-        description: "Whether Zap automatically installs TUI updates in the background.",
+        description: "Whether Phosphor automatically installs TUI updates in the background.",
     },
 ]);

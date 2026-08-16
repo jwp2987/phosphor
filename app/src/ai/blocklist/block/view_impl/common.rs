@@ -127,7 +127,7 @@ pub const WAITING_FOR_USER_INPUT_MESSAGE: &str = "Agent waiting for instructions
 const IMAGE_SOURCE_LINK_LINE_INDEX: usize = 1;
 
 const ERROR_APOLOGY_TEXT: &str = "I'm sorry, I couldn't complete that request.";
-const INTERNAL_WARP_ERROR: &str = "Internal Zap error.";
+const INTERNAL_WARP_ERROR: &str = "Internal Phosphor error.";
 
 pub const LOAD_OUTPUT_MESSAGE: &str = "Phosphorizing...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_ADJUSTING: &str = "Adjusting tasks...";
@@ -3035,7 +3035,7 @@ pub fn render_failed_output(props: FailedOutputProps, app: &AppContext) -> Box<d
             format!("{ERROR_APOLOGY_TEXT}\n\n{INTERNAL_WARP_ERROR}")
         }
         RenderableAIError::ServerOverloaded => {
-            "Zap is currently overloaded. Please try again later.".to_string()
+            "Phosphor is currently overloaded. Please try again later.".to_string()
         }
         RenderableAIError::InternalWarpError => {
             format!("{ERROR_APOLOGY_TEXT}\n\n{INTERNAL_WARP_ERROR}")

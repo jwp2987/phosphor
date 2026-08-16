@@ -47,7 +47,7 @@ pub(super) async fn download_update_and_cleanup(
                 found.browser_download_url.clone()
             } else {
                 log::warn!(
-                    "openWarp: cached release tag {} has no asset named {installer_file_name}, falling back to the tag URL",
+                    "Phosphor: cached release tag {} has no asset named {installer_file_name}, falling back to the tag URL",
                     release.tag_name
                 );
                 format!(
@@ -271,7 +271,7 @@ pub(super) fn check_and_report_update_errors(ctx: &mut AppContext) {
     if let Some(exit_code) = parse_forcekill_exit_code(&contents_lowercase)
         && exit_code != 128
     {
-        log::warn!("openWarp: autoupdate force-kill failed (exit code {exit_code})");
+        log::warn!("Phosphor: autoupdate force-kill failed (exit code {exit_code})");
         crate::send_telemetry_sync_from_app_ctx!(TelemetryEvent::AutoupdateForcekillFailed, ctx);
     }
 
@@ -280,7 +280,7 @@ pub(super) fn check_and_report_update_errors(ctx: &mut AppContext) {
     // (cloud telemetry is amputated), so it is recorded in the local log
     // instead — matching how the fork records autoupdate errors locally below.
     if let Some(exit_code) = parse_minidump_cleanup_exit_code(&contents_lowercase) {
-        log::warn!("openWarp: autoupdate minidump-server cleanup failed (exit code {exit_code})");
+        log::warn!("Phosphor: autoupdate minidump-server cleanup failed (exit code {exit_code})");
     }
 
     // openWarp doesn't upload autoupdate failure logs; it only records the
@@ -306,7 +306,7 @@ pub(super) fn check_and_report_update_errors(ctx: &mut AppContext) {
 
         if error_count > 0 {
             log::error!(
-                "openWarp: Windows auto-update log contains {error_count} error(s) (log: {:?})",
+                "Phosphor: Windows auto-update log contains {error_count} error(s) (log: {:?})",
                 log_path
             );
         }

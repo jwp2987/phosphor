@@ -73,7 +73,7 @@ fn create_symlink_with_admin(source: &Path, target: &Path) -> Result<()> {
 
     // Use osascript to run the ln command with admin privileges, with a custom prompt
     let script = format!(
-        "do shell script \"ln -sf {escaped_source} {escaped_target}\" with prompt \"Zap needs administrator privileges to install the command in /usr/local/bin.\" with administrator privileges"
+        "do shell script \"ln -sf {escaped_source} {escaped_target}\" with prompt \"Phosphor needs administrator privileges to install the command in /usr/local/bin.\" with administrator privileges"
     );
 
     log::debug!("Creating symlink with admin privileges");
@@ -109,7 +109,7 @@ fn remove_file_with_admin(target: &Path) -> Result<()> {
     let escaped_target = ShellFamily::Posix.shell_escape(target_str);
 
     let script = format!(
-        "do shell script \"rm {escaped_target}\" with prompt \"Zap needs administrator privileges to uninstall the command from /usr/local/bin.\" with administrator privileges"
+        "do shell script \"rm {escaped_target}\" with prompt \"Phosphor needs administrator privileges to uninstall the command from /usr/local/bin.\" with administrator privileges"
     );
 
     log::debug!("Removing file with admin privileges");
@@ -187,7 +187,7 @@ pub fn uninstall_cli() -> Result<()> {
     let cli_path = cli_install_target_path();
 
     if !cli_path.exists() {
-        return Err(anyhow!("Oz command is not currently installed."));
+        return Err(anyhow!("Phosphor CLI command is not currently installed."));
     }
 
     // Safety check: verify it's actually a symlink before removing
@@ -236,7 +236,7 @@ pub fn install_warpctrl() -> Result<()> {
 
     if !warpctrl_source.exists() {
         return Err(anyhow!(
-            "Cannot install Warp Control CLI: bundled wrapper not found at {}",
+            "Cannot install Phosphor Control CLI: bundled wrapper not found at {}",
             warpctrl_source.display()
         ));
     }
@@ -244,7 +244,7 @@ pub fn install_warpctrl() -> Result<()> {
     // Check if target file exists and handle conflicts
     if warpctrl_path.exists() && !warpctrl_path.is_symlink() {
         return Err(anyhow!(
-            "Cannot install Warp Control CLI: {:?} exists but is not a symlink. Please remove it manually first.",
+            "Cannot install Phosphor Control CLI: {:?} exists but is not a symlink. Please remove it manually first.",
             warpctrl_path
         ));
     }
@@ -255,7 +255,7 @@ pub fn install_warpctrl() -> Result<()> {
     match symlink_result {
         Ok(_) => {
             log::debug!(
-                "Warp Control CLI installed successfully without admin privileges: {:?} -> {}",
+                "Phosphor Control CLI installed successfully without admin privileges: {:?} -> {}",
                 warpctrl_path,
                 warpctrl_source.display()
             );
@@ -266,7 +266,7 @@ pub fn install_warpctrl() -> Result<()> {
             create_symlink_with_admin(&warpctrl_source, &warpctrl_path)
                 .context("Failed to create symlink even with admin privileges")?;
 
-            log::debug!("Warp Control CLI installed successfully with admin privileges");
+            log::debug!("Phosphor Control CLI installed successfully with admin privileges");
         }
     }
 
@@ -283,13 +283,13 @@ pub fn uninstall_warpctrl() -> Result<()> {
     let warpctrl_path = warpctrl_install_target_path();
 
     if !warpctrl_path.exists() {
-        return Err(anyhow!("Warp Control command is not currently installed."));
+        return Err(anyhow!("Phosphor Control command is not currently installed."));
     }
 
     // Safety check: verify it's actually a symlink before removing
     if !warpctrl_path.is_symlink() {
         return Err(anyhow!(
-            "Cannot uninstall Warp Control CLI: {:?} exists but is not a symlink. Please remove it manually.",
+            "Cannot uninstall Phosphor Control CLI: {:?} exists but is not a symlink. Please remove it manually.",
             warpctrl_path
         ));
     }
@@ -299,7 +299,7 @@ pub fn uninstall_warpctrl() -> Result<()> {
 
     match remove_result {
         Ok(_) => {
-            log::debug!("Warp Control CLI uninstalled successfully without admin privileges");
+            log::debug!("Phosphor Control CLI uninstalled successfully without admin privileges");
         }
         Err(_) => {
             log::debug!("File removal failed, trying with admin privileges");
@@ -307,7 +307,7 @@ pub fn uninstall_warpctrl() -> Result<()> {
             remove_file_with_admin(&warpctrl_path)
                 .context("Failed to remove symlink even with admin privileges")?;
 
-            log::debug!("Warp Control CLI uninstalled successfully with admin privileges");
+            log::debug!("Phosphor Control CLI uninstalled successfully with admin privileges");
         }
     }
 

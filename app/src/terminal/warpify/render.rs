@@ -162,7 +162,7 @@ pub fn description_row(text: &str, theme: &WarpTheme, appearance: &Appearance) -
     .finish()
 }
 
-/// Renders a "Never Warpify this host" link or nothing.
+/// Renders a "Never Phosphorize this host" link or nothing.
 pub fn render_never_warpify_ssh_link(
     ssh_host: &Option<String>,
     app: &AppContext,
@@ -183,7 +183,7 @@ pub fn render_never_warpify_ssh_link(
     let link = appearance
         .ui_builder()
         .link(
-            "Never Warpify this host".into(),
+            "Never Phosphorize this host".into(),
             None,
             Some(Box::new({
                 let ssh_host = ssh_host.clone();

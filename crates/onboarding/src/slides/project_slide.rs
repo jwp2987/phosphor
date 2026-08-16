@@ -137,7 +137,7 @@ impl ProjectSlide {
             .ui_builder()
             .paragraph(localized(
                 "onboarding-project-subtitle",
-                "Set up a project to optimize it for coding in Zap.",
+                "Set up a project to optimize it for coding in Phosphor.",
             ))
             .with_style(UiComponentStyles {
                 font_size: Some(20.),
@@ -305,7 +305,7 @@ impl ProjectSlide {
                 if theme_picker_last {
                     localized("common-next", "Next")
                 } else {
-                    localized("common-get-warping", "Get Zapping")
+                    localized("common-get-warping", "Get Started")
                 },
                 Keystroke::parse("enter").unwrap_or_default(),
                 ProjectSlideAction::NextClicked,

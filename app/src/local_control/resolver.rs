@@ -129,7 +129,7 @@ pub(crate) fn require_active_window_id_for_action(
     active_window.ok_or_else(|| {
         ControlError::new(
             ErrorCode::MissingTarget,
-            format!("{} requires an active Warp window", action.as_str()),
+            format!("{} requires an active Phosphor window", action.as_str()),
         )
     })
 }
@@ -148,7 +148,7 @@ fn active_or_single_window_id(
         _ => Err(ControlError::new(
             ErrorCode::AmbiguousTarget,
             format!(
-                "{} requires an explicit window selector when no Warp window is active",
+                "{} requires an explicit window selector when no Phosphor window is active",
                 action.as_str()
             ),
         )),

@@ -13,7 +13,7 @@ define_settings_group!(GeneralSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "general.show_warning_before_quitting",
-        description: "Whether to show a warning dialog before quitting Zap.",
+        description: "Whether to show a warning dialog before quitting Phosphor.",
     },
     quit_on_last_window_closed: QuitOnLastWindowClosed {
         type: bool,
@@ -22,7 +22,7 @@ define_settings_group!(GeneralSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "general.quit_on_last_window_closed",
-        description: "Whether to quit Zap when the last window is closed.",
+        description: "Whether to quit Phosphor when the last window is closed.",
     },
     restore_session: RestoreSession {
         type: bool,
@@ -31,7 +31,7 @@ define_settings_group!(GeneralSettings, settings: [
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,
         toml_path: "general.restore_session",
-        description: "Whether to restore the previous session when Zap starts up.",
+        description: "Whether to restore the previous session when Phosphor starts up.",
     },
     persist_conversations: PersistConversations {
         type: bool,

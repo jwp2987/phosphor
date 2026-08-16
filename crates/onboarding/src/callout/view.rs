@@ -58,7 +58,7 @@ fn get_universal_input_callout_options(
 ) -> Option<CalloutOptions> {
     match state {
         UniversalInputCalloutState::MeetInput => Some(CalloutOptions {
-            title: localized_static("onboarding-callout-meet-input-title", "Meet the Zap input"),
+            title: localized_static("onboarding-callout-meet-input-title", "Meet the Phosphor input"),
             text: format!(
                 "{} {} {}",
                 localized(
@@ -203,7 +203,7 @@ fn get_agent_modality_callout_options(
                         "{} {}.",
                         localized(
                             "onboarding-callout-nl-support-text-prefix",
-                            "Natural language input is off by default. If enabled, you can type requests in plain English and Zap will autodetect queries for the agent. You can always override them using"
+                            "Natural language input is off by default. If enabled, you can type requests in plain English and Phosphor will autodetect queries for the agent. You can always override them using"
                         ),
                         keybindings.toggle_input_mode,
                     ),
@@ -231,7 +231,7 @@ fn get_agent_modality_callout_options(
         AgentModalityCalloutState::IntroducingAgentExperience => Some(CalloutOptions {
             title: localized_static(
                 "onboarding-callout-new-agent-title",
-                "Introducing Zap's new agent experience",
+                "Introducing Phosphor's new agent experience",
             ),
             text: localized(
                 "onboarding-callout-new-agent-text",

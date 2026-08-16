@@ -27,7 +27,7 @@ pub const CONTROL_MODE_FLAG: &str = "--warpctrl";
 #[command(
     name = "warpctrl",
     display_name = "warpctrl",
-    about = "Control a running local Warp app instance"
+    about = "Control a running local Phosphor app instance"
 )]
 pub struct ControlArgs {
     /// Set the output format.

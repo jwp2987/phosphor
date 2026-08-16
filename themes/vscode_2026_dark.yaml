@@ -5,9 +5,9 @@
 #   shipped "Visual Studio Code" product, which Microsoft distributes under
 #   proprietary terms; the name and logo are Microsoft trademarks and are not
 #   licensed by the MIT grant.
-# Installation (Windows / openWarp OSS):
-#   Copy this file to %APPDATA%\zap\Zap\data\themes\vscode_2026_dark.yaml
-#   After restarting openWarp, select "VS Code 2026 Dark" under Settings → Appearance → Themes
+# Installation (Windows / Phosphor OSS):
+#   Copy this file to %APPDATA%\phosphor\Phosphor\data\themes\vscode_2026_dark.yaml
+#   After restarting Phosphor, select "VS Code 2026 Dark" under Settings → Appearance → Themes
 ---
 name: VS Code 2026 Dark
 background: '#191A1B'

@@ -593,7 +593,7 @@ impl MCPServersListPageView {
                 ctx.emit(MCPServersListPageViewEvent::Edit(*item_id));
             }
             ServerCardEvent::Share(item_id) => {
-                log::debug!("Zap: MCP sharing is disabled for {item_id:?}");
+                log::debug!("Phosphor: MCP sharing is disabled for {item_id:?}");
             }
             ServerCardEvent::ViewLogs(item_id) => match item_id {
                 ServerCardItemId::TemplatableMCP(_) => {

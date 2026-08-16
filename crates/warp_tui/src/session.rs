@@ -211,7 +211,7 @@ pub fn run() -> Result<()> {
                 // coalesced by the watcher's debounce.
                 if let Err(error) = warp::tui_export::notify_tui_api_keys_changed() {
                     log::warn!(
-                        "API key was saved, but signalling running Zap processes to \
+                        "API key was saved, but signalling running Phosphor processes to \
                          reload it failed: {error:#}"
                     );
                 }

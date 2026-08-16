@@ -370,7 +370,7 @@ async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBu
     // (otherwise it's silent the whole time and easy to mistake for a hang).
     log::info!(
         "dev remote-server: cross-compiling, first run usually takes several minutes \
-         — cargo progress will print to the terminal running Zap"
+         — cargo progress will print to the terminal running Phosphor"
     );
 
     let status = async {
@@ -431,7 +431,7 @@ async fn cross_compile_remote_server(backend: &DevBuildBackend) -> Result<PathBu
     if !status.success() {
         let code = status.code().unwrap_or(-1);
         return Err(anyhow!(
-            "cargo cross-compile failed (exit {code}); see cargo output in the terminal running Zap"
+            "cargo cross-compile failed (exit {code}); see cargo output in the terminal running Phosphor"
         ));
     }
 

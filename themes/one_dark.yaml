@@ -5,9 +5,9 @@
 #   which one governs assets/themes/ has not been verified. Zed's One theme
 #   descends from Atom's One Dark (MIT, GitHub Inc.). Verify before treating
 #   this file as redistributable. Tracked in docs/licensing-open-questions.md.
-# Installation (Windows / openWarp OSS):
-#   Copy this file to %APPDATA%\zap\Zap\data\themes\one_dark.yaml
-#   After restarting openWarp, select "One Dark" under Settings → Appearance → Themes
+# Installation (Windows / Phosphor OSS):
+#   Copy this file to %APPDATA%\phosphor\Phosphor\data\themes\one_dark.yaml
+#   After restarting Phosphor, select "One Dark" under Settings → Appearance → Themes
 ---
 name: One Dark
 background: '#282c34'

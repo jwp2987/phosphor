@@ -8542,7 +8542,7 @@ mod cache_boundary_stability_tests {
     fn build_three_turn_conversation() -> Vec<ChatMessage> {
         vec![
             ChatMessage::system(
-                "You are a helpful coding assistant for Zap BYOP.\n\
+                "You are a helpful coding assistant for Phosphor BYOP.\n\
                  Guidelines: be concise, prefer code over prose.",
             ),
             ChatMessage::user("What is rust borrow checker?"),

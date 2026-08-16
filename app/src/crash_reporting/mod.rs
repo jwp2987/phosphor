@@ -266,7 +266,7 @@ fn init_local_crash_reporting(
     _email: Option<String>,
     _ctx: &mut AppContext,
 ) {
-    log::info!("openWarp: crash reporting uses local panic logs; nothing is reported remotely");
+    log::info!("Phosphor: crash reporting uses local panic logs; nothing is reported remotely");
 
     use std::sync::Once;
     static PANIC_HOOK_INSTALLED: Once = Once::new();
@@ -310,15 +310,15 @@ pub fn uninit_crash_reporting() {
 
 /// Compatibility entry point for suspending local crash-reporting state before a child process is spawned.
 pub fn suspend_crash_reporting_for_child_spawn() {
-    log::info!("openWarp: the macOS native crash reporter has been stripped out; skipping suspend");
+    log::info!("Phosphor: the macOS native crash reporter has been stripped out; skipping suspend");
 }
 
 pub fn resume_crash_reporting_after_child_spawn() {
-    log::info!("openWarp: the macOS native crash reporter has been stripped out; skipping resume");
+    log::info!("Phosphor: the macOS native crash reporter has been stripped out; skipping resume");
 }
 
 pub fn crash() {
-    panic!("openWarp: crash() invoked for local panic-hook smoke test");
+    panic!("Phosphor: crash() invoked for local panic-hook smoke test");
 }
 
 /// The public signature is kept for use by login-state callbacks, but local crash reporting doesn't write any user identity.

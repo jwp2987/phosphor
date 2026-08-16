@@ -51,7 +51,7 @@ maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
     sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
     private: false,
     toml_path: "warpify.ssh.enable_ssh_warpification",
-    description: "Whether to enable Zap features in SSH sessions.",
+    description: "Whether to enable Phosphor features in SSH sessions.",
 });
 
 // NOTE: This setting has been unified into `enable_ssh_warpification` and is no

@@ -616,7 +616,7 @@ fn test_should_update() {
             let result = autoupdate.should_update(version, "oss_same_version".to_string());
             assert!(
                 matches!(result, UpdateReady::No),
-                "openWarp: a v-prefix-only difference should be recognized as already up to date, actual: {result:?}"
+                "Phosphor: a v-prefix-only difference should be recognized as already up to date, actual: {result:?}"
             );
 
             // Test 7: reversed (local has no v, remote has v) should also be recognized as the same version

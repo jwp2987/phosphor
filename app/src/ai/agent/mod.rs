@@ -698,7 +698,7 @@ pub enum TransientNetworkErrorKind {
 
 impl RenderableAIError {
     const TRANSIENT_NETWORK_ERROR_MESSAGE: &'static str =
-        "Zap lost connection while receiving the agent response. This is usually temporary.";
+        "Phosphor lost connection while receiving the agent response. This is usually temporary.";
 
     /// Creates a transient network error. `kind` is the structured cause, preserved so user
     /// reports can disambiguate the different causes behind the shared user-facing copy.
@@ -782,7 +782,7 @@ impl From<&AIApiError> for RenderableAIError {
                 format!("Your AI provider returned HTTP {}.\n\n{body}", status.as_u16())
             }
             AIApiError::Deserialization(err) => {
-                format!("Zap couldn't parse the response from your AI provider.\n\n{err}")
+                format!("Phosphor couldn't parse the response from your AI provider.\n\n{err}")
             }
             AIApiError::Stream {
                 stream_type,
@@ -804,9 +804,9 @@ impl Display for RenderableAIError {
         match self {
             Self::QuotaLimit => write!(f, "Quota limit reached."),
             Self::ServerOverloaded => {
-                write!(f, "Zap is currently overloaded. Please try again later.")
+                write!(f, "Phosphor is currently overloaded. Please try again later.")
             }
-            Self::InternalWarpError => write!(f, "Internal Zap error."),
+            Self::InternalWarpError => write!(f, "Internal Phosphor error."),
             Self::ContextWindowExceeded(message) => {
                 write!(f, "Context window exceeded: {message}")
             }

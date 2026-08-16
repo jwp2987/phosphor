@@ -632,7 +632,7 @@ pub mod regexes {
         },
         DefaultRegex {
             pattern: WARP_API_KEY,
-            name: "Zap API Key",
+            name: "Phosphor API Key",
         },
     ];
 }

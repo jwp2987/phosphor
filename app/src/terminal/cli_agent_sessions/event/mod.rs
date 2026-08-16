@@ -106,7 +106,7 @@ pub fn parse_event(title: Option<&str>, body: &str) -> Option<CLIAgentEvent> {
         None => {
             log::error!(
                 "Received CLI agent event with unsupported schema version \
-                 {version}. The CLI agent plugin or Zap may need to be updated."
+                 {version}. The CLI agent plugin or Phosphor may need to be updated."
             );
             None
         }

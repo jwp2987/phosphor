@@ -159,7 +159,7 @@ impl Harness {
 
     pub fn display_name(self) -> &'static str {
         match self {
-            Self::Oz => "Oz",
+            Self::Oz => "Phosphor Agent",
             Self::Claude => "Claude Code",
             Self::OpenCode => "OpenCode",
             Self::Gemini => "Gemini CLI",
