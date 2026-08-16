@@ -37,8 +37,20 @@ OUT="docs/STATE.md"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP" "$TMP".pin "$TMP".fork' EXIT
 
-PIN="$(sed -n 's/.*\b\(02b53fcd8\)\b.*/\1/p' ORACLE.md | head -1)"
-[[ -z "$PIN" ]] && PIN=02b53fcd8
+# Read the pin from ORACLE.md's "Commit (full)" row, the same way
+# .github/workflows/pr-check.yml does. This used to be a sed that matched the
+# literal `02b53fcd8` and fell back to it, so it kept reporting against the old
+# pin after a re-pin moved ORACLE.md -- silently, and STATE.md is the document
+# the other docs are supposed to defer to. Fail loudly instead of guessing.
+PIN="$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md | grep -oE '[0-9a-f]{40}' | head -1)"
+if [[ -z "$PIN" ]]; then
+    echo "state: ORACLE.md has no 40-char '**Commit (full)**' row; cannot measure parity" >&2
+    exit 1
+fi
+if ! git cat-file -e "$PIN^{commit}" 2>/dev/null; then
+    echo "state: pin $PIN is not a fetched object; run 'git fetch warp' first" >&2
+    exit 1
+fi
 LEDGER=docs/sweep-verdict-ledger.tsv
 
 # ---------------------------------------------------------------- parity
@@ -47,14 +59,14 @@ LEDGER=docs/sweep-verdict-ledger.tsv
 # approximation and why the ledger, not this, is the authority on any single
 # test.
 git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$PIN" -- "*.rs" 2>/dev/null \
-    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | sort -u > "$TMP".pin
+    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | LC_ALL=C sort -u > "$TMP".pin
 git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' HEAD -- "*.rs" 2>/dev/null \
-    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | sort -u > "$TMP".fork
+    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | LC_ALL=C sort -u > "$TMP".fork
 
 PIN_N=$(wc -l < "$TMP".pin)
 FORK_N=$(wc -l < "$TMP".fork)
-SHARED=$(comm -12 "$TMP".pin "$TMP".fork | wc -l)
-ABSENT=$(comm -23 "$TMP".pin "$TMP".fork | wc -l)
+SHARED=$(LC_ALL=C comm -12 "$TMP".pin "$TMP".fork | wc -l)
+ABSENT=$(LC_ALL=C comm -23 "$TMP".pin "$TMP".fork | wc -l)
 
 # ---------------------------------------------------------------- ledger
 if [[ -f "$LEDGER" ]]; then
