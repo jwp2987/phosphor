@@ -3255,14 +3255,52 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
 }
 
 /// Mapping from unstable feature names accepted by `ZAP_UNSTABLE_FEATURES` to
-/// FeatureFlag. Features registered here are hidden by default in release builds
-/// and appear only once the corresponding token is set; dev builds enable them by
-/// default via the debug_assertions branch and don't need this variable.
+/// FeatureFlag. Features registered here are hidden by default and appear only
+/// once the corresponding token is set.
+///
+/// Note this is an *additional* enable path, not the only one, and it is not
+/// implied by a debug build: `enabled_features()` has no blanket
+/// `debug_assertions` branch that turns these on (it enables only
+/// `SshRemoteServer` that way), so a `cargo run` build sees exactly what a
+/// release build does unless the variable or a cargo feature says otherwise.
+/// `docs/pin-migration.md` Phase 6.7 counts this list as one of the three paths
+/// by which a flag can be reachable in a normal GUI build.
 const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     (
         "windows_high_performance_gpu_default",
         FeatureFlag::WindowsHighPerformanceGpuDefault,
     ),
+    // The Gemini CLI extension install/update chip, gated on
+    // `FeatureFlag::GeminiNotifications`.
+    //
+    // **This is not fork drift, so it deliberately does NOT go in
+    // `app/Cargo.toml`'s `default`.** Upstream has no `gemini_notifications`
+    // cargo feature either -- not at `02b53fcd8` and not at `42effe840` -- and
+    // keeps the flag in `DOGFOOD_FLAGS` alone. Its own `specs/APP-4067/TECH.md`
+    // still lists "Promote `GeminiNotifications` from dogfood -- after
+    // validation" as an open follow-up. Its `HOANotifications`,
+    // `OpenCodeNotifications` and `CodexNotifications` siblings are default-on
+    // upstream too, so the asymmetry is upstream's, not this fork's, and
+    // matching the siblings would ship the chip further than upstream has.
+    //
+    // What IS fork-specific is that dogfood-only means unreachable by anyone
+    // here. Upstream's dogfood channel is a GUI build, so its team can exercise
+    // the chip and eventually promote it. In this fork `bin/phosphor_oss.rs` is
+    // the only GUI binary and it adds `DEBUG_FLAGS` alone; `DOGFOOD_FLAGS`
+    // reaches only `warp_tui`'s `dev`/`local` binaries (a TUI, which has no
+    // plugin chip) and the schema generators. So the validation upstream is
+    // waiting on could never happen here, and `GeminiPluginManager` plus its six
+    // `cli-agent-plugin-gemini-*` catalogue strings would stay permanently dead.
+    //
+    // This entry restores that validation path and nothing more: it is off
+    // unless `ZAP_UNSTABLE_FEATURES=gemini_notifications` is set. The rest of
+    // the path is present and was traced end to end -- the install command
+    // matches the published `warpdotdev/gemini-cli-warp` extension, whose
+    // manifest `name` (`gemini-warp`) and `version` (`1.0.0`) match
+    // `EXTENSION_NAME` and `MINIMUM_PLUGIN_VERSION`, and the consumer is the
+    // local OSC 777 listener, which already accepts `CLIAgent::Gemini` under
+    // `HOANotifications` alone. See TODO.md, issue #594.
+    ("gemini_notifications", FeatureFlag::GeminiNotifications),
 ];
 
 #[cfg(test)]

@@ -472,7 +472,10 @@ normal GUI build via exactly three paths, and you must check all of them:
 
 1. membership in `RELEASE_FLAGS`;
 2. a `#[cfg(feature = "x")] FeatureFlag::Y` entry **where `x` is in `default`**;
-3. an `UNSTABLE_FEATURES` name (one entry exists).
+3. an `UNSTABLE_FEATURES` name (two entries exist:
+   `windows_high_performance_gpu_default` and `gemini_notifications`), reachable
+   only when `ZAP_UNSTABLE_FEATURES` names it — a debug build does **not** imply
+   it.
 
 ### Four traps in this check specifically
 

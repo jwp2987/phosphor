@@ -2492,6 +2492,59 @@ here, so this list stays a work ledger rather than a history.
       `●` (U+25CF). Sibling arms (`✓`, `■`) match the pin exactly, so it is a
       single-glyph divergence recorded nowhere. A ported test now pins the
       character, which is the only thing holding it.
+- [ ] **#594 — `GeminiNotifications` stays out of `default`; promote only after
+      someone runs it.** **The issue's premise is refuted: this is not fork
+      drift.** There is no `gemini_notifications` cargo feature *upstream
+      either* — verified absent from `app/Cargo.toml` at both `02b53fcd8` and
+      `42effe840` — and upstream keeps the flag in `DOGFOOD_FLAGS` alone, with
+      `specs/APP-4067/TECH.md` §8 still listing "**Promote
+      `GeminiNotifications` from dogfood** — after validation" as an open
+      follow-up. The three siblings the issue calls "wired normally"
+      (`hoa_notifications`, `open_code_notifications`, `codex_notifications`)
+      are in upstream's `default` too, at lines 671/672/682 of its
+      `app/Cargo.toml`. So the asymmetry is upstream's, and the FLAG-DARK rule
+      "dark at the pin too → do not fix" applies. Adding it to `default` would
+      have shipped the chip *further than upstream has*.
+- [ ] **What #594 did surface, and what was changed.** Dogfood-only means
+      **unreachable by anyone** in this fork, not "awaiting validation" as it
+      does upstream. Upstream's dogfood channel is a GUI build; here
+      `app/src/bin/phosphor_oss.rs` is the only GUI binary and adds
+      `DEBUG_FLAGS` alone, while `DOGFOOD_FLAGS` reaches only `warp_tui`'s
+      `dev`/`local` binaries — a TUI with no plugin chip — and the schema
+      generators. So the validation upstream is waiting on could never happen
+      here. Fix applied: `gemini_notifications` registered in
+      `UNSTABLE_FEATURES` (`app/src/lib.rs`), i.e. opt-in via
+      `ZAP_UNSTABLE_FEATURES=gemini_notifications` and off for everyone else.
+      **Open work:** actually run it against a real `gemini` session, then
+      decide whether to promote to `default` — and if the answer is no, that
+      becomes a `DECLINED.md` row. No `DECLINED.md` row was added now, because
+      agreeing with the pin is not a non-parity decision.
+- [ ] **#594's trace, for whoever validates it.** Every link exists and was
+      checked: `plugin_manager_for(CLIAgent::Gemini)`
+      (`plugin_manager/mod.rs:281`, ANDed with `HOANotifications`) →
+      `GeminiPluginManager` (`plugin_manager/gemini.rs`, 11 tests in
+      `gemini_tests.rs`) → `gemini extensions install
+      https://github.com/warpdotdev/gemini-cli-warp --consent` → detection at
+      `~/.gemini/extensions/gemini-warp/gemini-extension.json` → the **local**
+      OSC 777 listener. Externally verified rather than assumed: the extension
+      repo is published and public, its manifest `name` is `gemini-warp` (so
+      `EXTENSION_NAME` and the detection path are right) and its `version` is
+      `1.0.0` (so `MINIMUM_PLUGIN_VERSION` matches and a fresh install does not
+      immediately re-show the update chip). Upstream's *other* stated shipping
+      blocker — "Publish `warpdotdev/gemini-warp` to GitHub — must happen
+      before shipping to external users" — is therefore already satisfied. The
+      protocol sentinel is still `warp://cli-agent`
+      (`cli_agent_sessions/event/mod.rs:12`), which the extension emits, so the
+      rebrand did not break the wire. `is_agent_supported`/`create_handler`
+      already accept `CLIAgent::Gemini` under `HOANotifications` alone
+      (`listener/mod.rs:46`, `:69`), so **notifications from a hand-installed
+      extension already work today** — the flag gates only the install/update
+      chip. Two residual risks for the validator: the extension needs Gemini
+      CLI v0.26.0+ and nothing version-checks the CLI (an older CLI fails the
+      install command and falls back to the manual-instructions modal via
+      `record_plugin_auto_failure_and_notify`, degraded but handled); and
+      `plugin_manager_for` is the flag's **only** consumer, so nothing else
+      moves when it flips.
 
 ### Consequences of this round's merges — check after integrating
 
