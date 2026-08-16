@@ -216,7 +216,8 @@ impl TuiSessions {
                         surface_init,
                         exit_summary,
                         keyboard_enhancement_supported,
-    default_autoexecute_mode, initial_settings_file_error,
+                        initial_settings_file_error,
+                        default_autoexecute_mode,
                         ctx,
                     )
                 });

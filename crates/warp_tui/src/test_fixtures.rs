@@ -228,7 +228,8 @@ pub(crate) fn add_test_terminal_session_with_settings_file_error(
                 surface_init,
                 TuiExitSummaryHandle::default(),
                 false,
-    AIConversationAutoexecuteMode::RespectUserSettings, initial_settings_file_error,
+                initial_settings_file_error,
+                AIConversationAutoexecuteMode::RespectUserSettings,
                 ctx,
             )
         });
