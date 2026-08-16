@@ -970,6 +970,12 @@ fn failed_status_maps_to_the_error_conversation_status() {
 
 // Cancellation round trip (#596).
 
+/// The exact OSC 777 body `CliAgentOscEventPublisher` writes when the selected
+/// TUI conversation reaches `ConversationStatus::Cancelled`. Field-for-field
+/// what its `status_osc_event` / `handle_history_event` pair produces, with the
+/// `serde` `skip_serializing_none` omissions applied.
+const CANCELLED_TUI_NOTIFICATION: &str = r#"{"v":1,"agent":"warp-tui","event":"stop_failure","session_id":"7","cwd":"/home/u/proj","project":"proj","query":"refactor the parser","response":"The task was cancelled before completion.","summary":"Phosphor Agent was cancelled.","error_type":"cancelled"}"#;
+
 fn in_progress_tui_session() -> CLIAgentSession {
     CLIAgentSession {
         agent: CLIAgent::PhosphorTui,

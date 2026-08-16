@@ -29,6 +29,7 @@ mod autoupdate;
 #[cfg(feature = "test-util")]
 #[doc(hidden)]
 pub mod benchmark_support;
+mod cli_agent_osc_event_publisher;
 mod clipboard;
 pub mod input;
 pub mod root_view;
@@ -53,6 +54,7 @@ mod input_mode_policy;
 mod input_suggestions_mode;
 mod keybindings;
 mod link;
+mod mcp_install_flow;
 mod mcp_menu;
 mod model_menu;
 mod option_selector;

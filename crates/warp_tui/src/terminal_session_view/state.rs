@@ -287,7 +287,7 @@ pub(crate) struct TuiBlockSessionState {
 pub(super) enum TuiInteractionState {
     Blocking(BlockingInputSource),
     StartingShell,
-    Composer(TuiAgentEditorState),
+    AgentEditor(TuiAgentEditorState),
     Pty(TuiPtyState),
 }
 

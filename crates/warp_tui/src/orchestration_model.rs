@@ -75,8 +75,10 @@ use std::collections::{HashMap, HashSet};
 use warp::tui_export::{
     AIConversation, AIConversationId, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
     ConversationStatus, Harness, LoadedConversationData, StartAgentExecutionMode,
-    StartAgentExecutor, StartAgentRequest, descendant_conversation_ids_in_spawn_order,
-    descendant_conversations_in_pill_order, orchestration_root_conversation_id,
+    StartAgentExecutor, StartAgentRequest, aggregated_orchestrator_status,
+    child_conversations_in_pill_order, descendant_conversation_ids_in_spawn_order,
+    descendant_conversations_in_pill_order, loaded_subtree_rollup,
+    orchestration_root_conversation_id,
 };
 use warp_core::features::FeatureFlag;
 use warpui::SingletonEntity;
@@ -103,7 +105,7 @@ pub(crate) const ORCHESTRATOR_TAB_LABEL: &str = "orchestrator";
 /// The pin carries a third, cloud-only variant pair for remote child launch
 /// (`BeginRemoteChildLaunch`/`FinishRemoteChildLaunch`); those are declined
 /// here (`DECLINED.md` #290) and `is_remote_child` is permanently false.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) enum TuiOrchestrationEvent {
     /// Cancel the child's in-flight work through its own session view, then
     /// finish the teardown that was interrupted to get here.

@@ -1,6 +1,6 @@
 use warp::appearance::Appearance;
 use warpui_core::App;
-use warpui_core::elements::tui::{TuiBufferExt, TuiRect, TuiText};
+use warpui_core::elements::tui::{TuiBufferExt, TuiElement, TuiRect, TuiText};
 use warpui_core::presenter::tui::TuiPresenter;
 
 use super::{

@@ -5,7 +5,6 @@ use crate::{
     test_util::settings::initialize_settings_for_tests,
 };
 use chrono::Utc;
-use settings::Setting as _;
 use warpui::{App, SingletonEntity};
 
 fn create_test_request_limit_info(

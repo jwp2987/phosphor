@@ -443,7 +443,7 @@ fn repeats_dispatch_keymaps_while_modifier_events_bypass_them() {
             })
         });
         let terminal = TestTerminal::new(TuiSize::new(20, 3));
-        let mut screen = TuiScreen::new(window_id, root.clone(), terminal);
+        let mut screen = TuiScreen::new(window_id, root.clone(), terminal, Arc::new(Mutex::new(())));
         app.update(|ctx| screen.draw(ctx)).unwrap();
 
         let modifier = screen
@@ -473,7 +473,7 @@ fn shift_lifecycle_restores_shift_and_normalizes_symbol_keystrokes() {
         let (window_id, root) =
             app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
         let terminal = TestTerminal::new(TuiSize::new(20, 3));
-        let mut screen = TuiScreen::new(window_id, root, terminal);
+        let mut screen = TuiScreen::new(window_id, root, terminal, Arc::new(Mutex::new(())));
 
         screen
             .convert_event(CrosstermEvent::Key(KeyEvent::new_with_kind(
@@ -531,7 +531,7 @@ fn shift_remains_active_until_both_shift_keys_are_released() {
         let (window_id, root) =
             app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
         let terminal = TestTerminal::new(TuiSize::new(20, 3));
-        let mut screen = TuiScreen::new(window_id, root, terminal);
+        let mut screen = TuiScreen::new(window_id, root, terminal, Arc::new(Mutex::new(())));
 
         for modifier in [ModifierKeyCode::LeftShift, ModifierKeyCode::RightShift] {
             screen.convert_event(CrosstermEvent::Key(KeyEvent::new_with_kind(
@@ -577,7 +577,7 @@ fn stale_shift_state_is_cleared_by_events_that_report_shift_accurately() {
         let (window_id, root) =
             app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
         let terminal = TestTerminal::new(TuiSize::new(20, 3));
-        let mut screen = TuiScreen::new(window_id, root, terminal);
+        let mut screen = TuiScreen::new(window_id, root, terminal, Arc::new(Mutex::new(())));
 
         let shift_press = || {
             CrosstermEvent::Key(KeyEvent::new_with_kind(

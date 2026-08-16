@@ -53,8 +53,9 @@ use super::{
     AUTO_APPROVE_ENABLED_HINT, AUTO_APPROVE_FEEDBACK_DURATION, AUTO_APPROVE_TOGGLE_BINDING_NAME,
     COST_CONVERSATION_IN_PROGRESS_HINT, COST_EMPTY_CONVERSATION_HINT,
     COST_NO_ACTIVE_CONVERSATION_HINT, CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT,
-    ConversationRestoreState, DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME, FooterSegment,
-    FooterSegments, INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT,
+    ConversationRestoreState, DETACH_AGENT_FROM_RUNNING_COMMAND_BINDING_NAME,
+    INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, mcp_primary_action_hint,
+    render_mcp_menu_footer,
     LOG_BUNDLE_FAILED_HINT, ORCHESTRATE_REQUIRES_CONVERSATION_HINT,
     ORCHESTRATE_REQUIRES_TASK_HINT, ORCHESTRATION_TAB_BAR_FOCUSED_FLAG,
     RUNNING_COMMAND_DETACH_HINT, SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG,
@@ -1260,7 +1261,7 @@ fn nld_slash_command_toggles_and_reports_its_effects() {
             }),
             Some((
                 "Natural language detection enabled.".to_owned(),
-                super::TransientHintTone::Success
+                crate::transient_hint::TransientHintTone::Success
             ))
         );
 
@@ -1286,7 +1287,7 @@ fn nld_slash_command_toggles_and_reports_its_effects() {
             }),
             Some((
                 "Natural language detection disabled.".to_owned(),
-                super::TransientHintTone::Success
+                crate::transient_hint::TransientHintTone::Success
             ))
         );
     });
@@ -2707,7 +2708,7 @@ fn zero_state_reload_failure_renders_as_an_error_footer_hint() {
             }),
             Some((
                 super::ZERO_STATE_ASCII_RELOAD_FAILED_HINT.to_owned(),
-                super::TransientHintTone::Error
+                crate::transient_hint::TransientHintTone::Error
             ))
         );
 
@@ -2742,7 +2743,7 @@ fn settings_reload_failure_renders_as_an_error_footer_hint() {
             }),
             Some((
                 super::SETTINGS_INVALID_VALUES_HINT.to_owned(),
-                super::TransientHintTone::Error
+                crate::transient_hint::TransientHintTone::Error
             ))
         );
 
@@ -2773,7 +2774,7 @@ fn startup_settings_parse_failure_renders_as_an_error_footer_hint() {
             }),
             Some((
                 super::SETTINGS_PARSE_FAILED_HINT.to_owned(),
-                super::TransientHintTone::Error
+                crate::transient_hint::TransientHintTone::Error
             ))
         );
 
@@ -2811,7 +2812,7 @@ fn zero_state_initial_load_failure_shows_an_error_footer_hint() {
             }),
             Some((
                 super::ZERO_STATE_ASCII_INITIAL_LOAD_FAILED_HINT.to_owned(),
-                super::TransientHintTone::Error
+                crate::transient_hint::TransientHintTone::Error
             ))
         );
     });
@@ -5415,7 +5416,7 @@ fn copy_debugging_id_shows_error_hint_when_no_server_token() {
                 view.transient_hint.current(),
                 Some((
                     super::COPY_DEBUGGING_ID_NO_TOKEN_HINT,
-                    super::TransientHintTone::Error
+                    crate::transient_hint::TransientHintTone::Error
                 )),
                 "/copy-debugging-id with no server token must set the no-token error hint"
             );

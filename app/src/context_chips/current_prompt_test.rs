@@ -671,7 +671,7 @@ fn test_cli_agent_footer_chips_require_a_visible_supported_footer() {
         );
 
         CLIAgentSessionsModel::handle(&app).update(&mut app, |sessions, ctx| {
-            sessions.set_session(terminal_view_id, session_for(CLIAgent::WarpTui), ctx);
+            sessions.set_session(terminal_view_id, session_for(CLIAgent::PhosphorTui), ctx);
         });
         assert!(cli_footer_chips(&app).is_empty());
 

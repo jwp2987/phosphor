@@ -1,8 +1,8 @@
 //! Reusable interaction for TUI tool-call permission requests.
 
 use warp::tui_export::{
-    AIAgentActionId, BlocklistAIActionEvent, BlocklistAIActionModel, OptionFooter, OptionRow,
-    OptionSnapshot, OptionSourceStatus,
+    AIAgentActionId, BlocklistAIActionModel, OptionFooter, OptionRow, OptionSnapshot,
+    OptionSourceStatus,
 };
 use warpui_core::elements::CrossAxisAlignment;
 use warpui_core::elements::tui::{

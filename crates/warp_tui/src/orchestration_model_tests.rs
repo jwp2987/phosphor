@@ -18,16 +18,18 @@
 
 use warp::tui_export::{
     AIConversationId, BlocklistAIHistoryModel, Harness, StartAgentExecutionMode,
-    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome, 
+    StartAgentExecutor, StartAgentExecutorEvent, StartAgentOutcome,
     register_tui_session_view_test_singletons,
 };
+use warp_core::features::FeatureFlag;
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, ModelHandle, ReadModel, SingletonEntity as _, UpdateModel};
 use warpui_core::{App, WindowId};
 
-use super::TuiOrchestrationModel;
+use super::{ORCHESTRATOR_TAB_LABEL, TuiOrchestrationModel};
 use crate::root_view::RootTuiView;
 use crate::session_registry::{TuiSessionId, TuiSessionView, TuiSessions};
+use crate::tab_bar::TuiTabBarNavigationDirection;
 use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
 
 struct OrchestrationFixture {
@@ -172,7 +174,7 @@ fn snapshot_is_shared_across_tree_and_filters_conversations_without_sessions() {
         });
         app.update(|ctx| {
             TuiOrchestrationModel::handle(ctx).update(ctx, |model, ctx| {
-                model.set_explicit_page(second_child_id, ctx);
+                model.set_explicit_page(parent_conversation_id, second_child_id, ctx);
             });
         });
         app.read(|ctx| {
@@ -207,7 +209,7 @@ fn snapshot_is_shared_across_tree_and_filters_conversations_without_sessions() {
 /// events into the coordinator, mirroring how a real caller (once one
 /// exists -- see [`super::TuiOrchestrationModel`]'s module doc) would wire
 /// both `StartAgentExecutorEvent` variants to `dispatch_create_agent` /
-/// `cleanup_failed_child`.
+/// `cleanup_child`.
 fn add_relayed_executor(
     app: &mut App,
     parent_session_id: TuiSessionId,
@@ -227,7 +229,7 @@ fn add_relayed_executor(
                     );
                 }
                 StartAgentExecutorEvent::CleanupFailedChildLaunch { conversation_id } => {
-                    orchestration.cleanup_failed_child(conversation_id, ctx);
+                    orchestration.cleanup_child(conversation_id, ctx);
                 }
             });
         });

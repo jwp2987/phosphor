@@ -975,7 +975,11 @@ impl TuiInputView {
             }
             // These menu-policy actions were handled by
             // `handle_inline_menu_action` before input ownership was resolved.
-            TuiInputAction::Submit | TuiInputAction::HandleEscape => {
+            // `LogOutSelectedMcp` joins them: it drives the MCP menu, and an
+            // inline menu that owns the input suppresses every menu trigger.
+            TuiInputAction::Submit
+            | TuiInputAction::HandleEscape
+            | TuiInputAction::LogOutSelectedMcp => {
                 TuiEditorInteractionOutcome::PreserveViewport
             }
         };

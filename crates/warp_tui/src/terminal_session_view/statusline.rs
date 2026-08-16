@@ -20,9 +20,10 @@ use warpui_core::elements::tui::{
 use warpui_core::{AppContext, ViewContext};
 
 use super::{
-    CTRL_C_EXIT_HINT, ConversationRestoreState, LOADING_CONVERSATION_HINT,
-    RUNNING_COMMAND_DETACH_HINT, SHELL_MODE_HINT, TuiConversationRestoreOrigin,
-    TuiTerminalSessionAction, TuiTerminalSessionView,
+    CTRL_C_EXIT_HINT, CTRL_C_KILL_CHILD_HINT, ConversationRestoreState,
+    LOADING_CONVERSATION_HINT, RUNNING_COMMAND_DETACH_HINT, SHELL_MODE_HINT,
+    TuiConversationRestoreOrigin, TuiTerminalSessionAction, TuiTerminalSessionView,
+    render_mcp_install_footer, render_mcp_menu_footer,
 };
 use crate::transient_hint::TransientHintTone;
 use crate::tui_builder::TuiUiBuilder;
@@ -76,7 +77,7 @@ pub(super) enum FooterSegment {
     GitBranch(String),
     /// The selected conversation's context-window usage. BYOP has no cloud
     /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
-    /// wraps Zap's informational context-% entry (`crate::usage`).
+    /// wraps Phosphor's informational context-% entry (`crate::usage`).
     ContextWindowUsage(Box<dyn TuiElement>),
     GitDiff {
         additions: usize,
@@ -85,8 +86,10 @@ pub(super) enum FooterSegment {
     /// A configured date/time item (`Date`, `Time12Hour`, `Time24Hour`).
     DateTime(Box<dyn TuiElement>),
     /// The selected AI conversation's active to-do list progress
-    /// (`format_todo_progress`), shown while that list is non-empty.
-    AgentTodoList(String),
+    /// (`format_todo_progress`), shown while that list is non-empty. Carries a
+    /// rendered element rather than a string because the segment is clickable
+    /// (it toggles the to-do menu) and tracks its own hover state.
+    AgentTodoList(Box<dyn TuiElement>),
     /// The current branch's GitHub pull request, rendered as a clickable
     /// link. Backed by the local `gh` CLI (`GitHubRepoModel`), so no Warp
     /// backend is involved.
@@ -198,14 +201,12 @@ pub(super) fn render_status_footer_row(
             FooterSegment::Model(model)
             | FooterSegment::ContextWindowUsage(model)
             | FooterSegment::DateTime(model)
+            | FooterSegment::AgentTodoList(model)
             | FooterSegment::GitHubPullRequest(model) => {
                 row = row.child(model);
             }
             FooterSegment::WorkingDirectory(cwd) | FooterSegment::GitBranch(cwd) => {
                 row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
-            }
-            FooterSegment::AgentTodoList(progress) => {
-                row = row.child(TuiText::new(progress).with_style(muted).truncate().finish());
             }
             FooterSegment::GitDiff {
                 additions,
@@ -260,12 +261,15 @@ impl TuiTerminalSessionView {
         // Replacing hints occupy the entire status row, in the existing
         // priority order: ctrl-c → loading → transient.
         if self.exit_confirmation.is_armed() {
-            return TuiFlex::row().child(
-                TuiText::new(CTRL_C_EXIT_HINT)
-                    .with_style(muted)
-                    .truncate()
-                    .finish(),
-            );
+            // When the kill-child window is armed, show the child-specific hint
+            // so the user knows the next ctrl-c will kill the child agent rather
+            // than exiting the whole TUI.
+            let hint = if self.child_kill_armed_conversation.is_some() {
+                CTRL_C_KILL_CHILD_HINT
+            } else {
+                CTRL_C_EXIT_HINT
+            };
+            return TuiFlex::row().child(TuiText::new(hint).with_style(muted).truncate().finish());
         }
         if matches!(
             &self.conversation_restore_state,
@@ -310,6 +314,22 @@ impl TuiTerminalSessionView {
                     .with_style(muted)
                     .truncate()
                     .finish(),
+            );
+        }
+        // The open `/mcp` install flow or menu replaces the statusline with its
+        // own controls, the same way the replacing hints above do.
+        if self.mcp_install_flow.as_ref(ctx).is_open(ctx) {
+            return render_mcp_install_footer(
+                &builder,
+                self.mcp_install_flow.as_ref(ctx).primary_action_hint(),
+            );
+        }
+        if self.mcp_menu.as_ref(ctx).is_open(ctx) {
+            let menu = self.mcp_menu.as_ref(ctx);
+            return render_mcp_menu_footer(
+                &builder,
+                menu.selected_primary_action(ctx),
+                menu.can_log_out_selected(ctx),
             );
         }
         let shell_mode = self.is_shell_mode(ctx);
@@ -446,11 +466,32 @@ impl TuiTerminalSessionView {
                     .and_then(|conversation| conversation.active_todo_list())
                     .filter(|todo_list| !todo_list.is_empty())
                     .map(|todo_list| {
-                        FooterSegment::AgentTodoList(format_todo_progress(
+                        let hovered = self
+                            .todo_list_mouse
+                            .lock()
+                            .is_ok_and(|state| state.is_hovered());
+                        let style = if hovered {
+                            builder.primary_text_style()
+                        } else {
+                            builder.muted_text_style()
+                        };
+                        let progress = format_todo_progress(
                             todo_list.completed_items().len(),
                             todo_list.len(),
                             todo_list.is_finished(),
-                        ))
+                        );
+                        FooterSegment::AgentTodoList(
+                            TuiHoverable::new(
+                                self.todo_list_mouse.clone(),
+                                TuiText::new(progress).with_style(style).truncate().finish(),
+                            )
+                            .on_click(|event_ctx, _| {
+                                event_ctx.dispatch_typed_action(
+                                    TuiTerminalSessionAction::ToggleTodoMenu,
+                                );
+                            })
+                            .finish(),
+                        )
                     }),
             };
             if let Some(segment) = segment {

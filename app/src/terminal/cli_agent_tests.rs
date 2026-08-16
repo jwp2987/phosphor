@@ -14,7 +14,6 @@ use super::{
     build_diff_hunk_prompt, build_review_prompt, build_selection_line_range_prompt,
     build_selection_substring_prompt, CLIAgent, PHOSPHOR_COLOR, UBER_TEAM_UID,
 };
-use crate::ui_components::icons::Icon;
 use crate::ai::agent::{AgentReviewCommentBatch, DiffSetHunk};
 use crate::code::editor::line::EditorLineLocation;
 use crate::code_review::comments::{
@@ -673,6 +672,18 @@ fn test_phosphor_tui_variant_properties() {
     );
     assert_eq!(CLIAgent::PhosphorTui.display_name(), "Phosphor TUI");
     assert_eq!(CLIAgent::PhosphorTui.brand_color(), Some(PHOSPHOR_COLOR));
+    // `brand_icon_color` renders the icon *on top of* `brand_color`, so the two
+    // must be asserted together: Phosphor's brand color is dark, so its icon
+    // takes the light arm. The light-brand agents take the dark arm; both
+    // branches are pinned here because nothing else in the tree covers them.
+    assert_eq!(CLIAgent::PhosphorTui.brand_icon_color(), ColorU::white());
+    for agent in [CLIAgent::Pi, CLIAgent::Auggie, CLIAgent::Droid] {
+        assert_eq!(
+            agent.brand_icon_color(),
+            ColorU::new(0, 0, 0, 255),
+            "{agent:?} has a light brand color and needs a dark icon for contrast"
+        );
+    }
     assert_eq!(CLIAgent::PhosphorTui.icon(), Some(Icon::PhosphorLogo));
     assert!(CLIAgent::PhosphorTui.supported_skill_providers().is_empty());
     assert!(!CLIAgent::PhosphorTui.supports_bash_mode());

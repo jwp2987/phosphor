@@ -51,7 +51,7 @@ use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestions
 const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, false);
 
 #[derive(Clone, Eq, PartialEq)]
-pub(crate) enum TuiMcpInstallFlowAction {
+pub enum TuiMcpInstallFlowAction {
     ProvideValue { key: String, value: String },
 }
 

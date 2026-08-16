@@ -88,12 +88,13 @@ impl CliAgentOscEventPublisher {
         action_model: &ModelHandle<BlocklistAIActionModel>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
-        ctx.subscribe_to_model(action_model, |publisher, action_model, event, ctx| {
-            publisher.handle_action_event(&action_model, event, ctx);
+        let action_model_for_events = action_model.clone();
+        ctx.subscribe_to_model(action_model, move |publisher, event, ctx| {
+            publisher.handle_action_event(&action_model_for_events, event, ctx);
         });
         ctx.subscribe_to_model(
             &BlocklistAIHistoryModel::handle(ctx),
-            |publisher, _, event, ctx| publisher.handle_history_event(event, ctx),
+            |publisher, event, ctx| publisher.handle_history_event(event, ctx),
         );
         Self {
             terminal_surface_id,

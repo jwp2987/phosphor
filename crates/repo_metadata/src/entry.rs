@@ -1066,12 +1066,22 @@ pub(crate) fn is_within_symlink(path: &Path, repo_root: &Path) -> bool {
 /// (same limitation as the existing tagging), which can only cause us to
 /// over-watch, never to miss events.
 ///
-/// The fork's `notify` [`WatchFilter`] carries a single predicate rather than
-/// upstream's separate descend/emit closures, so this exposes the descend
-/// predicate ([`should_watch_repo_directory`]); the emit-side `.git/`
-/// allowlist filtering ([`should_ignore_git_path`]) is applied on the
-/// delivered events instead, by `DirectoryWatcher::handle_watcher_event` and
+/// The emit predicate passed to `notify` is deliberately permissive: the
+/// emit-side `.git/` allowlist filtering ([`should_ignore_git_path`]) is
+/// applied on the *delivered* events instead, by
+/// `DirectoryWatcher::handle_watcher_event` and
 /// `LocalRepoMetadataModel::handle_watcher_event`.
+///
+/// This is not laziness left over from the single-predicate `notify` the fork
+/// used before the pin moved to `91b71984`. `notify` applies the emit
+/// predicate to each event path independently and *before* rename pairing
+/// (`inotify.rs`, `fsevent.rs`, `windows.rs`), whereas the delivered-event
+/// handlers drop a rename only when **both** of its paths are ignored. Moving
+/// the allowlist into the emit predicate would therefore split renames that
+/// straddle the allowlist — `.git/index.lock` (allowlisted) -> `.git/index`
+/// (not allowlisted) is the common case, written on every `git` invocation —
+/// delivering a half-rename the handlers have no way to reassemble. See
+/// issue #603.
 #[cfg(feature = "local_fs")]
 pub fn repo_watch_filter(
     repo_root: PathBuf,
@@ -1081,7 +1091,7 @@ pub fn repo_watch_filter(
     let should_watch = move |path: &Path| {
         should_watch_repo_directory(path, &repo_root, &gitignores, &force_included_paths)
     };
-    WatchFilter::with_filter(Arc::new(should_watch))
+    WatchFilter::with_filter(Arc::new(should_watch), Arc::new(|_: &Path| true))
 }
 
 /// Returns `true` when a path is neither gitignored nor a pruned git-internal
