@@ -83,6 +83,9 @@ arboard = { workspace = true }
 arboard = { workspace = true, features = ["wayland-data-control"] }
 
 [dev-dependencies]
+# Same version/features the `editor` crate's `buffer_bench` already pins, so the
+# workspace lock and build cache are shared rather than doubled.
+criterion = { version = "0.5.1", features = ["html_reports"] }
 tempfile.workspace = true
 # `test-util` exposes `Appearance::mock()`, used to register the `Appearance`
 # singleton that the editor-backed TUI input view depends on in tests.
@@ -99,7 +102,17 @@ warp = { workspace = true, features = ["tui", "test-util"] }
 # and cache once, at first access). A per-test init is too late.
 ctor = "0.1"
 
+[[bench]]
+name = "transcript_bench"
+harness = false
+# Keeps the bench out of the default build/test path: `test-util` is not a
+# default feature, so `cargo build`/`cargo test`/`cargo nextest` skip this target
+# unless it is asked for explicitly (`cargo bench -p warp_tui --features test-util`).
+required-features = ["test-util"]
+
 [features]
+# Exposes deterministic, production-shaped transcript fixtures to benchmarks.
+test-util = ["warp/test-util", "warp_core/test-util"]
 # Declared so the `warp_channel_config::load_config!` macro's
 # `cfg(feature = "release_bundle")` branch is a known cfg in this crate. Today it
 # stays off and the local bin uses the runtime generator; wiring the embedded
