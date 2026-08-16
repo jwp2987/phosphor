@@ -66,7 +66,8 @@ git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' HEAD -- "*.rs" 2>/dev/
 PIN_N=$(wc -l < "$TMP".pin)
 FORK_N=$(wc -l < "$TMP".fork)
 SHARED=$(LC_ALL=C comm -12 "$TMP".pin "$TMP".fork | wc -l)
-ABSENT=$(LC_ALL=C comm -23 "$TMP".pin "$TMP".fork | wc -l)
+LC_ALL=C comm -23 "$TMP".pin "$TMP".fork > "$TMP".absent
+ABSENT=$(wc -l < "$TMP".absent)
 
 # ---------------------------------------------------------------- ledger
 if [[ -f "$LEDGER" ]]; then
@@ -81,14 +82,38 @@ else
     LED_ROWS=0; CLOUD=0; DECLINED=0; DIVERGENT=0; COVERED=0; MISSING=0; UNPARSED=0
 fi
 
-# Non-cloud universe. The ledger covers only the areas that were swept, so the
-# unadjudicated remainder is projected at the SAME cloud ratio the adjudicated
-# part showed. That projection is an estimate and is labelled as one below.
-UNADJ=$(( ABSENT - LED_ROWS ))
+# How much of the absent set the ledger actually covers.
+#
+# This used to be `UNADJ=$(( ABSENT - LED_ROWS ))` -- a subtraction of two
+# TOTALS, not a difference of two SETS (#603). `ABSENT` is a set of test names;
+# `LED_ROWS` is `wc -l` of the ledger. Nothing checked that a ledger row names a
+# test that is in the absent set, so every row about a test the fork ALREADY HAS
+# silently cancelled a genuinely unadjudicated one. At `42effe840` that hid 280
+# of them -- 273 rows naming tests the fork now has (legitimate `PORTED` /
+# `COVERED-ELSEWHERE` rows) plus 4 naming tests not at the pin at all -- and
+# published 435 where the set difference is 715. The error GROWS as the fork
+# makes progress, because every newly ported test turns another row into a
+# canceller.
+#
+# Intersect instead. Hash lookups, not `comm`: no collation to get wrong.
+if [[ -f "$LEDGER" ]]; then
+    ADJ_ABSENT=$(awk -F'\t' 'NR==FNR{absent[$0]=1; next} FNR>1 && ($1 in absent){seen[$1]=1} END{print length(seen)}' \
+        "$TMP".absent "$LEDGER")
+    CLOUD_ABSENT=$(awk -F'\t' 'NR==FNR{absent[$0]=1; next} FNR>1 && $4=="CLOUD" && ($1 in absent){seen[$1]=1} END{print length(seen)}' \
+        "$TMP".absent "$LEDGER")
+    # Rows that adjudicate a test which is NOT absent -- the fork has it, or it
+    # is not at this pin. Not an error (a `PORTED` row is exactly this), but it
+    # is what the old arithmetic silently spent, so it is reported.
+    LED_NONABSENT=$(awk -F'\t' 'NR==FNR{absent[$0]=1; next} FNR>1 && !($1 in absent){seen[$1]=1} END{print length(seen)}' \
+        "$TMP".absent "$LEDGER")
+else
+    ADJ_ABSENT=0; CLOUD_ABSENT=0; LED_NONABSENT=0
+fi
+UNADJ=$(( ABSENT - ADJ_ABSENT ))
 (( UNADJ < 0 )) && UNADJ=0
-if (( LED_ROWS > 0 )); then
-    NONCLOUD_ADJ=$(( LED_ROWS - CLOUD ))
-    PROJ_NONCLOUD=$(( UNADJ * NONCLOUD_ADJ / LED_ROWS ))
+if (( ADJ_ABSENT > 0 )); then
+    NONCLOUD_ADJ=$(( ADJ_ABSENT - CLOUD_ABSENT ))
+    PROJ_NONCLOUD=$(( UNADJ * NONCLOUD_ADJ / ADJ_ABSENT ))
 else
     NONCLOUD_ADJ=0; PROJ_NONCLOUD=$UNADJ
 fi
@@ -166,10 +191,16 @@ any individual test.
 | Shared | $SHARED |
 | Absent from fork | $ABSENT |
 
-Of the absent, **$LED_ROWS are adjudicated** in the ledger and $UNADJ are not.
-Cloud accounts for $CLOUD of the adjudicated; the unadjudicated remainder is
+Of the absent, **$ADJ_ABSENT are adjudicated** in the ledger and $UNADJ are not.
+Cloud accounts for $CLOUD_ABSENT of those; the unadjudicated remainder is
 *projected* at the same ratio (~$PROJ_NONCLOUD non-cloud), so the figures below
 carry that estimate.
+
+The ledger has $LED_ROWS rows in total; the $((LED_ROWS - ADJ_ABSENT)) beyond the
+$ADJ_ABSENT above adjudicate tests that are **not** absent — the fork already has
+them (a \`PORTED\` or \`COVERED-ELSEWHERE\` row is exactly that), or they are not at
+this pin. Those rows are counted here as what they are rather than subtracted
+from the absent set, which is what #603 fixed.
 
 - **~${HAVE_PCT}% of the pin's non-cloud tests exist here** ($SHARED of ~$NONCLOUD_UNIVERSE)
 - **~${RESOLVED_PCT}% are present or deliberately resolved** (adding $DECLINED declined, $DIVERGENT divergent, $COVERED covered-elsewhere)
