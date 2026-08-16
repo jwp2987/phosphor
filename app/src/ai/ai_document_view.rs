@@ -105,6 +105,7 @@ pub enum AIDocumentAction {
     Close,
     SelectVersion(AIDocumentVersion),
     Export,
+    CopyAsMarkdown,
     OpenVersionMenu,
     CreateWarpDriveNotebook,
     RevertToDocumentVersion,
@@ -998,6 +999,20 @@ impl TypedActionView for AIDocumentView {
                 self.refresh(ctx);
             }
             AIDocumentAction::Export => self.export(ctx),
+            AIDocumentAction::CopyAsMarkdown => {
+                let markdown = self.editor.as_ref(ctx).markdown_unescaped(ctx);
+                ctx.clipboard()
+                    .write(ClipboardContent::plain_text(markdown));
+
+                let window_id = ctx.window_id();
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::success(crate::t!("ai-document-copied-as-markdown")),
+                        window_id,
+                        ctx,
+                    );
+                });
+            }
             AIDocumentAction::CreateWarpDriveNotebook => self.create_warp_drive_notebook(ctx),
             AIDocumentAction::CopyLink(link) => {
                 send_telemetry_from_ctx!(
@@ -1166,7 +1181,16 @@ impl BackingView for AIDocumentView {
 
         // openWarp localization: the cloud menu items "Copy Link" / "Show in Zap Drive"
         // used to only show up after a successful cloud sync. That path is fully
-        // unreachable locally, so they're removed outright.
+        // unreachable locally, so they're removed outright. "Copy as Markdown" is
+        // NOT one of them — it reads the editor and writes the clipboard, both
+        // local — and was removed here by mistake alongside them; restored below.
+
+        menu_items.push(
+            MenuItemFields::new(crate::t!("ai-document-copy-as-markdown"))
+                .with_on_select_action(AIDocumentAction::CopyAsMarkdown)
+                .with_icon(Icon::Copy)
+                .into_item(),
+        );
 
         #[cfg(feature = "local_fs")]
         {
