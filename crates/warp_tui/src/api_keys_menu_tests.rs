@@ -1,7 +1,7 @@
 //! Most of `TuiApiKeysMenuModel`'s behavior (open/list/accept persisting through
-//! `AgentProviderSecrets`) reads app-side singletons (`AISettings`,
-//! `AgentProviderSecrets`) that aren't available in `warp_tui`'s lightweight test harness --
-//! see `crate::exchange_menu` / `crate::profile_menu` tests for the same tradeoff. That
+//! `AgentProviderSecrets`) reads app-side singletons (`AISettings`, `AgentProviderSecrets`)
+//! that the lightweight fixture the older tests here use does not provide -- see
+//! `crate::exchange_menu` / `crate::profile_menu` tests for the same tradeoff. That
 //! end-to-end behavior is instead exercised via the PTY harness
 //! (`crates/warp_tui/scripts/tui_harness.py`) and, on the app side, via
 //! `app/src/ai/agent_providers/mod_test.rs`'s `tui_*_agent_provider_*` tests (which cover the
@@ -10,12 +10,22 @@
 //! What *is* free of that dependency -- and so tested directly here -- is
 //! [`build_provider_rows`], the pure row-building/filtering logic this menu's `refresh_rows`
 //! delegates to.
+//!
+//! The input-ownership tests at the bottom (ported from the pin for #599) do need those
+//! singletons -- leaving key entry runs `refresh_rows` -- so they provision the full
+//! `register_tui_session_view_test_singletons` fixture, which registers `AISettings`,
+//! `AgentProviderSecrets` and a no-op secure storage. They assert only ownership and buffer
+//! state, never a persisted key: that stays with the app-side tests above.
 
 use warp::editor::CodeEditorModel;
-use warp::tui_export::{Appearance, TuiApiKeyProvider};
+use warp::tui_export::{Appearance, TuiApiKeyProvider, register_tui_session_view_test_singletons};
 use warpui_core::App;
 
+// `use super::*` also carries the parent module's imports into scope here: `ModelHandle`,
+// `AppContext`, and the `CoreEditorModel` trait whose `user_insert`/`clear_buffer` the
+// ownership tests below drive the shared editor with.
 use super::*;
+use crate::inline_menu::TuiInlineMenuInputOwnership;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
 use crate::test_fixtures::add_test_semantic_selection;
 
@@ -180,4 +190,136 @@ fn build_provider_rows_filters_by_case_insensitive_display_name() {
 fn build_provider_rows_empty_input_lists_everything() {
     let rows = build_provider_rows(vec![provider("p1", "Local Ollama", false)], "   ");
     assert_eq!(rows.len(), 1, "whitespace-only query must not filter anything out");
+}
+
+// ── Input ownership (#599) ────────────────────────────────────────────────────
+//
+// Ported from the pin (`42effe840`) `crates/warp_tui/src/api_keys_menu_tests.rs`. The pin's
+// three ownership tests map onto this fork's states as `Browsing` -> `List`,
+// `EditingProvider` -> `EnteringKey`; its `ConnectingGrok` state has no counterpart here
+// (`DECLINED.md` #319). Assertions about upstream's fixed provider catalog, its
+// Warp-credit-fallback row and its `TuiApiKeysFooter` are dropped with the features they
+// belong to, not weakened: this fork has no such rows and no footer type.
+
+/// Provisions the full session-view fixture and returns the shared editor, the mode model,
+/// and an already-open menu seeded with `rows`.
+///
+/// The heavier fixture (rather than the lightweight one the tests above use) is what lets
+/// key entry be left at all: both submitting and cancelling end in `refresh_rows`, which
+/// reads the configured providers through `tui_list_agent_provider_keys` and so needs
+/// `AISettings` plus `AgentProviderSecrets`.
+fn add_seeded_menu(
+    app: &mut App,
+    rows: Vec<(&str, bool)>,
+) -> (
+    ModelHandle<CodeEditorModel>,
+    ModelHandle<TuiInputSuggestionsModeModel>,
+    ModelHandle<TuiApiKeysMenuModel>,
+) {
+    register_tui_session_view_test_singletons(app);
+    app.update(|ctx| {
+        add_test_semantic_selection(ctx);
+        let editor = ctx.add_model(|ctx| CodeEditorModel::new_tui(80, ctx));
+        let mode = ctx.add_model(|_| TuiInputSuggestionsModeModel::new());
+        mode.update(ctx, |mode, ctx| {
+            mode.set_mode(TuiInputSuggestionsMode::ApiKeys, ctx);
+        });
+        let menu = ctx
+            .add_model(|_| TuiApiKeysMenuModel::new_for_test(editor.clone(), mode.clone(), rows));
+        (editor, mode, menu)
+    })
+}
+
+#[test]
+fn changing_the_shared_menu_mode_deactivates_api_keys_state() {
+    App::test((), |mut app| async move {
+        let (editor, mode, menu) = add_seeded_menu(&mut app, vec![("Local Ollama", false)]);
+        editor.update(&mut app, |editor, ctx| editor.user_insert("query", ctx));
+        mode.update(&mut app, |mode, ctx| {
+            mode.set_mode(TuiInputSuggestionsMode::ModelSelector, ctx);
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ModelSelector
+            );
+            assert!(!menu.as_ref(ctx).is_open(ctx));
+            // A menu that is not the active mode never owns the editor, whatever sub-state it
+            // is parked in -- otherwise a stale menu could mask (or unmask) the composer.
+            assert_eq!(
+                menu.as_ref(ctx).input_ownership(ctx),
+                TuiInlineMenuInputOwnership::Composer
+            );
+        });
+    });
+}
+
+#[test]
+fn listing_providers_owns_the_input_as_plain_text() {
+    App::test((), |mut app| async move {
+        let (_, mode, menu) = add_seeded_menu(
+            &mut app,
+            vec![("Local Ollama", false), ("DeepSeek Official", true)],
+        );
+        app.read(|ctx| {
+            assert_eq!(mode.as_ref(ctx).mode(), TuiInputSuggestionsMode::ApiKeys);
+            // The list's buffer is a search query, not a credential: it stays readable.
+            assert_eq!(
+                menu.as_ref(ctx).input_ownership(ctx),
+                TuiInlineMenuInputOwnership::InlineMenuPlainText
+            );
+            let snapshot = menu.as_ref(ctx).snapshot(ctx).expect("menu should be open");
+            assert_eq!(
+                snapshot
+                    .rows
+                    .iter()
+                    .map(|row| row.title.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["Local Ollama", "DeepSeek Official"]
+            );
+        });
+    });
+}
+
+#[test]
+fn entering_a_key_masks_the_input_and_saving_returns_to_plain_text() {
+    App::test((), |mut app| async move {
+        let (editor, _, menu) = add_seeded_menu(&mut app, vec![("DeepSeek Official", true)]);
+        menu.update(&mut app, |menu, ctx| menu.accept_selected(ctx));
+
+        app.read(|ctx| {
+            assert_eq!(
+                menu.as_ref(ctx).input_ownership(ctx),
+                TuiInlineMenuInputOwnership::InlineMenuMasked
+            );
+            // The pin prefills the stored secret so it can be edited; this fork starts empty
+            // and never reads a stored key back out into the buffer.
+            assert_eq!(input_text(&editor, ctx), "");
+        });
+
+        editor.update(&mut app, |editor, ctx| {
+            editor.user_insert("replacement-secret", ctx);
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                menu.as_ref(ctx).input_ownership(ctx),
+                TuiInlineMenuInputOwnership::InlineMenuMasked
+            );
+            // Masking is paint-only: the backing model keeps the real text, which is what
+            // makes editing (and submitting) still work.
+            assert_eq!(input_text(&editor, ctx), "replacement-secret");
+        });
+
+        menu.update(&mut app, |menu, ctx| menu.accept_selected(ctx));
+        app.read(|ctx| {
+            assert_eq!(
+                menu.as_ref(ctx).input_ownership(ctx),
+                TuiInlineMenuInputOwnership::InlineMenuPlainText
+            );
+            // Masking ends with the sub-state, so the key must not survive into the
+            // now-unmasked buffer.
+            assert_eq!(input_text(&editor, ctx), "");
+        });
+    });
 }

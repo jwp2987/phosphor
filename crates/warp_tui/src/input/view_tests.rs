@@ -44,7 +44,8 @@ use crate::editor_element::{TuiEditorAction, TuiEditorElement};
 use crate::editor_interaction::TuiEditorCommand;
 use crate::inline_menu::{
     TuiInlineMenu, TuiInlineMenuAccepted, TuiInlineMenuHandle, TuiInlineMenuHeader,
-    TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot, TuiInlineMenuStatus,
+    TuiInlineMenuInputOwnership, TuiInlineMenuScrollAnchor, TuiInlineMenuSnapshot,
+    TuiInlineMenuStatus,
 };
 use crate::input_mode_policy::AI_LOCKED_CONFIG;
 use crate::input_suggestions_mode::{TuiInputSuggestionsMode, TuiInputSuggestionsModeModel};
@@ -90,6 +91,196 @@ impl InputModePolicy for TestInputModePolicy {
     ) -> Option<PolicyConfigUpdate> {
         None
     }
+}
+
+/// A minimal inline menu that claims masked ownership of the shared editor.
+/// Stands in for the `/api-keys` menu that lands upstack from the pin's
+/// `a3a06f234`; the ownership plumbing is what is under test here.
+struct TestSecretMenu;
+
+impl Entity for TestSecretMenu {
+    type Event = ();
+}
+
+impl TuiInlineMenuHandle for ModelHandle<TestSecretMenu> {
+    fn mode(&self) -> TuiInputSuggestionsMode {
+        TuiInputSuggestionsMode::ModelSelector
+    }
+
+    fn is_open(&self, _ctx: &AppContext) -> bool {
+        true
+    }
+
+    fn input_ownership(&self, _ctx: &AppContext) -> TuiInlineMenuInputOwnership {
+        TuiInlineMenuInputOwnership::InlineMenuMasked
+    }
+
+    fn input_highlight_range(&self, _ctx: &AppContext) -> Option<Range<CharOffset>> {
+        None
+    }
+
+    fn input_argument_hint_text(&self, _ctx: &AppContext) -> Option<&'static str> {
+        None
+    }
+
+    fn select_previous(&self, _ctx: &mut AppContext) {}
+    fn select_next(&self, _ctx: &mut AppContext) {}
+    fn accept(&self, _ctx: &mut AppContext) -> Option<TuiInlineMenuAccepted> {
+        None
+    }
+    fn dismiss(&self, _ctx: &mut AppContext) {}
+    fn snapshot(&self, _ctx: &AppContext) -> Option<TuiInlineMenuSnapshot> {
+        Some(TuiInlineMenuSnapshot {
+            header: Some(TuiInlineMenuHeader {
+                title: Some("Secret".to_owned()),
+                tabs: Vec::new(),
+            }),
+            rows: Vec::new(),
+            selected_index: None,
+            scroll_offset: 0,
+            scroll_anchor: TuiInlineMenuScrollAnchor::Selection,
+            max_visible_rows: 1,
+            status: None,
+        })
+    }
+}
+
+#[test]
+fn masked_inline_menu_input_keeps_copy_and_paste_inside_masked_editor() {
+    App::test((), |mut app| async move {
+        let (view, leaked_event_count) = app.update(|ctx| {
+            let view = build_view_with_masked_inline_menu(ctx);
+            let leaked_event_count = Rc::new(Cell::new(0));
+            let leaked_event_count_for_subscription = leaked_event_count.clone();
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(
+                    event,
+                    TuiInputViewEvent::Pasted(_)
+                        | TuiInputViewEvent::ClipboardCopySucceeded
+                        | TuiInputViewEvent::ClipboardCopyFailed
+                ) {
+                    leaked_event_count_for_subscription
+                        .set(leaked_event_count_for_subscription.get() + 1);
+                }
+            });
+            (view, leaked_event_count)
+        });
+
+        app.update(|ctx| {
+            type_str(&view, ctx, "top-secret");
+            dispatch(
+                &view,
+                ctx,
+                &[
+                    TuiInputAction::EditorCommand(TuiEditorCommand::SelectAll),
+                    TuiInputAction::EditorCommand(TuiEditorCommand::Copy),
+                    TuiInputAction::Editor(TuiEditorAction::PasteText(
+                        "replacement-secret".to_owned(),
+                    )),
+                ],
+            );
+        });
+        app.read(|ctx| {
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert_eq!(text(&view, ctx), "replacement-secret");
+            assert!(rendered.contains("••••••••••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+        assert_eq!(
+            leaked_event_count.get(),
+            0,
+            "masked copy and paste must not emit composer or clipboard events"
+        );
+    });
+}
+
+#[test]
+fn masked_inline_menu_input_keeps_undo_and_redo_inside_masked_editor() {
+    App::test((), |mut app| async move {
+        let view = app.update(build_view_with_masked_inline_menu);
+
+        app.update(|ctx| {
+            type_str(&view, ctx, "top-secret");
+            dispatch(
+                &view,
+                ctx,
+                &[
+                    TuiInputAction::EditorCommand(TuiEditorCommand::SelectAll),
+                    TuiInputAction::Editor(TuiEditorAction::PasteText(
+                        "replacement-secret".to_owned(),
+                    )),
+                    TuiInputAction::EditorCommand(TuiEditorCommand::Undo),
+                ],
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(text(&view, ctx), "top-secret");
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert!(rendered.contains("••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+
+        app.update(|ctx| {
+            dispatch(
+                &view,
+                ctx,
+                &[TuiInputAction::EditorCommand(TuiEditorCommand::Redo)],
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(text(&view, ctx), "replacement-secret");
+            let rendered = render_input_buffer(&view, ctx).to_lines().join("\n");
+            assert!(rendered.contains("••••••••••••••••••"), "{rendered}");
+            assert!(!rendered.contains("top-secret"), "{rendered}");
+            assert!(!rendered.contains("replacement-secret"), "{rendered}");
+        });
+    });
+}
+
+#[test]
+fn masked_inline_menu_input_suppresses_composer_modes() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let view = build_view_with_masked_inline_menu(ctx);
+            type_str(&view, ctx, "!?");
+            assert_eq!(text(&view, ctx), "!?");
+            assert!(!view.as_ref(ctx).is_shell_mode(ctx));
+            assert_eq!(
+                view.as_ref(ctx).suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ModelSelector
+            );
+        });
+    });
+}
+
+fn build_view_with_masked_inline_menu(ctx: &mut AppContext) -> ViewHandle<TuiInputView> {
+    if !ctx.has_singleton_model::<Appearance>() {
+        ctx.add_singleton_model(|_| Appearance::mock());
+    }
+    add_test_semantic_selection(ctx);
+    let input_model = ctx.add_model(|ctx| CodeEditorModel::new_tui(W, ctx));
+    let input_mode = add_test_input_mode(ctx);
+    let suggestions_mode = add_suggestions_mode(ctx, TuiInputSuggestionsMode::ModelSelector);
+    let menu = ctx.add_model(|_| TestSecretMenu);
+    let (_, view) = ctx.add_tui_window(
+        AddWindowOptions {
+            window_style: WindowStyle::NotStealFocus,
+            ..Default::default()
+        },
+        move |ctx| {
+            TuiInputView::new_for_test(
+                input_model,
+                input_mode,
+                suggestions_mode,
+                vec![TuiInlineMenu::new(menu)],
+                |_| false,
+                ctx,
+            )
+        },
+    );
+    view
 }
 
 #[test]

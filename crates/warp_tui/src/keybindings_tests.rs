@@ -5,7 +5,7 @@ use super::{ATTACHMENTS_AVAILABLE_FLAG, TUI_BINDING_GROUP, is_tui_owned};
 use crate::attachment_bar::{FOCUS_ATTACHMENTS_BINDING_NAME, TuiAttachmentBar};
 use crate::input::TuiInputView;
 use crate::terminal_session_view::{
-    PASTE_IMAGE_BINDING_NAME, SESSION_COMPOSER_OWNS_INPUT_FLAG, TuiTerminalSessionView,
+    PASTE_IMAGE_BINDING_NAME, SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG, TuiTerminalSessionView,
 };
 
 #[test]
@@ -106,7 +106,7 @@ fn attachment_bindings_are_scoped_to_available_and_focused_contexts() {
             let mut composer_context = plain_input.clone();
             composer_context
                 .set
-                .insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
+                .insert(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG);
             assert!(paste_image.in_context(&composer_context));
             assert!(!paste_image.in_context(&plain_input));
             assert!(!paste_image.in_context(&bar_context));

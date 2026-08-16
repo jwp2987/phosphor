@@ -99,6 +99,19 @@ impl TuiTerminalSessionView {
         ctx: &mut ViewContext<Self>,
     ) {
         self.abort_input_detection(ctx);
+        // An inline menu that owns the shared editor is not composing a shell
+        // command or an agent prompt, so neither Tab-completion nor natural
+        // language detection applies to what is in the buffer.
+        let inline_menu_owns_input = active_inline_menu(
+            &self.inline_menus,
+            self.suggestions_mode.as_ref(ctx).mode(),
+            ctx,
+        )
+        .is_some_and(|menu| menu.input_ownership(ctx).inline_menu_owns_input());
+        if inline_menu_owns_input {
+            self.abort_shell_completion(ctx);
+            return;
+        }
         if is_user_edit {
             self.schedule_input_detection(ctx);
         }

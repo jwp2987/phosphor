@@ -12,11 +12,11 @@ use sum_tree::SeekBias;
 use warp::tui_export::TotalIndex;
 use warp::tui_export::{BlockHeight, BlockHeightItem, BlockHeightSummary, BlockId, TerminalModel};
 use warpui::{EntityId, ViewHandle};
-use warpui_core::AppContext;
 use warpui_core::elements::tui::{
-    TuiChildView, TuiElement, TuiLayoutContext, TuiRowResize, TuiSelectionSpan, TuiViewportContent,
-    TuiViewportWindow, TuiViewportedElement, TuiVisibleViewportItem,
+    TuiChildView, TuiConstraint, TuiElement, TuiLayoutContext, TuiRowResize, TuiSelectionSpan,
+    TuiSize, TuiViewportContent, TuiViewportWindow, TuiViewportedElement, TuiVisibleViewportItem,
 };
+use warpui_core::{AppContext, TuiView};
 
 use super::agent_block::TuiAIBlock;
 use super::terminal_block::{TerminalBlockElement, should_render_terminal_block};
@@ -96,10 +96,11 @@ impl TuiBlockListViewportSource {
     ///
     /// A non-dirty band block is re-measured only when its cached height cannot
     /// be trusted: its last measurement was at a different width (reflow), it
-    /// has never been measured (no recorded width), or it is still streaming
-    /// (its height can grow without a per-update invalidation — e.g. an
-    /// expanded, still-running shell command). At a stable width with no
-    /// dynamic height, nothing extra is measured and the cached
+    /// has never been measured (no recorded width), or it contains dynamic
+    /// child content such as an expanded, still-running shell command. Agent
+    /// output updates explicitly dirty their block, so animation-only repaints
+    /// do not need to measure the entire streaming response again. At a stable
+    /// width with no dynamic height, nothing extra is measured and the cached
     /// `last_laid_out_height` is reused. Off-band blocks keep their cached
     /// height until they scroll into the band.
     fn agent_heights_to_measure(
@@ -153,6 +154,29 @@ impl TuiBlockListViewportSource {
         view_ids
     }
 
+    /// Measures a view the presenter already retained for this frame, so the
+    /// height comes from the same element tree that will be painted instead of
+    /// a parallel one built just to measure. `None` when the view was not
+    /// retained, in which case the caller falls back to `desired_height`.
+    fn retained_view_height<V: TuiView>(
+        view: &ViewHandle<V>,
+        width: u16,
+        ctx: &mut TuiLayoutContext,
+        app: &AppContext,
+    ) -> Option<usize> {
+        ctx.rendered_views.contains_key(&view.id()).then(|| {
+            usize::from(
+                TuiChildView::new(view)
+                    .layout(
+                        TuiConstraint::loose(TuiSize::new(width, u16::MAX)),
+                        ctx,
+                        app,
+                    )
+                    .height,
+            )
+        })
+    }
+
     /// Measures each agent block's wrapped height at `width`, returning heights
     /// in the block list's native line unit.
     fn measured_agent_heights(
@@ -167,14 +191,17 @@ impl TuiBlockListViewportSource {
         view_ids
             .into_iter()
             .filter_map(|view_id| {
-                let height = if let Some(view) = agent_blocks.get(&view_id) {
-                    let view = view.as_ref(app);
-                    let height = view.desired_height(width, ctx, app);
+                let height = if let Some(view_handle) = agent_blocks.get(&view_id) {
+                    let view = view_handle.as_ref(app);
+                    let height = Self::retained_view_height(view_handle, width, ctx, app)
+                        .unwrap_or_else(|| view.desired_height(width, ctx, app));
                     view.record_height_measurement(width);
                     height
                 } else {
-                    let view = cli_subagent_blocks.get(&view_id)?.as_ref(app);
-                    let height = view.desired_height(width, ctx, app);
+                    let view_handle = cli_subagent_blocks.get(&view_id)?;
+                    let view = view_handle.as_ref(app);
+                    let height = Self::retained_view_height(view_handle, width, ctx, app)
+                        .unwrap_or_else(|| view.desired_height(width, ctx, app));
                     view.record_height_measurement(width);
                     height
                 };

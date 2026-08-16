@@ -31,8 +31,8 @@ use warp::tui_export::{
     LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData, LoadedConversationData,
     ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput, PersistenceWriter, PtyIntent,
     PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource, ServerConversationToken,
-    ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference, SlashCommandKind,
-    SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
+    SessionsEvent, ShellCommandExecutorEvent, SizeInfo, SizeUpdate, SkillReference,
+    SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand, TerminalModel, TerminalSurface,
     TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiSlashCommandDataSource,
     TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
     UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD,
@@ -201,7 +201,7 @@ const SESSION_CAN_ATTACH_AGENT_TO_RUNNING_COMMAND_FLAG: &str =
 /// unsent prompt and returns input to the running command.
 const SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG: &str =
     "TuiSessionCanDetachAgentFromRunningCommand";
-pub(crate) const SESSION_COMPOSER_OWNS_INPUT_FLAG: &str = "TuiSessionComposerOwnsInput";
+pub(crate) const SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG: &str = "TuiSessionComposerShortcutsActive";
 pub(crate) const TRIGGER_COMPLETIONS_BINDING_NAME: &str = "tui:session:trigger_completions";
 pub(crate) const PASTE_IMAGE_BINDING_NAME: &str = "tui:session:paste_image";
 pub(crate) const AUTO_APPROVE_TOGGLE_BINDING_NAME: &str = "tui:session:toggle_auto_approve";
@@ -954,7 +954,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("ctrl-v"),
@@ -966,7 +966,7 @@ pub(crate) fn init(app: &mut AppContext) {
         )
         .with_context_predicate(
             (id!(TuiInputView::ui_name()) | id!(TuiTerminalSessionView::ui_name()))
-                & id!(SESSION_COMPOSER_OWNS_INPUT_FLAG),
+                & id!(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG),
         )
         .with_group(TUI_BINDING_GROUP)
         .with_key_binding("alt-v"),
@@ -1778,6 +1778,9 @@ impl TuiTerminalSessionView {
             .set_agent_view_state(AgentViewState::Inactive);
 
         let terminal_surface_id: EntityId = ctx.view_id();
+        // Kept alive past the `BlocklistAIContextModel::new` move below so the
+        // shell-completion warm-up can subscribe to session bootstraps.
+        let sessions_for_completions = sessions.clone();
         let active_session =
             ctx.add_model(|ctx| ActiveSession::new(sessions.clone(), model_events.clone(), ctx));
         let model_for_conversation_selection = model.clone();
@@ -2229,6 +2232,12 @@ impl TuiTerminalSessionView {
                 ctx.notify();
             }
             ModelEvent::Typeahead => view.handle_typeahead_event(ctx),
+            // Defensive retry: a session whose bootstrap warm-up was skipped
+            // (or raced the subscription below) still gets its PATH executables
+            // loaded after the first command finishes.
+            ModelEvent::AfterBlockCompleted(_) => {
+                view.ensure_external_commands_are_warming(ctx);
+            }
             ModelEvent::BlockMetadataReceived(_)
             | ModelEvent::BackgroundBlockStarted
             | ModelEvent::TerminalClear
@@ -2260,6 +2269,30 @@ impl TuiTerminalSessionView {
                 ctx.notify();
             }
         });
+        // Warm the completion sources as soon as the active session's shell has
+        // bootstrapped, so the first Tab press does not pay for a cold engine.
+        ctx.subscribe_to_model(
+            &sessions_for_completions,
+            |view, sessions, event, ctx| match event {
+                SessionsEvent::SessionBootstrapped(bootstrap_event)
+                    if view.active_session.as_ref(ctx).session_id(ctx)
+                        == Some(bootstrap_event.session_id) =>
+                {
+                    let Some(session) = sessions.as_ref(ctx).get(bootstrap_event.session_id) else {
+                        report_error!(
+                            "Could not find active TUI session after its bootstrap event",
+                            extra: { "session_id" => ?bootstrap_event.session_id }
+                        );
+                        return;
+                    };
+                    view.abort_shell_completion(ctx);
+                    view.warm_shell_completion_sources(session, ctx);
+                }
+                SessionsEvent::SessionBootstrapped(_)
+                | SessionsEvent::SessionInitialized { .. }
+                | SessionsEvent::EnvironmentVariablesUpdated { .. } => {}
+            },
+        );
         ctx.subscribe_to_model(&active_session, |view, _, event, ctx| match event {
             ActiveSessionEvent::UpdatedPwd => {
                 view.abort_shell_completion(ctx);
@@ -2410,6 +2443,11 @@ impl TuiTerminalSessionView {
         };
         if let Some(failure) = initial_zero_state_load_failure {
             view.show_zero_state_ascii_load_failure(failure, ctx);
+        }
+        // Late-subscriber path: the session may already have bootstrapped
+        // before the subscription above was installed.
+        if let Some(session) = view.active_session.as_ref(ctx).session(ctx) {
+            view.warm_shell_completion_sources(session, ctx);
         }
         view
     }
@@ -5170,7 +5208,7 @@ impl TuiView for TuiTerminalSessionView {
         if self.input_target().agent_editor_owns_input()
             && !self.suggestions_mode.as_ref(ctx).mode().is_visible()
         {
-            context.set.insert(SESSION_COMPOSER_OWNS_INPUT_FLAG);
+            context.set.insert(SESSION_COMPOSER_SHORTCUTS_ACTIVE_FLAG);
             if attachment_focus_available(
                 self.is_shell_mode(ctx),
                 self.attachment_bar.as_ref(ctx).should_render(ctx),
