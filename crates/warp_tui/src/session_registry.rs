@@ -117,8 +117,9 @@ pub(crate) enum TuiSessionsEvent {
 /// Owns all live TUI sessions and the focused-session selection.
 pub(crate) struct TuiSessions {
     /// TUI-specific process driver. Its handle restores terminal mode on
-    /// drop, so the app-lifetime session singleton must retain it.
-    _driver: Option<TuiDriverHandle>,
+    /// drop, so the app-lifetime session singleton must retain it, and it
+    /// carries the live repaint-scheduling switches.
+    driver: Option<TuiDriverHandle>,
     keyboard_enhancement_supported: bool,
     exit_summary: TuiExitSummaryHandle,
     sessions: Vec<TuiSession>,
@@ -407,7 +408,7 @@ impl TuiSessions {
     ) -> Self {
         let keyboard_enhancement_supported = driver.keyboard_enhancement_supported();
         Self {
-            _driver: Some(driver),
+            driver: Some(driver),
             keyboard_enhancement_supported,
             exit_summary,
             sessions: Vec::new(),
@@ -421,7 +422,7 @@ impl TuiSessions {
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
         Self {
-            _driver: None,
+            driver: None,
             keyboard_enhancement_supported: false,
             exit_summary: TuiExitSummaryHandle::default(),
             sessions: Vec::new(),
@@ -543,6 +544,13 @@ impl TuiSessions {
     }
 
     /// Consumes the startup resume token.
+    /// Applies a live change to `appearance.zero_state.freeze_animation_when_unfocused`.
+    pub(crate) fn set_freeze_repaints_when_unfocused(&mut self, freeze: bool) {
+        if let Some(driver) = self.driver.as_mut() {
+            driver.set_freeze_repaints_when_unfocused(freeze);
+        }
+    }
+
     pub(crate) fn take_resume_token(&mut self) -> Option<ServerConversationToken> {
         self.resume_token.take()
     }

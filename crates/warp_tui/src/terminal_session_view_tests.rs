@@ -2209,7 +2209,7 @@ fn zero_state_renders_with_only_zero_height_bootstrap_blocks() {
                 .updated
                 .extend(view.as_ref(ctx).child_view_ids(ctx));
             presenter.invalidate(&invalidation, ctx, fixture.window_id);
-            presenter.present(ctx, &view, TuiRect::new(0, 0, 120, 40))
+            presenter.present(ctx, &view, TuiRect::new(0, 0, 200, 40))
         });
         let lines = frame.buffer.to_lines();
         let title_row = lines
@@ -2219,6 +2219,27 @@ fn zero_state_renders_with_only_zero_height_bootstrap_blocks() {
         assert!(
             title_row < 28,
             "zero-state title should render in the transcript area:\n{}",
+            lines.join("\n")
+        );
+        // The 32-column animation panel is centered in the 152 columns left
+        // after the 48-column copy region: 48 + (152 - 32) / 2 = 108.
+        let animation_start = 108;
+        let animation_end = 140;
+        assert!(
+            lines.iter().take(28).any(|line| line
+                .chars()
+                .skip(animation_start)
+                .take(animation_end - animation_start)
+                .any(|character| character != ' ')),
+            "animation content should render in the centered remaining-space panel:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines.iter().take(28).any(|line| line
+                .chars()
+                .skip(animation_end)
+                .any(|character| character != ' ')),
+            "starfield content should extend beyond the centered logo panel:\n{}",
             lines.join("\n")
         );
     });
