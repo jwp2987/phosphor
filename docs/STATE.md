@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `a4ed06e63c499a568afaf4393b3b8ef71bf5bd5e` (2026-08-16 12:10) — **3 commit(s) since**
+Last fully green `script/precheck`: `913f0916de2e66ca5032ed8068ef21e99696b910` (2026-08-16 12:59) — **1 commit(s) since**
 
 | guard | |
 |---|---|

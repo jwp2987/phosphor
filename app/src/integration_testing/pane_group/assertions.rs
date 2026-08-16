@@ -33,7 +33,16 @@ pub fn assert_focused_pane_index(tab_index: usize, pane_index: usize) -> Asserti
             let Some(pane_id) = view.pane_id_from_index(pane_index) else {
                 return AssertionOutcome::failure(format!("no pane at pane_index {pane_index}"));
             };
-            async_assert_eq!(view.focused_pane_id(ctx), pane_id)
+            // Name both sides. Bare `async_assert_eq!` renders as "(left = right)"
+            // with no values, which says nothing about which pane actually has
+            // focus.
+            let focused = view.focused_pane_id(ctx);
+            async_assert_eq!(
+                focused,
+                pane_id,
+                "expected pane_index {pane_index} (id {pane_id:?}) to be focused in tab \
+                 {tab_index}, but focus is on {focused:?}"
+            )
         })
     })
 }
