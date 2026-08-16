@@ -104,10 +104,11 @@ pub use crate::ai::blocklist::input_model::{BlocklistAIInputModel, InputConfig, 
 // orchestration tab bar snapshot; kept separate from the (unported)
 // cloud-runner "RunAgents" orchestration family.
 pub use crate::ai::blocklist::orchestration_topology::{
-    OrchestrationParticipantKind, OrderedOrchestrationDescendant,
+    LoadedSubtreeRollup, OrchestrationParticipantKind, OrderedOrchestrationDescendant,
+    aggregated_orchestrator_status, child_conversations_in_pill_order,
     descendant_conversation_ids_in_spawn_order, descendant_conversations_in_pill_order,
-    orchestration_root_conversation_id, orchestrator_agent_id_for_conversation,
-    resolve_orchestration_participant,
+    loaded_subtree_rollup, orchestration_root_conversation_id,
+    orchestrator_agent_id_for_conversation, resolve_orchestration_participant,
 };
 pub use crate::ai::blocklist::permissions::BlocklistAIPermissions;
 pub use crate::ai::blocklist::persistence::maybe_build_ai_query_upsert_event;
@@ -128,9 +129,9 @@ pub use crate::ai::option_snapshot::{
 };
 // Lets `--set-provider-api-key` / `--clear-provider-api-key` tell already-running
 // Zap processes to re-read the shared keyring after it persists a key.
+pub use crate::ai::skills::{SkillManager, SkillReference};
 #[cfg(not(target_family = "wasm"))]
 pub use crate::ai::tui_api_keys::notify_tui_api_keys_changed;
-pub use crate::ai::skills::{SkillManager, SkillReference};
 pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};
 pub use crate::appearance::Appearance;
 pub use crate::banner::BannerState;

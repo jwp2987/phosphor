@@ -262,11 +262,14 @@ impl TuiSessions {
     /// Subscribes the session owner to orchestration lifecycle requests: the
     /// focused session's tab bar refreshes when the orchestration model
     /// notifies (topology changed) or when focus moves to a different
-    /// session, and restored child sessions are materialized / dropped on
-    /// request -- see [`TuiOrchestrationModel`]'s module doc for why this is
-    /// still a trimmed subset of the pin's `wire_orchestration` (no *launch*
-    /// materialization, since nothing in this fork emits a request to create
-    /// a child from scratch).
+    /// session; restored child sessions are materialized on request, and
+    /// child-session kill and deferred teardown are drained here -- see
+    /// [`TuiOrchestrationModel`]'s module doc for why this is still a trimmed
+    /// subset of the pin's `wire_orchestration`. What remains absent is
+    /// *launch* materialization: nothing in this fork emits a request to
+    /// create a child from scratch through the executor, and `/orchestrate`
+    /// children are materialized directly by
+    /// [`crate::pane_group::TuiPaneGroup`].
     pub(crate) fn wire_orchestration(
         sessions: &ModelHandle<Self>,
         orchestration: &ModelHandle<TuiOrchestrationModel>,
@@ -318,6 +321,23 @@ impl TuiSessions {
                         conversation_id,
                         ctx,
                     );
+                });
+            }
+            TuiOrchestrationEvent::KillLocalChildSession {
+                session_id,
+                conversation_id,
+            } => {
+                let child_view = sessions_for_events
+                    .as_ref(ctx)
+                    .session(*session_id)
+                    .map(|session| session.view().clone());
+                if let Some(TuiSessionView::Terminal(view)) = child_view {
+                    view.update(ctx, |view, ctx| {
+                        view.cancel_active_conversation(ctx);
+                    });
+                }
+                orchestration_for_events.update(ctx, |orchestration, ctx| {
+                    orchestration.cleanup_child(conversation_id, ctx);
                 });
             }
             TuiOrchestrationEvent::RemoveChildSession(session_id) => {
