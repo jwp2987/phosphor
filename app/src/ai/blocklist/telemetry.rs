@@ -106,6 +106,9 @@ pub(crate) struct TeamAgentCommunicationFailedEvent {
 pub(crate) enum PillBarPillKind {
     Orchestrator,
     Child,
+    /// A leading breadcrumb pill navigating back up the drill-down tree
+    /// (to the tree root or the anchor's parent level).
+    Breadcrumb,
 }
 
 /// Concrete user actions against an orchestration pill bar entry.
@@ -154,8 +157,13 @@ pub(crate) struct PillBarInteractionEvent {
     pub pill_kind: PillBarPillKind,
     pub total_pills: usize,
     pub total_pinned: usize,
-    /// The orchestrator that hosts the pill bar.
+    /// The drill-down anchor whose level the bar was rendering when the
+    /// interaction happened. With a single orchestration level this is
+    /// always the tree root.
     pub source_conversation_id: AIConversationId,
+    /// Root of the orchestration tree containing the anchor. Equal to
+    /// `source_conversation_id` when the bar is anchored at the root.
+    pub root_conversation_id: AIConversationId,
     /// The pill the action targets.
     pub target_conversation_id: AIConversationId,
     /// Present only when `action == Switch`. Distinguishes whether the
