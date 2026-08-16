@@ -5925,6 +5925,7 @@ impl PaneGroup {
     /// the caller already has a `PaneId`: the index form indexes the unfiltered
     /// pane list, so an index taken from `visible_pane_ids()` (hidden panes
     /// filtered out) resolves to the wrong pane as soon as anything is hidden.
+    #[cfg(any(test, feature = "integration_tests"))]
     pub fn terminal_pane_view_from_pane_id(
         &self,
         pane_id: impl Into<PaneId>,
