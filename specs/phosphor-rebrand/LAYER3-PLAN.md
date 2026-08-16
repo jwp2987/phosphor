@@ -42,13 +42,29 @@ migration bug. `SCOPE.md` is right that this is its own milestone and that you
 This is the finding that makes the milestone tractable: **on the Rust side,
 almost everything flows from one value.**
 
-`AppId` is set in two places, and read everywhere:
+`AppId` is set in **three** places, and read everywhere:
 
 | site | value |
 |---|---|
 | `crates/warp_core/src/channel/state.rs:40` | `AppId::new("dev", "zap", "Zap")` — the default `ChannelConfig` |
-| `app/src/bin/zap_oss.rs:29` | `AppId::new("dev", "zap", "Zap")` — the OSS channel's config |
-| `crates/warp_core/src/channel/state.rs:275` `app_id_from_bundle()` | **macOS only** — overrides both of the above from the bundle's `CFBundleIdentifier` at runtime |
+| `app/src/bin/zap_oss.rs:29` | `AppId::new("dev", "zap", "Zap")` — the GUI OSS channel's config |
+| `crates/warp_tui/src/bin/oss.rs:24` | `AppId::new("dev", "zap", "Zap")` — the **TUI** OSS channel's config, which deliberately repeats the GUI's identity so the two share config and keyring (`DECLINED.md`, "TUI/GUI shared app id") |
+| `crates/warp_core/src/channel/state.rs:275` `app_id_from_bundle()` | **macOS only** — overrides all of the above from the bundle's `CFBundleIdentifier` at runtime (bundled GUI builds only; the TUI ships no bundle) |
+
+> **Corrected 2026-08-15 (issue #585).** This table originally said "two
+> places" and omitted the TUI binary. `874c2f43d` executed the plan as written
+> and therefore moved only two of the three sites, shipping
+> `v2026.08.14.1-beta` with a GUI on `dev.phosphor.Phosphor` and a TUI still on
+> `dev.zap.Zap` — separate config dirs and separate keyring service names, so
+> a key saved in one surface was invisible to the other. The lesson is that the
+> "shared app id" design means the *duplicate* literal is load-bearing, not
+> redundant: grep for `AppId::new` rather than enumerating binaries.
+
+There is a fourth `AppId::new`, `crates/integration/src/bin/integration.rs:29`
+(`dev.warp.WarpIntegration` / `dev.warp.Zap-Integration`). It is deliberately
+**not** part of this rename: it is the `Channel::Integration` harness identity,
+which runs against a temporary home directory and must stay isolated from real
+user data.
 
 Everything below is *computed* from it and needs no separate edit:
 

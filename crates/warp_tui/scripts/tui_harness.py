@@ -23,8 +23,14 @@ Usage:
 without it the harness prints how many raw bytes each step produced and whether
 expected text appeared, which is enough for CI-style assertions.
 
-The TUI logs to ~/.local/state/zap-tui/oz/zap-tui.log (truncate it before a run
-to inspect a single session's log).
+On Linux the TUI logs to ~/.local/state/phosphor/warp-cli/zap-tui.log (truncate
+it before a run to inspect a single session's log). The first component is
+`warp_core::paths::state_dir()`, i.e. the app id shared with the GUI; the second
+is `TUI_LOG_SUBDIRECTORY` in `crates/warp_logging/src/native.rs`; only the
+filename comes from this binary's `logfile_name`. This line previously read
+`~/.local/state/zap-tui/oz/zap-tui.log`, which was wrong in both directory
+components (there has never been a `zap-tui` app dir, and `oz` is the *CLI*
+subdirectory, not the TUI's).
 """
 import os
 import pty

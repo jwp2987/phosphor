@@ -198,6 +198,14 @@ across.
 > This is deliberate — it is a beta, and writing a migration that moves OS
 > keychain entries correctly was judged not worth the risk of doing it wrong.
 > Nothing is deleted; the old directories are left untouched.
+>
+> **The `phosphor-tui` binary moved one release later than the GUI.** In
+> `v2026.08.14.1-beta` the GUI used the `phosphor` identity but the TUI was
+> still on `zap`, so the two did not see each other's settings or API keys
+> (issue #585). Both are on `phosphor` from the next release. If you saved an
+> API key *from the TUI* while running that beta, it is in the old
+> `dev.zap.Zap` keyring entry and must be re-entered; TUI-written settings are
+> under the old `~/.config/zap`, and the same hand-copy below applies to them.
 
 | | before | after |
 |---|---|---|

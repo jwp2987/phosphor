@@ -148,7 +148,13 @@ fn test_project_path_for_zap_dev_app_id() {
 }
 
 #[test]
-fn test_project_path_for_oss_app_id() {
+fn test_project_path_for_legacy_zap_app_id() {
+    // NOT the OSS identity any more — that is `dev.phosphor.Phosphor`, covered
+    // by `test_project_path_for_phosphor_app_id` below. This now covers the
+    // retained `"Zap" => "zap"` arm in `project_dirs_for_app_id`, which exists
+    // only so the pre-rename application name still maps to its historical
+    // directory if anything asks. The expectations are unchanged; only the
+    // name, which claimed to describe the live OSS identity, is corrected.
     let project_dirs = project_dirs_for_app_id(AppId::new("dev", "zap", "Zap"), None)
         .expect("should be able to compute project dirs");
     cfg_if::cfg_if! {
@@ -166,10 +172,11 @@ fn test_project_path_for_oss_app_id() {
 
 #[test]
 fn test_project_path_for_phosphor_app_id() {
-    // The post-rename identity. Pinned on all three platforms because the
-    // identity migration copies data into exactly these directories, and a
-    // wrong answer here is only cosmetic on the first launch and permanent
-    // thereafter.
+    // The post-rename identity, and the one both OSS binaries now configure
+    // (`app/src/bin/phosphor_oss.rs`, `crates/warp_tui/src/bin/oss.rs`) as well
+    // as `ChannelState::init`'s default. Pinned on all three platforms because
+    // there is no migration: these directories are where user data starts
+    // accumulating from first launch, and a wrong answer here is permanent.
     let project_dirs = project_dirs_for_app_id(AppId::new("dev", "phosphor", "Phosphor"), None)
         .expect("should be able to compute project dirs");
     cfg_if::cfg_if! {
