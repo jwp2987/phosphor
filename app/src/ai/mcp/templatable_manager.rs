@@ -117,9 +117,7 @@ pub struct TemplatableMCPServerInfo {
     description: Option<String>,
     /// Whether the underlying transport uses authentication.
     ///
-    /// TODO(vorporeal): Use this to display a toast when server authentication and connection is complete, and
-    /// to provide a "log out" button.
-    #[allow(dead_code)]
+    /// TODO(vorporeal): Use this to display a toast when server authentication and connection is complete.
     is_authenticated_transport: bool,
 }
 
@@ -142,6 +140,12 @@ impl TemplatableMCPServerInfo {
 
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
+    }
+
+    /// Whether this connection authenticated its transport (OAuth), so a
+    /// "log out" action is meaningful even before credentials are persisted.
+    pub fn is_authenticated_transport(&self) -> bool {
+        self.is_authenticated_transport
     }
 }
 
@@ -263,6 +267,26 @@ impl TemplatableMCPServerManager {
             .get(&uuid)
             .map(|server| server.tools.clone())
             .unwrap_or_default()
+    }
+
+    /// Whether the `/mcp` menu should offer a "log out & remove credentials"
+    /// action for a file-based installation.
+    ///
+    /// Upstream keys this off `has_credentials(installation_uuid, app)`, which
+    /// resolves the installation's *template* UUID in the synced credential map.
+    /// This fork stores file-based OAuth credentials keyed by the installation's
+    /// content hash instead (`has_oauth_credentials_for_file_based_server`), so
+    /// the hash is passed in alongside the UUID; it is `None` for a non-file
+    /// installation, which has no hash and so only the second term applies. That
+    /// term is upstream's verbatim: a server that authenticated its transport
+    /// can be logged out of even before its credentials have been persisted.
+    #[cfg(all(not(target_family = "wasm"), feature = "tui"))]
+    pub fn can_log_out(&self, installation_uuid: Uuid, hash: Option<u64>) -> bool {
+        hash.is_some_and(|hash| self.has_oauth_credentials_for_file_based_server(hash))
+            || self
+                .active_servers
+                .get(&installation_uuid)
+                .is_some_and(TemplatableMCPServerInfo::is_authenticated_transport)
     }
 
     /// Returns the JSON Schema `input_schema` for a named tool across active MCP servers.

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use uuid::Uuid;
 use warp::tui_export::{
-    TuiMcpConfigState, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerStatus, TuiMcpSnapshot,
-    TuiMcpTransport, register_tui_session_view_test_singletons,
+    TuiMcpConfigDiagnostic, TuiMcpServerId, TuiMcpServerSnapshot, TuiMcpServerSource,
+    TuiMcpServerStatus, TuiMcpSnapshot, TuiMcpTransport, register_tui_session_view_test_singletons,
 };
 use warpui::{EntityIdMap, SingletonEntity};
 use warpui_core::App;
@@ -19,15 +19,27 @@ use crate::autoupdate::TuiAutoupdateStatus;
 
 fn server(id: u64, status: TuiMcpServerStatus) -> TuiMcpServerSnapshot {
     TuiMcpServerSnapshot {
-        id: TuiMcpServerId(id),
-        installation_uuid: Uuid::from_u128(id as u128),
+        id: TuiMcpServerId::FileBased(id),
+        installation_uuid: Some(Uuid::from_u128(id as u128)),
         name: format!("server-{id}"),
-        transport: TuiMcpTransport::Stdio,
+        description: None,
+        source: TuiMcpServerSource::FileBased {
+            sources: Vec::new(),
+        },
+        transport: Some(TuiMcpTransport::Stdio),
         status,
         tool_count: 2,
         resource_count: 0,
-        has_credentials: false,
+        can_log_out: false,
         authorization_url: None,
+    }
+}
+
+fn diagnostic(message: &str) -> TuiMcpConfigDiagnostic {
+    TuiMcpConfigDiagnostic {
+        provider: "Claude".to_owned(),
+        config_path: PathBuf::from("/tmp/.mcp.json"),
+        message: message.to_owned(),
     }
 }
 
@@ -40,24 +52,36 @@ fn failed_autoupdate_status_has_visible_label() {
 }
 
 #[test]
-fn mcp_summary_keeps_missing_config_action_short() {
+fn mcp_summary_keeps_the_empty_catalog_action_short() {
+    let snapshot = TuiMcpSnapshot::default();
+
+    assert_eq!(
+        mcp_status_label(&snapshot),
+        ("No servers available · run /mcp".to_string(), false)
+    );
+}
+
+#[test]
+fn mcp_summary_counts_available_entries_separately() {
     let snapshot = TuiMcpSnapshot {
-        config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Missing,
-        servers: Vec::new(),
+        diagnostics: Vec::new(),
+        servers: vec![
+            server(1, TuiMcpServerStatus::Running),
+            server(2, TuiMcpServerStatus::Available),
+            server(3, TuiMcpServerStatus::Available),
+        ],
     };
 
     assert_eq!(
         mcp_status_label(&snapshot),
-        ("Not configured · /mcp".to_string(), false)
+        ("1 connected · 2 available · /mcp".to_string(), false)
     );
 }
 
 #[test]
 fn mcp_summary_reports_mixed_runtime_states() {
     let snapshot = TuiMcpSnapshot {
-        config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Ready,
+        diagnostics: Vec::new(),
         servers: vec![
             server(1, TuiMcpServerStatus::Running),
             server(2, TuiMcpServerStatus::Starting),
@@ -84,18 +108,26 @@ fn mcp_summary_reports_mixed_runtime_states() {
 }
 
 #[test]
-fn mcp_summary_marks_config_errors() {
+fn mcp_summary_marks_config_errors_alongside_healthy_servers() {
     let snapshot = TuiMcpSnapshot {
-        config_path: PathBuf::from("/tmp/.mcp.json"),
-        config_state: TuiMcpConfigState::Invalid {
-            message: "invalid JSON".to_string(),
-        },
+        diagnostics: vec![diagnostic("invalid JSON")],
         servers: Vec::new(),
     };
 
     assert_eq!(
         mcp_status_label(&snapshot),
-        ("Config error · run /mcp".to_string(), true)
+        ("1 config errors · /mcp".to_string(), true)
+    );
+
+    // A broken config no longer hides the servers that did parse.
+    let mixed = TuiMcpSnapshot {
+        diagnostics: vec![diagnostic("invalid JSON")],
+        servers: vec![server(1, TuiMcpServerStatus::Running)],
+    };
+
+    assert_eq!(
+        mcp_status_label(&mixed),
+        ("1 connected · 1 config errors · /mcp".to_string(), true)
     );
 }
 

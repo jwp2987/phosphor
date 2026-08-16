@@ -38,6 +38,56 @@ impl FileBasedMCPManager {
     ) -> Vec<PathBuf> {
         vec![]
     }
+
+    #[cfg(any(feature = "tui", test))]
+    pub fn config_diagnostics(&self) -> Vec<FileMCPConfigDiagnostic> {
+        vec![]
+    }
+
+    #[cfg(any(feature = "tui", test))]
+    pub fn file_based_servers_with_sources(&self) -> Vec<FileBasedMCPServerWithSources> {
+        vec![]
+    }
+
+    #[cfg(any(feature = "tui", test))]
+    pub fn installation_by_hash(&self, _hash: u64) -> Option<&TemplatableMCPServerInstallation> {
+        None
+    }
+}
+
+/// The fields of a config diagnostic the TUI catalog reads. Mirrors
+/// `file_mcp_watcher::FileMCPConfigDiagnostic` (minus its `kind`, which no
+/// frontend consumes) so callers compile with or without `local_fs`.
+#[cfg(any(feature = "tui", test))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileMCPConfigDiagnostic {
+    pub config_path: PathBuf,
+    pub provider: MCPProvider,
+    pub message: String,
+}
+
+/// Whether a file-based config source is a global one or a project one.
+/// Mirrors `file_based_manager::FileBasedMCPServerScope` so callers compile
+/// with or without `local_fs`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileBasedMCPServerScope {
+    Global,
+    Project,
+}
+
+#[cfg(any(feature = "tui", test))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileBasedMCPServerSource {
+    pub provider: MCPProvider,
+    pub root_path: PathBuf,
+    pub scope: FileBasedMCPServerScope,
+}
+
+#[cfg(any(feature = "tui", test))]
+#[derive(Clone, Debug)]
+pub struct FileBasedMCPServerWithSources {
+    pub installation: TemplatableMCPServerInstallation,
+    pub sources: Vec<FileBasedMCPServerSource>,
 }
 
 impl Entity for FileBasedMCPManager {

@@ -16,7 +16,7 @@ use warp::tui_export::{
     AIAgentActionId, AIAgentExchangeId, AIConversationAutoexecuteMode, AIConversationId,
     AgentViewEntryOrigin, AgentViewState, BlockPadding, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMPreferences, PtyIntent,
-    PtyIntentEvent, Session, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
+    PtyIntentEvent, TuiMcpServerId, TuiMcpAction, Session, SizeInfo, SizeUpdate, TaskId, TuiUpArrowHistoryItemKind,
     export_conversation_markdown, register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
@@ -4673,3 +4673,93 @@ fn ctrl_c_on_drilled_anchor_with_tabs_focused_kills_the_subtree() {
         });
     });
 }
+
+// MCP install-flow variable masking (#602).
+
+#[test]
+fn mcp_menu_footer_replaces_status_with_controls() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let footer = render_mcp_menu_footer(
+                &TuiUiBuilder::from_app(ctx),
+                Some(TuiMcpAction::Stop(TuiMcpServerId::FileBased(1))),
+                true,
+            )
+            .finish();
+            assert_eq!(
+                render_element(footer, ctx, 120).to_lines(),
+                vec![
+                    "Enter to stop  Ctrl+R to log out & remove credentials  Esc to close"
+                        .to_owned()
+                ],
+            );
+        });
+    });
+}
+
+#[test]
+fn mcp_menu_footer_hides_unavailable_primary_control() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let logout_only = render_mcp_menu_footer(&builder, None, true).finish();
+            assert_eq!(
+                render_element(logout_only, ctx, 120).to_lines(),
+                vec!["Ctrl+R to log out & remove credentials  Esc to close".to_owned()],
+            );
+            let close_only = render_mcp_menu_footer(&builder, None, false).finish();
+            assert_eq!(
+                render_element(close_only, ctx, 120).to_lines(),
+                vec!["Esc to close".to_owned()],
+            );
+        });
+    });
+}
+
+#[test]
+fn mcp_menu_footer_hides_unavailable_logout_control() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let footer = render_mcp_menu_footer(
+                &TuiUiBuilder::from_app(ctx),
+                Some(TuiMcpAction::Start(TuiMcpServerId::FileBased(1))),
+                false,
+            )
+            .finish();
+            assert_eq!(
+                render_element(footer, ctx, 120).to_lines(),
+                vec!["Enter to start  Esc to close".to_owned()],
+            );
+        });
+    });
+}
+
+#[test]
+fn mcp_primary_action_hints_match_available_actions() {
+    let id = TuiMcpServerId::FileBased(1);
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::Start(id)),
+        Some("to start")
+    );
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::Stop(id)),
+        Some("to stop")
+    );
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::Retry(id)),
+        Some("to retry")
+    );
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::ReopenAuthorization(id)),
+        Some("to authenticate")
+    );
+    assert_eq!(
+        mcp_primary_action_hint(TuiMcpAction::Enable(id)),
+        Some("to install and enable")
+    );
+    assert_eq!(mcp_primary_action_hint(TuiMcpAction::LogOut(id)), None);
+}
+
