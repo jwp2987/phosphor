@@ -1017,6 +1017,30 @@ fn blank_row() -> Box<dyn TuiElement> {
     TuiText::new(" ").truncate().finish()
 }
 
+/// Benchmark access to the zero state's layout seam.
+///
+/// The zero-state benchmark builds its own view rather than the real
+/// [`TuiZeroStateView`], which would drag in the settings, session, changelog
+/// and MCP models it reads. What it must not also re-implement is the layout:
+/// [`build_zero_state_layout`] and the two column widths are private, so a
+/// copy in `benchmark_support` would be free to drift from the composition it
+/// claims to measure. These re-exports are gated on `test-util`, which is not
+/// a default feature, so nothing here reaches a production build.
+#[cfg(feature = "test-util")]
+pub(crate) const BENCHMARK_COPY_COLS: u16 = LEFT_COLUMN_COLS;
+
+#[cfg(feature = "test-util")]
+pub(crate) const BENCHMARK_ANIMATION_PANEL_COLS: u16 = ANIMATION_PANEL_COLS;
+
+#[cfg(feature = "test-util")]
+pub(crate) fn benchmark_zero_state_layout(
+    starfield: Box<dyn TuiElement>,
+    animation: Box<dyn TuiElement>,
+    text_column: Box<dyn TuiElement>,
+) -> Box<dyn TuiElement> {
+    build_zero_state_layout(starfield, animation, text_column)
+}
+
 #[cfg(test)]
 #[path = "zero_state_tests.rs"]
 mod tests;

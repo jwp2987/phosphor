@@ -1,4 +1,4 @@
-//! Production-shaped fixtures for retained TUI transcript benchmarks.
+//! Production-shaped fixtures for retained TUI benchmarks.
 //!
 //! Ported from upstream `d5b1e6998`. Three adaptations to this fork's API shape:
 //! the block-list viewport source here has no handoff-block registry, so the root
@@ -6,36 +6,230 @@
 //! the conversation and exchange ids as separate arguments and has no
 //! `is_restored_for_telemetry` flag; and `WindowInvalidation` fields are plain
 //! `HashSet<EntityId>` rather than upstream's `EntityIdSet` alias.
+//!
+//! [`ClippedTerminalBlockBenchmark`] is ported from upstream `a95e6e541`,
+//! whose non-benchmark half (the viewport-clipped inline terminal paint it
+//! measures) is already in this fork.
+//!
+//! [`ZeroStateBenchmark`] and [`ZeroStateProjectionBenchmark`] are ported from
+//! upstream `b462e0132`, whose non-benchmark half (the cached logo geometry,
+//! reused projection buffers, direct starfield paint and direct zero-state
+//! compositor) is likewise already here. Two adaptations: the mark styles are
+//! `ZeroStateMarkStyles`, not upstream's `WarpLogoStyles`, because this fork's
+//! built-in object is a diamond spark rather than Warp's logo (see #384); and
+//! the zero-state layout and its two column widths are reached through the
+//! `test-util` seam at the end of `zero_state.rs`, since they are private to
+//! that module here.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use parking_lot::FairMutex;
 use warp::tui_export::{
     AIAgentExchangeId, AIAgentInput, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType,
     AIAgentText, AIAgentTextSection, AIBlockModel, AIBlockOutputStatus, AIConversationId,
-    AIRequestType, Appearance, LLMId, MessageId, OutputStatusUpdateCallback, RichContentItem,
-    RichContentType, ServerOutputId, Shared, TerminalModel,
+    AIRequestType, Appearance, BlockId, LLMId, MessageId, OutputStatusUpdateCallback,
+    RichContentItem, RichContentType, ServerOutputId, Shared, TerminalModel,
 };
 use warpui::platform::WindowStyle;
 use warpui::{
     AddWindowOptions, App, AppContext, Entity, EntityId, TuiView, TypedActionView, ViewContext,
     ViewHandle, WindowInvalidation,
 };
+use warpui_core::elements::animation::AnimationClock;
 use warpui_core::elements::tui::{
-    TuiElement, TuiRect, TuiViewportPosition, TuiViewportVerticalAlignment, TuiViewportedList,
-    TuiViewportedListState,
+    TuiClipped, TuiElement, TuiRect, TuiSize, TuiStyle, TuiText, TuiViewportPosition,
+    TuiViewportVerticalAlignment, TuiViewportedList, TuiViewportedListState,
 };
 use warpui_core::presenter::tui::TuiPresenter;
 
 use crate::agent_block::TuiAIBlock;
+use crate::terminal_block::{TerminalBlockElement, block_content_rows};
 use crate::test_fixtures::add_test_action_model_and_events;
 use crate::tui_block_list_viewport_source::{
     AgentBlockRegistry, CLISubagentBlockRegistry, TuiBlockListViewportSource,
 };
 use crate::tui_builder::TuiUiBuilder;
+use crate::zero_state::{
+    BENCHMARK_ANIMATION_PANEL_COLS, BENCHMARK_COPY_COLS, benchmark_zero_state_layout,
+};
+use crate::zero_state_animation::{
+    LogoProjector, ZeroStateAnimationConfig, ZeroStateAnimationElement, ZeroStateInteractionHandle,
+    ZeroStateMarkStyles, ZeroStateStarfieldElement, benchmark_logo_projection,
+};
+
+/// Which silhouette the zero-state fixture rotates.
+///
+/// The two arms are the comparison upstream `b462e0132` reported its numbers
+/// against: the built-in mark, whose geometry is a closed-form predicate, and
+/// a user-supplied ASCII mask, whose geometry is sampled from a bitmap and so
+/// costs more to re-derive. Caching that geometry is the larger half of what
+/// the commit optimized, so a benchmark that ran only the built-in shape would
+/// understate it.
+#[derive(Clone, Copy, Debug)]
+pub enum ZeroStateBenchmarkShape {
+    BuiltIn,
+    Ascii,
+}
+
+impl ZeroStateBenchmarkShape {
+    fn config(self) -> ZeroStateAnimationConfig {
+        match self {
+            Self::BuiltIn => ZeroStateAnimationConfig::default(),
+            Self::Ascii => ZeroStateAnimationConfig::benchmark_ascii(),
+        }
+    }
+}
+
+/// One retained zero-state frame: starfield, rotating mark, and opaque copy
+/// overlay, composed through the real zero-state layout.
+///
+/// Deliberately not the real `TuiZeroStateView`, which reads the settings,
+/// session, changelog, autoupdate and MCP models; the fixture supplies a fixed
+/// copy block of the same shape instead, so the frame cost measured is the
+/// animation and composition rather than model access.
+pub struct ZeroStateBenchmark {
+    app: App,
+    root: ViewHandle<BenchmarkZeroStateView>,
+    presenter: TuiPresenter,
+    area: TuiRect,
+}
+
+impl ZeroStateBenchmark {
+    /// Builds and primes a zero state at `width × height`.
+    pub fn new(shape: ZeroStateBenchmarkShape, width: u16, height: u16) -> Self {
+        let config = Arc::new(shape.config());
+        App::test((), move |mut app| async move {
+            let (_, root) = app.update(|ctx| {
+                ctx.add_tui_window(
+                    AddWindowOptions {
+                        window_style: WindowStyle::NotStealFocus,
+                        ..Default::default()
+                    },
+                    move |_| BenchmarkZeroStateView {
+                        clock: AnimationClock::starting_at(Duration::ZERO),
+                        config,
+                        interaction: ZeroStateInteractionHandle::default(),
+                    },
+                )
+            });
+            let mut benchmark = Self {
+                app,
+                root,
+                presenter: TuiPresenter::new(),
+                area: TuiRect::new(0, 0, width, height),
+            };
+            benchmark.invalidate();
+            benchmark.present();
+            benchmark
+        })
+    }
+
+    /// Paints one frame from the retained view element and returns a cheap
+    /// checksum.
+    pub fn present(&mut self) -> u64 {
+        let frame = self
+            .app
+            .update(|ctx| self.presenter.present(ctx, &self.root, self.area));
+        frame.buffer.content.iter().fold(0u64, |checksum, cell| {
+            checksum.wrapping_add(cell.symbol().len() as u64)
+        })
+    }
+
+    fn invalidate(&mut self) {
+        let invalidation = WindowInvalidation {
+            updated: HashSet::from_iter([self.root.id()]),
+            ..Default::default()
+        };
+        self.app.read(|ctx| {
+            self.presenter
+                .invalidate(&invalidation, ctx, self.root.window_id(ctx));
+        });
+    }
+}
+
+struct BenchmarkZeroStateView {
+    clock: AnimationClock,
+    config: Arc<ZeroStateAnimationConfig>,
+    interaction: ZeroStateInteractionHandle,
+}
+
+impl Entity for BenchmarkZeroStateView {
+    type Event = ();
+}
+
+impl TypedActionView for BenchmarkZeroStateView {
+    type Action = ();
+}
+
+impl TuiView for BenchmarkZeroStateView {
+    fn ui_name() -> &'static str {
+        "BenchmarkZeroStateView"
+    }
+
+    fn render(&self, _app: &AppContext) -> Box<dyn TuiElement> {
+        // One flat style for all four mark surfaces: the real view derives
+        // them from the theme through `TuiUiBuilder`, which needs an
+        // `Appearance` singleton and measures theme lookups rather than the
+        // projection this fixture is timing.
+        let style = TuiStyle::default();
+        let starfield = ZeroStateStarfieldElement::new(
+            self.clock,
+            style,
+            BENCHMARK_COPY_COLS,
+            BENCHMARK_ANIMATION_PANEL_COLS,
+        )
+        .finish();
+        let animation = ZeroStateAnimationElement::new(
+            self.clock,
+            self.config.clone(),
+            self.interaction.clone(),
+            ZeroStateMarkStyles {
+                front: style,
+                back: style,
+                side: style,
+                background: style,
+            },
+        )
+        .without_background_stars()
+        .finish();
+        let overlay = TuiText::new(
+            "Phosphor Agent\nv0.0.0\n\nWhat's new\n• benchmark\n\nProject\nbenchmark fixture",
+        )
+        .finish();
+        benchmark_zero_state_layout(starfield, animation, overlay)
+    }
+}
+
+/// The mark's projection alone, with the retained projector held across
+/// iterations so its cached geometry and reused buffers are in play.
+pub struct ZeroStateProjectionBenchmark {
+    elapsed: Duration,
+    size: TuiSize,
+    config: ZeroStateAnimationConfig,
+    projector: LogoProjector,
+}
+
+impl ZeroStateProjectionBenchmark {
+    /// Builds a projection fixture for a `width × height` animation panel.
+    pub fn new(shape: ZeroStateBenchmarkShape, width: u16, height: u16) -> Self {
+        Self {
+            elapsed: Duration::ZERO,
+            size: TuiSize::new(width, height),
+            config: shape.config(),
+            projector: LogoProjector::default(),
+        }
+    }
+
+    /// Advances one animation tick and projects, returning a cheap checksum.
+    pub fn project(&mut self) -> u64 {
+        self.elapsed += Duration::from_millis(66);
+        benchmark_logo_projection(self.elapsed, self.size, &self.config, &mut self.projector)
+    }
+}
 
 /// Shape of the retained transcript fixture.
 #[derive(Clone, Copy, Debug)]
@@ -49,6 +243,68 @@ pub enum TranscriptDataset {
         preceding_rows: usize,
         tail_rows: usize,
     },
+}
+
+/// One inline terminal block painted through a fixed-height clipped viewport.
+///
+/// Measures what upstream `a95e6e541` changed. An inline terminal block used
+/// to walk every retained command/output row and column on each paint while
+/// the nested surface discarded the offscreen writes, so its cost grew with
+/// total output rather than with the viewport. The fixture therefore scales
+/// `rows` while holding the viewport at `height`; the clipped implementation's
+/// cost should stay near flat across the sweep.
+pub struct ClippedTerminalBlockBenchmark {
+    app: App,
+    model: Arc<FairMutex<TerminalModel>>,
+    block_id: BlockId,
+    viewport_origin_y: usize,
+    presenter: TuiPresenter,
+    area: TuiRect,
+}
+
+impl ClippedTerminalBlockBenchmark {
+    /// Builds and primes a long terminal block with `rows` output rows.
+    pub fn new(rows: usize, width: u16, height: u16) -> Self {
+        App::test((), move |app| async move {
+            let mut terminal_model = TerminalModel::mock(None, None);
+            let output = "benchmark terminal output\r\n".repeat(rows);
+            terminal_model.simulate_block("printf benchmark", output.as_str());
+            let block = terminal_model
+                .block_list()
+                .blocks()
+                .iter()
+                .rev()
+                .find(|block| block.finished())
+                .expect("simulated block should exist");
+            let block_id = block.id().clone();
+            let content_height = block_content_rows(block).len();
+            let mut benchmark = Self {
+                app,
+                model: Arc::new(FairMutex::new(terminal_model)),
+                block_id,
+                viewport_origin_y: content_height.saturating_sub(usize::from(height)),
+                presenter: TuiPresenter::new(),
+                area: TuiRect::new(0, 0, width, height),
+            };
+            benchmark.present();
+            benchmark
+        })
+    }
+
+    /// Lays out and paints one clipped frame and returns a cheap checksum.
+    pub fn present(&mut self) -> u64 {
+        let element = TuiClipped::new(
+            TerminalBlockElement::content(self.model.clone(), self.block_id.clone()).finish(),
+        )
+        .with_viewport_origin_y(self.viewport_origin_y)
+        .finish();
+        let frame = self
+            .app
+            .read(|ctx| self.presenter.present_element(element, self.area, ctx));
+        frame.buffer.content.iter().fold(0u64, |checksum, cell| {
+            checksum.wrapping_add(cell.symbol().len() as u64)
+        })
+    }
 }
 
 /// One production-shaped retained transcript benchmark.

@@ -110,6 +110,12 @@ harness = false
 # unless it is asked for explicitly (`cargo bench -p warp_tui --features test-util`).
 required-features = ["test-util"]
 
+[[bench]]
+name = "zero_state_bench"
+harness = false
+# Same gate as `transcript_bench` above, for the same reason.
+required-features = ["test-util"]
+
 [features]
 # Exposes deterministic, production-shaped transcript fixtures to benchmarks.
 test-util = ["warp/test-util", "warp_core/test-util"]
