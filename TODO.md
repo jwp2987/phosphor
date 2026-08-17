@@ -1664,9 +1664,10 @@ more look at *why* it is absent.
       **22 real-debt symbols → 16.**
 
 ### Confirmed absent — computer use
-- [ ] `use_computer_decoration`. Block decoration for computer-use actions.
+- [x] `use_computer_decoration`. Block decoration for computer-use actions.
       Computer use itself is built and sighted as of tonight.
       **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — not absent: `output.rs:2913/2961/2988` implement and wire a use-computer block decoration, tested at `output_tests.rs:36-71`. But it decorates *screenshot delivery* where the pin decorates *recording status*, so this is a different subject, not a port. Equivalence to the pin was NOT verified (the audit had no oracle access). Narrow this entry to the actual delta before acting.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Settled against the pin: `42effe840:output_tests.rs:170` tests `should_decorate_recorded_use_computer` (recording status); the fork's `output.rs:2913` does `should_decorate_blind_use_computer_screenshot` (screenshot delivery). Different subjects, and recording is formally declined under #350. Nothing actionable remains.
 
 ### Confirmed absent — CLOUD, no action (recorded so they are not re-raised)
 `CLOUD_MODE_V2_COMPOSER`, `CloudEnvironmentCatalog`, `CloudModeSetupV2`,
@@ -1707,11 +1708,12 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       and `lock_for_agent_control`/`reset_after_agent_control` now exist
       (`edd9b31b6`), the enum variant deliberately does not (#399/#254 item d).
       Do not track this cluster in two places again.
-- [ ] **No TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
+- [x] **No TUI renderer for `MessagesReceivedFromAgents` / `EventsFromAgents`**
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
       missing. Second of the two clusters behind #456.
       **PARTIALLY STALE 2026-08-17 (v0.1.0).** "No TUI renderer" is no longer true for the first half: `crates/warp_tui/src/agent_block.rs:1349` renders `MessagesReceivedFromAgents { messages }`. `EventsFromAgents` is still an empty match arm at :1356, so only that half remains. Rescope before working it.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **Not a gap at all — my earlier "partially stale" note was itself wrong.** The pin's own arm is `EventsFromAgents { .. } => {}` (`42effe840:crates/warp_tui/src/agent_block.rs:1616`) with the identical comment: "Event IDs contain no display detail." The fork's `:1356` is byte-identical. The empty arm is the pin's deliberate no-op, faithfully ported; `MessagesReceivedFromAgents` matches too. I read intentional parity as debt because I checked the fork and not the oracle.
 - [x] **~~No `/index` slash command~~ — FALSE, corrected 2026-08-11.** It
       exists: `app/src/search/slash_command_menu/static_commands/mod.rs:257`
       maps `"/index" => SlashCommandKind::Index`. This entry also said
@@ -1872,11 +1874,13 @@ bypass, `175776e22` unescaped exec path). Remaining:
       `warpui`, or `warpui_extras`. That is a genuine coverage hole in the audit,
       not just an unfixed bug: **~1,240 upstream commits touch `warpui_core` and
       `warpui` and have never been swept at all.**
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **The #13591 example is wrong** — `diff` of `crates/warpui_core/src/runtime/renderer.rs` against the pin is EMPTY (byte-identical), and `renderer_tests.rs:201` has `wide_grapheme_does_not_shift_following_cells`. That bug is already fixed here. The coverage-hole half stands: `docs/FLEET-ROUND.md:64-81`'s partition table has no `warpui_core`/`warpui`/`warpui_extras` row. Replace the example or drop it; do not cite #13591 as unfixed.
 - [ ] **~25 of the 34 PARTIAL candidates were never hand-verified** (tab-group
       rename bugs, cross-window drag "fuzzy shake", MCP install-modal styling,
       and others). The triage script flagged them; nobody read them. These are
       the cheapest remaining wins in this area — the expensive part (finding
       them) is already done.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **Drop the "cross-window drag 'fuzzy shake'" example** — fixed by `c3f4b667a` (2026-08-04), confirmed an ancestor of `main`, eleven days before the fleet round. The "~25 of 34" count and the other two examples are unfalsifiable without the source list of 34.
 - [ ] **~82 non-fix-flavoured commits** (features/refactors) were excluded by the
       keyword filter and never examined.
 
@@ -1919,6 +1923,7 @@ other unported commit in this area was cloud and is now recorded by name in
       exist here. Needs a look at what upstream suppresses during recovery and
       whether this fork has an equivalent path that should be doing it. Low
       priority, but genuinely unexamined rather than decided.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **"The concept simply does not exist here" is false.** The symbol is absent, but the behaviour is present and tested: `view_util.rs:113` returns `None` when `error.will_attempt_resume()`, covered by `agent_block_tests.rs:211`. The real delta is narrow — the pin gates suppression on `!ChannelState::channel().is_dogfood()` (`42effe840:app/src/ai/agent/mod.rs:791`) so Local/Dev builds still see the raw error; the fork suppresses unconditionally. Rescope to that carve-out.
 
 ### remote_server + core crates (278 commits triaged, ~35 hand-verified, 0 partials)
 
@@ -1954,6 +1959,7 @@ other unported commit in this area was cloud and is now recorded by name in
       `DECLINED.md`. Sampled, not exhaustively verified (`bbdc5a2ea`, `08487819f`,
       `856c74b0` unchecked) — needs a scope call, not an assertion.
       **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the blanket "entirely absent" claim is false: `remote_server.proto` carries `GetBranches`/`BranchInfo` (`:828-856`), `GitCreatePr*` (`:977-993`), `PrInfo.url` (`:1153-1159`) and a DiffState subscription. The literal names `RepositoryInfo`/`GitBranchStatus` are local-session types, not remote ones. Which specific fields remain missing was NOT established, and equivalence to the pin was not checked. Re-derive the real delta rather than treating this as a blanket gap.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Narrower than written. The request-response half is fully wired and tested: `GetBranches`/`BranchInfo`, `GitCreatePr*`, `PrInfo.url`, `GitCommitChain`, `GitPush` in `remote_server.proto:828-1170`, with round-trip tests at `client_tests.rs:611-791`. The real gap is admitted in-source at `codebase_index_model.rs:571-578`: the fork's `RemoteServerManagerEvent` lacks the pin's live-PUSH variants (`GitStatusPushReceived`, `GitHubPrInfoPushReceived`, `GitHubRepositoryInfoPushReceived`), so remote git/PR chips go stale until a manual refresh instead of updating live. Rescope to that.
 
 - [x] **`f0ca7861` — `capture_exit_status` races.** `crates/remote_server/src/manager.rs`
       still uses synchronous `child.try_status()`, which returns `None` on a
@@ -1974,6 +1980,7 @@ other unported commit in this area was cloud and is now recorded by name in
       executable-name mojibake) and `ef4b562191` / `eab3b3fa9` (deferred cmdlet and
       function-name loading, perf) — none ported in
       `crates/warp_terminal/src/shell/mod.rs`.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Two of the three commits ARE ported. `ef4b562191`'s `shell_command_to_get_all_builtins` and `eab3b3fa9`'s `shell_command_to_get_all_functions` are present verbatim at `crates/warp_terminal/src/shell/mod.rs:757-793` and wired at `session.rs:1165,1190`. Only `ebedb9fd` is genuinely missing: `shell/mod.rs:635` still has the pre-fix `Get-Command -CommandType Application` line with no UTF8Encoding wrapper, so localized non-UTF-8 executable names still corrupt the list. Rescope to `ebedb9fd` alone.
 
 - [x] **`a792340801` and `5b047fc2` — record in `DECLINED.md`, do not port.**
       Sentry init and daemon client-ID forwarding, both cloud telemetry. Correctly
@@ -2099,6 +2106,7 @@ session out of `IsLegacySSHSession::Yes`, which un-withdraws `read_files` /
       subprocess per prompt that the pin does not pay. It burns remote CPU
       in-band and does **not** open an SSH channel, so it is a latency
       regression, not the channel bug.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed; line reference imprecise. The pin gates on `WARP_PROMPT_NODE_VERSION_ENABLED` (`42effe840:bash_body.sh:586`) and caches on `$PWD:$PATH` (`:617-630`); the fork has neither in any of the three shells. Cite the block, not `:611` — the actual call is ~`:623`.
 
 - [x] **Escape single quotes in the ControlMaster executor's `cd`. DONE
       2026-08-15 — and this was a SECURITY fix, not the cosmetic quoting bug
@@ -2182,6 +2190,7 @@ three, which is what kills the bundling option below).
       objection. The fetch path, `download_url()`, `RELEASE_ASSET_PREFIX` and
       the `curl` in `install_remote_server.sh` all come out once (1) or (2) is
       chosen.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Two corrections. (1) `90cae8c9f` (2026-08-13) bakes a build-time SHA-256 per platform into the install script, delivered over the authenticated SSH channel and fail-closing when absent — GitHub is no longer in the integrity path, which the entry never mentions. (2) SCP push is not hypothetical: `scp_install_fallback` (`ssh_transport.rs:570`) is already the PRIMARY path for dev-source builds and the fallback for release builds. The work is promoting it to primary, not building it. Line refs have drifted: `setup.rs` ~485-502/557/566, and the curl is `crates/remote_server/src/install_remote_server.sh:106`.
 
 ## LATENT BREAK — the wasm target does not compile (found 2026-08-11)
 
@@ -2199,6 +2208,7 @@ three, which is what kills the bundling option below).
       code paths — carrying dead cfg-gated code that cannot compile is the worst
       of the three options, because it looks supported.
       Found by the tail-block sweep while adjudicating unrelated tests.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed still broken, line reference corrected: the import is `app/src/workspace/view.rs:178`, not `:179`. No `conversation_details_panel` file or `mod` declaration exists anywhere; both sites and the enclosing `mod wasm_view;` are wasm-gated, and nothing in CI or `script/precheck` builds wasm32, so it fails invisibly.
 
 ## UPSTREAM ZAP ISSUES — triaged against this fork 2026-08-10
 
@@ -2266,6 +2276,7 @@ other way.
       Explicitly scoped local-only: no account, no cloud sync, no hosted repo
       management — so it is **in scope for this fork by construction**.
       **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the "pull ABSENT" row is false: pull is fully built (proto `GitPullRequest` `:963`, `handle_git_pull` `server_model.rs:2695`, client `:582`, and a wired `GitDialogMode::Pull` with `git_dialog/pull.rs`). Hunk staging and branch create/switch now have primitives (`run_apply_patch_cached`, `hunk_to_patch`, `run_create_branch`, `run_switch_branch`) with **zero callers** — so those rows are still true in effect, but the work left is UI wiring, not implementation. The same stale state is repeated in this file's summary table near L162.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **Four gaps, not three, and one cited evidence line is wrong.** `diff_state.rs:916` is a `log::warn!`, not the `restore --staged --worktree` call — the real ones (`:838-841`, `:980`) are the Discard Files path, not stage/unstage. Grep for `stage_file`/`unstage_file`/`is_staged` across `code_review/` returns zero, and `run_commit` (`util/git.rs:792`) takes only a binary `include_unstaged` and runs `git add -A`. So per-file staging is absent too. Pull is built; hunk staging, per-file staging, and branch create/switch are not.
 
       **Triage verdict: mostly already built here, inherited from Warp.**
       Phosphor has the whole `app/src/code_review/` subsystem — `diff_state.rs`,
@@ -2312,12 +2323,13 @@ other way.
       inherited, so if the reasoning holds upstream it holds here. The fork does at
       least name the failure (`WarpificationUnavailableReason::UnsupportedShell`)
       rather than failing silently.
-- [ ] **Zap #328 — BYOP agent: approving an async tool action immediately triggers
+- [x] **Zap #328 — BYOP agent: approving an async tool action immediately triggers
       `OrphanToolResult`.** The most interesting of the three, because BYOP is this
       fork's core case and Zap's BYOP is the same lineage. The fork has a whole
       `app/src/ai/byop_readiness/` subsystem that *detects* the condition and has a
       repair pass — but whether it still *produces* it on async approval needs a
       real trace of the approval path. Unresolved by reading.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Already fixed: commit `5b2d600fa` (2026-07-29) "fix(byop): stop misclassifying fast tool results as OrphanToolResult", which cites the issue, was reproduced live against a local Ollama endpoint, and added `controller_readiness_treats_fast_current_input_result_as_pending_not_orphan` (`chat_stream.rs:9341`) plus two more regression tests. This predates the entry's own "Assigned 2026-08-10" line.
 - [ ] **Zap #275 — ctrl-c does not stop `python`.** Runtime behaviour; not
       settleable by reading. Distinct from the TUI ctrl-c sheet-dismiss defect
       fixed tonight (`30dce9d5a`), which was about an open shortcuts sheet, not
@@ -2348,21 +2360,24 @@ moving the pin:
       pins. This is the next round's queue; generate it with
       `script/generate_repin_queue` rather than by hand.
       **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Superseded by the `script/state` set-difference fix (#603). STATE.md now reports 2793 absent / 2078 adjudicated / **715** unadjudicated, not 2360/435. The 435 queue figure is dead; the procedural instruction (`script/generate_repin_queue`) still stands.
-- [ ] **`SCOPE-{AI,TERMINAL,REST}.md` are not re-derived at the new pin.** Their
+- [x] **`SCOPE-{AI,TERMINAL,REST}.md` are not re-derived at the new pin.** Their
       verdicts classify the 854 test-bearing files as they were at `02b53fcd8`.
       Banners now say so explicitly. Files added between the pins have no row at
       all — do not read "absent from SCOPE" as "no debt".
-- [ ] **`ORACLE.md`'s "Gap at the pin" figures are old-pin figures** (net 2,239 /
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed: `SCOPE-AI.md:5-13`, `SCOPE-TERMINAL.md:12-20`, `SCOPE-REST.md:5-13` all carry the "pin has moved; not re-derived" banner verbatim. The banner is the deliverable; nothing further is owed here.
+- [x] **`ORACLE.md`'s "Gap at the pin" figures are old-pin figures** (net 2,239 /
       workload 1,605 / 854 files). Kept because they are the only written
       statement of net-vs-workload, flagged as historical. `docs/STATE.md` is the
       live number.
-- [ ] **Brand cleanup is string-literals-only.** `script/check_brand_strings`
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed: `ORACLE.md:82` is headed "measured at the OLD pin `02b53fcd8`" and every figure matches. The historical framing is already correct.
+- [x] **Brand cleanup is string-literals-only.** `script/check_brand_strings`
       guards user-visible Rust string literals and is green. Identifiers and
       comments were never in scope: **~1,820 `Zap` and ~271 `Oz`** occurrences
       remain in `.rs`. Needs a maintainer decision on wire-value carve-outs
       first — `Harness::Oz` may be serialized the way `"warp-tui"` is
       (deliberately not renamed, interop surface), while `MCPProvider::Zap` is
       internal-only (no serde derives) and safe. Not a find-and-replace.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed and re-measured: guard exits 0; independent count is 1,856 `Zap` / 285 `Oz` in `.rs` (entry says ~1,820/~271, within its own tolerance). `Harness::Oz` carries `#[value(name = "oz")]` — a real clap wire surface; `MCPProvider::Zap` derives no serde, so it is internal-only. The carve-out reasoning holds.
 
 ### Defects — user-visible
 
@@ -2471,6 +2486,7 @@ moving the pin:
       still files every `Failed` as `NotificationCategory::Error`, so a Ctrl-C
       still lands in the notification centre as an error.
       **STILL OPEN 2026-08-17 (v0.1.0) -- do not tick because the issue is closed.** GitHub #596 is closed `completed`, but the residue described above is still in the tree: `crates/warp_tui/src/cli_agent_osc_event_publisher.rs:360` still hardcodes `error_type: Some("cancelled")`, and `app/src/notifications/model.rs` still files failures as `NotificationCategory::Error`. Verified by reading the code, not by the issue state.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **Half of this is false.** The publisher half is real: `cli_agent_osc_event_publisher.rs:360` still hardcodes `Some("cancelled")` and never imports the `CANCELLED` constant that exists for it. But `notifications/model.rs:331-336` HAS a dedicated `ConversationStatus::Cancelled` arm producing `NotificationCategory::Complete` ("Task was cancelled."), and `cli_agent_sessions/mod.rs:38-66` maps a cancelled `Failed` to `Cancelled` before it ever reaches there. I asserted this claim held earlier today after grepping for `NotificationCategory::Error` and finding hits — without checking whether the cancelled path reaches them. Rescope to the publisher literal alone.
 - [ ] **#597's fix is sound; its justification is wrong.** The
       permanent-bootstrap-file argument does not hold — that file is returned
       only for `BootstrapSessionType::Local` PowerShell (the case #597 never
@@ -2479,13 +2495,15 @@ moving the pin:
       right on its other grounds, but **the wrong evidence is now baked into two
       permanent doc comments** and should be corrected.
       **STILL OPEN 2026-08-17 (v0.1.0).** GitHub #597 is closed `completed` (the code fix), but this entry tracks the *justification* baked into two doc comments, which was not verified as corrected during the v0.1.0 reconciliation. Re-read the comments before ticking.
-- [ ] **`check_generator_wrapper_names` is defeated by commenting a line out —
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — One doc comment, not two: only `in_band_command_executor.rs:47-56` repeats the flawed permanent-bootstrap-file justification. The `pwsh.ps1` and `shell_command_tests.rs:23` comments reference #597 without repeating the wrong argument. Core claim confirmed — `bootstrap_file/mod.rs:45-50` returns `None` unless `BootstrapSessionType::Local`.
+- [x] **`check_generator_wrapper_names` is defeated by commenting a line out —
       8 of 8 `require`/`require_count` checks.** Commenting the pwsh
       `Export-ModuleMember` line *is* #597's failure mode, and the guard passes.
       It checks presence, not activeness. It also scans 4 of the 19 files in
       `app/assets/bundled/bootstrap/`, so a third spelling in `bash.sh` passes.
       **COUNT CORRECTED 2026-08-17 (v0.1.0 agent audit)** — the defeat-by-commenting-out finding is reproduced (commenting the `Export-ModuleMember` line still exits 0), but the script now has **11** `require`/`require_count` checks, not 8, and scans 4 of 19 bootstrap files. All 11 use the same substring-presence technique and are equally defeated.
-- [ ] **`check_brand_strings` residual misses**, exact text:
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Reproduced empirically: commenting out `Export-ModuleMember` in `pwsh.ps1` still exits 0, because `require()` uses `grep -qF` (presence, not activeness). 11 `require`/`require_count` call sites, scanning 4 of 19 bootstrap files. Finding confirmed; count corrected from 8 to 11.
+- [x] **`check_brand_strings` residual misses**, exact text:
       `concat!("Warp", " Agent…")`, `format!("… {} Agent…", "Warp")`,
       `"Zap-powered completions"`, `"Zap2 is available"`, `"Warp\nAgent"`,
       `"Warpを再起動してください"` (Rust side only), and **Fluent terms
@@ -2495,6 +2513,7 @@ moving the pin:
       which hits its one sanctioned use, the AGPL §13 attribution.
       **`Zapfino` fires in production code**; green today only because all 16
       occurrences are in `*_test.rs`. Wider instance: `Ozone`.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Reproduced empirically: a synthetic Fluent message with a `.tooltip` attribute under a `brand-guard: allow` marker still fired on the attribute. Fluent `-term` definitions are structurally unscannable (`FTL_ID` requires `\.?[A-Za-z]`, never a leading `-`), and zero terms exist today. All listed blind spots confirmed.
 
 ### Defects — correctness of the guards and the record
 
@@ -2546,12 +2565,13 @@ moving the pin:
       error *grows* as rows become `PORTED`/`COVERED-ELSEWHERE` — i.e. as the
       fork makes progress. Found by #592's reconciliation block.
       **RECONCILED 2026-08-17 (v0.1.0).** GitHub #603 closed `completed`, and verified in the code: `script/state:112` now computes `UNADJ=$(( ABSENT - ADJ_ABSENT ))`, a set difference, with the old subtraction documented at line 87.
-- [ ] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
+- [x] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
       genuine proper nouns continuing lowercase would fire. `Zapfino` (Apple's
       font, 16 occurrences) survives only because every occurrence sits in a
       `*_test.rs` file or a comment. A font name in production code needs
       handling.
       **RETAINED DELIBERATELY 2026-08-17 (v0.1.0).** GitHub #589 is closed `completed`; this entry is kept on purpose for the latent edge (a proper noun continuing lowercase in production code, e.g. a font name). Not outstanding work.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed: `gh issue view 589` is CLOSED; 16 `Zapfino` hits, every one in a `*_test.rs` file. Retained deliberately for the latent edge, as written.
 
 ### Divergences that need a decision, not a fix
 
@@ -2768,6 +2788,7 @@ it had no remote-write authority.
 - [ ] Upstream `ddba1684e` / `d9ed47239` ship a signed Inno Setup installer for
       the TUI and rework TUI autoupdate to download and run it. **Deferred, not
       declined** — revisit when Windows packaging is worth investing in.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — **Two of the three named features exist here.** `nld_heuristic_v2` and `voice_input` are present (`app/Cargo.toml:227,667,673,823`, `root_view.rs:262-264`); only `nld_classifier_v3` is genuinely absent. The `bundle.ps1`-has-no-tui and unix-only-autoupdate claims stand (`autoupdate.rs:917-920`).
 
       What it needs, so the next person does not re-derive it: the fork's
       `script/windows/bundle.ps1` has no `tui` artifact at all; the TUI install
@@ -3139,6 +3160,7 @@ only reality and never looking at the branches:**
       Zero hits for `git_pull`/`GitPull` in the tree — this is absence, not a
       stub.
       **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — Stage 1 is done: `git pull --ff-only` exists end to end (`code_review/git_dialog/pull.rs`, `handle_git_pull`, proto, client, round-trip test). Stage 2 remains accurate — `global_buffer_model.rs:2390`'s `resolve_conflict` is buffer-sync, not git-merge, and no merge-conflict UX exists. Keep only Stage 2 open.
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed accurate under renewed attack, with one path correction: `global_buffer_model.rs:2390` is now `code/global_buffer_model.rs:2390` (module reorg). Stage 1 is fully wired (`util/git.rs:881` `run_pull`, `server_model.rs:2695`, proto `:963`, two round-trip tests at `client_tests.rs:694,728`); invalidation is handled via `refresh_after_git_operation`/`DiffStateWatch` rather than the `FileInvalidationTask` the entry expected. Stage 2 genuinely absent.
 
       **Do it in two stages, because pull is NOT symmetric with push.** Push
       never touches the working tree; pull does, and that is the entire
@@ -3829,6 +3851,7 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   cannot be done on this Linux host — it needs a Mac (no CI-discovery builds). That run may
   still surface further latent mac-only errors.
 - [ ] **#4 warp_tui suite** — **STALE, corrected 2026-08-07.** The deadlock this
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Framing is stale. `gh` reports **#4, #456 and all six named siblings (#384/#387/#389/#390/#392/#395) CLOSED**, and `docs/SWEEP-SUMMARY.md:273-277` already supersedes the "trailing the pin by a generation" reading: "#456 is not 'the crate is behind'; it is two specific unfinished features", both marked resolved at TODO.md:1477,1527. CI gating is real (`pr-check.yml:279-351`). Narrow to the surviving #399/#254 item-d divergence (`InputTypeAutoDetectionSource::AgentTerminalControl`) and decide whether this box should now be ticked.
   entry describes (`tui_generic_tool_call_view::…_completes_the_executor`) is FIXED
   — see Part 2 below, PR #124, commit `87d06d179` — do not re-investigate it. #4
   itself stays open, but its scope moved: CI now gates the `warp_tui` crate at all
@@ -3837,7 +3860,8 @@ mermaid fallback, focus-URL env, `standing_queries`, pinned-tabs storage).
   root-cause map at **#456**, with #384/#387/#389/#390/#392/#395 as siblings tracing
   to the same cause. Treat the old 18-failure nextest breakdown above as historical
   context for how this was first noticed, not as the current state.
-- [ ] **#2 sweep** — the 2 missing GUI auto-resume oracle tests
+- [x] **#2 sweep** — the 2 missing GUI auto-resume oracle tests
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Fully done: both auto-resume tests are real (not stubs) at `terminal/view_test.rs:4118-4187`; `docs/SWEEP-INVENTORY.md:24` matches the 3,902→2,357 count with 269 file sections; `handle_interrupt` (`terminal_session_view.rs:3155-3177`) carries the fix with two non-ignored regression tests at `terminal_session_view_tests.rs:373-416`.
   (`completed_user_controlled_lrc_{resumes_when_not_suppressed,skips_resume_when_suppressed}`)
   are now PORTED to `terminal/view_test.rs` (2/0; the resumes case needed a
   `GlobalResourceHandlesProvider` mock for the subagent-sidecar persist path; the fork's
@@ -3916,6 +3940,7 @@ Dev machine is Linux; nothing below has been run against a real Windows
 `pwsh.exe`. Verified only via `cargo check`/`cargo test` (static + unit-level).
 
 - [ ] **NEEDS WINDOWS VERIFICATION: pwsh `-EncodedCommand` at 2 more call sites**
+      **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Line reference wrong: `local_command_executor.rs:55` is an unrelated struct field; the real call site is `:179-183`. Substance confirmed — `util/mod.rs:68-75` does UTF-16LE+base64 only, and `:115-129`'s test round-trips the encoding without ever spawning `pwsh.exe`, so the needs-Windows-verification framing is right.
   — `app/src/terminal/model/session/command_executor/local_command_executor.rs:55`,
   `app/src/terminal/model/session/command_executor/msys2_command_executor.rs:67`
   Ported the same fix as the interactive-session-launch site (`shell.rs`,

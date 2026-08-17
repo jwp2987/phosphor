@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **6 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **7 commit(s) since**
 
 | guard | |
 |---|---|
@@ -79,6 +79,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **235 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **53 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **43 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> **Check the gap:** the ledger has 235 open tests; `TODO.md` tracks 67 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
+> **Check the gap:** the ledger has 235 open tests; `TODO.md` tracks 57 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
