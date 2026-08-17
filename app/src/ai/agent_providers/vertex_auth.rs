@@ -36,6 +36,74 @@ struct CachedToken {
 
 static TOKEN_CACHE: Mutex<Vec<CachedToken>> = Mutex::new(Vec::new());
 
+/// The remedy named in the one [`mint_via_gcloud`] failure branch that an interactive login can
+/// actually fix: `gcloud auth print-access-token` exiting non-zero.
+///
+/// Bound to a constant and interpolated into that message so the phrase cannot drift away from
+/// the branch [`is_reauth_required`] uses it to identify. The other failures deliberately do not
+/// carry it — a missing `gcloud` binary, an unusable token, or a malformed impersonation email
+/// are all cases where opening a browser would be noise.
+const REAUTH_HINT: &str = "Run `gcloud auth login`";
+
+/// How long to wait before a second failure is allowed to open another browser window.
+///
+/// The Vertex `ServiceTargetResolver` runs on *every* request and a failing turn may retry, so
+/// without this an outage spawns a login tab per attempt.
+const LOGIN_LAUNCH_DEBOUNCE: Duration = Duration::from_secs(120);
+
+static LAST_LOGIN_LAUNCH: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether `err` -- an error string from [`access_token`] -- describes a failure that signing in
+/// again could plausibly fix.
+///
+/// This matches the branch where `gcloud auth print-access-token` exited non-zero, which covers
+/// absent credentials but also expired ones, an unset project, and denied impersonation. That is
+/// the right set: it is exactly the set whose message already tells the user to sign in.
+pub fn is_reauth_required(err: &str) -> bool {
+    err.contains(REAUTH_HINT)
+}
+
+/// Whether enough time has passed since `last` to open another login window.
+fn login_launch_allowed(last: Option<Instant>) -> bool {
+    !last.is_some_and(|at| at.elapsed() < LOGIN_LAUNCH_DEBOUNCE)
+}
+
+/// Starts the interactive login flow for a failed [`access_token`] call, if `err` is one this can
+/// fix and one hasn't just been started.
+///
+/// Returns whether a browser was opened, so the caller can say so in the error the user sees --
+/// a browser appearing with no explanation is worse than the original failure.
+pub fn maybe_launch_login_for_error(err: &str) -> bool {
+    if !is_reauth_required(err) {
+        return false;
+    }
+
+    {
+        let mut last = match LAST_LOGIN_LAUNCH.lock() {
+            Ok(last) => last,
+            // A poisoned lock here would mean a previous caller panicked mid-check. Declining to
+            // launch is the safe read: the cost of a missed login prompt is an error message the
+            // user can act on, the cost of a wrong one is unsolicited browser windows.
+            Err(_) => return false,
+        };
+        if !login_launch_allowed(*last) {
+            return false;
+        }
+        *last = Some(Instant::now());
+    }
+
+    match launch_gcloud_login() {
+        Ok(()) => {
+            log::info!("[byop-vertex] no usable credentials; launched `gcloud auth login`");
+            true
+        }
+        Err(e) => {
+            log::warn!("[byop-vertex] could not launch `gcloud auth login`: {e}");
+            false
+        }
+    }
+}
+
 /// Serializes token minting so that concurrent cold-start callers (main chat +
 /// title-gen + active-AI all firing on the first turn) don't each spawn a
 /// separate `gcloud` subprocess. The window this guards is tiny and rare (once
@@ -223,7 +291,7 @@ async fn mint_via_gcloud(credential: &str) -> Result<String, String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
-            "`gcloud auth print-access-token` failed ({}). Run `gcloud auth login` (or `gcloud \
+            "`gcloud auth print-access-token` failed ({}). {REAUTH_HINT} (or `gcloud \
              auth application-default login`) and confirm the project is set. Details: {}",
             output.status,
             stderr.trim()
@@ -461,5 +529,58 @@ mod tests {
         let _guard = EnvGuard::set(path_dir.path(), home_dir.path());
 
         assert_eq!(resolve_gcloud_path(), on_path);
+    }
+
+    /// The whole point of `REAUTH_HINT` being a constant is that this branch's message keeps
+    /// carrying it. If someone rewrites the message without it, the connector silently stops
+    /// offering to sign the user in -- no compile error, no other failing test.
+    #[test]
+    fn print_access_token_failure_is_classified_as_reauth() {
+        let err = format!(
+            "`gcloud auth print-access-token` failed (exit status: 1). {REAUTH_HINT} (or `gcloud \
+             auth application-default login`) and confirm the project is set. Details: ERROR: \
+             (gcloud.auth.print-access-token) Your current active account does not have any \
+             valid credentials"
+        );
+        assert!(is_reauth_required(&err));
+    }
+
+    /// The other failure branches must not open a browser: signing in fixes none of them, and an
+    /// unsolicited login window is worse than the error the user already has.
+    #[test]
+    fn other_failures_are_not_classified_as_reauth() {
+        for err in [
+            // gcloud absent -- launching it would fail the same way.
+            "failed to run `gcloud auth print-access-token` — is the gcloud CLI installed and on \
+             PATH? (No such file or directory (os error 2))",
+            "gcloud returned an empty access token",
+            // A token exists; it just has advisory noise around it.
+            "`gcloud auth print-access-token` wrote 4 whitespace-separated words to stdout; an \
+             access token is a single word, so this output is not usable as a bearer token.",
+            "invalid Vertex impersonation service-account email \"nope\" — expected the form \
+             name@project-id.iam.gserviceaccount.com",
+        ] {
+            assert!(!is_reauth_required(err), "should not offer login for: {err}");
+        }
+    }
+
+    #[test]
+    fn login_launch_is_debounced() {
+        assert!(
+            login_launch_allowed(None),
+            "the first failure should be able to launch"
+        );
+        assert!(
+            !login_launch_allowed(Some(Instant::now())),
+            "a launch that just happened should suppress the next one"
+        );
+
+        let long_ago = Instant::now()
+            .checked_sub(LOGIN_LAUNCH_DEBOUNCE * 2)
+            .expect("clock should support subtracting the debounce window");
+        assert!(
+            login_launch_allowed(Some(long_ago)),
+            "a launch older than the debounce window should not suppress"
+        );
     }
 }

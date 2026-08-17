@@ -4458,9 +4458,20 @@ fn build_vertex_resolver(endpoint_url: String, credential: String) -> ServiceTar
         let credential = credential.clone();
         Box::pin(async move {
             let ServiceTarget { model, .. } = service_target;
+            // A request that fails purely because nobody is signed in should start the same
+            // login flow the providers panel's button starts, rather than telling the user to go
+            // run a command by hand. Debounced inside `maybe_launch_login_for_error`, since this
+            // resolver runs on every request and a failing turn may retry.
             let token = super::vertex_auth::access_token(&credential)
                 .await
-                .map_err(genai::resolver::Error::Custom)?;
+                .map_err(|err| {
+                    let err = if super::vertex_auth::maybe_launch_login_for_error(&err) {
+                        format!("{err}\n\nOpening `gcloud auth login` in your browser — retry once you've signed in.")
+                    } else {
+                        err
+                    };
+                    genai::resolver::Error::Custom(err)
+                })?;
             let endpoint = Endpoint::from_owned(endpoint_url);
             let auth = AuthData::from_single(token);
             // Override genai's "guess by model name"; keep model_name so the Vertex adapter can
