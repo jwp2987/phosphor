@@ -1223,31 +1223,31 @@ impl UpdateManager {
     /// Zap: the cloud notebook edit lease has been removed. This is now collapsed
     /// into granting the edit bit locally; the method signature is kept for
     /// `notebooks/notebook.rs` call sites.
+    ///
+    /// There is deliberately no `SyncId::ServerId` guard here. The pin had one -- an object
+    /// unknown to the server could not hold a server-arbitrated lease -- but in this fork
+    /// `set_server_id` has zero call sites (both of the pin's lived in the dropped cloud
+    /// layer), so every notebook keeps a `ClientId` forever and that guard rejected *every*
+    /// call. With no server to arbitrate against, the local answer is always "you have it".
     pub fn grab_notebook_edit_access(
         &mut self,
         notebook_id: SyncId,
         _optimistically_grant_access: bool,
         ctx: &mut ModelContext<Self>,
     ) {
-        // If the object isn't known to the server yet, we should not proceed
-        let SyncId::ServerId(_server_id) = notebook_id else {
-            return;
-        };
-
         self.set_notebook_current_editor(&notebook_id, Some(TEST_USER_UID.to_string()), ctx);
     }
 
     /// Zap: the cloud notebook edit lease has been removed; this is now collapsed into directly clearing the edit right locally.
+    ///
+    /// As with [`Self::grab_notebook_edit_access`], the pin's `ServerId` guard is deliberately
+    /// absent: it was unsatisfiable here, so the editor was never cleared and the "clearing"
+    /// this doc comment describes never actually happened.
     pub fn give_up_notebook_edit_access(
         &mut self,
         notebook_id: SyncId,
         ctx: &mut ModelContext<Self>,
     ) {
-        // If the object isn't known to the server yet, we should not proceed
-        let SyncId::ServerId(_server_id) = notebook_id else {
-            return;
-        };
-
         let current_editor = ObjectStoreViewModel::as_ref(ctx)
             .object_current_editor(&notebook_id.uid(), ctx)
             .unwrap_or(Editor::no_editor());
