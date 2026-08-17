@@ -486,9 +486,18 @@ jobs:
   # may not satisfy, and some are already `#[ignore]`d in-file for reasons
   # unrelated to display (feature-flag churn, known CI flakiness).
   integration-linux:
-    name: cargo nextest -p integration (Linux)
+    name: cargo nextest -p integration (Linux) shard ${{ matrix.shard }}/3
     runs-on: ubuntu-22.04
     timeout-minutes: 150
+    # ~211 GUI tests on one 2-core runner is the load #611 is suspected of, and
+    # it is also why this job dominates wall clock. nextest's `--partition`
+    # splits the suite deterministically by test name, so three runners each do
+    # a third. This is the structural fix; `--profile ci`'s retries below are
+    # the safety net, not the answer.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -536,7 +545,12 @@ jobs:
       # those retries had never once run.
       - name: cargo nextest -p integration (headless via Xvfb)
         shell: bash
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci
+        # No `--test-threads` override: on a 2-core runner nextest's default is
+        # already 2, and the integration profile's `threads-required = 2` makes
+        # each test claim both, so tests run one at a time regardless. Setting
+        # it explicitly would only mislead a reader into thinking it changed
+        # something. The `Runner resources` step above records the real nproc.
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --partition count:${{ matrix.shard }}/3
 
   check-windows:
     name: cargo check (Windows)
