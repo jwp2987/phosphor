@@ -192,7 +192,25 @@ fn capture_surface_texture(
         return Err(format!("Invalid texture dimensions: {width}x{height}"));
     }
 
-    let format = resources.surface_config.borrow().format;
+    let (format, surface_usage) = {
+        let config = resources.surface_config.borrow();
+        (config.format, config.usage)
+    };
+
+    // `configure_surface` adds COPY_SRC only when the adapter advertises it, because some
+    // surfaces do not offer it at all. Copying from a surface texture that was never granted
+    // it is a validation error, and wgpu's default handler treats those as fatal -- so without
+    // this check the process dies, blaming whichever test happened to ask for a screenshot
+    // rather than the adapter that could not provide one. CI's software rasteriser is such an
+    // adapter; a typical dev GPU is not, which is why this only ever reproduced in CI.
+    if !surface_usage.contains(wgpu::TextureUsages::COPY_SRC) {
+        return Err(
+            "frame capture unavailable: this adapter's surface was not granted COPY_SRC, so \
+             the surface texture cannot be copied"
+                .to_owned(),
+        );
+    }
+
     let bytes_per_pixel = 4u32;
     let unpadded_bytes_per_row = width * bytes_per_pixel;
     let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
