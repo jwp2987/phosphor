@@ -518,9 +518,25 @@ jobs:
         shell: bash
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
+      # Runner size decides nextest's parallelism (one thread per core, and the
+      # integration override makes each test count as two). #611's segfault
+      # only ever reproduces here, never locally under the same headless X11 +
+      # software-Vulkan setup, so record what this box actually has.
+      - name: Runner resources
+        shell: bash
+        run: |
+          echo "nproc: $(nproc)"
+          free -h
+          df -h /
+
+      # `--profile ci` is required, not cosmetic: without it the entire
+      # `[profile.ci]` block in `.config/nextest.toml` is inert -- including
+      # `retries = 2` for this package, which was written for exactly the
+      # flakiness this job hits. Nothing selected that profile until #611, so
+      # those retries had never once run.
       - name: cargo nextest -p integration (headless via Xvfb)
         shell: bash
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --no-fail-fast
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci
 
   check-windows:
     name: cargo check (Windows)
