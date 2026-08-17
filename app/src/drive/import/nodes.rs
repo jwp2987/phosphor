@@ -1,6 +1,5 @@
 use crate::{
     drive::{cloud_object_styling::warp_drive_icon_color, DriveObjectType},
-    notebooks::post_process_notebook,
     workflows::{
         export_workflow::export_deserialize, workflow::Workflow, workflow_enum::WorkflowEnum,
     },
@@ -897,9 +896,7 @@ impl FileUploadState {
 
 pub(super) async fn parse_file(path: PathBuf, file_type: FileType) -> Result<FileContent> {
     match file_type {
-        FileType::Notebook => Ok(FileContent::Notebook(post_process_notebook(
-            &async_fs::read_to_string(path).await?,
-        ))),
+        FileType::Notebook => Ok(FileContent::Notebook(async_fs::read_to_string(path).await?)),
         FileType::Workflow => {
             let file = async_fs::read(path).await?;
             let mut workflow_enums: HashMap<ClientId, WorkflowEnum> = HashMap::new();
