@@ -58,8 +58,14 @@ LEDGER=docs/sweep-verdict-ledger.tsv
 # not proof of a shared assertion, which is why the number is reported as an
 # approximation and why the ledger, not this, is the authority on any single
 # test.
-git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$PIN" -- "*.rs" 2>/dev/null \
-    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | LC_ALL=C sort -u > "$TMP".pin
+# Keep the defining file alongside each pin test name. The names alone answer
+# "is it absent"; the file answers "is it absent because we deleted the whole
+# subsystem", which is a different question and the one that matters -- see the
+# split below.
+git grep -n -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$PIN" -- "*.rs" 2>/dev/null \
+    | sed -nE "s/^${PIN}:([^:]+)[:-][0-9]+[:-].*\bfn ([a-z0-9_]+).*/\2\t\1/p" \
+    | LC_ALL=C sort -u > "$TMP".pinmap
+cut -f1 "$TMP".pinmap | LC_ALL=C sort -u > "$TMP".pin
 git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' HEAD -- "*.rs" 2>/dev/null \
     | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | LC_ALL=C sort -u > "$TMP".fork
 
@@ -111,6 +117,45 @@ else
 fi
 UNADJ=$(( ABSENT - ADJ_ABSENT ))
 (( UNADJ < 0 )) && UNADJ=0
+
+# Split the unadjudicated remainder by whether the file that DEFINES the test at
+# the pin still exists here.
+#
+# #603 fixed the arithmetic but left the number saying the wrong thing. A test in
+# a file this fork deleted wholesale -- the dropped cloud layer -- is not pending
+# a judgement; the judgement was made once, at subsystem level, and written in
+# `DECLINED.md`. What is missing is a per-test ledger row restating it. Reporting
+# those together with genuinely open tests makes the remainder read as a work
+# queue when most of it is bookkeeping: measured 2026-08-17, 581 of 715 sat in
+# 66 files that do not exist here (`server/cloud_objects`, `computer_use`,
+# `warp_server_client`, ...), leaving ~135 where "should we port this?" is still
+# a live question. Report both, and never quote the total as a queue.
+if [[ -s "$TMP".absent && -s "$TMP".pinmap ]]; then
+    awk -F'\t' 'NR==FNR{a[$0]=1; next} ($1 in a) && !seen[$1]++ {print $2}' \
+        "$TMP".absent "$TMP".pinmap | LC_ALL=C sort > "$TMP".unadj_files
+    # `DECLINED.md`'s `test:` markers are adjudication too. A test named there has
+    # a written verdict; that it lacks a ledger ROW is a bookkeeping gap, not an
+    # open question. Counting those as unadjudicated inflated the live remainder
+    # by 16 of 135 when this was added (2026-08-17) -- the whole
+    # `install_platform_plugin` family, declined wholesale on 2026-08-15 with
+    # per-test markers, still showed up as work to triage.
+    grep -o 'test:[A-Za-z0-9_]*' DECLINED.md 2>/dev/null | sed 's/^test://' \
+        | LC_ALL=C sort -u > "$TMP".declined_tests || : > "$TMP".declined_tests
+    awk -F'\t' 'NR==FNR{led[$1]=1; next} !($0 in led)' \
+        "$LEDGER" "$TMP".absent > "$TMP".unadj_pre 2>/dev/null || : > "$TMP".unadj_pre
+    LC_ALL=C comm -23 "$TMP".unadj_pre "$TMP".declined_tests > "$TMP".unadj 2>/dev/null \
+        || cp "$TMP".unadj_pre "$TMP".unadj
+    DECLINED_MARKED=$(LC_ALL=C comm -12 "$TMP".unadj_pre "$TMP".declined_tests | wc -l)
+    UNADJ_DELETED=0; UNADJ_LIVE=0
+    while IFS=$'\t' read -r name file; do
+        [[ -z "$name" ]] && continue
+        if [[ -f "$file" ]]; then UNADJ_LIVE=$(( UNADJ_LIVE + 1 ))
+        else UNADJ_DELETED=$(( UNADJ_DELETED + 1 )); fi
+    done < <(awk -F'\t' 'NR==FNR{u[$0]=1; next} ($1 in u) && !seen[$1]++' \
+        "$TMP".unadj "$TMP".pinmap)
+else
+    UNADJ_DELETED=0; UNADJ_LIVE=$UNADJ
+fi
 if (( ADJ_ABSENT > 0 )); then
     NONCLOUD_ADJ=$(( ADJ_ABSENT - CLOUD_ABSENT ))
     PROJ_NONCLOUD=$(( UNADJ * NONCLOUD_ADJ / ADJ_ABSENT ))
@@ -192,6 +237,15 @@ any individual test.
 | Absent from fork | $ABSENT |
 
 Of the absent, **$ADJ_ABSENT are adjudicated** in the ledger and $UNADJ are not.
+
+> **Do not quote that $UNADJ as a work queue.** Of them, **$UNADJ_DELETED are
+> defined in files this fork deleted wholesale** — the dropped cloud layer, whose
+> verdict was decided once at subsystem level in \`DECLINED.md\`. They are missing a
+> per-test ledger row, not a decision. A further **$DECLINED_MARKED** carry an
+> explicit \`test:\` marker in \`DECLINED.md\` — also decided, also row-less — and are
+> excluded here. The remainder where "should we port this?" is still genuinely
+> open is **$UNADJ_LIVE**.
+
 Cloud accounts for $CLOUD_ABSENT of those; the unadjudicated remainder is
 *projected* at the same ratio (~$PROJ_NONCLOUD non-cloud), so the figures below
 carry that estimate.

@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **5 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **6 commit(s) since**
 
 | guard | |
 |---|---|
@@ -31,29 +31,38 @@ any individual test.
 | Shared | 8067 |
 | Absent from fork | 2793 |
 
-Of the absent, **2078 are adjudicated** in the ledger and 715 are not.
-Cloud accounts for 1160 of those; the unadjudicated remainder is
-*projected* at the same ratio (~315 non-cloud), so the figures below
+Of the absent, **2213 are adjudicated** in the ledger and 580 are not.
+
+> **Do not quote that 580 as a work queue.** Of them, **579 are
+> defined in files this fork deleted wholesale** — the dropped cloud layer, whose
+> verdict was decided once at subsystem level in `DECLINED.md`. They are missing a
+> per-test ledger row, not a decision. A further **1** carry an
+> explicit `test:` marker in `DECLINED.md` — also decided, also row-less — and are
+> excluded here. The remainder where "should we port this?" is still genuinely
+> open is **0**.
+
+Cloud accounts for 1202 of those; the unadjudicated remainder is
+*projected* at the same ratio (~264 non-cloud), so the figures below
 carry that estimate.
 
-The ledger has 2360 rows in total; the 282 beyond the
-2078 above adjudicate tests that are **not** absent — the fork already has
+The ledger has 2495 rows in total; the 282 beyond the
+2213 above adjudicate tests that are **not** absent — the fork already has
 them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~86.7% of the pin's non-cloud tests exist here** (8067 of ~9300)
-- **~94.8% are present or deliberately resolved** (adding 598 declined, 87 divergent, 67 covered-elsewhere)
+- **~86.3% of the pin's non-cloud tests exist here** (8067 of ~9342)
+- **~95.2% are present or deliberately resolved** (adding 638 declined, 105 divergent, 87 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
-| CLOUD | 1164 |
-| DECLINED | 598 |
-| MISSING-SUBSYSTEM | 233 |
-| DIVERGENT | 87 |
-| COVERED-ELSEWHERE | 67 |
+| CLOUD | 1206 |
+| DECLINED | 638 |
+| MISSING-SUBSYSTEM | 235 |
+| DIVERGENT | 105 |
+| COVERED-ELSEWHERE | 87 |
 | UNPARSED | 0 |
 
 Per `TODO.md`'s definition of done, a test is resolved when it is ported,
@@ -69,7 +78,7 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 
 | source | open work | authority |
 |---|---:|---|
-| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **233 tests** | primary; a test is open until ported/declined/covered/divergent |
+| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **235 tests** | primary; a test is open until ported/declined/covered/divergent |
 | `TODO.md` checkboxes | **53 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> **Check the gap:** the ledger has 233 open tests; `TODO.md` tracks 67 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
+> **Check the gap:** the ledger has 235 open tests; `TODO.md` tracks 67 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
