@@ -12,4 +12,16 @@ cargo install --git https://github.com/wgsl-analyzer/wgsl-analyzer --tag "2025-0
 "$PWD"/script/install_cargo_binstall
 
 # Install nextest, which we use as our test execution harness.
-cargo binstall --secure --no-confirm --no-discover-github-token cargo-nextest
+#
+# `--locked` is not optional here. When binstall cannot fetch the prebuilt
+# binary -- a GitHub outage, or the unauthenticated rate limit that
+# `--no-discover-github-token` implies -- it falls back to `cargo install`, and
+# nextest ships a `locked-tripwire` crate that deliberately fails that build:
+#
+#   error: Nextest does not support being installed without --locked.
+#
+# So the fallback was guaranteed to fail, after several minutes of compiling
+# toward a certain error. binstall documents `--locked` as "passed through to
+# all cargo-install invocations", which makes the fallback actually work.
+# Observed 2026-08-17 in run 32054215165, shard 2.
+cargo binstall --secure --no-confirm --no-discover-github-token --locked cargo-nextest
