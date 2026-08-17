@@ -27,6 +27,9 @@ use warpui::{AppContext, Element, SingletonEntity};
 pub struct MatchedBinding {
     fuzzy_match_result: FuzzyMatchResult,
     binding: Arc<CommandBinding>,
+    /// The query is a case-insensitive prefix of this action's visible name.
+    /// Set by the data source, which is where the query is in scope.
+    name_is_prefix_match: bool,
 }
 
 impl MatchedBinding {
@@ -34,6 +37,28 @@ impl MatchedBinding {
         Self {
             fuzzy_match_result,
             binding,
+            name_is_prefix_match: false,
+        }
+    }
+
+    /// As [`Self::new`], recording whether `query` is a case-insensitive prefix
+    /// of the action's visible name. See [`SearchItem::priority_tier`] below.
+    pub fn new_with_query(
+        fuzzy_match_result: FuzzyMatchResult,
+        binding: Arc<CommandBinding>,
+        query: &str,
+    ) -> Self {
+        let query = query.trim().to_lowercase();
+        let name_is_prefix_match = !query.is_empty()
+            && binding
+                .description
+                .in_context(DescriptionContext::Default)
+                .to_lowercase()
+                .starts_with(&query);
+        Self {
+            fuzzy_match_result,
+            binding,
+            name_is_prefix_match,
         }
     }
 
@@ -126,6 +151,29 @@ impl SearchItem for MatchedBinding {
     fn render_details(&self, _: &AppContext) -> Option<Box<dyn Element>> {
         // Bindings do not support details panels.
         None
+    }
+
+    /// Rank an action whose visible name the query is a prefix of above
+    /// everything else in the palette.
+    ///
+    /// The palette searches sessions alongside actions, and a session's title is
+    /// its working directory. A long path can accumulate enough fuzzy hits to
+    /// outscore an exact title match: querying "Activate Previous Pane" in a
+    /// checkout containing `.../tmp/test_pane_group_state_multi_pane` selected
+    /// the *session*, and enter switched sessions instead of running the action
+    /// (#607). Both sat in tier 0, so raw fuzzy score alone decided it.
+    ///
+    /// Tiers are compared before scores and, after `SearchBar`'s `.rev()` for
+    /// `SearchResultOrdering::TopDown`, a higher tier sorts first -- the same
+    /// mechanism `DiffSetSearchItem` uses to "prioritize diffsets above other
+    /// items". Only a prefix match qualifies, so ordinary fuzzy queries rank
+    /// exactly as before.
+    fn priority_tier(&self) -> u8 {
+        if self.name_is_prefix_match {
+            1
+        } else {
+            0
+        }
     }
 
     fn score(&self) -> OrderedFloat<f64> {
@@ -234,4 +282,67 @@ pub(crate) mod styles {
 
     /// Margin between the right-side of the element and the end of the keybinding.
     pub const KEYBINDING_MARGIN_RIGHT: f32 = 14.;
+}
+
+#[cfg(test)]
+mod priority_tier_tests {
+    use super::MatchedBinding;
+    use crate::search::item::SearchItem;
+    use crate::util::bindings::CommandBinding;
+    use fuzzy_match::FuzzyMatchResult;
+    use std::sync::Arc;
+
+    fn binding(description: &str) -> Arc<CommandBinding> {
+        Arc::new(CommandBinding::new(
+            "pane_group:navigate_prev".to_string(),
+            description.to_string(),
+            None,
+        ))
+    }
+
+    /// Querying an action's visible name must rank that action above everything
+    /// else, including a session whose path happens to fuzzy-match better (#607).
+    #[test]
+    fn query_matching_an_action_name_prefix_gets_the_higher_tier() {
+        let matched = MatchedBinding::new_with_query(
+            FuzzyMatchResult::no_match(),
+            binding("Activate Previous Pane"),
+            "Activate Previous Pane",
+        );
+        assert_eq!(matched.priority_tier(), 1);
+
+        let partial = MatchedBinding::new_with_query(
+            FuzzyMatchResult::no_match(),
+            binding("Activate Previous Pane"),
+            "activate prev",
+        );
+        assert_eq!(
+            partial.priority_tier(),
+            1,
+            "a prefix of the name, case-insensitively, still qualifies"
+        );
+    }
+
+    /// A fuzzy hit that is NOT a prefix of the name keeps the default tier, so
+    /// ordinary queries rank exactly as they did before.
+    #[test]
+    fn fuzzy_but_non_prefix_match_keeps_the_default_tier() {
+        let matched = MatchedBinding::new_with_query(
+            FuzzyMatchResult::no_match(),
+            binding("Activate Previous Pane"),
+            "previous",
+        );
+        assert_eq!(matched.priority_tier(), 0);
+    }
+
+    /// An empty query must not promote every action into the higher tier.
+    #[test]
+    fn empty_query_does_not_promote() {
+        let matched = MatchedBinding::new_with_query(
+            FuzzyMatchResult::no_match(),
+            binding("Activate Previous Pane"),
+            "   ",
+        );
+        assert_eq!(matched.priority_tier(), 0);
+    }
 }

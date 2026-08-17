@@ -1040,6 +1040,15 @@ impl NotebookView {
         self.active_notebook_data.as_ref(ctx).mode
     }
 
+    /// Whether the notebook is currently in edit mode.
+    ///
+    /// Exposed so callers that want to *enter* edit mode can do so idempotently
+    /// rather than going through [`Self::toggle_mode`], which flips a notebook
+    /// that is already editing back into view mode.
+    pub fn is_editing<C: ModelAsRef>(&self, ctx: &C) -> bool {
+        matches!(self.mode(ctx), Mode::Editing)
+    }
+
     fn mode_app_ctx(&self, ctx: &AppContext) -> Mode {
         self.active_notebook_data.as_ref(ctx).mode
     }
