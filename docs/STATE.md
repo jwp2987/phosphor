@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **9 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **10 commit(s) since**
 
 | guard | |
 |---|---|
@@ -41,8 +41,8 @@ Of the absent, **2213 are adjudicated** in the ledger and 580 are not.
 > excluded here. The remainder where "should we port this?" is still genuinely
 > open is **0**.
 
-Cloud accounts for 1228 of those; the unadjudicated remainder is
-*projected* at the same ratio (~258 non-cloud), so the figures below
+Cloud accounts for 1236 of those; the unadjudicated remainder is
+*projected* at the same ratio (~256 non-cloud), so the figures below
 carry that estimate.
 
 The ledger has 2495 rows in total; the 282 beyond the
@@ -51,18 +51,18 @@ them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~86.6% of the pin's non-cloud tests exist here** (8067 of ~9310)
-- **~95.8% are present or deliberately resolved** (adding 644 declined, 111 divergent, 100 covered-elsewhere)
+- **~86.7% of the pin's non-cloud tests exist here** (8067 of ~9300)
+- **~95.4% are present or deliberately resolved** (adding 645 declined, 87 divergent, 79 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
-| CLOUD | 1232 |
-| DECLINED | 644 |
-| MISSING-SUBSYSTEM | 53 |
-| DIVERGENT | 111 |
-| COVERED-ELSEWHERE | 100 |
+| CLOUD | 1240 |
+| DECLINED | 645 |
+| MISSING-SUBSYSTEM | 66 |
+| DIVERGENT | 87 |
+| COVERED-ELSEWHERE | 79 |
 | UNPARSED | 0 |
 
 Per `TODO.md`'s definition of done, a test is resolved when it is ported,
@@ -78,7 +78,7 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 
 | source | open work | authority |
 |---|---:|---|
-| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **53 tests** | primary; a test is open until ported/declined/covered/divergent |
+| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **66 tests** | primary; a test is open until ported/declined/covered/divergent |
 | `TODO.md` checkboxes | **43 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> Ledger open bucket is represented in `TODO.md`'s tracked items.
+> **Check the gap:** the ledger has 66 open tests; `TODO.md` tracks 57 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
