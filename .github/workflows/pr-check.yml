@@ -545,12 +545,22 @@ jobs:
       # those retries had never once run.
       - name: cargo nextest -p integration (headless via Xvfb)
         shell: bash
-        # No `--test-threads` override: on a 2-core runner nextest's default is
-        # already 2, and the integration profile's `threads-required = 2` makes
-        # each test claim both, so tests run one at a time regardless. Setting
-        # it explicitly would only mislead a reader into thinking it changed
-        # something. The `Runner resources` step above records the real nproc.
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --partition count:${{ matrix.shard }}/3
+        # `--test-threads=2` against the profile's `threads-required = 2` means
+        # exactly one integration test at a time.
+        #
+        # The runner reports `nproc: 4`, so the default allowed TWO integration
+        # tests to run at once -- and #611's segfault only ever hits a test that
+        # cold-starts simultaneously with another. Measured in run 32051996874:
+        # `test_bash_bootstraps_with_prompt_command_array` died 0.685s after
+        # starting at ~18:01:48.95, while `test_alias_guards_on_ps1_set` started
+        # at the same instant and passed. Every later test also runs two-up and
+        # is fine, because they stagger -- only at run start do two processes
+        # initialise together. The original #611 failure has the same shape:
+        # first test of the run, 0.699s, SIGSEGV.
+        #
+        # Serialising removes the simultaneous cold start entirely. Sharding
+        # absorbs the wall-clock cost (~70 tests per shard).
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --test-threads=2 --partition count:${{ matrix.shard }}/3
 
   check-windows:
     name: cargo check (Windows)
