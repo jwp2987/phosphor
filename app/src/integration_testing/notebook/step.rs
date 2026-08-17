@@ -100,7 +100,16 @@ pub fn enter_notebook_edit_mode_and_set_markdown(
     TestStep::new("Enter notebook edit mode and set Markdown").with_action(
         move |app, window_id, _| {
             let notebook = notebook_view(app, window_id, tab_index, pane_index);
-            notebook.update(app, |notebook, ctx| notebook.toggle_mode(ctx));
+            // `toggle_mode` flips, so it only enters edit mode from view mode. A freshly
+            // created personal notebook grabs edit access on its own (`NotebookView`'s
+            // "grabbing access must be safe" path), and that grab lands asynchronously --
+            // so toggling unconditionally raced it and put the notebook back into *view*
+            // mode, where `EditorView::backspace` silently drops the keystroke.
+            notebook.update(app, |notebook, ctx| {
+                if !notebook.is_editing(ctx) {
+                    notebook.toggle_mode(ctx);
+                }
+            });
             let editor = notebook_editor(app, window_id, tab_index, pane_index);
             editor.update(app, |editor, ctx| {
                 editor.reset_with_markdown(&markdown, ctx);
