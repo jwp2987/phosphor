@@ -26,7 +26,7 @@ input nobody can name is worse than no build, because its result gets believed.
 
 ## OPERATIONAL HAZARD — agents share ONE checkout (found 2026-08-11)
 
-- [ ] **Parallel agents work in the shared checkout `/cache/git/zap`, switch its
+- [x] **Parallel agents work in the shared checkout `/cache/git/zap`, switch its
       branch, and mix uncommitted work — and the build agent compiles whatever
       that mixture happens to be.**
       **Observed 2026-08-11, ~06:00.** Six sweep agents were launched with
@@ -38,6 +38,7 @@ input nobody can name is worse than no build, because its result gets believed.
       | `app/src/ai/agent_events/{driver,driver_tests,mod}.rs`, `app/src/server/retry_strategies.rs` | agent-events package |
       | `crates/ai/src/project_context/{model,model_tests}.rs` | project-context package |
       | `TODO.md`, `docs/STATE.md`, `script/state` | coordinator |
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Resolved as an action item. Its own recommended fixes exist and are in daily use: `script/check_workspace_clean` implements the workspace-clean gate, and per-agent worktree isolation is standard (`docs/FLEET-ROUND.md`, `script/agent-worktree`). Kept as history. NB the `/cache/git/zap` path is dead; the checkout is `/home/winters/git/phosphor`.
 
       **Consequence, and the reason this is a hazard and not an annoyance: the
       build agent runs `cargo`/`nextest` in this same tree.** Its results
@@ -202,6 +203,7 @@ green. Baseline to beat: **6,846 passing**.
       See `docs/build/TRIAGE.md` § "Beyond the compiler" — singleton
       registration order and prompt-cache breakpoint placement are both
       invisible to `cargo check` and to `nextest`.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the "since the freeze lifted" premise is stale: `script/precheck` went green 2026-08-17 and cargo work has landed continuously since the 2026-08-11 freeze. Whether a human has done an interactive launch is still unrecorded either way, which is the part worth keeping.
 
 ## WHAT DONE LOOKS LIKE (maintainer, 2026-08-11)
 
@@ -1579,7 +1581,7 @@ more look at *why* it is absent.
       **16 real-debt symbols → 13.**
 
 <details><summary>Original entry, kept for the evidence trail</summary>
-- [ ] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
+- [x] `OrchestrationConfigState`, `AuthSecretSelection`, `apply_execution_mode_change`.
       The picker layer only. Orchestration itself is built. #310/#304.
       **`AuthSecretSelection` needs a cloud/non-cloud ruling before implementing.**
       Its pin variants are `Named(name)` / `Inherit` / `CreatingNew` — a picker
@@ -1587,6 +1589,7 @@ more look at *why* it is absent.
       secret" would mean a BYOP provider key, which is local; at the pin it may
       mean a Warp *managed* secret, which is declined. It sits in the same file
       as `ORCHESTRATION_WARP_WORKER_HOST`. Decide before building, not after.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — The ruling was made 2026-08-11 and is recorded in `DECLINED.md:203` (all three CLOUD, with `sym:`/`path:` markers). This entry sits inside a `<details>` block marked historical; the unchecked box was a formatting artifact.
 </details>
 
 ### Remote project skills — IMPLEMENTED 2026-08-11 (audit cluster 5) — LAST OF THE 23
@@ -1663,6 +1666,7 @@ more look at *why* it is absent.
 ### Confirmed absent — computer use
 - [ ] `use_computer_decoration`. Block decoration for computer-use actions.
       Computer use itself is built and sighted as of tonight.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — not absent: `output.rs:2913/2961/2988` implement and wire a use-computer block decoration, tested at `output_tests.rs:36-71`. But it decorates *screenshot delivery* where the pin decorates *recording status*, so this is a different subject, not a port. Equivalence to the pin was NOT verified (the audit had no oracle access). Narrow this entry to the actual delta before acting.
 
 ### Confirmed absent — CLOUD, no action (recorded so they are not re-raised)
 `CLOUD_MODE_V2_COMPOSER`, `CloudEnvironmentCatalog`, `CloudModeSetupV2`,
@@ -1707,6 +1711,7 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       (9 tests). **The GUI half is built** — `blocklist/orchestration_events.rs`
       both emits (`:331`) and renders (`:407`) them. Only the TUI side is
       missing. Second of the two clusters behind #456.
+      **PARTIALLY STALE 2026-08-17 (v0.1.0).** "No TUI renderer" is no longer true for the first half: `crates/warp_tui/src/agent_block.rs:1349` renders `MessagesReceivedFromAgents { messages }`. `EventsFromAgents` is still an empty match arm at :1356, so only that half remains. Rescope before working it.
 - [x] **~~No `/index` slash command~~ — FALSE, corrected 2026-08-11.** It
       exists: `app/src/search/slash_command_menu/static_commands/mod.rs:257`
       maps `"/index" => SlashCommandKind::Index`. This entry also said
@@ -1714,20 +1719,24 @@ wrong or half wrong. Do not act on a sweep verdict without this kind of check.
       *(If the real complaint is that the command exists but does nothing
       useful, that is a different, narrower item — file it with the dispatch
       site as evidence, not as "no command".)*
-- [ ] **MCP tool results render as a `serde_json::to_string_pretty` blob, not a
+- [x] **MCP tool results render as a `serde_json::to_string_pretty` blob, not a
       collapsible tree.** `McpRenderable` / `mcp_result_to_renderable` exist
       **nowhere in production** — the only tree-wide hits are a comment in
       `ui_components/json_tree_tests.rs` noting the pin has 5 tests for them.
-- [ ] **`TuiSelectable::with_semantic_selection_by_style` does not exist** —
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Claim is false: `McpRenderable` (`requested_command.rs:180`) and `mcp_result_to_renderable` (`:192`) exist in production and the render path builds an interactive collapsible tree (`:1586-1638`). `to_string_pretty` survives only in the copy-to-clipboard callback at `:1607`.
+- [x] **`TuiSelectable::with_semantic_selection_by_style` does not exist** —
       double-click cannot select a whole styled span. Verified: no definition
       anywhere. **Note the correction below: its sibling DOES exist.**
-- [ ] **`skill_watcher.rs` lacks the remote-project-skill refresh/fallback
+      **RECONCILED 2026-08-17 (v0.1.0) -- claim is false.** It exists: defined at `crates/warpui_core/src/elements/tui/selectable.rs:134` and used at `crates/warp_tui/src/read_only_menu.rs:230`.
+- [x] **`skill_watcher.rs` lacks the remote-project-skill refresh/fallback
       layer** (13 tests).
-- [ ] **`languages::language_by_filename` has no `StandardizedPath` overload** —
+      **RECONCILED 2026-08-17 (v0.1.0) -- claim is false.** The layer is present in `app/src/ai/skills/file_watchers/skill_watcher.rs`: it imports `read_remote_text_file_contents` and `LocalOrRemotePath`, and :185 documents the fallback behaviour for remote repos explicitly.
+- [x] **`languages::language_by_filename` has no `StandardizedPath` overload** —
       remote files resolve their language through a host-local `Path`. This is a
       deliberate fork simplification (documented on
       `try_chunk_code_semantically`), so it may belong in `DECLINED.md` rather
       than here — needs a maintainer call.
+      **RECONCILED 2026-08-17 (v0.1.0) -- claim is false.** The overload exists: `pub fn language_by_filename(path: &StandardizedPath)` at `crates/languages/src/lib.rs:145`.
 
 ### Partly confirmed — the fork is host-blind, but the scaffolding is there
 
@@ -1913,7 +1922,7 @@ other unported commit in this area was cloud and is now recorded by name in
 
 ### remote_server + core crates (278 commits triaged, ~35 hand-verified, 0 partials)
 
-- [ ] **The daemon's writer loop is stuck pre-fix — two upstream commits, both
+- [x] **The daemon's writer loop is stuck pre-fix — two upstream commits, both
       100% absent, on the same function.** `d9dee18e1` ("Fix daemon message too
       big error") adds an `is_write_recoverable()` gate to the daemon's own write
       loop plus `RunCommand` output-size truncation in `server_model.rs`.
@@ -1925,13 +1934,15 @@ other unported commit in this area was cloud and is now recorded by name in
       ("Downgrade remote server SSH disconnect errors") is the sibling: routine
       broken-pipe/connection-reset on client disconnect still logs at
       `log::error!` rather than `log::warn!`. Highest-severity item in this batch.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Both halves are implemented: `app/src/remote_server/unix/mod.rs:202` gates writer-loop errors on `is_write_recoverable()`, and `server_model.rs:3667-3683` truncates `RunCommand` output. **Caveat:** that code is annotated in-source *"NOT COMPILED: verified by reading only"* — ported, not proven. A compile/test pass is still owed.
 
-- [ ] **`97a9ff5f` — wasm debug panic in `StandardizedPath::from_local_absolute_unchecked`.**
+- [x] **`97a9ff5f` — wasm debug panic in `StandardizedPath::from_local_absolute_unchecked`.**
       `debug_assert!(path.is_absolute())` uses std's `Path::is_absolute()`, which
       returns `false` for Unix-rooted paths on `wasm32-unknown-unknown`. This fork
       still targets wasm32 (lsp, ai, editor, code_review, terminal/view). Upstream's
       fix is a same-file swap to the encoding-aware `typed_path` check. Low risk,
       genuinely broken today.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Fixed in place: `crates/warp_util/src/standardized_path.rs:97` asserts on `normalized.is_absolute()` (typed_path, encoding-aware), and `:87-96` cites upstream `97a9ff5f…(#13552)` as the applied fix.
 
 - [ ] **Remote git-chip / PR-context proto plumbing appears entirely absent.**
       Zero hits under `app/src/remote_server/` or `crates/remote_server/proto/` for
@@ -1942,11 +1953,13 @@ other unported commit in this area was cloud and is now recorded by name in
       agent gets materially less git and PR context than it does locally.** Not in
       `DECLINED.md`. Sampled, not exhaustively verified (`bbdc5a2ea`, `08487819f`,
       `856c74b0` unchecked) — needs a scope call, not an assertion.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the blanket "entirely absent" claim is false: `remote_server.proto` carries `GetBranches`/`BranchInfo` (`:828-856`), `GitCreatePr*` (`:977-993`), `PrInfo.url` (`:1153-1159`) and a DiffState subscription. The literal names `RepositoryInfo`/`GitBranchStatus` are local-session types, not remote ones. Which specific fields remain missing was NOT established, and equivalence to the pin was not checked. Re-derive the real delta rather than treating this as a blanket gap.
 
-- [ ] **`f0ca7861` — `capture_exit_status` races.** `crates/remote_server/src/manager.rs`
+- [x] **`f0ca7861` — `capture_exit_status` races.** `crates/remote_server/src/manager.rs`
       still uses synchronous `child.try_status()`, which returns `None` on a
       just-killed child, instead of upstream's async `.status()` + 200ms timeout.
       Diagnostic accuracy only.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Fixed: `crates/remote_server/src/manager.rs:1841` defines `async fn await_exit_status` using `child.status().with_timeout(...)`, citing upstream `f0ca7861f (#10728)`; `AwaitingExitStatus` is wired at `:294-319`. **Same caveat:** annotated *"NOT COMPILED: verified by reading only"*.
 
 - [ ] **`ae69bd4c` — no tarball cache for the SCP fallback.** The fork re-downloads
       on every install; no `remote_server_artifact_version()`.
@@ -1962,10 +1975,11 @@ other unported commit in this area was cloud and is now recorded by name in
       function-name loading, perf) — none ported in
       `crates/warp_terminal/src/shell/mod.rs`.
 
-- [ ] **`a792340801` and `5b047fc2` — record in `DECLINED.md`, do not port.**
+- [x] **`a792340801` and `5b047fc2` — record in `DECLINED.md`, do not port.**
       Sentry init and daemon client-ID forwarding, both cloud telemetry. Correctly
       unported, but not named in `DECLINED.md`, so they keep reading as gaps. A
       one-line row each stops the re-discovery.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Already done: `DECLINED.md:241` names both `a792340801` and `5b047fc2` under the 2026-08-15 partial-port audit.
 
 **False positives this agent rejected (do not re-raise):** `5ea50d236` (documented
 divergence — `SkillManagerEvent::InventoryChanged` is a safe superset),
@@ -2251,6 +2265,7 @@ other way.
       assistant able to reference git status/diff as workspace context.
       Explicitly scoped local-only: no account, no cloud sync, no hosted repo
       management — so it is **in scope for this fork by construction**.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the "pull ABSENT" row is false: pull is fully built (proto `GitPullRequest` `:963`, `handle_git_pull` `server_model.rs:2695`, client `:582`, and a wired `GitDialogMode::Pull` with `git_dialog/pull.rs`). Hunk staging and branch create/switch now have primitives (`run_apply_patch_cached`, `hunk_to_patch`, `run_create_branch`, `run_switch_branch`) with **zero callers** — so those rows are still true in effect, but the work left is UI wiring, not implementation. The same stale state is repeated in this file's summary table near L162.
 
       **Triage verdict: mostly already built here, inherited from Warp.**
       Phosphor has the whole `app/src/code_review/` subsystem — `diff_state.rs`,
@@ -2327,11 +2342,12 @@ here, so this list stays a work ledger rather than a history.
 deliberately, each because finishing it is a reading pass rather than part of
 moving the pin:
 
-- [ ] **435 unadjudicated absent tests.** `docs/STATE.md` counts 2,795 absent at
+- [x] **435 unadjudicated absent tests.** `docs/STATE.md` counts 2,795 absent at
       the new pin, 2,360 of them adjudicated in `docs/sweep-verdict-ledger.tsv`.
       The remainder are tests in files that appeared or changed between the two
       pins. This is the next round's queue; generate it with
       `script/generate_repin_queue` rather than by hand.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Superseded by the `script/state` set-difference fix (#603). STATE.md now reports 2793 absent / 2078 adjudicated / **715** unadjudicated, not 2360/435. The 435 queue figure is dead; the procedural instruction (`script/generate_repin_queue`) still stands.
 - [ ] **`SCOPE-{AI,TERMINAL,REST}.md` are not re-derived at the new pin.** Their
       verdicts classify the 854 test-bearing files as they were at `02b53fcd8`.
       Banners now say so explicitly. Files added between the pins have no row at
@@ -2402,12 +2418,13 @@ moving the pin:
       toast for a cancelled turn;
       (b) the publisher's literal `Some("cancelled")` should become
       `Some(cli_agent_error_type::CANCELLED)` — byte-identical, hygiene only.
-- [ ] **#586 — shell completions never learn functions or builtins.**
+- [x] **#586 — shell completions never learn functions or builtins.**
       `Session::load_all_function_names` / `load_all_builtins` and the whole
       deferred name-set machinery exist at the old pin, absent here (verified 0
       hits vs 1-2). Same subsystem as the stale `warp-command-signatures` data
       this round fixed — that one made completions *wrong*, this makes a class
       of names invisible.
+      **RECONCILED 2026-08-17 (v0.1.0).** Wrong on both counts: the machinery *is* present (`Session::load_all_function_names`, `session.rs:1160`), and bash/zsh/fish report functions and builtins in the bootstrap payload (`compgen -A function`, `functions -an`, consumed at `session.rs:763`). They return `None` from `shell_command_to_get_all_functions` because they need no deferred pass -- **identical to the pin**, which is also `_ => None` for everything but PowerShell. GitHub #586 closed `not_planned`. The one live question is PowerShell-only and is documented in place at `session.rs:1145`.
 - [x] **#585 — the TUI OSS binary still uses the pre-rename app id.**
       **FIXED, pending merge** — flipped to `("dev","phosphor","Phosphor")` on
       `repin-gap-appid`. `crates/warp_tui/src/bin/oss.rs:24` was
@@ -2428,7 +2445,7 @@ moving the pin:
 
 ### Defects found by the fix-refutation pass (2026-08-15)
 
-- [ ] **#601 — every OpenCode/DeepSeek harness launch logs a false install failure.**
+- [x] **#601 — every OpenCode/DeepSeek harness launch logs a false install failure.**
       `driver.rs:1125` calls `manager.install()` with no `can_auto_install()`
       check. DeepSeek returns `false` unconditionally, OpenCode likewise, Codex
       behind a flag — so `install()` hits the trait default `Err("Auto-install
@@ -2436,11 +2453,13 @@ moving the pin:
       genuine Claude failure in the same stream. Distinct from #600: that path
       needs `has_local_marketplace_override()`, this one needs
       `can_auto_install()`, and the pin calls each in only one of the two.
-- [ ] **#602 — MCP template variables render unmasked.** `mcp_install_flow.rs`
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #601 closed `completed`.
+- [x] **#602 — MCP template variables render unmasked.** `mcp_install_flow.rs`
       collects them into the shared input with **no** `input_ownership`, while
       its own `Debug` impl writes `[REDACTED]`. `TuiMcpTemplateVariable` carries
       no secret flag, so nothing distinguishes an API token from a hostname.
       Same class as #599; masking primitive arrives with `repin-input`.
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #602 closed `completed`.
 
 ### Known-incomplete fixes — verified by refutation, not yet closed
 
@@ -2451,6 +2470,7 @@ moving the pin:
       literal. Also the fix moves the *status chip* only — `notifications/model.rs`
       still files every `Failed` as `NotificationCategory::Error`, so a Ctrl-C
       still lands in the notification centre as an error.
+      **STILL OPEN 2026-08-17 (v0.1.0) -- do not tick because the issue is closed.** GitHub #596 is closed `completed`, but the residue described above is still in the tree: `crates/warp_tui/src/cli_agent_osc_event_publisher.rs:360` still hardcodes `error_type: Some("cancelled")`, and `app/src/notifications/model.rs` still files failures as `NotificationCategory::Error`. Verified by reading the code, not by the issue state.
 - [ ] **#597's fix is sound; its justification is wrong.** The
       permanent-bootstrap-file argument does not hold — that file is returned
       only for `BootstrapSessionType::Local` PowerShell (the case #597 never
@@ -2458,11 +2478,13 @@ moving the pin:
       each session rather than using an RC file. The rename direction is still
       right on its other grounds, but **the wrong evidence is now baked into two
       permanent doc comments** and should be corrected.
+      **STILL OPEN 2026-08-17 (v0.1.0).** GitHub #597 is closed `completed` (the code fix), but this entry tracks the *justification* baked into two doc comments, which was not verified as corrected during the v0.1.0 reconciliation. Re-read the comments before ticking.
 - [ ] **`check_generator_wrapper_names` is defeated by commenting a line out —
       8 of 8 `require`/`require_count` checks.** Commenting the pwsh
       `Export-ModuleMember` line *is* #597's failure mode, and the guard passes.
       It checks presence, not activeness. It also scans 4 of the 19 files in
       `app/assets/bundled/bootstrap/`, so a third spelling in `bash.sh` passes.
+      **COUNT CORRECTED 2026-08-17 (v0.1.0 agent audit)** — the defeat-by-commenting-out finding is reproduced (commenting the `Export-ModuleMember` line still exits 0), but the script now has **11** `require`/`require_count` checks, not 8, and scans 4 of 19 bootstrap files. All 11 use the same substring-presence technique and are equally defeated.
 - [ ] **`check_brand_strings` residual misses**, exact text:
       `concat!("Warp", " Agent…")`, `format!("… {} Agent…", "Warp")`,
       `"Zap-powered completions"`, `"Zap2 is available"`, `"Warp\nAgent"`,
@@ -2488,13 +2510,14 @@ moving the pin:
       `4431b15ff` port replaces box-drawing borders with hairline glyphs, so the
       fork's assertion now has almost nothing left to catch. §5.6; recorded in
       no document and uncommented at the site.
-- [ ] **#593 — 28 ledger rows say CLOUD where `DECLINED.md` says the opposite.**
+- [x] **#593 — 28 ledger rows say CLOUD where `DECLINED.md` says the opposite.**
       24 are the `grok_*` cluster in `crates/ai/src/api_keys_tests.rs`, which
       `DECLINED.md:93` claims by name and count while `:250` says explicitly it
       is ***not*** a cloud drop. Kills the rule-2 tripwire and teaches the exact
       false history the "common false positives" section exists to prevent.
       **68 further `judgement`-confidence CLOUD rows are unsampled** — the
       sampled hit rate was 28/58.
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #593 closed `completed`.
 - [x] **#592 — tests added to already-classified files land in no bucket.**
       `UNCLASSIFIED` is whole-file, so a file with existing ledger rows can
       never surface new upstream tests. Measured this move: **284** across the
@@ -2515,31 +2538,35 @@ moving the pin:
       has (plus 4 naming tests not at the pin) cancel genuinely unadjudicated
       ones. It reports 435 where the set difference is 715 — filed as **#603**,
       not fixed here: it moves a headline number in a generated file.]**
-- [ ] **#603 — `script/state`'s unadjudicated count is a subtraction of totals,
+- [x] **#603 — `script/state`'s unadjudicated count is a subtraction of totals,
       not a difference of sets.** `UNADJ=$(( ABSENT - LED_ROWS ))`, so each of
       the 273 ledger rows naming a test the fork now has (plus 4 naming a test
       not at the pin) cancels a genuinely unadjudicated one. Published 435;
       true set difference **715**. Wrong in the optimistic direction, and the
       error *grows* as rows become `PORTED`/`COVERED-ELSEWHERE` — i.e. as the
       fork makes progress. Found by #592's reconciliation block.
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #603 closed `completed`, and verified in the code: `script/state:112` now computes `UNADJ=$(( ABSENT - ADJ_ABSENT ))`, a set difference, with the old subtraction documented at line 87.
 - [ ] **#589 — branding guard blind spot** (fixed, kept for the latent edge):
       genuine proper nouns continuing lowercase would fire. `Zapfino` (Apple's
       font, 16 occurrences) survives only because every occurrence sits in a
       `*_test.rs` file or a comment. A font name in production code needs
       handling.
+      **RETAINED DELIBERATELY 2026-08-17 (v0.1.0).** GitHub #589 is closed `completed`; this entry is kept on purpose for the latent edge (a proper noun continuing lowercase in production code, e.g. a font name). Not outstanding work.
 
 ### Divergences that need a decision, not a fix
 
-- [ ] **#583 — `test_phosphor_tui_variant_properties` asserts `None`** for
+- [x] **#583 — `test_phosphor_tui_variant_properties` asserts `None`** for
       `brand_color()`/`icon()`; upstream now returns `Some(ColorU::black())` /
       `Some(Icon::Warp)`. Either give the variant Phosphor branding and update
       the assertion, or keep `None` with a `DECLINED.md` row and a `keep:`
       marker. Leaving it stale is the one option that is wrong.
-- [ ] **#584 — `todo_glyph` `InProgress` uses `•` (U+2022)** where both pins use
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #583 closed `completed`.
+- [x] **#584 — `todo_glyph` `InProgress` uses `•` (U+2022)** where both pins use
       `●` (U+25CF). Sibling arms (`✓`, `■`) match the pin exactly, so it is a
       single-glyph divergence recorded nowhere. A ported test now pins the
       character, which is the only thing holding it.
-- [ ] **#594 — `GeminiNotifications` stays out of `default`; promote only after
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #584 closed `completed`.
+- [x] **#594 — `GeminiNotifications` stays out of `default`; promote only after
       someone runs it.** **The issue's premise is refuted: this is not fork
       drift.** There is no `gemini_notifications` cargo feature *upstream
       either* — verified absent from `app/Cargo.toml` at both `02b53fcd8` and
@@ -2552,7 +2579,8 @@ moving the pin:
       `app/Cargo.toml`. So the asymmetry is upstream's, and the FLAG-DARK rule
       "dark at the pin too → do not fix" applies. Adding it to `default` would
       have shipped the chip *further than upstream has*.
-- [ ] **What #594 did surface, and what was changed.** Dogfood-only means
+      **RECONCILED 2026-08-17 (v0.1.0).** GitHub #594 closed `completed`.
+- [x] **What #594 did surface, and what was changed.** Dogfood-only means
       **unreachable by anyone** in this fork, not "awaiting validation" as it
       does upstream. Upstream's dogfood channel is a GUI build; here
       `app/src/bin/phosphor_oss.rs` is the only GUI binary and adds
@@ -2566,7 +2594,8 @@ moving the pin:
       decide whether to promote to `default` — and if the answer is no, that
       becomes a `DECLINED.md` row. No `DECLINED.md` row was added now, because
       agreeing with the pin is not a non-parity decision.
-- [ ] **#594's trace, for whoever validates it.** Every link exists and was
+      **RECONCILED 2026-08-17 (v0.1.0).** Context for #594, retained as a record; the issue is closed `completed`.
+- [x] **#594's trace, for whoever validates it.** Every link exists and was
       checked: `plugin_manager_for(CLIAgent::Gemini)`
       (`plugin_manager/mod.rs:281`, ANDed with `HOANotifications`) →
       `GeminiPluginManager` (`plugin_manager/gemini.rs`, 11 tests in
@@ -2592,14 +2621,16 @@ moving the pin:
       `record_plugin_auto_failure_and_notify`, degraded but handled); and
       `plugin_manager_for` is the flag's **only** consumer, so nothing else
       moves when it flips.
+      **RECONCILED 2026-08-17 (v0.1.0).** Context for #594, retained as a record; the issue is closed `completed`.
 
 ### Consequences of this round's merges — check after integrating
 
-- [ ] **Benchmark debt becomes real.** `repin-misc` adds
+- [x] **Benchmark debt becomes real.** `repin-misc` adds
       `benches/transcript_bench.rs` and `benchmark_support.rs`. Two other
       branches skipped bench hunks as "no bench harness here" — after merge,
       `a95e6e541`'s `ClippedTerminalBlockBenchmark` and `b462e0132`'s
       `zero_state_bench.rs` are genuine unported debt.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Both benchmarks are ported: `crates/warp_tui/src/benchmark_support.rs:10` (`ClippedTerminalBlockBenchmark`, commit `73753d713`) and `crates/warp_tui/benches/zero_state_bench.rs` (commit `5cd185c55`); both commits are ancestors of `main`.
 - [ ] **`slash_command_is_submitted_as_prompt`** (`app/src/terminal/input/slash_commands/mod.rs:80`)
       matches `SlashCommandKind::Orchestrate`, which this fork's `kind()` never
       produces — `/orchestrate` maps to `SlashCommandKind::Other`. Latent
@@ -2623,7 +2654,7 @@ plugins"). Tracing their pin-side callers surfaced one residual that is **not**
 declined and is a genuine, if small, divergence. Recorded here rather than as a
 GitHub issue because the agent that found it had no remote-write authority.
 
-- [ ] **`CliAgentPluginManager::has_local_marketplace_override` has no non-test
+- [x] **`CliAgentPluginManager::has_local_marketplace_override` has no non-test
       caller, and the call site it belongs at is missing its guard.** The pin
       calls it in `ensure_local_claude_child_plugins`
       (`app/src/pane_group/pane/local_harness_launch.rs:35-53` at `02b53fcd8`) to
@@ -2641,6 +2672,7 @@ GitHub issue because the agent that found it had no remote-write authority.
       place. Fix is ~3 lines at the call site; it needs the same
       `needs_update()`-else-`is_installed()` shape the pin uses, not a bare
       `if !override`.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Fixed by #600: `app/src/pane_group/pane/local_harness_launch.rs:84` checks `has_local_marketplace_override()` and branches `needs_update()`/`is_installed()`. The entry predates that fix.
 
 ## GIT-PINNED DEPENDENCY DRIFT — found 2026-08-15 during the first re-pin
 
@@ -2654,7 +2686,7 @@ Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly*
 
 ### Real drift — the fork is simply behind
 
-- [ ] **`warp-command-signatures`: `00a032b8` → `fe352669`.** The completion
+- [x] **`warp-command-signatures`: `00a032b8` → `fe352669`.** The completion
       spec data, pulled with `embed-signatures`, compiled into the binary and
       consumed by `crates/warp_completer`. Set in "Initial public release of
       Warp" and never touched since. Upstream was already at `29cd61c3` at the
@@ -2666,11 +2698,13 @@ Audited all 22 git-pinned deps against `42effe840`. **17 match upstream exactly*
       **not** a source port; the five intermediate revs do not apply as diffs
       because the fork's base does not match the start of the chain.
       Repo is reachable (HEAD `d79e09c4` as of 2026-08-15).
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Already bumped: `Cargo.toml` pins `warp-command-signatures` at `fe3526693fe…` — the target rev — via commit `993c7102e`.
 
-- [ ] **`notify-debouncer-full`: `f3afcda30` → `91b719849`.** Same repo
+- [x] **`notify-debouncer-full`: `f3afcda30` → `91b719849`.** Same repo
       (`warpdotdev/notify`), fork behind, undocumented. This is the filesystem
       watch debouncer — it sits under the directory-watch paths that the
       `RepositoryWatchMode` work also touches, so check the two together.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Already bumped: `Cargo.toml` pins `notify-debouncer-full` at `91b719849bc…` — the target rev — same commit `993c7102e`.
 
 ### A divergence needing a decision, not a bump
 
@@ -2699,7 +2733,7 @@ did **not** touch — it is a different pin function and a different failure
 mode. Recorded here rather than as a GitHub issue because the agent that found
 it had no remote-write authority.
 
-- [ ] **`AgentDriver::setup_harness` installs the notification plugin
+- [x] **`AgentDriver::setup_harness` installs the notification plugin
       unconditionally** (`app/src/ai/agent_sdk/driver.rs:1125`,
       `if let Err(e) = manager.install().await`). The pin splits this into
       `setup_harness_plugins` → `setup_notification_plugin`
@@ -2727,6 +2761,7 @@ it had no remote-write authority.
       definition anywhere in this fork (`grep -r SetupClientEventReporter app/src`
       is empty), so port the branching and drop the reporting, rather than
       dragging in a telemetry surface to carry it.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Fixed: `driver.rs:1141` calls `setup_notification_plugin` (`:1204-1215`), which gates on `can_auto_install()` then `needs_update()`/`is_installed()` — the pin shape this entry says is missing. Commit `a4b2ce3fb`.
 
 ## WINDOWS TUI INSTALLER — deferred 2026-08-15 (maintainer's call)
 
@@ -3049,6 +3084,7 @@ only reality and never looking at the branches:**
       > `requires_registered_session`, `is_registered_session`, and
       > `should_validate_dcs_hook_session_id` are present in
       > `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`."
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — "0 production call sites" is false: `terminal_manager.rs:816`, `remote_tty/event_loop.rs:172` and `view.rs:13613` all register (commit `1f793fb0d`). Still open: `should_validate_dcs_hook_session_id` remains hardcoded `false` because `session_id` is not threaded through the remaining `DProtoHook` variants. Narrow to that.
 
       **It closed on SYMBOL PRESENCE, not on the wiring those symbols exist to serve.**
       All three symbols are present. `should_validate_dcs_hook_session_id` returns a
@@ -3096,11 +3132,13 @@ only reality and never looking at the branches:**
       Note the numbering trap: **Zap #324 is unrelated to Phosphor #334**, which
       was this fork's own divider work (reset + double-click) and is already
       done. Same subsystem, different issue, colliding numbers.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — the min-size half is fixed: `ai_assistant/panel.rs:68` is now `MIN_PANEL_WIDTH = 240.` (commit `390453a94`, citing #324). The drag-latency half is untouched and undiagnosed. Keep only that.
 - [ ] **`git pull` — the one Git verb the fork has no path for at all.**
       Raised by Zap #329 (see the upstream-issues section for the full triage;
       the other two gaps there are hunk staging and branch create/switch).
       Zero hits for `git_pull`/`GitPull` in the tree — this is absence, not a
       stub.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — Stage 1 is done: `git pull --ff-only` exists end to end (`code_review/git_dialog/pull.rs`, `handle_git_pull`, proto, client, round-trip test). Stage 2 remains accurate — `global_buffer_model.rs:2390`'s `resolve_conflict` is buffer-sync, not git-merge, and no merge-conflict UX exists. Keep only Stage 2 open.
 
       **Do it in two stages, because pull is NOT symmetric with push.** Push
       never touches the working tree; pull does, and that is the entire
@@ -3618,12 +3656,14 @@ Not deferred for lack of intent: this box is Linux and these cannot be compiled 
 exercised here at all. They need a macOS or Windows machine (or CI) to progress.
 **Do not mark any of these done from a Linux build.**
 
-- [ ] **WSLENV passthrough vars** *(Windows)* — **STALE: this claimed absent, but it
+- [x] **WSLENV passthrough vars** *(Windows)* — **STALE: this claimed absent, but it
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Ported: `app/src/terminal/local_tty/windows/environment.rs:201` defines `wsl_env_allowlist`, called at `:159`; commit `17ee390a2` is an ancestor of `main`. The remaining caveat (never run against real WSL) is genuine and is covered by the Windows-verification entries.
   is DONE.** `wsl_env_allowlist` exists at
   `app/src/terminal/local_tty/windows/environment.rs:202` (commit `17ee390a2`, PR #119,
   targeted issue #117). Compile-only port, per the commit's own note — still not
   runtime-verified on an actual WSL/Windows host, which is the real remaining item.
-- [ ] **Launch-at-login** *(macOS + Windows)* — **STALE: this claimed absent, but it
+- [x] **Launch-at-login** *(macOS + Windows)* — **STALE: this claimed absent, but it
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Ported: `app/src/login_item/` contains `mod.rs`, `macos.rs`, `windows.rs` and both test modules; same commit `17ee390a2`. Same runtime-verification caveat as above.
   is DONE.** `app/src/login_item/` exists (`mod.rs`, `macos.rs`, `windows.rs`,
   `windows_tests.rs`; commit `17ee390a2`, PR #119, targeted issue #118). Same caveat:
   compile-only on this Linux host, not runtime-verified on macOS/Windows.
@@ -3635,7 +3675,8 @@ exercised here at all. They need a macOS or Windows machine (or CI) to progress.
   sites" further down this file.** Not a second checkbox.
 
 ### STALE-WRONG — corrected 2026-08-07
-- [ ] **AI global skills** — **this entry previously said "WON'T DO (maintainer,
+- [x] **AI global skills** — **this entry previously said "WON'T DO (maintainer,
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Self-resolved 2026-08-10 and never ticked: `app/src/ai/skills/mod.rs:143-146` records the removal, no `global_skills*` file exists, and `DECLINED.md:87` carries the #487 decision.
   2026-08-06)" and stated the opposite of the actual decision.** #11's 2026-08-07
   closing comment quotes the ledger's own "Maintainer BYOP decisions — 2026-08-02"
   section, settled before the WON'T-DO note was ever written: *"AI skills: build

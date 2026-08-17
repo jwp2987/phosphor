@@ -5,7 +5,9 @@ file ties it together and records the operational lessons a fresh session will
 not otherwise have.
 
 Last rewritten: 2026-08-06 evening, after the migration to the `/cache/git/zap`
-host.
+host. **That host is gone.** The checkout is now `/home/winters/git/phosphor`
+(verified 2026-08-17: `/cache/git/zap` does not exist). Paths below were written
+for the old host; read them for the lesson, not the literal path.
 
 ## App identity (read first)
 - The app is **Phosphor** (`jwp2987/phosphor`). "Zap" is only the **upstream
@@ -14,7 +16,7 @@ host.
   `SkillProvider::Zap`) stay. See `docs/DESIGN-PHOSPHOR-FORK.md`.
 - **English only** in code/comments/tests/docs (`CLAUDE.local.md`). Exception:
   `app/i18n/zh-CN|ja/*.ftl` are intentional translations — never edit them.
-- The behavioral oracle is the **PINNED** Warp stable `02b53fcd8`, never
+- The behavioral oracle is the **PINNED** Warp stable `42effe840`, never
   `warp/master` — read `ORACLE.md`. `warp/master` is a fetched remote and is
   useful only for archaeology (finding *why* a pin behaviour exists); measuring
   against it produces a gap that never shrinks. Never weaken a test to go green
@@ -605,7 +607,10 @@ mid-round. rustfmt also comes from apt here (PR #153).
    unmodified main-branch tree and reports a clean green that means nothing. One
    agent only caught it by inspecting cargo's `.fingerprint` dep-info files and
    noticing they listed the *old* file set. Write
-   `cd /cache/git/zap/.worktrees/<name> && agent-cargo …` as one string, every time.
+   `cd <checkout>/.worktrees/<name> && agent-cargo …` as one string, every time.
+   (The literal paths in this item are the old `/cache/git/zap` host, which no
+   longer exists; the checkout is now `/home/winters/git/phosphor`. The lesson
+   is the `cd`, not the path.)
 10. **A baseline number is only valid for the tree it was measured on.** The
    "4025/0/33" figure circulated all session as if it were main's; it was PR #132's
    *branch* number. It made a clean re-pin look like it had lost 22 tests and
