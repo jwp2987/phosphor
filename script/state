@@ -242,8 +242,22 @@ $( if (( MISSING > 0 && OPEN_TODO + INFLIGHT == 0 )); then
 EOF
 } > "$TMP"
 
+# Strip the lines that are a function of HEAD rather than of tree content, so `--check`
+# compares only what a commit can actually fix.
+#
+# `Generated` is a timestamp. The verified line embeds `git rev-list --count $VSHA..HEAD`,
+# which EVERY commit increments -- including the commit that updates this file. Comparing
+# it made the gate unpassable: regenerate at commit N and it writes "N - verified"; commit
+# that and HEAD becomes N+1; the next --check computes N+1 - verified and reports stale.
+# There is no sequence of commits that leaves it green, so `script/precheck` reported red
+# on every push regardless of the change being pushed -- which is how a gate teaches people
+# to ignore it. See #612.
+#
+# Both lines still render in the document; they just cannot be equality-checked.
+strip_head_derived() { grep -v -e '^Generated ' -e '^Last fully green '; }
+
 if (( CHECK )); then
-    if [[ -f "$OUT" ]] && diff -q <(grep -v '^Generated ' "$TMP") <(grep -v '^Generated ' "$OUT") >/dev/null 2>&1; then
+    if [[ -f "$OUT" ]] && diff -q <(strip_head_derived < "$TMP") <(strip_head_derived < "$OUT") >/dev/null 2>&1; then
         echo "state: ok (docs/STATE.md is current)"
         exit 0
     fi
