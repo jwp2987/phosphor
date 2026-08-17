@@ -1,7 +1,10 @@
 use crate::integration_testing::command_palette::assertions::{
     assert_command_palette_has_results, assert_command_palette_is_closed,
     assert_command_palette_is_open,
+    assert_command_palette_selection_matches,
 };
+use crate::integration_testing::view_getters::command_palette_view;
+use crate::search::data_source::QueryFilter;
 use crate::util::bindings::cmd_or_ctrl_shift;
 use warpui::integration::{AssertionOutcome, TestStep};
 use warpui::{App, WindowId};
@@ -50,12 +53,28 @@ pub fn open_command_palette() -> TestStep {
 /// Returns two steps: the first opens the palette and types the action text, waiting for
 /// search results to appear (needed because async data sources like file search may delay
 /// result delivery). The second presses Enter to execute the selected action.
-pub fn open_command_palette_and_run_action(action: &str) -> Vec<TestStep> {
+pub fn open_command_palette_and_run_action(action: &'static str) -> Vec<TestStep> {
     vec![
         TestStep::new(format!("Type {action} in command palette").as_str())
             .with_keystrokes(&[cmd_or_ctrl_shift("p")])
+            // Scope the search to actions before typing. The palette also
+            // searches open sessions, and a session's title is its working
+            // directory -- so in an integration test, whose cwd is a temp dir
+            // named after the test, a long path fuzzy-matches an action name
+            // well enough to outrank it. `test_pane_group_state_multi_pane`
+            // selected "Selected /home/.../tmp/test_pane_group_state_multi_pane
+            // git:(main)" for the query "Activate Previous Pane" and pressed
+            // enter on it, so its workspace action was never dispatched at all.
+            // It failed 4 runs in 5 that way, the fifth passing by ranking luck.
+            .with_action(move |app, window_id, _| {
+                let palette = command_palette_view(app, window_id);
+                palette.update(app, |palette, ctx| {
+                    palette.set_active_query_filter(QueryFilter::Actions, ctx);
+                });
+            })
             .with_typed_characters(&[action])
-            .add_assertion(assert_command_palette_has_results()),
+            .add_assertion(assert_command_palette_has_results())
+            .add_assertion(assert_command_palette_selection_matches(action)),
         TestStep::new(format!("Run {action} in command palette").as_str())
             .with_keystrokes(&["enter"]),
     ]
