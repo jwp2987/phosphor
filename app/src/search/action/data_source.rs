@@ -193,7 +193,7 @@ impl ActionSearcher for FuzzyActionSearcher {
                 })
             })
             .map(|(match_result, binding)| {
-                MatchedBinding::new(match_result, binding.clone()).into()
+                MatchedBinding::new_with_query(match_result, binding.clone(), search_term).into()
             })
             .collect())
     }
