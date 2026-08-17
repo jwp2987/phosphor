@@ -545,22 +545,19 @@ jobs:
       # those retries had never once run.
       - name: cargo nextest -p integration (headless via Xvfb)
         shell: bash
-        # `--test-threads=2` against the profile's `threads-required = 2` means
-        # exactly one integration test at a time.
+        # No `--test-threads` override, deliberately. It was briefly set to 2
+        # (one integration test at a time) on the theory that #611's segfault
+        # needed two processes cold-starting together. **That theory is wrong**
+        # -- run 32054215165 shard 1 segfaulted at 0.394s with serialisation
+        # active and nothing running alongside it. Serialising costs wall clock
+        # and prevented nothing, so the default is restored.
         #
-        # The runner reports `nproc: 4`, so the default allowed TWO integration
-        # tests to run at once -- and #611's segfault only ever hits a test that
-        # cold-starts simultaneously with another. Measured in run 32051996874:
-        # `test_bash_bootstraps_with_prompt_command_array` died 0.685s after
-        # starting at ~18:01:48.95, while `test_alias_guards_on_ps1_set` started
-        # at the same instant and passed. Every later test also runs two-up and
-        # is fine, because they stagger -- only at run start do two processes
-        # initialise together. The original #611 failure has the same shape:
-        # first test of the run, 0.699s, SIGSEGV.
-        #
-        # Serialising removes the simultaneous cold start entirely. Sharding
-        # absorbs the wall-clock cost (~70 tests per shard).
-        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --test-threads=2 --partition count:${{ matrix.shard }}/3
+        # What the evidence actually says: the crash hits the FIRST test of a
+        # run, whatever that test happens to be (0.699s / 0.685s / 0.394s across
+        # three runs, two different tests, always position 1). It looks like
+        # first-launch initialisation against a cold Xvfb and cold graphics
+        # stack, not contention. See #611.
+        run: xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci --partition count:${{ matrix.shard }}/3
 
   check-windows:
     name: cargo check (Windows)
