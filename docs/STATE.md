@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **15 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **17 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,11 +27,11 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 10860 |
-| Fork tests | 10201 |
-| Shared | 8067 |
-| Absent from fork | 2793 |
+| Fork tests | 10210 |
+| Shared | 8076 |
+| Absent from fork | 2784 |
 
-Of the absent, **2213 are adjudicated** in the ledger and 580 are not.
+Of the absent, **2204 are adjudicated** in the ledger and 580 are not.
 
 > **Do not quote that 580 as a work queue.** Of them, **579 are
 > defined in files this fork deleted wholesale** — the dropped cloud layer, whose
@@ -41,24 +41,24 @@ Of the absent, **2213 are adjudicated** in the ledger and 580 are not.
 > excluded here. The remainder where "should we port this?" is still genuinely
 > open is **0**.
 
-Cloud accounts for 1236 of those; the unadjudicated remainder is
-*projected* at the same ratio (~256 non-cloud), so the figures below
+Cloud accounts for 1251 of those; the unadjudicated remainder is
+*projected* at the same ratio (~250 non-cloud), so the figures below
 carry that estimate.
 
-The ledger has 2495 rows in total; the 282 beyond the
-2213 above adjudicate tests that are **not** absent — the fork already has
+The ledger has 2495 rows in total; the 291 beyond the
+2204 above adjudicate tests that are **not** absent — the fork already has
 them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~86.7% of the pin's non-cloud tests exist here** (8067 of ~9300)
-- **~95.0% are present or deliberately resolved** (adding 647 declined, 61 divergent, 61 covered-elsewhere)
+- **~87.0% of the pin's non-cloud tests exist here** (8076 of ~9279)
+- **~95.3% are present or deliberately resolved** (adding 647 declined, 61 divergent, 61 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
-| CLOUD | 1240 |
+| CLOUD | 1255 |
 | DECLINED | 647 |
 | MISSING-SUBSYSTEM | 67 |
 | DIVERGENT | 61 |
