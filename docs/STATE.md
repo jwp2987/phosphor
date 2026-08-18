@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **12 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **13 commit(s) since**
 
 | guard | |
 |---|---|
@@ -52,7 +52,7 @@ this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
 - **~86.7% of the pin's non-cloud tests exist here** (8067 of ~9300)
-- **~95.2% are present or deliberately resolved** (adding 647 declined, 82 divergent, 64 covered-elsewhere)
+- **~95.1% are present or deliberately resolved** (adding 647 declined, 74 divergent, 62 covered-elsewhere)
 
 ## Ledger
 
@@ -61,8 +61,8 @@ from the absent set, which is what #603 fixed.
 | CLOUD | 1240 |
 | DECLINED | 647 |
 | MISSING-SUBSYSTEM | 66 |
-| DIVERGENT | 82 |
-| COVERED-ELSEWHERE | 64 |
+| DIVERGENT | 74 |
+| COVERED-ELSEWHERE | 62 |
 | UNPARSED | 0 |
 
 Per `TODO.md`'s definition of done, a test is resolved when it is ported,
