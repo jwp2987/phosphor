@@ -352,3 +352,24 @@ fn ask_user_question_speedbump_shown_latch_starts_unset() {
     }
     assert!(*shown.lock());
 }
+
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/block_tests.rs::
+/// received_message_collapsible_id_prefixes_row_ids`) verbatim --
+/// `received_message_collapsible_id` (`block.rs:837`) is byte-identical to the
+/// pin's (`block.rs:877`), so no adaptation was needed.
+///
+/// The prefix is what keeps a received orchestration message's collapsible row
+/// id from colliding with any other `MessageId` in the same block: the
+/// transcript keys `collapsible_states` by `MessageId`, and the raw
+/// `message_id` of the received message is also used as an id elsewhere
+/// (`view_impl/orchestration.rs:390`). Without the namespace, expanding one
+/// would toggle the other.
+#[test]
+fn received_message_collapsible_id_prefixes_row_ids() {
+    let first = super::received_message_collapsible_id("message-1");
+    let second = super::received_message_collapsible_id("message-2");
+
+    assert_eq!(&*first, "received-message:message-1");
+    assert_eq!(&*second, "received-message:message-2");
+    assert_ne!(first, second);
+}

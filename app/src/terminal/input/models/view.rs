@@ -105,6 +105,10 @@ pub struct InlineModelSelectorView {
     /// Controls whether or not we should filter the contents of the menu
     /// based on the contents of the input.
     filter_results_by_input: bool,
+    /// Whether the prompt that was in the input when this selector opened was
+    /// cleared so the input could be used as a model search field. When set, the
+    /// prompt must be restored on every route that closes the selector.
+    prompt_parked_for_search: bool,
 }
 
 impl InlineModelSelectorView {
@@ -255,6 +259,7 @@ impl InlineModelSelectorView {
                 me.rerun_query(ctx);
             } else if model.as_ref(ctx).is_closed() {
                 me.filter_results_by_input = true;
+                me.prompt_parked_for_search = false;
                 me.mixer.update(ctx, |mixer, ctx| {
                     mixer.reset_results(ctx);
                 });
@@ -401,6 +406,7 @@ impl InlineModelSelectorView {
             terminal_view_id,
             selection_before_tab_switch: None,
             filter_results_by_input: true,
+            prompt_parked_for_search: false,
         }
     }
 
@@ -452,6 +458,14 @@ impl InlineModelSelectorView {
 
     pub fn set_filter_results_by_input(&mut self, filter: bool) {
         self.filter_results_by_input = filter;
+    }
+
+    pub fn prompt_parked_for_search(&self) -> bool {
+        self.prompt_parked_for_search
+    }
+
+    pub fn set_prompt_parked_for_search(&mut self, parked: bool) {
+        self.prompt_parked_for_search = parked;
     }
 
     pub fn set_active_tab(&self, tab: InlineModelSelectorTab, ctx: &mut ViewContext<Self>) {

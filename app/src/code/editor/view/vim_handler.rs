@@ -269,7 +269,7 @@ impl VimHandler for CodeEditorView {
                                 // unmatched-bracket half of the same bug in place.
                                 // `keep_selection: true` matches the standalone `[`/`]` handler
                                 // below (`jump_to_unmatched_bracket`, called with `false`) and
-                                // upstream's fix. NOT COMPILED -- builds are suspended; verified
+                                // upstream's fix. ; verified
                                 // by reading only.
                                 model.vim_jump_to_unmatched_bracket(bracket, true, ctx);
                             }
@@ -933,7 +933,6 @@ impl VimHandler for CodeEditorView {
 
             // Clear selections after undo, for things like delete/change operations which
             // modify the editor state by changing selections and then making an insert/delete.
-            //
             // TODO(liliwilson): this only works for the vim undo: cmd+Z and cmd+shift+z will undo
             // the operation but not the selection. Need a deeper change to the buffer model
             // undostack to support this.

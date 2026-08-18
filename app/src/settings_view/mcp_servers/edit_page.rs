@@ -807,8 +807,7 @@ impl TypedActionView for MCPServersEditPageView {
                     // Net effect: pasting a secret into a freshly added MCP server via
                     // "+ Add" skipped the local secret-redaction guard entirely, so the
                     // actionable "This MCP server contains secrets..." toast never fired
-                    // here even with redaction enabled. NOT COMPILED -- builds are
-                    // suspended; verified by reading only.
+                    // here even with redaction enabled.
                     if parsed_servers
                         .iter()
                         .try_for_each(|parsed_server| {
@@ -871,7 +870,6 @@ impl TypedActionView for MCPServersEditPageView {
 
 /// Decide whether to block saving an MCP server config because secret
 /// redaction is in force AND the parsed config contains secret-shaped strings.
-///
 /// We block only when redaction is actually active — either the user-level
 /// Settings > Privacy > Secret redaction toggle is on, or the user's workspace
 /// has enterprise enforcement enabled. With both off, the user has explicitly

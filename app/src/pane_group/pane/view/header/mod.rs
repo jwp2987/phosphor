@@ -334,18 +334,27 @@ impl<P: BackingView> PaneHeader<P> {
                     let tab_quarter_x = (tab_center_x + tab_rect.lower_left().x()) / 2.;
                     let tab_three_quarters_x = (tab_center_x + tab_rect.lower_right().x()) / 2.;
                     if drag_position.center().x() < tab_quarter_x {
-                        TabBarHoverIndex::BeforeTab(*idx)
+                        TabBarHoverIndex::BeforeTab {
+                            index: *idx,
+                            group: None,
+                        }
                     } else if drag_position.center().x() < tab_three_quarters_x {
                         TabBarHoverIndex::OverTab(*idx)
                     } else {
-                        TabBarHoverIndex::BeforeTab(*idx + 1)
+                        TabBarHoverIndex::BeforeTab {
+                            index: *idx + 1,
+                            group: None,
+                        }
                     }
                 } else {
                     // If for some reason we can't retrieve the tab position, just default to the index
                     TabBarHoverIndex::OverTab(*idx)
                 }
             }
-            TabBarLocation::AfterTabIndex(tab_count) => TabBarHoverIndex::BeforeTab(*tab_count),
+            TabBarLocation::AfterTabIndex(tab_count) => TabBarHoverIndex::BeforeTab {
+                index: *tab_count,
+                group: None,
+            },
         }
     }
 }

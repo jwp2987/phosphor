@@ -435,6 +435,9 @@ code-review-open-repository-tooltip = リポジトリに移動してコーディ
 code-review-open-file = ファイルを開く
 code-review-add-file-diff-context = ファイル diff をコンテキストに追加
 code-review-copy-file-path = ファイルパスをコピー
+code-review-stage-file = ファイルをステージ
+code-review-stage-remaining = 残りの変更をステージ
+code-review-unstage-file = ファイルのステージを解除
 code-review-no-open-changes = 開いている変更はありません
 code-review-header-reviewing-changes = コード変更をレビュー中
 code-review-search-diff-placeholder = 比較する diff セットまたはブランチを検索…
@@ -1129,6 +1132,19 @@ settings-code-embedding-model-none = 未設定
 settings-code-embedding-model-none-desc = 埋め込みモデルを登録したプロバイダーがないため、既定値にフォールバックせずインデックス作成はエラーになります。「設定 > AI」でいずれかのプロバイダーに下記のモデルを追加してください。
 settings-code-embedding-candidate-available = {$model} — {$provider} が提供
 settings-code-embedding-candidate-unavailable = {$model} — このモデルを登録したプロバイダーがありません
+settings-code-remote-indexed-folders = リモートのインデックス済みフォルダー
+settings-code-remote-indexed-folders-desc = リモートエージェントのデーモンにインデックス作成を依頼した SSH ホスト上のリポジトリと、各ホストから返ってきた状態です。インデックス作成はホスト側で実行され、ここの情報が 外部のサーバーへ送られることはありません。
+settings-code-remote-index-not-created = インデックス未作成
+settings-code-remote-index-limit-reached = インデックス数の上限に到達
+settings-code-remote-index-unavailable = 利用できません
+settings-code-remote-index-disabled = 無効
+settings-code-remote-index-queued = 待機中
+settings-code-remote-index-indexing = インデックス作成中...
+settings-code-remote-index-indexing-progress = インデックス作成中 - { $completed } / { $total }
+settings-code-remote-index-indexing-completed = インデックス作成中 - { $completed }
+settings-code-remote-index-synced = 同期済み
+settings-code-remote-index-stale = 古い状態
+settings-code-remote-index-failed = 失敗
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
@@ -1375,6 +1391,7 @@ settings-appearance-tab-close-position-right = 右
 settings-appearance-tab-close-position-left = 左
 settings-appearance-tab-show-indicators-label = タブインジケータを表示
 settings-appearance-tab-show-code-review-label = コードレビューボタンを表示
+settings-appearance-tab-enable-tab-groups-label = タブグループを有効にする
 settings-appearance-tab-preserve-active-color-label = 新規タブにアクティブタブの色を引き継ぐ
 settings-appearance-tab-vertical-layout-label = 垂直タブレイアウトを使用
 settings-appearance-tab-show-vertical-panel-in-restored-windows-label = 復元されたウィンドウで垂直タブパネルを表示

@@ -20,6 +20,7 @@ use warpui::{
     ViewContext, ViewHandle,
 };
 
+use crate::settings::{ReuseExistingSshControlMaster, SshSettings};
 use crate::terminal::warpify::settings::{
     EnableSshWarpification, SshExtensionInstallMode, SshExtensionInstallModeSetting,
     UseSshTmuxWrapper, WarpifySettingsChangedEvent,
@@ -429,6 +430,9 @@ pub enum WarpifyPageAction {
     /// If disabled, auto-Warpification and the SSH Warpification prompt will be disabled.
     ToggleTmuxWarpification,
     ToggleSshWarpification,
+    /// Toggles whether the legacy SSH wrapper attaches to an existing
+    /// ControlMaster for the destination host instead of creating its own.
+    ToggleReuseSshControlMaster,
     /// Set the SSH extension installation mode (always ask / always install / always skip).
     SetSshExtensionInstallMode(SshExtensionInstallMode),
     OpenUrl(String),
@@ -472,6 +476,23 @@ impl TypedActionView for WarpifyPageView {
                     send_telemetry_from_ctx!(
                         TelemetryEvent::ToggleSshTmuxWrapper {
                             enabled: *ssh_settings.use_ssh_tmux_wrapper.value(),
+                        },
+                        ctx
+                    );
+                });
+            }
+            ToggleReuseSshControlMaster => {
+                SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
+                    report_if_error!(ssh_settings
+                        .reuse_existing_control_master
+                        .toggle_and_save_value(ctx));
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::FeaturesPageAction {
+                            action: "ToggleSshReuseControlMaster".to_string(),
+                            value: ssh_settings
+                                .reuse_existing_control_master
+                                .value()
+                                .to_string(),
                         },
                         ctx
                     );
@@ -653,6 +674,7 @@ impl SettingsWidget for SubshellsWidget {
 struct SSHWidget {
     tmux_warpification_switch_state: SwitchStateHandle,
     enable_ssh_warpification_switch_state: SwitchStateHandle,
+    reuse_control_master_switch_state: SwitchStateHandle,
     additional_info_mouse_state: MouseStateHandle,
     local_only_icon_tooltip_states: RefCell<HashMap<String, MouseStateHandle>>,
 }
@@ -740,6 +762,66 @@ impl SettingsWidget for SSHWidget {
                     ))
                     .with_padding_bottom(HEADER_PADDING)
                     .finish()
+                },
+            );
+        }
+
+        // Reuse-ControlMaster only applies to the legacy (ControlMaster)
+        // SSH wrapper, which is bypassed while the tmux wrapper is in use.
+        if !should_prompt_ssh_tmux_wrapper {
+            let reuse_existing_control_master = *SshSettings::as_ref(app)
+                .reuse_existing_control_master
+                .value();
+            add_setting(
+                &mut column,
+                &SshSettings::as_ref(app).reuse_existing_control_master,
+                move || {
+                    let mut column = Flex::column();
+                    column.add_child(render_body_item::<WarpifyPageAction>(
+                        crate::t!("settings-warpify-reuse-control-master"),
+                        None,
+                        LocalOnlyIconState::for_setting(
+                            ReuseExistingSshControlMaster::storage_key(),
+                            ReuseExistingSshControlMaster::sync_to_cloud(),
+                            &mut self.local_only_icon_tooltip_states.borrow_mut(),
+                            app,
+                        ),
+                        enable_ssh_warpification.into(),
+                        appearance,
+                        ui_builder
+                            .switch(self.reuse_control_master_switch_state.clone())
+                            .check(reuse_existing_control_master)
+                            .with_disabled(!enable_ssh_warpification)
+                            .build()
+                            .on_click(move |ctx, _, _| {
+                                if !enable_ssh_warpification {
+                                    return;
+                                }
+                                ctx.dispatch_typed_action(
+                                    WarpifyPageAction::ToggleReuseSshControlMaster,
+                                );
+                            })
+                            .finish(),
+                        None,
+                    ));
+                    column.add_child(
+                        ui_builder
+                            .paragraph(crate::t!(
+                                "settings-warpify-reuse-control-master-description"
+                            ))
+                            .with_style(UiComponentStyles {
+                                font_color: Some(description_text_color.into_solid()),
+                                margin: Some(
+                                    Coords::default()
+                                        .top(styles::DESCRIPTION_NEGATIVE_MARGIN_OFFSET)
+                                        .bottom(styles::DESCRIPTION_LINE_MARGIN_BOTTOM),
+                                ),
+                                ..Default::default()
+                            })
+                            .build()
+                            .finish(),
+                    );
+                    column.finish()
                 },
             );
         }

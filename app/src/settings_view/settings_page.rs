@@ -503,18 +503,13 @@ pub enum LocalOnlyIconState {
 
 impl LocalOnlyIconState {
     /// Creates a `LocalOnlyIconState` for a given setting.
-    ///
     /// This function determines whether to show an icon indicating that a setting
     /// is not cloud-synced based on the `SyncToCloud` value of the setting.
-    ///
     /// # Arguments
-    ///
     /// * `storage_key` - A string slice that holds the storage key for the setting.
     /// * `sync_to_cloud` - The `SyncToCloud` value for the setting.
     /// * `mouse_states` - A mutable reference to a `HashMap` storing `MouseStateHandle`s.
-    ///
     /// # Returns
-    ///
     /// Returns a `LocalOnlyIconState` enum variant:
     /// - `LocalOnlyIconState::Visible` with a `MouseStateHandle` if the setting is never synced to cloud.
     /// - `LocalOnlyIconState::Hidden` if the setting is synced to cloud.
@@ -1009,7 +1004,6 @@ pub struct InputListItem<SettingsPageAction: Action + Clone> {
 
 /// Renders a title, an input field to add new items and a list of already
 /// added items.
-///
 /// TODO: standardize this and remove [`render_alternating_color_list`].
 pub fn render_input_list<SettingsPageAction: Action + Clone>(
     title: Option<&str>,
@@ -1159,7 +1153,6 @@ fn render_alternating_color_list_item<SettingsPageAction: Action + Clone>(
 
 /// Adds a setting (e.g., "Background opacity") to the parent flex if it is supported on the current platform. Returns
 /// true if the setting was added to the flex, false if not.
-///
 /// This is the default method to use when rendering a setting in the settings menu, across all pages
 /// (Appearance, Features, etc).
 pub fn add_setting<F>(
@@ -1184,7 +1177,6 @@ pub(super) enum PageType<V: warpui::View> {
     /// A page where the contents cannot be separated for showing search results. If any part
     /// matches the search query, the whole page must show. The whole page is one big
     /// [`SettingsWidget`].
-    ///
     /// The vertical and horizontal scroll states are optional to let Monolith pages
     /// handle and render their own scrollable elements.
     Monolith {
@@ -1262,11 +1254,10 @@ impl From<usize> for MatchData {
 
 /// Returns true if every whitespace-delimited word in `query` appears somewhere
 /// in `terms` (case-insensitive). An empty query matches everything.
-///
 /// Extracted from `PageType::update_filter` (upstream 2356ddab2, #14116) to a
 /// testable module-level function so the predicate itself has direct unit
 /// coverage instead of only being exercised indirectly through a full
-/// `ViewContext`. NOT COMPILED -- builds are suspended; verified by reading
+/// `ViewContext`. ; verified by reading
 /// only.
 pub(super) fn search_terms_match(terms: &str, query: &str) -> bool {
     if query.is_empty() {

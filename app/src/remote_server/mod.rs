@@ -24,6 +24,13 @@ pub mod get_branches;
 pub mod get_committed_branch_files;
 #[cfg(not(target_family = "wasm"))]
 pub mod diff_state_proto;
+/// Wire conversions for the remote git-chip / PR-context pushes. Gated on
+/// `local_fs` rather than on wasm like its neighbours, so the gate matches the
+/// `GitStatusMetadata` / `GitRepoStatusModel` types it converts and every `use`
+/// site can carry the same single predicate. The two select the same builds:
+/// `app/build.rs:245-249` sets `local_fs` for exactly `target_family != "wasm"`.
+#[cfg(feature = "local_fs")]
+pub mod git_status_proto;
 #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
 pub mod diff_state_tracker;
 #[cfg(not(target_family = "wasm"))]
@@ -164,6 +171,24 @@ pub(super) fn run_daemon_app(
             model
         });
         ctx.add_singleton_model(warp_files::FileModel::new);
+        // Per-repo git-status / GitHub-info factory. `ServerModel` reaches for
+        // it via `GitRepoModels::handle(ctx)` when a connection navigates into
+        // a repo or sends `UpdateGitStatus` / `UpdateGitHubPrInfo` /
+        // `UpdateGitHubRepoInfo`, so an unregistered singleton would panic
+        // there — the same failure mode `GlobalBufferModel` documents below.
+        // Must come after `DetectedRepositories`, which its local backend
+        // resolves the watched repository through.
+        //
+        // The daemon deliberately does *not* gain the settings / local-shell
+        // singletons the app registers alongside this one: the two places
+        // `LocalGitHubRepoModel` reaches for them are guarded by
+        // `has_singleton_model` and degrade to "no chip-default bookkeeping"
+        // and "daemon process PATH", both of which are the right behaviour for
+        // a headless host. See `code_review/github_repo_model/local.rs`.
+        #[cfg(feature = "local_fs")]
+        ctx.add_singleton_model(|_| {
+            crate::code_review::git_status_update::GitStatusUpdateModel::new()
+        });
         // GlobalBufferModel must be registered before ServerModel: the
         // server-side buffer-sync handling (server_model.rs /
         // server_buffer_tracker.rs) accesses it via

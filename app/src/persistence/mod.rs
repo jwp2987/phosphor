@@ -246,6 +246,14 @@ pub struct PersistedData {
     pub object_actions: Vec<ObjectAction>,
     pub experiments: Vec<ServerExperiment>,
     pub ai_queries: Vec<PersistedAIInput>,
+    /// Prompt text and submission time for NLD prompt-history matching, oldest-first.
+    ///
+    /// Separate from `ai_queries` even though both come from one read: `ai_queries` is the
+    /// up-arrow list, capped at 100 and carrying whole `PersistedAIInput`s, while this is a
+    /// much longer text-only candidate list. Empty unless `FeatureFlag::NldPromptHistoryMatch`
+    /// is on -- off by default here and at the pin -- so the wider scan costs nothing until the
+    /// flag is enabled. Consumed by `BlocklistAIHistoryModel::new` in `app/src/lib.rs`.
+    pub nld_prompts: Vec<(String, DateTime<Local>)>,
     /// Recently-used repository roots, restored into `PersistedWorkspace` at
     /// startup. Named `codebase_indices` at the pin, where codebase indexing was
     /// the primary consumer; kept under that name so the diff against

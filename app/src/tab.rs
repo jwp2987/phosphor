@@ -7,7 +7,7 @@ use crate::editor::EditorView;
 use crate::features::FeatureFlag;
 use crate::launch_configs::launch_config::LaunchConfig;
 use crate::menu::{MenuAction, MenuItem, MenuItemFields};
-use crate::pane_group::PaneGroup;
+use crate::pane_group::{PaneGroup, PaneId};
 use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
 use settings::Setting as _;
 use std::collections::HashMap;
@@ -27,7 +27,9 @@ use crate::util::truncation::truncate_from_end;
 use crate::window_settings::WindowSettings;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
-use crate::workspace::tab_settings::{TabCloseButtonPosition, TabSettings};
+use crate::workspace::tab_settings::{
+    TabCloseButtonPosition, TabSettings, VerticalTabsDisplayGranularity,
+};
 use crate::workspace::{
     PaneViewLocator, TabBarDropTargetData, TabBarLocation, TabContextMenuAnchor, WorkspaceAction,
 };
@@ -54,7 +56,7 @@ use warpui::ui_components::text_input::TextInput;
 use warpui::{AppContext, SingletonEntity, ViewHandle};
 
 pub const TAB_BAR_BORDER_HEIGHT: f32 = 1.0;
-const TAB_INDICATOR_HEIGHT: f32 = 14.0;
+pub(crate) const TAB_INDICATOR_HEIGHT: f32 = 14.0;
 
 /// True when the user has opted into vertical tabs and the feature flag is on.
 /// Exposed so binding-description overrides in `workspace/mod.rs` and context-
@@ -68,15 +70,21 @@ const WARP_2_HOVERED_TAB_COLOR_OPACITY: Opacity = 50;
 const TAB_CLOSE_BUTTON_OPACITY: Opacity = 60;
 const TAB_CLOSE_BUTTON_WIDTH: f32 = 20.0;
 const MAX_TOOLTIP_LENGTH: usize = 80;
+pub(crate) const TAB_PIN_INDICATOR_ICON_SIZE: f32 = 16.0;
 
 /// Color of the synchronized-inputs indicator, shared by the horizontal tab bar
 /// and the vertical tabs panel so both surfaces read identically.
 pub(crate) const TAB_INDICATOR_SYNCED_COLOR: u32 = 0x4A93FFFF;
 
 // Width threshold (in px) below which we render an icon-only tab
-const COMPACT_TAB_WIDTH_THRESHOLD: f32 = 42.0;
+pub(crate) const COMPACT_TAB_WIDTH_THRESHOLD: f32 = 42.0;
 // Horizontal inset for the tab close button
 const TAB_CLOSE_BUTTON_HORIZONTAL_INSET: f32 = 2.0;
+// Padding on each side of a pinned tab, reserving the pin's footprint so the title clips before it.
+const TAB_PINNED_CONTENT_HORIZONTAL_PADDING: f32 = 26.0;
+// Width below which a pinned tab drops its idle pin, early enough that the pin
+// never overlaps the centered title/icon.
+pub(crate) const TAB_PIN_VANISH_THRESHOLD: f32 = 70.0;
 
 /// Represents the user's manual tab-color selection state.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,6 +237,21 @@ impl TabData {
         self.selected_color.resolve(self.default_directory_color)
     }
 
+    /// True when this tab's top-level name is not shown because it is a member of
+    /// a tab group rendered in vertical-tabs Panes view. In that layout the group
+    /// owns the container and only individual pane names are displayed, so
+    /// tab-level rename/reset should not be possible.
+    pub fn tab_name_hidden_in_grouped_pane_view(&self, ctx: &AppContext) -> bool {
+        self.group_id.is_some()
+            && uses_vertical_tabs(ctx)
+            && matches!(
+                *TabSettings::as_ref(ctx)
+                    .vertical_tabs_display_granularity
+                    .value(),
+                VerticalTabsDisplayGranularity::Panes
+            )
+    }
+
     /// Returns the menu items for the context menu on right mouse click.
     pub fn menu_items(
         &self,
@@ -265,6 +288,7 @@ impl TabData {
             self.pin_menu_items(index),
             self.tab_group_menu_items(index, tab_groups, is_only_member_of_group),
             self.session_sharing_menu_items(index, ctx),
+            self.copy_metadata_menu_items(pane_name_target, ctx),
             self.modify_tab_menu_items(index, tabs_len, pane_name_target, ctx),
             self.close_tab_menu_items(index, tabs_len, ctx),
             Self::save_config_menu_items(index),
@@ -347,6 +371,152 @@ impl TabData {
         menu_items
     }
 
+    /// The title to copy for a single pane row: the user's custom vertical-tabs
+    /// name when one is set, otherwise the pane's rendered title.
+    fn copyable_pane_title(
+        pane_group: &PaneGroup,
+        pane_id: PaneId,
+        ctx: &AppContext,
+    ) -> Option<String> {
+        pane_group.pane_by_id(pane_id).and_then(|pane| {
+            let configuration = pane.pane_configuration();
+            let configuration = configuration.as_ref(ctx);
+            let title = configuration
+                .custom_vertical_tabs_title()
+                .unwrap_or_else(|| configuration.title());
+            Self::copyable_metadata_value(Some(title.to_string()))
+        })
+    }
+
+    /// Metadata-copy entries for the tab context menu.
+    ///
+    /// Ported from `42effe840:app/src/tab.rs::copy_metadata_menu_items`. Three
+    /// surfaces share this builder, and each resolves a different subject:
+    ///
+    /// * **Horizontal tab bar** (`pane_name_target` is `None`, vertical tabs
+    ///   off) — only the tab title is meaningful there, so it is the single
+    ///   entry. This matches the oracle, which returns early for this case.
+    /// * **Vertical tabs, `Tabs` granularity** — the right-clicked row is a
+    ///   whole tab, so the title entry is the tab title and the git/pwd/PR
+    ///   values come from the targeted tab's terminal (the workspace passes
+    ///   `VerticalTabsPaneContextMenuTarget::ActivePane`, i.e. the tab's
+    ///   focused pane), falling back to the focused session.
+    /// * **Vertical tabs, `Panes` granularity** — the right-clicked row is a
+    ///   single pane (`VerticalTabsPaneContextMenuTarget::ClickedPane`), so the
+    ///   title entry is that pane's title and the other values come from that
+    ///   pane's terminal.
+    ///
+    /// Every value is read from local state — prompt context chips, the
+    /// terminal model's `pwd`, and the locally resolved `GitHubRepoModel` PR
+    /// URL. Nothing here reaches for a backend, an account or a shared session.
+    /// Entries whose value is missing or blank are omitted rather than rendered
+    /// as no-ops.
+    fn copy_metadata_menu_items(
+        &self,
+        pane_name_target: Option<PaneNameMenuTarget>,
+        ctx: &AppContext,
+    ) -> Vec<MenuItem<WorkspaceAction>> {
+        let pane_group = self.pane_group.as_ref(ctx);
+        let mut menu_items = vec![];
+        let tab_title = Self::copyable_metadata_value(Some(pane_group.display_title(ctx)));
+        if !uses_vertical_tabs(ctx) {
+            Self::push_copy_metadata_menu_item(
+                &mut menu_items,
+                crate::t!("menu-tab-copy-tab-title"),
+                tab_title,
+            );
+            return menu_items;
+        }
+
+        let vertical_tabs_display_granularity = *TabSettings::as_ref(ctx)
+            .vertical_tabs_display_granularity
+            .value();
+        let (title_label, title, terminal_view) = if matches!(
+            vertical_tabs_display_granularity,
+            VerticalTabsDisplayGranularity::Panes
+        ) {
+            // Guard on the pane group id: the workspace already rejects targets
+            // from another tab, but a stale target must not make this menu
+            // describe a pane that isn't in this tab.
+            let pane_id = pane_name_target
+                .filter(|target| self.pane_group.id() == target.locator.pane_group_id)
+                .and_then(|target| {
+                    pane_group
+                        .pane_by_id(target.locator.pane_id)
+                        .map(|_| target.locator.pane_id)
+                })
+                .unwrap_or_else(|| pane_group.focused_pane_id(ctx));
+            (
+                crate::t!("menu-tab-copy-pane-title"),
+                Self::copyable_pane_title(pane_group, pane_id, ctx),
+                pane_group.terminal_view_from_pane_id(pane_id, ctx),
+            )
+        } else {
+            let terminal_view = pane_name_target
+                .filter(|target| self.pane_group.id() == target.locator.pane_group_id)
+                .and_then(|target| {
+                    pane_group.terminal_view_from_pane_id(target.locator.pane_id, ctx)
+                })
+                .or_else(|| pane_group.focused_session_view(ctx));
+            (
+                crate::t!("menu-tab-copy-tab-title"),
+                tab_title,
+                terminal_view,
+            )
+        };
+
+        if let Some(terminal_view) = terminal_view {
+            let terminal_view = terminal_view.as_ref(ctx);
+            Self::push_copy_metadata_menu_item(
+                &mut menu_items,
+                crate::t!("menu-tab-copy-branch"),
+                Self::copyable_metadata_value(terminal_view.current_git_branch(ctx)),
+            );
+            Self::push_copy_metadata_menu_item(&mut menu_items, title_label, title);
+            Self::push_copy_metadata_menu_item(
+                &mut menu_items,
+                crate::t!("menu-tab-copy-working-directory"),
+                Self::copyable_metadata_value(
+                    terminal_view
+                        .pwd()
+                        .or_else(|| terminal_view.display_working_directory(ctx)),
+                ),
+            );
+            Self::push_copy_metadata_menu_item(
+                &mut menu_items,
+                crate::t!("menu-tab-copy-pull-request-link"),
+                Self::copyable_metadata_value(terminal_view.current_pull_request_url(ctx)),
+            );
+        } else {
+            // A non-terminal pane (editor, file viewer, ...) has no branch, pwd
+            // or PR to report, so only the title survives.
+            Self::push_copy_metadata_menu_item(&mut menu_items, title_label, title);
+        }
+
+        menu_items
+    }
+
+    /// Push a copy entry, skipping it entirely when there is nothing to copy.
+    fn push_copy_metadata_menu_item(
+        menu_items: &mut Vec<MenuItem<WorkspaceAction>>,
+        label: String,
+        value: Option<String>,
+    ) {
+        if let Some(value) = value {
+            menu_items.push(
+                MenuItemFields::new(label)
+                    .with_on_select_action(WorkspaceAction::CopyTextToClipboard(value))
+                    .into_item(),
+            );
+        }
+    }
+
+    /// Blank and whitespace-only metadata is treated as absent, so the menu
+    /// never offers an entry that would copy an empty string.
+    fn copyable_metadata_value(value: Option<String>) -> Option<String> {
+        value.filter(|value| !value.trim().is_empty())
+    }
+
     fn modify_tab_menu_items(
         &self,
         index: usize,
@@ -357,20 +527,27 @@ impl TabData {
         let mut menu_items = vec![];
         let uses_vertical_tabs = uses_vertical_tabs(ctx);
 
-        // TODO add option to show the keybinding once we figure out a nice API to retrieve
-        // the actual keybinding (based on the user's preferences etc.)
-        menu_items.append(&mut vec![MenuItemFields::new(crate::t!("menu-tab-rename"))
-            .with_on_select_action(WorkspaceAction::RenameTab(index))
-            .into_item()]);
-        // Group together with rename option (note, resetting doesn't make
-        // sense unless you're able to rename a tab).
-        let title = self.pane_group.as_ref(ctx).custom_title(ctx);
-        if title.is_some() {
-            menu_items.push(
-                MenuItemFields::new(crate::t!("menu-tab-reset-name"))
-                    .with_on_select_action(WorkspaceAction::ResetTabName(index))
+        // In Panes view the tab in a group has no visible top-level name (only pane
+        // rows are shown), so skip tab rename/reset and rely on the pane name
+        // items below instead.
+        if !self.tab_name_hidden_in_grouped_pane_view(ctx) {
+            // TODO add option to show the keybinding once we figure out a nice API to retrieve
+            // the actual keybinding (based on the user's preferences etc.)
+            menu_items.append(&mut vec![
+                MenuItemFields::new(crate::t!("menu-tab-rename"))
+                    .with_on_select_action(WorkspaceAction::RenameTab(index))
                     .into_item(),
-            );
+            ]);
+            // Group together with rename option (note, resetting doesn't make
+            // sense unless you're able to rename a tab).
+            let title = self.pane_group.as_ref(ctx).custom_title(ctx);
+            if title.is_some() {
+                menu_items.push(
+                    MenuItemFields::new(crate::t!("menu-tab-reset-name"))
+                        .with_on_select_action(WorkspaceAction::ResetTabName(index))
+                        .into_item(),
+                );
+            }
         }
         if let Some(pane_name_target) = pane_name_target {
             menu_items.extend(self.pane_name_menu_items(pane_name_target, ctx));
@@ -489,87 +666,14 @@ impl TabData {
         terminal_colors: AnsiColors,
     ) -> Vec<MenuItem<WorkspaceAction>> {
         if FeatureFlag::DirectoryTabColors.is_enabled() {
-            self.dot_color_option_menu_items(index, terminal_colors)
+            color_picker_menu_items(
+                self.color(),
+                terminal_colors,
+                ColorPickerTarget::Tab { tab_index: index },
+            )
         } else {
             self.legacy_color_option_menu_items(index, terminal_colors)
         }
-    }
-
-    /// New dot-based color picker: default (no-color) + color options.
-    /// Rendered as a single custom menu item with individually clickable dots.
-    fn dot_color_option_menu_items(
-        &self,
-        index: usize,
-        terminal_colors: AnsiColors,
-    ) -> Vec<MenuItem<WorkspaceAction>> {
-        let effective_color = self.color();
-        let mouse_states: Vec<MouseStateHandle> = (0..TAB_COLOR_OPTIONS.len() + 1)
-            .map(|_| MouseStateHandle::default())
-            .collect();
-
-        vec![MenuItem::Item(
-            MenuItemFields::new_with_custom_label(
-                Arc::new(move |_is_selected, _is_hovered, appearance, _app| {
-                    let theme = appearance.theme();
-                    let ring_color: ColorU = theme.accent().into();
-
-                    let mut row = Flex::row()
-                        .with_main_axis_alignment(MainAxisAlignment::SpaceEvenly)
-                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
-                        .with_main_axis_size(MainAxisSize::Max);
-
-                    for (ansi_id, mouse_state) in std::iter::once(None)
-                        .chain(TAB_COLOR_OPTIONS.iter().copied().map(Some))
-                        .zip(mouse_states.iter().cloned())
-                    {
-                        let is_selected = match ansi_id {
-                            None => effective_color.is_none(),
-                            Some(id) => effective_color == Some(id),
-                        };
-                        let dot_color: ColorU = match ansi_id {
-                            None => ColorU::transparent_black(),
-                            Some(id) => id.to_ansi_color(&terminal_colors).into(),
-                        };
-                        let tooltip = match ansi_id {
-                            None => crate::t!("menu-tab-default-no-color"),
-                            Some(id) => id.to_string(),
-                        };
-
-                        let dot = render_color_dot(
-                            mouse_state,
-                            dot_color,
-                            is_selected,
-                            ring_color,
-                            ansi_id.is_none(),
-                            theme.foreground(),
-                            tooltip,
-                            appearance,
-                        )
-                        .on_click(move |ctx, _, _| {
-                            if let Some(color) = ansi_id {
-                                ctx.dispatch_typed_action(WorkspaceAction::ToggleTabColor {
-                                    color,
-                                    tab_index: index,
-                                });
-                            } else if let Some(color) = effective_color {
-                                ctx.dispatch_typed_action(WorkspaceAction::ToggleTabColor {
-                                    color,
-                                    tab_index: index,
-                                });
-                            }
-                            ctx.dispatch_typed_action(MenuAction::Close(true));
-                        });
-
-                        row.add_child(dot.finish());
-                    }
-
-                    row.finish()
-                }),
-                None,
-            )
-            .no_highlight_on_hover()
-            .with_no_interaction_on_hover(),
-        )]
     }
 
     /// Legacy icon-based color picker with toggle behavior.
@@ -601,6 +705,101 @@ impl TabData {
                 .collect(),
         }]
     }
+}
+
+/// Identifies what a color-picker selection recolors: a single tab or a whole
+/// tab group. Used by [`color_picker_menu_items`] to choose the toggle action
+/// dispatched when a dot is clicked.
+#[derive(Clone, Copy)]
+pub(crate) enum ColorPickerTarget {
+    Tab { tab_index: usize },
+    Group { group_id: TabGroupId },
+}
+
+impl ColorPickerTarget {
+    fn toggle_action(self, color: AnsiColorIdentifier) -> WorkspaceAction {
+        match self {
+            ColorPickerTarget::Tab { tab_index } => {
+                WorkspaceAction::ToggleTabColor { color, tab_index }
+            }
+            ColorPickerTarget::Group { group_id } => {
+                WorkspaceAction::ToggleTabGroupColor { color, group_id }
+            }
+        }
+    }
+}
+
+/// Builds the shared dot-based color picker menu section (a single custom row)
+/// used by both the per-tab and per-group color selectors. The leading dot clears
+/// the color; the rest are the `TAB_COLOR_OPTIONS`. `current_color` drives the
+/// selected-dot ring and the clear dot's toggle-off; `target` selects which toggle
+/// action is dispatched on click, either tab or group color selection.
+pub(crate) fn color_picker_menu_items(
+    current_color: Option<AnsiColorIdentifier>,
+    terminal_colors: AnsiColors,
+    target: ColorPickerTarget,
+) -> Vec<MenuItem<WorkspaceAction>> {
+    let mouse_states: Vec<MouseStateHandle> = (0..TAB_COLOR_OPTIONS.len() + 1)
+        .map(|_| MouseStateHandle::default())
+        .collect();
+
+    vec![MenuItem::Item(
+        MenuItemFields::new_with_custom_label(
+            Arc::new(move |_is_selected, _is_hovered, appearance, _app| {
+                let theme = appearance.theme();
+                let ring_color: ColorU = theme.accent().into();
+
+                let mut row = Flex::row()
+                    .with_main_axis_alignment(MainAxisAlignment::SpaceEvenly)
+                    .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                    .with_main_axis_size(MainAxisSize::Max);
+
+                for (ansi_id, mouse_state) in std::iter::once(None)
+                    .chain(TAB_COLOR_OPTIONS.iter().copied().map(Some))
+                    .zip(mouse_states.iter().cloned())
+                {
+                    let is_selected = match ansi_id {
+                        None => current_color.is_none(),
+                        Some(id) => current_color == Some(id),
+                    };
+                    let dot_color: ColorU = match ansi_id {
+                        None => ColorU::transparent_black(),
+                        Some(id) => id.to_ansi_color(&terminal_colors).into(),
+                    };
+                    let tooltip = match ansi_id {
+                        None => crate::t!("menu-tab-default-no-color"),
+                        Some(id) => id.to_string(),
+                    };
+
+                    let dot = render_color_dot(
+                        mouse_state,
+                        dot_color,
+                        is_selected,
+                        ring_color,
+                        ansi_id.is_none(),
+                        theme.foreground(),
+                        tooltip,
+                        appearance,
+                    )
+                    .on_click(move |ctx, _, _| {
+                        if let Some(color) = ansi_id {
+                            ctx.dispatch_typed_action(target.toggle_action(color));
+                        } else if let Some(color) = current_color {
+                            ctx.dispatch_typed_action(target.toggle_action(color));
+                        }
+                        ctx.dispatch_typed_action(MenuAction::Close(true));
+                    });
+
+                    row.add_child(dot.finish());
+                }
+
+                row.finish()
+            }),
+            None,
+        )
+        .no_highlight_on_hover()
+        .with_no_interaction_on_hover(),
+    )]
 }
 
 /// Stores the state of the tab bar—info related to the entire list of tabs rather than any one
@@ -674,6 +873,10 @@ pub struct TabComponent<'a> {
     ///     flicker), and
     ///   * does not act as its own draggable / drop target.
     for_drag_ghost: bool,
+    /// Set when rendered as a member of a horizontal tab group.
+    grouped_member: bool,
+    /// Set when this member is the sole tab in its group.
+    sole_grouped_member: bool,
     /// Locator pointing at this tab's focused pane.
     locator: PaneViewLocator,
     /// True when this tab is part of a multi-tab (count > 1) selection. Drives
@@ -841,6 +1044,8 @@ impl<'a> TabComponent<'a> {
             is_drag_target,
             background_opacity,
             for_drag_ghost: false,
+            grouped_member: false,
+            sole_grouped_member: false,
             locator,
             is_in_multi_tab_selection: false,
         }
@@ -850,6 +1055,23 @@ impl<'a> TabComponent<'a> {
     /// cross-window tab drag overlay. See [`TabComponent::for_drag_ghost`].
     pub fn for_drag_ghost(mut self) -> Self {
         self.for_drag_ghost = true;
+        self
+    }
+
+    /// Marks this tab as a member of a horizontal tab group. See the
+    /// [`TabComponent`] `grouped_member` field for the rendering differences.
+    /// Pass `is_sole_member = true` when this is the only tab in its group so
+    /// the per-tab `Draggable` is suppressed and the parent group drag fires.
+    pub fn for_grouped_member(mut self, is_sole_member: bool) -> Self {
+        self.grouped_member = true;
+        self.sole_grouped_member = is_sole_member;
+        self
+    }
+
+    /// Overrides the effective color used to build tab styles. Used when the
+    /// tab's color should be driven by its group rather than its own data.
+    pub fn with_effective_color(mut self, color: Option<AnsiColorIdentifier>) -> Self {
+        self.styles = TabStyles::default(self.appearance, color);
         self
     }
 
@@ -1044,15 +1266,16 @@ impl<'a> TabComponent<'a> {
                         .set_border_width(0.),
                 )
                 .with_style(UiComponentStyles {
-                    margin: Some(Coords::default().top(
-                        if FeatureFlag::NewTabStyling.is_enabled() {
-                            // With the larger tabs in the new ui, we need to give the editor some extra top margin
-                            // to make it appear centered
-                            8.
-                        } else {
-                            3.
-                        },
-                    )),
+                    margin: Some(Coords::default().top(if self.grouped_member {
+                        // Reduce the top margin for grouped tabs to make it appear centered.
+                        2.
+                    } else if FeatureFlag::NewTabStyling.is_enabled() {
+                        // With the larger tabs in the new ui, we need to give the editor some extra top margin
+                        // to make it appear centered
+                        8.
+                    } else {
+                        3.
+                    })),
                     ..Default::default()
                 })
                 .build()
@@ -1079,9 +1302,13 @@ impl<'a> TabComponent<'a> {
         }
     }
 
-    fn render_close_tab_button(
+    /// Renders the close-button slot for the tab: the close button when
+    /// hovered, a pin when pinned (unless the tab is too narrow), or an empty
+    /// width-reserving placeholder otherwise.
+    fn render_close_button_or_pin_icon(
         &self,
         background: Option<Fill>,
+        is_narrow: bool,
         is_hovered: bool,
     ) -> Box<dyn Element> {
         let should_render = {
@@ -1152,6 +1379,26 @@ impl<'a> TabComponent<'a> {
                     ctx.dispatch_typed_action(WorkspaceAction::CloseTab(tab_index))
                 })
                 .finish()
+        } else if !is_narrow && self.show_pin_indicator() {
+            // Pinned: render the pin in the exact slot the close button uses so
+            // hovering swaps icons in place without changing the layout.
+            let theme = self.appearance.theme();
+            ConstrainedBox::new(
+                Align::new(
+                    ConstrainedBox::new(
+                        Icon::PinFilledDiagonal
+                            .to_warpui_icon(theme.main_text_color(theme.background()))
+                            .finish(),
+                    )
+                    .with_width(TAB_PIN_INDICATOR_ICON_SIZE)
+                    .with_height(TAB_PIN_INDICATOR_ICON_SIZE)
+                    .finish(),
+                )
+                .finish(),
+            )
+            .with_width(ICON_DIMENSIONS)
+            .with_height(ICON_DIMENSIONS)
+            .finish()
         } else {
             ConstrainedBox::new(Empty::new().finish())
                 .with_width(ICON_DIMENSIONS)
@@ -1163,6 +1410,13 @@ impl<'a> TabComponent<'a> {
             SavePosition::new(button, &format!("close_tab_button:{}", self.tab_index)).finish(),
         )
         .finish()
+    }
+
+    /// True when this tab should display the pinned indicator in its close-
+    /// button slot: pinning is enabled, the tab is pinned, and it isn't a
+    /// grouped member (groups render their own pin).
+    fn show_pin_indicator(&self) -> bool {
+        FeatureFlag::PinnedTabs.is_enabled() && self.tab.pinned && !self.grouped_member
     }
 
     fn render_indicator(&self) -> Option<Box<dyn Element>> {
@@ -1306,11 +1560,10 @@ impl<'a> TabComponent<'a> {
                     60
                 } else if is_in_multi_tab_selection {
                     // Multi-selected (but not hovered): brighter than the resting
-                    // tint. Warp steps this up further for a tab rendered as a
-                    // member of a horizontal tab group, which sits on the group's
-                    // color backdrop; that group rendering is a #108 follow-up, so
-                    // every tab here is an ungrouped-looking row.
-                    30
+                    // tint. A grouped member sits on the group's color backdrop,
+                    // so it needs a bigger step to read as selected against it;
+                    // at rest it just shows its own color over that backdrop.
+                    if self.grouped_member { 55 } else { 30 }
                 } else if is_hovered {
                     40
                 } else {
@@ -1375,7 +1628,7 @@ impl<'a> TabComponent<'a> {
             (bg, border)
         };
 
-        let full_tab_content = {
+        let build_full_content = |reserve_pin_space: bool| -> Box<dyn Element> {
             let mut flex_row = Flex::row()
                 .with_main_axis_size(MainAxisSize::Max)
                 .with_main_axis_alignment(MainAxisAlignment::Center)
@@ -1391,9 +1644,21 @@ impl<'a> TabComponent<'a> {
                 )
                 .finish(),
             );
-            Container::new(flex_row.finish())
-                .with_horizontal_padding(8.)
-                .finish()
+            // Equal padding on both sides so the title stays centered; the pin
+            // vanishes before it can reach the title.
+            let horizontal_padding = if reserve_pin_space {
+                TAB_PINNED_CONTENT_HORIZONTAL_PADDING
+            } else {
+                8.
+            };
+            let mut container =
+                Container::new(flex_row.finish()).with_horizontal_padding(horizontal_padding);
+            // Pad inside the Stack so the close-button overlay (anchored to
+            // the Stack) stays vertically centered within the visible pill.
+            if self.grouped_member {
+                container = container.with_vertical_padding(5.);
+            }
+            container.finish()
         };
 
         let compact_icon = {
@@ -1483,11 +1748,13 @@ impl<'a> TabComponent<'a> {
                 )
             };
 
-        let build_close_button_overlay = |is_hovered: bool| {
+        let build_close_button_overlay = |is_narrow: bool, is_hovered: bool| {
             Container::new(
-                ConstrainedBox::new(
-                    self.render_close_tab_button(Some(close_button_background), is_hovered),
-                )
+                ConstrainedBox::new(self.render_close_button_or_pin_icon(
+                    Some(close_button_background),
+                    is_narrow,
+                    is_hovered,
+                ))
                 .with_width(TAB_CLOSE_BUTTON_WIDTH)
                 .with_height(TAB_CLOSE_BUTTON_WIDTH)
                 .finish(),
@@ -1495,23 +1762,28 @@ impl<'a> TabComponent<'a> {
             .finish()
         };
 
-        let mut full_stack = Stack::new().with_child(full_tab_content);
-        full_stack.add_positioned_child(
-            build_close_button_overlay(is_hovered),
-            OffsetPositioning::offset_from_parent(
-                vec2f(horizontal_inset, 0.0),
-                ParentOffsetBounds::ParentByPosition,
-                parent_anchor,
-                child_anchor,
-            ),
-        );
+        let build_full_stack = |is_narrow: bool| {
+            let reserve_pin_space = self.show_pin_indicator() && !is_narrow;
+            let mut full_stack = Stack::new().with_child(build_full_content(reserve_pin_space));
+            full_stack.add_positioned_child(
+                build_close_button_overlay(is_narrow, is_hovered),
+                OffsetPositioning::offset_from_parent(
+                    vec2f(horizontal_inset, 0.0),
+                    ParentOffsetBounds::ParentByPosition,
+                    parent_anchor,
+                    child_anchor,
+                ),
+            );
+            full_stack.finish()
+        };
 
         let mut compact_stack = Stack::new().with_child(compact_tab_content);
         // Only show the close button on the active tab for narrow width
         // to prevent accidental clicks
         if self.is_active_tab() {
             compact_stack.add_positioned_child(
-                build_close_button_overlay(is_hovered),
+                // Compact tabs are too narrow to show a pin icon.
+                build_close_button_overlay(true, is_hovered),
                 OffsetPositioning::offset_from_parent(
                     vec2f(horizontal_inset, 0.0),
                     ParentOffsetBounds::ParentByPosition,
@@ -1520,15 +1792,62 @@ impl<'a> TabComponent<'a> {
                 ),
             );
         }
+        let compact_stack = compact_stack.finish();
 
-        let stack = SizeConstraintSwitch::new(
-            full_stack.finish(),
-            vec![(
-                SizeConstraintCondition::WidthLessThan(COMPACT_TAB_WIDTH_THRESHOLD),
-                compact_stack.finish(),
-            )],
-        )
-        .finish();
+        let stack = if self.show_pin_indicator() {
+            // There are three cases here that conditionally render based on tab size:
+            // 1. The original tab container (displays tab name and pin icon if pinned)
+            // 2. A narrow tab container (hides pin icon)
+            // 3. A very narrow tab container (displays tab icon only)
+            SizeConstraintSwitch::new(
+                build_full_stack(false),
+                vec![
+                    (
+                        SizeConstraintCondition::WidthLessThan(COMPACT_TAB_WIDTH_THRESHOLD),
+                        compact_stack,
+                    ),
+                    (
+                        SizeConstraintCondition::WidthLessThan(TAB_PIN_VANISH_THRESHOLD),
+                        build_full_stack(true),
+                    ),
+                ],
+            )
+            .finish()
+        } else {
+            SizeConstraintSwitch::new(
+                build_full_stack(false),
+                vec![(
+                    SizeConstraintCondition::WidthLessThan(COMPACT_TAB_WIDTH_THRESHOLD),
+                    compact_stack,
+                )],
+            )
+            .finish()
+        };
+
+        // Grouped member: inset rounded highlight, no side dividers. It still
+        // gets its own drop target so a dragged pane can land at this member's
+        // slot (and the member highlights while hovered).
+        if self.grouped_member {
+            let highlight = Container::new(stack)
+                .with_background(background_color)
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(8.0)))
+                .finish();
+            let member = Container::new(highlight)
+                .with_vertical_padding(3.)
+                .with_horizontal_padding(3.)
+                .finish();
+            return if self.for_drag_ghost {
+                member
+            } else {
+                DropTarget::new(
+                    member,
+                    TabBarDropTargetData {
+                        tab_bar_location: TabBarLocation::TabIndex(self.tab_index),
+                    },
+                )
+                .finish()
+            };
+        }
 
         let mut tab = Container::new(stack)
             .with_vertical_padding(2.)
@@ -1596,6 +1915,7 @@ impl UiComponent for TabComponent<'_> {
         let mouse_close_state = self.tab.close_mouse_state.clone();
         // Capture before `self` is moved into the Hoverable closure below.
         let for_drag_ghost = self.for_drag_ghost;
+        let sole_grouped_member = self.sole_grouped_member;
         let locator = self.locator;
         let is_in_multi_tab_selection = self.is_in_multi_tab_selection;
 
@@ -1812,7 +2132,17 @@ impl UiComponent for TabComponent<'_> {
         // position cache, breaking `tab_insertion_index_for_cursor`.
         let full_tab: Box<dyn Element> = if for_drag_ghost {
             constrained_tab
+        } else if sole_grouped_member {
+            // Sole member of a group: skip the per-tab `Draggable` so the
+            // parent group's `Draggable` picks up the drag instead. Dragging
+            // the only member of a group drags the entire group, preventing
+            // accidental orphaning. Keep `SavePosition` so hit-testing /
+            // neighbor-rect math still works.
+            SavePosition::new(constrained_tab, &tab_position_id(tab_index)).finish()
         } else {
+            // Grouped members use the same `Draggable` wrapper as regular tabs
+            // so dragging fires `DragTab`; the workspace's `on_tab_drag`
+            // handles cross-group reassignment.
             let draggable = Draggable::new(draggable_state, constrained_tab)
                 .on_drag_start(|ctx, _, _| ctx.dispatch_typed_action(WorkspaceAction::StartTabDrag))
                 .on_drag(move |ctx, _, rect, _| {

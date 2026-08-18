@@ -14,6 +14,7 @@ pub(super) mod util;
 
 // Re-export types that were moved to the ai crate.
 pub use ai::agent::{action::*, action_result::*, AIAgentCitation, FileLocations};
+use warp_core::channel::ChannelState;
 use warp_core::features::FeatureFlag;
 
 #[cfg(test)]
@@ -115,6 +116,28 @@ pub enum CancellationReason {
     AgentExitedShell,
 }
 
+/// How a [`CancellationReason`] maps to the conversation's resulting status.
+/// This is the single source of truth consumed by the stream- and
+/// action-cancellation machinery; see [`CancellationReason::conversation_outcome`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancellationOutcome {
+    /// Leave the conversation `InProgress`; it will continue on its own (a
+    /// follow-up request or a resumed long-running command) without further user
+    /// input.
+    KeepInProgress,
+    /// Finalize the conversation as a successful completion (`Success`).
+    Succeeded,
+    /// Finalize the conversation as a user cancellation (`Cancelled`).
+    Cancelled,
+    /// Terminal, but a dedicated path (not the cancellation machinery) writes the
+    /// status — the cancellation is only a stop signal and must not stamp a status.
+    /// Currently used for shell exit, which is finalized as `Error` by
+    /// `BlocklistAIController::fail_conversation_due_to_shell_exit`. Unlike
+    /// `KeepInProgress`, the conversation is ending; only the status write is
+    /// suppressed.
+    FinalizedExternally,
+}
+
 impl Display for CancellationReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -151,16 +174,41 @@ impl CancellationReason {
         matches!(self, CancellationReason::Reverted)
     }
 
-    pub fn is_lrc_command_completed(&self) -> bool {
-        matches!(self, CancellationReason::OptimisticCLISubagentCompletion)
-    }
-
-    /// The shell died under the agent; `fail_conversation_due_to_shell_exit` finalizes
-    /// this as a terminal `Error` directly, so the cancellation machinery
-    /// (`AIConversation::mark_request_cancelled`) must not stamp a `Cancelled` status
-    /// over it.
-    pub fn is_agent_exited_shell(&self) -> bool {
-        matches!(self, CancellationReason::AgentExitedShell)
+    /// How a cancellation reason maps to the conversation's resulting status.
+    /// Every site that finalizes a cancelled stream or action consults this
+    /// instead of re-deriving the disposition, so the reason -> status mapping
+    /// lives in one exhaustive place.
+    ///
+    /// Note that sometimes the action result is treated as authoritative for
+    /// determining conversation status even when there is a cancellation reason
+    /// (taking priority over this).
+    ///
+    /// Ported from the pin (`42effe840:app/src/ai/agent/mod.rs:191`). The pin's
+    /// `AutomaticCloudHandoff` and `CLISubagentUserTakeover` variants do not
+    /// exist in this fork, so they are absent here rather than resurrected.
+    pub fn conversation_outcome(&self) -> CancellationOutcome {
+        match self {
+            // The conversation continues without further user input (a follow-up
+            // request drives it forward), so its status must stay InProgress.
+            CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: true,
+            } => CancellationOutcome::KeepInProgress,
+            // A long-running command finishing (optimistically) or a revert are
+            // successful completions rather than cancellations.
+            CancellationReason::OptimisticCLISubagentCompletion | CancellationReason::Reverted => {
+                CancellationOutcome::Succeeded
+            }
+            // The shell died under the agent; `fail_conversation_due_to_shell_exit`
+            // finalizes this as a terminal `Error` directly, so the cancellation
+            // machinery must not stamp a status over it.
+            CancellationReason::AgentExitedShell => CancellationOutcome::FinalizedExternally,
+            CancellationReason::ManuallyCancelled
+            | CancellationReason::UserCommandExecuted
+            | CancellationReason::Deleted
+            | CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: false,
+            } => CancellationOutcome::Cancelled,
+        }
     }
 }
 
@@ -737,6 +785,14 @@ impl RenderableAIError {
                 ..
             }
         )
+    }
+
+    /// Whether the failed-output UI should be suppressed while an automatic resume is in
+    /// flight. Release builds stay quiet so transient blips that recover on their own
+    /// don't surface an alarming error; dogfood builds (Local/Dev) keep the old, more
+    /// aggressive behavior so developers still see every transport failure.
+    pub fn should_suppress_during_recovery(&self) -> bool {
+        self.will_attempt_resume() && !ChannelState::channel().is_dogfood()
     }
 }
 

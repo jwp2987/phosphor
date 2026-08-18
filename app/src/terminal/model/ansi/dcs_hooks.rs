@@ -77,15 +77,28 @@ pub(super) enum DProtoHook {
     FinishUpdate {
         value: FinishUpdateValue,
     },
+    // The next three hooks are this fork's own tmux-warpification extensions and are the only
+    // ones that carry `session_id` as a *sibling* of `value` rather than inside it. Their
+    // emitters are the remote-side scripts in `app/assets/bundled/ssh/`, which share one `_log`
+    // helper that wraps an already-formed `value` -- and one of those values
+    // (`WarpificationUnavailableReason`) is an externally tagged enum with no room for an extra
+    // key. A sibling field lets all three emitters add the ID with the same 18 bytes of format
+    // string, which is what makes it fit under the macOS 1020-byte pty limit (#532).
     RemoteWarpificationIsUnavailable {
         // If a value is provided, it's suggesting a way to install TMUX on the remote.
         value: WarpificationUnavailableReason,
+        #[serde(default)]
+        session_id: HookSessionId,
     },
     SshTmuxInstaller {
         value: String,
+        #[serde(default)]
+        session_id: HookSessionId,
     },
     TmuxInstallFailed {
         value: TmuxInstallFailedInfo,
+        #[serde(default)]
+        session_id: HookSessionId,
     },
     ExitShell {
         value: ExitShellValue,
@@ -118,30 +131,34 @@ impl DProtoHook {
     }
 
     /// Extracts the session_id from whichever variant carries one. Returns `None` for hook
-    /// types that don't (yet) include a session_id field -- see #419 for the remaining variants
-    /// (`CommandFinished`, `Preexec`, `Bootstrapped`, `PreInteractiveSSHSession`, `SSH`,
-    /// `InputBuffer`, `Clear`, `InitSubshell`, `FinishUpdate`, and the fork-only SSH bootstrap
-    /// hooks) that still need a `session_id` field threaded through their value structs and every
-    /// call site that constructs them.
+    /// types that don't include a session_id field.
+    ///
+    /// `SourcedRcFileForWarp` is now the only variant that never carries one (see
+    /// `requires_registered_session`). The three fork-only tmux-warpification hooks
+    /// (`RemoteWarpificationIsUnavailable`, `SshTmuxInstaller`, `TmuxInstallFailed`) run on the
+    /// *remote* host before any Warp session exists there, so they cannot mint an ID -- instead
+    /// the client bakes one it already registered into the script before it reaches the pty, via
+    /// `SESSION_ID_PLACEHOLDER` in `app/assets/bundled/ssh/` (#532). They read it from a sibling
+    /// field rather than from `value`; see the comment on the variants above.
     pub fn session_id(&self) -> Option<SessionId> {
         match self {
             DProtoHook::InitShell { value } => Some(value.session_id),
             DProtoHook::Precmd { value } => value.session_id().map(SessionId::from),
             DProtoHook::ExitShell { value } => Some(value.session_id),
-            DProtoHook::CommandFinished { .. }
-            | DProtoHook::Preexec { .. }
-            | DProtoHook::Bootstrapped { .. }
-            | DProtoHook::PreInteractiveSSHSession { .. }
-            | DProtoHook::SSH { .. }
-            | DProtoHook::InputBuffer { .. }
-            | DProtoHook::Clear { .. }
-            | DProtoHook::InitSubshell { .. }
-            | DProtoHook::FinishUpdate { .. }
-            | DProtoHook::InitSsh { .. }
-            | DProtoHook::RemoteWarpificationIsUnavailable { .. }
-            | DProtoHook::SshTmuxInstaller { .. }
-            | DProtoHook::TmuxInstallFailed { .. }
-            | DProtoHook::SourcedRcFileForWarp { .. } => None,
+            DProtoHook::Preexec { value } => value.session_id.map(SessionId::from),
+            DProtoHook::CommandFinished { value } => value.session_id.map(SessionId::from),
+            DProtoHook::Bootstrapped { value } => value.session_id.map(SessionId::from),
+            DProtoHook::InputBuffer { value } => value.session_id.map(SessionId::from),
+            DProtoHook::Clear { value } => value.session_id.map(SessionId::from),
+            DProtoHook::FinishUpdate { value } => value.session_id.map(SessionId::from),
+            DProtoHook::PreInteractiveSSHSession { value } => value.session_id.map(SessionId::from),
+            DProtoHook::SSH { value } => value.session_id.map(SessionId::from),
+            DProtoHook::InitSubshell { value } => value.session_id.map(SessionId::from),
+            DProtoHook::InitSsh { value } => value.session_id.map(SessionId::from),
+            DProtoHook::RemoteWarpificationIsUnavailable { session_id, .. }
+            | DProtoHook::SshTmuxInstaller { session_id, .. }
+            | DProtoHook::TmuxInstallFailed { session_id, .. } => session_id.map(SessionId::from),
+            DProtoHook::SourcedRcFileForWarp { .. } => None,
         }
     }
 
@@ -154,8 +171,9 @@ impl DProtoHook {
     /// `SshTmuxInstaller`, `TmuxInstallFailed`) don't exist in the pin at all; they're this fork's
     /// own SSH-wrapper extensions. They're classified `true` here for the same reason the pin
     /// classifies every other session-bootstrap/lifecycle hook `true`: they mutate session state
-    /// in response to PTY-supplied data, so they belong on the "must be validated" side once
-    /// `session_id` is threaded through them (#419).
+    /// in response to PTY-supplied data (#419). All four now carry a `session_id` the client
+    /// minted and registered before the emitting script reached the pty, so the classification
+    /// costs nothing in practice (#532).
     pub fn requires_registered_session(&self) -> bool {
         match self {
             DProtoHook::CommandFinished { .. }
@@ -220,9 +238,11 @@ impl DProtoHook {
             }),
             "SshTmuxInstaller" => Some(DProtoHook::SshTmuxInstaller {
                 value: Default::default(),
+                session_id: Default::default(),
             }),
             "TmuxInstallFailed" => Some(DProtoHook::TmuxInstallFailed {
                 value: Default::default(),
+                session_id: Default::default(),
             }),
             "ExitShell" => Some(DProtoHook::ExitShell {
                 value: Default::default(),
@@ -255,6 +275,7 @@ impl DProtoHook {
                 "next_block_id" => {
                     value.completion_metadata.next_block_id = v.to_string().into();
                 }
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field to CommandFinished");
                 }
@@ -340,6 +361,7 @@ impl DProtoHook {
                 "wsl_name" => {
                     value.wsl_name = map_empty_to_none(v);
                 }
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to Bootstrapped hook");
                 }
@@ -348,17 +370,22 @@ impl DProtoHook {
                 "command" => {
                     value.command = v;
                 }
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to Preexec hook");
                 }
             },
-            DProtoHook::Clear { .. } => {
-                log::warn!("Tried to add unknown field {key} to Clear hook");
-            }
+            DProtoHook::Clear { value } => match key.as_ref() {
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to Clear hook");
+                }
+            },
             DProtoHook::FinishUpdate { value } => match key.as_ref() {
                 "update_id" => {
                     value.update_id = v;
                 }
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to FinishUpdate hook");
                 }
@@ -367,8 +394,35 @@ impl DProtoHook {
                 "buffer" => {
                     value.buffer = v;
                 }
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
                 _ => {
                     log::warn!("Tried to add unknown field {key} to InputBuffer hook");
+                }
+            },
+            DProtoHook::PreInteractiveSSHSession { value } => match key.as_ref() {
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to PreInteractiveSSHSession hook");
+                }
+            },
+            DProtoHook::SSH { value } => match key.as_ref() {
+                "socket_path" => value.socket_path = v.into(),
+                "remote_shell" => value.remote_shell = v,
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                "remote_session_id" => value.remote_session_id = v.parse::<u64>().ok(),
+                "external_control_master" => {
+                    value.external_control_master = v.parse::<bool>().unwrap_or(false)
+                }
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to SSH hook");
+                }
+            },
+            DProtoHook::InitSubshell { value } => match key.as_ref() {
+                "shell" => value.shell = v,
+                "uname" => value.uname = map_empty_to_none(v),
+                "session_id" => value.session_id = v.parse::<u64>().ok(),
+                _ => {
+                    log::warn!("Tried to add unknown field {key} to InitSubshell hook");
                 }
             },
             DProtoHook::ExitShell { value } => match key.as_ref() {
@@ -454,6 +508,8 @@ pub struct CompletionMetadata {
 pub struct CommandFinishedValue {
     #[serde(flatten)]
     pub completion_metadata: CompletionMetadata,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Payload with completion metadata received from the pty at precmd.
@@ -660,12 +716,17 @@ pub struct PreexecValue {
     /// include up to the first job control indicator, e.g. '|', '&&'). This is due to a
     /// shortcoming of the bash_preexec library we use to simulate preexec hooks in bash.
     pub command: String,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Received from the pty after the shell has finished executing Zap's
 /// bootstrap script.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct BootstrappedValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+
     #[serde(deserialize_with = "empty_string_is_none")]
     pub histfile: Option<String>,
 
@@ -767,7 +828,10 @@ fn parse_float_from_string(s: String) -> Option<OrderedFloat<f64>> {
 /// Received from the pty when Zap's SSH wrapper is executed, prior to
 /// bootstrapping the SSH session.
 #[derive(Debug, Default, PartialEq, Eq, Deserialize, Serialize, Clone)]
-pub struct PreInteractiveSSHSessionValue {}
+pub struct PreInteractiveSSHSessionValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+}
 
 /// Received from the pty after establishing an SSH connection, prior to
 /// bootstrapping the session.
@@ -775,6 +839,14 @@ pub struct PreInteractiveSSHSessionValue {}
 pub struct SSHValue {
     pub socket_path: PathBuf,
     pub remote_shell: String,
+    #[serde(default)]
+    pub session_id: HookSessionId,
+    /// The session ID the *local* wrapper minted for the remote shell and baked into its
+    /// `WARP_SESSION_ID`. It reaches us on this hook -- emitted by the already-registered
+    /// local session -- so the client can register it before the remote shell writes
+    /// anything back. See `TerminalModel::ssh`.
+    #[serde(default)]
+    pub remote_session_id: HookSessionId,
     /// `true` when `socket_path` points at a ControlMaster the user already
     /// had running (the SSH wrapper attached to it instead of creating its
     /// own). Warp must not tear down such a master on session exit. Defaults
@@ -809,6 +881,8 @@ pub struct InitShellValue {
 pub struct InitSshValue {
     pub shell: String,
     pub uname: Option<String>,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Emitted as part of the tmux bootstrapping process.
@@ -816,6 +890,8 @@ pub struct InitSshValue {
 pub struct InitSubshellValue {
     pub shell: String,
     pub uname: Option<String>,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Emitted by a snippet included in the user's RC file, which signals a new session is being
@@ -837,18 +913,25 @@ pub struct SourcedRcFileForWarpValue {
 #[derive(Debug, Default, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct InputBufferValue {
     pub buffer: String,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Received from the pty when the terminal screen should be cleared (e.g. via
 /// the `clear` command or ctrl-l).
 #[derive(Debug, Default, Deserialize, Serialize)]
-pub struct ClearValue {}
+pub struct ClearValue {
+    #[serde(default)]
+    pub session_id: HookSessionId,
+}
 
 /// Received from the pty when warp_finish_update is called at the end of an
 /// assisted auto-update.
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct FinishUpdateValue {
     pub update_id: String,
+    #[serde(default)]
+    pub session_id: HookSessionId,
 }
 
 /// Received from the pty right before the remote shell exits (via `exit`,

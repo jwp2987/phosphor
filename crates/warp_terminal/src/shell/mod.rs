@@ -632,7 +632,20 @@ impl ShellType {
                 // this will print one item per line. However, when it is converted to a string,
                 // it will join the entries together with a space. So to make sure we get one item
                 // per line, we explicitly join the results with a newline.
-                "Get-Command -CommandType Application | Select-Object -ExpandProperty Name"
+                //
+                // We then write that joined text to stdout as explicit UTF-8 bytes rather than
+                // letting PowerShell encode it with the machine's active code page. On a
+                // localized Windows install (say GBK with Chinese executable names) the code-page
+                // bytes are not valid UTF-8, `CommandOutput::to_string` fails, and
+                // `executables_from_shell_command_output` discards the *entire* list — after
+                // which every valid command keeps rendering as unknown for the life of the
+                // session. Matches `shell_command_to_get_all_functions` /
+                // `shell_command_to_get_all_builtins` below, which write stdout the same way.
+                "$names = Get-Command -CommandType Application | \
+                Select-Object -ExpandProperty Name; \
+                $text = [string]::Join([Environment]::NewLine, $names); \
+                $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($text); \
+                [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"
             }
         }
     }

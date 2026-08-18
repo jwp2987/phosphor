@@ -1,0 +1,832 @@
+305 commits total
+...0
+...40
+...60
+...80
+...100
+...120
+...140
+...160
+...180
+...200
+...220
+...240
+...260
+...300
+DONE
+SOME	02b53fcd8	Remove process-global current team APIs (#14393)
+    MISSING [app/src/search/command_search/view.rs]: cloud_workflows_data_source(window_id),
+    MISSING [app/src/search/command_search/workflows/cloud_workflows_data_source.rs]: pub fn cloud_workflows_data_source(
+SOME	e712486bd	feat(tui): dedicated /status menu with shared read-only structure (extend shortcuts) (#14281)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const STATUS: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: for settings_mode in [settings::SettingsMode::Gui, settings::SettingsMode::Tui] {
+ALL	222903cb4	fix(markdown): strip HTML comments instead of rendering them as text (#14009)
+NONE	eef504ac8	add grok sub byok support for TUI (#14420)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: .is_some_and(|hint| hint.split('|').any(|provider| provider == "grok"))
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: .is_some_and(|hint| hint.split('|').any(|provider| provider == "grok"))
+SOME	633a8f17e	Replace Oz armadillo icon with white Warp logo app-wide (#14344)
+    MISSING [app/src/search/command_search/warp_ai.rs]: UIIcon::Agent
+    MISSING [app/src/tab_configs/session_config.rs]: SessionType::Oz => Icon::Agent,
+    MISSING [app/src/ui_components/icon_with_status.rs]: WarpIcon::Agent.to_warpui_icon(glyph_color).finish(),
+    MISSING [crates/onboarding/src/bin/main.rs]: icon: Icon::Agent,
+    MISSING [crates/onboarding/src/slides/intention_slide.rs]: for (i, icon) in [Icon::Agent, Icon::ClaudeLogo, Icon::OpenAILogo]
+SOME	62d87d7d2	feat(tui): add /clear slash command as alias for /new and /agent (#14421)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const CLEAR: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn clear_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: all_commands(settings::SettingsMode::Tui)
+SOME	a376af915	Add shell commands to the TUI up-arrow history menu (CODE-1906) (#14192)
+    MISSING [app/src/persistence/mod.rs]: fn command_history(self) -> bool {
+    MISSING [app/src/persistence/mod.rs]: PersistedDataScope::Full | PersistedDataScope::TuiFrontend
+    MISSING [app/src/persistence/sqlite.rs]: let commands = if data_scope.command_history() {
+    MISSING [app/src/persistence/sqlite.rs]: let user_profiles = if data_scope.gui_only_data() {
+    MISSING [app/src/persistence/sqlite_tests.rs]: BlockCompleted, ModelEvent, PersistedDataScope, PersistenceScope, StartedCommandMetadata,
+NONE	a9099599e	Add support for BYOK in the TUI (#14333)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const ADD_API_KEY: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/add-api-key",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn add_api_key_command_is_tui_only_and_requires_a_provider() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: let command = all_commands(settings::SettingsMode::Tui)
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: ClearApiKey,
+SOME	f5eb1885a	Expand TUI statusline item catalog (#14257)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const STATUSLINE: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn statusline_command_is_always_available_only_in_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: let command = all_commands(settings::SettingsMode::Tui)
+NONE	da06b312c	feat(tui): add local-to-cloud handoff (#14208)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: supported_surfaces: SlashCommandSurfaces::GuiAndTui {
+NOFILES/TRIVIAL	e172e78df	Enable API key login across Warp channels (#14338)
+SOME	f9a55792e	[MCP] Add well-known MCP type (#13792)
+    MISSING [crates/warp_cli/src/mcp.rs]: WellKnown(String),
+    MISSING [crates/warp_cli/src/mcp.rs]: pub fn is_well_known_mcp_id(s: &str) -> bool {
+    MISSING [crates/warp_cli/src/mcp_tests.rs]: other => panic!("Expected Uuid variant, got {other:?}"),
+    MISSING [crates/warp_cli/src/mcp_tests.rs]: fn test_parse_well_known_integration_id() {
+SOME	30aa7e973	CLI: expose named-agent prompt in oz agent create/update (REMOTE-2309) (#14261)
+    MISSING [crates/warp_cli/src/agent.rs]: #[arg(long = "prompt", value_name = "TEXT")]
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn agent_update_rejects_prompt_and_remove_prompt() {
+SOME	063ed013a	add light,dark, and auto themes (#14265)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const THEME: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn theme_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: let tui_commands = all_commands(settings::SettingsMode::Tui);
+NONE	11590c3a8	Run gcloud auth login during GCP provider setup (#14132)
+    MISSING [crates/managed_secrets/src/gcp.rs]: pub fn config_file_path(&self) -> &Path {
+    MISSING [crates/managed_secrets/src/gcp.rs]: self.config_file.path()
+    MISSING [crates/managed_secrets/src/gcp_tests.rs]: GcpCredentials, GcpFederationConfig, PrepareGcpCredentialsError, generate_gcp_credential_config,
+    MISSING [crates/managed_secrets/src/gcp_tests.rs]: fn config_file_path_matches_application_credentials_env_var() {
+NONE	161dd1e51	Quote worktree path in generated tab-config commands (fixes #11144) (#14296)
+    MISSING [app/src/tab_configs/session_config.rs]: "git worktree add -b {autogenerated_branch_name} \"{worktree_path}\""
+    MISSING [app/src/tab_configs/session_config.rs]: commands.push(format!("cd \"{worktree_path}\""));
+    MISSING [app/src/tab_configs/session_config_tests.rs]: "git worktree add -b {{{{worktree_branch_name}}}} \"{expected_worktree_path}\""
+    MISSING [app/src/tab_configs/session_config_tests.rs]: format!("cd \"{expected_worktree_path}\""),
+    MISSING [app/src/tab_configs/tab_config.rs]: "git worktree add -b {worktree_branch_name} \"{worktree_path}\" {base_branch}"
+    MISSING [app/src/tab_configs/tab_config.rs]: Value::String(format!("cd \"{worktree_path}\"")),
+    MISSING [app/src/tab_configs/tab_config_tests.rs]: "git worktree add -b obsidian-hawk \"{}\" main",
+    MISSING [app/src/tab_configs/tab_config_tests.rs]: "cd \"{}\"",
+SOME	c0ad83627	Add Vim indent/dedent operators (< and >) to the code editor (#14268)
+    MISSING [app/src/editor/view/mod.rs]: let include_newline = operator.includes_trailing_newline();
+    MISSING [app/src/editor/view/mod.rs]: let include_newline = operator.includes_trailing_newline();
+    MISSING [app/src/editor/view/model/mod.rs]: let include_newline = operator.includes_trailing_newline();
+    MISSING [app/src/editor/view/model/mod.rs]: let include_newline = operator.includes_trailing_newline();
+SOME	89f742fa6	add validation to keep secrets under 128kb (#14219)
+    MISSING [crates/managed_secrets/src/manager.rs]: value.validate_field_sizes(&name)?;
+    MISSING [crates/managed_secrets/src/manager.rs]: if let Some(v) = &value {
+SOME	d30abae5d	feat: ship TUI voice input slash command (CODE-1884) (#14089)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const VOICE: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/voice",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn voice_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: all_commands(settings::SettingsMode::Tui)
+NONE	f7e9d2830	add version command (#14169)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const VERSION: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/version",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn version_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: all_commands(settings::SettingsMode::Tui)
+NOFILES/TRIVIAL	e24f75b21	[Oz CLI] Support --model flag with --harness claude/codex (#14011)
+SOME	5b8a3758e	Add account-first onboarding (flag-gated): pre-auth flow, offer UI, and post-auth routing (#14075)
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: IntroSlide, IntroSlideEvent, OfferSlide, OfferSlideEvent, OfferVariant, OnboardingModelInfo,
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: OnboardingSlide, ProjectSlide, ThemePickerSlide, ThemePickerSlideEvent, ThirdPartySlide,
+    MISSING [crates/onboarding/src/lib.rs]: pub use slides::{OfferVariant, ProjectOnboardingSettings};
+    MISSING [crates/onboarding/src/model.rs]: AgentAutonomy, AgentDevelopmentSettings, OfferVariant, OnboardingModelInfo,
+    MISSING [crates/onboarding/src/model_tests.rs]: add_model(app)
+    MISSING [crates/onboarding/src/model_tests.rs]: fn add_model(app: &mut App) -> ModelHandle<OnboardingStateModel> {
+    MISSING [crates/onboarding/src/slides/ai_access_slide.rs]: Border, ClippedScrollStateHandle, Container, CornerRadius, CrossAxisAlignment, Flex,
+SOME	5dafe6399	Use a single TUI natural language detection toggle (#14168)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const NATURAL_LANGUAGE_DETECTION: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn natural_language_detection_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: .any(|command| command == &NATURAL_LANGUAGE_DETECTION)
+NONE	cb085fb89	[APP-4943] Deduplicate SQLite Sentry error reports (#14180)
+    MISSING [app/src/persistence/sqlite.rs]: static REPORTED_PRIMARY_CODES: AtomicU64 = AtomicU64::new(0);
+    MISSING [app/src/persistence/sqlite.rs]: let primary_code = (primary_error_code as u64).min(63);
+ALL	4b04ef719	Fix TUI log storage paths (#14071)
+SOME	6b1d9db7a	Centralize slash command surface support (#14153)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: kind: SlashCommandKind::Agent,
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: supported_surfaces: SlashCommandSurfaces::GuiAndTui {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn command_names_and_kinds_are_unique_per_surface() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: for settings_mode in [settings::SettingsMode::Gui, settings::SettingsMode::Tui] {
+SOME	c7c66040a	Fix TUI conversation filtering (#14149)
+    MISSING [app/src/ui_components/agent_icon.rs]: AgentConversationEntry, AgentConversationsModel, AgentRunDisplayStatus,
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: let mut cloud_agent_by_provenance = entry.clone();
+ALL	d4c4cf9b3	warpctrl: drop shell selection from create APIs and fix Keychain security claims (#14158)
+SOME	eeecb6744	Add report-external-reference CLI subcommand to oz CLI (#14072)
+    MISSING [crates/warp_cli/src/harness_support.rs]: HarnessSupportCommand::ReportExternalReference(_) => {
+    MISSING [crates/warp_cli/src/harness_support.rs]: "harness-support report-external-reference"
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn report_external_reference_required_args_parse() {
+NONE	a66337f4f	Add TUI logout slash command (#14117)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const LOGOUT: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/logout",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn logout_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: all_commands(settings::SettingsMode::Tui)
+SOME	d34aaf06e	Implement /fast-forward slash command in GUI and TUI (APP-4901) (#14057)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const AUTO_APPROVE: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: let tui_commands = all_commands(settings::SettingsMode::Tui);
+NONE	8e61f9ced	feat(tui): make NLD opt-in with /enable & /disable slash commands (CODE-1893) (#14035)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const ENABLE_NATURAL_LANGUAGE_DETECTION: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/enable-natural-language-detection",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn natural_language_detection_commands_are_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: let tui_commands = all_commands(settings::SettingsMode::Tui);
+NONE	67960ea54	Add speech language preference for voice input (#13722)
+    MISSING [app/src/editor/view/voice.rs]: let language = AISettings::as_ref(ctx)
+    MISSING [app/src/editor/view/voice.rs]: .voice_input_language_code()
+ALL	730a4acc0	fix(vim): respect count before gg (e.g. 5gg jumps to line 5) (#13167)
+ALL	8a30a37ff	feat: add oh-my-pi as a native CLI agent (#13766)
+SOME	abea51cd1	Move workspace crates over to the Rust 2024 edition. (#13990)
+    MISSING [app/src/autoupdate/linux.rs]: "mkdir -p {cache_dir_str}{and}\\\ncp /etc/pacman.conf {cache_dir_str}{and}\\\nsudo sh -c \"echo '\n[{repo_name}]\nServer = https://releases.
+    MISSING [app/src/autoupdate/linux.rs]: "sudo pacman-key -r \"linux-maintainers@warp.dev\" --keyserver hkp://keys.openpgp.org:80{and}\\\nsudo pacman-key --lsign-key \"linux-maintai
+    MISSING [app/src/autoupdate/mac.rs]: && metadata.is_dir()
+    MISSING [app/src/editor/accept_autosuggestion_keybinding_view.rs]: DEFAULT_UI_LINE_HEIGHT_RATIO, Element, Flex, Hoverable, MouseStateHandle, OffsetPositioning,
+NONE	1388531b1	[REMOTE-2149] Add runner config to orchestration (client) (#13896)
+    MISSING [crates/warp_cli/src/lib.rs]: if !FeatureFlag::CloudAgentRunners.is_enabled() {
+    MISSING [crates/warp_cli/src/lib.rs]: if !FeatureFlag::CloudAgentRunners.is_enabled() {
+ALL	dbaf6d50d	Send PR url and repository host in InputContext.Git (#13936)
+SOME	69ce3728a	feat(tui): add /view-logs slash command (APP-4880) (#13932)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const VIEW_LOGS: StaticCommand = StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn view_logs_command_is_registered_only_for_tui_mode() {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: assert!(all_commands(settings::SettingsMode::Tui)
+    MISSING [crates/warp_logging/src/native.rs]: let log_files = collect_log_paths_in(&log_directory, &logfile_name)?;
+SOME	b491ddaf2	Inject X-Warp-Traceparent trace-link header on warp-server requests (#13959)
+    MISSING [crates/http_client/Cargo.toml]: # Used to read the current OTEL span context and inject it as a trace-link
+    MISSING [crates/http_client/src/lib.rs]: pub(crate) const TRACE_LINK_HEADER: &str = "X-Warp-Traceparent";
+    MISSING [crates/http_client/src/lib.rs]: if let Some(trace_link) = current_trace_link_header() {
+    MISSING [crates/http_client/src/lib_tests.rs]: fn with_active_span<R>(f: impl FnOnce() -> R) -> R {
+    MISSING [crates/http_client/src/lib_tests.rs]: let provider = SdkTracerProvider::builder().build();
+SOME	26b7c9cdb	Add /exit slash command and ctrl-d exit to the TUI (#13915)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const EXIT: StaticCommand = StaticCommand {
+ALL	eca8c1a60	Remove logging of 13 unused telemetry events (#13847)
+NONE	20dcd2905	Fix pane header showing cloud icon for shared local conversations (#13823)
+    MISSING [app/src/ui_components/agent_icon.rs]: let server_ambient_task_id = terminal_view
+    MISSING [app/src/ui_components/agent_icon.rs]: .selected_conversation_server_metadata(app)
+ALL	74a0d6758	Exclude directories from the files command palette (`files:` filter) (#13801)
+NONE	7ffccbb82	[REMOTE-2178] Add `oz runner` CRUD CLI commands (#13760)
+    MISSING [crates/warp_cli/src/lib.rs]: pub mod runner;
+    MISSING [crates/warp_cli/src/lib.rs]: if !FeatureFlag::CloudAgentRunnerCLICommands.is_enabled() {
+    MISSING [crates/warp_cli/src/runner.rs]: const MAX_DESCRIPTION_LENGTH: usize = 240;
+    MISSING [crates/warp_cli/src/runner.rs]: fn validate_description(s: &str) -> Result<String, String> {
+    MISSING [crates/warp_cli/src/runner_tests.rs]: fn validate_os_config_rejects_macos_version_with_linux() {
+    MISSING [crates/warp_cli/src/runner_tests.rs]: let err = validate_os_config(
+SOME	79e5873cc	Fix global flags (--api-key, --debug) before subcommand causing parse error (#13816)
+    MISSING [crates/warp_cli/src/lib_tests.rs]: let args = Args::try_parse_from(["warp", "--api-key", "test-key", "login"]).unwrap();
+ALL	3bf0899d5	Exclude directories from Command Palette file search so files aren't starved from the result cap (#13433)
+SOME	dcd7494aa	Add V0 MCP implementation (#13744)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub const MCP: StaticCommand = StaticCommand {
+ALL	086dade63	Fix bolded/italicized links breaking before trailing punctuation in Markdown renderer (#13747)
+SOME	9d563b01c	Exclude fullwidth punctuation from detected links (#13085)
+    MISSING [app/src/util/link_detection.rs]: fn push_url_range(
+    MISSING [app/src/util/link_detection.rs]: url_ranges: &mut Vec<Range<usize>>,
+SOME	b43821d0a	Align TUI slash command menu styling (#13604)
+    MISSING [app/src/search/slash_command_menu/mod.rs]: pub use static_commands::{SlashCommandArgumentHint, SlashCommandId, StaticCommand};
+ALL	992610422	conversation persistence and restoration for TUI (#13590)
+ALL	0e6871373	Restore telemetry emission calls for key client events (#13584)
+NOFILES/TRIVIAL	7607cc7c1	Remove the /pr-comments slash command (superseded by the bundled skill) (#13621)
+ALL	a4a857688	Render MCP tool-call request/response preview in monospace font (#13490)
+NONE	40f59b517	Remove selected telemetry event emissions (#13503)
+    MISSING [app/src/autoupdate/mod.rs]: crate::report_error!(e.context("Error relaunching app after autoupdate"));
+SOME	cf3ad092f	import warp_errors directly instead of chain of re-exports (#13523)
+    MISSING [app/src/autoupdate/mac.rs]: warp_errors::report_error!(&err);
+    MISSING [app/src/autoupdate/mod.rs]: warp_errors::report_error!(&err);
+    MISSING [app/src/editor/view/voice.rs]: warp_errors::report_if_error!(settings
+    MISSING [app/src/search/action/data_source.rs]: warp_errors::report_error!("Failed to create search index writer for actions");
+    MISSING [app/src/search/command_palette/launch_config/data_source.rs]: warp_errors::report_error!(
+    MISSING [app/src/search/command_palette/new_session/data_source.rs]: warp_errors::report_error!(
+    MISSING [app/src/search/command_palette/new_session/data_source.rs]: warp_errors::report_error!(
+SOME	34393bc2c	Separate persistence scope for TUI and GUI (#13500)
+    MISSING [app/src/persistence/mod.rs]: pub use sqlite::database_file_path_for_current_scope;
+    MISSING [app/src/persistence/sqlite.rs]: PersistenceScope::Tui => tui_database_file_path(),
+    MISSING [app/src/persistence/sqlite.rs]: pub fn database_file_path_for_current_scope() -> PathBuf {
+    MISSING [app/src/persistence/sqlite_tests.rs]: app_database_file_path, database_file_path_for_current_scope, database_file_path_for_scope,
+SOME	883f22b00	Migrate most `log::error!` calls to`report_error!` (#13483)
+    MISSING [app/src/autoupdate/changelog.rs]: report_error!(error.context("Failed to fetch changelog.json"))
+    MISSING [app/src/autoupdate/mac.rs]: report_error!(anyhow::Error::new(err).context("Failed to remove temporary bundle"));
+    MISSING [app/src/autoupdate/mod.rs]: report_error, report_if_error, send_telemetry_from_ctx, send_telemetry_sync_from_app_ctx,
+    MISSING [app/src/editor/view/element.rs]: report_error!(error.context("error laying out lines"));
+    MISSING [app/src/editor/view/mod.rs]: report_error!(err.context("Error calling map#up"));
+    MISSING [app/src/editor/view/mod.rs]: report_error!(err.context("Error calling map#down"));
+SOME	6807ff6d8	Surface run-cloud harness & auth-secret flags in CLI help (#13502)
+    MISSING [crates/warp_cli/src/agent.rs]: const HARNESS_VALUE_VARIANTS: [Harness; 5] = [
+    MISSING [crates/warp_cli/src/lib.rs]: command = command.mut_subcommand("agent", |agent_cmd| {
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn parse_run_cloud(args: &[&str]) -> crate::agent::RunCloudArgs {
+    MISSING [crates/warp_cli/src/lib_tests.rs]: let full: Vec<&str> = std::iter::once("warp")
+ALL	6f286a557	Enable skills and project context discovery in TUI (#13497)
+SOME	0ac6f5948	Speedup TUI startup time (#13449)
+    MISSING [app/src/persistence/mod.rs]: pub enum PersistedDataScope {
+    MISSING [app/src/persistence/sqlite.rs]: backfill_conversation_summaries, delete_agent_conversations, read_agent_conversation_metadata,
+    MISSING [app/src/persistence/sqlite.rs]: upsert_agent_conversation,
+ALL	dcf985db6	Refactor AI query cloud routing, handle session end, and add sandbox connection status to input footer (#13340)
+ALL	6b01a8e2f	Respect Markdown Viewer preference for file URLs (#12866)
+SOME	593b03f5f	Apply NLD history match to agent prompt history backed by ai_queries (#12586)
+    MISSING [app/src/persistence/block_list_tests.rs]: process_ai_queries_for_nld_history_match, process_ai_queries_for_uparrow_prompt,
+    MISSING [app/src/persistence/block_list_tests.rs]: read_recent_ai_queries, upsert_ai_query_with_limit,
+    MISSING [app/src/persistence/mod.rs]: pub nld_prompts: Vec<(String, DateTime<Local>)>,
+    MISSING [app/src/persistence/sqlite.rs]: get_all_restored_blocks, process_ai_queries_for_nld_history_match,
+ALL	44893c508	Render and execute file edits in the TUI surface (#13332)
+SOME	150b4c158	GUI/TUI agnostic file execution (#13302)
+    MISSING [crates/warp_files/src/lib.rs]: error: Arc<FileSaveError>,
+    MISSING [crates/warp_files/src/lib_tests.rs]: matches!(result, Err(FileSaveError::NoFilePath(file_id)) if file_id == id),
+    MISSING [crates/warp_files/src/lib_tests.rs]: "expected NoFilePath error"
+ALL	13e8b6114	Wire up Jupyter notebook (.ipynb) rendering in the client (#13071)
+SOME	d3b312377	Add "Copy file path" to file viewer pane right-click menu (#13145)
+    MISSING [app/src/notebooks/file/mod.rs]: let copy_file_path = self.file_state.path().map(|p| p.display_path());
+SOME	dfabfa5bb	Add Markdown syntax highlighting in the editor (#13034)
+    MISSING [crates/languages/src/lib.rs]: pub const SUPPORTED_LANGUAGES: [&str; 35] = [
+    MISSING [crates/languages/src/lib.rs]: "md" => "markdown",
+ALL	dbd412209	thinking blocks for TUI (#13291)
+ALL	bcfd97873	Fix link/file 'Open link' tooltip not appearing on plain click in Agent Mode (#13280)
+ALL	814753f3c	Jump to start/end of the visual (soft-wrapped) line for cmd+←/→ (+ macOS Home/End document nav) (#13195)
+NONE	4c5ca9395	Initial settings refactor for TUI (#13294)
+    MISSING [app/src/search/command_search/settings.rs]: surface: settings::SettingSurfaces::GUI,
+    MISSING [app/src/util/file/external_editor/settings.rs]: surface: settings::SettingSurfaces::GUI,
+    MISSING [app/src/util/file/external_editor/settings.rs]: surface: settings::SettingSurfaces::GUI,
+SOME	6be84ac0b	Fix conversation rewind re-sending rewound-away prompts and stale sub-agent tasks (#13072)
+    MISSING [app/src/persistence/agent.rs]: let kept_task_ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
+ALL	b69c43b29	managed_secrets: add BYO first-party + endpoint WASM seal exports (#13298)
+ALL	1a9af7a08	APP-2527 Phase 3: MCP JSON tree rendering (#12829)
+ALL	4c80f6319	APP-2527 Phase 2: MCP data pipeline (#12828)
+SOME	f0afcc12e	APP-2527 Phase 1: Generic JsonTreeView component (#12822)
+    MISSING [app/src/ui_components/json_tree.rs]: ConstrainedBox, CrossAxisAlignment, Empty, Flex, Hoverable, MainAxisSize, MouseStateHandle,
+SOME	676c882b7	Add warp://settings deeplink entrypoints (open, search, scroll-to-widget) (#13232)
+    MISSING [app/src/uri/mod.rs]: settings_widget_deeplink_target, OpenTeamsSettingsModalArgs, SettingsSection,
+    MISSING [app/src/uri/mod.rs]: pub enum OpenSettingsArgs {
+ALL	278494bad	Fix vim visual paste losing selection after history recall (#13152)
+SOME	b484e4fdd	Add memory store CLI commands (#12973)
+    MISSING [crates/warp_cli/src/lib.rs]: pub mod memory_store;
+    MISSING [crates/warp_cli/src/lib.rs]: #[command(subcommand, alias = "memory-stores")]
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn memory_store_list_parses() {
+    MISSING [crates/warp_cli/src/lib_tests.rs]: let args = Args::try_parse_from(["warp", "memory-store", "list"]).unwrap();
+    MISSING [crates/warp_cli/src/memory_store.rs]: pub enum MemoryStoreCommand {
+NONE	73834e56f	Use faster hasher for `EntityId`-keyed maps and sets. (#13058)
+    MISSING [app/src/editor/view/vim_handler_tests.rs]: let mut updated = EntityIdSet::default();
+    MISSING [app/src/editor/view/vim_handler_tests.rs]: let mut updated = EntityIdSet::default();
+ALL	148c81179	Conversation streaming for the TUI (#13057)
+NONE	11742b32c	feat(tui): implement TUI input view milestone 1 (#13064)
+    MISSING [app/src/editor/mod.rs]: pub use crate::code::editor::model::{CodeEditorModel, CodeEditorModelEvent};
+NONE	e5c2b86f9	Add ai_access field to onboarding_slides_completed telemetry (#13094)
+    MISSING [crates/onboarding/src/model.rs]: let (intention, model, autonomy, ai_access) = match &self.intention {
+    MISSING [crates/onboarding/src/model.rs]: OnboardingIntention::Terminal => (self.intention.to_string(), None, None, None),
+    MISSING [crates/onboarding/src/telemetry.rs]: ai_access: Option<String>,
+    MISSING [crates/onboarding/src/telemetry.rs]: "ai_access": ai_access,
+NONE	f4bcdadb4	REMOTE-1936 (client 2/2): --runner flag + runner_id plumbing (#12949)
+    MISSING [crates/warp_cli/src/agent.rs]: #[arg(long = "runner", value_name = "ID")]
+    MISSING [crates/warp_cli/src/agent.rs]: pub runner: Option<String>,
+SOME	45e82234d	Fix crdt input buffer inconsistencies with agent prompts (#13002)
+    MISSING [app/src/editor/view/mod.rs]: pub fn exit_ephemeral_loading_state(&mut self, ctx: &mut ViewContext<Self>) {
+    MISSING [app/src/editor/view/model/mod.rs]: ephemeral_is_display_only: bool,
+    MISSING [app/src/editor/view/model/mod.rs]: self.ephemeral_is_display_only = false;
+ALL	2da530282	Add ipynb formatting buffer (#12462)
+NONE	b349964ea	Rework onboarding "Choose how to access AI": Subscription + Set up later (#12993)
+    MISSING [crates/onboarding/src/model.rs]: AiAccessChoice::SetUpLater => write!(f, "set_up_later"),
+    MISSING [crates/onboarding/src/slides/ai_access_slide.rs]: SelectSetUpLater,
+    MISSING [crates/onboarding/src/slides/ai_access_slide.rs]: set_up_later_mouse_state: MouseStateHandle,
+NONE	dbde9bcda	Gate onboarding AI on a Warp account; rework login screen (PR-D) (#12992)
+    MISSING [crates/onboarding/src/model.rs]: SelectedSettings::AgentDrivenDevelopment { .. } => true,
+    MISSING [crates/onboarding/src/model_tests.rs]: fn agent_intent_keeps_ai_enabled_for_any_setup_choice() {
+    MISSING [crates/onboarding/src/model_tests.rs]: model.read(&app, |model, _| assert!(model.settings().is_ai_enabled()));
+SOME	563682edb	Onboarding: remove post-agent no-AI buttons, inline dots, simplify no-AI modal (#12991)
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: body: "Without AI, you'll still get Warp's terminal experience, but you'll miss \
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: our agentic features like automatic fixes for terminal errors.",
+    MISSING [crates/onboarding/src/components/feature_optout_dialog.rs]: let mut body_section = Flex::column()
+    MISSING [crates/onboarding/src/components/feature_optout_dialog.rs]: .with_child(body_text);
+    MISSING [crates/onboarding/src/model.rs]: Some(NoAiConfirmationSource::AiAccess) | None => {
+    MISSING [crates/onboarding/src/model_tests.rs]: model.set_intention_terminal(ctx);
+    MISSING [crates/onboarding/src/model_tests.rs]: model.request_no_ai_confirmation(NoAiConfirmationSource::Intention, ctx);
+NONE	8af2dbadd	Refresh the first agent-onboarding card (heading, description, checklist) (#12988)
+    MISSING [crates/onboarding/src/lib.rs]: "Use frontier and open-weight models with Warp Agent",
+    MISSING [crates/onboarding/src/lib.rs]: "Hand off agent work to cloud agents",
+    MISSING [crates/onboarding/src/slides/intention_slide.rs]: .paragraph("Build faster with agents")
+    MISSING [crates/onboarding/src/slides/intention_slide.rs]: "Get AI features to accelerate terminal and agent-driven workflows:",
+SOME	9fd0e8874	Add UI for configuring custom model routers in Warp Agent settings (#13010)
+    MISSING [app/src/persistence/sqlite.rs]: LeafContents::ExecutionProfileEditor | LeafContents::CustomRouterEditor => {
+SOME	584b5e453	Support for Google's new Antigravity CLI (agy) (#12380)
+    MISSING [crates/input_classifier/src/util.rs]: static ref ONE_OFF_SHELL_COMMAND_KEYWORDS: HashSet<&'static str> = HashSet::from(["#", "echo", "man", "sudo", "claude", "codex", "gemini", "
+ALL	4c9105661	Show Maximize/Minimize pane shortcut in pane menu (#12811)
+NONE	3ca45befb	Configure git credentials with Github. (#12538)
+    MISSING [crates/warp_cli/src/agent.rs]: #[arg(long = "configure-git-credentials-with-github", hide = true, requires_all = ["task_id"])]
+    MISSING [crates/warp_cli/src/agent.rs]: pub configure_git_credentials_with_github: bool,
+NONE	df89509e3	prevent trying to use 0-byte corrupted installer file in auto-update (#12806)
+    MISSING [app/src/autoupdate/windows.rs]: let non_empty = path.metadata().map(|m| m.len() > 0).unwrap_or(false);
+    MISSING [app/src/autoupdate/windows.rs]: already_exists = non_empty;
+ALL	97829d563	Fix Ctrl+Tab switcher: carry tab color to icon and lead with title (#12776)
+SOME	109deb73d	Improve tracing for parallel fetch that blocks cloud agent init. (#12843)
+    MISSING [crates/managed_secrets/src/manager.rs]: #[tracing::instrument(name = "get_task_secrets", skip_all, err, fields(tags.cloud_agent = true))]
+    MISSING [crates/managed_secrets/src/manager.rs]: async fn inner(
+SOME	62f95346e	Fix fork button tooltip, command insertion, /continue-locally visibility (#12704)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: | Availability::CLOUD_MODE_V2_COMPOSER,
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: const CLOUD_AGENT = 1 << 9;
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: const CLOUD_MODE_V2_COMPOSER = 1 << 10;
+    MISSING [app/src/search/slash_command_menu/static_commands/mod_tests.rs]: fn cloud_agent_required_command_satisfied_in_cloud_agent_session() {
+    MISSING [app/src/search/slash_command_menu/static_commands/mod_tests.rs]: let command = Availability::AGENT_VIEW | Availability::AI_ENABLED | Availability::CLOUD_AGENT;
+ALL	3ed3ae1d0	Add git branch status context chip (#11938)
+SOME	3ffa815d5	add emitter_handle parameter to model subscriptions (#12767)
+    MISSING [app/src/editor/view/model/display_map/mod.rs]: _: ModelHandle<Buffer>,
+    MISSING [app/src/editor/view/model/mod.rs]: _: ModelHandle<Buffer>,
+    MISSING [app/src/notebooks/active_notebook_data.rs]: ctx.subscribe_to_model(&cloud_model, |me, _, event, ctx| {
+    MISSING [app/src/notebooks/editor/keys.rs]: _: ModelHandle<KeybindingChangedNotifier>,
+NONE	63b3ca251	Include `launch_mode` field in `run_internal` spans. (#12800)
+    MISSING [crates/warp_cli/src/agent.rs]: impl AgentCommand {
+    MISSING [crates/warp_cli/src/agent.rs]: pub(crate) fn as_str_for_tracing(&self) -> &'static str {
+    MISSING [crates/warp_cli/src/api_key.rs]: impl ApiKeyCommand {
+    MISSING [crates/warp_cli/src/api_key.rs]: pub(crate) fn as_str_for_tracing(&self) -> &'static str {
+    MISSING [crates/warp_cli/src/artifact.rs]: impl ArtifactCommand {
+    MISSING [crates/warp_cli/src/artifact.rs]: pub(crate) fn as_str_for_tracing(&self) -> &'static str {
+    MISSING [crates/warp_cli/src/environment.rs]: impl EnvironmentCommand {
+    MISSING [crates/warp_cli/src/environment.rs]: pub(crate) fn as_str_for_tracing(&self) -> &'static str {
+ALL	1d65e362b	Ship channel-specific warpctrl wrappers and PATH install support (#12705)
+SOME	3ede77814	REV-1625 C2: rework onboarding to support no AI on free (#12551)
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: AgentSlide, AiAccessSlide, AiAccessSlideEvent, AiSetupSlide, CustomizeUISlide, IntentionSlide,
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: IntroSlide, IntroSlideEvent, OnboardingModelInfo, OnboardingSlide, ProjectSlide,
+    MISSING [crates/onboarding/src/bin/main.rs]: | AgentOnboardingEvent::AddApiKeyRequested
+    MISSING [crates/onboarding/src/bin/main.rs]: | AgentOnboardingEvent::AddCustomEndpointRequested
+    MISSING [crates/onboarding/src/components/feature_optout_dialog.rs]: FormattedTextElement, MainAxisAlignment, MainAxisSize, ParentElement, Radius, Shrinkable,
+NONE	0d5e8bbaf	Render local orchestration subagents with the local agent icon (APP-4726) (#12608)
+    MISSING [app/src/ui_components/agent_icon.rs]: let is_local_child = terminal_view.selected_conversation_is_local_child(app);
+    MISSING [app/src/ui_components/agent_icon.rs]: return Some(agent_icon_variant_for_run(harness, status, !is_local_child));
+NONE	29d7d9f3f	REV-1625 C1: delete now-unused FREE_AI_REMOVAL experiment (#12543)
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: AgentSlide, AgentSlideEvent, CustomizeUISlide, IntentionSlide, IntroSlide, IntroSlideEvent,
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: OnboardingModelInfo, OnboardingSlide, ProjectSlide, ThemePickerSlide, ThemePickerSlideEvent,
+SOME	81d02ea43	Add warp://settings/warp_agent deep link (#12720)
+    MISSING [app/src/uri/mod.rs]: if let Some(section) = settings_section_for_simple_subpage(other) {
+ALL	2a251933c	Persist pin state on app close/reopen (#12675)
+ALL	c682422f2	fix(markdown_parser): widen delimiter run counter to avoid u8 overflow (#12644)
+ALL	ec29aefa6	add back pane_leaves to sqlite save_app_state which was mistakenly deleted (#12672)
+ALL	11f6f4a91	fix(warp_files): avoid reversed line range on first-line truncation (#12642)
+ALL	2735ae10a	remove dead code for WelcomePalette (#12614)
+ALL	8c63aaf9b	Add remote support for git chips (#12542)
+ALL	aa0a2c210	Implement warpctrl with set of non-authenticated, safe commands (#12327)
+SOME	1184de5b6	Add Nix to language grammars. (#12508)
+    MISSING [crates/languages/grammars/nix/identifiers.scm]: ; Nix has no named function or class declarations; the meaningful symbols are
+    MISSING [crates/languages/grammars/nix/indents.scm]: ; Adapted from Helix's runtime/queries/nix/indents.scm, reduced to the plain
+    MISSING [crates/languages/grammars/nix/indents.scm]: ; @indent / @outdent captures Warp's indent engine consumes.
+    MISSING [crates/languages/src/lib.rs]: pub const SUPPORTED_LANGUAGES: [&str; 34] = [
+NONE	aa873b543	remove redundant path canonicalizations causing UI to freeze with WSL tabs (#12492)
+    MISSING [app/src/search/ai_context_menu/view.rs]: .get_root_for_canonical_path(dir)
+ALL	a30cc7a33	Enhance writing logic for ai_queries sqlite db table  (#12484)
+SOME	26e81f9da	Add /rename-conversation (#12323)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub static RENAME_CONVERSATION: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/rename-conversation",
+    MISSING [app/src/search/slash_command_menu/static_commands/commands_tests.rs]: fn rename_conversation_command_is_active_conversation_scoped_and_requires_argument() {
+NONE	3d8235443	Add basic tracing support for cloud agents. (#12363)
+    MISSING [app/src/persistence/mod.rs]: #[tracing::instrument(name = "persistence::initialize", skip_all, fields(tags.cloud_agent = true))]
+NONE	9a9439ee0	Make MCP server startup non-fatal for Oz agent runs (#12470)
+    MISSING [crates/warp_cli/src/agent.rs]: #[arg(long = "strict-mcp-startup")]
+    MISSING [crates/warp_cli/src/agent.rs]: pub strict_mcp_startup: bool,
+ALL	9c4c656d2	Add GitHubRepoModel (#12456)
+NONE	d9c4c1a70	Carry attached image into new conversations for /fork with prompt (#12376)
+    MISSING [app/src/search/command_palette/view.rs]: initial_attachments: vec![],
+NOFILES/TRIVIAL	30a788873	QUALITY-780: client-side handling of wait_for_events yields (#12084)
+NONE	a7f668eaa	[Security] Remove problematic log statements (#26091)
+    MISSING [app/src/uri/mod.rs]: safe: ("received url"),
+NONE	f6b28f5e9	[Security] Limit protocols in WASM open link (#26090)
+    MISSING [app/src/uri/browser_url_handler.rs]: if let Some(unwrapped_url) = new_url.and_then(safe_browser_navigation_url) {
+    MISSING [app/src/uri/browser_url_handler.rs]: fn safe_browser_navigation_url(url: Url) -> Option<Url> {
+ALL	7f0c4dd23	Fix security vulnerability in markdown open link (#25353)
+SOME	861dacea2	Fix escaping issues when opening files in an external editor. (#25365)
+    MISSING [app/src/util/file/external_editor/linux.rs]: fn tokenize_exec(exec: &str) -> Result<Vec<String>, DesktopExecError> {
+    MISSING [app/src/util/file/external_editor/linux_tests.rs]: fn test_tokenize_simple() {
+    MISSING [app/src/util/file/external_editor/linux_tests.rs]: let tokens = tokenize_exec("echo hello world").unwrap();
+SOME	895016351	feat: add shortcuts for cycling orchestration subagents (#11760)
+    MISSING [app/src/util/bindings.rs]: && !is_pty_non_compliant_binding_allowed(binding.name, &keystroke)
+    MISSING [app/src/util/bindings.rs]: fn is_pty_non_compliant_binding_allowed(binding_name: &str, keystroke: &Keystroke) -> bool {
+    MISSING [app/src/util/bindings_tests.rs]: fn test_orchestration_cycle_bindings_are_editable() {
+SOME	08487819f	Add remote support for git operations (#12230)
+    MISSING [app/src/util/git.rs]: pub files: Vec<FileChangeEntry>,
+SOME	723b445a6	Fix file search filtering (#12379)
+    MISSING [app/src/search/command_palette/files/data_source.rs]: file_search_model.get_repo_contents(query, app)
+    MISSING [app/src/search/files/model.rs]: if !query.is_empty() {
+SOME	984a88962	Persist tab group on app close (#12348)
+    MISSING [app/src/persistence/sqlite.rs]: NewApp, NewCommand, NewServerExperiment, NewTab, NewTabGroup, NewTeam, NewWindow, NewWorkspace,
+    MISSING [app/src/persistence/sqlite.rs]: NewWorkspaceMetadata, NewWorkspaceTeam, Project, Tab, TabGroup, Window,
+SOME	5967abf0b	Warp Control CLI v2: contract and spec sync (#11772)
+    MISSING [crates/local_control/src/auth.rs]: ActionKind, ControlError, ErrorCode, ExecutionContextProof, InvocationContext,
+SOME	e4ab1917b	filter local skills from remote (#12262)
+    MISSING [app/src/search/ai_context_menu/skills/data_source.rs]: let cwd: Option<LocalOrRemotePath> = app
+ALL	eaa936c78	Add toggle: Rich Input submit on Ctrl+Enter (vs Enter) (#11723)
+NONE	3fe061620	Fix limiting get_repo_contents result failing file search (#12226)
+    MISSING [app/src/search/files/model.rs]: Ok(repo_contents) => repo_contents.contents,
+    MISSING [app/src/search/files/model.rs]: Err(_) => return Vec::new(),
+ALL	69bb47708	Clean up orchestration rollout flags (#11908)
+ALL	c429bb8a6	Create standing results to track project skills and project rules (#12047)
+SOME	14c8c8ded	Add proper support for host scoped requests (#12036)
+    MISSING [crates/warp_files/src/lib.rs]: let handle = RemoteServerManager::as_ref(ctx).host_request_handle(host_id);
+    MISSING [crates/warp_files/src/lib.rs]: async move { handle.write_file(path, content).await },
+ALL	63fe72858	Add support for a proper codex plugin. (#11871)
+SOME	27ff15b50	Update handoff surfaces to allow for empty prompts (and auto-handoff on click) (#11576)
+    MISSING [crates/warp_cli/src/agent.rs]: long = "skip-initial-turn",
+    MISSING [crates/warp_cli/src/agent.rs]: hide = true,
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn agent_run_accepts_skip_initial_turn_with_task_id_and_idle_on_complete() {
+SOME	1a3bdee4a	Some IAP fixes (WS reqs, rtc reqs, and recognize gcloud from `PATH` after init) (#12004)
+    MISSING [crates/http_client/src/iap.rs]: pub fn proxy_auth_header(token: &str) -> (&'static str, String) {
+    MISSING [crates/http_client/src/iap.rs]: (IAP_PROXY_AUTH_HEADER, format!("Bearer {token}"))
+    MISSING [crates/http_client/src/iap_tests.rs]: fn headers_with_iap() -> HeaderMap {
+    MISSING [crates/http_client/src/lib.rs]: let (name, value) = proxy_auth_header(&token);
+SOME	9de6d4dc6	dogfood nld_classifier_v3 (#12092)
+    MISSING [crates/input_classifier/Cargo.toml]: nld_classifier_v3 = ["onnx_candle"]
+    MISSING [crates/input_classifier/models/onnx/bert_tiny_v3.onnx]: oid sha256:d649a9cf72bb8c188cea7f290290f12e3a3ac4031469cd5144f17a500b46b166
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: } else if #[cfg(feature = "nld_classifier_v3")] {
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: Some(OnnxModel::BertTinyV3)
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: #[cfg_attr(feature = "nld_classifier_v3", include = "bert_tiny_v3.onnx")]
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: Model::BertTinyV3 => "bert_tiny_v3.onnx",
+NOFILES/TRIVIAL	0aee45df2	Fix queued prompt paper cuts (#12105)
+SOME	483318700	Add max result limit to get_repo_contents (#12035)
+    MISSING [app/src/search/files/model.rs]: match repo_metadata.get_repo_contents(&id, GetContentsArgs::default(), app) {
+SOME	3298ddcf6	[QUALITY-768] Fix orchestration session restoration after Warp restart (#11722)
+    MISSING [app/src/persistence/agent.rs]: pub(super) const MAX_PERSISTED_CONVERSATION_COUNT: usize = 200;
+SOME	a35bf3a47	Tighten some crate dependencies. (#12022)
+    MISSING [crates/onboarding/Cargo.toml]: bin = ["warpui_core/log_named_telemetry_events"]
+    MISSING [crates/onboarding/examples/callout.rs]: let app_builder = warpui::platform::AppBuilder::new(
+    MISSING [crates/onboarding/examples/callout_flow.rs]: let app_builder = warpui::platform::AppBuilder::new(
+    MISSING [crates/onboarding/src/agent_onboarding_view.rs]: let asset_cache = warpui_core::assets::asset_cache::AssetCache::as_ref(ctx);
+NONE	6616a42eb	Get rid of unneeded `DateTimeExt`. (#11976)
+    MISSING [app/src/autoupdate/mod.rs]: let current_date = chrono::Local::now().date_naive();
+    MISSING [app/src/autoupdate/mod.rs]: self.last_successful_daily_update_check = Some(chrono::Local::now().fixed_offset());
+SOME	405c83cba	Move inline test modules out to separate files. (#12018)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: #[path = "commands_tests.rs"]
+    MISSING [app/src/util/openable_file_type.rs]: #[path = "openable_file_type_tests.rs"]
+NONE	feff4718e	Extract cloud object persistence logic to other crates. (#11179)
+    MISSING [app/src/persistence/sqlite.rs]: self as generic_string_persistence, PersistedGenericStringObject,
+    MISSING [app/src/persistence/sqlite.rs]: delete_cloud_object, delete_generic_string_object, increment_retry_count,
+    MISSING [app/src/persistence/sqlite_tests.rs]: let cloud_permissions = to_cloud_object_permissions(&db_permissions, None);
+SOME	5767910b5	Add `./script/format` for customized `cargo fmt` invocation. (#11747)
+    MISSING [app/src/search/mod.rs]: pub use warp_search_core::*;
+NONE	e9decdbb3	[2/5] Preserve skill location identity through API references (#11861)
+    MISSING [app/src/search/ai_context_menu/skills/data_source.rs]: let cwd: Option<LocalOrRemotePath> = {
+    MISSING [app/src/search/ai_context_menu/skills/data_source.rs]: app.windows().state().active_window.and_then(|window_id| {
+SOME	a79721a5c	[1/5] Support remote project skills (#11459)
+    MISSING [app/src/search/ai_context_menu/skills/data_source.rs]: let skills = SkillManager::as_ref(app).get_skills_for_working_directory(cwd.as_ref(), app);
+NONE	086150b87	Add IAP (Identity-Aware Proxy) support for staging (#11729)
+    MISSING [crates/http_client/src/iap.rs]: pub const IAP_GENERATED_RESPONSE_HEADER: &str = "x-goog-iap-generated-response";
+    MISSING [crates/http_client/src/iap.rs]: pub const IAP_PROXY_AUTH_HEADER: &str = "Proxy-Authorization";
+    MISSING [crates/http_client/src/lib.rs]: pub mod iap;
+    MISSING [crates/http_client/src/lib.rs]: iap_token_provider: Option<Arc<dyn IapTokenProvider>>,
+SOME	39dd121f3	Reorder tools panel to put project explorer first, conversation list second (#11843)
+    MISSING [crates/onboarding/src/slides/customize_slide.rs]: label: "File explorer",
+SOME	90f7a4c81	introduce PR and repository info to input context (#10391)
+    MISSING [app/src/util/git_tests.rs]: is_gh_missing_error, RepositoryInfo,
+NONE	a6d9b93ae	Extract `CloudObject` client and models to separate crates. (#11166)
+    MISSING [app/src/notebooks/mod.rs]: pub use cloud_object_models::{CloudNotebook, CloudNotebookModel, NotebookId, SerializedNotebook};
+    MISSING [app/src/notebooks/mod.rs]: CloudModelType, CloudObjectEventEntrypoint, CloudObjectUpsertParams, CreateCloudObjectResult,
+    MISSING [app/src/persistence/sqlite.rs]: object_action_from_persisted, ObjectAction, ObjectActionSubtype,
+    MISSING [app/src/persistence/sqlite.rs]: .map(user_profile_from_persistence)
+ALL	e1be4179c	Support warp://action/open_file_editor URIs (#10233)
+SOME	2196ce9b3	Clarify create file palette item (#11799)
+    MISSING [app/src/search/command_palette/files/data_source.rs]: query.filters.contains(&QueryFilter::Files),
+    MISSING [app/src/search/command_palette/files/search_item.rs]: format!("Create a file named {}…", &self.file_name),
+NONE	5becb10b8	Migrate app crate macOS code to objc2 (#11669)
+    MISSING [app/src/util/file/external_editor/mac.rs]: let app_bundle_id = default_app_to_open_path(full_path);
+    MISSING [app/src/util/file/external_editor/mac.rs]: let bundle_id = default_app_to_open_path(full_path);
+NOFILES/TRIVIAL	c4946001f	fix(tab-configs): let a focused picker own Space (#11138) (#11412)
+SOME	876b840c7	feat: make /app redirect to cloud agent in wasm (#11781)
+    MISSING [app/src/uri/mod.rs]: open_new_window_get_handles, open_new_with_workspace_source, NewWorkspaceSource,
+    MISSING [app/src/uri/uri_tests.rs]: fn test_app_web_link_rewrites_to_new_cloud_agent_conversation() {
+    MISSING [app/src/uri/uri_tests.rs]: let url = Url::parse(&format!("{}/app", ChannelState::server_root_url())).unwrap();
+    MISSING [app/src/uri/web_intent_parser.rs]: CloudAgentHome(Url),
+    MISSING [app/src/uri/web_intent_parser.rs]: return Ok(WebIntent::CloudAgentHome(Url::parse(&format!(
+SOME	186c8d1d2	Show "Maximize pane" in Rendered Markdown overflow menu (#11258)
+    MISSING [app/src/notebooks/file/mod.rs]: FileNotebookAction::ToggleMaximized => {
+ALL	abc70eba1	UI Polish orchestration pill bar + segmented control to match Figma (#11578)
+SOME	ba5dcd90e	update FilterableDropdown to use trait for SelectActionAndClose instead of generic on entire DropdownAction (#11718)
+    MISSING [app/src/notebooks/editor/notebook_command.rs]: .with_on_select_action(DropdownAction::select_action_and_close(
+SOME	00fa7aad1	Move core search infra to new `warp_search_core` crate. (#11763)
+    MISSING [app/src/search/action/data_source.rs]: let search_error = DataSourceSearchError::new(err.to_string());
+    MISSING [app/src/search/command_palette/conversations/data_source.rs]: let search_error = DataSourceSearchError::new(err.to_string());
+    MISSING [app/src/search/command_palette/launch_config/data_source.rs]: Box::new(DataSourceSearchError::new(err.to_string())) as DataSourceRunErrorWrapper
+    MISSING [app/src/search/command_palette/navigation/data_source.rs]: let search_error = DataSourceSearchError::new(err.to_string());
+    MISSING [app/src/search/command_palette/new_session/data_source.rs]: let search_error = DataSourceSearchError::new(err.to_string());
+    MISSING [app/src/search/command_palette/warp_drive/data_source.rs]: Box::new(DataSourceSearchError::new(err.to_string()))
+    MISSING [app/src/search/mod.rs]: pub use warp_search_core::*;
+ALL	fc2dfe971	Implement auth secret deletion from selector menu (#11241)
+ALL	c7272dc44	feat(logging): in-session size rotation for warp.log (#10879) (#11000)
+SOME	bbdc5a2ea	Update pr chip and pr button to have a single source of truth (#10930)
+    MISSING [app/src/util/git_tests.rs]: detect_current_branch, detect_current_branch_display, get_pr_for_branch, is_gh_auth_error,
+    MISSING [app/src/util/git_tests.rs]: is_gh_missing_error, is_no_pr_for_branch_error,
+SOME	37f104a1c	Move `GenericStringModel` to `warp_server_client`. (#11117)
+    MISSING [app/src/search/ai_context_menu/rules/data_source_tests.rs]: GenericStringModel::new(AIFact::Memory(AIMemory {
+ALL	0b737e22a	Banner for remote server disconnect (#11565)
+SOME	b385a14f5	CLI commands for CRUD on agents (#11286)
+    MISSING [crates/warp_cli/src/agent.rs]: List(AgentListArgs),
+    MISSING [crates/warp_cli/src/agent.rs]: Get(AgentGetArgs),
+    MISSING [crates/warp_cli/src/api_key.rs]: pub sort_order: Option<SortOrderArg>,
+    MISSING [crates/warp_cli/src/lib.rs]: mod sort_order;
+    MISSING [crates/warp_cli/src/lib.rs]: pub use sort_order::SortOrderArg;
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn agent_update_rejects_conflicting_remove_flags() {
+    MISSING [crates/warp_cli/src/schedule.rs]: #[arg(long = "skill", value_name = "SKILL")]
+NONE	a76823c88	Move `GenericCloudObject` to `warp_server_client`. (#11115)
+    MISSING [app/src/notebooks/mod.rs]: fn upsert_event(params: CloudObjectUpsertParams<Self>) -> ModelEvent {
+    MISSING [app/src/notebooks/mod.rs]: notebook: CloudNotebook::from(params),
+NONE	dc408d2cb	Move `GenericServerObject` to `warp_server_client`. (#11114)
+    MISSING [app/src/notebooks/editor/model_tests.rs]: let workflow = ServerWorkflow::new(
+    MISSING [app/src/notebooks/editor/model_tests.rs]: SyncId::ServerId(workflow_id.into()),
+    MISSING [app/src/notebooks/notebook_tests.rs]: ServerNotebook::new(
+    MISSING [app/src/notebooks/notebook_tests.rs]: ServerId(123.into()),
+    MISSING [app/src/search/ai_context_menu/notebooks/data_source_tests.rs]: ServerNotebook::new(
+    MISSING [app/src/search/ai_context_menu/notebooks/data_source_tests.rs]: SyncId::ServerId(id.into()),
+    MISSING [app/src/search/ai_context_menu/rules/data_source_tests.rs]: GenericServerObject::new(
+    MISSING [app/src/search/ai_context_menu/rules/data_source_tests.rs]: SyncId::ServerId(id.into()),
+SOME	49bbe78e1	Open Mermaid diagrams in lightbox (#11548)
+    MISSING [app/src/notebooks/editor/view.rs]: OpenMermaidDiagramLightbox {
+SOME	7f4e11136	add nld decision telemetry event (#10875)
+    MISSING [crates/input_classifier/src/heuristic_classifier/mod_tests.rs]: ParsedTokenData, ParsedTokensSnapshot, meta::SpannedItem,
+SOME	885c54063	Style rich text editor newlines as line breaks, not paragraph breaks (#10293)
+    MISSING [app/src/notebooks/editor/mod.rs]: const NOTEBOOK_LINE_HEIGHT_RATIO: f32 = 1.5;
+    MISSING [app/src/notebooks/file/mod.rs]: me.set_content(content, ctx);
+    MISSING [app/src/notebooks/file/mod.rs]: me.set_content(content, ctx);
+NONE	ffe5cff65	fix redirects going haywire (#11353)
+    MISSING [app/src/uri/browser_url_handler.rs]: if should_preserve_current_url_on_base_fallback(&current_url) {
+    MISSING [app/src/uri/browser_url_handler.rs]: return Some(current_url);
+ALL	cf5ebea44	feat: support local→cloud handoff snapshot in remote SSH sessions (#11453)
+SOME	4aea06734	Run cargo fmt to clean up imports. (#11491)
+    MISSING [app/src/autoupdate/mod.rs]: report_if_error, send_telemetry_from_ctx, send_telemetry_sync_from_app_ctx, ChannelState,
+    MISSING [app/src/editor/accept_autosuggestion_keybinding_view.rs]: Element, Flex, Hoverable, MouseStateHandle, OffsetPositioning, ParentAnchor, ParentElement,
+    MISSING [app/src/editor/view/element.rs]: AfterLayoutContext, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
+    MISSING [app/src/editor/view/element.rs]: Element, Event, EventContext, Flex, LayoutContext, PaintContext, ParentElement, Point, Radius,
+    MISSING [app/src/editor/view/mod.rs]: Anchor, AnchorBias, Bias, DisplayMap, DrawableSelection, EditorModel, EditorModelEvent, Edits,
+    MISSING [app/src/editor/view/mod.rs]: LocalPendingSelection, LocalSelection, MarkedTextState, MovementResult, SelectionMode,
+SOME	90d214af3	Fix markdown rendering on remote SSH sessions (#11427)
+    MISSING [app/src/notebooks/file/mod.rs]: header_title_mouse_state: MouseStateHandle,
+    MISSING [app/src/notebooks/file/mod_tests.rs]: FileState::Loading(SourceFile::FileBased { path, .. }) => {
+    MISSING [app/src/notebooks/file/mod_tests.rs]: assert_eq!(path.to_local_path(), Some(Path::new("../README.md")))
+    MISSING [app/src/uri/mod.rs]: crate::code::buffer_location::LocalOrRemotePath::Local(path),
+ALL	3d940d78a	Add host label for remote repos and files (#11423)
+SOME	04e0c2297	Fix QUALITY-668 orchestration child restore persistence (#10794)
+    MISSING [app/src/search/command_search/view.rs]: pub fn has_search_results(&self, app: &AppContext) -> bool {
+NONE	f653e1f1d	Delete unused `new_from_server_update` function. (#11112)
+    MISSING [app/src/notebooks/mod.rs]: GenericCloudObject, GenericServerObject, ObjectType, Owner, Revision,
+NONE	d2e9affcd	Split out our embedded assets to a `warp_assets` crate. (#11387)
+    MISSING [app/src/notebooks/editor/notebook_command.rs]: elements::Align, platform::Cursor, r#async::SpawnedFutureHandle, AppContext, AssetProvider as _,
+    MISSING [app/src/notebooks/editor/notebook_command.rs]: if let Ok(asset) = ASSETS.get("bundled/syntax_theme/base16.tmTheme") {
+SOME	3bd21f82f	Enable cmd-O and @ context on remote SSH session (#11295)
+    MISSING [app/src/search/ai_context_menu/files/data_source.rs]: let repo_root = app
+    MISSING [app/src/search/ai_context_menu/files/data_source.rs]: .and_then(|window_id| ActiveSession::as_ref(app).working_directory(window_id))
+    MISSING [app/src/search/ai_context_menu/view.rs]: .and_then(|window_id| ActiveSession::as_ref(app).working_directory(window_id))
+    MISSING [app/src/search/command_palette/data_sources.rs]: let is_in_git_repo = file_search_model.repo_root_location(ctx).is_some();
+    MISSING [app/src/search/command_palette/files/data_source.rs]: let repo_root = file_search_model.repo_root_location(app);
+    MISSING [app/src/search/command_palette/files/data_source.rs]: .and_then(|of: &OpenedFilesInRepo| of.get(&item.path))
+    MISSING [app/src/search/files/model.rs]: repo_contents_cache: RefCell<HashMap<LocalOrRemotePath, Arc<Vec<FileSearchResult>>>>,
+ALL	b0897e597	Fix 1px window restore after macOS green-tile (#10083) (#10855)
+SOME	1bb368b6a	Add sleep auto handoff to cloud (#11049)
+    MISSING [app/src/uri/mod.rs]: auto_handoff::trigger_auto_handoff_to_cloud, AutoCloudHandoffTrigger, Workspace,
+    MISSING [app/src/uri/mod.rs]: WorkspaceAction, WorkspaceRegistry,
+    MISSING [app/src/uri/uri_tests.rs]: fn test_action_auto_handoff_to_cloud_parse_default_trigger() {
+SOME	2304ae94f	Fix asset-loading errors on WASM (#11195)
+    MISSING [crates/asset_cache/src/lib.rs]: let content = response.error_for_status()?.bytes().await?;
+SOME	4d844f14e	Migrate to use `LocalOrRemotePath` (#10961)
+    MISSING [app/src/util/openable_file_type.rs]: languages::language_by_local_filename(path.as_ref()).is_some()
+ALL	5067be3c7	add approve to AGENT_FOLLOW_UP_INPUTS (#11056)
+SOME	119398514	CLI commands for API key management (#10998)
+    MISSING [crates/warp_cli/src/api_key.rs]: pub enum ApiKeyCommand {
+    MISSING [crates/warp_cli/src/api_key_tests.rs]: struct TestApiKey {
+    MISSING [crates/warp_cli/src/date_time.rs]: pub(crate) fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, String> {
+    MISSING [crates/warp_cli/src/lib.rs]: pub mod api_key;
+    MISSING [crates/warp_cli/src/lib.rs]: mod date_time;
+ALL	7f013c1c7	Plumb --bedrock-role-region into the Bedrock OIDC STS client (#11193)
+ALL	18c98f266	Fix stale dependency definitions causing unnecessary rebuilds. (#11181)
+SOME	d14f1fca5	[REMOTE-1688] Add Codex auth secret types to CLI (#11122)
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn secret_create_codex_api_key_parses_minimal() {
+    MISSING [crates/warp_cli/src/secret.rs]: #[command(name = "claude")]
+    MISSING [crates/warp_cli/src/secret.rs]: Codex(CodexCreateArgs),
+SOME	05da7af3d	Simplify FTUE Modality Callouts (#11108)
+    MISSING [crates/onboarding/examples/callout_flow.rs]: return_to_terminal_mode: "ESC".to_string(),
+    MISSING [crates/onboarding/src/callout/model.rs]: (Some(AgentModalityCalloutState::TerminalMode), false)
+    MISSING [crates/onboarding/src/callout/view.rs]: pub return_to_terminal_mode: String,
+NONE	2fd4a785f	[QUALITY-719] Hide legacy orchestration setting for v2 (#11035)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: if FeatureFlag::OrchestrationV2.is_enabled() {
+ALL	ed01fe452	tell Inno Setup to kill the minidump server process if it failed to exit (#10766)
+ALL	4c3c95a7c	feat: retry Cloud Mode initial runs after GitHub auth (#10973)
+ALL	fda540595	[REMOTE-1702] Gate DetectedRepositories usage for WASM (#11028)
+SOME	6d5128b8d	[Remote envs] codebase indexing persistence (#10883)
+    MISSING [app/src/persistence/mod.rs]: ) -> (Option<Box<PersistedData>>, Option<WriterHandles>) {
+    MISSING [app/src/persistence/sqlite.rs]: ) -> (Option<Box<PersistedData>>, Option<WriterHandles>) {
+    MISSING [app/src/persistence/sqlite.rs]: let persisted_data = read_persisted_data(&mut conn, ctx);
+    MISSING [app/src/persistence/sqlite_tests.rs]: encode_path, get_all_codebase_index_metadata, read_sqlite_data, save_app_state,
+NONE	252afbd62	Handle `user_display_message` in `QuotaLimit` coming from the server (#10279)
+    MISSING [crates/http_client/src/lib.rs]: pub headers: Box<HeaderMap>,
+    MISSING [crates/http_client/src/lib.rs]: pub body: Option<String>,
+SOME	3f0337de1	Add RPC for fetching branches (#10986)
+    MISSING [app/src/tab_configs/branch_picker.rs]: sort_branches_main_first, BranchEntry,
+    MISSING [app/src/tab_configs/branch_picker.rs]: return Ok(vec![BranchEntry {
+    MISSING [app/src/util/git.rs]: pub struct BranchEntry {
+SOME	14205aa35	Migrate DetectedRepositories to include remote backing repos (#10921)
+    MISSING [app/src/search/ai_context_menu/files/data_source.rs]: .get_root_for_path(&LocalOrRemotePath::Local(
+    MISSING [app/src/search/ai_context_menu/view.rs]: .get_root_for_path(&LocalOrRemotePath::Local(Path::new(dir).to_path_buf()))
+    MISSING [app/src/search/files/model.rs]: .get_root_for_path(&LocalOrRemotePath::Local(current_dir.to_path_buf()))
+SOME	48ac96fa2	[Quality-543]Remove check_if_token_has_shell_syntax and pin threshold to 1 for nld_heuristic_v2 (#10846)
+    MISSING [crates/input_classifier/Cargo.toml]: # Selects which shell-command heuristic behavior is used. If both are enabled, v2 wins.
+ALL	207f9d5eb	Add warp://tab_config/<name> deeplink (#9379)
+SOME	9600cde9d	Remove dead command palette fixed filters (#10869)
+    MISSING [app/src/search/command_palette/conversations/search.rs]: pub struct FuzzyConversationSearcher;
+    MISSING [app/src/search/command_palette/filter_chip_renderer.rs]: QueryFilter::Conversations => appearance
+    MISSING [app/src/search/command_palette/view.rs]: view.set_query_filter(Some((filter, filter.filter_atom().primary_text)), ctx)
+    MISSING [app/src/search/command_palette/view.rs]: self.search_bar_state.as_ref(app).active_query_filter()
+    MISSING [app/src/search/command_search/view.rs]: let filter = self.search_bar_state.as_ref(ctx).active_query_filter();
+    MISSING [app/src/search/command_search/view.rs]: search_bar.set_query_filter(filter_and_atom_text, ctx);
+ALL	8da83b42a	Respect Markdown Viewer preference for Markdown file links (#9483)
+NONE	127b626bf	Fix onnx runtime incompatibility on new NLD classifier (#10932)
+    MISSING [crates/input_classifier/models/onnx/bert_tiny_v2.onnx]: oid sha256:ed2cea2884206a66fd8e96bf51895aa4e5696a09d8f344e132f84246e40f7b83
+    MISSING [crates/input_classifier/models/onnx/bert_tiny_v2.onnx]: size 17582121
+SOME	e7e97a301	APP-4423: Temporarily disable local Claude/Codex child harnesses (#10847)
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: fn default_onnx_model() -> Option<OnnxModel> {
+ALL	5c90c9cc3	Fix link display text escaping for notebooks/plans (#10829)
+NONE	5a9bf6712	Rename `FileLocation` to `LocalOrRemotePath` (#10909)
+    MISSING [app/src/persistence/sqlite_tests.rs]: location: crate::code::buffer_location::LocalOrRemotePath::Local(
+SOME	f61826505	Fix theme picker displaying stale colors when os sync is toggled (#10840)
+    MISSING [crates/onboarding/src/slides/theme_picker_slide.rs]: let selected_theme = if self.sync_with_os {
+SOME	0b0318a32	Client support for HTTP POST form upload targets (#9737)
+    MISSING [crates/http_client/src/lib.rs]: pub fn multipart(self, form: reqwest::multipart::Form) -> RequestBuilder<'a> {
+NONE	9eef1d25c	Revert back to NLD V1 on dogfood. (#10888)
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: #[cfg(all(not(feature = "nld_classifier_v1"), feature = "nld_classifier_v2"))]
+ALL	5836a6636	avoid dropping installer file handle to prevent race (#10768)
+SOME	d72cee89c	Do less work in command palette zero state (#10537)
+    MISSING [app/src/search/command_palette/view.rs]: let body = if self.search_bar.as_ref(app).should_show_zero_state(app) {
+    MISSING [app/src/search/command_search/view.rs]: let should_show_zero_state = self.search_bar.as_ref(app).should_show_zero_state(app);
+    MISSING [app/src/search/welcome_palette/view.rs]: if self.search_bar.as_ref(app).should_show_zero_state(app) {
+SOME	fd2a608ac	[Quality-547] add bert_tiny_v2 model and update input classifier (#10756)
+    MISSING [crates/input_classifier/Cargo.toml]: # Selects which BERT-tiny ONNX model bytes are embedded via rust-embed; enable exactly one.
+    MISSING [crates/input_classifier/Cargo.toml]: nld_classifier_v1 = ["onnx_candle"]
+    MISSING [crates/input_classifier/models/onnx/bert_tiny_v2.onnx]: oid sha256:1fd8afc92b849ad1ac1d6b35ec24702ee10bfd263aa1c2cd137cb2e2fd4737e1
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: #[cfg(feature = "nld_classifier_v1")]
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: const DEFAULT_ONNX_MODEL: OnnxModel = OnnxModel::BertTinyV1;
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: #[include = "bert_tiny_tokenizer.json"]
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: #[cfg_attr(feature = "nld_classifier_v1", include = "bert_tiny_v1.onnx")]
+NONE	3f53f3c62	Switch to upstream `rmcp`. (#10754)
+    MISSING [crates/http_client/src/lib.rs]: .tls_certs_only([])
+ALL	68dcee86c	spec: Watch remote refs for updates (#10094)
+SOME	69d8b47b4	feat: add jq syntax highlighting (#10539)
+    MISSING [crates/languages/grammars/jq/config.yaml]: display_name: "jq"
+    MISSING [crates/languages/src/lib.rs]: pub const SUPPORTED_LANGUAGES: [&str; 33] = [
+    MISSING [crates/languages/src/lib.rs]: "jq" => language_by_name("jq"),
+ALL	83340951b	Add vim ctrl-d/ctrl-u half-page scroll in code editor (#10582)
+SOME	c66758998	Codex auth: API key support. (#10675)
+    MISSING [crates/managed_secrets/src/manager.rs]: GqlManagedSecretValue::ManagedSecretOpenAiApiKeyValue(v) => {
+    MISSING [crates/managed_secrets/src/manager.rs]: ManagedSecretValue::openai_api_key(v.api_key, v.base_url)
+SOME	21e70d566	Fix panick when file watcher failed to get created (#10682)
+    MISSING [crates/watcher/src/lib.rs]: match BackgroundFileWatcher::new(
+NONE	2c1f2042d	Clean up nld flags (#10671)
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: let use_all = !args.heuristic && !onnx_specified;
+    MISSING [crates/input_classifier/src/bin/evaluate.rs]: match OnnxClassifier::new(OnnxModel::BertTinyV1) {
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: Model::BertTinyV1 => "bert_tiny_v1.onnx",
+    MISSING [crates/input_classifier/src/onnx/mod.rs]: Model::BertTinyV1 => "bert_tiny_tokenizer.json",
+SOME	0c7a819a7	Cloud status badge for remote child pills in orchestration pill bar (#10696)
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: | IconWithStatusVariant::CustomAvatar { .. } => None,
+SOME	c83e1efa4	Migrate editor to use remote backed buffer (#10520)
+    MISSING [app/src/persistence/sqlite_tests.rs]: location: crate::code::buffer_location::FileLocation::Local(
+    MISSING [crates/warp_files/src/lib.rs]: let watch_path = file_path_clone
+ALL	dc372ce5d	Add vim zz to center cursor vertically in code editor (#10581)
+ALL	1640580cb	Lazily restore child agents when parent agent is restored (#10371)
+SOME	c23106005	fix: Able to run 'open .command' file (#10543)
+    MISSING [app/src/util/openable_file_type.rs]: for name in ["run.bash", "run.zsh", "run.fish", "run.ksh", "run.command"] {
+NONE	25cdd9e68	Surface run executor in Warp client (#10479)
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: AgentConversationBackingData, AgentConversationCapabilities, AgentConversationDisplayData,
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: AgentConversationIdentity, AgentConversationPrincipal,
+ALL	35cb40c31	Add Raw/Rendered toggle for Mermaid notebook blocks (#10431)
+ALL	c8d39088e	[APP-4267] Show Mermaid render failure callout (#10432)
+ALL	4d84af55a	Use unified agent icon-with-status in management panel (#10518)
+SOME	023031217	[APP-3792] set up sqlite for remote codebase indexing caching (#10425)
+    MISSING [app/src/persistence/mod.rs]: pub use sqlite::database_file_path_for_scope;
+    MISSING [app/src/persistence/mod.rs]: pub enum PersistenceScope {
+    MISSING [app/src/persistence/sqlite.rs]: BlockCompleted, FinishedCommandMetadata, ModelEvent, PersistedData, PersistenceScope,
+    MISSING [app/src/persistence/sqlite.rs]: StartedCommandMetadata, WriterHandles,
+    MISSING [app/src/persistence/sqlite_tests.rs]: persistence::{model::ObjectPermissions, BlockCompleted, ModelEvent, PersistenceScope},
+    MISSING [app/src/persistence/sqlite_tests.rs]: app_database_file_path, database_file_path_for_scope, decode_path, deduplicate_events,
+    MISSING [app/src/persistence/testing.rs]: init_db(&PersistenceScope::App).expect("Should be able to establish sqlite connection.");
+ALL	b87da5fe7	Improve repo picker readability for long saved-repo paths (#9451)
+SOME	ef00af00b	fix cloud background + status styling for cloud conversations (#10511)
+    MISSING [app/src/ui_components/icon_with_status.rs]: let (icon, color) = status.status_icon_and_color(theme, StatusColorStyle::Cloud);
+SOME	148e80ceb	feat(harness-support): add report-shutdown command (#10409)
+    MISSING [crates/warp_cli/src/harness_support.rs]: ReportShutdown(ReportShutdownArgs),
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn report_shutdown_clean_parses() {
+NONE	756586ff9	add & entrypoint for local -> cloud handoff (#10271)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/handoff",
+SOME	654188596	[REMOTE-1544] Apply slash command enablement checks on execution (#10466)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: | Availability::NOT_CLOUD_AGENT,
+SOME	68f6062d0	Detect file paths preceded by Unicode/CJK punctuation (#10250)
+    MISSING [app/src/util/link_detection.rs]: if is_file_link_separator(c) {
+ALL	e75bf8098	Update orchestration message transcript UI (#10285)
+NONE	c2565f50a	Fix: validate pacman signing key before allowing update (#9706)
+    MISSING [app/src/autoupdate/linux.rs]: let fields: Vec<&str> = stdout
+    MISSING [app/src/autoupdate/linux.rs]: .find(|line| line.starts_with("pub:"))
+NONE	84f9584c7	In-app auth secret creation flow. (#10420)
+    MISSING [crates/managed_secrets/src/client.rs]: async fn list_harness_auth_secrets(
+    MISSING [crates/managed_secrets/src/client.rs]: harness: warp_graphql::ai::AgentHarness,
+SOME	9d2296d14	Add agent CLI flag for cloud runs (#9935)
+    MISSING [crates/warp_cli/src/agent.rs]: #[arg(long = "agent", value_name = "UID")]
+    MISSING [crates/warp_cli/src/agent.rs]: pub agent_uid: Option<String>,
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn agent_run_cloud_accepts_agent_flag() {
+SOME	48a648b10	Add `DiffStateModel` local and remote wrapper (#10404)
+    MISSING [app/src/tab_configs/branch_picker.rs]: detect_current_branch, get_all_branches, get_all_branches_with_known_main,
+SOME	9c1df06d3	Support third party harness model selection. (#9832)
+    MISSING [crates/warp_cli/src/agent.rs]: #[derive(Debug, Copy, Clone, ValueEnum, Eq, PartialEq, Hash, Default, Serialize, Deserialize)]
+ALL	564c70eed	load files for the command palette async so it opens faster (#10332)
+ALL	eb0b51f3b	collect taskkill exit code from failure log message in inno setup logs (#10330)
+ALL	606e1653f	Fix Markdown ToC anchor navigation in notebooks (#10143)
+SOME	b5c64ff4d	Consistently use _tests.rs for test file names. (#10373)
+    MISSING [app/src/editor/soft_wrap.rs]: #[path = "soft_wrap_tests.rs"]
+NONE	35e3a6f53	Don't check server for new versions on wasm or during onboarding (#10315)
+    MISSING [app/src/autoupdate/mod.rs]: polling_started: bool,
+    MISSING [app/src/autoupdate/mod.rs]: polling_started: false,
+    MISSING [app/src/autoupdate/mod_test.rs]: autoupdate.polling_started = true;
+    MISSING [app/src/autoupdate/mod_test.rs]: autoupdate.polling_started = true;
+ALL	4dbf8758d	fix: detect tree output filenames as file links (#10004)
+NOFILES/TRIVIAL	689cbce0e	Support waiting on initial sync of a repository (#10350)
+SOME	94f63ce25	Clean up ConversationOrTask. (#10195)
+    MISSING [app/src/ui_components/agent_icon.rs]: let status = AgentRunDisplayStatus::from_task(task, app).to_conversation_status();
+NONE	560efc3ca	Migrate agent management view to use new AgentConversationEntry abstraction. (#10194)
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: session_status: None,
+ALL	0320c7929	feat(tabs): add CycleMostRecentTab as third Ctrl+Tab behavior option (#9658)
+ALL	27f4933b8	feat(uri): add warposs://pane/{uuid} deep link for pane focus (#9655)
+SOME	143ec0802	Migrate conversation list to AgentConversationEntry (#10197)
+    MISSING [app/src/ui_components/agent_icon.rs]: AgentConversationEntry, AgentConversationProvenance, AgentConversationsModel,
+SOME	fd0a9d109	Add Codex local child harness support (#10176)
+    MISSING [app/src/util/path.rs]: path::{self, Path, PathBuf},
+    MISSING [app/src/util/path.rs]: if let Some(resolved) = resolve_executable_in_dir(&path_dir, command) {
+ALL	1d1c06db0	Fix file picker truncating paths within available width (#9885)
+SOME	f95364ac2	Add harness availability model to the client. (#10135)
+    MISSING [crates/warp_cli/src/agent.rs]: Debug, Copy, Clone, ValueEnum, Eq, PartialEq, Default, serde::Serialize, serde::Deserialize,
+NONE	74bdbd1d0	implement basic local cloud handoff UI (#9455)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub static MOVE_TO_CLOUD: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/move-to-cloud",
+NONE	34d311df6	use correct cloud agent icons for 3p conversation transcripts (#10148)
+    MISSING [app/src/ui_components/agent_icon.rs]: let ambient_task_id = terminal_view
+    MISSING [app/src/ui_components/agent_icon.rs]: .ambient_agent_task_id_for_details_panel(app)
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: agent_icon_variant_for_run, agent_icon_variant_from_terminal_inputs, CLISessionInputs,
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: ViewingCloudCodexTranscript,
+ALL	34f3adc2a	Attach image drops in CLI-agent sessions instead of typing the path (drag-and-drop) (#9553)
+ALL	71edcac80	fix(terminal): scroll output with Page Up/Down from prompt (#9008) (#9624)
+SOME	caf534a6a	Make Oz cloud agent icon glyph black for consistency with web app (#9952)
+    MISSING [app/src/ui_components/icon_with_status.rs]: let glyph_color = if is_ambient {
+SOME	7f484a265	Fix cloud status badge using themed background instead of white (#9976)
+    MISSING [app/src/ui_components/icon_with_status.rs]: status_container_background,
+SOME	1148ae3e8	Wake up remote Claude Code agents on new events (#9399)
+    MISSING [crates/warp_cli/src/lib_tests.rs]: fn agent_run_accepts_task_id_with_conversation_for_worker_followups() {
+NONE	73406f533	fix: clarify MCP slash command labels (#9887)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: description: "Add a new MCP server via the MCP settings page",
+SOME	59fc1a944	use multi-harness cloud agent icons + status (#9263)
+    MISSING [app/src/ui_components/agent_icon.rs]: pub(crate) fn terminal_view_agent_icon_variant(
+    MISSING [app/src/ui_components/agent_icon_tests.rs]: agent_icon_variant_for_task, agent_icon_variant_from_terminal_inputs, CLISessionInputs,
+ALL	25652d73a	Fix typos (#9318)
+SOME	8e0291208	Recognize .command files as shell scripts (#9345)
+    MISSING [crates/languages/src/lib_tests.rs]: let language = language_by_filename(Path::new("script.command"))
+SOME	0964e697f	Open "Default App" files in the running Warp channel (#9285)
+    MISSING [app/src/util/file/external_editor/mac_test.rs]: fn is_warp_bundle_recognises_warp_channels() {
+    MISSING [app/src/util/file/external_editor/mac_test.rs]: assert!(is_warp_bundle("dev.warp.Warp"));
+ALL	e6098a8ae	Get warp compiling on FreeBSD (#9362)
+SOME	edac6515e	Run executable shell scripts in the terminal instead of opening in the editor (#9503)
+    MISSING [app/src/uri/mod.rs]: is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script, starts_with_shebang,
+ALL	5fa228312	Fix read_files with out-of-bounds line ranges producing empty result (#9326)
+ALL	6b675992f	Cap word length and separator count in filepath detection (#9617)
+ALL	5906dd3b8	Recognize .htm files as HTML (#9360)
+NOFILES/TRIVIAL	150df7e9d	Fix typo in markdown_parser doc comment (#9341)
+NONE	b740b82f2	Update persistence README paths to crates/persistence (#9405)
+    MISSING [app/src/persistence/README.md]: cd <repo root>
+    MISSING [app/src/persistence/README.md]: This will run the migration on the same warp that runs when you run the app locally. This automatically generates or updates the `crates/per
+ALL	c4f8464a5	Pipe version through to CLI (#9252)
+NOFILES/TRIVIAL	a6b498536	Fix typos in code comments (#9363)
+ALL	6188ed177	Fix broken Markdown link in languages/grammars README (#9343)
+SOME	157f35868	Introduce `/harness`, `/host` and `/environment` slash commands to new cloud mode input. (#9482)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub static HOST: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: name: "/host",
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: const CLOUD_AGENT_V2 = 1 << 9;
+    MISSING [app/src/search/slash_command_menu/static_commands/mod_test.rs]: fn cloud_agent_v2_required_command_satisfied_in_v2_session() {
+SOME	199cd9481	Slash command menu sidecar. (#9359)
+    MISSING [app/src/search/data_source.rs]: pub fn detail_data(&self) -> Option<crate::search::item::SearchItemDetail> {
+SOME	95518310b	Initial codex CLI harness setup (#9370)
+    MISSING [crates/warp_cli/src/agent.rs]: Some(Self::Oz) | Some(Self::Gemini) | Some(Self::Codex) | Some(Self::Unknown)
+NONE	e058136c8	Slash command menu working. (#9358)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: availability: Availability::AI_ENABLED.union(Availability::NOT_CLOUD_AGENT),
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: availability: Availability::AI_ENABLED.union(Availability::NOT_CLOUD_AGENT),
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: pub struct Availability: u16 {
+    MISSING [app/src/search/slash_command_menu/static_commands/mod.rs]: const NOT_CLOUD_AGENT = 1 << 8;
+NONE	b59e3519d	add /continue-locally slash command (#9500)
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: pub static CONTINUE_LOCALLY: LazyLock<StaticCommand> = LazyLock::new(|| {
+    MISSING [app/src/search/slash_command_menu/static_commands/commands.rs]: let hint_text = "<optional prompt to send in forked conversation>";
+ALL	f43676081	fix(windows): exclude error-codes.md filenames from autoupdate error detection (#9498)
+ALL	52f636997	Add header icon to Git dialog and dialog component (#9464)
+ALL	1d2775ac4	[WAR-7378] Fix: Use fork point for PR diffs and commit message retrieval and remove parent branch logic (#9238)
+ALL	ee133f47a	Add /set-tab-color slash command (#9305)
+NOFILES/TRIVIAL	71054d652	Remove `NotAmbientAgent` state from AmbientAgentViewModel. (#9310)
+SOME	c85b6f299	Also recognize .h++ as a C++ header extension (#9346)
+    MISSING [crates/languages/src/lib_tests.rs]: for filename in ["header.hpp", "header.hxx", "header.H", "header.h++"] {
+NOFILES/TRIVIAL	3476f1934	Fix doubled-word typos in crates/ comments (#9338)
+NONE	3f0ac51bc	fix: highlight C++ header extensions (#9388)
+    MISSING [crates/languages/src/lib.rs]: "cpp" | "cxx" | "cc" | "h" | "hh" | "hpp" | "hxx" | "H" => language_by_name("cpp"),
+    MISSING [crates/languages/src/lib_tests.rs]: fn cpp_header_extensions_resolve_to_cpp_language() {
+    MISSING [crates/languages/src/lib_tests.rs]: for filename in ["header.hpp", "header.hxx", "header.H"] {
+ALL	f0c8b7f72	[APP-3801] implement remote environments auth (#9331)
+ALL	ffe93a5e6	Fix git diff for first commit in commit message autogen (#9291)
+ALL	c0feac21d	Expand `~` in `warp://action/new_tab?path=` URLs (#9277)
+ALL	e3470ae08	@ context menu fixes. (#9237)
+ALL	84592e2ad	Fix typo: quote_ahead_fount_at -> quote_ahead_found_at (#9280)
+NOFILES/TRIVIAL	fc0ce9f8c	Don't require login to open file from URI (#9300)
+ALL	57e8e3e9b	Replay agent events on restore (#9251)

@@ -451,7 +451,6 @@ pub enum AutonomySettingSpeedbump {
         /// Whether the setting in the speedbump is checked or not.
         checked: bool,
         /// Whether or not the speedbump is actually shown.
-        ///
         /// Set at render-time.
         shown: Arc<Mutex<bool>>,
     },
@@ -462,7 +461,6 @@ pub enum AutonomySettingSpeedbump {
         /// Whether the setting in the speedbump is checked or not.
         checked: bool,
         /// Whether or not the speedbump is actually shown.
-        ///
         /// Set at render-time.
         shown: Arc<Mutex<bool>>,
     },
@@ -471,7 +469,6 @@ pub enum AutonomySettingSpeedbump {
         /// Which action this corresponds to.
         action_id: AIAgentActionId,
         /// Whether or not the speedbump is actually shown.
-        ///
         /// Set at render-time.
         shown: Arc<Mutex<bool>>,
     },
@@ -480,7 +477,6 @@ pub enum AutonomySettingSpeedbump {
         /// Which action this corresponds to.
         action_id: AIAgentActionId,
         /// Whether or not the speedbump is actually shown.
-        ///
         /// Set at render-time.
         shown: Arc<Mutex<bool>>,
     },
@@ -940,7 +936,6 @@ pub struct AIBlock {
     is_references_section_open: bool,
 
     /// A speedbump, or notice, about an autonomy setting.
-    ///
     /// Assumes we only have 1 action per AI block.
     autonomy_setting_speedbump: AutonomySettingSpeedbump,
 
@@ -955,7 +950,6 @@ pub struct AIBlock {
     action_buttons: HashMap<AIAgentActionId, ActionButtons>,
 
     /// A user menu presenting an accept and reject choice.
-    ///
     /// This UI is used for the new conversation suggestion multi-select.
     keyboard_navigable_buttons: Option<ViewHandle<KeyboardNavigableButtons>>,
 
@@ -987,7 +981,6 @@ pub struct AIBlock {
 
     /// Controller for reading/modifying `AgentView` state for this terminal pane (e.g. if there is
     /// an active agent view or not, which affects whether or not this block should be hidden).
-    ///
     /// Only used when `FeatureFlag::AgentView` is enabled.
     agent_view_controller: ModelHandle<AgentViewController>,
 
@@ -1504,7 +1497,6 @@ impl AIBlock {
 
     /// Detects all links (URLs + file paths) in both the output and user query inputs.
     /// Reads the current output from the model internally.
-    ///
     /// On `local_fs`, this spawns a background task via `spawn_blocking` to avoid blocking
     /// the main thread with filesystem I/O (file path detection + code block path resolution).
     /// On other targets (e.g. WASM), `spawn_blocking` is unavailable so detection runs
@@ -1608,7 +1600,7 @@ impl AIBlock {
                         for source in image_sources {
                             resolved_image_sources.insert(
                                 source.clone(),
-                                // NOT COMPILED -- builds are suspended. Ported from
+                                // Ported from
                                 // upstream `da6066b759` ("Invalidate cached local-file
                                 // images in AI blocks when the file changes", #12840):
                                 // `with_local_file_content_version()` reads the file's
@@ -1840,7 +1832,6 @@ impl AIBlock {
             {
                 // Log action IDs that were cached from a previous version of `output` that are not
                 // in the updated `output` to assist with debugging evals.
-                //
                 // This is a short-term means to observe if the requested_action_ids logic is
                 // faulty.
                 // TODO(zachbai): Remove caching of action ids on the block entirely.
@@ -2629,7 +2620,6 @@ impl AIBlock {
             self.client_ids.client_exchange_id,
         );
         // If the AI Block's exchange is hidden, return true.
-        //
         // This is typically the case for the initial exchange in a conversation started for a
         // 'passive' AI feature like suggested prompts.
         if is_for_hidden_exchange {
@@ -2651,7 +2641,6 @@ impl AIBlock {
         } else {
             // If there is no active agent view, only passive, non-hidden (we checked for if the
             // exchange is hidden already above) exchanges are rendered.
-            //
             // These correspond to AI blocks with a successfully received suggested code diff or
             // unit test suggestion.
             !self.model.request_type(app).is_passive()
@@ -2755,7 +2744,6 @@ impl AIBlock {
                     CodeEditorEvent::SelectionChanged => {
                         // If there's an ongoing text selection, clear all other selections within the
                         // `AIBlock`'s view sub-hierarchy to ensure only one component has a selection at a time.
-                        //
                         // The `is_some` check is necessary because `CodeEditorEvent::SelectionChanged` is
                         // also emitted when the editor's selection is cleared via external means
                         // (i.e. when a text selection is made outside the `CodeEditorView`).
@@ -3200,7 +3188,16 @@ impl AIBlock {
                 // We only care about expansion state updates when the command
                 // is running or finished (i.e. when it has a block).
                 let action_status = self.action_model.as_ref(ctx).get_action_status(action_id);
-                if !action_status.is_some_and(|a| a.is_running() || a.is_done()) {
+                let has_finished_command_block = {
+                    let terminal_model = self.terminal_model.lock();
+                    terminal_model
+                        .block_list()
+                        .block_for_ai_action_id(action_id)
+                        .is_some_and(|block| block.finished())
+                };
+                if !has_finished_command_block
+                    && !action_status.is_some_and(|a| a.is_running() || a.is_done())
+                {
                     return;
                 }
 
@@ -4016,7 +4013,6 @@ impl AIBlock {
     }
 
     /// Returns the rich-content link currently hovered by the mouse, if any.
-    ///
     /// This is used to build a link-specific right-click context menu (e.g. "Copy URL") when the
     /// user right-clicks a hyperlink rendered inside an AI response. Returns `None` if the mouse
     /// is not over a detected link.
@@ -4044,7 +4040,6 @@ impl AIBlock {
     }
 
     /// `true` if the AI output in the block finished streaming.
-    ///
     /// Note that this is different from `is_finished` since user could still have pending
     /// actions to execute.
     pub fn is_ai_output_complete(&self, app: &AppContext) -> bool {
@@ -4332,7 +4327,6 @@ impl AIBlock {
     /// Tries to focus the AI block or one of its parts, if applicable.
     /// If the block doesn't need to be focused, focus is yielded
     /// back to the owning [`TerminalView`].
-    ///
     /// WARNING: take care to only use this API when you are sure the AI block or its
     /// children should steal focus (e.g. on user action). For example, be careful
     /// not to steal focus away from another terminal session just because a requested
@@ -4515,7 +4509,6 @@ impl AIBlock {
 
     /// Clears all text selections in all components within this `AIBlock`'s view sub-hierarchy
     /// _other_ than the one that triggered a selection change.
-    ///
     /// Call this after text is selected in one part of the AI block (e.g. a code diff), to ensure
     /// that there's only one active selection at a time.
     fn clear_other_selections(
@@ -5163,7 +5156,6 @@ impl AIBlock {
 
     /// Writes `text` to the clipboard, unless it's empty (after trimming), in which case it shows
     /// a toast instead of clobbering the clipboard.
-    ///
     /// Without this, an AI block copy action (`CopyQuery`, `CopyOutput`, `Copy`,
     /// `CopyConversation`) that extracts nothing — e.g. every exchange in range errored before
     /// producing output — silently overwrites the clipboard with `""`. That looks visually
@@ -5273,7 +5265,6 @@ impl AIBlock {
     }
 
     /// Returns the repo path associated with this block's imported comments, if any.
-    ///
     /// All imported comment groups in a single block share the same repo
     /// (they were fetched in the same terminal context), so any group's
     /// path is representative.

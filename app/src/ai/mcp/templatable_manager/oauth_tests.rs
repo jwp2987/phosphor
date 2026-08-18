@@ -151,12 +151,12 @@ fn persisted_credentials_deserializes_legacy_format_without_received_at() {
 async fn save_forwards_token_received_at_to_persist_channel() {
     let (store, rx) = make_test_store(Some("client_secret_xyz".to_string()));
 
-    let credentials = StoredCredentials {
-        client_id: "client-id".to_string(),
-        token_response: Some(make_test_token_response(Some("refresh-1"))),
-        granted_scopes: Vec::new(),
-        token_received_at: Some(1_700_000_500),
-    };
+    let credentials = StoredCredentials::new(
+        "client-id".to_string(),
+        Some(make_test_token_response(Some("refresh-1"))),
+        Vec::new(),
+        Some(1_700_000_500),
+    );
 
     store.save(credentials).await.expect("save succeeds");
 
@@ -176,12 +176,12 @@ async fn save_forwards_token_received_at_to_persist_channel() {
 async fn save_forwards_none_when_received_at_is_none() {
     let (store, rx) = make_test_store(None);
 
-    let credentials = StoredCredentials {
-        client_id: "c".to_string(),
-        token_response: Some(make_test_token_response(None)),
-        granted_scopes: Vec::new(),
-        token_received_at: None,
-    };
+    let credentials = StoredCredentials::new(
+        "c".to_string(),
+        Some(make_test_token_response(None)),
+        Vec::new(),
+        None,
+    );
 
     store.save(credentials).await.expect("save succeeds");
 
@@ -195,12 +195,8 @@ async fn save_forwards_none_when_received_at_is_none() {
 async fn save_skips_persist_when_token_response_absent() {
     let (store, rx) = make_test_store(None);
 
-    let credentials = StoredCredentials {
-        client_id: "c".to_string(),
-        token_response: None,
-        granted_scopes: Vec::new(),
-        token_received_at: Some(1_700_000_500),
-    };
+    let credentials =
+        StoredCredentials::new("c".to_string(), None, Vec::new(), Some(1_700_000_500));
 
     store.save(credentials).await.expect("save succeeds");
 
@@ -221,23 +217,23 @@ async fn save_carries_forward_refresh_token_and_preserves_received_at() {
     // Seed the inner store with prior credentials that have a refresh token.
     store
         .inner
-        .save(StoredCredentials {
-            client_id: "c".to_string(),
-            token_response: Some(make_test_token_response(Some("prior-refresh-token"))),
-            granted_scopes: Vec::new(),
-            token_received_at: Some(1_699_000_000),
-        })
+        .save(StoredCredentials::new(
+            "c".to_string(),
+            Some(make_test_token_response(Some("prior-refresh-token"))),
+            Vec::new(),
+            Some(1_699_000_000),
+        ))
         .await
         .expect("seed succeeds");
 
     // Now save NEW credentials that omit a refresh token, simulating a
     // refresh response from a server that does not rotate refresh tokens.
-    let new_credentials = StoredCredentials {
-        client_id: "c".to_string(),
-        token_response: Some(make_test_token_response(None)),
-        granted_scopes: Vec::new(),
-        token_received_at: Some(1_700_000_500),
-    };
+    let new_credentials = StoredCredentials::new(
+        "c".to_string(),
+        Some(make_test_token_response(None)),
+        Vec::new(),
+        Some(1_700_000_500),
+    );
 
     store.save(new_credentials).await.expect("save succeeds");
 

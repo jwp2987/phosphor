@@ -79,6 +79,27 @@ pub enum TabContextMenuAnchor {
     VerticalTabsKebab,
 }
 
+/// Describes how the new-session dropdown menu was opened so the renderer
+/// can pick the right anchor strategy.
+#[derive(Debug, Clone, Copy)]
+pub enum NewSessionMenuAnchor {
+    /// Menu was opened from the `+` add-tab button. When vertical tabs are
+    /// active, the renderer anchors below the button's save position;
+    /// otherwise the contained position is used directly.
+    AddTabButton(Vector2F),
+    /// Menu was opened by right-clicking the vertical tabs panel.
+    /// Always anchored at the contained pointer position.
+    Pointer(Vector2F),
+}
+
+impl NewSessionMenuAnchor {
+    pub fn position(&self) -> Vector2F {
+        match self {
+            Self::AddTabButton(position) | Self::Pointer(position) => *position,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum VerticalTabsPaneContextMenuTarget {
     ClickedPane(PaneViewLocator),
@@ -155,6 +176,8 @@ pub enum WorkspaceAction {
     CloseTabGroup(TabGroupId),
     /// Toggle collapsed state for the given tab group.
     ToggleTabGroupCollapsed(TabGroupId),
+    /// Opens an inline editor over the given group's header for renaming.
+    RenameTabGroup(TabGroupId),
     /// Creates a new tab group containing the tab at the given index.
     NewTabGroupFromTab(usize),
     /// Moves the tab at `tab_index` into `group_id`, appending it to the
@@ -192,10 +215,25 @@ pub enum WorkspaceAction {
     RemoveActiveOrSelectedTabsFromGroup,
     /// Clears the tab multi-selection.
     ClearTabMultiSelection,
+    /// Opens the right-click context menu for the given tab group's header.
+    ToggleTabGroupRightClickMenu {
+        group_id: TabGroupId,
+        anchor: TabContextMenuAnchor,
+    },
     /// Removes the given group, leaving its member tabs top-level.
     UngroupTabs(TabGroupId),
     /// Opens a new tab inside the given group.
     NewTabInGroup(TabGroupId),
+    /// Moves the whole group block one slot towards the front of the tab list.
+    MoveTabGroupUp(TabGroupId),
+    /// Moves the whole group block one slot towards the back of the tab list.
+    MoveTabGroupDown(TabGroupId),
+    /// Closes every tab that is not a member of the given group.
+    CloseTabsOutsideGroup(TabGroupId),
+    /// Closes every tab positioned before the given group's block.
+    CloseTabsAboveGroup(TabGroupId),
+    /// Closes every tab positioned after the given group's block.
+    CloseTabsBelowGroup(TabGroupId),
     /// Pins the tab at the given index. If the tab is part of a group, it
     /// is first extracted from the group and then pinned as ungrouped.
     PinTab(usize),
@@ -233,11 +271,14 @@ pub enum WorkspaceAction {
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
     OpenNewSessionMenu {
-        position: Vector2F,
+        anchor: NewSessionMenuAnchor,
     },
     ToggleTabConfigsMenu,
     ToggleNewSessionMenu {
-        position: Vector2F,
+        anchor: NewSessionMenuAnchor,
+        /// Fork-only: the pin always renders this menu at the 268px vertical-tabs
+        /// width, while this fork still falls back to `MENU_DEFAULT_WIDTH` outside
+        /// the vertical tabs panel. Width selection is independent of the anchor.
         is_vertical_tabs: bool,
     },
     SelectNewSessionMenuItem(NewSessionMenuItem),
@@ -299,6 +340,12 @@ pub enum WorkspaceAction {
         color: AnsiColorIdentifier,
         tab_index: usize,
     },
+    /// Toggles the color for a tab group. Clears the color if it was already
+    /// set to `color`; otherwise applies `color` as the uniform group color.
+    ToggleTabGroupColor {
+        color: AnsiColorIdentifier,
+        group_id: TabGroupId,
+    },
     OpenLaunchConfigSaveModal,
     SelectTabConfig(TabConfig),
     DispatchToSettingsTab(SettingsTabAction),
@@ -323,6 +370,15 @@ pub enum WorkspaceAction {
         tab_position: RectF,
     },
     DropTab,
+    StartGroupDrag(TabGroupId),
+    DragGroup {
+        group_id: TabGroupId,
+        /// The dragged group's painted rect.
+        position: RectF,
+        /// The position of the cursor while dragging a group.
+        cursor_position: Vector2F,
+    },
+    DropGroup,
     /// Toggles the left panel. In Code Mode V1 this toggles Zap Drive.
     /// In Code Mode V2 this toggles the left panel which contains both the project explorer and
     /// Zap Drive. This happens as explicit action from the user.
@@ -342,6 +398,10 @@ pub enum WorkspaceAction {
     OpenCodeReviewPanel(PaneViewLocator),
     /// Toggles the vertical tabs panel. This happens as an explicit action from the user.
     ToggleVerticalTabsPanel,
+    /// Opens the vertical tabs panel without toggling it: a no-op when it is already
+    /// open. Used by callers that want the panel surfaced (e.g. the local-control
+    /// `surface` action) rather than flipped.
+    OpenVerticalTabsPanel,
     ToggleVerticalTabsSettingsPopup,
     SetVerticalTabsDisplayGranularity(VerticalTabsDisplayGranularity),
     SetVerticalTabsTabItemMode(VerticalTabsTabItemMode),
@@ -743,6 +803,7 @@ impl WorkspaceAction {
             | MoveTabLeft(_)
             | MoveTabRight(_)
             | DropTab
+            | DropGroup
             | RenameTab(_)
             | ResetTabName(_)
             | RenamePane(_)
@@ -760,6 +821,7 @@ impl WorkspaceAction {
             | CloseTabsRightActiveTab
             | CloseTabGroup(_)
             | ToggleTabGroupCollapsed(_)
+            | RenameTabGroup(_)
             | NewTabGroupFromTab(_)
             | MoveTabToGroup { .. }
             | RemoveTabFromGroup(_)
@@ -770,6 +832,11 @@ impl WorkspaceAction {
             | RemoveActiveOrSelectedTabsFromGroup
             | UngroupTabs(_)
             | NewTabInGroup(_)
+            | MoveTabGroupUp(_)
+            | MoveTabGroupDown(_)
+            | CloseTabsOutsideGroup(_)
+            | CloseTabsAboveGroup(_)
+            | CloseTabsBelowGroup(_)
             | PinTab(_)
             | UnpinTab(_)
             | PinActiveTab
@@ -779,6 +846,7 @@ impl WorkspaceAction {
             | PinActiveTabGroup
             | UnpinActiveTabGroup
             | ToggleTabColor { .. }
+            | ToggleTabGroupColor { .. }
             | AddDefaultTab
             | AddTerminalTab { .. }
             | ToggleSkillManager
@@ -803,7 +871,8 @@ impl WorkspaceAction {
             | SummarizeAIConversation { .. }
             | OpenRepository { .. }
             | SelectTabConfig(_)
-            | ToggleVerticalTabsPanel => true, // actions that actually change a state of the state of user's
+            | ToggleVerticalTabsPanel
+            | OpenVerticalTabsPanel => true, // actions that actually change a state of the state of user's
             // workspace would most likely require a save, so that if the app gets
             // restarted, the user can continue working
             AutoupdateFailureLink
@@ -840,6 +909,7 @@ impl WorkspaceAction {
             | ToggleTabMultiSelection { .. }
             | ToggleTabRightClickMenu { .. }
             | ToggleTabSelectionRightClickMenu { .. }
+            | ToggleTabGroupRightClickMenu { .. }
             | ToggleVerticalTabsPaneContextMenu { .. }
             | OpenNewSessionMenu { .. }
             | ToggleTabConfigsMenu
@@ -868,6 +938,8 @@ impl WorkspaceAction {
             | OpenInExplorer { .. }
             | DragTab { .. }
             | StartTabDrag
+            | DragGroup { .. }
+            | StartGroupDrag(_)
             | ToggleLeftPanel
             | ToggleWarpDrive
             | ZapDrive

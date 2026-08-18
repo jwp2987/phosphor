@@ -43,7 +43,9 @@ fn test_mac_warpification_script_size() {
 
         app.read(|ctx| {
             assert_script_is_short_enough_mac(
-                &begin_warpify_ssh_session_command(ctx),
+                // u64::MAX is the widest ID `generate_session_id` can produce, so this
+                // measures the worst case for the macOS 1020-byte pty limit.
+                &begin_warpify_ssh_session_command(SessionId::from(u64::MAX), ctx),
                 "unknown_init_subshell.sh",
                 false,
             );
@@ -65,24 +67,73 @@ fn test_mac_warpification_script_size() {
                 false,
             );
 
+            // These three also carry a session ID now (#532), so they are measured at
+            // `u64::MAX` for the same reason `unknown_init_subshell.sh` is above.
             assert_script_is_short_enough_mac(
-                &warpify_ssh_session_command("Darwin", ShellType::Zsh, ctx)
-                    .expect("Should get Darwin zsh script"),
+                &warpify_ssh_session_command(
+                    "Darwin",
+                    ShellType::Zsh,
+                    SessionId::from(u64::MAX),
+                    ctx,
+                )
+                .expect("Should get Darwin zsh script"),
                 "zsh warpify",
                 true,
             );
             assert_script_is_short_enough_mac(
-                &warpify_ssh_session_command("Darwin", ShellType::Bash, ctx)
-                    .expect("Should get Darwin bash script"),
+                &warpify_ssh_session_command(
+                    "Darwin",
+                    ShellType::Bash,
+                    SessionId::from(u64::MAX),
+                    ctx,
+                )
+                .expect("Should get Darwin bash script"),
                 "bash warpify",
                 true,
             );
             assert_script_is_short_enough_mac(
-                &warpify_ssh_session_command("Darwin", ShellType::Fish, ctx)
-                    .expect("Should get Darwin fish script"),
+                &warpify_ssh_session_command(
+                    "Darwin",
+                    ShellType::Fish,
+                    SessionId::from(u64::MAX),
+                    ctx,
+                )
+                .expect("Should get Darwin fish script"),
                 "fish warpify",
                 true,
             )
+        });
+    });
+}
+
+/// Every warpify script must have its [`SESSION_ID_PLACEHOLDER`] substituted before it reaches
+/// the pty. A leftover placeholder emits `"session_id": @@WARP_SESSION_ID@@`, which is not valid
+/// JSON, so `SshTmuxInstaller` / `RemoteWarpificationIsUnavailable` would be dropped at
+/// deserialization -- a failed warpification would hang with no error block, which is the exact
+/// silent failure #532 exists to prevent.
+#[cfg_attr(windows, ignore = "TODO(CORE-3626)")]
+#[test]
+fn test_warpify_scripts_substitute_session_id() {
+    App::test(Assets, |mut app| async move {
+        initialize_app(&mut app);
+
+        app.read(|ctx| {
+            for uname in ["Darwin", "Linux"] {
+                for shell_type in [ShellType::Zsh, ShellType::Bash, ShellType::Fish] {
+                    let name = shell_type.name();
+                    let script =
+                        warpify_ssh_session_command(uname, shell_type, SessionId::from(1234), ctx)
+                            .expect("Should get a warpify script");
+                    assert!(
+                        !script.contains(SESSION_ID_PLACEHOLDER),
+                        "{uname}/{name} warpify script still contains {SESSION_ID_PLACEHOLDER}"
+                    );
+                    assert!(
+                        script.contains(r#"\"session_id\": 1234"#),
+                        "{uname}/{name} warpify script does not quote the session ID"
+                    );
+                }
+            }
         });
     });
 }

@@ -1,0 +1,434 @@
+#!/usr/bin/env bash
+# Build a triaged work queue for moving the oracle pin from N to N+1.
+#
+# WHY THIS EXISTS
+# ----------------
+# `git diff <pin N> <pin N+1>` over the whole Warp tree is thousands of files,
+# most of them cloud or already covered. What a human needs at re-pin time is
+# the much shorter list of test-bearing files that (a) changed upstream AND
+# (b) are not cloud AND (c) are not something the fork already has a verdict
+# on. This generates that list, so re-pinning starts from a triage instead of
+# a raw diff. See the "RE-PIN AUTOMATION" section of TODO.md.
+#
+# USAGE
+#     script/generate_repin_queue [<new-pin>] [<old-pin>]
+#
+#     <old-pin> defaults to the pin recorded in ORACLE.md (pin N).
+#     <new-pin> defaults to <old-pin> too -- so a bare invocation diffs the
+#     pin against itself and produces a trivially empty queue. This is
+#     DELIBERATE: a generator that only works once N+1 exists is a generator
+#     nobody can tell is broken until the day it matters. Pass a real
+#     candidate commit (e.g. a recent `warp/master` commit, or the actual next
+#     stable once ORACLE.md is updated) to exercise it for real before then.
+#
+# HOW IT WORKS
+# ------------
+# 1. `git diff --name-status <old> <new> -- '*.rs'` over the whole tree (this
+#    is Warp's own diff between two of its own commits -- nothing fork-side
+#    yet).
+# 2. Keep only files that are TEST-BEARING at whichever side of the diff
+#    still has them (a test-attribute grep, same four attributes SCOPE-*.md's
+#    own Method sections use: #[test], #[tokio::test], #[gpui::test],
+#    #[rstest]/#[test_case]).
+# 3. Bucket each survivor:
+#      DECLINED COLLISION -- the diff touches a name/path DECLINED.md marked
+#                             (see script/check_declined_collisions). Highest
+#                             priority: read the row before doing anything.
+#      LEDGER RE-EXAMINE   -- docs/sweep-verdict-ledger.tsv already has a
+#                             per-test verdict for this exact pin file, but
+#                             the file changed between the two pins, so
+#                             INVALIDATION RULE 1 fires (see below): every
+#                             verdict recorded against it needs a fresh look,
+#                             not blind trust. This supersedes the coarser
+#                             SCOPE-*.md-letter path below wherever the
+#                             ledger has data, because it is per-test and the
+#                             SCOPE letter is per-file.
+#      CLOUD-DROPPED       -- the pin file's own `use` lines reach a cloud
+#                             module (crate::server::, cloud_object,
+#                             warp_graphql, ServerApiProvider, ...), the same
+#                             marker check_cloud_boundary and SCOPE-*.md use.
+#                             Counted, not listed -- nothing to do.
+#      REMOVED AT NEW PIN  -- the file existed at the old pin and does not at
+#                             the new one. Informational only.
+#      UNCLASSIFIED        -- no SCOPE-*.md row AND no ledger row exists for
+#                             this exact path at the OLD pin. Nobody has
+#                             judged it yet, so it needs a first look, not a
+#                             re-look.
+#      inherited verdict   -- SCOPE-*.md already has a row for this path (and
+#                             the ledger doesn't); its verdict letter
+#                             (A/B/C/D/MIXED) is carried over, clearly
+#                             labelled a VERDICT, not a fact (see the caveat
+#                             below).
+# 4. SEPARATELY from the file diff (these can fire even for a pin file that
+#    did NOT change), scan the WHOLE ledger for the two other checkable
+#    invalidation rules and report them as their own sections:
+#      DECLINED, struck row     -- rule 2: the ledger row's cited DECLINED.md
+#                                   issue is now fully struck through. Should
+#                                   normally be empty here -- script/check_sweep_ledger
+#                                   already fails CI the moment this happens --
+#                                   shown for completeness/a stale-CI-run check.
+#      MISSING-SUBSYSTEM, symbol exists -- rule 3: a symbol the row's own
+#                                   evidence named as absent now has a
+#                                   definition somewhere in the fork.
+#
+# THE SIX-AREA LEDGER VS. SCOPE-*.md
+# -----------------------------------
+# docs/sweep-verdict-ledger.tsv (1,843 rows, docs/SWEEP-SUMMARY.md) is a
+# strict refinement of SCOPE-*.md for the files it covers: per-test verdicts
+# with cited evidence, not a per-file letter. Where both exist for the same
+# path, this script trusts the ledger and does not also print the SCOPE
+# letter -- printing both would just invite trusting whichever number looks
+# more convenient.
+#
+# WHY THE INHERITED VERDICT IS NOT TRUSTED SILENTLY
+# ---------------------------------------------------
+# CLAUDE.md and SCOPE-*.md's own staleness banners record two separate,
+# already-discovered overstatements of verdict A: MIXED files collapse to
+# their majority bucket, and (found later, docs/SWEEP-INVENTORY.md) a
+# same-named file is not necessarily the same module, and the pin's API under
+# test may no longer even exist in an otherwise-verdict-A file. A verdict
+# carried into this queue is exactly as reliable as it was in SCOPE-*.md --
+# this script does not re-derive it, and every place it prints one says so.
+# The ledger's own verdicts carry the same caveat, one level more precisely:
+# see docs/sweep-verdict-ledger.tsv's `confidence` column (clean/judgement/
+# unparsed) and script/extract_sweep_ledger.py's header for what each means.
+#
+# Requires the two pin commits fetched. Skips cleanly (exit 0) if either is
+# missing, same convention as script/check_stub_coverage. The ledger-specific
+# sections are skipped (not the whole script) if docs/sweep-verdict-ledger.tsv
+# does not exist.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+OLD_PIN_DEFAULT="$(grep -oE '\*\*Commit\*\* \| `[0-9a-f]+`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{7,}' | head -1)"
+OLD_PIN_DEFAULT="${OLD_PIN_DEFAULT:-02b53fcd8}"
+
+NEW_PIN="${1:-$OLD_PIN_DEFAULT}"
+OLD_PIN="${2:-$OLD_PIN_DEFAULT}"
+
+for rev in "$OLD_PIN" "$NEW_PIN"; do
+    if ! git cat-file -e "${rev}^{commit}" 2>/dev/null; then
+        echo "repin queue: skipped (commit ${rev} not fetched; run 'git fetch warp ${rev}')"
+        exit 0
+    fi
+done
+
+TEST_ATTR_RE='#\[[[:space:]]*(test|tokio::test|gpui::test|rstest|test_case)'
+CLOUD_RE='crate::server::|cloud_object|warp_graphql|ServerApiProvider|warp_server_client|warp_server_auth|cloud_object_models|cloud_object_persistence'
+LEDGER="docs/sweep-verdict-ledger.tsv"
+HAVE_LEDGER=0
+[[ -f "$LEDGER" ]] && HAVE_LEDGER=1
+
+ledger_summary_for() {
+    # $1 = pin_file path. Prints "N_ROWS<TAB>VERDICT:count VERDICT:count ..."
+    # or nothing if the ledger has no rows for this path.
+    ((HAVE_LEDGER)) || return
+    awk -F'\t' -v f="$1" '
+        NR > 1 && $2 == f { c[$4]++; n++ }
+        END { if (n > 0) { printf "%d\t", n; for (v in c) printf "%s:%d ", v, c[v]; print "" } }
+    ' "$LEDGER"
+}
+
+is_test_bearing() {
+    # $1 = rev, $2 = path
+    #
+    # The content is captured BEFORE grepping, deliberately. `git show | grep -q`
+    # under `set -o pipefail` is a silent-wrong-answer generator: grep -q exits
+    # at the first match, git show takes SIGPIPE and exits 141, and pipefail
+    # propagates 141 as the pipeline status -- which reads as "no match" and
+    # drops the file from every bucket. It is size- and timing-dependent, so it
+    # reproduces intermittently and the queue's output stops being deterministic.
+    # Measured at the 02b53fcd8 -> 42effe840 move: the queue reported 194
+    # test-bearing files where the same logic run serially found 204.
+    local content
+    content="$(git show "$1:$2" 2>/dev/null)" || return 1
+    [[ -n "$content" ]] || return 1
+    grep -qE "$TEST_ATTR_RE" <<<"$content"
+}
+
+is_cloud_touching() {
+    # $1 = rev, $2 = path -- reads the pin's own imports, same first filter
+    # check_cloud_boundary and SCOPE-*.md both use.
+    # Same SIGPIPE hazard as is_test_bearing -- capture, then match.
+    local uses
+    uses="$(git show "$1:$2" 2>/dev/null | grep -E '^\s*use ')"
+    [[ -n "$uses" ]] || return 1
+    grep -qE "$CLOUD_RE" <<<"$uses"
+}
+
+scope_verdict_for() {
+    # Prints "FILE VERDICT" if any SCOPE-*.md has a row for this exact path,
+    # nothing otherwise. SCOPE rows start with "| `<path>` | <verdict> |".
+    local path="$1"
+    grep -hE "^\| \`${path}\` \|" SCOPE-AI.md SCOPE-TERMINAL.md SCOPE-REST.md 2>/dev/null \
+        | head -1 \
+        | awk -F'|' '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $3); print $3}'
+}
+
+declined_markers() {
+    # All marker values (any kind) recorded in DECLINED.md, one per line.
+    grep -oE '<!-- markers:[^>]*-->' DECLINED.md 2>/dev/null \
+        | sed -E 's/^<!-- markers:[[:space:]]*//; s/[[:space:]]*-->$//' \
+        | tr ' ' '\n' \
+        | grep -E '^(test|sym|path|keep):' \
+        | cut -d: -f2-
+}
+
+collision_hits="$(mktemp)" unclassified="$(mktemp)" actionable="$(mktemp)"
+lowprio="$(mktemp)" removed="$(mktemp)" ledger_reexamine="$(mktemp)"
+cloud_count=0
+ledger_reexamine_tests=0
+trap 'rm -f "$collision_hits" "$unclassified" "$actionable" "$lowprio" "$removed" "$ledger_reexamine"' EXIT
+
+marker_values="$(declined_markers)"
+
+total_changed=0
+total_test_bearing=0
+
+while IFS=$'\t' read -r status path; do
+    [[ -z "$path" ]] && continue
+    total_changed=$((total_changed + 1))
+
+    if [[ "$status" == D* ]]; then
+        is_test_bearing "$OLD_PIN" "$path" || continue
+        total_test_bearing=$((total_test_bearing + 1))
+        echo "$path" >> "$removed"
+        continue
+    fi
+
+    is_test_bearing "$NEW_PIN" "$path" || continue
+    total_test_bearing=$((total_test_bearing + 1))
+
+    # Declined-collision check: does this file's diff mention a marked name?
+    if [[ -n "$marker_values" ]]; then
+        diff_text="$(git diff "$OLD_PIN" "$NEW_PIN" -- "$path" 2>/dev/null)"
+        hit=""
+        while IFS= read -r mv; do
+            [[ -z "$mv" ]] && continue
+            if printf '%s' "$diff_text" | grep -qF "$mv"; then
+                hit="$mv"
+                break
+            fi
+        done <<< "$marker_values"
+        if [[ -n "$hit" ]]; then
+            printf '%s  (touches DECLINED.md marker: %s)\n' "$path" "$hit" >> "$collision_hits"
+            continue
+        fi
+    fi
+
+    # Ledger check (INVALIDATION RULE 1): docs/sweep-verdict-ledger.tsv
+    # already has per-test verdicts for this exact pin file, but the file is
+    # in this diff -- its content changed between the two pins, which
+    # invalidates EVERY verdict recorded against it (the evidence was read
+    # against the OLD content). Report it, with the verdict breakdown, rather
+    # than falling through to the coarser SCOPE-*.md-letter path below.
+    if ((HAVE_LEDGER)); then
+        ledger_line="$(ledger_summary_for "$path")"
+        if [[ -n "$ledger_line" ]]; then
+            n_ledger_tests="${ledger_line%%$'\t'*}"
+            breakdown="${ledger_line#*$'\t'}"
+            ledger_reexamine_tests=$((ledger_reexamine_tests + n_ledger_tests))
+            printf '%s  (%d ledger-adjudicated test(s) invalidated -- pin file changed: %s)\n' \
+                "$path" "$n_ledger_tests" "$breakdown" >> "$ledger_reexamine"
+            continue
+        fi
+    fi
+
+    if is_cloud_touching "$NEW_PIN" "$path"; then
+        cloud_count=$((cloud_count + 1))
+        continue
+    fi
+
+    verdict="$(scope_verdict_for "$path")"
+    if [[ -z "$verdict" ]]; then
+        echo "$path" >> "$unclassified"
+    elif [[ "$verdict" == A* || "$verdict" == D* || "$verdict" == MIXED* ]]; then
+        printf '%s  (SCOPE verdict %s -- a VERDICT, not a fact; re-check before trusting it)\n' \
+            "$path" "$verdict" >> "$actionable"
+    else
+        printf '%s  (SCOPE verdict %s)\n' "$path" "$verdict" >> "$lowprio"
+    fi
+done < <(git diff --name-status "$OLD_PIN" "$NEW_PIN" -- '*.rs' 2>/dev/null)
+
+n_collision=$(wc -l < "$collision_hits" | tr -d ' ')
+n_unclassified=$(wc -l < "$unclassified" | tr -d ' ')
+n_actionable=$(wc -l < "$actionable" | tr -d ' ')
+n_lowprio=$(wc -l < "$lowprio" | tr -d ' ')
+n_removed=$(wc -l < "$removed" | tr -d ' ')
+n_ledger_files=$(wc -l < "$ledger_reexamine" | tr -d ' ')
+
+# ============================================================= #
+# INDEPENDENT LEDGER SCAN -- rules 2 and 3, which can fire even
+# for a pin file that did NOT change (the file-diff loop above
+# only ever sees files that changed). Whole-ledger, not tied to
+# the diff at all.
+# ============================================================= #
+ledger_declined_struck="$(mktemp)"
+ledger_missing_subsystem="$(mktemp)"
+trap 'rm -f "$collision_hits" "$unclassified" "$actionable" "$lowprio" "$removed" "$ledger_reexamine" "$ledger_declined_struck" "$ledger_missing_subsystem"' EXIT
+
+n_declined_checked=0
+n_ms_checked=0
+n_ms_candidate=0
+
+if ((HAVE_LEDGER)); then
+    # Rule 2 (DECLINED, struck row): reuses script/check_sweep_ledger's exact
+    # struck-detection logic (an issue counts as struck only when EVERY
+    # DECLINED.md row citing it is struck -- see that script's #325
+    # explanation). This is a courtesy re-check: script/check_sweep_ledger
+    # already fails CI the moment a citation goes stale, so this should
+    # normally print zero. It is not redundant with that guard -- it is what
+    # tells a human running THIS script, at re-pin time, whether that guard
+    # is currently green, without a separate CI run.
+    row_issues="$(awk -F'\\|' '
+        /^\| / && $2 !~ /^ *what *$/ && $2 !~ /^ *kind *$/ {
+            title = $2; issues = $3
+            state = (title ~ /~~/) ? "STRUCK" : "ACTIVE"
+            while (match(issues, /#[0-9]+/)) {
+                print state "\t" substr(issues, RSTART, RLENGTH)
+                issues = substr(issues, RSTART + RLENGTH)
+            }
+        }
+    ' DECLINED.md 2>/dev/null)"
+    struck_issues="$(awk -F'\t' '$1=="STRUCK"{print $2}' <<<"$row_issues" | sort -u)"
+    active_issues="$(awk -F'\t' '$1=="ACTIVE"{print $2}' <<<"$row_issues" | sort -u)"
+    fully_struck=""
+    while IFS= read -r issue; do
+        [[ -z "$issue" ]] && continue
+        grep -qxF "$issue" <<<"$active_issues" || fully_struck+="$issue"$'\n'
+    done <<<"$struck_issues"
+
+    n_declined_checked=$(awk -F'\t' 'NR>1 && $4=="DECLINED" && $6!=""' "$LEDGER" | wc -l | tr -d ' ')
+    if [[ -n "$fully_struck" ]]; then
+        while IFS= read -r issue; do
+            [[ -z "$issue" ]] && continue
+            awk -F'\t' -v ref="$issue" -v i="$issue" \
+                'NR>1 && $4=="DECLINED" && $6==i {print $2"::"$1"  (cites "ref", now fully struck)"}' \
+                "$LEDGER" >> "$ledger_declined_struck"
+        done <<<"$fully_struck"
+    fi
+
+    # Rule 3 (MISSING-SUBSYSTEM, symbol now exists): only checkable when the
+    # evidence names a symbol IMMEDIATELY adjacent to an absence cue -- not
+    # merely present somewhere in the same 220-char evidence string.
+    #
+    # This was tightened after testing found the obvious "first backtick
+    # token in the evidence" heuristic produces real false positives, not
+    # hypothetical ones: on this exact ledger it flagged `BlocklistAIHistoryModel`
+    # (a type that has existed in the fork the whole time -- the evidence
+    # merely MENTIONS it as context: "Walks `BlocklistAIHistoryModel` ... That
+    # helper ALREADY EXISTS") and `conversation_status_glyph` (a same-named
+    # but UNRELATED function that exists in a different file,
+    # orchestration_tab_bar.rs, not the agent_message.rs the evidence is
+    # actually about) -- exactly the collision class script/check_declined_collisions'
+    # own header warns about for its sym: marker. Both were caught by hand
+    # before this script shipped, which is the whole reason the adjacency
+    # requirement below exists instead of the simpler version.
+    #
+    # A candidate is extracted ONLY when a backtick token (excluding
+    # anything containing `/` or `.` -- a file path, not a symbol) sits
+    # directly next to "does not exist" / "doesn't exist" / "needs `X`" /
+    # "lacks `X`", AND the evidence does not also contain the phrase
+    # "already exist" anywhere (a strong signal the sentence is asserting
+    # the OPPOSITE and naive extraction nearby is unsafe). This is a real
+    # narrowing, not a formality: it drops both false positives above to
+    # zero candidates, at the cost of also dropping some genuine ones this
+    # script cannot tell apart from them -- the under-report this file's
+    # design constraint asks for.
+    n_ms_checked=$(awk -F'\t' 'NR>1 && $4=="MISSING-SUBSYSTEM"' "$LEDGER" | wc -l | tr -d ' ')
+    while IFS=$'\t' read -r test pin_file area verdict evidence rest; do
+        [[ -z "$test" ]] && continue
+        [[ "$evidence" == *"already exist"* || "$evidence" == *"Already exist"* ]] && continue
+        symbol=""
+        if [[ "$evidence" =~ \`([A-Za-z_][A-Za-z0-9_]*)\`[[:space:]]+(does|do)[[:space:]]not[[:space:]]exist ]]; then
+            symbol="${BASH_REMATCH[1]}"
+        elif [[ "$evidence" =~ \`([A-Za-z_][A-Za-z0-9_]*)\`[[:space:]]+(does|do)n\'t[[:space:]]exist ]]; then
+            symbol="${BASH_REMATCH[1]}"
+        elif [[ "$evidence" =~ (needs|lacks)[[:space:]]+\`([A-Za-z_][A-Za-z0-9_]*)\` ]]; then
+            symbol="${BASH_REMATCH[2]}"
+        fi
+        [[ -z "$symbol" ]] && continue
+        n_ms_candidate=$((n_ms_candidate + 1))
+        if grep -rqE "^[[:space:]]*(pub(\([a-z]+\))? )?(struct|enum|trait|fn)[[:space:]]+${symbol}\b" \
+                app/src crates --include='*.rs' 2>/dev/null; then
+            echo "${pin_file}::${test}  (evidence said \`${symbol}\` does not exist; a definition now matches -- VERIFY it is the same symbol, not a same-named unrelated one, before trusting this)" \
+                >> "$ledger_missing_subsystem"
+        fi
+    done < <(awk -F'\t' 'NR>1 && $4=="MISSING-SUBSYSTEM"' "$LEDGER")
+fi
+
+n_declined_struck=$(wc -l < "$ledger_declined_struck" | tr -d ' ')
+n_ms_stale=$(wc -l < "$ledger_missing_subsystem" | tr -d ' ')
+
+ledger_total=0
+((HAVE_LEDGER)) && ledger_total=$(($(wc -l < "$LEDGER") - 1))
+ledger_touched=$((ledger_reexamine_tests + n_declined_struck + n_ms_stale))
+ledger_carried_forward=$((ledger_total - ledger_touched))
+
+echo "Re-pin work queue: ${OLD_PIN} -> ${NEW_PIN}"
+echo "================================================"
+echo
+echo "${total_changed} .rs file(s) changed upstream; ${total_test_bearing} are test-bearing."
+if [[ "$OLD_PIN" == "$NEW_PIN" ]]; then
+    echo "(old pin == new pin: this is the trivial self-diff case, exercised with"
+    echo " no real N+1 yet. Pass a candidate commit as \$1 to run this for real.)"
+fi
+echo
+
+print_section() {
+    local title="$1" count="$2" file="$3" show="$4"
+    echo "--- ${title} (${count}) ---"
+    if [[ "$count" -eq 0 ]]; then
+        echo "  (none)"
+    elif [[ "$show" == "list" ]]; then
+        sed 's/^/  /' "$file"
+    fi
+    echo
+}
+
+echo "=== SWEEP-LEDGER SUMMARY (docs/sweep-verdict-ledger.tsv) ==="
+if ((HAVE_LEDGER)); then
+    echo "${ledger_total} previously-adjudicated tests total."
+    echo "  ${ledger_carried_forward} still hold -- pin file unchanged, DECLINED.md row not struck,"
+    echo "    MISSING-SUBSYSTEM symbol (where checkable) still absent. NOT re-examined; NOT work."
+    echo "  ${ledger_reexamine_tests} RE-EXAMINE: pin file changed since the sweep (rule 1)."
+    echo "  ${n_declined_struck} RE-EXAMINE: cited DECLINED.md row now fully struck (rule 2)."
+    echo "  ${n_ms_stale} RE-EXAMINE: named symbol now exists in the fork (rule 3)."
+    echo "  Rule 3 coverage: ${n_ms_candidate}/${n_ms_checked} MISSING-SUBSYSTEM rows had an"
+    echo "    extractable single symbol name to check; the rest need a human (see"
+    echo "    script/generate_repin_queue's header, 'THE SIX-AREA LEDGER')."
+    echo "  Rule 2 coverage: ${n_declined_checked} DECLINED rows carry a checkable issue ref."
+    echo "  CLOUD verdicts (durable by design, never auto-invalidated -- see header) and"
+    echo "    COVERED-ELSEWHERE (rule 4, fork test renamed/deleted -- human-only, not checked"
+    echo "    here) are folded into 'still holds' above; read the row before trusting either"
+    echo "    if you have independent reason to doubt it."
+else
+    echo "(docs/sweep-verdict-ledger.tsv not found -- ledger sections skipped)"
+fi
+echo
+
+print_section "DECLINED COLLISIONS -- read DECLINED.md before touching these" "$n_collision" "$collision_hits" list
+print_section "LEDGER RE-EXAMINE -- pin file changed, ledger verdicts invalidated (rule 1)" "$n_ledger_files" "$ledger_reexamine" list
+print_section "LEDGER RE-EXAMINE -- DECLINED.md row now struck (rule 2)" "$n_declined_struck" "$ledger_declined_struck" list
+print_section "LEDGER RE-EXAMINE -- MISSING-SUBSYSTEM symbol now exists (rule 3)" "$n_ms_stale" "$ledger_missing_subsystem" list
+print_section "UNCLASSIFIED -- no SCOPE-*.md verdict AND no ledger row at the old pin, needs a first look" "$n_unclassified" "$unclassified" list
+print_section "ACTIONABLE -- inherited SCOPE verdict A/D/MIXED (work, pending re-check)" "$n_actionable" "$actionable" list
+print_section "LOW-PRIORITY -- inherited SCOPE verdict B/C (already covered / out of scope)" "$n_lowprio" "$lowprio" list
+print_section "REMOVED AT NEW PIN -- file no longer exists upstream" "$n_removed" "$removed" list
+echo "--- CLOUD-DROPPED -- pin file's own imports reach a cloud module (${cloud_count}) ---"
+echo "  (counted only, not listed -- nothing to do)"
+echo
+
+echo "Next step: DECLINED COLLISIONS first, always. Then the three LEDGER"
+echo "RE-EXAMINE sections -- each already carries a per-test verdict and"
+echo "evidence in docs/sweep-verdict-ledger.tsv, so re-checking one is"
+echo "re-reading a specific row, not re-deriving from scratch. Then"
+echo "UNCLASSIFIED (nobody has judged these at all). Then ACTIONABLE,"
+echo "re-checking each inherited SCOPE verdict against the file's actual"
+echo "pin-side imports before trusting it (see CLAUDE.md's verdict-A caveat"
+echo "and docs/SWEEP-INVENTORY.md's larger one). LOW-PRIORITY and"
+echo "CLOUD-DROPPED need no action unless you suspect the old verdict is now"
+echo "stale. The ${ledger_carried_forward:-0} tests the ledger summary calls"
+echo "'still holds' are the entire payoff of building this ledger: work"
+echo "nobody has to redo."

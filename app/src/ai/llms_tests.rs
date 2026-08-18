@@ -190,6 +190,7 @@ fn preferences_for_profile_model_tests(custom_model_id: &LLMId) -> LLMPreference
         base_llm_for_terminal_view: HashMap::new(),
         reasoning_effort_per_terminal: HashMap::new(),
         last_used_reasoning: HashMap::new(),
+        agent_mode_models_unavailable: false,
     }
 }
 
@@ -277,6 +278,105 @@ fn selecting_a_custom_profile_default_clears_the_session_override() {
                     .id
                     .as_str(),
                 "auto"
+            );
+        });
+    });
+}
+
+/// `/fork` copies a pane's model selection with `copy_agent_mode_selection`, not with
+/// `update_preferred_agent_mode_llm`. The latter is the model picker's entry point and
+/// *always* writes `byop_last_used_model_id`, which `get_preferred_base_model` consults
+/// ahead of the profile default -- so routing a fork through it would make forking a pane
+/// that carries an explicit override silently repoint every new tab, and every restart,
+/// at that pane's model.
+#[test]
+fn copying_the_agent_mode_selection_leaves_the_global_last_used_model_alone() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let _profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let custom_model_id = LLMId::from("custom-endpoint");
+        let preferences =
+            app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
+
+        let source_id = EntityId::new();
+        let forked_id = EntityId::new();
+
+        // The source pane carries an explicit override and the global tier is empty.
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(source_id, LLMId::from("claude-opus"));
+        });
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .byop_last_used_model_id
+                    .set_value(String::new(), ctx)
+                    .expect("clearing the last-used model id should succeed");
+            });
+        });
+
+        preferences.update(&mut app, |preferences, ctx| {
+            preferences.copy_agent_mode_selection(source_id, forked_id, ctx);
+        });
+
+        preferences.read(&app, |preferences, _| {
+            assert_eq!(
+                preferences.base_llm_for_terminal_view.get(&forked_id),
+                Some(&LLMId::from("claude-opus")),
+                "the fork inherits the source pane's explicit override"
+            );
+            assert_eq!(
+                preferences.base_llm_for_terminal_view.get(&source_id),
+                Some(&LLMId::from("claude-opus")),
+                "the source pane's own override is untouched"
+            );
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                AISettings::as_ref(ctx).byop_last_used_model_id.to_string(),
+                String::new(),
+                "forking is not a picker switch, so it must not rewrite the global default model"
+            );
+        });
+    });
+}
+
+/// The *absence* of a per-view override is itself a selection -- "follow the active
+/// profile's default" -- so it has to be copied as well. Copying the source's resolved
+/// model instead would pin the fork to a concrete id and stop it tracking the profile.
+#[test]
+fn copying_an_absent_override_clears_a_stale_override_on_the_target() {
+    App::test((), |mut app| async move {
+        install_profile_model_singletons(&mut app);
+        let _profiles = app.add_singleton_model(|ctx| {
+            AIExecutionProfilesModel::new(&LaunchMode::new_for_unit_test(), ctx)
+        });
+        let custom_model_id = LLMId::from("custom-endpoint");
+        let preferences =
+            app.add_singleton_model(|_| preferences_for_profile_model_tests(&custom_model_id));
+
+        let source_id = EntityId::new();
+        let forked_id = EntityId::new();
+
+        // The source follows its profile; the target carries a leftover override.
+        preferences.update(&mut app, |preferences, _ctx| {
+            preferences
+                .base_llm_for_terminal_view
+                .insert(forked_id, LLMId::from("claude-opus"));
+        });
+
+        preferences.update(&mut app, |preferences, ctx| {
+            preferences.copy_agent_mode_selection(source_id, forked_id, ctx);
+        });
+
+        preferences.read(&app, |preferences, _| {
+            assert_eq!(
+                preferences.base_llm_for_terminal_view.get(&forked_id),
+                None,
+                "a fork of a profile-tracking pane must track the profile too"
             );
         });
     });

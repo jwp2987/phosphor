@@ -343,6 +343,17 @@ fn navigation_action_for_orchestrator_pill_switches_in_place() {
 //   update_manager::UpdateManager}` — a new import of a dropped-cloud module,
 //   which `script/check_cloud_boundary` rejects. Left untested rather than
 //   built on a cloud import; the subscription itself is a one-line arm.
+//
+//   UPDATE (this round): the second bullet's blocker no longer holds and the
+//   test is now ported, at the bottom of this file. `AgentViewController` does
+//   have a cloud-free construction path here —
+//   `test_util::terminal::initialize_app_for_terminal_view` +
+//   `add_window_with_terminal` register `ObjectStoreModel::mock` /
+//   `UpdateManager::mock` inside `test_util/terminal.rs`, whose imports are
+//   already on `script/cloud_boundary_allowlist.txt`, and hand back a real
+//   controller via `TerminalView::agent_view_controller()`. No new
+//   dropped-cloud import appears in this file, so the boundary guard is not
+//   widened. The first bullet is unaffected and still stands.
 
 /// Builds a 3-level tree (root → mid → grandchild) and returns the history
 /// handle plus the ids.
@@ -497,6 +508,140 @@ fn drill_down_anchor_matches_root_anchoring_at_depth_one() {
                 .expect("child conversation exists");
             assert_eq!(drill_down_anchor_id(root_id, root, ctx), root_id);
             assert_eq!(drill_down_anchor_id(child_id, child, ctx), root_id);
+        });
+    });
+}
+
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/agent_view/
+/// orchestration_pill_bar_tests.rs::conversation_server_token_assignment_rerenders_the_pill_bar`),
+/// adapted in two places:
+///
+/// * The event. The pin's `assign_run_id_for_conversation` emits
+///   `ConversationServerTokenAssigned`; this fork's (`history_model.rs:1343`)
+///   emits `ConversationAgentIdAssigned`, the local equivalent, and the pill
+///   bar subscribes to exactly that arm (`orchestration_pill_bar.rs:263`).
+///   Same trigger, local name.
+/// * The fixture. The pin hand-builds an `AgentViewController` from a
+///   `TerminalModel`; this fork's constructor additionally takes an
+///   `AmbientAgentViewModel`, and the assembled-by-hand pattern used elsewhere
+///   in the tree reaches for `ObjectStoreModel` / `UpdateManager` directly.
+///   Going through `initialize_app_for_terminal_view` +
+///   `add_window_with_terminal` instead yields a real, fully wired controller
+///   with those singletons registered inside `test_util/terminal.rs` — so this
+///   file takes on no `crate::cloud_object` import and
+///   `script/check_cloud_boundary` sees no new entry.
+///
+/// What is being pinned: a child's run-id linkage can land *after*
+/// `StartedNewConversation` (a restored or late-linked child), and every pill
+/// the bar draws is keyed on that linkage. If the assignment did not re-render,
+/// the bar would keep showing stale contents until some unrelated status event
+/// happened to fire. `mouse_states` is the observable proxy for "the bar
+/// refreshed", because `ensure_mouse_states` is what the subscription arm calls.
+#[test]
+fn conversation_agent_id_assignment_rerenders_the_pill_bar() {
+    use warpui::App;
+    use warpui::platform::WindowStyle;
+
+    use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+    use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+
+    /// Hosts the pill bar without embedding it in the rendered element tree,
+    /// so the scene builds triggered by its notifications stay trivial — and,
+    /// more importantly, so `render`'s lazy mouse-state insertion cannot
+    /// populate the map behind the assertion below.
+    struct PillBarHost {
+        pill_bar: ViewHandle<OrchestrationPillBar>,
+    }
+
+    impl Entity for PillBarHost {
+        type Event = ();
+    }
+
+    impl View for PillBarHost {
+        fn ui_name() -> &'static str {
+            "PillBarHost"
+        }
+
+        fn render(&self, _app: &AppContext) -> Box<dyn Element> {
+            Empty::new().finish()
+        }
+    }
+
+    impl TypedActionView for PillBarHost {
+        type Action = ();
+    }
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |terminal, _| terminal.id());
+        let agent_view_controller =
+            terminal.read(&app, |terminal, _| terminal.agent_view_controller().clone());
+
+        let history_model = BlocklistAIHistoryModel::handle(&app);
+        let root_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |history, ctx| {
+            history.start_new_child_conversation(
+                terminal_view_id,
+                "child".to_string(),
+                root_id,
+                None,
+                ctx,
+            )
+        });
+
+        // Activate the agent view on the root BEFORE the pill bar exists so
+        // the entry events cannot populate its mouse-state cache; the only
+        // event the bar sees below is the agent-id assignment.
+        agent_view_controller.update(&mut app, |controller, ctx| {
+            controller
+                .try_enter_agent_view(
+                    Some(root_id),
+                    AgentViewEntryOrigin::ConversationSelector,
+                    ctx,
+                )
+                .expect("agent view entry should succeed");
+        });
+
+        let (_window_id, host) = app.add_window(WindowStyle::NotStealFocus, |ctx| {
+            let controller = agent_view_controller.clone();
+            let pill_bar =
+                ctx.add_typed_action_view(move |ctx| OrchestrationPillBar::new(controller, ctx));
+            PillBarHost { pill_bar }
+        });
+        let pill_bar = host.read(&app, |host, _| host.pill_bar.clone());
+
+        pill_bar.read(&app, |bar, _| {
+            assert!(
+                bar.mouse_states.borrow().is_empty(),
+                "no history event has reached the pill bar yet",
+            );
+        });
+
+        // A real UUID rather than the pin's "run-123" label: this fork parses
+        // the run id into an `AmbientAgentTaskId` (`conversation.rs:986`) and
+        // drops an unparseable one with a warning. The emission itself is
+        // unconditional either way, but an id that actually lands keeps the
+        // fixture honest about what a run-id assignment looks like here.
+        history_model.update(&mut app, |history, ctx| {
+            history.assign_run_id_for_conversation(
+                child_id,
+                "9a7d1f2e-4c3b-4a5d-8e6f-0b1c2d3e4f50".to_string(),
+                None,
+                terminal_view_id,
+                ctx,
+            );
+        });
+
+        pill_bar.read(&app, |bar, _| {
+            let mouse_states = bar.mouse_states.borrow();
+            assert!(
+                mouse_states.contains_key(&root_id) && mouse_states.contains_key(&child_id),
+                "ConversationAgentIdAssigned must re-render the pill bar, refreshing \
+                 mouse states for the visible pills",
+            );
         });
     });
 }

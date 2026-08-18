@@ -2,12 +2,12 @@
 
 use std::{collections::HashMap, sync::Arc};
 
-use chrono::{Local, NaiveDateTime, TimeZone};
+use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
 use diesel::{prelude::*, result::Error, sqlite::SqliteConnection};
 
 use itertools::Itertools;
 
-use crate::ai::blocklist::{PersistedAIInput, SerializedBlockListItem};
+use crate::ai::blocklist::{PersistedAIInput, PersistedAIInputType, SerializedBlockListItem};
 use crate::terminal::model::block::{SerializedAgentViewVisibility, SerializedBlock};
 use crate::{app_state::PaneUuid, persistence::schema::ai_queries};
 
@@ -92,6 +92,14 @@ const MAX_AI_QUERIES_READ_LIMIT: i64 = 2000;
 /// TODO(alokedesai): Consider loading all AI queries by paginating the SQL query.
 const MAX_AI_QUERIES_FOR_UPARROW: usize = 100;
 
+/// Maximum number of recent AI queries scanned for NLD prompt-history matching.
+///
+/// Twenty times the up-arrow cap, and equal to [`MAX_AI_QUERIES_READ_LIMIT`], because the two
+/// serve different jobs: up-arrow is a list the user scrolls, so a short one is a feature,
+/// while NLD matching is a lookup that only benefits from more history. Both are derived from
+/// the same single read, so the wider cap costs no extra query.
+const MAX_AI_QUERIES_FOR_NLD: usize = 2000;
+
 /// Reads the most recent [`MAX_AI_QUERIES_READ_LIMIT`] AI queries from the `ai_queries` table,
 /// oldest-first (ascending by submission).
 pub(super) fn read_recent_ai_queries(
@@ -117,6 +125,35 @@ pub(super) fn process_ai_queries_for_uparrow_prompt(
         .len()
         .saturating_sub(MAX_AI_QUERIES_FOR_UPARROW);
     recent_ai_queries.split_off(start)
+}
+
+/// Extracts NLD prompt-history candidates (prompt text and submission time) from the newest
+/// [`MAX_AI_QUERIES_FOR_NLD`] of `recent_ai_queries` (ordered oldest-first).
+///
+/// Takes a slice rather than owning the vector, because the caller derives both this and the
+/// up-arrow list from the same read and needs the vector afterwards.
+///
+/// Rows with no inputs at all (legacy `[]` rows written before empty inputs were skipped at
+/// write time) and rows whose text is whitespace-only are dropped: neither can match anything,
+/// and a blank candidate in the matcher would compare equal to a user's empty prompt.
+pub(super) fn process_ai_queries_for_nld_history_match(
+    recent_ai_queries: &[PersistedAIInput],
+) -> Vec<(String, DateTime<Local>)> {
+    let start = recent_ai_queries
+        .len()
+        .saturating_sub(MAX_AI_QUERIES_FOR_NLD);
+    recent_ai_queries[start..]
+        .iter()
+        .filter_map(|query| {
+            let text = query.inputs.first().map(|input| match input {
+                PersistedAIInputType::Query { text, .. } => text.clone(),
+            })?;
+            if text.trim().is_empty() {
+                return None;
+            }
+            Some((text, query.start_ts))
+        })
+        .collect_vec()
 }
 
 /// Cap on the `ai_queries` table enforced on every write; see `upsert_ai_query_with_limit`.

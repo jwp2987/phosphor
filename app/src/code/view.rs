@@ -395,12 +395,10 @@ impl CodeView {
 
     /// Toggles between a read-only rendered preview and an editable source
     /// for remote Markdown files, inline within `CodeView`.
-    ///
     /// `rendered = true`: snapshots the current buffer text and constructs a
     /// read-only (`InteractionState::Selectable`) [`RichTextEditorView`],
     /// stored on the current tab.
     /// `rendered = false`: clears that view and returns to the source editor.
-    ///
     /// Note: this is a **snapshot**-style render — the preview does not
     /// auto-refresh when the buffer is later updated via sync; the user can
     /// switch to Raw and back to Rendered to re-render. Local files don't go
@@ -1093,7 +1091,7 @@ impl CodeView {
             // below) is not part of the title/secondary text, so without this the header
             // doesn't re-render when only the unsaved state changes (e.g. a keystroke right
             // after a save) -- it would keep showing stale dot state until something else
-            // happened to trigger a redraw. NOT COMPILED -- builds are suspended; verified
+            // happened to trigger a redraw. ; verified
             // by reading only.
             ctx.emit(PaneConfigurationEvent::HeaderContentChanged);
         });
@@ -2270,8 +2268,7 @@ impl CodeView {
         // single-tab header path (`HeaderContent::Standard`/`::Custom`) never rendered
         // the unsaved-changes dot that `render_tab_internal`'s multi-tab path already
         // renders above (see `has_unsaved_changes` there) -- a regression from the pane
-        // header refactor that introduced this function. NOT COMPILED -- builds are
-        // suspended; verified by reading only.
+        // header refactor that introduced this function.
         let has_unsaved = tab.is_some_and(|tab| Self::has_unsaved_changes(tab, app));
 
         // Build the center title element, with a hover tooltip showing the full path.

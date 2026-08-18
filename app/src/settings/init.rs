@@ -25,7 +25,7 @@ use crate::{
     undo_close::UndoCloseSettings,
     window_settings::WindowSettings,
     workflows::aliases::WorkflowAliases,
-    workspace::tab_settings::TabSettings,
+    workspace::tab_settings::{TabSettings, TabSettingsChangedEvent},
 };
 
 use warp_core::semantic_selection::SemanticSelection;
@@ -158,12 +158,27 @@ pub fn init(
     // but cannot be deserialized into the expected Rust types.
     let invalid_setting_keys =
         settings::SettingsManager::as_ref(ctx).validate_all_public_settings(ctx);
+
+    // Keys in `settings.toml` that match no setting are invisible to
+    // everything above: the loader is pull-based, so it only ever asks for
+    // settings it already knows about and never notices a key nothing asked
+    // for. A typo and a setting this fork removed both land there, silently.
+    // Report (never fail) — see the module docs for why a hard error would be
+    // wrong for anyone migrating a Warp settings file.
+    let unknown_keys = super::settings_file_diagnostics::report_unknown_settings_file_keys(ctx);
+
+    // Priority order, most to least urgent: a file that didn't parse (nothing
+    // in it took effect), values the loader rejected (defaults substituted),
+    // then keys that name no setting (nothing to substitute — the line is
+    // simply inert). Only one can be shown, so the worse news wins.
     let settings_file_error = if let Some(err) = startup_toml_parse_error {
         Some(super::SettingsFileError::FileParseFailed(err.to_string()))
     } else if !invalid_setting_keys.is_empty() {
         Some(super::SettingsFileError::InvalidSettings(
             invalid_setting_keys,
         ))
+    } else if !unknown_keys.is_empty() {
+        Some(super::SettingsFileError::UnknownKeys(unknown_keys))
     } else {
         None
     };
@@ -181,6 +196,10 @@ pub fn init(
                     keys.join(", ")
                 );
             }
+            // Already logged, with the file path and the full explanation, by
+            // `report_unknown_settings_file_keys` above. Logging it a second
+            // time here would double every unknown-key warning.
+            super::SettingsFileError::UnknownKeys(_) => {}
         }
     }
 
@@ -261,6 +280,32 @@ pub fn init(
         }
     });
 
+    // Tab groups (`appearance.tabs.enable_tab_groups`). Every tab-group entry
+    // point -- the key bindings in `workspace/mod.rs`, the context-menu entries
+    // and multi-select in `tab.rs`, and the whole of
+    // `workspace/view/tab_grouping.rs` -- is already guarded by
+    // `FeatureFlag::GroupedTabs.is_enabled()`, and `is_enabled` consults the
+    // user-preference map ahead of the global flag state. So pushing the
+    // setting onto the flag's user preference is the entire bridge: no call
+    // site needs its own check.
+    //
+    // Pushed once here, not only from the subscription, because a user who
+    // turned tab groups off in a previous session must come back to them off
+    // without having to touch the toggle again.
+    //
+    // `grouped_tabs_available` is sampled before the first push so the setting
+    // can only ever narrow what the build offers. Turning the toggle on in a
+    // build that never enabled `FeatureFlag::GroupedTabs` (the `grouped_tabs`
+    // cargo feature is in this fork's default list, so this is the unusual
+    // case) must not conjure the feature into existence.
+    let grouped_tabs_available = FeatureFlag::GroupedTabs.is_enabled();
+    apply_tab_groups_setting_to_feature_flag(grouped_tabs_available, ctx);
+    ctx.subscribe_to_model(&TabSettings::handle(ctx), move |_model, event, ctx| {
+        if matches!(event, TabSettingsChangedEvent::EnableTabGroups { .. }) {
+            apply_tab_groups_setting_to_feature_flag(grouped_tabs_available, ctx);
+        }
+    });
+
     // Set up hot-reload for the settings file. When the WarpConfig watcher
     // detects a change to settings.toml, reload preferences from disk and
     // push changed values into setting models.
@@ -330,6 +375,20 @@ pub(crate) fn apply_prompt_template_dir_to_global_slot(ctx: &AppContext) {
     );
 }
 
+/// Pushes the `appearance.tabs.enable_tab_groups` setting onto
+/// `FeatureFlag::GroupedTabs` as a user preference, which
+/// [`FeatureFlag::is_enabled`] consults ahead of the global flag state. This is
+/// the only place the setting is read: every tab-group code path is already
+/// behind that flag.
+///
+/// `available_in_build` is the flag's state before any preference was written,
+/// so the setting can turn tab groups off but never on in a build that did not
+/// have them.
+fn apply_tab_groups_setting_to_feature_flag(available_in_build: bool, ctx: &AppContext) {
+    let enabled = *TabSettings::as_ref(ctx).enable_tab_groups.value();
+    FeatureFlag::GroupedTabs.set_user_preference(available_in_build && enabled);
+}
+
 /// Called after `initialize_app` (once `ProxyCredentials` is registered): reads the current
 /// password and re-pushes the global proxy settings. Also used by the NetworkSettings change
 /// subscription to keep the password from being lost.
@@ -364,13 +423,24 @@ fn handle_warp_config_change(
     }
     let failed_keys = settings::SettingsManager::handle(ctx)
         .update(ctx, |manager, ctx| manager.reload_all_public_settings(ctx));
+    // Re-check for unrecognized keys: the user edited the file, which is
+    // exactly when a typo appears. Log repeats are suppressed inside — this
+    // fires on every write the app itself makes to the file, too — but the
+    // returned set is always current, which is what the banner needs.
+    let unknown_keys = super::settings_file_diagnostics::report_unknown_settings_file_keys(ctx);
     WarpConfig::handle(ctx).update(ctx, |_, ctx| {
-        if failed_keys.is_empty() {
-            ctx.emit(WarpConfigUpdateEvent::SettingsErrorsCleared);
-        } else {
+        // Same priority order as `init`: rejected values first, inert keys
+        // second, cleared only when the file has neither.
+        if !failed_keys.is_empty() {
             ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
                 super::SettingsFileError::InvalidSettings(failed_keys),
             ));
+        } else if !unknown_keys.is_empty() {
+            ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
+                super::SettingsFileError::UnknownKeys(unknown_keys),
+            ));
+        } else {
+            ctx.emit(WarpConfigUpdateEvent::SettingsErrorsCleared);
         }
     });
 }

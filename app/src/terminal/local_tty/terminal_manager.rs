@@ -28,7 +28,9 @@ use crate::terminal::view::ConversationRestorationInNewPaneType;
 
 use crate::banner::BannerState;
 use crate::context_chips::current_prompt::CurrentPrompt;
+use crate::context_chips::prompt::Prompt;
 use crate::context_chips::prompt_type::PromptType;
+use crate::context_chips::ContextChipKind;
 use crate::features::FeatureFlag;
 use crate::pane_group::TerminalViewResources;
 use crate::persistence::ModelEvent;
@@ -42,7 +44,7 @@ use crate::terminal::model::session::Sessions;
 
 use crate::terminal::model_events::{ModelEventDispatcher, SshRemoteServerSupport};
 use crate::terminal::safe_mode_settings::get_secret_obfuscation_mode;
-use crate::terminal::session_settings::SessionSettings;
+use crate::terminal::session_settings::{SessionSettings, ToolbarChipSelection};
 use crate::terminal::shared_session::SharedSessionStatus;
 use crate::terminal::writeable_pty::pty_controller::{EventLoopSendError, EventLoopSender};
 use crate::terminal::writeable_pty::terminal_manager_util::{
@@ -190,19 +192,28 @@ impl TerminalManager<TerminalView> {
         ctx: &mut AppContext,
     ) -> (ViewHandle<TerminalView>, ModelHandle<Box<dyn TerminalManagerTrait>>) {
         // If we have explicit restored_blocks, prioritize those (these come from db on startup).
-        // Otherwise if there's a conversation we're restoring, get blocks from those.
-        let all_restored_blocks =
-            restored_blocks
-                .cloned()
-                .or_else(|| match &conversation_restoration {
-                    Some(ConversationRestorationInNewPaneType::Historical {
-                        conversation, ..
-                    })
-                    | Some(ConversationRestorationInNewPaneType::Forked { conversation, .. }) => {
-                        Some(conversation.to_serialized_blocklist_items())
-                    }
-                    _ => None,
-                });
+        // Otherwise if there's a conversation we're restoring, get blocks from those (including
+        // when `restored_blocks` is missing or an empty vec: on startup the blocks may only exist
+        // in the conversation transcript, e.g. when the pane was viewing a transcript at quit).
+        let all_restored_blocks = restored_blocks
+            .filter(|blocks| !blocks.is_empty())
+            .cloned()
+            .or_else(|| match &conversation_restoration {
+                Some(ConversationRestorationInNewPaneType::Historical { conversation, .. })
+                | Some(ConversationRestorationInNewPaneType::Forked { conversation, .. }) => {
+                    Some(conversation.to_serialized_blocklist_items())
+                }
+                Some(ConversationRestorationInNewPaneType::Startup { conversations, .. }) => {
+                    // Multiple conversations may have interleaved timestamps, so sort by start_ts.
+                    let mut items: Vec<_> = conversations
+                        .iter()
+                        .flat_map(|conversation| conversation.to_serialized_blocklist_items())
+                        .collect();
+                    items.sort_by_key(|item| item.start_ts());
+                    (!items.is_empty()).then_some(items)
+                }
+                _ => None,
+            });
 
         // We need to append the session restoration separator to the block list if there are any
         // restored blocks (command blocks or AI conversations) to show. These predicates are
@@ -652,6 +663,28 @@ impl<S> TerminalManager<S> {
         let is_honor_ps1_enabled = *SessionSettings::as_ref(ctx).honor_ps1;
         let is_crash_reporting_enabled = PrivacySettings::as_ref(ctx).is_crash_reporting_enabled;
 
+        // Determine whether the Node.js Version chip is enabled anywhere it could be
+        // shown (the Zap prompt, the agent footer, or the CLI agent footer). When it
+        // is not, the shell bootstrap skips the expensive per-prompt `node --version`
+        // detection. The chip value is fed by the same precmd payload regardless of
+        // where it is displayed, so we must check all three locations.
+        let node_version_chip_enabled = {
+            let in_prompt = !is_honor_ps1_enabled
+                && Prompt::as_ref(ctx)
+                    .chip_kinds()
+                    .contains(&ContextChipKind::NodeVersion);
+            let settings = SessionSettings::as_ref(ctx);
+            in_prompt
+                || settings
+                    .agent_footer_chip_selection
+                    .all_chips()
+                    .contains(&ContextChipKind::NodeVersion)
+                || settings
+                    .cli_agent_footer_chip_selection
+                    .all_chips()
+                    .contains(&ContextChipKind::NodeVersion)
+        };
+
         // The TMUX SSH wrapper supercedes the original ControlMaster wrapper.
         let enable_ssh_wrapper = if FeatureFlag::SSHTmuxWrapper.is_enabled() {
             *WarpifySettings::as_ref(ctx)
@@ -662,6 +695,12 @@ impl<S> TerminalManager<S> {
             *SshSettings::as_ref(ctx).enable_legacy_ssh_wrapper.value()
         };
 
+        // Only meaningful when the legacy ControlMaster wrapper is active.
+        let reuse_ssh_control_master = enable_ssh_wrapper
+            && *SshSettings::as_ref(ctx)
+                .reuse_existing_control_master
+                .value();
+
         let size: crate::terminal::SizeInfo = model.lock().block_list().size().to_owned();
         let options = PtyOptions {
             size,
@@ -670,8 +709,10 @@ impl<S> TerminalManager<S> {
             start_dir: startup_directory,
             env_vars,
             enable_ssh_wrapper,
+            reuse_ssh_control_master,
             shell_debug_mode: is_shell_debug_mode_enabled,
             honor_ps1: is_honor_ps1_enabled,
+            node_version_chip_enabled,
             close_fds: true,
         };
 

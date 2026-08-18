@@ -35,7 +35,7 @@ CHECK=0
 
 OUT="docs/STATE.md"
 TMP="$(mktemp)"
-trap 'rm -f "$TMP" "$TMP".pin "$TMP".fork' EXIT
+trap 'rm -rf "$TMP" "$TMP".*' EXIT
 
 # Read the pin from ORACLE.md's "Commit (full)" row, the same way
 # .github/workflows/pr-check.yml does. This used to be a sed that matched the
@@ -62,12 +62,210 @@ LEDGER=docs/sweep-verdict-ledger.tsv
 # "is it absent"; the file answers "is it absent because we deleted the whole
 # subsystem", which is a different question and the one that matters -- see the
 # split below.
-git grep -n -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$PIN" -- "*.rs" 2>/dev/null \
-    | sed -nE "s/^${PIN}:([^:]+)[:-][0-9]+[:-].*\bfn ([a-z0-9_]+).*/\2\t\1/p" \
-    | LC_ALL=C sort -u > "$TMP".pinmap
+#
+# NOT EVERY TEST IS SPELLED `#[test] fn <name>`
+# ---------------------------------------------
+# This used to be a single `git grep` for `#[test]`, and it under-counted BOTH
+# sides in two independent ways (measured 2026-08-18). Every parity percentage
+# this project has ever published was computed over the short count.
+#
+#   1. `crates/integration` was entirely invisible -- 319 tests at the pin, and
+#      more here, counted as ZERO. The crate declares its tests by name in
+#      `integration_tests! { ... }` and implements them behind
+#      `register_test!(<name>)` in `src/bin/integration.rs`. The `#[test]` item
+#      nextest actually runs is generated inside the macro body, so no `#[test]`
+#      is ever written next to a test's real name.
+#
+#   2. Three more `macro_rules!` emit `#[test] fn $name()`. The literal
+#      `#[test]` again sits in the macro BODY, so the only name the grep could
+#      see was whatever the body happened to spell -- and ~57 real tests
+#      collapsed to ONE placeholder (`test_name`, from the `concat_idents!`
+#      inside `define_axis_agnostic_tests!`). `ref_tests!` (39 names),
+#      `input_mode_prefix_tests!` and `define_axis_agnostic_tests!` (2 per
+#      invocation) contributed nothing but that placeholder.
+#
+# So the extraction is now three steps: grep `#[test]` as before, SUBTRACT the
+# names that were read out of a macro body rather than off a real item, and ADD
+# the names those macros actually generate, expanded from their invocation
+# lists. All of it runs identically against the pin and against HEAD, so a
+# macro that exists on both sides cancels out of the diff instead of showing up
+# as fake debt.
+#
+# `register_test!` -- not the `integration_tests!` lists -- is the source for
+# the integration crate because it is the superset of the two:
+# `script/check_integration_test_registry` FAILS if a listed name is not
+# registered, while `register_tests()` deliberately carries entries no automatic
+# suite runs (`test_video_recording`, the `usage_*` scenarios). Counting the
+# registry therefore counts every integration test that exists.
+#
+# HOW A FOURTH SUCH MACRO GETS NOTICED
+# Hard-coding three macro names is exactly the shape of mistake that hid this
+# for months, so the scan does not trust its own list: it reports EVERY
+# `macro_rules!` whose body contains a `#[test]`, and warns about any that this
+# script does not know how to expand. If that warning fires, teach the expander
+# about the new macro. Do not silence it, and do not add it to the allowlist
+# without an expander -- the allowlist means "handled", not "seen".
+
+# Macros whose generated tests are expanded below. `integration_tests` is here
+# because its names are covered via `register_test!`, see above.
+MACRO_TEST_ALLOWLIST=" ref_tests input_mode_prefix_tests define_axis_agnostic_tests integration_tests "
+
+# Walks a Rust file and reports, for every `macro_rules!` whose body contains a
+# `#[test]` attribute:  DEF <file> <macro>, plus  INNER <file> <fn> for each
+# `fn <name>` written inside that body. The INNER names are the placeholders the
+# old grep mistook for tests; they are subtracted, per (name, file) pair, so a
+# real test elsewhere that happens to share the name survives.
+#
+# Brace counting, not a parser: braces inside string literals would throw it
+# off. No macro in this tree does that, and the cost of being wrong is a
+# spurious warning, not a wrong number.
+MACRO_SCAN_AWK='
+function flush(  i) {
+    if (hit) {
+        print "DEF\t" FILE "\t" mname
+        for (i = 1; i <= nfn; i++) print "INNER\t" FILE "\t" fns[i]
+    }
+    inmac = 0; hit = 0; nfn = 0; opened = 0; mname = ""
+}
+{
+    line = $0
+    sub(/\/\/.*/, "", line)
+    if (!inmac) {
+        if (line !~ /macro_rules![ \t]*[A-Za-z_]/) next
+        inmac = 1; depth = 0; hit = 0; nfn = 0; opened = 0
+        mname = line
+        sub(/^.*macro_rules![ \t]*/, "", mname)
+        sub(/[^A-Za-z0-9_].*$/, "", mname)
+    }
+    depth += gsub(/\{/, "{", line)
+    depth -= gsub(/\}/, "}", line)
+    if (line ~ /\{/) opened = 1
+    if (line ~ /#\[(tokio::)?(async_std::)?test/) hit = 1
+    rest = line
+    while (match(rest, /(^|[^A-Za-z0-9_])fn [a-z0-9_]+/)) {
+        frag = substr(rest, RSTART, RLENGTH)
+        sub(/^.*fn /, "", frag)
+        fns[++nfn] = frag
+        rest = substr(rest, RSTART + RLENGTH)
+    }
+    if (opened && depth <= 0) flush()
+}
+END { if (inmac) flush() }
+'
+
+# `ref_tests! { name name ... }` -- a bare whitespace-separated ident list.
+REF_TESTS_AWK='
+/^[ \t]*ref_tests![ \t]*\{/ { d = 1; next }
+d && /^[ \t]*\}/ { d = 0; next }
+d {
+    l = $0; sub(/\/\/.*/, "", l)
+    n = split(l, a, /[ \t,]+/)
+    for (i = 1; i <= n; i++) if (a[i] ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print a[i] "\t" FILE
+}
+'
+
+# `input_mode_prefix_tests! { name: (args), ... }` -- ident before the colon.
+INPUT_MODE_TESTS_AWK='
+/^[ \t]*input_mode_prefix_tests![ \t]*\{/ { d = 1; next }
+d && /^[ \t]*\}/ { d = 0; next }
+d {
+    l = $0; sub(/\/\/.*/, "", l); gsub(/[ \t]/, "", l)
+    if (match(l, /^[A-Za-z_][A-Za-z0-9_]*:/)) print substr(l, 1, RLENGTH - 1) "\t" FILE
+}
+'
+
+# `define_axis_agnostic_tests!(f);` -- generates `f_vertical` and `f_horizontal`
+# via `concat_idents!`. The `macro_rules!` line itself has no `(` after the `!`,
+# so the definition cannot match this.
+AXIS_TESTS_AWK='
+{
+    rest = $0
+    while (match(rest, /define_axis_agnostic_tests!\([A-Za-z_][A-Za-z0-9_]*\)/)) {
+        n = substr(rest, RSTART, RLENGTH)
+        sub(/^define_axis_agnostic_tests!\(/, "", n); sub(/\)$/, "", n)
+        print n "_vertical\t" FILE
+        print n "_horizontal\t" FILE
+        rest = substr(rest, RSTART + RLENGTH)
+    }
+}
+'
+
+# Paths at rev $1 whose contents match ERE $2, with the `<rev>:` prefix stripped.
+rev_files() { git grep -lE "$2" "$1" -- "*.rs" 2>/dev/null | sed "s|^$1:||" | LC_ALL=C sort -u; }
+
+# Run awk program $3 over every file at rev $1 matching ERE $2, with FILE set.
+expand_macro() {
+    local rev="$1" pat="$2" prog="$3" f
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        git show "$rev:$f" 2>/dev/null | awk -v FILE="$f" "$prog"
+    done < <(rev_files "$rev" "$pat")
+}
+
+# extract_test_map <rev> <out>
+# Writes `<name>\t<defining file>` to <out>, and the two generated subsets to
+# <out>.reg (integration registry) and <out>.mac (test-emitting macros) so the
+# document can show its work. Unexpanded test-emitting macros go to <out>.warn.
+extract_test_map() {
+    local rev="$1" out="$2" d f
+    d="$(mktemp -d "${TMP}.dir.XXXXXX")"
+
+    git grep -n -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' "$rev" -- "*.rs" 2>/dev/null \
+        | sed -nE "s/^${rev}:([^:]+)[:-][0-9]+[:-].*\bfn ([a-z0-9_]+).*/\2\t\1/p" \
+        | LC_ALL=C sort -u > "$d/plain"
+
+    # Only files that define a macro AND contain a `#[test]` can be affected.
+    LC_ALL=C comm -12 <(rev_files "$rev" 'macro_rules!') \
+                      <(rev_files "$rev" '^\s*#\[(tokio::)?(async_std::)?test') > "$d/cands"
+    : > "$d/scan"
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        git show "$rev:$f" 2>/dev/null | awk -v FILE="$f" "$MACRO_SCAN_AWK" >> "$d/scan"
+    done < "$d/cands"
+
+    awk -F'\t' '$1 == "INNER" { print $3 "\t" $2 }' "$d/scan" | LC_ALL=C sort -u > "$d/inner"
+    LC_ALL=C comm -23 "$d/plain" "$d/inner" > "$d/base"
+
+    awk -F'\t' -v ok="$MACRO_TEST_ALLOWLIST" \
+        '$1 == "DEF" && index(ok, " " $3 " ") == 0 { print $2 "\t" $3 }' \
+        "$d/scan" | LC_ALL=C sort -u > "$out".warn
+
+    git grep -oE 'register_test!\([A-Za-z_][A-Za-z0-9_]*\)' "$rev" -- "*.rs" 2>/dev/null \
+        | sed -nE "s/^${rev}:([^:]+):register_test!\(([A-Za-z0-9_]+)\)/\2\t\1/p" \
+        | LC_ALL=C sort -u > "$out".reg
+
+    {
+        expand_macro "$rev" 'ref_tests!' "$REF_TESTS_AWK"
+        expand_macro "$rev" 'input_mode_prefix_tests!' "$INPUT_MODE_TESTS_AWK"
+        expand_macro "$rev" 'define_axis_agnostic_tests!' "$AXIS_TESTS_AWK"
+    } | LC_ALL=C sort -u > "$out".mac
+
+    LC_ALL=C sort -u "$d/base" "$out".reg "$out".mac > "$out"
+    rm -rf "$d"
+}
+
+extract_test_map "$PIN" "$TMP".pinmap
 cut -f1 "$TMP".pinmap | LC_ALL=C sort -u > "$TMP".pin
-git grep -h -A 3 -E '^\s*#\[(tokio::)?(async_std::)?test' HEAD -- "*.rs" 2>/dev/null \
-    | grep -oE '\bfn [a-z0-9_]+' | sed 's/fn //' | LC_ALL=C sort -u > "$TMP".fork
+extract_test_map HEAD "$TMP".forkmap
+cut -f1 "$TMP".forkmap | LC_ALL=C sort -u > "$TMP".fork
+
+# A `macro_rules!` that emits `#[test]` and has no expander here is silently
+# uncounted -- the exact bug this section exists to fix. Say so, loudly, on both
+# stderr and in the document, and never fail closed into a smaller number.
+LC_ALL=C sort -u "$TMP".pinmap.warn "$TMP".forkmap.warn > "$TMP".macrowarn
+MACRO_WARN=""
+if [[ -s "$TMP".macrowarn ]]; then
+    MACRO_WARN=$(sed 's/\t/` — `/; s/^/> - `/; s/$/`/' "$TMP".macrowarn)
+    {
+        echo "state: WARNING -- macro_rules! that emit #[test] but are not expanded by this script:"
+        sed 's/^/  /' "$TMP".macrowarn
+        echo "  Their tests are being under-counted. Add an expander to script/state."
+    } >&2
+fi
+PIN_REG=$(cut -f1 "$TMP".pinmap.reg | LC_ALL=C sort -u | wc -l)
+FORK_REG=$(cut -f1 "$TMP".forkmap.reg | LC_ALL=C sort -u | wc -l)
+PIN_MAC=$(cut -f1 "$TMP".pinmap.mac | LC_ALL=C sort -u | wc -l)
+FORK_MAC=$(cut -f1 "$TMP".forkmap.mac | LC_ALL=C sort -u | wc -l)
 
 PIN_N=$(wc -l < "$TMP".pin)
 FORK_N=$(wc -l < "$TMP".fork)
@@ -235,6 +433,24 @@ any individual test.
 | Fork tests | $FORK_N |
 | Shared | $SHARED |
 | Absent from fork | $ABSENT |
+
+Counted the same way on both sides: \`#[test]\` items, **plus** the
+\`crates/integration\` tests wired up by \`register_test!\` ($PIN_REG at the pin,
+$FORK_REG here), **plus** the tests generated by the \`macro_rules!\` that emit
+\`#[test] fn \$name()\` ($PIN_MAC / $FORK_MAC). Before 2026-08-18 the extractor saw
+only literal \`#[test]\`, which counted the whole integration crate as zero and
+collapsed the macro-generated tests to a single placeholder name — so every
+percentage published before that date was computed over a short count on both
+sides.$( if [[ -n "$MACRO_WARN" ]]; then
+     printf '\n\n'
+     echo "> **A \`macro_rules!\` that emits \`#[test]\` is NOT being expanded, so its"
+     echo "> tests are missing from the counts above:**"
+     echo ">"
+     echo "$MACRO_WARN"
+     echo ">"
+     echo "> Add an expander for it in \`script/state\`. Listing it as handled without"
+     echo "> one just hides the undercount again."
+   fi )
 
 Of the absent, **$ADJ_ABSENT are adjudicated** in the ledger and $UNADJ are not.
 

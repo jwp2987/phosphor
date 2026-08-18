@@ -10,6 +10,8 @@ pub use view::*;
 #[cfg(feature = "local_fs")]
 use std::path::PathBuf;
 
+#[cfg(feature = "local_fs")]
+use ai::index::full_source_code_embedding::manager::CodebaseIndexManager;
 use ai::skills::SkillReference;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
@@ -42,6 +44,7 @@ use crate::tab::SelectedTabColor;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::inline_menu::{InlineMenuAction, InlineMenuType};
 use crate::terminal::input::message_bar::Message;
+use crate::terminal::input::models::InlineModelSelectorTab;
 use crate::terminal::input::slash_command_model::{
     SlashCommandEntryState, UpdatedSlashCommandModel,
 };
@@ -55,6 +58,8 @@ use crate::ui_components::color_dot;
 use crate::view_components::DismissibleToast;
 use crate::workflows::command_parser::compute_workflow_display_data;
 use crate::workspace::{ForkedConversationDestination, ToastStack, WorkspaceAction};
+#[cfg(feature = "local_fs")]
+use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::TelemetryEvent;
 
 /// What happens when a slash command is selected from the menu.
@@ -816,6 +821,65 @@ impl Input {
                     entrypoint: CodeReviewPaneEntrypoint::SlashCommand,
                 });
             }
+            index if command.name == commands::INDEX.name => {
+                // The pin routes this through `TerminalAction::IndexProjectSpeedbump`
+                // (`42effe840:app/src/terminal/view.rs:27486`), whose handler checks
+                // `FullSourceCodeEmbedding` + `is_codebase_context_enabled`, canonicalizes the
+                // pwd, calls `CodebaseIndexManager::index_directory`, and then swaps in an
+                // "indexing" speedbump banner. This fork has no codebase-index speedbump banner
+                // (nothing else inserts or removes one), so the banner half is dropped and the
+                // gates and the index call are kept verbatim — routed straight from here rather
+                // than through a new terminal action, because that action would have exactly one
+                // dispatch site and one handler.
+                #[cfg(feature = "local_fs")]
+                {
+                    if !FeatureFlag::FullSourceCodeEmbedding.is_enabled()
+                        || !UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx)
+                    {
+                        return false;
+                    }
+
+                    let Some(directory) = self
+                        .active_session_path_if_local(ctx)
+                        .map(|path| path.to_path_buf())
+                    else {
+                        show_error_toast(
+                            "/index requires a local working directory".to_owned(),
+                            ctx,
+                        );
+                        return true;
+                    };
+
+                    // The pin canonicalizes and indexes the working directory itself rather
+                    // than the repo root; `CodebaseIndexManager` resolves the root it actually
+                    // indexes (`root_path_for_codebase`).
+                    let Ok(repo_path) = directory.canonicalize() else {
+                        show_error_toast(
+                            format!("Could not resolve {} to index", directory.display()),
+                            ctx,
+                        );
+                        return true;
+                    };
+
+                    let started = CodebaseIndexManager::handle(ctx)
+                        .update(ctx, |manager, ctx| manager.index_directory(repo_path, ctx));
+                    if !started {
+                        // `index_directory` returns false when indexing is off or the index
+                        // limit is reached, and says nothing about which. Both are conditions
+                        // the user has to fix in Code settings.
+                        show_error_toast(
+                            "Could not start indexing — check Settings > Code > Codebase Indexing"
+                                .to_owned(),
+                            ctx,
+                        );
+                        return true;
+                    }
+                }
+                #[cfg(not(feature = "local_fs"))]
+                {
+                    return false;
+                }
+            }
             open_mcp_servers if command.name == commands::OPEN_MCP_SERVERS.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenViewMCPPane);
             }
@@ -846,7 +910,20 @@ impl Input {
                 self.open_invoke_skill_selector(ctx);
             }
             models if command.name == commands::MODEL.name => {
-                self.open_model_selector(ctx);
+                if trigger.is_keybinding() {
+                    // A keybinding may carry a pre-existing prompt in the buffer; open
+                    // like the model chip so the prompt is parked for search and
+                    // restored when a model is selected (or the selector is dismissed).
+                    self.open_model_selector_and_snapshot_prompt(
+                        InlineModelSelectorTab::BaseAgent,
+                        ctx,
+                    );
+                } else {
+                    // Typed `/model`: the buffer holds the consumable command text.
+                    // Just switch into the model selector; `set_mode` snapshots the
+                    // buffer so it's restored on dismiss but cleared on selection.
+                    self.open_model_selector(ctx);
+                }
             }
             profiles if command.name == commands::PROFILE.name => {
                 if !FeatureFlag::InlineProfileSelector.is_enabled() {
@@ -1350,6 +1427,80 @@ mod tests {
         assert_eq!(commands::MODEL.kind(), SlashCommandKind::Model);
         assert!(!slash_command_is_submitted_as_prompt(&commands::MODEL));
         assert!(commands::MODEL.argument.is_none());
+    }
+
+    /// The centralized classifier must mark only the prompt-submitting commands (/compact,
+    /// /plan) as "submitted as a prompt". Every other slash command emits an immediate
+    /// action and must be treated as "run now" by the prompt-queue gate and the shared-session
+    /// viewer path.
+    ///
+    /// **Diverges from the pin, deliberately.** Upstream also lists `/orchestrate` here,
+    /// because its `/orchestrate` is agent-invoked: it carries
+    /// `SlashCommandKind::Orchestrate` and is submitted as a prompt for the model to act on,
+    /// which needs `AIAgentActionType::RunAgents`. This fork's `/orchestrate` is
+    /// user-invoked and executes directly, so it deliberately has no `kind()` arm and falls
+    /// through to `SlashCommandKind::Other` — see the doc comment on `commands::ORCHESTRATE`
+    /// and the sibling assertion in
+    /// `orchestrate_command_is_registered_and_available_on_both_surfaces`, which pins the
+    /// `Other` kind from the other direction. It is asserted below with the run-now commands.
+    ///
+    /// `SlashCommandKind::Orchestrate` stays in the `matches!` arm of
+    /// `slash_command_is_submitted_as_prompt` on purpose: the predicate keeps pin fidelity so
+    /// the deferred agent-invoked path works unchanged if it is ever wired up. Nothing in this
+    /// fork maps to that kind today, so the arm is unreachable rather than wrong.
+    #[test]
+    fn slash_command_is_submitted_as_prompt_only_for_prompt_commands() {
+        assert!(slash_command_is_submitted_as_prompt(&commands::COMPACT));
+        assert!(slash_command_is_submitted_as_prompt(&commands::PLAN));
+
+        for command in [
+            // Fork-native, user-invoked, executes directly — see above.
+            &*commands::ORCHESTRATE,
+            &*commands::FORK,
+            &*commands::FORK_AND_COMPACT,
+            &*commands::FORK_FROM,
+            // The pin also lists `/continue-locally` here; it is a cloud-session hand-off
+            // command that this fork does not carry.
+            &*commands::COMPACT_AND,
+            &*commands::MODEL,
+            &*commands::AUTO_APPROVE,
+            &*commands::REWIND,
+            &*commands::CONVERSATIONS,
+            &*commands::QUEUE,
+            &*commands::MCP,
+        ] {
+            assert!(!slash_command_is_submitted_as_prompt(command));
+        }
+    }
+
+    /// `/theme` takes a mandatory argument, so selecting it from the menu must seed the input with
+    /// the command text instead of firing with no argument.
+    #[test]
+    fn theme_command_inserts_input_for_its_required_argument() {
+        assert_eq!(
+            slash_command_selection_behavior(&commands::THEME),
+            SlashCommandSelectionBehavior::InsertCommandText("/theme ".to_owned())
+        );
+        let argument = commands::THEME
+            .argument
+            .as_ref()
+            .expect("theme should require an argument");
+        assert!(!argument.is_optional);
+        assert_eq!(argument.hint_text, Some("<auto|light|dark>"));
+    }
+
+    /// `/exit` is an argument-less, always-available command that runs the moment it is selected —
+    /// never queued as a prompt and never waiting for input.
+    #[test]
+    fn exit_command_executes_immediately_and_takes_no_argument() {
+        assert_eq!(commands::EXIT.kind(), SlashCommandKind::Exit);
+        assert!(commands::EXIT.argument.is_none());
+        assert!(!slash_command_is_submitted_as_prompt(&commands::EXIT));
+        assert_eq!(
+            slash_command_selection_behavior(&commands::EXIT),
+            SlashCommandSelectionBehavior::Execute
+        );
+        assert_eq!(commands::EXIT.availability, Availability::ALWAYS);
     }
 
     #[cfg(all(feature = "local_fs", windows))]

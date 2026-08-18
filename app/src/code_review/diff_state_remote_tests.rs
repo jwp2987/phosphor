@@ -455,6 +455,7 @@ fn simple_file_diff(path: &str) -> FileDiff {
         max_line_number: 10,
         has_hidden_bidi_chars: false,
         size: DiffSize::Normal,
+        staged: None,
     }
 }
 

@@ -104,10 +104,108 @@ impl GitFileStatus {
     }
 }
 
+/// Where a file's changes sit relative to the index (Zap #329).
+///
+/// Derived from the `XY` column of `git status --porcelain=v2`: `X` is the
+/// index-vs-HEAD state and `Y` the worktree-vs-index state, so `X != '.'`
+/// means "something is staged" and `Y != '.'` means "something is not".
+///
+/// Deliberately *not* stored on [`GitFileStatus`]: that enum answers "what
+/// kind of change is this" and is shared with the base-branch diff modes,
+/// which have no index at all. This answers a different question, and is
+/// carried as an `Option` on [`FileDiff`] so those modes can say "not
+/// applicable" instead of lying with `Unstaged`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FileStagedState {
+    /// The whole diff for this path is in the index (`XY` = `X.`).
+    Staged,
+    /// Nothing for this path is in the index (`XY` = `.Y`, or untracked).
+    Unstaged,
+    /// Both columns are dirty (`XY` = `XY`): some of this file is staged and
+    /// some is not, so neither a plain "stage" nor "unstage" label is honest.
+    PartiallyStaged,
+}
+
+impl FileStagedState {
+    /// Whether *any* part of this file is in the index.
+    pub fn is_staged(&self) -> bool {
+        matches!(self, Self::Staged | Self::PartiallyStaged)
+    }
+
+    /// Whether the file's whole diff is in the index — the predicate the UI
+    /// uses to pick between the stage and unstage affordance. A partially
+    /// staged file gets the *stage* action, because `git add` on it stages
+    /// the remainder rather than discarding what is already staged.
+    pub fn is_fully_staged(&self) -> bool {
+        matches!(self, Self::Staged)
+    }
+
+    /// Reads the `XY` status field of a `git status --porcelain=v2` changed
+    /// or renamed entry. Anything that is not a two-column code (an untracked
+    /// or unmerged entry, or malformed input) is reported as unstaged, which
+    /// is what both of those are: an untracked path has no index entry, and an
+    /// unmerged one cannot be staged without resolving the conflict first.
+    fn from_status_code(status_code: &str) -> Self {
+        let mut chars = status_code.chars();
+        let (Some(index), Some(worktree)) = (chars.next(), chars.next()) else {
+            return Self::Unstaged;
+        };
+        match (index != '.', worktree != '.') {
+            (true, true) => Self::PartiallyStaged,
+            (true, false) => Self::Staged,
+            (false, _) => Self::Unstaged,
+        }
+    }
+}
+
+/// What a single staging operation applies to (Zap #329).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StageTarget {
+    /// Whole files, by **repo-relative** path. Absolute paths would work for
+    /// the local backend and silently mean the wrong thing on the daemon,
+    /// whose repo lives at a different absolute prefix.
+    Paths(Vec<String>),
+    /// One reconstructed hunk patch from [`hunk_to_patch`], applied with
+    /// `git apply --cached`.
+    ///
+    /// The patch's line numbers are those of the diff it was built from, so a
+    /// caller must re-diff between operations rather than queueing several
+    /// hunks from one snapshot — see [`hunk_to_patch`]'s note. `git apply`
+    /// verifies context and rejects a stale patch, so getting this wrong
+    /// fails loudly instead of corrupting the index.
+    Hunk(String),
+}
+
+/// One stage/unstage operation. Shared by the local backend, the remote
+/// backend, and the daemon handler so all three express the same vocabulary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StageRequest {
+    pub target: StageTarget,
+    /// Un-stage rather than stage. For [`StageTarget::Paths`] this is
+    /// `git restore --staged` (index only — the working tree is untouched,
+    /// unlike the Discard Files path, which also passes `--worktree`); for
+    /// [`StageTarget::Hunk`] it is `git apply --cached --reverse`.
+    pub unstage: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct FileStatusInfo {
     pub path: PathBuf,
     pub status: GitFileStatus,
+}
+
+/// One parsed `git status --porcelain=v2` entry, carrying the index state
+/// alongside the change kind.
+///
+/// [`LocalDiffStateModel::parse_git_status`] keeps returning bare
+/// `(path, status)` pairs because its five callers only ever wanted those;
+/// only the HEAD-mode diff builder needs the staged column, and it calls
+/// [`LocalDiffStateModel::parse_git_status_entries`] directly.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GitStatusEntry {
+    pub path: PathBuf,
+    pub status: GitFileStatus,
+    pub staged: FileStagedState,
 }
 
 impl TryFrom<&str> for GitFileStatus {
@@ -213,6 +311,13 @@ pub struct FileDiff {
     pub max_line_number: usize,
     pub has_hidden_bidi_chars: bool,
     pub size: DiffSize,
+    /// Index state for this path, or `None` when the question does not apply
+    /// (Zap #329). `None` in the base-branch diff modes, whose file list comes
+    /// from `git diff --name-status <merge-base>` and carries no index column;
+    /// `None` too for a remote snapshot from a daemon predating this field,
+    /// since the wire default decodes to "not reported" rather than
+    /// "unstaged". Both cases render without a staging affordance.
+    pub staged: Option<FileStagedState>,
 }
 
 impl FileDiff {
@@ -1092,6 +1197,77 @@ impl LocalDiffStateModel {
         // Noop on WASM builds.
     }
 
+    /// Stages or un-stages part of the working tree (Zap #329).
+    ///
+    /// Unlike [`Self::discard_files`] this never touches the working tree, so
+    /// there is nothing to stash and no confirmation dialog upstream of it.
+    /// It reloads the diff afterwards for the same reason discard does: the
+    /// index is not a path the file watcher reports, so nothing else would
+    /// tell the view that a file's staged column moved.
+    #[cfg(feature = "local_fs")]
+    pub fn stage_changes(&mut self, request: StageRequest, ctx: &mut ModelContext<Self>) {
+        let Some(current_repository) = &self.repository else {
+            return;
+        };
+        let repo_path = current_repository
+            .as_ref(ctx)
+            .root_dir()
+            .to_local_path_lossy();
+
+        ctx.spawn(
+            async move { Self::stage_changes_impl(&repo_path, &request).await },
+            |me, result, ctx| match result {
+                Ok(_) => {
+                    me.load_diffs_for_current_repo(false, ctx);
+                    me.refresh_diff_metadata_for_current_repo(
+                        InvalidationBehavior::PromptRefresh,
+                        ctx,
+                    );
+                }
+                Err(err) => {
+                    log::error!("Failed to stage changes: {err}");
+                }
+            },
+        );
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    pub fn stage_changes(&mut self, _request: StageRequest, _ctx: &mut ModelContext<Self>) {
+        // Noop on WASM builds.
+    }
+
+    /// Runs one staging operation against `repo_path`.
+    ///
+    /// `pub(crate)` for the same reason as [`Self::discard_files_impl`]: the
+    /// remote-server daemon's `GitStage` handler
+    /// (`app/src/remote_server/server_model.rs`) calls it directly so the SSH
+    /// path runs byte-identical git invocations to the local one.
+    #[cfg(feature = "local_fs")]
+    pub(crate) async fn stage_changes_impl(
+        repo_path: &Path,
+        request: &StageRequest,
+    ) -> Result<()> {
+        match &request.target {
+            StageTarget::Paths(paths) => {
+                log::debug!(
+                    "[GIT OPERATION] diff_state.rs stage_changes_impl {} {}",
+                    if request.unstage { "unstage" } else { "stage" },
+                    paths.join(" ")
+                );
+                crate::util::git::run_stage_paths(repo_path, paths, request.unstage).await?;
+            }
+            StageTarget::Hunk(patch) => {
+                log::debug!(
+                    "[GIT OPERATION] diff_state.rs stage_changes_impl git apply --cached{} (hunk patch, {} bytes)",
+                    if request.unstage { " --reverse" } else { "" },
+                    patch.len()
+                );
+                crate::util::git::run_apply_patch_cached(repo_path, patch, request.unstage).await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Sets whether the code review pane needs diff metadata.
     /// When transitioning from disabled to enabled, triggers an
     /// immediate refresh to catch up on changes that occurred while disabled.
@@ -1716,7 +1892,7 @@ impl LocalDiffStateModel {
         })
     }
 
-    async fn file_statuses_against_head(repo_path: &Path) -> Result<Vec<(PathBuf, GitFileStatus)>> {
+    async fn file_statuses_against_head(repo_path: &Path) -> Result<Vec<GitStatusEntry>> {
         // First, get the list of changed files with their status
         log::debug!(
             "[GIT OPERATION] diff_state.rs file_statuses_against_head git --no-optional-locks status --untracked-files=all --branch --porcelain=2 -z"
@@ -1734,7 +1910,7 @@ impl LocalDiffStateModel {
         )
         .await?;
 
-        Self::parse_git_status(&status_output)
+        Self::parse_git_status_entries(&status_output)
     }
 
     async fn diff_state_against_head(repo_path: &Path) -> Result<GitDiffWithBaseContent> {
@@ -1748,10 +1924,16 @@ impl LocalDiffStateModel {
         let mut total_additions = 0;
         let mut total_deletions = 0;
 
-        for (file_path, status) in changed_files {
+        for GitStatusEntry {
+            path: file_path,
+            status,
+            staged,
+        } in changed_files
+        {
             let is_binary = binary_files.contains(&file_path);
             let mut file_diff =
-                Self::get_file_diff(repo_path, &file_path, &status, is_binary, None).await?;
+                Self::get_file_diff(repo_path, &file_path, &status, Some(staged), is_binary, None)
+                    .await?;
             // Never read or ship base content for binary files: it can't be
             // inline-rendered and, after lossy UTF-8 decoding, can balloon ~3x.
             let content_at_head = if is_binary {
@@ -1792,12 +1974,18 @@ impl LocalDiffStateModel {
 
     /// Returns the per-file status by running a scoped `git status` (Head mode)
     /// or `git diff --name-status` (base-branch mode) limited to a single path.
+    ///
+    /// The third tuple element is the index state (Zap #329). It is `Some`
+    /// only in the Head arm: `git diff --name-status` against a merge base has
+    /// no index column, and the untracked fallback below is reached precisely
+    /// when the path is *not* in the index, so neither base-branch answer
+    /// would mean anything.
     async fn file_status_for_path(
         repo_path: &Path,
         file: &Path,
         mode: &DiffMode,
         merge_base: Option<&str>,
-    ) -> Result<Option<(PathBuf, GitFileStatus)>> {
+    ) -> Result<Option<(PathBuf, GitFileStatus, Option<FileStagedState>)>> {
         let relative = file
             .strip_prefix(repo_path)
             .map(|p| p.to_path_buf())
@@ -1821,8 +2009,11 @@ impl LocalDiffStateModel {
                     ],
                 )
                 .await?;
-                let statuses = Self::parse_git_status(&output)?;
-                Ok(statuses.into_iter().find(|(p, _)| *p == relative))
+                let statuses = Self::parse_git_status_entries(&output)?;
+                Ok(statuses
+                    .into_iter()
+                    .find(|entry| entry.path == relative)
+                    .map(|entry| (entry.path, entry.status, Some(entry.staged))))
             }
             (_, Some(base)) => {
                 log::debug!(
@@ -1834,11 +2025,11 @@ impl LocalDiffStateModel {
                 )
                 .await?;
 
-                if let Some(entry) = Self::parse_git_diff_name_status(&diff_output)?
+                if let Some((path, status)) = Self::parse_git_diff_name_status(&diff_output)?
                     .into_iter()
                     .find(|(p, _)| *p == relative)
                 {
-                    return Ok(Some(entry));
+                    return Ok(Some((path, status, None)));
                 }
 
                 // The file may be untracked (not in the base diff). Fall back to
@@ -1852,7 +2043,8 @@ impl LocalDiffStateModel {
                 let status_files = Self::parse_git_status(&status_output)?;
                 Ok(status_files
                     .into_iter()
-                    .find(|(p, s)| *p == relative && matches!(s, GitFileStatus::Untracked)))
+                    .find(|(p, s)| *p == relative && matches!(s, GitFileStatus::Untracked))
+                    .map(|(path, status)| (path, status, None)))
             }
             _ => Ok(None),
         }
@@ -1899,7 +2091,7 @@ impl LocalDiffStateModel {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|_| file.to_path_buf());
 
-        let Some((file_path, status)) =
+        let Some((file_path, status, staged)) =
             Self::file_status_for_path(repo_path, file, mode, merge_base).await?
         else {
             // File is no longer part of the diff.
@@ -1912,8 +2104,15 @@ impl LocalDiffStateModel {
         };
         let is_binary = Self::is_file_binary(repo_path, file, commit).await?;
 
-        let diff =
-            Self::file_diff_for_path(is_binary, repo_path, &file_path, &status, merge_base).await?;
+        let diff = Self::file_diff_for_path(
+            is_binary,
+            repo_path,
+            &file_path,
+            &status,
+            staged,
+            merge_base,
+        )
+        .await?;
 
         Ok((relative, diff))
     }
@@ -1923,10 +2122,12 @@ impl LocalDiffStateModel {
         repo_path: &Path,
         file_path: &PathBuf,
         status: &GitFileStatus,
+        staged: Option<FileStagedState>,
         merge_base: Option<&str>,
     ) -> Result<Option<FileDiffAndContent>> {
         let mut file_diff =
-            Self::get_file_diff(repo_path, file_path, status, is_binary, merge_base).await?;
+            Self::get_file_diff(repo_path, file_path, status, staged, is_binary, merge_base)
+                .await?;
 
         // Skip files that have no actual changes (empty hunks and not binary)
         // Also skip files with no additions or deletions (no real changes) except for renamed or new files.
@@ -2072,6 +2273,8 @@ impl LocalDiffStateModel {
                 repo_path,
                 &file_path,
                 &status,
+                // Base-branch mode has no index to be staged against.
+                None,
                 Some(&merge_base),
             )
             .await?;
@@ -2339,9 +2542,21 @@ impl LocalDiffStateModel {
             .chain(branches.iter().filter(|(_, is_main)| !is_main))
     }
 
+    /// Back-compatible view of [`Self::parse_git_status_entries`] for the
+    /// callers that only need the change kind.
+    pub(crate) fn parse_git_status(status_output: &str) -> Result<Vec<(PathBuf, GitFileStatus)>> {
+        Ok(Self::parse_git_status_entries(status_output)?
+            .into_iter()
+            .map(|entry| (entry.path, entry.status))
+            .collect())
+    }
+
     /// Parses git status output to get changed files and their status
     /// This handles porcelain=2 format to match git desktop implementation
-    fn parse_git_status(status_output: &str) -> Result<Vec<(PathBuf, GitFileStatus)>> {
+    ///
+    /// Also keeps the index (`X`) column, which the tuple-returning
+    /// [`Self::parse_git_status`] drops — see [`FileStagedState`] (Zap #329).
+    pub(crate) fn parse_git_status_entries(status_output: &str) -> Result<Vec<GitStatusEntry>> {
         if status_output.is_empty() {
             return Ok(Vec::new());
         }
@@ -2382,7 +2597,11 @@ impl LocalDiffStateModel {
                                 e
                             )
                         })?;
-                        files.push((PathBuf::from(path), status));
+                        files.push(GitStatusEntry {
+                            path: PathBuf::from(path),
+                            status,
+                            staged: FileStagedState::from_status_code(status_code),
+                        });
                     } else {
                         log::warn!("Invalid format for changed entry: '{token}' - expected at least 9 parts, got {}", parts.len());
                     }
@@ -2418,7 +2637,11 @@ impl LocalDiffStateModel {
                             })?
                         };
 
-                        files.push((PathBuf::from(path), status));
+                        files.push(GitStatusEntry {
+                            path: PathBuf::from(path),
+                            status,
+                            staged: FileStagedState::from_status_code(status_code),
+                        });
                         i += 1; // Skip the old path token
                     } else {
                         log::warn!("Invalid format for renamed/copied entry: '{token}' - expected at least 10 parts, got {}", parts.len());
@@ -2430,7 +2653,13 @@ impl LocalDiffStateModel {
                     let parts: Vec<&str> = token.splitn(11, ' ').collect();
                     if parts.len() >= 11 {
                         let path = parts[10];
-                        files.push((PathBuf::from(path), GitFileStatus::Conflicted));
+                        // An unmerged path cannot be staged until the conflict
+                        // is resolved, so it is never reported as staged.
+                        files.push(GitStatusEntry {
+                            path: PathBuf::from(path),
+                            status: GitFileStatus::Conflicted,
+                            staged: FileStagedState::Unstaged,
+                        });
                     } else {
                         log::warn!("Invalid format for unmerged entry: '{}' - expected at least 11 parts, got {}", token, parts.len());
                     }
@@ -2439,7 +2668,12 @@ impl LocalDiffStateModel {
                     // Untracked entry: ? <path>
                     if token.len() > 2 {
                         let path = &token[2..]; // Skip "? "
-                        files.push((PathBuf::from(path), GitFileStatus::Untracked));
+                        files.push(GitStatusEntry {
+                            path: PathBuf::from(path),
+                            status: GitFileStatus::Untracked,
+                            // Untracked means "no index entry at all".
+                            staged: FileStagedState::Unstaged,
+                        });
                     } else {
                         log::warn!("Invalid format for untracked entry: '{token}' - expected path after '? '");
                     }
@@ -2513,6 +2747,7 @@ impl LocalDiffStateModel {
         repo_path: &Path,
         file_path: &PathBuf,
         status: &GitFileStatus,
+        staged: Option<FileStagedState>,
         is_binary: bool,
         commit: Option<&str>,
     ) -> Result<FileDiff> {
@@ -2530,6 +2765,7 @@ impl LocalDiffStateModel {
                 max_line_number: 0,
                 has_hidden_bidi_chars: false,
                 size: DiffSize::Normal,
+                staged,
             });
         }
 
@@ -2547,6 +2783,7 @@ impl LocalDiffStateModel {
                 max_line_number: 0,
                 has_hidden_bidi_chars: false,
                 size: DiffSize::Normal,
+                staged,
             });
         }
 
@@ -2674,6 +2911,7 @@ impl LocalDiffStateModel {
                     max_line_number: 0,
                     has_hidden_bidi_chars: false,
                     size: DiffSize::Normal,
+                    staged,
                 });
             }
         };
@@ -2693,6 +2931,7 @@ impl LocalDiffStateModel {
                 max_line_number: 0,
                 has_hidden_bidi_chars: false,
                 size: DiffSize::Normal,
+                staged,
             });
         }
 
@@ -2724,6 +2963,7 @@ impl LocalDiffStateModel {
             max_line_number,
             has_hidden_bidi_chars,
             size,
+            staged,
         })
     }
 
@@ -3516,6 +3756,17 @@ impl DiffStateModel {
             Self::Remote(m) => m.update(ctx, |local, ctx| {
                 local.discard_files(file_infos, should_stash, branch_name, ctx)
             }),
+        }
+    }
+
+    /// Stages or un-stages part of the working tree (Zap #329). Both backends
+    /// implement it, so per-file and per-hunk staging work over SSH exactly as
+    /// they do locally.
+    pub fn stage_changes(&mut self, request: StageRequest, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => m.update(ctx, |local, ctx| local.stage_changes(request, ctx)),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Remote(m) => m.update(ctx, |remote, ctx| remote.stage_changes(request, ctx)),
         }
     }
 

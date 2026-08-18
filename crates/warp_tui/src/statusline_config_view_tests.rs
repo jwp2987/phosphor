@@ -81,6 +81,7 @@ fn toggle_and_reorder_are_reflected_in_saved_config() {
                 TuiStatuslineItem::Model,
                 TuiStatuslineItem::WorkingDirectory,
                 TuiStatuslineItem::GitBranch,
+                TuiStatuslineItem::GitBranchStatus,
                 TuiStatuslineItem::GitDiffStatus,
                 TuiStatuslineItem::GitHubPullRequest,
                 TuiStatuslineItem::ContextWindowUsage,

@@ -301,8 +301,7 @@ impl PromptDisplay {
         // may have an open menu (silently closing it) and causes a visible flicker, for no
         // reason on the (very common) case where nothing about the chips actually changed.
         // `handle_prompt_change` already gates its `reset_chips` call the same way; this
-        // brings focus/repo-path updates in line with it. NOT COMPILED -- builds are
-        // suspended; verified by reading only.
+        // brings focus/repo-path updates in line with it.
         if self.check_if_chip_values_have_changed(&new_chips, ctx) {
             self.reset_chips(&new_chips, ctx);
         }

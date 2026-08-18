@@ -36,8 +36,25 @@ const GUI_RERUN_EXIT_CODE: i32 = 127;
 /// Mirrors `MAX_TEST_RUNS` in `crates/integration/tests/common/mod.rs`.
 const MAX_GUI_RETRIES: u32 = 10;
 
-/// Max bytes of captured output kept in a failure report.
+/// Max bytes of captured output kept in a failure report when the detail is
+/// the WHOLE batch's output — every TUI test's noise plus cargo's build lines.
+/// Deliberately small: that blob is mostly irrelevant to any one scenario, and
+/// it would otherwise be repeated verbatim on every failing scenario's NDJSON
+/// line.
 const FAILURE_DETAIL_MAX_BYTES: usize = 4000;
+
+/// Max bytes kept when the detail is ONE test's own failure section, sliced
+/// out of the batch output by [`failure_section_for`].
+///
+/// Four times the batch cap, because this budget is spent entirely on the
+/// failing test rather than shared with five passing ones. It is sized for the
+/// payload that motivated it: `usage_tui_transcript_render` asserts on a
+/// rendered frame and prints the whole thing in its panic message — 20 lines ×
+/// 80 columns ≈ 1.7 KB, and the widest TUI scenario presents 40 × 120 ≈ 5 KB.
+/// A doubled 8 KB cap would still clip a frame printed twice (`left`/`right`);
+/// 16 KB holds one comfortably, and [`clamp_preserving_ends`] keeps both ends
+/// of anything larger.
+const PER_TEST_FAILURE_DETAIL_MAX_BYTES: usize = 16_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lowercase")]
@@ -459,7 +476,7 @@ fn run_tui_scenarios(scenarios: &[&Scenario], args: &Args) -> Vec<ScenarioReport
                     failure_detail: if passed {
                         None
                     } else {
-                        Some(tail(&detail, FAILURE_DETAIL_MAX_BYTES))
+                        Some(tui_failure_detail(&detail, scenario.name))
                     },
                 });
             }
@@ -683,6 +700,170 @@ fn run_and_capture(program: &str, args: &[&str]) -> std::result::Result<(), Stri
     }
 }
 
+/// The `failure_detail` to report for ONE failing TUI scenario, given the
+/// whole batch's captured output.
+///
+/// One nextest process runs every `usage_tui_*` test, so `captured` holds the
+/// build lines, six status lines, and every failing test's captured output.
+/// Reporting `tail(captured, ..)` for each failing scenario keeps the LAST few
+/// KB of that blob — which is nextest's trailing summary, not the assertion
+/// that failed. That is how `usage_tui_transcript_render`'s Windows failure
+/// stayed unreadable: the run said which scenario failed and then handed back
+/// a clipped tail with no panic message in it, and the only machine that
+/// reproduces it is a CI runner (TODO.md, Windows TUI entry).
+///
+/// So slice out the failing test's own section first and spend the (larger)
+/// per-test budget on that. The whole-batch tail survives only as the fallback
+/// for when no section can be found — a run that died before the test printed
+/// anything, say — and says so, so a clipped tail is never again mistaken for
+/// "this is all the detail that exists".
+fn tui_failure_detail(captured: &str, test_name: &str) -> String {
+    let section = failure_section_for(captured, test_name)
+        // Second chance, independent of how the runner decorates its banners:
+        // a Rust test panic names the test in its THREAD name
+        // (`thread 'usage_smoke_tests::usage_tui_foo' panicked at ...`), which
+        // libtest has printed that way for years and nextest passes through
+        // verbatim. This is what keeps the fix working if nextest restyles the
+        // banner again.
+        .or_else(|| panic_section_for(captured, test_name));
+
+    match section {
+        Some(section) => clamp_preserving_ends(&section, PER_TEST_FAILURE_DETAIL_MAX_BYTES),
+        None => format!(
+            "(no per-test output section for `{test_name}` in the batch output; \
+             showing the tail of the whole batch)\n{}",
+            tail(captured, FAILURE_DETAIL_MAX_BYTES)
+        ),
+    }
+}
+
+/// Extracts the captured-output sections belonging to `test_name` from a
+/// batch runner's output, or `None` when it printed none.
+///
+/// Handles both shapes the suite can produce:
+///   * nextest — `--- STDOUT: warp_tui usage_smoke_tests::usage_tui_foo ---`
+///     followed by the same for `STDERR` (which is where the panic lands);
+///   * libtest, used by the `cargo test` fallback when nextest is absent —
+///     `---- usage_smoke_tests::usage_tui_foo stdout ----`.
+///
+/// A header is recognized by decoration + the word STDOUT/STDERR + the test
+/// name on the same line, rather than by an exact prefix, because nextest has
+/// changed the decoration and the column padding of that banner between
+/// releases and CI installs whatever is latest. A section runs until the next
+/// banner or the next runner status line; missing the end of a section costs
+/// some extra context in the report, missing the start would cost the panic.
+fn failure_section_for(captured: &str, test_name: &str) -> Option<String> {
+    let plain = strip_ansi(captured);
+    let mut collected: Vec<&str> = Vec::new();
+    let mut in_section = false;
+
+    for line in plain.lines() {
+        if is_output_banner(line) {
+            in_section = banner_names_test(line, test_name);
+            if in_section {
+                collected.push(line);
+            }
+            continue;
+        }
+        if in_section {
+            if is_runner_status_line(line) {
+                in_section = false;
+                continue;
+            }
+            collected.push(line);
+        }
+    }
+
+    if collected.is_empty() {
+        return None;
+    }
+    // Trailing blank lines carry nothing; the leading banner is kept because
+    // it names which stream the text below came from.
+    while collected.last().is_some_and(|line| line.trim().is_empty()) {
+        collected.pop();
+    }
+    Some(collected.join("\n"))
+}
+
+/// Extracts the panic block whose panicking THREAD is `test_name`, for runner
+/// output whose banners [`failure_section_for`] did not recognize.
+///
+/// libtest names the test's thread after the test, so the panic line reads
+/// `thread 'usage_smoke_tests::usage_tui_foo' panicked at <file>:<line>:` and
+/// the assertion message follows it. Runs to the next banner or runner status
+/// line, with a hard line cap so a runner that prints no terminator at all
+/// cannot swallow the rest of the batch.
+fn panic_section_for(captured: &str, test_name: &str) -> Option<String> {
+    /// Generous next to any real assertion message (a 40-line rendered frame
+    /// printed twice is 80), small enough to bound the damage.
+    const MAX_PANIC_SECTION_LINES: usize = 400;
+
+    let plain = strip_ansi(captured);
+    let lines: Vec<&str> = plain.lines().collect();
+    let start = lines.iter().position(|line| {
+        line.contains("panicked at")
+            && line
+                .split(['\'', '"'])
+                .any(|segment| segment.rsplit("::").next().unwrap_or(segment) == test_name)
+    })?;
+
+    let mut collected: Vec<&str> = Vec::new();
+    for &line in &lines[start..] {
+        if is_output_banner(line) || is_runner_status_line(line) {
+            break;
+        }
+        collected.push(line);
+        if collected.len() >= MAX_PANIC_SECTION_LINES {
+            break;
+        }
+    }
+    while collected.last().is_some_and(|line| line.trim().is_empty()) {
+        collected.pop();
+    }
+    (!collected.is_empty()).then(|| collected.join("\n"))
+}
+
+/// Whether `line` is a captured-output banner (`--- STDERR: … ---`,
+/// `---- … stdout ----`, and the unicode-ruled variants nextest has shipped).
+fn is_output_banner(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    let decorated = trimmed.starts_with(['-', '=', '\u{2500}', '\u{2015}', '\u{2501}']);
+    if !decorated {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("stdout") || lower.contains("stderr")
+}
+
+/// Whether an output banner names `test_name`. Test paths on the banner carry
+/// their module (`usage_smoke_tests::usage_tui_foo`); the manifest stores the
+/// bare function name, so compare on the final `::` segment as the outcome
+/// parser does.
+fn banner_names_test(line: &str, test_name: &str) -> bool {
+    line.split_whitespace().any(|word| {
+        let word = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != ':');
+        word.rsplit("::").next().unwrap_or(word) == test_name
+    })
+}
+
+/// Whether `line` is the runner talking rather than a test's own output —
+/// nextest's per-test verdicts and its final summary. Used only to close a
+/// section that is already open.
+fn is_runner_status_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some(first) = trimmed.split_whitespace().next() else {
+        return false;
+    };
+    let is_status_word = matches!(
+        first,
+        "PASS" | "FAIL" | "TRY" | "SLOW" | "LEAK" | "TIMEOUT" | "SIGSEGV" | "SIGABRT" | "Summary"
+    );
+    // Every one of those lines carries a bracketed duration; requiring it
+    // keeps a panic message that happens to open with the word FAIL from
+    // silently ending the section.
+    is_status_word && trimmed.contains('[')
+}
+
 /// Returns the last `max_bytes` of `s`, truncated on a char boundary.
 fn tail(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
@@ -695,9 +876,39 @@ fn tail(s: &str, max_bytes: usize) -> String {
     format!("...{}", &s[boundary..])
 }
 
+/// Truncates from the MIDDLE, keeping both ends of `s`.
+///
+/// [`tail`] is wrong for an assertion failure: the panic header, the source
+/// location and the `left:` value all sit at the top of the section and the
+/// `right:` value at the bottom, so keeping only one end loses half of any
+/// diff. Two thirds of the budget goes to the head (panic message plus the
+/// start of the expectation), one third to the tail.
+fn clamp_preserving_ends(s: &str, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s.to_string();
+    }
+    let elided = s.len() - max_bytes;
+    let head_budget = max_bytes * 2 / 3;
+    let tail_budget = max_bytes - head_budget;
+
+    let head_end = (0..=head_budget)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    let tail_start = (s.len() - tail_budget..s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len());
+
+    format!(
+        "{}\n... [{elided} bytes elided from the middle] ...\n{}",
+        &s[..head_end],
+        &s[tail_start..]
+    )
+}
+
 #[cfg(test)]
 mod parse_tests {
-    use super::{parse_nextest_outcomes, strip_ansi};
+    use super::*;
 
     /// Real nextest output shape, including the ANSI colouring it emits in CI
     /// and the `TRY n FAIL` prefix it uses for retried tests.
@@ -741,5 +952,144 @@ mod parse_tests {
             "        PASS [ 0.1s] warp_tui usage_smoke_tests::usage_tui_flaky\n",
         );
         assert_eq!(parse_nextest_outcomes(retried).get("usage_tui_flaky"), Some(&true));
+    }
+
+    /// A batch run where one of six TUI tests fails, in nextest's real
+    /// shape: the failing test's captured streams are printed as banner-led
+    /// sections, and the run's own summary follows them.
+    const BATCH_WITH_ONE_FAILURE: &str = concat!(
+        "   Compiling warp_tui v0.1.0\n",
+        "    Starting 6 tests across 1 binary\n",
+        "        PASS [   0.106s] warp_tui usage_smoke_tests::usage_tui_completions_menu\n",
+        "        FAIL [   0.120s] warp_tui usage_smoke_tests::usage_tui_transcript_render\n",
+        "\n",
+        "--- STDOUT:              warp_tui usage_smoke_tests::usage_tui_transcript_render ---\n",
+        "\n",
+        "running 1 test\n",
+        "test usage_smoke_tests::usage_tui_transcript_render ... FAILED\n",
+        "\n",
+        "--- STDERR:              warp_tui usage_smoke_tests::usage_tui_transcript_render ---\n",
+        "\n",
+        "thread 'usage_tui_transcript_render' panicked at crates/warp_tui/src/usage_smoke_tests.rs:139:9:\n",
+        "transcript should render the command input:\n",
+        "  > echo\r\n",
+        "  hello\r\n",
+        "\n",
+        "   Summary [   0.300s] 6 tests run: 5 passed, 1 failed, 0 skipped\n",
+    );
+
+    #[test]
+    fn per_test_detail_carries_the_panic_not_the_batch_summary() {
+        let detail = tui_failure_detail(BATCH_WITH_ONE_FAILURE, "usage_tui_transcript_render");
+
+        // The whole point: the assertion message survives.
+        assert!(
+            detail.contains("transcript should render the command input"),
+            "the panic message must be in the reported detail, got:\n{detail}"
+        );
+        assert!(detail.contains("usage_smoke_tests.rs:139:9"));
+        assert!(detail.contains("hello"));
+
+        // And the runner's own chatter around it does not crowd it out.
+        assert!(!detail.contains("Compiling warp_tui"));
+        assert!(!detail.contains("6 tests run: 5 passed"));
+        assert!(!detail.contains("usage_tui_completions_menu"));
+    }
+
+    #[test]
+    fn a_test_with_no_section_falls_back_to_the_batch_tail_and_says_so() {
+        let detail = tui_failure_detail(BATCH_WITH_ONE_FAILURE, "usage_tui_never_reported");
+        assert!(
+            detail.starts_with("(no per-test output section"),
+            "a fallback tail must announce itself, got:\n{detail}"
+        );
+        assert!(detail.contains("6 tests run: 5 passed"));
+    }
+
+    /// The `cargo test` fallback path (no nextest installed) uses libtest's
+    /// banner shape instead. Both must resolve to the same panic text.
+    #[test]
+    fn libtest_banner_shape_is_also_recognized() {
+        let libtest = concat!(
+            "running 6 tests\n",
+            "test usage_smoke_tests::usage_tui_transcript_render ... FAILED\n",
+            "\n",
+            "---- usage_smoke_tests::usage_tui_transcript_render stdout ----\n",
+            "thread 'main' panicked at usage_smoke_tests.rs:139:9:\n",
+            "transcript should render the command input\n",
+            "\n",
+            "failures:\n",
+            "    usage_smoke_tests::usage_tui_transcript_render\n",
+        );
+        let section = failure_section_for(libtest, "usage_tui_transcript_render")
+            .expect("libtest prints a `---- <test> stdout ----` banner");
+        assert!(section.contains("transcript should render the command input"));
+        assert!(!section.contains("running 6 tests"));
+    }
+
+    #[test]
+    fn ansi_coloured_banners_are_still_matched() {
+        let coloured = concat!(
+            "\u{1b}[31;1m--- STDERR:\u{1b}[0m warp_tui usage_smoke_tests::usage_tui_x ---\n",
+            "panicked: boom\n",
+        );
+        let section =
+            failure_section_for(coloured, "usage_tui_x").expect("colour must not hide the banner");
+        assert!(section.contains("panicked: boom"));
+    }
+
+    /// A section longer than the budget keeps BOTH ends — a `left`/`right`
+    /// comparison is useless with either half missing.
+    #[test]
+    fn oversized_detail_keeps_both_ends() {
+        let body = "x".repeat(50_000);
+        let section = format!("assertion `left == right` failed\n{body}\nright: THE-TAIL");
+        let clamped = clamp_preserving_ends(&section, 4000);
+
+        assert!(clamped.starts_with("assertion `left == right` failed"));
+        assert!(clamped.ends_with("right: THE-TAIL"));
+        assert!(clamped.contains("bytes elided from the middle"));
+        // The marker adds a little; the payload itself stays within budget.
+        assert!(clamped.len() < 4000 + 100, "got {} bytes", clamped.len());
+    }
+
+    /// If a future nextest restyles its banner past recognition, the panic's
+    /// thread name still identifies the test, and THAT is what has to keep the
+    /// assertion out of the whole-batch tail.
+    #[test]
+    fn an_unrecognized_banner_still_yields_the_panic_via_the_thread_name() {
+        let restyled = concat!(
+            "        FAIL [   0.120s] warp_tui usage_smoke_tests::usage_tui_transcript_render\n",
+            "\u{2501}\u{2501}\u{2501} output \u{2501}\u{2501}\u{2501}\n",
+            "thread 'usage_smoke_tests::usage_tui_transcript_render' panicked at src/x.rs:1:1:\n",
+            "transcript should render the command input:\n",
+            "  > echo\n",
+            "   Summary [   0.300s] 6 tests run: 5 passed, 1 failed, 0 skipped\n",
+        );
+        // The banner says neither STDOUT nor STDERR, so the banner scan misses.
+        assert!(failure_section_for(restyled, "usage_tui_transcript_render").is_none());
+
+        let detail = tui_failure_detail(restyled, "usage_tui_transcript_render");
+        assert!(
+            detail.contains("transcript should render the command input"),
+            "the thread-name fallback must still find the panic, got:\n{detail}"
+        );
+        assert!(!detail.starts_with("(no per-test output section"));
+        assert!(!detail.contains("6 tests run: 5 passed"));
+    }
+
+    #[test]
+    fn a_short_detail_is_passed_through_untouched() {
+        let short = "assertion failed: left != right";
+        let clamped = clamp_preserving_ends(short, FAILURE_DETAIL_MAX_BYTES);
+        assert_eq!(clamped, short);
+    }
+
+    #[test]
+    fn clamping_never_splits_a_multibyte_char() {
+        let wide = "\u{2500}".repeat(4000);
+        let clamped = clamp_preserving_ends(&wide, 1000);
+        // Reaching here without a panic is the assertion; check it stayed sane.
+        assert!(clamped.contains("bytes elided from the middle"));
     }
 }

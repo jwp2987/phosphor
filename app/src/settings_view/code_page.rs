@@ -68,11 +68,55 @@ use warpui::{
     ViewHandle,
 };
 
+// The remote codebase-index section. Gated exactly as its model is: `app/src/remote_server/mod.rs`
+// declares `codebase_index_model` under `not(target_family = "wasm")`, and `app/src/lib.rs:1599`
+// registers the singleton under the same cfg, so nothing below can exist on wasm.
+#[cfg(not(target_family = "wasm"))]
+use crate::remote_server::codebase_index_model::{
+    RemoteCodebaseIndexModel, RemoteCodebaseIndexModelEvent,
+};
+#[cfg(not(target_family = "wasm"))]
+use remote_server::codebase_index_proto::{RemoteCodebaseIndexState, RemoteCodebaseIndexStatus};
+#[cfg(not(target_family = "wasm"))]
+use warp_core::ui::theme::Fill as ThemeFill;
+#[cfg(not(target_family = "wasm"))]
+use warpui::elements::ConstrainedBox;
+
 /// Vertical rhythm between the language-server section's stacked pieces. Both
 /// constants are the pin's.
 const MAIN_SECTION_MARGIN: f32 = 12.;
 const SUB_SECTION_MARGIN: f32 = 8.;
 const LSP_STATUS_INDICATOR_SIZE: f32 = 8.;
+/// Size of the status glyph on a remote index row. The pin's `STATUS_ICON_SIZE`.
+#[cfg(not(target_family = "wasm"))]
+const STATUS_ICON_SIZE: f32 = 16.;
+
+/// The substring an SSH daemon puts in `failure_message` when it refuses to index because the
+/// host already holds its maximum number of indexes.
+///
+/// This is a *substring* match on purpose, and it is not a cloud string: the emitter is this
+/// fork's own daemon in `app/src/remote_server/server_model.rs:1889`, which formats the message
+/// as "Cannot index remote codebase because the maximum number of codebase indexes has been
+/// reached." A daemon may be older or newer than the client that talks to it, so the client
+/// matches the stable middle of the sentence rather than the whole of it. Value and predicate
+/// are the pin's (`42effe840:app/src/settings_view/code_page.rs:92`).
+#[cfg(not(target_family = "wasm"))]
+const REMOTE_CODEBASE_INDEX_LIMIT_REACHED_FAILURE: &str =
+    "maximum number of codebase indexes has been reached";
+
+/// Whether an `Unavailable` remote index is unavailable *because the host is full*.
+///
+/// The distinction is worth a predicate because the two cases want different words and
+/// different colours: hitting the index limit is a quota the user can act on by deleting an
+/// index, whereas every other unavailability ("indexing did not start", a disconnected host)
+/// is a fault. See [`remote_indexing_status_presentation`], its only caller.
+#[cfg(not(target_family = "wasm"))]
+fn remote_codebase_index_limit_reached(status: &RemoteCodebaseIndexStatus) -> bool {
+    status
+        .failure_message
+        .as_deref()
+        .is_some_and(|message| message.contains(REMOTE_CODEBASE_INDEX_LIMIT_REACHED_FAILURE))
+}
 
 /// Mouse/switch state for one language-server row. One entry per rendered row,
 /// flattened across workspaces in render order (see [`CodeSettingsPageView::lsp_row_mouse_states`]).
@@ -188,6 +232,21 @@ impl CodeSettingsPageView {
             );
         }
 
+        // The remote index section is a live readout of what each SSH daemon reports, so it has
+        // to re-render when a snapshot lands -- otherwise a row says "Indexing..." until the
+        // user leaves the page and comes back. Same singleton guard as above and for the same
+        // reason: `RemoteCodebaseIndexModel` is registered by `app/src/lib.rs`, and page-level
+        // tests build this view without it, where `handle()` would panic.
+        #[cfg(not(target_family = "wasm"))]
+        if ctx.has_singleton_model::<RemoteCodebaseIndexModel>() {
+            ctx.subscribe_to_model(
+                &RemoteCodebaseIndexModel::handle(ctx),
+                |_me, _model, event, ctx| match event {
+                    RemoteCodebaseIndexModelEvent::SettingsEntriesChanged => ctx.notify(),
+                },
+            );
+        }
+
         let (page, external_editor_view) = Self::build_page(ctx);
 
         Self {
@@ -224,7 +283,8 @@ impl CodeSettingsPageView {
         let (widgets, external_editor_view) = if FeatureFlag::ZapNewSettingsModes.is_enabled()
         {
             let editor_view = ctx.add_typed_action_view(ExternalEditorView::new);
-            let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
+            #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+            let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
                 Box::new(ExternalEditorCodeWidget),
                 Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
                 Box::new(CodeReviewPanelToggleWidget::default()),
@@ -238,6 +298,10 @@ impl CodeSettingsPageView {
                 Box::new(AutoIndexingToggleWidget::default()),
                 Box::new(CodebaseEmbeddingModelWidget),
             ];
+            // Last, below the local indexing controls, mirroring the pin's order: the pin's
+            // Initialized-Folders section walks local workspaces first and remote entries after.
+            #[cfg(not(target_family = "wasm"))]
+            widgets.push(Box::new(RemoteIndexedFoldersWidget));
             (widgets, Some(editor_view))
         } else {
             // Legacy view: in the old settings mode, the Code page renders nothing (the
@@ -257,7 +321,8 @@ impl CodeSettingsPageView {
     fn build_page(
         _ctx: &mut ViewContext<Self>,
     ) -> (PageType<Self>, Option<ViewHandle<ExternalEditorView>>) {
-        let widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+        let mut widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             if FeatureFlag::ZapNewSettingsModes.is_enabled() {
                 vec![
                     Box::new(AutoOpenCodeReviewPaneCodeWidget::default()),
@@ -275,6 +340,11 @@ impl CodeSettingsPageView {
             } else {
                 vec![]
             };
+        // Only when the page has content at all -- an empty legacy page stays empty.
+        #[cfg(not(target_family = "wasm"))]
+        if !widgets.is_empty() {
+            widgets.push(Box::new(RemoteIndexedFoldersWidget));
+        }
         (PageType::new_uncategorized(widgets, None), None)
     }
 }
@@ -1675,6 +1745,258 @@ impl SettingsWidget for CodebaseEmbeddingModelWidget {
         );
 
         column.finish()
+    }
+}
+
+/// How one indexed folder's status should read: the words, the colour that carries the same
+/// information to someone scanning the page, and an optional glyph.
+///
+/// **Narrower than the pin's struct of the same name, deliberately.** The pin also carries
+/// `refresh_action: Option<IndexingRefreshAction>` and `show_delete: bool`, which drive the
+/// per-row refresh and trash buttons of its Initialized-Folders section. Those buttons are not
+/// here yet (that section, and its local-workspace half, is still unported), so carrying the
+/// fields would mean shipping two struct members nothing reads. Nothing observable is lost:
+/// this fork shows no remote index controls today either, so a status-only row is strictly
+/// more than the page rendered before. When the folder section is ported, restore both fields
+/// and the `IndexingRefreshAction` enum with it rather than inventing a different shape.
+#[cfg(not(target_family = "wasm"))]
+struct IndexingStatusPresentation {
+    text: String,
+    color: ColorU,
+    icon: Option<Icon>,
+}
+
+/// The pin's `remote_indexing_status_presentation` (`42effe840:code_page.rs:1821`), as a free
+/// function because nothing in it reads the view.
+///
+/// All eight `RemoteCodebaseIndexState` variants are covered explicitly, with the pin's words
+/// and the pin's colour for each -- a catch-all arm here would silently render a new daemon
+/// state as whatever the fallback said.
+#[cfg(not(target_family = "wasm"))]
+fn remote_indexing_status_presentation(
+    status: &RemoteCodebaseIndexStatus,
+    appearance: &Appearance,
+) -> IndexingStatusPresentation {
+    let theme = appearance.theme();
+
+    match status.state {
+        RemoteCodebaseIndexState::NotEnabled => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-not-created"),
+            color: theme.disabled_ui_text_color().into_solid(),
+            icon: Some(Icon::SlashCircle),
+        },
+        RemoteCodebaseIndexState::Unavailable => {
+            // The one branch the limit predicate exists for. A host that is full is a quota the
+            // user can clear; every other unavailability is a fault, and the two must not read
+            // the same -- which is why this is a warning colour and a warning glyph rather than
+            // the grey "Unavailable" the fault case gets.
+            let limit_reached = remote_codebase_index_limit_reached(status);
+            IndexingStatusPresentation {
+                text: if limit_reached {
+                    crate::t!("settings-code-remote-index-limit-reached")
+                } else {
+                    crate::t!("settings-code-remote-index-unavailable")
+                },
+                color: if limit_reached {
+                    theme.ui_warning_color()
+                } else {
+                    theme.disabled_ui_text_color().into_solid()
+                },
+                icon: Some(if limit_reached {
+                    Icon::AlertTriangle
+                } else {
+                    Icon::SlashCircle
+                }),
+            }
+        }
+        RemoteCodebaseIndexState::Disabled => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-disabled"),
+            color: theme.disabled_ui_text_color().into_solid(),
+            icon: Some(Icon::SlashCircle),
+        },
+        RemoteCodebaseIndexState::Queued => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-queued"),
+            color: theme.disabled_ui_text_color().into_solid(),
+            icon: None,
+        },
+        RemoteCodebaseIndexState::Indexing => {
+            // A daemon may report either bound, both, or neither, so all four shapes get their
+            // own wording rather than a "0 / 0" that looks like a stalled index.
+            let text = match (status.progress_completed, status.progress_total) {
+                (Some(completed), Some(total)) => crate::t!(
+                    "settings-code-remote-index-indexing-progress",
+                    completed = completed,
+                    total = total
+                ),
+                (Some(completed), None) => crate::t!(
+                    "settings-code-remote-index-indexing-completed",
+                    completed = completed
+                ),
+                (None, Some(total)) => crate::t!(
+                    "settings-code-remote-index-indexing-progress",
+                    completed = 0u64,
+                    total = total
+                ),
+                (None, None) => crate::t!("settings-code-remote-index-indexing"),
+            };
+
+            IndexingStatusPresentation {
+                text,
+                color: theme.disabled_ui_text_color().into_solid(),
+                icon: None,
+            }
+        }
+        RemoteCodebaseIndexState::Ready => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-synced"),
+            color: theme.ansi_fg_green(),
+            icon: Some(Icon::Check),
+        },
+        RemoteCodebaseIndexState::Stale => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-stale"),
+            color: theme.nonactive_ui_detail().into_solid(),
+            icon: Some(Icon::ClockRefresh),
+        },
+        RemoteCodebaseIndexState::Failed => IndexingStatusPresentation {
+            text: crate::t!("settings-code-remote-index-failed"),
+            color: theme.ui_error_color(),
+            icon: Some(Icon::AlertTriangle),
+        },
+    }
+}
+
+/// The right-hand side of a remote index row: status glyph, then status text, both in the
+/// presentation's colour.
+#[cfg(not(target_family = "wasm"))]
+fn render_remote_index_status(
+    presentation: IndexingStatusPresentation,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let mut row = Flex::row()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+
+    if let Some(status_icon) = presentation.icon {
+        row.add_child(
+            Container::new(
+                ConstrainedBox::new(
+                    status_icon
+                        .to_warpui_icon(ThemeFill::Solid(presentation.color))
+                        .finish(),
+                )
+                .with_width(STATUS_ICON_SIZE)
+                .with_height(STATUS_ICON_SIZE)
+                .finish(),
+            )
+            .with_margin_right(4.)
+            .finish(),
+        );
+    }
+
+    row.add_child(
+        appearance
+            .ui_builder()
+            .label(presentation.text)
+            .with_style(UiComponentStyles {
+                font_color: Some(presentation.color),
+                font_size: Some(12.),
+                ..Default::default()
+            })
+            .build()
+            .finish(),
+    );
+
+    row.finish()
+}
+
+/// The remote codebase-index readout: one row per remote repository an SSH daemon has reported
+/// index state for, showing that state.
+///
+/// **Why this exists as its own small section rather than as part of a folders list.** The pin
+/// renders local and remote indexed folders together inside one "Initialized / indexed folders"
+/// section, with per-row refresh and delete buttons. That section is not ported; this is the
+/// remote readout only. It is not a stub standing in for it: it renders live daemon state
+/// (`RemoteCodebaseIndexModel::entries_for_settings`, fed by
+/// `RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot`) that had **no UI consumer at all**
+/// before -- the model layer was restored with its whole settings-facing API and nothing on the
+/// page ever read it, so a user whose host refused to index was told nothing, anywhere.
+///
+/// The row is a `render_body_item`, which is what every other control on this flat page is; the
+/// pin's card-with-buttons shape belongs to the folder section and should arrive with it.
+#[cfg(not(target_family = "wasm"))]
+struct RemoteIndexedFoldersWidget;
+
+#[cfg(not(target_family = "wasm"))]
+impl SettingsWidget for RemoteIndexedFoldersWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "remote codebase index indexed folders ssh host repository indexing status limit reached unavailable stale"
+    }
+
+    /// Hidden, not empty-stated, when there is nothing to report. A user with no SSH hosts has
+    /// no use for a permanently empty "remote" heading; the pin reaches the same place by only
+    /// rendering remote rows when `RemoteCodebaseIndexing` is on and entries exist.
+    fn should_render(&self, app: &AppContext) -> bool {
+        FeatureFlag::RemoteCodebaseIndexing.is_enabled()
+            && app.has_singleton_model::<RemoteCodebaseIndexModel>()
+            && !RemoteCodebaseIndexModel::as_ref(app)
+                .entries_for_settings()
+                .is_empty()
+    }
+
+    fn render(
+        &self,
+        _view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        // Repeated rather than assumed from `should_render`: `as_ref` on an unregistered
+        // singleton panics, and this page is deliberately constructible in harnesses that
+        // register none of its models (see `the_page_is_constructible_without_the_lsp_singletons`).
+        // The same guard on `render_language_servers` is there because that class of bug reached
+        // the remote-server daemon once already.
+        if !app.has_singleton_model::<RemoteCodebaseIndexModel>() {
+            return Empty::new().finish();
+        }
+
+        let entries = RemoteCodebaseIndexModel::as_ref(app).entries_for_settings();
+
+        let mut content = Flex::column().with_spacing(SUB_SECTION_MARGIN);
+        content.add_child(render_sub_header_with_description(
+            appearance,
+            crate::t!("settings-code-remote-indexed-folders"),
+            crate::t!("settings-code-remote-indexed-folders-desc"),
+        ));
+
+        let mut rows = Flex::column().with_spacing(SUB_SECTION_MARGIN);
+        for entry in &entries {
+            // `host_label` is the SSH host's display name, falling back to its id
+            // (`codebase_index_model.rs`), so this reads as the user typed it: `myhost:/srv/repo`.
+            let label = format!("{}:{}", entry.host_label, entry.remote_path.path.as_str());
+            rows.add_child(render_body_item::<CodeSettingsPageAction>(
+                label,
+                None,
+                LocalOnlyIconState::Hidden,
+                ToggleState::Enabled,
+                appearance,
+                render_remote_index_status(
+                    remote_indexing_status_presentation(&entry.status, appearance),
+                    appearance,
+                ),
+                None,
+            ));
+        }
+
+        content.add_child(
+            Container::new(rows.finish())
+                .with_uniform_padding(MAIN_SECTION_MARGIN)
+                .with_background(appearance.theme().surface_1())
+                .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                .with_margin_bottom(MAIN_SECTION_MARGIN)
+                .finish(),
+        );
+
+        content.finish()
     }
 }
 

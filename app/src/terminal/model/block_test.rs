@@ -574,6 +574,7 @@ pub fn test_block_emits_block_completed_event_for_in_band_command() {
     block.prompt_only_precmd(Default::default());
     block.preexec(PreexecValue {
         command: "warp_run_generator_command 1234 foo".to_owned(),
+        session_id: None,
     });
     block.finish(0);
 

@@ -658,6 +658,10 @@ pub enum CodeEditorViewAction {
     RevertDiffHunk {
         line_range: Range<LineCount>,
     },
+    /// Stage (or unstage) a diff hunk, when clicking the stage icon (Zap #329)
+    StageDiffHunk {
+        line_range: Range<LineCount>,
+    },
     /// Open comment line (when opening a comment on a specific line)
     NewCommentOnLine {
         line: EditorLineLocation,
@@ -807,6 +811,7 @@ impl CodeEditorViewAction {
             | Self::HiddenSectionExpansion { .. }
             | Self::AddDiffHunkContext { .. }
             | Self::RevertDiffHunk { .. }
+            | Self::StageDiffHunk { .. }
             | Self::NewCommentOnLine { .. }
             | Self::RequestOpenSavedComment { .. }
             | Self::MouseHovered { .. }
@@ -1092,6 +1097,16 @@ impl TypedActionView for CodeEditorView {
 
                     // Notify to re-render
                     ctx.notify();
+                }
+            }
+            StageDiffHunk { line_range } => {
+                if FeatureFlag::StageChanges.is_enabled() {
+                    // Staging is a repository operation and this view has no
+                    // repo path, so it only reports the range; the code-review
+                    // view resolves it to a hunk and drives the git backend.
+                    ctx.emit(CodeEditorEvent::DiffHunkStageRequested {
+                        line_range: line_range.clone(),
+                    });
                 }
             }
             NewCommentOnLine { line: line_info } => {

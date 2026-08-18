@@ -12,12 +12,14 @@ use super::*;
 //   local/remote-host multiplexing. Ported below now that the SSH arm is built
 //   (see `bundled.rs`'s module doc comment).
 // - `unavailable_bundled_context_path_renders_as_empty_string` — exercises
-//   `display_optional_path`, a helper that only exists because the pin's
-//   `build_bundled_skill_context` has `Option<PathBuf>`-typed GUI/TUI config-dir
-//   variables this fork doesn't build yet (no `gui_config_local_dir`/
-//   `tui_config_local_dir` — separate from this issue's scope). Not ported for the
-//   same reason `build_bundled_skill_context` here stays at its current (fork-original,
-//   already-tested) variable set.
+//   `display_optional_path`. Ported below. An earlier note here said the helper
+//   could not be ported because it only served the pin's `Option<PathBuf>`-typed
+//   GUI/TUI config-dir variables (`gui_config_local_dir` / `tui_config_local_dir`),
+//   which this fork does not build. That is no longer accurate: this fork's
+//   `build_bundled_skill_context` renders `{{warpctrl_wrapper_path}}` from
+//   `warp_core::paths::bundled_resources_dir()`, which is also `Option<PathBuf>`,
+//   and now goes through `display_optional_path` — so the helper has a real
+//   production caller here and the pin's test covers it.
 //
 // The rest of this file adds direct coverage of the `BundledSkill` catalog surface
 // extracted out of `skill_manager.rs` by an earlier port — previously only exercised
@@ -33,6 +35,11 @@ fn test_skill(id: &str) -> ParsedSkill {
         provider: SkillProvider::Zap,
         scope: SkillScope::Bundled,
     }
+}
+
+#[test]
+fn unavailable_bundled_context_path_renders_as_empty_string() {
+    assert_eq!(display_optional_path(None), "");
 }
 
 #[test]

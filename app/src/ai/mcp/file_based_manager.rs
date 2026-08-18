@@ -6,6 +6,7 @@ use repo_metadata::repositories::DetectedRepositories;
 use std::collections::{hash_map::Entry, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, Entity, ModelContext, SingletonEntity};
 
@@ -30,10 +31,25 @@ pub struct FileBasedMCPManager {
     /// config path. Cleared once that path parses (or is removed) successfully, so this only
     /// ever reflects the current state, not history.
     config_diagnostics_by_path: HashMap<PathBuf, FileMCPConfigDiagnostic>,
+    /// The TUI scans its global config as soon as it starts so it can render
+    /// config health immediately, but starting servers at scan time would expose
+    /// tools (and begin any OAuth handshake) before the session is ready. Hold
+    /// global Zap servers until the TUI front-end explicitly activates them, and
+    /// never auto-start global third-party servers there at all — the TUI's MCP
+    /// menu requires an explicit start action for those.
+    ///
+    /// Upstream derives this from `settings::settings_mode()`; this fork dropped
+    /// `SettingsMode` (see `DECLINED.md`) and reads the equivalent runtime fact
+    /// from [`AppExecutionMode::is_tui`].
+    defer_global_warp_autostart: bool,
+    /// Whether deferred global Zap servers may now be started. Always `true`
+    /// outside the TUI, where nothing is deferred in the first place.
+    global_warp_servers_activated: bool,
 }
 
 impl FileBasedMCPManager {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        let defer_global_warp_autostart = AppExecutionMode::as_ref(ctx).is_tui();
         if FeatureFlag::FileBasedMcp.is_enabled() {
             ctx.subscribe_to_model(&FileMCPWatcher::handle(ctx), |me, event, ctx| {
                 me.handle_watcher_event(event, ctx);
@@ -50,6 +66,8 @@ impl FileBasedMCPManager {
             file_based_servers: Default::default(),
             file_based_servers_by_root: Default::default(),
             config_diagnostics_by_path: Default::default(),
+            defer_global_warp_autostart,
+            global_warp_servers_activated: !defer_global_warp_autostart,
         }
     }
 
@@ -201,7 +219,13 @@ impl FileBasedMCPManager {
             .get_mut(root_path)
             .and_then(|m| m.remove(&provider));
         if let Some(hashes) = hashes {
+            // Dropping an empty set leaves the effective source set unchanged, so
+            // only a non-empty removal is a change worth announcing.
+            let servers_changed = !hashes.is_empty();
             self.remove_if_orphaned(hashes, ctx);
+            if servers_changed {
+                ctx.emit(FileBasedMCPManagerEvent::ServersChanged);
+            }
         }
     }
 
@@ -323,6 +347,13 @@ impl FileBasedMCPManager {
 
         // If orphaned servers are found, remove them and purge their credentials.
         self.remove_if_orphaned(servers_to_remove, ctx);
+
+        // Re-parsing a config that has not changed re-applies the identical hash
+        // set; only a genuine change to this `(root, provider)`'s effective source
+        // set is announced, so subscribers do not rebuild on every file event.
+        if previous_scanned_servers != scanned_servers {
+            ctx.emit(FileBasedMCPManagerEvent::ServersChanged);
+        }
     }
 
     /// Returns `true` if the server identified by `hash` is referenced from any global
@@ -411,11 +442,22 @@ impl FileBasedMCPManager {
             let Some(hash) = installation.hash() else {
                 continue;
             };
-            if self.is_global_warp_server(hash) || (self.is_global_server(hash) && mcp_enabled) {
+            let should_spawn = if self.is_global_warp_server(hash) {
+                // Global Zap servers always auto-spawn, except in the TUI before
+                // activation (see `defer_global_warp_autostart`).
+                !self.defer_global_warp_autostart || self.global_warp_servers_activated
+            } else if self.is_global_server(hash) {
+                // Global third-party servers follow the GUI toggle, and never
+                // auto-start in the TUI — that guarantee is unconditional, not
+                // merely "until activation".
+                !self.defer_global_warp_autostart && mcp_enabled
+            } else {
+                // Project-scoped installations are intentionally dropped from auto-spawn.
+                false
+            };
+            if should_spawn {
                 to_spawn.push(installation);
             }
-
-            // Project-scoped installations are intentionally dropped from auto-spawn.
         }
 
         if !to_spawn.is_empty() {
@@ -426,6 +468,12 @@ impl FileBasedMCPManager {
     }
 
     fn handle_file_based_mcp_enabled_change(&mut self, ctx: &mut ModelContext<Self>) {
+        // The setting is GUI-only. TUI-discovered third-party servers always
+        // require an explicit start action, even if a value is loaded into the
+        // shared model by tests or future settings migrations.
+        if self.defer_global_warp_autostart {
+            return;
+        }
         // Only global third-party servers are affected by the toggle:
         // - Global Zap servers always spawn regardless of the toggle.
         // - Project-scoped servers (any provider) are never auto-spawned and their
@@ -453,6 +501,37 @@ impl FileBasedMCPManager {
             ctx.emit(FileBasedMCPManagerEvent::SpawnServers {
                 installations: global_third_party_servers,
             });
+        }
+    }
+
+    /// Every installation referenced from the global Zap config (`~/.warp/mcp.json`).
+    #[cfg(any(feature = "tui", test))]
+    pub fn global_warp_servers(&self) -> Vec<&TemplatableMCPServerInstallation> {
+        self.file_based_servers
+            .iter()
+            .filter(|(hash, _)| self.is_global_warp_server(**hash))
+            .map(|(_, installation)| installation)
+            .collect()
+    }
+
+    /// Releases the TUI's deferred global Zap servers and starts the ones already
+    /// detected. Idempotent, and a no-op outside the TUI (nothing was deferred).
+    ///
+    /// Global third-party servers are deliberately *not* released here: in the TUI
+    /// they always require an explicit start action from the MCP menu.
+    #[cfg(any(feature = "tui", test))]
+    pub fn activate_global_warp_servers(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.global_warp_servers_activated {
+            return;
+        }
+        self.global_warp_servers_activated = true;
+        let installations = self
+            .global_warp_servers()
+            .into_iter()
+            .cloned()
+            .collect_vec();
+        if !installations.is_empty() {
+            ctx.emit(FileBasedMCPManagerEvent::SpawnServers { installations });
         }
     }
 
@@ -570,6 +649,10 @@ pub struct FileBasedMCPServerWithSources {
 }
 
 pub enum FileBasedMCPManagerEvent {
+    /// The effective set of `(root, provider)` server references changed — a config
+    /// introduced or dropped servers. Deliberately *not* emitted when a re-parse
+    /// yields the same set, so subscribers can treat it as "the catalog moved".
+    ServersChanged,
     /// A config file's diagnostic (read/parse/missing-env-var error, or its resolution) changed.
     ConfigDiagnosticChanged,
     SpawnServers {

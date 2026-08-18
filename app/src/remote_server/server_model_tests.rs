@@ -808,13 +808,15 @@ fn non_host_scoped_response_is_not_failed_over() {
 // the git-status one. The fork now has `GitHubRepoModel` (ported by #463 for
 // issue #385) and `GitRepoStatusModel` (`code_review::git_status_update`),
 // so both fields are ported here with the pin's real types rather than
-// placeholders. What is *not* ported is the daemon-side wiring that would
-// ever populate them (`NavigatedToDirectory` subscribing a connection,
-// `UpdateGitStatus`/`UpdateGitHubPrInfo` notifications refreshing a model,
-// `GitStatusPush` broadcasts) — that is a separate, larger feature gap.
-// These 6 tests, like the pin's, exercise only the subscription bookkeeping,
-// so the two model maps are asserted for absence/presence but never
-// populated with a real handle.
+// placeholders. The daemon-side wiring that populates them
+// (`NavigatedToDirectory` subscribing a connection, `UpdateGitStatus` /
+// `UpdateGitHubPrInfo` / `UpdateGitHubRepoInfo` notifications creating and
+// refreshing a model, `GitStatusPush` / `GitHubPrInfoPush` /
+// `GitHubRepositoryInfoPush` broadcasts) has since landed in `server_model.rs`.
+// These 6 tests, like the pin's, still exercise only the subscription
+// bookkeeping, so the two model maps are asserted for absence/presence but
+// never populated with a real handle — creating one needs a `ModelContext` and
+// a watched repository, which `test_model()` deliberately does not provide.
 
 #[cfg(feature = "local_fs")]
 #[test]

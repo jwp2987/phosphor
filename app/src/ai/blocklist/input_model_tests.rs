@@ -22,15 +22,15 @@
 //! (`new_inner`) is shared by both surfaces and `new_tui` needs no
 //! `AgentViewController` fixture.
 //!
-//! Two of the five blocked #313 pin tests are not ported here:
-//! `conversation_events_with_inert_policy_leave_config_unchanged` and
-//! `conversation_events_apply_policy_updates`. Both exercise config transitions
-//! driven by `ConversationSelectionEvent`, which the fork's
-//! `BlocklistAIInputModel` does not yet subscribe to — see `GuiInputModePolicy`'s
-//! doc comment for why (the GUI has no `ConversationSelection` implementation
-//! yet, only the TUI's `TuiConversationSelection` does). Porting that wiring is
-//! a distinct, larger feature gap than #313, which is scoped to lock gating /
-//! initial config / AI-settings transitions.
+//! `conversation_events_apply_policy_updates` and
+//! `conversation_events_with_inert_policy_leave_config_unchanged` pin the
+//! conversation-selection half of that seam: `new_inner` subscribes to the surface's
+//! `ConversationSelection` (read back from the context model, which both surfaces already
+//! construct with it) and routes every `ConversationSelectionEvent` at
+//! `InputModePolicy::config_on_conversation_selection_changed`, applying a config write only
+//! when the policy returns `Some`. Both shipped policies currently return `None`
+//! (`GuiInputModePolicy` deliberately, since the GUI still transitions on
+//! `AgentViewControllerEvent`), so the stub policy here is what proves the route is live.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -42,7 +42,11 @@ use warpui::r#async::executor::Background;
 use warpui::{App, AppContext, EntityId, ModelHandle, SingletonEntity};
 
 use super::*;
-use crate::ai::blocklist::conversation_selection::ConversationSelectionEvent;
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+use crate::ai::blocklist::conversation_selection::{
+    ConversationSelectionEvent, ConversationSelectionHandle,
+};
 use crate::ai::blocklist::input_mode_policy::{InputModePolicy, PolicyConfigUpdate};
 use crate::ai::blocklist::BlocklistAIContextModel;
 use crate::settings::{AISettings, AISettingsChangedEvent};
@@ -191,16 +195,20 @@ const SHELL_UNLOCKED: InputConfig = InputConfig {
 struct StubPolicy {
     initial: InputConfig,
     allows_locked_ai: bool,
+    on_conversation_activated: Option<InputConfig>,
+    on_conversation_deactivated: Option<InputConfig>,
     on_settings_changed: Option<InputConfig>,
 }
 
 impl StubPolicy {
     /// A policy with `initial` config that permits locked AI and never reacts
-    /// to AI-settings events.
+    /// to conversation-selection or AI-settings events.
     fn inert(initial: InputConfig) -> Self {
         Self {
             initial,
             allows_locked_ai: true,
+            on_conversation_activated: None,
+            on_conversation_deactivated: None,
             on_settings_changed: None,
         }
     }
@@ -221,11 +229,19 @@ impl InputModePolicy for StubPolicy {
 
     fn config_on_conversation_selection_changed(
         &self,
-        _event: &ConversationSelectionEvent,
+        event: &ConversationSelectionEvent,
         _current: InputConfig,
         _app: &AppContext,
     ) -> Option<PolicyConfigUpdate> {
-        None
+        match event {
+            ConversationSelectionEvent::Changed => None,
+            ConversationSelectionEvent::Activated { .. } => {
+                self.on_conversation_activated.map(PolicyConfigUpdate::new)
+            }
+            ConversationSelectionEvent::Deactivated { .. } => self
+                .on_conversation_deactivated
+                .map(PolicyConfigUpdate::new),
+        }
     }
 
     fn config_on_ai_settings_changed(
@@ -239,11 +255,18 @@ impl InputModePolicy for StubPolicy {
     }
 }
 
-/// Builds a TUI-surface input model driven by `policy`. Uses `new_tui` (no
-/// `AgentViewController` fixture needed) since the policy seam under test —
-/// `new_inner`'s initial config, `set_input_config_internal`'s lock gate, and
-/// the AI-settings subscription — is shared by both surfaces.
-fn build_input_model(app: &mut App, policy: StubPolicy) -> ModelHandle<BlocklistAIInputModel> {
+/// Builds a TUI-surface input model driven by `policy`, returning the conversation-selection
+/// handle so tests can emit selection events. Uses `new_tui` (no `AgentViewController` fixture
+/// needed) since the policy seam under test — `new_inner`'s initial config,
+/// `set_input_config_internal`'s lock gate, and the AI-settings and conversation-selection
+/// subscriptions — is shared by both surfaces.
+fn build_input_model(
+    app: &mut App,
+    policy: StubPolicy,
+) -> (
+    ModelHandle<BlocklistAIInputModel>,
+    ConversationSelectionHandle,
+) {
     initialize_settings_for_tests(app);
     app.add_singleton_model(|_| CLIAgentSessionsModel::new());
 
@@ -265,10 +288,10 @@ fn build_input_model(app: &mut App, policy: StubPolicy) -> ModelHandle<Blocklist
         BlocklistAIContextModel::mock_agent_view_less(
             terminal_model.clone(),
             terminal_view_id,
-            conversation_selection,
+            conversation_selection.clone(),
         )
     });
-    app.add_model(|ctx| {
+    let input_model = app.add_model(|ctx| {
         BlocklistAIInputModel::new_tui(
             terminal_model,
             ai_context_model,
@@ -276,14 +299,15 @@ fn build_input_model(app: &mut App, policy: StubPolicy) -> ModelHandle<Blocklist
             terminal_view_id,
             ctx,
         )
-    })
+    });
+    (input_model, conversation_selection)
 }
 
 #[test]
 fn initial_config_comes_from_policy() {
     App::test((), |mut app| async move {
         // A locked-AI initial config sticks — no hardcoded GUI/TUI gating overrides it.
-        let input_model = build_input_model(&mut app, StubPolicy::inert(AI_LOCKED));
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(AI_LOCKED));
         input_model.read(&app, |model, _| {
             assert_eq!(model.input_config(), AI_LOCKED);
         });
@@ -297,7 +321,7 @@ fn locked_ai_write_requires_policy_permission() {
             allows_locked_ai: false,
             ..StubPolicy::inert(SHELL_UNLOCKED)
         };
-        let input_model = build_input_model(&mut app, policy);
+        let (input_model, _) = build_input_model(&mut app, policy);
 
         // Rejected: the policy forbids locking to AI.
         input_model.update(&mut app, |model, ctx| {
@@ -318,13 +342,72 @@ fn locked_ai_write_requires_policy_permission() {
 }
 
 #[test]
+fn conversation_events_with_inert_policy_leave_config_unchanged() {
+    App::test((), |mut app| async move {
+        // The subscription must route events at the policy, not rewrite the config itself: a
+        // policy that answers `None` to every selection event leaves the initial config intact.
+        let (input_model, conversation_selection) =
+            build_input_model(&mut app, StubPolicy::inert(AI_LOCKED));
+
+        conversation_selection.update(&mut app, |_, ctx| {
+            ctx.emit(ConversationSelectionEvent::Activated {
+                is_fullscreen: true,
+                origin: AgentViewEntryOrigin::Cli,
+            });
+            ctx.emit(ConversationSelectionEvent::Deactivated {
+                conversation_id: AIConversationId::new(),
+                final_exchange_count: 0,
+                is_exit_before_new_entrance: false,
+            });
+        });
+
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), AI_LOCKED);
+        });
+    });
+}
+
+#[test]
+fn conversation_events_apply_policy_updates() {
+    App::test((), |mut app| async move {
+        let policy = StubPolicy {
+            on_conversation_activated: Some(SHELL_LOCKED),
+            on_conversation_deactivated: Some(AI_LOCKED),
+            ..StubPolicy::inert(SHELL_UNLOCKED)
+        };
+        let (input_model, conversation_selection) = build_input_model(&mut app, policy);
+
+        conversation_selection.update(&mut app, |_, ctx| {
+            ctx.emit(ConversationSelectionEvent::Activated {
+                is_fullscreen: false,
+                origin: AgentViewEntryOrigin::Cli,
+            });
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), SHELL_LOCKED);
+        });
+
+        conversation_selection.update(&mut app, |_, ctx| {
+            ctx.emit(ConversationSelectionEvent::Deactivated {
+                conversation_id: AIConversationId::new(),
+                final_exchange_count: 0,
+                is_exit_before_new_entrance: false,
+            });
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), AI_LOCKED);
+        });
+    });
+}
+
+#[test]
 fn settings_change_applies_policy_update() {
     App::test((), |mut app| async move {
         let policy = StubPolicy {
             on_settings_changed: Some(SHELL_LOCKED),
             ..StubPolicy::inert(AI_LOCKED)
         };
-        let input_model = build_input_model(&mut app, policy);
+        let (input_model, _) = build_input_model(&mut app, policy);
 
         // Default is opt-in (off), so flipping to `true` guarantees a changed event.
         AISettings::handle(&app).update(&mut app, |settings, ctx| {

@@ -1088,4 +1088,58 @@ mod tests {
             });
         });
     }
+
+    /// Ported from the pin (`42effe840:app/src/ai/blocklist/usage/
+    /// conversation_usage_view_tests.rs::show_all_agent_rows_is_independent_of_details_expanded`).
+    ///
+    /// The sibling test above walks the affordances in the order a user
+    /// clicks them (expand, then "Show N more"), which means it would still
+    /// pass if `ShowAllAgentRows` had been written to depend on
+    /// `details_expanded` -- e.g. as an early return, or by folding the two
+    /// flags into one. This one dispatches `ShowAllAgentRows` first, from the
+    /// collapsed state, and pins both halves of the independence: the flag
+    /// flips anyway, and it does not implicitly expand the breakdown. The
+    /// render path is what gates on `details_expanded` (`:594`); the handler
+    /// (`:766`) must not.
+    ///
+    /// Fixture matches the pin's `initialize_test_app` + `build_view`: the
+    /// only singleton the view touches on construction and `ctx.notify()` is
+    /// `Appearance`, and `add_window` registers the root view through
+    /// `add_typed_action_view` internally, so standing the window up is also
+    /// the compile-time proof that `ConversationUsageView: TypedActionView`.
+    #[test]
+    fn show_all_agent_rows_is_independent_of_details_expanded() {
+        App::test((), |mut app| async move {
+            app.add_singleton_model(|_| Appearance::mock());
+            let (_window_id, view) = app.add_window(
+                warpui::platform::WindowStyle::NotStealFocus,
+                |_ctx: &mut warpui::ViewContext<ConversationUsageView>| {
+                    ConversationUsageView::new(
+                        placeholder_usage_info(),
+                        DisplayMode::Footer,
+                        None,
+                        MouseStateHandle::default(),
+                    )
+                },
+            );
+
+            // `ShowAllAgentRows` on its own should flip `show_all_clicked`
+            // even when the user hasn't expanded the breakdown yet (the
+            // render path won't show rows until expanded, but the handler
+            // itself shouldn't care about ordering).
+            view.update(&mut app, |view, ctx| {
+                view.handle_action(&ConversationUsageViewAction::ShowAllAgentRows, ctx);
+            });
+            view.read(&app, |view, _| {
+                assert!(
+                    view.show_all_clicked,
+                    "ShowAllAgentRows should flip show_all_clicked regardless of expanded state"
+                );
+                assert!(
+                    !view.details_expanded,
+                    "ShowAllAgentRows must not implicitly expand details"
+                );
+            });
+        });
+    }
 }

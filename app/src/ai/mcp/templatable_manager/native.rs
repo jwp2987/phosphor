@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::{collections::HashMap, future::Future};
 
 use crate::ai::mcp::http_client::build_client_with_headers;
+use crate::ai::mcp::sse_transport::{SseClientConfig, SseClientTransport};
 use crate::ai::mcp::templatable::GalleryData;
 use crate::ai::mcp::templatable_manager::FigmaMcpStatus;
 use crate::ai::mcp::{
@@ -156,6 +157,10 @@ fn error_to_user_message(error: &rmcp::RmcpError) -> String {
             }
             _ => format!("Service error: {}", err),
         },
+        // `RmcpError` became `#[non_exhaustive]` in rmcp 1.x and has since
+        // grown `TaskError`; this arm keeps future variants from breaking the
+        // build while still surfacing the error text.
+        _ => format!("MCP error: {}", error),
     }
 }
 
@@ -194,8 +199,11 @@ impl TemplatableMCPServerManager {
             } => {
                 me.purge_file_based_server_credentials(installation_hashes, ctx);
             }
-            // Diagnostic surfacing is handled by the settings UI, not server lifecycle.
-            FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
+            // Diagnostic surfacing and catalog refreshes are handled by the UI, not
+            // by server lifecycle: `ServersChanged` says the source set moved, while
+            // the actual spawn/despawn work arrives as its own event above.
+            FileBasedMCPManagerEvent::ServersChanged
+            | FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
         });
 
         // TemplatableMCPServerManager is the source of truth for templatable MCP servers stored on the cloud
@@ -1731,7 +1739,9 @@ impl TemplatableMCPServerManager {
 }
 
 type ReqwestHttpTransport = rmcp::transport::StreamableHttpClientTransport<reqwest::Client>;
-type ReqwestSseTransport = rmcp::transport::SseClientTransport<reqwest::Client>;
+// rmcp deleted its SSE client transport in v0.11.0; this now resolves to the
+// vendored copy in `crate::ai::mcp::sse_transport` (see that module's header).
+type ReqwestSseTransport = SseClientTransport<reqwest::Client>;
 
 /// Spawns a new MCP server from a given [`TransportType`].
 async fn spawn_server(
@@ -1904,9 +1914,9 @@ async fn spawn_server(
                     is_authenticated_transport = true;
 
                     logger.log("[info] MCP: Using (legacy) SSE transport (due to preflight failing with a 404)".to_string());
-                    let transport = rmcp::transport::SseClientTransport::start_with_client(
+                    let transport = SseClientTransport::start_with_client(
                         client,
-                        rmcp::transport::sse_client::SseClientConfig {
+                        SseClientConfig {
                             sse_endpoint: sse_server.url.into(),
                             ..Default::default()
                         },
@@ -1922,16 +1932,16 @@ async fn spawn_server(
                 Ok(Transport::Sse(None)) => {
                     logger.log("[info] MCP: Using (legacy) SSE transport (due to preflight failing with a 404)".to_string());
                     let transport = if headers.is_empty() {
-                        rmcp::transport::SseClientTransport::start(sse_server.url.clone())
+                        SseClientTransport::start(sse_server.url.clone())
                             .await
                             .map_err(|e| {
                                 rmcp::RmcpError::transport_creation::<ReqwestSseTransport>(e)
                             })?
                     } else {
                         let client = build_client_with_headers(&headers)?;
-                        rmcp::transport::SseClientTransport::start_with_client(
+                        SseClientTransport::start_with_client(
                             client,
-                            rmcp::transport::sse_client::SseClientConfig {
+                            SseClientConfig {
                                 sse_endpoint: sse_server.url.clone().into(),
                                 ..Default::default()
                             },
@@ -1958,7 +1968,11 @@ async fn spawn_server(
     let server_info = service.peer_info();
     logger.log(format!("[info] MCP: Connected to server: {server_info:#?}"));
 
-    let capabilities = server_info.map(|info| &info.capabilities);
+    // `peer_info()` returns an owned `Option<ServerInfo>` in rmcp 1.6, so `map` would move
+    // `info` into the closure and the borrow of its field could not escape. `as_ref()` keeps
+    // the owned value in `server_info` (a local that outlives both queries below) and yields
+    // the `Option<&ServerCapabilities>` that `query_resources_for`/`query_tools_for` take.
+    let capabilities = server_info.as_ref().map(|info| &info.capabilities);
     let resources =
         query_resources_for(capabilities, &server_name, || service.list_all_resources()).await;
     let tools = query_tools_for(capabilities, &server_name, || service.list_all_tools()).await;
@@ -2161,19 +2175,27 @@ where
 ///
 /// This tells the MCP server who we are and what capabilities we have.
 fn make_client_info() -> rmcp::model::ClientInfo {
-    rmcp::model::ClientInfo {
-        protocol_version: Default::default(),
-        capabilities: Default::default(),
-        client_info: rmcp::model::Implementation {
-            name: warp_core::channel::ChannelState::app_id().to_string(),
-            version: warp_core::channel::ChannelState::app_version()
+    // `ClientInfo` (= `InitializeRequestParams`) and `Implementation` are both
+    // `#[non_exhaustive]` in rmcp 1.x, so they can no longer be built with a
+    // struct literal. Both constructors set every field this code previously
+    // set explicitly: `Implementation::new` leaves title/description/icons/
+    // website_url as `None`, and `InitializeRequestParams::new` defaults
+    // `protocol_version` exactly as `Default::default()` did.
+    //
+    // NOTE: that default is not the same *value* it used to be.
+    // `ProtocolVersion::LATEST` moved 2025-03-26 -> 2025-11-25 between rmcp
+    // 0.10 and 1.6, so this client now negotiates two protocol revisions
+    // higher than before. Nothing here changes and nothing fails to compile;
+    // it is only observable against a live MCP server.
+    rmcp::model::ClientInfo::new(
+        Default::default(),
+        rmcp::model::Implementation::new(
+            warp_core::channel::ChannelState::app_id().to_string(),
+            warp_core::channel::ChannelState::app_version()
                 .map(|v| v.to_string())
                 .unwrap_or_default(),
-            title: None,
-            icons: None,
-            website_url: None,
-        },
-    }
+        ),
+    )
 }
 
 /// A wrapper around a [`rmcp::transport::Transport`] that logs all requests and responses.

@@ -2,7 +2,6 @@
 /// and displaying them in a code editor.
 /// It also handles applying an optional diff to the file content that will be applied
 /// when the file is loaded.
-//
 // FIELD ADJUDICATION vs the pinned oracle `02b53fcd8` (2026-08-10).
 // ----------------------------------------------------------------
 // `efcaa42b8` stripped this file's LSP layer, and the file has independently
@@ -10,13 +9,11 @@
 // this one has 13, but the 11 absences do NOT all come from the LSP removal —
 // some are simply newer-Warp features this fork's base predates. Restoring
 // "everything the pin has" would therefore smuggle in unrelated subsystems.
-//
 // Each absence was adjudicated with `git log -S<field> -- <this file>`, which
 // distinguishes the two cases exactly: a field present at `0dbd3d567` (the fork
 // base, Warp's initial public release) and removed by `efcaa42b8` is LSP debt;
 // a field with NO history in this file never existed here and is a later Warp
 // addition.
-//
 //   LSP-CAUSED — restored:
 //     lsp_server, lsp_hover_state, processed_diagnostics,
 //     diagnostic_decorations, find_references_view, hover_debounce_tx,
@@ -24,7 +21,6 @@
 //       All show `0dbd3d567` + `efcaa42b8`. `context_menu` is included on
 //       evidence, not by name: its only two entries are "Go to Definition" and
 //       "Find References" (`context_menu_items`), so it is wholly LSP UI.
-//
 //   NOT LSP — deliberately left out (no history in this file; newer than the
 //   fork base, so they belong to a general pin-sync, not to this track):
 //     has_remote_conflict      — remote-buffer conflict banner state
@@ -32,7 +28,6 @@
 //     auto_save_in_flight      — suppresses the toast for auto-saves
 //       Pulling these in would mean porting the remote-conflict and auto-save
 //       subsystems wholesale, neither of which LSP touches.
-//
 // Adjudicated separately, same discriminator: the `Hoverable` +
 // `on_right_click` wrapper around `base_with_handler` in `render`. `efcaa42b8`
 // replaced it with a bare `let base_with_handler = base;`. `git log -S
@@ -42,7 +37,6 @@
 // wholly LSP (its two items are Go to Definition and Find References), so the
 // wrapper is LSP fallout, not a deliberate fork simplification. Category (a):
 // restored.
-//
 // The same rule governs the method restore below: what comes back is what
 // `efcaa42b8` removed, not everything the pin now has.
 use std::{
@@ -429,7 +423,6 @@ impl LocalCodeEditorView {
                 // If the mouse location is clamped (meaning it's not hovering on an actual buffer text),
                 // or if the event is covered by an element above the editor,
                 // we should clear the hovered range and symbol.
-                //
                 // However, if the mouse is over the LSP hover card itself, we should not clear
                 // the hover state - the "covered" event is expected when hovering over the tooltip.
                 if *clamped || *is_covered {
@@ -516,6 +509,10 @@ impl LocalCodeEditorView {
             | CodeEditorEvent::CopiedEmptyText
             | CodeEditorEvent::DiffHunkContextAdded { .. }
             | CodeEditorEvent::DiffReverted
+            // Staging is handled by the code-review view, which subscribes to
+            // the inner `CodeEditorView` directly (as it already does for
+            // `DiffHunkContextAdded`); there is nothing for this wrapper to do.
+            | CodeEditorEvent::DiffHunkStageRequested { .. }
             | CodeEditorEvent::HiddenSectionExpanded => {}
             CodeEditorEvent::VimGotoDefinition
             | CodeEditorEvent::VimFindReferences
@@ -710,7 +707,6 @@ impl LocalCodeEditorView {
     }
 
     /// Constructs an editor view bound to a remote buffer.
-    ///
     /// Opens the remote file via [`GlobalBufferModel::open`] with
     /// [`BufferLocation::Remote`]; content is filled in asynchronously by the
     /// buffer-sync protocol. Language detection reuses the remote path's extension.
@@ -1693,8 +1689,7 @@ impl LocalCodeEditorView {
                     // buffers don't track `base_content_version` at all (see
                     // `InternalBufferState::base_content_version`'s doc comment; they use
                     // `SyncClock` instead), so `base_version` correctly stays `None` for
-                    // them and this is a no-op there. NOT COMPILED -- builds are
-                    // suspended; verified by reading only.
+                    // them and this is a no-op there.
                     me.base_content_version = GlobalBufferModel::as_ref(ctx).base_version(file_id);
                     me.has_remote_conflict = false;
                     ctx.emit(LocalCodeEditorEvent::FileSaved);

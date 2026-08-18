@@ -378,6 +378,19 @@ fn make_http_status_error(status: u16) -> anyhow::Error {
 }
 
 #[test]
+fn actionable_stream_status_reports_only_at_threshold_crossing() {
+    let err = make_http_status_error(400);
+    assert_eq!(
+        [
+            agent_event_failure_should_log_error(&err, 4, 5),
+            agent_event_failure_should_log_error(&err, 5, 5),
+            agent_event_failure_should_log_error(&err, 6, 5),
+        ],
+        [false, true, false]
+    );
+}
+
+#[test]
 fn zero_threshold_disables_stream_error_escalation() {
     let err = make_http_status_error(400);
     assert!(!agent_event_failure_should_log_error(&err, 1, 0));

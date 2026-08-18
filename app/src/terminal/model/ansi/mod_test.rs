@@ -534,7 +534,9 @@ fn parse_dcs_ssh() {
                 "hook": "SSH",
                 "value": {
                     "socket_path": "~/.ssh/9001",
-                    "remote_shell": "zsh"
+                    "remote_shell": "zsh",
+                    "session_id": 167303092612201,
+                    "remote_session_id": 167303092612202
                 }
             }"#,
     );
@@ -547,6 +549,8 @@ fn parse_dcs_ssh() {
             SSHValue {
                 socket_path: PathBuf::from("~/.ssh/9001"),
                 remote_shell: "zsh".to_string(),
+                session_id: Some(167303092612201),
+                remote_session_id: Some(167303092612202),
                 external_control_master: false,
             }
         ),
@@ -562,6 +566,8 @@ fn parse_dcs_ssh_with_external_control_master() {
                 "value": {
                     "socket_path": "/home/user/.ssh/cm-user@host:22",
                     "remote_shell": "zsh",
+                    "session_id": 167303092612201,
+                    "remote_session_id": 167303092612202,
                     "external_control_master": true
                 }
             }"#,
@@ -575,6 +581,8 @@ fn parse_dcs_ssh_with_external_control_master() {
             SSHValue {
                 socket_path: PathBuf::from("/home/user/.ssh/cm-user@host:22"),
                 remote_shell: "zsh".to_string(),
+                session_id: Some(167303092612201),
+                remote_session_id: Some(167303092612202),
                 external_control_master: true,
             }
         ),
@@ -767,7 +775,8 @@ fn parse_dcs_command_finished() {
                 "hook": "CommandFinished",
                 "value": {
                     "exit_code": 127,
-                    "next_block_id": "block_id"
+                    "next_block_id": "block_id",
+                    "session_id": 167303092612201
                 }
             }"#,
     );
@@ -782,7 +791,8 @@ fn parse_dcs_command_finished() {
                     completion_metadata: CompletionMetadata {
                         exit_code: ExitCode::from(127),
                         next_block_id: "block_id".to_owned().into(),
-                    }
+                    },
+                    session_id: Some(167303092612201)
                 }
             )
         }
@@ -826,6 +836,7 @@ fn parse_dcs_bootstrapped() {
         DProtoHook::Bootstrapped { value } => assert_eq!(
             **value,
             BootstrappedValue {
+                session_id: Some(167303092612201),
                 histfile: Some("/Users/andy/.zsh_history".to_string()),
                 shell: "bash".to_string(),
                 home_dir: Some("/Users/andy".to_string()),
@@ -927,7 +938,8 @@ fn parse_dcs_input_buffer() {
         r#"{
                 "hook": "InputBuffer",
                 "value": {
-                    "buffer": "ls -al dir"
+                    "buffer": "ls -al dir",
+                    "session_id": 167303092612201
                 }
             }"#,
     );
@@ -939,7 +951,8 @@ fn parse_dcs_input_buffer() {
         DProtoHook::InputBuffer { value } => assert_eq!(
             *value,
             InputBufferValue {
-                buffer: "ls -al dir".to_string()
+                buffer: "ls -al dir".to_string(),
+                session_id: Some(167303092612201)
             }
         ),
         _ => panic!("incorrect dcs value"),

@@ -32,6 +32,30 @@ fn use_latest_user_prompt_as_conversation_title_in_tab_names_uses_vertical_tabs_
 }
 
 #[test]
+fn enable_tab_groups_defaults_to_true() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        TabSettings::handle(&app).read(&app, |settings, _ctx| {
+            assert!(
+                *settings.enable_tab_groups,
+                "tab groups ship on; the setting only exists so a user can turn them off"
+            );
+        });
+    });
+}
+
+#[test]
+fn enable_tab_groups_uses_appearance_tabs_path() {
+    assert_eq!(
+        EnableTabGroups::toml_path(),
+        Some("appearance.tabs.enable_tab_groups")
+    );
+    assert_eq!(EnableTabGroups::hierarchy(), Some("appearance.tabs"));
+    assert_eq!(EnableTabGroups::toml_key(), "enable_tab_groups");
+}
+
+#[test]
 fn show_vertical_tab_panel_in_restored_windows_defaults_to_false() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);

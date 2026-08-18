@@ -9,7 +9,10 @@ use diesel::sqlite::SqliteConnection;
 use diesel::{Connection, ExpressionMethods, QueryDsl, RunQueryDsl};
 use diesel_migrations::MigrationHarness;
 
-use super::{process_ai_queries_for_uparrow_prompt, read_recent_ai_queries};
+use super::{
+    process_ai_queries_for_nld_history_match, process_ai_queries_for_uparrow_prompt,
+    read_recent_ai_queries,
+};
 use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::{AIAgentExchangeId, AIAgentInput, UserQueryMode};
 use crate::ai::blocklist::{AIQueryHistoryOutputStatus, PersistedAIInput, PersistedAIInputType};
@@ -74,6 +77,27 @@ fn first_query_text(query: &PersistedAIInput) -> &str {
     match query.inputs.first().expect("query should have an input") {
         PersistedAIInputType::Query { text, .. } => text,
     }
+}
+
+/// Builds a [`PersistedAIInput`] whose inputs serialize to `[]`, mirroring legacy rows
+/// written before empty inputs were skipped at write time.
+fn make_empty_input_query() -> Arc<PersistedAIInput> {
+    Arc::new(PersistedAIInput {
+        inputs: vec![],
+        ..(*make_query("unused")).clone()
+    })
+}
+
+/// Re-stamps a query's `start_ts`, so a test can order rows explicitly rather than relying on
+/// `Local::now()` resolving differently between consecutive calls.
+fn with_start_ts(
+    query: Arc<PersistedAIInput>,
+    start_ts: chrono::DateTime<chrono::Local>,
+) -> Arc<PersistedAIInput> {
+    Arc::new(PersistedAIInput {
+        start_ts,
+        ..(*query).clone()
+    })
 }
 
 #[test]
@@ -251,4 +275,30 @@ fn read_recent_ai_queries_returns_oldest_first() {
     let recent = read_recent_ai_queries(&mut conn).expect("read should succeed");
     let texts: Vec<&str> = recent.iter().map(first_query_text).collect();
     assert_eq!(texts, vec!["q0", "q1", "q2"]);
+}
+
+/// Ported from the pin (`42effe840:app/src/persistence/block_list_tests.rs:190`), assertions
+/// unchanged. It goes through real SQLite rather than a hand-built vector on purpose: the
+/// `[]`-inputs case only arises from a row that was already written, so a test that skipped the
+/// round trip would not exercise the thing that produces it.
+#[test]
+fn process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_oldest_first() {
+    let mut conn = test_connection();
+
+    // Explicit, strictly increasing timestamps keep the `start_ts`-ordered read deterministic.
+    let t0 = chrono::Local::now();
+    for query in [
+        with_start_ts(make_query("older prompt"), t0),
+        with_start_ts(make_query("   "), t0 + chrono::Duration::seconds(1)),
+        with_start_ts(make_empty_input_query(), t0 + chrono::Duration::seconds(2)),
+        with_start_ts(make_query("newer prompt"), t0 + chrono::Duration::seconds(3)),
+    ] {
+        super::upsert_ai_query_with_limit(&mut conn, query, 10).expect("upsert should succeed");
+    }
+
+    let recent_ai_queries = read_recent_ai_queries(&mut conn).expect("read should succeed");
+    let prompts = process_ai_queries_for_nld_history_match(&recent_ai_queries);
+    let texts: Vec<&str> = prompts.iter().map(|(text, _)| text.as_str()).collect();
+    // `[]` and whitespace-only rows are dropped; the rest come back oldest-first.
+    assert_eq!(texts, vec!["older prompt", "newer prompt"]);
 }

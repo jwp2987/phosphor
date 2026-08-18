@@ -569,12 +569,13 @@ impl RemoteCodebaseIndexModel {
                 self.clear_active_git_repo_for_session(*session_id);
             }
             // Fork: this arm lists *this* fork's `RemoteServerManagerEvent`
-            // variants, which are not the pin's. The pin additionally has
-            // `GitStatusPushReceived`, `GitHubPrInfoPushReceived`,
-            // `GitHubRepositoryInfoPushReceived`, `GetBranchesResponse`,
-            // `CommitChainResponse`, `GitPushResponse`, `CreatePrResponse`,
-            // `GenerateCommitMessageResponse` and
-            // `GetCommittedBranchFilesResponse`; this fork has
+            // variants, which are not the pin's. `GitStatusPushReceived`,
+            // `GitHubPrInfoPushReceived` and `GitHubRepositoryInfoPushReceived`
+            // have since been ported and appear below. The pin additionally has
+            // `GetBranchesResponse`, `CommitChainResponse`, `GitPushResponse`,
+            // `CreatePrResponse`, `GenerateCommitMessageResponse` and
+            // `GetCommittedBranchFilesResponse` (this fork models those as
+            // request/response rather than as manager events); this fork has
             // `RemoteAgentContextSnapshot`, which the pin does not.
             RemoteServerManagerEvent::SessionConnecting { .. }
             | RemoteServerManagerEvent::SessionConnectionFailed { .. }
@@ -588,6 +589,9 @@ impl RemoteCodebaseIndexModel {
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
             | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+            | RemoteServerManagerEvent::GitStatusPushReceived { .. }
+            | RemoteServerManagerEvent::GitHubPrInfoPushReceived { .. }
+            | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
             | RemoteServerManagerEvent::SetupStateChanged { .. }
             | RemoteServerManagerEvent::BinaryCheckComplete { .. }
             | RemoteServerManagerEvent::BinaryInstallComplete { .. }

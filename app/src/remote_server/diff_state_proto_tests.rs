@@ -7,8 +7,8 @@ use super::*;
 use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE, UnrenderableReason};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
-    DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
-    GitFileStatus,
+    DiffStats, FileDiff, FileDiffAndContent, FileStagedState, FileStatusInfo, GitDiffData,
+    GitDiffWithBaseContent, GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -50,6 +50,7 @@ fn sample_file_diff() -> FileDiff {
         max_line_number: 42,
         has_hidden_bidi_chars: false,
         size: DiffSize::Normal,
+        staged: Some(FileStagedState::PartiallyStaged),
     }
 }
 
@@ -152,6 +153,40 @@ fn file_diff_round_trips_with_base_content() {
     let (back, decoded_content) = proto_to_file_diff(&encoded);
     assert_eq!(original, back);
     assert_eq!(decoded_content, content);
+}
+
+#[test]
+fn file_staged_state_round_trips_every_variant() {
+    for staged in [
+        FileStagedState::Staged,
+        FileStagedState::Unstaged,
+        FileStagedState::PartiallyStaged,
+    ] {
+        let mut original = sample_file_diff();
+        original.staged = Some(staged);
+        let (back, _) = proto_to_file_diff(&file_diff_to_proto(&original, None));
+        assert_eq!(back.staged, Some(staged));
+    }
+}
+
+#[test]
+fn absent_staged_state_survives_as_absent_not_as_unstaged() {
+    // The wire default (UNSPECIFIED = 0) has to decode back to `None`. If it
+    // collapsed to `Unstaged`, a base-branch diff — and any snapshot from a
+    // daemon built before Zap #329 — would render a stage button that the
+    // other end has no handler for.
+    let mut original = sample_file_diff();
+    original.staged = None;
+    let encoded = file_diff_to_proto(&original, None);
+    assert_eq!(encoded.staged, proto::FileStagedState::Unspecified as i32);
+    let (back, _) = proto_to_file_diff(&encoded);
+    assert_eq!(back.staged, None);
+
+    // Same for a daemon that never set the field at all.
+    let mut legacy = file_diff_to_proto(&sample_file_diff(), None);
+    legacy.staged = 0;
+    let (back, _) = proto_to_file_diff(&legacy);
+    assert_eq!(back.staged, None);
 }
 
 #[test]

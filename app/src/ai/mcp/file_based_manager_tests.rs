@@ -14,12 +14,17 @@ use settings::Setting as _;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use uuid::Uuid;
+use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_core::features::FeatureFlag;
 use warpui::{App, Entity, ModelHandle, SingletonEntity as _};
 use watcher::HomeDirectoryWatcher;
 
 // Helper to initialize dependencies and return FileBasedMCPManager handle
 fn setup_app(app: &mut App) -> warpui::ModelHandle<FileBasedMCPManager> {
+    // `FileBasedMCPManager::new` reads the execution mode to decide whether to
+    // defer global autostart, so it has to exist first. `App` keeps the
+    // GUI-equivalent default; the TUI tests below set the fields explicitly.
+    app.add_singleton_model(|ctx| AppExecutionMode::new(ExecutionMode::App, false, ctx));
     app.add_singleton_model(DirectoryWatcher::new);
     app.add_singleton_model(|_| DetectedRepositories::default());
     app.add_singleton_model(RepoMetadataModel::new);
@@ -66,7 +71,34 @@ fn subscribe_events(
                     .extend(installation_uuids.iter().copied());
             }
             FileBasedMCPManagerEvent::PurgeCredentials { .. } => {}
+            FileBasedMCPManagerEvent::ServersChanged => {}
             FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
+        });
+    });
+    events
+}
+
+/// Counts only `ServersChanged`, so a test can assert how many times the
+/// effective source set was reported as having moved.
+#[derive(Default)]
+struct ServerChangeEvents {
+    count: usize,
+}
+
+impl Entity for ServerChangeEvents {
+    type Event = ();
+}
+
+fn subscribe_server_change_events(
+    app: &mut App,
+    manager: &ModelHandle<FileBasedMCPManager>,
+) -> ModelHandle<ServerChangeEvents> {
+    let events = app.add_model(|_| ServerChangeEvents::default());
+    events.update(app, |_, ctx| {
+        ctx.subscribe_to_model(manager, |me, event, _| {
+            if matches!(event, FileBasedMCPManagerEvent::ServersChanged) {
+                me.count += 1;
+            }
         });
     });
     events
@@ -79,6 +111,128 @@ fn set_file_based_mcp_enabled(app: &mut App, enabled: bool) {
             .file_based_mcp_enabled
             .load_value(enabled, true, ctx)
             .expect("load_value should succeed in tests");
+    });
+}
+
+/// `ServersChanged` is a "the catalog moved" signal, not a "a config file was
+/// read" one: re-applying an identical parse, or removing a `(root, provider)`
+/// pair that holds nothing, must stay silent.
+#[test]
+fn servers_changed_only_emits_for_effective_source_set_changes() {
+    let root_path = PathBuf::from("/tmp/test-repo");
+    let json = r#"{"test-server":{"command":"npx","args":["server-example"]}}"#;
+
+    App::test((), |mut app| async move {
+        let manager = setup_app(&mut app);
+        let events = subscribe_server_change_events(&mut app, &manager);
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.apply_parsed_servers(
+                root_path.clone(),
+                MCPProvider::Zap,
+                parse_mcp_json(json),
+                ctx,
+            );
+        });
+        events.read(&app, |events, _| assert_eq!(events.count, 1));
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.apply_parsed_servers(
+                root_path.clone(),
+                MCPProvider::Zap,
+                parse_mcp_json(json),
+                ctx,
+            );
+        });
+        events.read(&app, |events, _| assert_eq!(events.count, 1));
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.remove_servers_for_root_provider(&root_path, MCPProvider::Zap, ctx);
+        });
+        events.read(&app, |events, _| assert_eq!(events.count, 2));
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.remove_servers_for_root_provider(&root_path, MCPProvider::Zap, ctx);
+        });
+        events.read(&app, |events, _| assert_eq!(events.count, 2));
+    });
+}
+
+/// In the TUI, a global third-party config is never auto-started, and the
+/// GUI-only `file_based_mcp_enabled` toggle must not start or stop it either.
+#[test]
+fn tui_global_third_party_servers_never_auto_start() {
+    let _flag_guard = FeatureFlag::FileBasedMcp.override_enabled(true);
+    let Some(home_dir) = dirs::home_dir() else {
+        return;
+    };
+    let parsed =
+        parse_mcp_json(r#"{"global-codex": {"command": "npx", "args": ["global-codex"]}}"#);
+
+    App::test((), |mut app| async move {
+        let manager = setup_app(&mut app);
+        let events = subscribe_events(&mut app, &manager);
+        set_file_based_mcp_enabled(&mut app, true);
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.defer_global_warp_autostart = true;
+            manager.global_warp_servers_activated = false;
+            manager.apply_parsed_servers(home_dir, MCPProvider::Codex, parsed, ctx);
+        });
+        set_file_based_mcp_enabled(&mut app, false);
+        set_file_based_mcp_enabled(&mut app, true);
+
+        events.read(&app, |events, _| {
+            assert!(
+                events.spawned_uuids.is_empty(),
+                "TUI third-party global configs require an explicit start"
+            );
+            assert!(
+                events.despawned_uuids.is_empty(),
+                "GUI toggle changes must not control TUI third-party configs"
+            );
+        });
+    });
+}
+
+/// In the TUI, a global Zap config is held back at scan time and started only
+/// once the front-end activates it.
+#[test]
+fn tui_global_warp_servers_start_only_after_activation() {
+    let _flag_guard = FeatureFlag::FileBasedMcp.override_enabled(true);
+    let Some(warp_mcp_config_path) = warp_managed_mcp_config_path() else {
+        return;
+    };
+    let parsed = parse_mcp_json(r#"{"global-warp": {"command": "npx", "args": ["global-warp"]}}"#);
+
+    App::test((), |mut app| async move {
+        let manager = setup_app(&mut app);
+        let events = subscribe_events(&mut app, &manager);
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.defer_global_warp_autostart = true;
+            manager.global_warp_servers_activated = false;
+            manager.apply_parsed_servers(
+                warp_mcp_config_path.root_path,
+                MCPProvider::Zap,
+                parsed,
+                ctx,
+            );
+        });
+        events.read(&app, |events, _| {
+            assert!(events.spawned_uuids.is_empty());
+        });
+
+        manager.update(&mut app, |manager, ctx| {
+            manager.activate_global_warp_servers(ctx);
+        });
+        events.read(&app, |events, _| {
+            assert_eq!(
+                events.spawned_uuids.len(),
+                1,
+                "activation should start TUI Zap-global servers"
+            );
+        });
     });
 }
 

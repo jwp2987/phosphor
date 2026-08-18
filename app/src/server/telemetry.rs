@@ -352,6 +352,9 @@ impl From<rmcp::RmcpError> for MCPServerTelemetryError {
                 // The enum is marked as non-exhaustive, so we need a catch-all.
                 _ => Self::InternalError(err.to_string()),
             },
+            // `RmcpError` is also `#[non_exhaustive]` as of rmcp 1.x (it has
+            // since grown `TaskError`), so it needs a catch-all too.
+            ref other => Self::InternalError(other.to_string()),
         }
     }
 }

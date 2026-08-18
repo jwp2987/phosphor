@@ -565,8 +565,8 @@ fn tui_new_conversation_is_selected_and_terminal_surface_scoped() {
 
 // ─── Ported from the pinned oracle ───────────────────────────────────────────
 // `02b53fcd8:app/src/ai/blocklist/context_model_tests.rs`. The pin's
-// `GitRepoStatusModel::new_local_for_test(repo, metadata, ctx)` is this fork's
-// `GitRepoStatusModel::new_for_test(repo, metadata)`.
+// `GitRepoStatusModel::new_local_for_test(repo, metadata, ctx)` now exists under
+// that name in this fork too.
 
 /// Builds an inert `GitHubRepoModel` over a throwaway sibling git-status model.
 #[cfg(feature = "local_fs")]
@@ -583,7 +583,8 @@ fn new_github_repo_model_for_test(
             )
             .unwrap()
     });
-    let git_status = app.add_model(move |_| GitRepoStatusModel::new_for_test(repository, None));
+    let git_status =
+        app.add_model(move |ctx| GitRepoStatusModel::new_local_for_test(repository, None, ctx));
     let model = app.add_model(move |ctx| GitHubRepoModel::new_local_for_test(git_status, ctx));
     (temp_dir, model)
 }

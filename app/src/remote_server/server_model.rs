@@ -20,15 +20,17 @@ use warp_util::file::FileId;
 
 use super::proto::{
     client_message, delete_file_response, discard_files_response, git_commit_chain_response,
-    git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,
-    notification, run_command_response, server_message, session_scoped_request,
-    write_file_response, Abort, Authenticate, ClientMessage, DeleteFile, DeleteFileResponse,
+    git_create_pr_response, git_pull_response, git_push_response, git_stage_response,
+    host_scoped_request, notification, run_command_response, server_message,
+    session_scoped_request, write_file_response, Abort, Authenticate, ClientMessage, DeleteFile,
+    DeleteFileResponse,
     DeleteFileSuccess, DiscardFilesError, DiscardFilesRequest, DiscardFilesResponse,
     DiscardFilesSuccess, ErrorCode, ErrorResponse, FailedFileRead, FileContextProto,
     FileOperationError, GetBranches, GetCommittedBranchFilesRequest, GetDiffState,
     GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse, GitCommitChainSuccess,
     GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, Initialize,
+    GitPullResponse, GitPushRequest, GitPushResponse, GitStageError, GitStageRequest,
+    GitStageResponse, GitStageSuccess, HostScopedRequest, Initialize,
     InitializeResponse, NavigatedToDirectory, NavigatedToDirectoryResponse, Notification,
     ReadFileContextResponse, RipgrepSearchRequest, RunCommandError, RunCommandErrorCode,
     RunCommandRequest, RunCommandResponse, RunCommandSuccess, ServerMessage, SessionBootstrapped,
@@ -46,6 +48,24 @@ use super::codebase_index_status::{
 };
 #[cfg(feature = "local_fs")]
 use super::codebase_index_store::daemon_store_client;
+// Remote git-chip / PR-context (issue: remote git status + PR context). Gated
+// `local_fs` because every producer behind them runs `git` / `gh` against the
+// host's own filesystem.
+#[cfg(feature = "local_fs")]
+use super::git_status_proto::{
+    git_status_metadata_to_proto, repository_info_to_proto,
+};
+#[cfg(feature = "local_fs")]
+use super::proto::{
+    GitHubPrInfoPush, GitHubRepositoryInfoPush, GitStatusPush, UpdateGitHubPrInfo,
+    UpdateGitHubRepoInfo, UpdateGitStatus,
+};
+#[cfg(feature = "local_fs")]
+use crate::code_review::github_repo_model::GitHubRepoEvent;
+#[cfg(feature = "local_fs")]
+use crate::remote_server::diff_state_proto::pr_info_to_proto;
+#[cfg(feature = "local_fs")]
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 #[cfg(feature = "local_fs")]
 use super::proto::{
     CodebaseIndexLimits, CodebaseIndexStatus, CodebaseIndexStatusUpdated,
@@ -110,7 +130,7 @@ use super::server_buffer_tracker::{PendingBufferRequestKind, ServerBufferTracker
 #[cfg(feature = "local_fs")]
 use crate::code::global_buffer_model::{GlobalBufferModel, GlobalBufferModelEvent};
 #[cfg(feature = "local_fs")]
-use crate::code_review::git_status_update::GitRepoStatusModel;
+use crate::code_review::git_status_update::{GitRepoModels, GitRepoStatusModel};
 #[cfg(feature = "local_fs")]
 use crate::code_review::github_repo_model::GitHubRepoModel;
 #[cfg(feature = "local_fs")]
@@ -129,7 +149,6 @@ use crate::terminal::model::session::command_executor::{
 };
 
 /// Outcome of dispatching a request-style `ClientMessage`.
-///
 /// Notifications (fire-and-forget messages like `SessionBootstrapped` and
 /// `Abort`) do not produce a `HandlerOutcome`; they are dispatched inline in
 /// `handle_message` and return early.
@@ -137,11 +156,9 @@ enum HandlerOutcome {
     /// The response is ready synchronously — the caller sends it immediately.
     Sync(server_message::Message),
     /// The handler initiated async work whose response will be sent later.
-    ///
     /// When the handle is `Some`, the caller inserts it into `in_progress`
     /// so the request can be cancelled via `Abort`. Removal on
     /// completion/abort is arranged by [`ServerModel::spawn_request_handler`].
-    ///
     /// `None` is used for async work whose completion is delivered through
     /// a separate event subscription and is not currently cancellable via
     /// `Abort` (e.g. `FileModel` events for file writes and deletes, which
@@ -180,7 +197,6 @@ struct PendingFileOp {
 }
 
 /// A `SearchRemoteCodebase` request awaiting its retrieval-completion event.
-///
 /// `CodebaseIndexManager::retrieve_relevant_files` only registers the
 /// request and returns a `RetrievalID`; the answer arrives later as a
 /// `CodebaseIndexManagerEvent::RetrievalRequestCompleted`/
@@ -256,7 +272,6 @@ impl PendingFileOps {
 /// bounding response size regardless of the client's requested count.
 const MAX_BRANCH_COUNT_CAP: usize = 500;
 
-///
 /// Receives `ClientMessage`s from connected proxy sessions and routes
 /// `ServerMessage` responses and push notifications back through each
 /// connection's dedicated sender channel.
@@ -277,7 +292,6 @@ struct DiffModelKey {
 /// together with it on completion, or failed together with it on abort of
 /// the leading request — see `resolve_diff_state_pending_responses` and
 /// `handle_get_diff_state`.
-///
 /// Carries its own `wire_repo_path` rather than the pin's plain
 /// `(request_id, conn_id)` pair, because this fork echoes each connection's
 /// exact `repo_path` string back in responses (see the field doc on
@@ -295,11 +309,9 @@ struct PendingDiffStateResponse {
 /// Resolves the global bundled resources directory populated by the install
 /// script (see `remote_server::setup::remote_server_bundled_resources_dir()`),
 /// expanding the shell-form `~/` prefix against this process's home directory.
-///
 /// This deliberately does not use any macOS app-bundle resource resolution:
 /// the global location is version-independent, and a headless remote daemon
 /// has no app bundle to resolve against anyway.
-///
 /// #440: the Rust side is now wired up, but this fork's
 /// `install_remote_server.sh` doesn't yet create or populate
 /// `BUNDLED_RESOURCES_DIR_NAME` from the release artifact's `resources/`
@@ -320,7 +332,6 @@ fn daemon_bundled_resources_dir() -> Option<PathBuf> {
 /// daemon's own bundled-skill catalog (`bundled_skills`, produced once at startup —
 /// see `daemon_bundled_resources_dir`) with its currently-cached home skills, plus
 /// this host's file-based global rules (e.g. `~/.agents/AGENTS.md`).
-///
 /// `global_rules` is sourced from `ProjectContextModel::global_rules()` (#575):
 /// unlike the previous state of this fork, `ProjectContextModel`
 /// (`crates/ai/src/project_context/model.rs`) now indexes file-based global rules
@@ -366,7 +377,6 @@ fn remote_agent_context_snapshot(
 
 pub struct ServerModel {
     /// Per-connection outbound channels, keyed by `ConnectionId`.
-    ///
     /// The daemon can serve multiple proxy connections simultaneously — one
     /// per SSH session / Zap tab connecting to this host.  Each entry maps
     /// a connection's `Uuid` to the channel the connection task drains to
@@ -374,7 +384,6 @@ pub struct ServerModel {
     connection_senders: HashMap<ConnectionId, async_channel::Sender<ServerMessage>>,
     /// Per-connection set of repo roots for which we've already sent a
     /// snapshot in this connection's lifetime.
-    ///
     /// Used to avoid sending duplicate snapshots on repeated
     /// `NavigatedToDirectory` calls while the user `cd`s within the same repo.
     snapshot_sent_roots_by_connection: HashMap<ConnectionId, HashSet<StandardizedPath>>,
@@ -382,7 +391,6 @@ pub struct ServerModel {
     /// the exact `repo_path` string it sent in `GetDiffState` — echoed back
     /// verbatim in pushed snapshots so the client's `RemoteDiffStateModel`
     /// (which matches pushes by that exact string) sees them.
-    ///
     /// Key -> conns indexing (#324; mirrors `git_status_subscribers`, added
     /// by #330) replaces an earlier conn -> keys design that could not
     /// express "push to every connection watching this repo" without a full
@@ -418,19 +426,17 @@ pub struct ServerModel {
     #[cfg(feature = "local_fs")]
     diff_state_pending_responses: HashMap<DiffModelKey, Vec<PendingDiffStateResponse>>,
     /// Per-repo local git-status models tracked on the daemon, keyed by repo
-    /// path. Ported from the pin's `git_status_models` field. Only the
-    /// subscription bookkeeping is ported here (issue #330); the daemon-side
-    /// wiring that would actually populate this map — subscribing on
-    /// navigation and broadcasting `GitStatusPush` — is a separate, larger
-    /// feature gap and is not part of this change, so this map stays empty.
-    /// It exists now so `drop_subscription` evicts the right entries once
-    /// that wiring lands.
+    /// path. Ported from the pin's `git_status_models` field. Populated by
+    /// `subscribe_to_git_status_updates` (from `NavigatedToDirectory` and from
+    /// an explicit `UpdateGitStatus`), which also wires each model's
+    /// `MetadataChanged` event to broadcast a `GitStatusPush`.
     #[cfg(feature = "local_fs")]
     git_status_models: HashMap<StandardizedPath, ModelHandle<GitRepoStatusModel>>,
     /// Per-repo local GitHub-info models tracked on the daemon, keyed by repo
-    /// path. Ported from the pin's `github_repo_models` field. Same caveat as
-    /// `git_status_models`: stays empty until the daemon-side push wiring is
-    /// ported separately.
+    /// path. Ported from the pin's `github_repo_models` field. Populated by
+    /// `subscribe_to_github_info_updates` on an `UpdateGitHubPrInfo` /
+    /// `UpdateGitHubRepoInfo` notification; each model's events broadcast a
+    /// `GitHubPrInfoPush` / `GitHubRepositoryInfoPush`.
     #[cfg(feature = "local_fs")]
     github_repo_models: HashMap<StandardizedPath, ModelHandle<GitHubRepoModel>>,
     /// Connections subscribed (via navigation) to each repo's git status,
@@ -462,7 +468,6 @@ pub struct ServerModel {
     /// original connection is gone or its channel is closed: if the
     /// request is tracked here, the response is failed over to another
     /// live connection instead of being silently dropped.
-    ///
     /// The pin (`02b53fcd8`) populates this from a `HostScoped` request
     /// envelope (`client_message::Message::HostScoped`) that classifies
     /// every request kind as host- or session-scoped at dispatch time. The
@@ -502,14 +507,12 @@ pub struct ServerModel {
     #[cfg(feature = "local_fs")]
     remote_agent_context_snapshot_sent: HashSet<ConnectionId>,
     /// Daemon-wide bearer credential for the identity-scoped daemon.
-    ///
     /// The token is written by Initialize when the client supplies a
     /// non-empty credential, or by Authenticate during token rotation. It is
     /// intentionally retained across proxy connection teardown and cleared
     /// only by daemon process exit.
     auth_token: Option<String>,
     /// Whether a `CodebaseIndexManager` singleton exists in this process.
-    ///
     /// `ServerModel` is constructed both by `run_daemon_app` (where the manager
     /// is registered first) and by tests and the integration harness (where it
     /// is not). `CodebaseIndexManager::handle(ctx)` panics on an unregistered
@@ -530,7 +533,6 @@ pub struct ServerModel {
     /// keyed by repository root — one watch per repo, shared by every
     /// `(repo, mode)` subscription on it, since the filesystem events do not
     /// depend on the mode.
-    ///
     /// A repo present here is delta-capable: its live updates come from this
     /// watch, and the coarse `RepositoryUpdated` whole-snapshot push is skipped
     /// for it. A repo absent here (no detected/watched `Repository`) keeps the
@@ -719,7 +721,6 @@ impl ServerModel {
                     }
                     // The repository's contents changed — push a fresh diff-state
                     // snapshot to any connection subscribed to it.
-                    //
                     // Only for repos with no git watch. A watched repo drives its
                     // own pushes from `handle_diff_state_watch_update`, which can
                     // tell a single-file edit from a repo-wide change and sends a
@@ -1147,7 +1148,6 @@ impl ServerModel {
     }
 
     /// Called by the background stdin reader task via `ModelSpawner`.
-    ///
     /// Dispatches on the `oneof message` variant. Notifications are handled
     /// inline; request-style messages return a `HandlerOutcome` that is
     /// centrally acted on here: `Sync` responses are sent immediately and
@@ -1224,6 +1224,13 @@ impl ServerModel {
                     // git restore/stash/rm on the daemon's filesystem.
                     Some(host_scoped_request::Message::DiscardFiles(req)) => {
                         self.handle_discard_files(req, &request_id, conn_id, ctx)
+                    }
+                    // Per-file / per-hunk staging over SSH (Zap #329): the
+                    // remote equivalent of the code-review stage buttons.
+                    // Runs `git add` / `git restore --staged` /
+                    // `git apply --cached` against the daemon's index.
+                    Some(host_scoped_request::Message::GitStage(req)) => {
+                        self.handle_git_stage(req, &request_id, conn_id, ctx)
                     }
                     Some(host_scoped_request::Message::RipgrepSearch(req)) => {
                         self.handle_ripgrep_search(req, &request_id, conn_id, ctx)
@@ -1390,6 +1397,35 @@ impl ServerModel {
                         return; // fire-and-forget notification
                     }
                     #[cfg(feature = "local_fs")]
+                    Some(notification::Message::UpdateGitStatus(msg)) => {
+                        self.handle_update_git_status(msg, conn_id, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::UpdateGithubPrInfo(msg)) => {
+                        self.handle_update_github_pr_info(msg, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    #[cfg(feature = "local_fs")]
+                    Some(notification::Message::UpdateGithubRepoInfo(msg)) => {
+                        self.handle_update_github_repo_info(msg, ctx);
+                        return; // fire-and-forget notification
+                    }
+                    // Without `local_fs` there is no host filesystem to read
+                    // git status or run `gh` against, so there is nothing to
+                    // create and nothing to push. Dropping is correct for the
+                    // same reason as `UpdatePreferences` below: the client
+                    // waits on a broadcast, not on a response, and simply
+                    // never sees one.
+                    #[cfg(not(feature = "local_fs"))]
+                    Some(
+                        notification::Message::UpdateGitStatus(_)
+                        | notification::Message::UpdateGithubPrInfo(_)
+                        | notification::Message::UpdateGithubRepoInfo(_),
+                    ) => {
+                        return;
+                    }
+                    #[cfg(feature = "local_fs")]
                     Some(notification::Message::UpdatePreferences(msg)) => {
                         self.handle_update_preferences(msg, ctx);
                         return; // fire-and-forget notification
@@ -1457,12 +1493,10 @@ impl ServerModel {
     }
 
     /// Routes a server message to its destination.
-    ///
     /// - `conn_id = Some(id)` — sends only to the connection that originated
     ///   the request (used for all request/response pairs).
     /// - `conn_id = None` — broadcasts to every connected proxy (used for
     ///   server-initiated push notifications such as repo metadata updates).
-    ///
     /// For host-scoped requests (tracked in `host_scoped_requests`): if the
     /// target connection is gone, or its channel rejects the send, the
     /// response is delivered through any other open connection instead of
@@ -1551,7 +1585,6 @@ impl ServerModel {
 
     /// Spawns an abortable future tied to `request_id` and wires up automatic
     /// removal from `in_progress` on completion or abort.
-    ///
     /// The returned handle is intended to be returned from a handler as
     /// `HandlerOutcome::Async(Some(handle))`; the caller (`handle_message`)
     /// inserts it into `in_progress`.
@@ -1583,14 +1616,12 @@ impl ServerModel {
     }
 
     /// Handles `Initialize` by returning the server version and host id.
-    ///
     /// `server_version` is the release tag the daemon was built from
     /// (`GIT_RELEASE_TAG`) or the empty string for `cargo run` / locally
     /// deployed builds. The client treats an empty version as "unknown" and
     /// skips strict version enforcement, which keeps the
     /// `script/deploy_remote_server` developer workflow functional.
     /// Handles `Initialize`.
-    ///
     /// Deliberately does NOT take a `ModelContext`: `server_model_tests.rs`
     /// drives this directly against a hand-built `ServerModel` with no app
     /// behind it. The codebase-index half of the handshake needs a context, so
@@ -1610,10 +1641,8 @@ impl ServerModel {
     }
 
     // ── Remote codebase indexing (Delta D2, remote-daemon leg) ────────────
-    //
     // Ported from `02b53fcd8:app/src/remote_server/server_model.rs`. Two
     // differences run through the whole block:
-    //
     //  * Every guard also checks `self.codebase_indexing_available`, because
     //    this fork constructs `ServerModel` in processes with no
     //    `CodebaseIndexManager` singleton, where the pin's unconditional
@@ -1647,7 +1676,6 @@ impl ServerModel {
 
     /// Applies an `EmbeddingProviderConfig` from `Initialize` /
     /// `UpdatePreferences` to the daemon's store client.
-    ///
     /// An absent or unparseable config clears the endpoint rather than leaving
     /// a stale one: continuing to embed against a model the user has removed
     /// would write vectors under a storage key nothing will ever query.
@@ -2089,7 +2117,6 @@ impl ServerModel {
 
     /// Handles `SearchRemoteCodebase`: asks this host's `CodebaseIndexManager`
     /// to answer `query` against its own private index for `repo_path`.
-    ///
     /// Unlike `GetFragmentMetadataFromHash`, this cannot be answered
     /// synchronously. `CodebaseIndexManager::retrieve_relevant_files` only
     /// registers the request and returns a `RetrievalID`; the real answer
@@ -2370,7 +2397,6 @@ impl ServerModel {
     }
 
     /// Handles `RunCommand` by delegating to the session's `LocalCommandExecutor`.
-    ///
     /// On success, returns a `HandlerOutcome::Async` whose task resolves the
     /// request with a `RunCommandResponse`. On validation failure (missing
     /// executor), returns a `HandlerOutcome::Sync` error response.
@@ -2534,12 +2560,10 @@ impl ServerModel {
     /// optionally push, then optionally create-PR) on the daemon's filesystem
     /// in a single round trip, returning the post-chain delta (refreshed
     /// unpushed commits + upstream) and any created PR.
-    ///
     /// `path_env` is `None`: the remote host's daemon runs from a login/sshd
     /// context with a normal `PATH`, so — unlike Warp's macOS GUI, which must
     /// capture an interactive-shell `PATH` for launchd-spawned processes — it
     /// finds `git` / `gh` directly.
-    ///
     /// BYOP divergence (#116): `autogenerate_pr_content` is accepted for
     /// protocol parity but ignored — the fork drops Warp's cloud AIClient and
     /// the daemon has no BYOP provider reachable, so create-PR falls back to
@@ -2755,7 +2779,6 @@ impl ServerModel {
 
     /// Handles `GitCreatePrRequest` — runs `gh pr create` on the daemon's
     /// filesystem and returns the created PR info.
-    ///
     /// BYOP divergence (#116): `autogenerate_content` is accepted for protocol
     /// parity but ignored — no BYOP provider is reachable on the daemon, so the
     /// PR is created with `gh pr create --fill` (see `util::git::create_pr`).
@@ -2818,7 +2841,6 @@ impl ServerModel {
     /// (repo, mode) pair on the remote filesystem and replies with it, then
     /// registers a subscription so subsequent repository changes push a fresh
     /// snapshot to this connection (see `push_diff_state_for_repo`).
-    ///
     /// A request for a key that already has a computation in flight joins it
     /// instead of triggering a redundant one (#324) — see
     /// `diff_state_in_flight` / `diff_state_pending_responses` and
@@ -2930,7 +2952,6 @@ impl ServerModel {
 
     /// Establishes the git watch that makes `repo` delta-capable, if it isn't
     /// already (#577).
-    ///
     /// Returns whether the repo is delta-capable afterwards. `false` means the
     /// daemon has no watched `Repository` for the path — the repo was never
     /// detected, or detection is still in flight — and the caller must keep the
@@ -3015,10 +3036,8 @@ impl ServerModel {
 
     /// Pushes one `DiffStateFileDelta` per changed file to every connection
     /// subscribed to `repo`, for each mode they subscribed with (#577).
-    ///
     /// This is the whole point of the watch: the previous path re-serialized
     /// every file in the repository for every subscriber on every change.
-    ///
     /// Each connection is addressed with the exact `repo_path` string it sent,
     /// preserving the same echo constraint the snapshot path has — the client
     /// matches incoming pushes against the literal string it subscribed with.
@@ -3179,7 +3198,6 @@ impl ServerModel {
     }
 
     /// Stops `repo`'s git watch once nothing is subscribed to it (#577).
-    ///
     /// Without this the daemon keeps a filesystem watcher alive for every
     /// repository any client ever asked about, for the life of the process.
     #[cfg(feature = "local_fs")]
@@ -3388,7 +3406,6 @@ impl ServerModel {
     /// snapshot to every connection subscribed to this repo so the
     /// code-review UI updates without waiting for the next file-watcher
     /// event.
-    ///
     /// `msg.mode` is accepted but not used to select a cached model — see
     /// the field's doc comment in the proto for why (a discard invalidates
     /// every mode's diff for this repo, not just the requesting one).
@@ -3509,6 +3526,121 @@ impl ServerModel {
         ))
     }
 
+    /// Handles `GitStageRequest` — stages or un-stages whole files
+    /// (`git add` / `git restore --staged`) or a single hunk
+    /// (`git apply --cached`) on the daemon's filesystem, reusing the same
+    /// `LocalDiffStateModel::stage_changes_impl` the local code-review
+    /// buttons drive (Zap #329). On success, pushes a fresh diff-state
+    /// snapshot to every connection subscribed to this repo: staging moves the
+    /// index only, and the filesystem watcher that catches working-tree
+    /// changes never fires for that, so without this push the client would
+    /// keep rendering the pre-stage column indefinitely.
+    ///
+    /// `msg.mode` is accepted but not used to select a cached model, for the
+    /// same reason as `handle_discard_files`.
+    #[cfg(feature = "local_fs")]
+    fn handle_git_stage(
+        &mut self,
+        msg: GitStageRequest,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        use crate::code_review::diff_state::{LocalDiffStateModel, StageRequest, StageTarget};
+
+        fn stage_error(message: String) -> HandlerOutcome {
+            HandlerOutcome::Sync(server_message::Message::GitStageResponse(GitStageResponse {
+                result: Some(git_stage_response::Result::Error(GitStageError { message })),
+            }))
+        }
+
+        let canonical_path =
+            match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+                Ok(p) => p,
+                Err(e) => return stage_error(format!("Invalid repo_path: {e}")),
+            };
+
+        // Exactly one target. Both-set is rejected rather than silently
+        // preferring one: the two express different intents, and guessing
+        // would stage something the client did not ask for.
+        let target = match (msg.paths.is_empty(), msg.patch) {
+            (false, None) => StageTarget::Paths(msg.paths),
+            (true, Some(patch)) => StageTarget::Hunk(patch),
+            (true, None) => {
+                return stage_error("GitStageRequest set neither paths nor patch".to_string());
+            }
+            (false, Some(_)) => {
+                return stage_error("GitStageRequest set both paths and patch".to_string());
+            }
+        };
+
+        // A repo-relative path is what the local backend sends and what
+        // `git add --` expects; an absolute one would resolve against the
+        // daemon's filesystem root and silently address the wrong tree.
+        if let StageTarget::Paths(paths) = &target {
+            if let Some(bad) = paths.iter().find(|p| Path::new(p.as_str()).is_absolute()) {
+                return stage_error(format!(
+                    "GitStageRequest path must be repo-relative, got '{bad}'"
+                ));
+            }
+        }
+
+        let request = StageRequest {
+            target,
+            unstage: msg.reverse,
+        };
+        let repo_path = PathBuf::from(canonical_path.to_local_path_lossy());
+
+        log::info!(
+            "Handling GitStage repo={} reverse={} (request_id={request_id})",
+            msg.repo_path,
+            msg.reverse,
+        );
+
+        let request_id_for_response = request_id.clone();
+        let repo_path_for_push = canonical_path.clone();
+        let handle = self.spawn_request_handler(
+            request_id.clone(),
+            async move {
+                guard_git_operation_in_progress(&repo_path)?;
+                LocalDiffStateModel::stage_changes_impl(&repo_path, &request).await
+            },
+            move |me, result, ctx| {
+                let message = match result {
+                    Ok(_) => {
+                        me.push_diff_state_for_repo(&repo_path_for_push, ctx);
+                        server_message::Message::GitStageResponse(GitStageResponse {
+                            result: Some(git_stage_response::Result::Success(GitStageSuccess {})),
+                        })
+                    }
+                    Err(e) => server_message::Message::GitStageResponse(GitStageResponse {
+                        result: Some(git_stage_response::Result::Error(GitStageError {
+                            message: format!("{e:#}"),
+                        })),
+                    }),
+                };
+                me.send_server_message(Some(conn_id), Some(&request_id_for_response), message);
+            },
+            ctx,
+        );
+        HandlerOutcome::Async(Some(handle))
+    }
+
+    #[cfg(not(feature = "local_fs"))]
+    fn handle_git_stage(
+        &mut self,
+        _msg: GitStageRequest,
+        _request_id: &RequestId,
+        _conn_id: ConnectionId,
+        _ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
+        HandlerOutcome::Sync(server_message::Message::GitStageResponse(GitStageResponse {
+            result: Some(git_stage_response::Result::Error(GitStageError {
+                message: "Staging requires the local_fs feature".to_string(),
+            })),
+        }))
+    }
+
     /// Handles `UnsubscribeDiffState` — fire-and-forget removal of a diff-state
     /// subscription for a `(repo, mode)` pair on this connection.
     #[cfg(feature = "local_fs")]
@@ -3542,26 +3674,21 @@ impl ServerModel {
     }
 
     // ── Git-status / GitHub: per-connection subscription tracking ───────
-    //
     // Ported from the pinned oracle's `subscribe_git_status` /
-    // `unsubscribe_git_status` (issue #330). Pure bookkeeping: which
+    // `unsubscribe_git_status` (issue #330). Bookkeeping only: which
     // connection currently watches which repo's git status, and eviction of
-    // the (currently always-empty; see the `git_status_models` field doc)
-    // per-repo model caches once a repo has no subscribers left. The pin
-    // also drives these from `NavigatedToDirectory` / `UpdateGitStatus`
-    // handlers and pushes `GitStatusPush` messages on model events; that
-    // wiring is a separate, larger feature gap and is not part of this
-    // change.
+    // the per-repo model caches once a repo has no subscribers left. The
+    // models themselves are created by `subscribe_to_git_status_updates` /
+    // `subscribe_to_github_info_updates` further down, which is where the
+    // `GitStatusPush` / `GitHubPrInfoPush` / `GitHubRepositoryInfoPush`
+    // broadcasts are wired.
 
     /// Subscribe `conn` to `repo`'s git status (navigation in), moving it off
     /// any repo it was previously in. A no-op if `conn` is already the repo's
     /// subscriber.
-    ///
-    /// Not yet called from a handler — the `NavigatedToDirectory` wiring is
-    /// the separate feature gap noted above — so this is currently exercised
-    /// only by tests.
+    /// Pure bookkeeping — the caller ensures the per-repo git-status model
+    /// exists via `subscribe_to_git_status_updates`.
     #[cfg(feature = "local_fs")]
-    #[allow(dead_code)]
     fn subscribe_git_status(&mut self, conn: ConnectionId, repo: &StandardizedPath) {
         match self.git_status_repo_by_conn.get(&conn) {
             Some(prev) if prev == repo => return,
@@ -3602,6 +3729,227 @@ impl ServerModel {
             self.github_repo_models.remove(repo);
             self.git_status_models.remove(repo);
         }
+    }
+
+    // ── Git-status / GitHub: per-repo models and push broadcasts ────────
+    // Ported from the pin's `subscribe_to_git_status_updates`,
+    // `push_git_status`, `subscribe_to_github_info_updates`,
+    // `push_github_pr_info` and `push_github_repository_info`
+    // (`42effe840:app/src/remote_server/server_model.rs:3469-3715`).
+    // De-clouding note: every value pushed from here is produced by a local
+    // subprocess on the daemon host — `git` for status, the `gh` CLI for PR and
+    // repository info. No Warp backend is contacted on this side either.
+
+    /// Subscribes the daemon to per-repo local git status updates. On first
+    /// creation it wires model events to broadcast a `GitStatusPush`. No-op if
+    /// already subscribed, or when the repo is not yet a watched repository;
+    /// the next navigation or explicit snapshot request will try again.
+    #[cfg(feature = "local_fs")]
+    fn subscribe_to_git_status_updates(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.git_status_models.contains_key(repo_path) {
+            return;
+        }
+        let repo = LocalOrRemotePath::Local(repo_path.to_local_path_lossy());
+        let handle = match GitRepoModels::handle(ctx)
+            .update(ctx, |factory, ctx| factory.subscribe(&repo, ctx))
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::warn!("Daemon: git status subscribe failed for {repo_path}: {e}");
+                return;
+            }
+        };
+
+        let path_for_sub = repo_path.clone();
+        ctx.subscribe_to_model(&handle, move |me, _event, ctx| {
+            me.push_git_status(&path_for_sub, ctx);
+        });
+
+        self.git_status_models.insert(repo_path.clone(), handle);
+    }
+
+    /// Broadcasts the repo's current git-status snapshot to every connection.
+    /// Silent when the model does not exist yet or has not computed metadata:
+    /// the client re-asks on `HostConnected`, and the watcher tick will push
+    /// as soon as there is something to push.
+    #[cfg(feature = "local_fs")]
+    fn push_git_status(&mut self, repo_path: &StandardizedPath, ctx: &mut ModelContext<Self>) {
+        let Some(handle) = self.git_status_models.get(repo_path) else {
+            return;
+        };
+        let Some(metadata) = handle.as_ref(ctx).metadata(ctx) else {
+            return;
+        };
+        let proto_metadata = git_status_metadata_to_proto(metadata);
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::GitStatusPush(GitStatusPush {
+                repo_path: repo_path.to_string(),
+                metadata: Some(proto_metadata),
+            }),
+        );
+    }
+
+    /// Handles the `UpdateGitStatus` notification (fire-and-forget).
+    #[cfg(feature = "local_fs")]
+    fn handle_update_git_status(
+        &mut self,
+        msg: UpdateGitStatus,
+        conn_id: ConnectionId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let std_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Invalid repo_path for UpdateGitStatus: {e}");
+                return;
+            }
+        };
+
+        // This notification rides an arbitrary connection for the host, so it
+        // says nothing about which repo the connection's session is in.
+        // Register only when the connection is untracked, which keeps the
+        // requested repo's model alive across reconnect until
+        // `NavigatedToDirectory` lands.
+        if !self.git_status_repo_by_conn.contains_key(&conn_id) {
+            self.subscribe_git_status(conn_id, &std_path);
+            self.subscribe_to_git_status_updates(&std_path, ctx);
+        }
+        self.push_git_status(&std_path, ctx);
+    }
+
+    /// Subscribes the daemon to per-repo local GitHub info updates. On first
+    /// creation it wires model events to broadcast separate PR-info and
+    /// repository-info pushes. No-op if already subscribed, or when the repo is
+    /// not yet a watched repository (the client requests another snapshot on
+    /// `HostConnected`).
+    #[cfg(feature = "local_fs")]
+    fn subscribe_to_github_info_updates(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self.github_repo_models.contains_key(repo_path) {
+            return;
+        }
+        let repo = LocalOrRemotePath::Local(repo_path.to_local_path_lossy());
+        let handle = match GitRepoModels::handle(ctx)
+            .update(ctx, |factory, ctx| factory.subscribe_github_repo(&repo, ctx))
+        {
+            Ok(handle) => handle,
+            Err(e) => {
+                log::warn!("Daemon: github repo subscribe failed for {repo_path}: {e}");
+                return;
+            }
+        };
+
+        let path_for_sub = repo_path.clone();
+        ctx.subscribe_to_model(&handle, move |me, event, ctx| match event {
+            GitHubRepoEvent::PrInfoChanged => me.push_github_pr_info(&path_for_sub, ctx),
+            GitHubRepoEvent::RepositoryInfoChanged => {
+                me.push_github_repository_info(&path_for_sub, ctx)
+            }
+        });
+
+        self.github_repo_models.insert(repo_path.clone(), handle);
+    }
+
+    /// Handles the `UpdateGitHubPrInfo` notification (fire-and-forget).
+    /// Ensures the per-repo `GitHubRepoModel` exists and refreshes PR info.
+    #[cfg(feature = "local_fs")]
+    fn handle_update_github_pr_info(
+        &mut self,
+        msg: UpdateGitHubPrInfo,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let std_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Invalid repo_path for UpdateGitHubPrInfo: {e}");
+                return;
+            }
+        };
+        // A model created just now already fetches on construction, so only an
+        // already-tracked repo needs an explicit refresh.
+        let already_tracked = self.github_repo_models.contains_key(&std_path);
+        self.subscribe_to_github_info_updates(&std_path, ctx);
+        if already_tracked {
+            if let Some(handle) = self.github_repo_models.get(&std_path).cloned() {
+                handle.update(ctx, |model, ctx| model.refresh_pr_info(ctx));
+            }
+        }
+    }
+
+    /// Handles the `UpdateGitHubRepoInfo` notification (fire-and-forget).
+    /// Ensures the per-repo `GitHubRepoModel` exists and refreshes repo info.
+    #[cfg(feature = "local_fs")]
+    fn handle_update_github_repo_info(
+        &mut self,
+        msg: UpdateGitHubRepoInfo,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let std_path = match StandardizedPath::from_local_canonicalized(Path::new(&msg.repo_path)) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Invalid repo_path for UpdateGitHubRepoInfo: {e}");
+                return;
+            }
+        };
+        let already_tracked = self.github_repo_models.contains_key(&std_path);
+        self.subscribe_to_github_info_updates(&std_path, ctx);
+        if already_tracked {
+            if let Some(handle) = self.github_repo_models.get(&std_path).cloned() {
+                handle.update(ctx, |model, ctx| model.refresh_repository_info(ctx));
+            }
+        }
+    }
+
+    /// Broadcasts the repo's current PR info to every connection. `None` is a
+    /// meaningful value here (branch has no PR), so it is pushed as an absent
+    /// optional rather than suppressed.
+    #[cfg(feature = "local_fs")]
+    fn push_github_pr_info(&mut self, repo_path: &StandardizedPath, ctx: &mut ModelContext<Self>) {
+        let Some(handle) = self.github_repo_models.get(repo_path) else {
+            return;
+        };
+        let pr_info = handle.as_ref(ctx).pr_info(ctx).map(pr_info_to_proto);
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::GithubPrInfoPush(GitHubPrInfoPush {
+                repo_path: repo_path.to_string(),
+                pr_info,
+            }),
+        );
+    }
+
+    /// Broadcasts the repo's current repository name/owner to every connection.
+    #[cfg(feature = "local_fs")]
+    fn push_github_repository_info(
+        &mut self,
+        repo_path: &StandardizedPath,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(handle) = self.github_repo_models.get(repo_path) else {
+            return;
+        };
+        let repository_info = handle
+            .as_ref(ctx)
+            .repository_info(ctx)
+            .map(repository_info_to_proto);
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::GithubRepositoryInfoPush(GitHubRepositoryInfoPush {
+                repo_path: repo_path.to_string(),
+                repository_info,
+            }),
+        );
     }
 
     fn handle_run_command(
@@ -3669,7 +4017,7 @@ impl ServerModel {
                         // (see the writer loop in `unix/mod.rs`) instead of
                         // ever reaching the client in any form.
                         // Upstream: d9dee18e19e8c06e24b7b32a9619685e5dd3289c
-                        // (#10681). NOT COMPILED: verified by reading only.
+                        // (#10681).
                         const MAX_OUTPUT_BYTES: usize = MAX_MESSAGE_SIZE - 1024;
                         let total = stdout.len() + stderr.len();
                         if total > MAX_OUTPUT_BYTES {
@@ -3786,14 +4134,34 @@ impl ServerModel {
                     ),
                 );
 
+                // Move this connection's git-status subscription to the repo it
+                // just navigated into (or drop it when it left git), create the
+                // per-repo models if this is the first subscriber, and push an
+                // opportunistic snapshot. Ported from the pin's
+                // `42effe840:app/src/remote_server/server_model.rs:2090-2108`;
+                // before this the bookkeeping existed but nothing called it, so
+                // the maps stayed empty and no push was ever sent.
+                #[cfg(feature = "local_fs")]
+                {
+                    if is_git {
+                        if let Ok(root_path) =
+                            StandardizedPath::from_local_canonicalized(Path::new(&indexed_path))
+                        {
+                            me.subscribe_git_status(conn_id_for_response, &root_path);
+                            me.subscribe_to_git_status_updates(&root_path, ctx);
+                            me.push_git_status(&root_path, ctx);
+                        }
+                    } else {
+                        me.unsubscribe_git_status(conn_id_for_response);
+                    }
+                }
+
                 // After responding, push a snapshot if metadata is available.
-                //
                 // For git repos this is an opportunistic push for the case
                 // where the repo was already indexed and RepositoryUpdated
                 // won't fire again (which would otherwise leave the client
                 // with only a placeholder root). We skip if a snapshot was
                 // already sent for this connection+root.
-                //
                 // For non-git directories the lazy-loaded tree is always
                 // broadcast to all connections.
                 if let Ok(root_path) =
@@ -4127,7 +4495,6 @@ impl ServerModel {
 
     /// Handles `OpenBuffer` by opening the file via `GlobalBufferModel`.
     /// The response is sent asynchronously when `BufferLoaded` fires.
-    ///
     /// When `force_reload` is set, the server re-reads the file from disk even
     /// if the buffer is already loaded. This broadcasts a `BufferUpdatedPush` to
     /// the other connections and responds with the fresh content via
@@ -4346,7 +4713,6 @@ impl ServerModel {
 
     /// Zap: handles `ListDirectory` — synchronously lists the immediate
     /// children of a directory.
-    ///
     /// Used for precise validation by remote terminal file-link detection:
     /// the client caches the real directory entries for a given cwd, and the
     /// link detector uses them to cut out the correct filename from a full
@@ -4567,7 +4933,6 @@ impl ServerModel {
 /// repository lives on the daemon's. This is therefore the only guard on the
 /// remote path, and `RemoteDiffStateModel::is_git_operation_blocked` returns
 /// `false` on the promise that the daemon owns it.
-///
 /// The shared `util::git` orchestration itself stays guard-free, so each
 /// mutating handler applies this at the head of its spawned future.
 #[cfg(feature = "local_fs")]
@@ -4667,7 +5032,6 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
 }
 
 // ── Remote codebase indexing helpers (Delta D2) ───────────────────────────
-//
 // Ported verbatim from `02b53fcd8:app/src/remote_server/server_model.rs`
 // except where noted.
 
@@ -4791,7 +5155,6 @@ fn fragment_metadata_to_proto(
 
 // ── SearchRemoteCodebase helpers (TODO.md "UNWIRED-CODE AUDIT 2026-08-10"
 // finding #5) ───────────────────────────────────────────────────────────
-//
 // Fork-original: the pin has no equivalent RPC. See the field comment on
 // `HostScopedRequest.search_remote_codebase` in the proto file.
 

@@ -6,11 +6,25 @@ use super::*;
 use crate::test_fixtures::add_test_semantic_selection;
 
 fn row(id: &str, is_selectable: bool) -> TuiModelMenuRow {
+    row_with_state(id, is_selectable, false, false)
+}
+
+/// The pin's four-argument `row`, kept under a separate name so the
+/// two-argument call sites in the selection tests below stay as they are.
+/// `key_connected` is this fork's field name for the pin's `is_key_connected`,
+/// and this fork's row carries no `discount_percentage`.
+fn row_with_state(
+    id: &str,
+    is_selectable: bool,
+    key_connected: bool,
+    is_profile_default: bool,
+) -> TuiModelMenuRow {
     TuiModelMenuRow {
         id: id.into(),
         title: id.to_owned(),
         is_selectable,
-        key_connected: false,
+        key_connected,
+        is_profile_default,
     }
 }
 
@@ -143,4 +157,27 @@ fn selectable_key_connected_model_renders_the_suffix() {
             );
         });
     });
+}
+
+/// Ported from the pin (`42effe840`). Both state badges share the single
+/// `state_suffix` slot the inline-menu row model provides, so the profile
+/// default has to fold into it rather than take a slot of its own: a row that
+/// is *both* the profile default and key-connected shows both, in the pin's
+/// order (profile default first).
+///
+/// This is the unit-level half of the badge's coverage. The live half --
+/// resolving `is_profile_default` from real `LLMPreferences` against a real
+/// session -- is `terminal_session_view_tests::model_menu_labels_the_profile_default_model`,
+/// because `new_for_test` deliberately hard-codes `is_profile_default: false`
+/// (see its doc comment).
+#[test]
+fn snapshot_marks_the_profile_default_model() {
+    let default = snapshot_row(&row_with_state("auto", true, false, true));
+    assert_eq!(default.state_suffix.as_deref(), Some("(default)"));
+
+    let connected_default = snapshot_row(&row_with_state("gpt-5", true, true, true));
+    assert_eq!(
+        connected_default.state_suffix.as_deref(),
+        Some("(default) (key connected)")
+    );
 }

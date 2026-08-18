@@ -407,10 +407,19 @@ impl NotificationsModel {
         artifacts: Vec<Artifact>,
         ctx: &mut ModelContext<Self>,
     ) {
-        if !*AISettings::as_ref(ctx).show_agent_notifications {
-            return;
-        }
-
+        // The item is recorded unconditionally. `show_agent_notifications` is a
+        // *display* setting: it hides the mailbox chip, the mailbox panel and the
+        // toast stack, but it must not destroy unread state. Early-returning here
+        // (the `a530563eb` defect) dropped the item outright, so the vertical-tab
+        // unread dots — which read `has_unread_for_terminal_view` and are
+        // deliberately not gated on this setting, in this fork or at the pin —
+        // silently stopped appearing, with no way to connect cause to effect.
+        // The pin has no such check in this function
+        // (`42effe840:app/src/ai/agent_management/agent_management_model.rs:454-482`);
+        // it suppresses only at the display layer:
+        //   - `workspace/header_toolbar_item.rs` (mailbox chip visibility)
+        //   - `workspace/view.rs` `ToggleNotificationMailbox` (mailbox open action)
+        //   - `workspace/view.rs` notification-center overlay (mailbox + toasts)
         let is_visible = is_terminal_view_visible(terminal_view_id, ctx);
         let branch = resolve_git_branch_for_terminal_view(terminal_view_id, ctx);
         let item = NotificationItem::new(
@@ -424,12 +433,18 @@ impl NotificationsModel {
             artifacts,
             branch,
         );
-        send_telemetry_from_ctx!(
-            TelemetryEvent::AgentNotificationShown {
-                agent_variant: agent.into(),
-            },
-            ctx
-        );
+        // Telemetry *is* gated: the event means "a notification was shown to the
+        // user", which is false when the display surfaces are suppressed. (The pin
+        // does not emit this event from here at all; this fork does, so the gate
+        // moves here rather than disappearing.)
+        if *AISettings::as_ref(ctx).show_agent_notifications {
+            send_telemetry_from_ctx!(
+                TelemetryEvent::AgentNotificationShown {
+                    agent_variant: agent.into(),
+                },
+                ctx
+            );
+        }
 
         let id = item.id;
         self.notifications.push(item);
@@ -483,3 +498,7 @@ fn active_focused_terminal_id(app: &AppContext) -> Option<EntityId> {
     let workspace = workspace.as_ref(app);
     workspace.active_terminal_id(app)
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod tests;

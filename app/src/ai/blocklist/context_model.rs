@@ -716,6 +716,18 @@ impl BlocklistAIContextModel {
         }
     }
 
+    /// Returns this surface's [`ConversationSelection`] handle.
+    ///
+    /// Both surfaces construct one selection handle per terminal surface and hand it to this
+    /// model, then hand this model to `BlocklistAIInputModel`. The input model therefore reads
+    /// the handle back through here rather than taking a second constructor parameter, which
+    /// would have to be threaded through `new`, `new_tui` and every call site (including
+    /// `warp_tui`'s). It uses the handle to subscribe to conversation-selection events and
+    /// route them at its `InputModePolicy`.
+    pub(crate) fn conversation_selection(&self) -> &ConversationSelectionHandle {
+        &self.conversation_selection
+    }
+
     /// Resets the set of blocks to be included as context to an empty list.
     /// Also removes any selected text that was to be included as context.
     pub fn reset_context_to_default(&mut self, ctx: &mut ModelContext<Self>) {

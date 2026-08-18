@@ -3,20 +3,23 @@
 //! Ported from the pinned oracle
 //! (`02b53fcd8:app/src/code_review/github_repo_model/{mod,local,local_tests}.rs`).
 //!
-//! Only the **local** backend is ported. The pin's `remote.rs` is a pure push
-//! receiver over `RemoteServerManagerEvent::{GitHubPrInfoPushReceived,
-//! GitHubRepositoryInfoPushReceived}` plus the matching daemon-side model and
-//! `UpdateGitHubPrInfo` / `UpdateGitHubRepoInfo` notifications, none of which
-//! exist in this fork's `remote_server` yet. The unified enum shape is kept so a
-//! `Remote` variant can be added later without touching any consumer.
+//! Both backends are ported. `remote.rs` is a pure push receiver over
+//! `RemoteServerManagerEvent::{GitHubPrInfoPushReceived,
+//! GitHubRepositoryInfoPushReceived}`, paired with the daemon-side model in
+//! `app/src/remote_server/server_model.rs` and the `UpdateGitHubPrInfo` /
+//! `UpdateGitHubRepoInfo` notifications.
 //!
-//! Everything here is local: `gh` is a locally-authenticated CLI, so no cloud
-//! backend is involved.
+//! Both are local in the sense that matters: `gh` is a locally-authenticated
+//! CLI, run on whichever machine owns the repository. No cloud backend is
+//! involved on either path.
 
 use warpui::{AppContext, Entity, ModelContext, ModelHandle};
 
 mod local;
 pub use local::LocalGitHubRepoModel;
+
+mod remote;
+pub use remote::RemoteGitHubRepoModel;
 
 #[cfg(test)]
 use crate::code_review::git_status_update::GitRepoStatusModel;
@@ -38,9 +41,10 @@ pub enum GitHubRepoEvent {
 ///
 /// Consumers (prompt chips, code review, agent context) hold a
 /// `ModelHandle<GitHubRepoModel>` and subscribe to its [`GitHubRepoEvent`]s
-/// without caring which backend serves them.
+/// without caring whether the repository is local or on an SSH host.
 pub enum GitHubRepoModel {
     Local(ModelHandle<LocalGitHubRepoModel>),
+    Remote(ModelHandle<RemoteGitHubRepoModel>),
 }
 
 impl Entity for GitHubRepoModel {
@@ -63,6 +67,7 @@ impl GitHubRepoModel {
     pub fn pr_info<'a>(&self, ctx: &'a AppContext) -> Option<&'a PrInfo> {
         match self {
             Self::Local(m) => m.as_ref(ctx).pr_info(),
+            Self::Remote(m) => m.as_ref(ctx).pr_info(),
         }
     }
 
@@ -70,6 +75,7 @@ impl GitHubRepoModel {
     pub fn repository_info<'a>(&self, ctx: &'a AppContext) -> Option<&'a RepositoryInfo> {
         match self {
             Self::Local(m) => m.as_ref(ctx).repository_info(),
+            Self::Remote(m) => m.as_ref(ctx).repository_info(),
         }
     }
 
@@ -78,6 +84,7 @@ impl GitHubRepoModel {
     pub fn is_refreshing_pr_info(&self, ctx: &AppContext) -> bool {
         match self {
             Self::Local(m) => m.as_ref(ctx).is_refreshing_pr_info(),
+            Self::Remote(m) => m.as_ref(ctx).is_refreshing_pr_info(),
         }
     }
 
@@ -85,6 +92,7 @@ impl GitHubRepoModel {
     pub fn refresh_pr_info(&self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |m, ctx| m.refresh_pr_info(ctx)),
+            Self::Remote(m) => m.update(ctx, |m, ctx| m.refresh_pr_info(ctx)),
         }
     }
 
@@ -93,6 +101,7 @@ impl GitHubRepoModel {
     pub fn refresh_repository_info(&self, ctx: &mut ModelContext<Self>) {
         match self {
             Self::Local(m) => m.update(ctx, |m, ctx| m.refresh_repository_info(ctx)),
+            Self::Remote(m) => m.update(ctx, |m, ctx| m.refresh_repository_info(ctx)),
         }
     }
 }
@@ -116,6 +125,7 @@ impl GitHubRepoModel {
     ) {
         match self {
             Self::Local(m) => m.update(ctx, |m, ctx| m.set_pr_info_for_test(pr_info, ctx)),
+            Self::Remote(_) => unreachable!("remote test models are not used"),
         }
     }
 
@@ -128,6 +138,7 @@ impl GitHubRepoModel {
             Self::Local(m) => m.update(ctx, |m, ctx| {
                 m.set_repository_info_for_test(repository_info, ctx)
             }),
+            Self::Remote(_) => unreachable!("remote test models are not used"),
         }
     }
 }

@@ -542,6 +542,14 @@ impl BlocklistAIHistoryModel {
             }
         }
         self.set_parent_for_conversation(conversation_id, parent_conversation_id);
+        // Without this write the child exists only in memory: a child agent that
+        // has not yet taken a turn is absent from SQLite and cannot be restored,
+        // so its parent link is lost across a restart. The pin persists at the
+        // end of this same function
+        // (`42effe840:app/src/ai/blocklist/history_model.rs:577`). The `&mut`
+        // borrow of the child above is already scoped to end before this call,
+        // which takes `&mut self`.
+        self.persist_conversation_state(conversation_id, ctx);
         conversation_id
     }
 
@@ -559,6 +567,29 @@ impl BlocklistAIHistoryModel {
         self.resolved_parent_conversation_id_from_refs(
             conversation.parent_conversation_id(),
             conversation.parent_agent_id(),
+        )
+    }
+
+    /// The startup counterpart of
+    /// [`Self::resolved_parent_conversation_id_for_conversation`]: resolves the
+    /// parent of a *persisted* row, which at startup has not been hydrated into
+    /// an [`AIConversation`] yet. Same precedence — the stored
+    /// `parent_conversation_id`, then `parent_agent_id` resolved against the
+    /// `agent_id_to_conversation_id` index, which
+    /// `initialize_historical_conversations` seeds for every restorable row in
+    /// a first pass before calling this. Ported from
+    /// `42effe840:app/src/ai/blocklist/history_model.rs:508`.
+    fn resolved_parent_conversation_id_from_persisted_data(
+        &self,
+        conversation_data: &AgentConversationData,
+    ) -> Option<AIConversationId> {
+        let parent_conversation_id = conversation_data
+            .parent_conversation_id
+            .as_deref()
+            .and_then(|id| AIConversationId::try_from(id.to_owned()).ok());
+        self.resolved_parent_conversation_id_from_refs(
+            parent_conversation_id,
+            conversation_data.parent_agent_id.as_deref(),
         )
     }
 
@@ -672,6 +703,25 @@ impl BlocklistAIHistoryModel {
             conversation.set_pinned(pinned);
         }
         self.persist_conversation_state(conversation_id, ctx);
+    }
+
+    /// Copies the live conversation's durable identity fields back onto its
+    /// cached [`AIConversationMetadata`] entry, so metadata-driven UI (the
+    /// conversation list) doesn't keep serving a stale token after a rebind.
+    ///
+    /// Ported from the pin (`42effe840:app/src/ai/blocklist/history_model.rs:617`)
+    /// minus its `has_cloud_data` / `server_conversation_metadata` writes --
+    /// neither field exists on this fork's `AIConversationMetadata` (deliberately
+    /// de-clouded), so there is nothing to mirror them onto.
+    fn update_cached_metadata_for_conversation(&mut self, conversation_id: AIConversationId) {
+        let Some(conversation) = self.conversations_by_id.get(&conversation_id) else {
+            return;
+        };
+        let Some(metadata) = self.all_conversations_metadata.get_mut(&conversation_id) else {
+            return;
+        };
+
+        metadata.server_conversation_token = conversation.server_conversation_token().cloned();
     }
 
     /// Starts an optimistic local rename and records rollback state.
@@ -833,30 +883,87 @@ impl BlocklistAIHistoryModel {
         });
     }
 
-    /// Sets a live conversation's server token, and updates the mapping in the history
-    /// model.
+    /// Sets a live conversation's server token, updates the reverse index, and
+    /// synchronizes any cached metadata entry for the same conversation.
+    ///
+    /// Returns whether the token changed. Purely in-memory: nothing here reaches
+    /// SQLite, so a binding made through this method is lost on restart. Callers
+    /// that need the binding to survive a restart (and live consumers to refresh)
+    /// must use [`Self::set_server_conversation_token_for_conversation_and_persist`].
     pub fn set_server_conversation_token_for_conversation(
         &mut self,
         conversation_id: AIConversationId,
         token: String,
-    ) {
-        let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
-            return;
-        };
+    ) -> bool {
+        let new_token = ServerConversationToken::new(token.clone());
+        {
+            let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
+                return false;
+            };
 
-        // Drop the old entry only if it still points at the given conversation_id,
-        // so we don't wrongly remove an entry that's been remapped.
-        if let Some(old_token) = conversation.server_conversation_token().cloned() {
-            if let Entry::Occupied(entry) = self.server_token_to_conversation_id.entry(old_token) {
-                if *entry.get() == conversation_id {
-                    entry.remove();
+            let old_token = conversation.server_conversation_token().cloned();
+            if old_token.as_ref() == Some(&new_token) {
+                return false;
+            }
+
+            // Drop the old entry only if it still points at the given conversation_id,
+            // so we don't wrongly remove an entry that's been remapped.
+            if let Some(old_token) = old_token {
+                if let Entry::Occupied(entry) =
+                    self.server_token_to_conversation_id.entry(old_token)
+                {
+                    if *entry.get() == conversation_id {
+                        entry.remove();
+                    }
                 }
             }
+
+            conversation.set_server_conversation_token(token);
         }
 
-        conversation.set_server_conversation_token(token.clone());
         self.server_token_to_conversation_id
-            .insert(ServerConversationToken::new(token), conversation_id);
+            .insert(new_token, conversation_id);
+        self.update_cached_metadata_for_conversation(conversation_id);
+        true
+    }
+
+    /// Sets a live conversation's server token, updates the reverse index,
+    /// synchronizes cached metadata, persists the rebound token to SQLite, and
+    /// emits refresh events for live consumers.
+    ///
+    /// The persisting half of the pair: [`Self::set_server_conversation_token_for_conversation`]
+    /// only touches in-memory state, so a conversation bound through it alone
+    /// comes back from a restart with no token and no run-id link. The handoff
+    /// token is a local index in this fork (`find_conversation_id_by_server_token`,
+    /// `forked_from_server_conversation_token`), so losing it loses the
+    /// fork-to-source correspondence, not a cloud record.
+    ///
+    /// Ported from the pin (`42effe840:app/src/ai/blocklist/history_model.rs:901`).
+    /// The pin's `ConversationServerTokenAssigned` event is named
+    /// [`BlocklistAIHistoryEvent::ConversationAgentIdAssigned`] here, and carries a
+    /// non-optional `terminal_view_id`, so it is only emitted for a conversation
+    /// that is live in some terminal view -- as in the pin.
+    pub fn set_server_conversation_token_for_conversation_and_persist(
+        &mut self,
+        conversation_id: AIConversationId,
+        token: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if !self.set_server_conversation_token_for_conversation(conversation_id, token) {
+            return;
+        }
+        self.persist_conversation_state(conversation_id, ctx);
+        let terminal_view_id = self.terminal_view_id_for_conversation(&conversation_id);
+        ctx.emit(BlocklistAIHistoryEvent::UpdatedConversationMetadata {
+            terminal_view_id,
+            conversation_id,
+        });
+        if let Some(terminal_view_id) = terminal_view_id {
+            ctx.emit(BlocklistAIHistoryEvent::ConversationAgentIdAssigned {
+                conversation_id,
+                terminal_view_id,
+            });
+        }
     }
 
     /// Returns the ID of the conversation that processed or is processing the response stream.
@@ -1047,7 +1154,17 @@ impl BlocklistAIHistoryModel {
             }
 
             // Maintain the parent→child index for child agent conversations.
-            if let Some(parent_id) = conversation.parent_conversation_id() {
+            // Resolve through `resolved_parent_conversation_id_for_conversation`
+            // rather than reading `parent_conversation_id()` directly, so a child
+            // that carries only a `parent_agent_id` (the link a restored remote
+            // child usually has) still lands under its parent. The `agent_id_key`
+            // seeding above means a parent restored earlier in this same loop —
+            // or in an earlier `restore_conversations` call — is already in the
+            // `agent_id_to_conversation_id` index by the time we get here. Matches
+            // the pin (`42effe840:app/src/ai/blocklist/history_model.rs:1145-1149`).
+            let resolved_parent_id =
+                self.resolved_parent_conversation_id_for_conversation(&conversation);
+            if let Some(parent_id) = resolved_parent_id {
                 let children = self.children_by_parent.entry(parent_id).or_default();
                 if !children.contains(&conversation_id) {
                     children.push(conversation_id);
@@ -1306,6 +1423,12 @@ impl BlocklistAIHistoryModel {
         init_event: warp_multi_agent_api::response_event::StreamInit,
         ctx: &mut ModelContext<Self>,
     ) {
+        // Hoisted out of the `&mut` borrow of `conversations_by_id` below:
+        // `persist_conversation_state` takes `&mut self`, so it cannot run while
+        // `conversation` is still live. Matches the pin
+        // (`42effe840:app/src/ai/blocklist/history_model.rs:1388-1418`).
+        let mut should_emit_agent_id_assigned = false;
+        let mut should_persist = false;
         if let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) {
             let had_token_before = conversation.server_conversation_token().is_some();
 
@@ -1329,12 +1452,24 @@ impl BlocklistAIHistoryModel {
             }
 
             // Notify observers when a conversation first receives its agent id.
-            if !had_token_before && conversation.server_conversation_token().is_some() {
-                ctx.emit(BlocklistAIHistoryEvent::ConversationAgentIdAssigned {
-                    conversation_id,
-                    terminal_view_id,
-                });
-            }
+            should_emit_agent_id_assigned =
+                !had_token_before && conversation.server_conversation_token().is_some();
+            should_persist = true;
+        }
+
+        // The server conversation token and run id assigned by `StreamInit` are
+        // durable conversation fields: without this write they live only in
+        // memory and the conversation comes back from a restart with no server
+        // identity at all.
+        if should_persist {
+            self.persist_conversation_state(conversation_id, ctx);
+        }
+
+        if should_emit_agent_id_assigned {
+            ctx.emit(BlocklistAIHistoryEvent::ConversationAgentIdAssigned {
+                conversation_id,
+                terminal_view_id,
+            });
         }
     }
 
@@ -1349,27 +1484,41 @@ impl BlocklistAIHistoryModel {
         terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
-            log::warn!(
-                "assign_run_id_for_conversation: conversation {conversation_id:?} not found"
-            );
-            return;
+        // Scoped so the `&mut` borrow of `conversations_by_id` ends before
+        // `persist_conversation_state` (which takes `&mut self`) is called.
+        let (agent_key, server_token) = {
+            let Some(conversation) = self.conversations_by_id.get_mut(&conversation_id) else {
+                log::warn!(
+                    "assign_run_id_for_conversation: conversation {conversation_id:?} not found"
+                );
+                return;
+            };
+            conversation.set_run_id(run_id);
+            if let Some(task_id) = task_id {
+                conversation.set_task_id(task_id);
+            }
+            (
+                agent_id_key(conversation),
+                conversation.server_conversation_token().cloned(),
+            )
         };
-        conversation.set_run_id(run_id);
-        if let Some(task_id) = task_id {
-            conversation.set_task_id(task_id);
-        }
 
-        if let Some(key) = agent_id_key(conversation) {
+        if let Some(key) = agent_key {
             self.agent_id_to_conversation_id
                 .insert(key, conversation_id);
         }
 
-        if let Some(token) = conversation.server_conversation_token() {
+        if let Some(token) = server_token {
             self.server_token_to_conversation_id
-                .insert(token.clone(), conversation_id);
+                .insert(token, conversation_id);
         }
 
+        // The run id is a durable conversation field: without this write it lives
+        // only in memory and the conversation comes back from a restart with no
+        // run, breaking the child-agent links that `conversation_id_for_agent_id`
+        // resolves. The pin persists here too
+        // (`42effe840:app/src/ai/blocklist/history_model.rs:1466`).
+        self.persist_conversation_state(conversation_id, ctx);
         ctx.emit(BlocklistAIHistoryEvent::ConversationAgentIdAssigned {
             conversation_id,
             terminal_view_id,
@@ -2237,13 +2386,18 @@ impl BlocklistAIHistoryModel {
     ///
     /// Ported from the pin (`app/src/ai/blocklist/history_model.rs:2370-2373`, `02b53fcd8`) for
     /// #256, item 2. Consumed by `input_model.rs`'s `detect_and_set_input_type` (#312), gated on
-    /// `FeatureFlag::NldPromptHistoryMatch`. Still seeded only from the snapshot passed to `new`
-    /// -- the live-session append path (`append_session_prompt` in the pin) and the SQLite-backed
-    /// `nld_prompts` read that feeds the real production snapshot are tracked separately
-    /// (superseded by #336/#337/#331), so this fork's `new` is currently always called with an
-    /// empty snapshot (see `lib.rs`) until that persistence work lands. `NldPromptHistoryMatch`
-    /// is also off by default (matching the pin's own default-off state), so in production this
-    /// currently has no observable effect either way.
+    /// `FeatureFlag::NldPromptHistoryMatch`.
+    ///
+    /// The snapshot passed to `new` is now the real one: `sqlite.rs` derives `nld_prompts` from
+    /// the same startup read that feeds up-arrow history (`process_ai_queries_for_nld_history_match`),
+    /// and `lib.rs` hands it here. The previous note on this function claimed that read was
+    /// "superseded by #336/#337/#331" -- it was not; those supersede items 1/3/4 of #256 and are
+    /// all closed. The read was simply unported.
+    ///
+    /// **Still absent:** the pin's live-session append path (`append_session_prompt`), so within
+    /// a single session a prompt the user typed after startup is not yet a candidate. Both the
+    /// SQLite read and this function are gated behind `NldPromptHistoryMatch`, off by default
+    /// (matching the pin's own default-off state), so that gap has no observable effect today.
     pub(crate) fn prompt_history_candidates(&self) -> Vec<PromptHistoryEntry> {
         self.prompt_history.clone()
     }
@@ -2527,6 +2681,17 @@ impl BlocklistAIHistoryModel {
 /// conversation.
 fn agent_id_key(conversation: &AIConversation) -> Option<String> {
     conversation.agent_link_id()
+}
+
+/// The startup counterpart of [`agent_id_key`]: the key to use in
+/// `agent_id_to_conversation_id` for a persisted row that has not been
+/// hydrated into an [`AIConversation`] yet. The persisted `run_id` is the
+/// orchestration agent identifier a child's `parent_agent_id` points at;
+/// server tokens are indexed separately in `server_token_to_conversation_id`
+/// (and `conversation_id_for_agent_id` already falls back to it). Ported from
+/// `42effe840:app/src/ai/blocklist/history_model.rs:2896`.
+fn agent_id_key_from_persisted_data(conversation_data: &AgentConversationData) -> Option<&str> {
+    conversation_data.run_id.as_deref()
 }
 
 /// Whether an `UpdatedConversationStatus` event represents a restoration

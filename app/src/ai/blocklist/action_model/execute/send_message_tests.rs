@@ -194,3 +194,54 @@ fn should_autoexecute_is_always_true() {
         assert!(result);
     });
 }
+
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/action_model/execute/
+/// send_message_tests.rs::sender_run_id_and_task_id_for_send_prefers_conversation_task_id`),
+/// adapted to this fork's reduced helper.
+///
+/// The pin's `sender_run_id_and_task_id_for_send` returns a
+/// `(String, Option<AmbientAgentTaskId>, SendMessageTaskResolution)` triple,
+/// because upstream also needs the task id (and which source it came from) to
+/// route the send through the cloud `AIClient`. This fork has no such routing,
+/// so `send_message.rs:34` keeps only the first element as
+/// `sender_run_id_for_send`; the enum and the `Option<AmbientAgentTaskId>` do
+/// not exist here and are deliberately not re-added (see that function's doc
+/// comment). What survives -- and is what this test is actually about -- is the
+/// precedence: a conversation that has recorded its own task id must sign
+/// messages with it, never with the ambient task id the driver pushed down.
+///
+/// The two IDs are deliberately different UUIDs so a regression that silently
+/// preferred the ambient fallback would change the asserted value rather than
+/// coincide with it. Note `Conversation::run_id()` is `task_id` rendered as a
+/// string in this fork (`conversation.rs:977`), which is why the pin's separate
+/// `run_id` / `task_id` assertions collapse into the single one below.
+#[test]
+fn sender_run_id_for_send_prefers_the_conversation_task_id_over_the_ambient_one() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let history_model = initialize_history(&mut app);
+        let conversation_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+
+        let conversation_task_id: AmbientAgentTaskId = "22222222-2222-2222-2222-222222222222"
+            .parse()
+            .expect("valid conversation task id");
+        let ambient_task_id: AmbientAgentTaskId = "33333333-3333-3333-3333-333333333333"
+            .parse()
+            .expect("valid ambient task id");
+
+        history_model.update(&mut app, |history_model, _| {
+            history_model
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .set_task_id(conversation_task_id);
+        });
+
+        let sender_run_id =
+            app.read(|ctx| sender_run_id_for_send(conversation_id, Some(ambient_task_id), ctx));
+
+        assert_eq!(sender_run_id, conversation_task_id.to_string());
+        assert_ne!(sender_run_id, ambient_task_id.to_string());
+    });
+}

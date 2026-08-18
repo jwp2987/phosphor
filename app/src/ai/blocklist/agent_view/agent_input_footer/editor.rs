@@ -7,6 +7,7 @@ use warpui::keymap::FixedBinding;
 
 use warpui::{AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext};
 
+use crate::appearance::AppearanceEvent;
 use crate::chip_configurator::{
     render_chip_editor_modal, render_chip_editor_sections, ChipConfigurator,
     ChipConfiguratorAction, ChipConfiguratorLayout, ChipEditorModalConfig, ChipEditorMouseHandles,
@@ -153,6 +154,20 @@ impl AgentToolbarInlineEditor {
             }
         });
 
+        // Chip colors are derived from the theme at build time, so rebuild the
+        // chips from settings when the theme changes; otherwise an open editor
+        // keeps colors mixed for the previous theme (e.g. near-black text on a
+        // dark chip after light -> dark). This inline editor persists its
+        // arrangement on every edit, so reloading preserves the user's layout.
+        ctx.subscribe_to_model(&Appearance::handle(ctx), |me, _, event, ctx| {
+            if matches!(event, AppearanceEvent::ThemeChanged)
+                && me.chip_configurator.current_dragging_state.is_none()
+            {
+                me.reset_from_settings(ctx);
+                ctx.notify();
+            }
+        });
+
         editor
     }
 
@@ -267,13 +282,43 @@ fn save_toolbar_selection<V: View>(
 }
 
 impl AgentToolbarEditorModal {
-    pub fn new(_ctx: &mut ViewContext<Self>) -> Self {
+    pub fn new(ctx: &mut ViewContext<Self>) -> Self {
+        // Chip colors are derived from the theme at build time, so rebuild the
+        // chips when the theme changes to keep an open editor readable after a
+        // theme switch. Only rebuild while the modal is actually open (has
+        // chips) and not mid-drag. Unlike the inline editor, this modal only
+        // writes to settings on save, so the rebuild is seeded from the chips
+        // currently on screen rather than from settings — reloading settings
+        // here would silently discard an unsaved arrangement.
+        ctx.subscribe_to_model(&Appearance::handle(ctx), |me, _, event, ctx| {
+            if matches!(event, AppearanceEvent::ThemeChanged)
+                && me.chip_configurator.current_dragging_state.is_none()
+                && me.chip_configurator.has_items()
+            {
+                me.rebuild_chips_for_appearance(ctx);
+                ctx.notify();
+            }
+        });
         Self {
             mouse_handles: Default::default(),
             chip_configurator: ChipConfigurator::new(ChipConfiguratorLayout::LeftRightZones),
             mode: AgentToolbarEditorMode::default(),
             is_dirty: false,
         }
+    }
+
+    /// Rebuilds the chips against the live appearance, preserving the
+    /// arrangement currently shown in the modal.
+    fn rebuild_chips_for_appearance(&mut self, ctx: &mut ViewContext<Self>) {
+        let left = self.chip_configurator.left_item_kinds();
+        let right = self.chip_configurator.right_item_kinds();
+        let available = match self.mode {
+            AgentToolbarEditorMode::AgentView => AgentToolbarItemKind::all_available(),
+            AgentToolbarEditorMode::CLIAgent => AgentToolbarItemKind::all_available_for_cli_input(),
+        };
+        let appearance = Appearance::as_ref(ctx);
+        self.chip_configurator
+            .open_left_right_zones_with_items(left, right, available, appearance);
     }
 
     pub fn open(&mut self, mode: AgentToolbarEditorMode, ctx: &mut ViewContext<Self>) {

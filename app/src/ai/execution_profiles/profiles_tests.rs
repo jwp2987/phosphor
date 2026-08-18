@@ -173,7 +173,7 @@ fn reconciles_unsynced_default_profile_with_cloud_after_initial_load() {
     })
 }
 
-/// NOT COMPILED -- builds are suspended. Regression coverage for upstream
+/// Regression coverage for upstream
 /// `c2954dcbc0` ("Prevent the client from reading non-personal AI execution
 /// profiles", #25377, GHSA-cqw8-cqq2-8cjm) ported against this fork's own
 /// `ObjectStoreModel`/`StoredObject` test scaffolding -- the pin's four tests
@@ -234,7 +234,7 @@ fn ignores_non_owned_default_profile_after_initial_load() {
     })
 }
 
-/// NOT COMPILED -- builds are suspended. See
+/// See
 /// `ignores_non_owned_default_profile_after_initial_load` above for why this
 /// is a from-scratch equivalent of the pin's coverage rather than a verbatim
 /// port. Exercises the live-event path (`ObjectStoreModel::create_object`,
@@ -290,7 +290,7 @@ fn ignores_non_owned_default_profile_created_via_event() {
     })
 }
 
-/// NOT COMPILED -- builds are suspended. See
+/// See
 /// `ignores_non_owned_default_profile_after_initial_load` above for why this
 /// is a from-scratch equivalent of the pin's coverage rather than a verbatim
 /// port. Equivalent of the pin's `filters_non_owned_non_default_profile_from_list`.
@@ -353,7 +353,6 @@ fn filters_non_owned_non_default_profile_from_list() {
 /// computer-use model picker and the computer-use prompt-override slot in the
 /// execution profile editor), and the flag that decides whether an explicitly
 /// requested computer-use override is honoured for a non-sandboxed CLI agent.
-///
 /// `AgentModeComputerUse` used to be hard-disabled in `warp_features`, which
 /// made all of this unreachable no matter what this flag said. These assertions
 /// fail if the local half is ever switched off again.
@@ -386,7 +385,6 @@ fn cli_profile_refuses_computer_use_override_when_local_computer_use_is_off() {
 }
 
 // ── Ask-User-Question speedbump dropdown (#11) ──
-//
 // The speedbump dropdown selects by *label* (`Dropdown::set_selected_by_name`),
 // so the labels must be distinct -- a duplicate would make the dropdown silently
 // show the wrong permission as selected.

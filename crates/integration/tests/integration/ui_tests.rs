@@ -143,6 +143,9 @@ integration_tests! {
     test_open_input_context_menu,
     test_copy_all_from_input_context_menu,
     test_cut_paste_from_input_context_menu,
+    test_inline_model_selector_restores_prompt_on_dismissal,
+    test_inline_model_selector_restores_prompt_on_model_selection,
+    test_inline_model_selector_restores_prompt_on_chip_toggle_close,
     test_paste_and_type_characters_before_bootstrap,
     #[ignore = "Flaking on CI - KC looking into 3/31/26"]
     test_code_review_scroll_anchor_preserved_when_inserting_above,
@@ -156,6 +159,7 @@ integration_tests! {
     test_code_review_scroll_preserved_header_range,
     #[ignore = "Flaking on CI - KC looking into 3/31/26"]
     test_code_review_scroll_preserved_footer_range,
+    test_code_review_double_click_fully_expands_hidden_section,
     test_pane_group_state_single_pane,
     test_pane_group_state_multi_pane,
     test_pane_group_state_close_pane,
@@ -218,6 +222,9 @@ integration_tests! {
 
     test_cycle_active_tab_color_with_keybinding,
     test_active_session_follows_focus,
+    test_tab_context_menu_copies_metadata,
+    test_vertical_tab_context_menu_copies_metadata,
+    test_vertical_pane_context_menu_copies_metadata,
 
     test_focus_panes_on_hover,
 
@@ -226,6 +233,7 @@ integration_tests! {
     test_detach_tab_to_new_window_with_drag,
     test_attach_tab_to_other_window_and_continue_drag,
     test_single_tab_handoff_continues_drag,
+    test_multi_tab_drag_back_to_source_and_out_again,
 
     test_restore_single_closed_pane,
     test_restore_multiple_closed_panes,
@@ -238,6 +246,7 @@ integration_tests! {
     test_open_in_warp_banner,
     test_close_notebook_window,
     test_backspace_inside_rendered_mermaid_block_is_atomic,
+    test_backspace_inside_raw_mermaid_block_edits_text_without_removing_block,
 
     test_open_workflow_in_pane,
     test_create_personal_workflow_pane_from_command_palette,
@@ -303,6 +312,7 @@ integration_tests! {
     test_selection_last_to_ai_simple,
     #[ignore = "Affected by agent_view feature flag UI changes"]
     test_copy_on_select_within_ai_simple,
+    test_copy_selection_within_ai_block,
     #[ignore = "Affected by agent_view feature flag UI changes"]
     test_selection_last_to_ai_semantic,
     #[ignore = "Affected by agent_view feature flag UI changes"]
@@ -335,6 +345,8 @@ integration_tests! {
     test_goto_line_jumps_to_line,
     test_goto_line_with_column,
     test_goto_line_clamps_out_of_range,
+    test_code_editor_line_numbers_default_to_absolute,
+    test_code_editor_relative_line_numbers_follow_cursor,
 
     // AI document tests
     test_copy_ai_document_as_markdown_from_overflow_menu,
@@ -353,6 +365,11 @@ integration_tests! {
     // Video recording test — requires real display, run manually
     #[ignore = "Manual test: requires real display for frame capture"]
     test_video_recording,
+
+    // Rich Input Ctrl+Enter submit toggle (issue #11588)
+    test_rich_input_toggle_on_enter_inserts_newline_and_ctrl_enter_submits,
+    // Regression: Enter must accept inline menus (not insert newline) when toggle=true
+    test_rich_input_enter_accepts_menu_item_when_toggle_is_true,
 
     // The eighteen `test_sftp_*` entries that stood here were removed in
     // 3c657be07 ("remove fork-original SSH Manager feature (Track 3)") along

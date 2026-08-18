@@ -19,7 +19,6 @@ use std::os::unix::fs::PermissionsExt;
 use warpui::r#async::executor;
 
 /// Run the `remote-server-daemon` subcommand.
-///
 /// Binds a Unix domain socket and writes a PID file, then delegates the
 /// WarpUI app startup to [`super::run_daemon_app`] with the Unix-specific
 /// `ServerModel` constructor.
@@ -27,7 +26,6 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
     // socket_path: ~/.warp[-channel]/remote-server/{identity_key}/server.sock
     //   The Unix domain socket the daemon binds on.  Proxy processes connect
     //   to it and bridge their SSH stdio channel through it.
-    //
     // pid_path:    ~/.warp[-channel]/remote-server/{identity_key}/server.pid
     //   Contains the daemon's PID.  Proxy processes read it and use
     //   kill(pid, 0) to detect whether the daemon is still alive before
@@ -101,13 +99,11 @@ pub fn run_daemon(identity_key: String) -> anyhow::Result<()> {
 }
 
 /// Handles a single Unix socket connection from a proxy process.
-///
 /// Spawns a dedicated **reader task** that owns the read half of the socket
 /// and runs a tight `read_client_message` loop, forwarding each decoded
 /// message to `ServerModel` via the spawner.  The reader is never cancelled
 /// mid-read, which avoids the framing desynchronisation that would occur if
 /// `read_client_message` were polled inside a `select!` branch.
-///
 /// The calling task becomes the **writer loop**: it drains the per-connection
 /// outbound channel (`conn_rx`) and writes each `ServerMessage` to the socket.
 /// When the reader exits (EOF / error) it calls `deregister_connection`, which
@@ -189,14 +185,13 @@ pub(super) async fn handle_daemon_connection(
     // ---- Writer loop -------------------------------------------------------
     // Drains outbound messages until conn_rx closes (reader called
     // deregister_connection) or a fatal write error occurs.
-    //
     // Upstream: d9dee18e19e8c06e24b7b32a9619685e5dd3289c (#10681, "Fix daemon
     // message too big error") + 363d1d6e929df5ff23431eb2d2cf1018cb0009e9
     // (#10727, "Downgrade remote server SSH disconnect errors"). Before this,
     // ANY write error — including a recoverable `MessageTooLarge` from an
     // oversized `RunCommand` response, or a routine broken-pipe when the
     // client just disconnected — tore down the whole connection and logged
-    // at `error!`. NOT COMPILED: verified by reading only.
+    // at `error!`.
     while let Ok(msg) = conn_rx.recv().await {
         if let Err(e) = remote_server::protocol::write_server_message(&mut writer, &msg).await {
             if !e.is_write_recoverable() {
@@ -262,7 +257,6 @@ pub(super) async fn handle_daemon_connection(
 }
 
 /// Returns `true` if the IO error represents a normal client disconnect.
-///
 /// Upstream: 363d1d6e929df5ff23431eb2d2cf1018cb0009e9 (#10727). For
 /// connectivity issues like a broken pipe or a connection reset, the daemon
 /// shouldn't log at `error!` — they are outside its control and happen on

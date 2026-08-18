@@ -369,8 +369,20 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             context,
             #[allow(deprecated)]
             flags::LEGACY_SSH_WRAPPER_CONTEXT_FLAG,
-        ))
+        ));
     }
+
+    // Registered regardless of the SSHTmuxWrapper feature flag: even when the
+    // flag is on, the legacy ControlMaster wrapper is still what runs unless
+    // the user opts into the tmux wrapper, so this setting stays meaningful.
+    toggle_binding_pairs.push(ToggleSettingActionPair::new(
+        &crate::t!("toggle-suffix-ssh-reuse-control-master"),
+        builder(SettingsAction::FeaturesPageToggle(
+            FeaturesPageAction::ToggleSshReuseControlMaster,
+        )),
+        context,
+        flags::SSH_REUSE_CONTROL_MASTER_CONTEXT_FLAG,
+    ));
 
     toggle_binding_pairs.push(ToggleSettingActionPair::new(
         &crate::t!("toggle-suffix-link-tooltip"),
@@ -635,6 +647,7 @@ pub enum FeaturesPageAction {
     ToggleOpenLinksInDesktopApp,
     #[deprecated]
     ToggleSshWrapper,
+    ToggleSshReuseControlMaster,
     ToggleSnackbar,
     ToggleLinkTooltip,
     ToggleCompletionsOpenWhileTyping,
@@ -829,6 +842,10 @@ impl FeaturesPageAction {
             Self::ToggleSshWrapper => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleSshWrapper".to_string(),
                 value: to_string(*ssh_settings.enable_legacy_ssh_wrapper.value()),
+            },
+            Self::ToggleSshReuseControlMaster => TelemetryEvent::FeaturesPageAction {
+                action: "ToggleSshReuseControlMaster".to_string(),
+                value: to_string(*ssh_settings.reuse_existing_control_master.value()),
             },
             Self::SetGlobalHotkeyMode(mode) => TelemetryEvent::FeaturesPageAction {
                 action: "SetGlobalHotkeyMode".to_string(),
@@ -1401,6 +1418,13 @@ impl TypedActionView for FeaturesPageView {
                 SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
                     report_if_error!(ssh_settings
                         .enable_legacy_ssh_wrapper
+                        .toggle_and_save_value(ctx));
+                });
+            }
+            ToggleSshReuseControlMaster => {
+                SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
+                    report_if_error!(ssh_settings
+                        .reuse_existing_control_master
                         .toggle_and_save_value(ctx));
                 });
             }

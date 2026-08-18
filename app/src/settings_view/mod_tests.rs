@@ -6,7 +6,6 @@ use super::*;
 use crate::appearance::Appearance;
 
 // ── SettingsSection classification ──────────────────────────────────────────
-//
 // NOTE: Warp's `is_code_subpage()` / `is_cloud_platform_subpage()` and the
 // `CodeIndexing` / `CloudEnvironments` / `OzCloudAPIKeys` / `Account` /
 // `Teams` / `BillingAndUsage` `SettingsSection` variants do not
@@ -202,7 +201,6 @@ fn subpage_from_str_parses_display_names() {
 }
 
 // ── Stable persistence keys ─────────────────────────────────────────────────
-//
 // Regression guard for issue #578. `Display` is localized in this fork, so the
 // settings pane used to persist a translated string that `FromStr` (English
 // literals) could not read back: the user silently landed on the default
@@ -827,7 +825,6 @@ fn legacy_ai_section_maps_to_oz_default() {
 // Verify that arrow-key navigation lands on a collapsed umbrella as a single
 // stop (and activates it by jumping to the first subpage, which auto-expands
 // the umbrella) instead of silently skipping over it.
-//
 // NOTE: unlike Warp, this fork's `SettingsView::new` builds only a single
 // "Agents" umbrella -- the Code / Cloud-platform umbrellas Warp's original
 // `realistic_nav_items()` modeled don't exist here (the decentralized branch
@@ -1210,18 +1207,21 @@ fn arrow_down_wrapping_into_collapsed_umbrella_respects_search_filter() {
 // exercise the real PageType::Uncategorized filter lifecycle and the real
 // `search_terms_match` predicate. The production reapply call sites in mod.rs
 // (handle_search_editor_event/cycle_pages/SelectAndRefresh) need a full
-// ViewContext<SettingsView>, so they are verified by reading (NOT COMPILED --
-// builds are suspended) rather than computer-use screenshots here.
-//
+// ViewContext<SettingsView>, so they are verified by reading rather than computer-use screenshots here.
 // Upstream 2356ddab2 (#14116): `search_terms_match` is extracted to a
 // `pub(super)` module-level fn in settings_page.rs (was previously nested
 // inside `PageType::update_filter`), which is what makes
 // `search_terms_match_direct_unit_checks` below possible -- an earlier sweep
-// left that test out because the helper wasn't module-level yet. Note this
-// test-only sweep also did NOT port the production fix (the
-// `reapply_search_filter_to_active_subpage` call sites in mod.rs) -- these
-// tests exercise `PageType::update_filter` directly and would have stayed
-// green either way, which is exactly why the omission wasn't caught here.
+// left that test out because the helper wasn't module-level yet.
+//
+// History: an earlier, test-only sweep of 2356ddab2 landed the tests below but
+// NOT the production fix, and stayed green -- the tests drive
+// `PageType::update_filter` directly, so a missing call site in mod.rs is
+// invisible to them. The auto-select jump in `handle_search_editor_event` was
+// left unfixed for exactly that reason. `query_preserving_navigation_reapplies_the_subpage_filter`
+// below closes that hole: it asserts the invariant at the level the omission
+// actually lives at -- every navigation that *preserves* the search query must
+// be followed by a reapply -- which no `PageType`-level test can see.
 
 /// Minimal View so PageType<V> can be instantiated in a unit test without the
 /// full SettingsView/ViewContext the production reapply call sites require.
@@ -1396,4 +1396,67 @@ fn empty_query_after_reapply_shows_all_widgets() {
             );
         });
     });
+}
+
+/// Guards the production call sites the `PageType`-level tests above cannot
+/// see. `set_and_refresh_current_page_internal` rebuilds the target subpage's
+/// `PageType` with the default all-widgets filter; when the caller passes
+/// `should_clear_query = false` the search query survives the navigation, so
+/// the filter must be reapplied or the restored subpage renders every widget.
+/// A call site that navigates while preserving the query and *forgets* the
+/// reapply is precisely the defect this file previously shipped, and it is
+/// only visible by inspecting the call sites -- driving `update_filter`
+/// directly stays green either way.
+#[test]
+fn query_preserving_navigation_reapplies_the_subpage_filter() {
+    const SOURCE: &str = include_str!("mod.rs");
+    const CALL: &str = "self.set_and_refresh_current_page_internal(";
+    const REAPPLY: &str = "self.reapply_search_filter_to_active_subpage(";
+    // Widest gap between a preserving call and its reapply is the
+    // `cycle_pages` site (an `if is_search_active` guard in between); the
+    // three preserving sites are thousands of bytes apart, so this window
+    // cannot bleed from one site into another site's reapply.
+    const WINDOW: usize = 600;
+
+    let mut preserving_sites = Vec::new();
+    for (offset, _) in SOURCE.match_indices(CALL) {
+        let after = &SOURCE[offset + CALL.len()..];
+        // No argument to any call site is itself a call, so the first `);`
+        // terminates the argument list.
+        let args_end = after
+            .find(");")
+            .expect("set_and_refresh_current_page_internal call is unterminated");
+        let args = &after[..args_end];
+        // `should_clear_query` is the second parameter. `true` clears the
+        // search box, so there is no active filter left to reapply.
+        let clears_query = args
+            .split(',')
+            .nth(1)
+            .expect("call site has fewer than two arguments")
+            .trim_start()
+            .starts_with("true");
+        if clears_query {
+            continue;
+        }
+
+        let line = SOURCE[..offset].lines().count() + 1;
+        let tail = &after[args_end..];
+        let window = &tail[..tail.len().min(WINDOW)];
+        assert!(
+            window.contains(REAPPLY),
+            "mod.rs:{line}: navigation preserves the search query \
+             (should_clear_query = false) but never calls \
+             reapply_search_filter_to_active_subpage, so the rebuilt subpage \
+             will render every widget instead of just the matches"
+        );
+        preserving_sites.push(line);
+    }
+
+    assert_eq!(
+        preserving_sites.len(),
+        3,
+        "expected the three query-preserving navigation sites \
+         (handle_search_editor_event auto-select, cycle_pages, \
+         SelectAndRefresh); found {preserving_sites:?}"
+    );
 }

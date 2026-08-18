@@ -292,3 +292,122 @@ fn fail_conversation_due_to_shell_exit_reports_error_and_survives_manual_cancel(
         });
     });
 }
+
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/controller_tests.rs::
+/// cancelling_conversation_aborts_pending_auto_resume`) verbatim; every symbol
+/// it drives exists unchanged in this fork
+/// (`schedule_auto_resume_after_error` at `controller.rs:1813`,
+/// `pending_auto_resume_handles` at `:432`, and the `remove(..).abort()` arm of
+/// `cancel_conversation_progress` at `:3403`).
+///
+/// The interaction matters because the scheduled resume is a
+/// `wait_until_online()` future that can outlive the user's decision to stop:
+/// without the abort, cancelling a conversation would leave a future armed that
+/// re-sends a request the user just cancelled, as soon as the network returns.
+#[test]
+fn cancelling_conversation_aborts_pending_auto_resume() {
+    use crate::ai::agent::conversation::AIConversationId;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // An ID with no backing conversation: if the scheduled wait ever
+        // completes, the resume is a harmless no-op.
+        let conversation_id = AIConversationId::new();
+
+        terminal.update(&mut app, |terminal, ctx| {
+            terminal.ai_controller().update(ctx, |controller, ctx| {
+                controller.schedule_auto_resume_after_error(conversation_id, ctx);
+                assert!(
+                    controller
+                        .pending_auto_resume_handles
+                        .contains_key(&conversation_id)
+                );
+
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                assert!(
+                    !controller
+                        .pending_auto_resume_handles
+                        .contains_key(&conversation_id)
+                );
+            });
+        });
+    });
+}
+
+/// An optimistic long-running-command completion that cancels an in-flight
+/// stream must finalize the conversation as `Success`, not `Cancelled`. This is
+/// a regression test for the reason -> status mapping living in a single place
+/// (`CancellationReason::conversation_outcome`).
+///
+/// Ported from the pin (`42effe840:app/src/ai/blocklist/controller_tests.rs::
+/// optimistic_cli_subagent_completion_with_in_flight_stream_reports_success`).
+/// The pin's reason is named `CommandFinishedDuringInlineAgentView`; this fork
+/// carries the same variant under its older name
+/// `OptimisticCLISubagentCompletion`. Set up the in-flight stream with
+/// `append_reassigned_exchange` + `register_mock_stream_for_test` (the pattern
+/// the sibling shell-exit test above already uses) rather than the pin's
+/// `RequestInput`/`update_conversation_for_new_request_input` path -- both make
+/// `is_processing_response_stream` true for the stream id, which is all
+/// `cancel_conversation_progress` needs.
+#[test]
+fn optimistic_cli_subagent_completion_with_in_flight_stream_reports_success() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // Cancelling the stream reaches `write_updated_conversation_state`, which
+        // reads this singleton; `get_singleton_model_as_ref` panics rather than
+        // returning None when it is absent.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| {
+            crate::global_resource_handles::GlobalResourceHandlesProvider::new(
+                global_resource_handles,
+            )
+        });
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            let terminal_view_id = view.id();
+            let stream_id = ResponseStreamId::new_for_test();
+            let conversation_id =
+                BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                    let conversation_id =
+                        history.start_new_conversation(terminal_view_id, false, false, ctx);
+                    history
+                        .conversation_mut(&conversation_id)
+                        .expect("conversation should exist")
+                        .append_reassigned_exchange(
+                            &stream_id,
+                            streaming_exchange(),
+                            terminal_view_id,
+                            ctx,
+                        )
+                        .expect("exchange should append");
+                    conversation_id
+                });
+            let stream = ctx.add_model(|_| ResponseStream::new_for_test(stream_id.clone()));
+            view.ai_controller().update(ctx, |controller, ctx| {
+                controller.register_mock_stream_for_test(stream_id, conversation_id, stream, ctx);
+                // The long-running command finished while the agent was still
+                // streaming, cancelling the in-flight stream optimistically.
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::OptimisticCLISubagentCompletion,
+                    ctx,
+                );
+            });
+            conversation_id
+        });
+
+        BlocklistAIHistoryModel::handle(&app).read(&app, |history, _| {
+            assert_eq!(
+                history.conversation(&conversation_id).map(|c| c.status()),
+                Some(&crate::ai::agent::conversation::ConversationStatus::Success)
+            );
+        });
+    });
+}

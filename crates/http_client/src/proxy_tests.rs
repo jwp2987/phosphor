@@ -1,16 +1,17 @@
 //! Unit tests for the `proxy` module.
 //!
-//! reqwest 0.12 doesn't have a public API for us to query the `Proxy` registered
+//! reqwest 0.13 doesn't have a public API for us to query the `Proxy` registered
 //! on a `ClientBuilder`, so this can only do minimal verification via observable
 //! behavior (whether the `Client` constructed after `apply` succeeds).
 //! Finer-grained "does it actually go through the proxy" checks are left to
 //! integration tests (which require a local mitm setup).
 //!
-//! Note: under the `rustls-tls-native-roots-no-provider` features, reqwest's
-//! `.build()` requires a global crypto provider to already be installed,
-//! otherwise it panics. Production code installs this via
-//! `app/src/lib.rs::init_common`; in the unit test process we need to install
-//! it ourselves.
+//! Note: reqwest's `.build()` wants a rustls crypto provider to be resolvable,
+//! and historically panicked when none was installed. Production code installs
+//! one via `app/src/lib.rs::init_common`; in the unit test process we install it
+//! ourselves. Kept after the 0.13 bump (0.13 bundles aws-lc-rs, so this is now
+//! defensive rather than load-bearing) because `install_default` is idempotent
+//! here — the return value is discarded.
 
 use super::*;
 use std::sync::Once;
@@ -27,9 +28,7 @@ fn ensure_crypto_provider() {
 /// Builds a builder with native CA loading disabled, avoiding build failures in environments where system certificates are hard to obtain.
 fn test_builder() -> reqwest::ClientBuilder {
     ensure_crypto_provider();
-    reqwest::ClientBuilder::new()
-        .tls_built_in_native_certs(false)
-        .tls_built_in_root_certs(false)
+    reqwest::ClientBuilder::new().tls_certs_only([])
 }
 
 #[test]

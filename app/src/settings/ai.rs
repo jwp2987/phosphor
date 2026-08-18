@@ -632,6 +632,11 @@ pub enum TuiStatuslineItem {
     Model,
     WorkingDirectory,
     GitBranch,
+    /// Composite branch item: the branch name plus its upstream tracking state
+    /// (`⊢ main • ↑1 ↓2`), read from the same local `git status` metadata as
+    /// `GitBranch`. Supersedes the plain `GitBranch` item when both are enabled
+    /// -- see `should_render_plain_git_branch`.
+    GitBranchStatus,
     GitDiffStatus,
     /// Current-branch GitHub pull request, resolved through the local `gh` CLI
     /// (`GitHubRepoModel`) -- no Warp backend is involved.
@@ -646,12 +651,13 @@ pub enum TuiStatuslineItem {
 }
 
 impl TuiStatuslineItem {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::AutoApprove,
         Self::AutoQueue,
         Self::Model,
         Self::WorkingDirectory,
         Self::GitBranch,
+        Self::GitBranchStatus,
         Self::GitDiffStatus,
         Self::GitHubPullRequest,
         Self::ContextWindowUsage,
@@ -668,6 +674,7 @@ impl TuiStatuslineItem {
             Self::Model => "Model",
             Self::WorkingDirectory => "Working directory",
             Self::GitBranch => "Git branch",
+            Self::GitBranchStatus => "Git branch and tracking status",
             Self::GitDiffStatus => "Git diff status",
             Self::GitHubPullRequest => "GitHub pull request",
             Self::ContextWindowUsage => "Context window usage",

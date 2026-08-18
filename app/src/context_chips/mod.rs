@@ -329,6 +329,13 @@ impl ContextChipKind {
             // from the per-repo `GitHubRepoModel`, so the chip itself has no
             // generator, no required executables and no failure suppression.
             // Matches `02b53fcd8:app/src/context_chips/mod.rs`.
+            //
+            // That model now has a remote backend too, so SSH sessions get PR
+            // context from the daemon's `gh` rather than nothing. Before that
+            // landed the `|_| None` generator was the *only* producer on a
+            // remote session — unlike `GitDiffStats` / `ShellGitBranch`, which
+            // fall back to a per-prompt shell command — so the chip stayed
+            // empty for the whole session and the agent saw no PR context.
             Self::GithubPullRequest => Some(ContextChip::builtin(
                 "GitHub Pull Request",
                 |_| None,
@@ -592,8 +599,9 @@ pub fn available_chips() -> Vec<ContextChipKind> {
 /// Parses [`display_chip::GitLineChanges`] from the raw shell command output stored in a
 /// [`GitDiffStats`](ContextChipKind::GitDiffStats) chip's value.
 ///
-/// Used as a fallback when `GitRepoStatusModel` is unavailable (e.g. remote sessions,
-/// local subshells).
+/// Used as a fallback when `GitRepoStatusModel` has no value yet (local
+/// subshells, and remote sessions before the daemon's first `GitStatusPush`
+/// arrives).
 pub fn git_line_changes_from_chips(chips: &[ChipResult]) -> Option<display_chip::GitLineChanges> {
     chips.iter().find_map(|chip| {
         if matches!(chip.kind(), ContextChipKind::GitDiffStats) {

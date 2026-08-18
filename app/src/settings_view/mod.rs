@@ -113,11 +113,9 @@ pub use settings_page::{
 /// Resolves a stable, friendly deeplink slug (used by
 /// `zap://settings?widget=<slug>`) to the settings page and `&'static str`
 /// widget id it should scroll to.
-///
 /// Only allowlisted widgets are linkable, so the public URL contract stays
 /// stable and internal widget identifiers (Rust type names) are not exposed.
 /// Add an entry here to make a new widget deep-linkable.
-///
 /// Fork adaptation: the upstream `custom_router` slug (custom model routers)
 /// has no counterpart here — that widget was dropped along with the
 /// custom-model-routing feature — so only `global_hotkey` and `cli_agents`
@@ -323,7 +321,6 @@ impl SettingsSection {
     }
 
     /// Every section, in declaration order.
-    ///
     /// This is the list `from_stable_key` scans and the list the persistence
     /// round-trip tests iterate, so a variant missing from it is a variant
     /// whose persistence is untested. `mod_tests.rs` keeps that honest with an
@@ -354,18 +351,15 @@ impl SettingsSection {
     }
 
     /// A stable, ASCII, never-translated identifier for this section.
-    ///
     /// This -- not `Display` -- is what gets **stored** (the settings pane's
     /// `current_page` column) and what external callers may pass to the
     /// `surface.settings.open` local-control action.
-    ///
     /// `Display` is localized in this fork (a deliberate divergence from the
     /// pin, where it is English literals), so it must never be persisted: a
     /// value written while the UI was in zh-CN cannot be parsed back when the
     /// UI is in English, and the user silently loses the settings page they
     /// left open. Teaching the parser one translated label at a time only
     /// fixes one section in one language.
-    ///
     /// The key is the Rust variant name and is **frozen**: it must not follow
     /// display renames (`ZapDrive` stays `"ZapDrive"` even though the page is
     /// shown as "Library"), because changing a key orphans every row
@@ -405,14 +399,12 @@ impl SettingsSection {
 
     /// Reads a stored `current_page` value, upgrading anything written before
     /// stable keys existed.
-    ///
     /// Accepted, in order:
     /// 1. a stable key (`persistence_key`) -- what every new write produces;
     /// 2. a canonical English label or historical alias (`FromStr`) -- what
     ///    rows written by an older build on an English UI contain;
     /// 3. a localized label (`from_localized_label`) -- what rows written by an
     ///    older build on a translated UI contain.
-    ///
     /// **Legacy rows are upgraded on read rather than by a SQL data
     /// migration.** Three reasons:
     /// - the step-3 vocabulary is unbounded -- one label per section per
@@ -435,12 +427,10 @@ impl SettingsSection {
     }
 
     /// Best-effort reverse lookup of a **localized** section label.
-    ///
     /// Only ever used to upgrade a legacy stored value. It is deliberately not
     /// reachable from `FromStr`, because `FromStr` also backs the
     /// `surface.settings.open` scripting contract, which must resolve the same
     /// page whatever language the UI happens to be in.
-    ///
     /// Two caveats, both acceptable for a one-shot upgrade of a value that is
     /// otherwise lost outright:
     /// - only the *currently active* locale is matched (plus the hard-coded
@@ -471,7 +461,6 @@ impl SettingsSection {
 /// `persistence_key`, or a canonical English label / historical English alias
 /// kept so existing deep links and `surface.settings.open --page <name>`
 /// callers keep working.
-///
 /// It deliberately does **not** accept localized labels. This parser backs the
 /// `surface.settings.open` local-control action, whose page names are a
 /// scripting contract shared with agents and external tools; a contract that
@@ -549,6 +538,7 @@ pub mod flags {
     pub const FOCUS_REPORTING_CONTEXT_FLAG: &str = "Focus_Reporting";
     #[deprecated = "Use `SSH_TMUX_WRAPPER_CONTEXT_FLAG` for new ssh warpification logic"]
     pub const LEGACY_SSH_WRAPPER_CONTEXT_FLAG: &str = "SSH_Wrapper";
+    pub const SSH_REUSE_CONTROL_MASTER_CONTEXT_FLAG: &str = "SSH_Reuse_Control_Master";
     pub const SSH_TMUX_WRAPPER_CONTEXT_FLAG: &str = "SSH_Tmux_Wrapper";
     pub const NOTIFICATIONS_CONTEXT_FLAG: &str = "Notifications_Enabled";
     pub const LINK_TOOLTIP_CONTEXT_FLAG: &str = "Link_Tooltip";
@@ -638,7 +628,6 @@ pub mod flags {
     pub const ACTIVE_AGENT_VIEW: &str = "ActiveAgentView";
     pub const ACTIVE_INLINE_AGENT_VIEW: &str = "ActiveInlineAgentView";
     /// When set, ctrl-enter should be the active binding to enter agent view.
-    ///
     /// This is true on linux and windows.
     pub const CTRL_ENTER_ENTERS_AGENT_VIEW: &str = "CtrlEnterEntersAgentView";
     pub const AGENT_VIEW_ENABLED: &str = "FeatureFlag.AgentView";
@@ -999,7 +988,6 @@ enum CycleDirection {
 }
 
 /// A stop in the arrow-key navigation order over the sidebar.
-///
 /// A collapsed umbrella occupies a single stop rather than being skipped,
 /// so arrow-key navigation auto-expands it and selects one of its visible
 /// subpages instead of jumping over it. Which subpage is chosen depends
@@ -1029,7 +1017,6 @@ enum NavStop {
 }
 
 /// Builds the ordered list of arrow-key nav stops from `nav_items`.
-///
 /// `is_visible` decides which sections are currently shown in the sidebar;
 /// callers pass a predicate that ignores the search filter when no search
 /// is active and applies it otherwise. Umbrellas with no visible subpages
@@ -1075,7 +1062,6 @@ where
 }
 
 /// Returns the index in `stops` that corresponds to `section`.
-///
 /// A collapsed-umbrella stop also matches when `section` is one of the
 /// umbrella's subpages — this covers the edge case where the user manually
 /// collapsed the umbrella while still on a subpage, so arrow-key cycling
@@ -1631,6 +1617,11 @@ impl SettingsView {
                             false, /* allow_steal_focus */
                             ctx,
                         );
+                        // The navigation above rebuilt the newly-selected
+                        // subpage's PageType via set_active_subpage, resetting
+                        // its widget filter to default. Reapply the active
+                        // search query so only matching widgets render.
+                        self.reapply_search_filter_to_active_subpage(&search_query, ctx);
                     }
                 }
                 ctx.notify();
@@ -1652,7 +1643,6 @@ impl SettingsView {
 
     /// Resolves the `EditorView` a right-click at `position` should target as the context
     /// menu's edit target, if any.
-    ///
     /// A right-click never focuses the field it lands on (unlike a left-click), so
     /// `focused_editor` may point at an unrelated field -- e.g. the search box -- while the user
     /// actually right-clicked an unfocused API-key field. We only trust `focused_editor` as the
@@ -2173,7 +2163,6 @@ impl SettingsView {
     }
 
     /// Reapply the active search query to the currently-selected AI subpage.
-    ///
     /// Upstream 2356ddab2 (#14116, "Fix settings search filtering for Code and
     /// AI subpages"): `set_active_subpage`/`set_and_refresh_current_page_internal`
     /// rebuild the subpage's `PageType` with its default all-widgets filter
@@ -2184,14 +2173,13 @@ impl SettingsView {
     /// `handle_search_editor_event` -- silently dropped back to showing every
     /// widget on that subpage instead of only the ones matching the query.
     /// This reapplies the filter after each such rebuild.
-    ///
     /// Upstream also covers a `CodeSubpage` (`is_code_subpage`/
     /// `CodeSubpage::from_section`) half of the same bug: the pin's Code
     /// settings page shares one backing page across subpages the way AI does.
     /// This fork's Code settings page (`code_page.rs`) has no subpage
     /// architecture -- no `CodeSubpage` type, no `is_code_subpage` -- so that
     /// half does not apply here; there is no equivalent unfiltered-rebuild to
-    /// guard against. NOT COMPILED -- builds are suspended; verified by
+    /// guard against. ; verified by
     /// reading only.
     fn reapply_search_filter_to_active_subpage(
         &mut self,

@@ -274,10 +274,8 @@ pub struct FileTreeView {
     active_file_model: Option<ModelHandle<ActiveFileModel>>,
     has_terminal_session: bool,
     /// Paths the user explicitly collapsed (per root).
-    ///
     /// This is used to prevent automatic expansion behavior (e.g. when switching tabs,
     /// focusing the left panel, or "reveal active file") from overriding the user's intent.
-    ///
     /// The root header collapse is represented by including the root path itself in the set.
     explicitly_collapsed: HashMap<StandardizedPath, HashSet<StandardizedPath>>,
     /// Lazy-loaded paths that this view has registered with the
@@ -285,7 +283,6 @@ pub struct FileTreeView {
     #[cfg(feature = "local_fs")]
     registered_lazy_loaded_paths: HashSet<StandardizedPath>,
     /// Directory the view wants to focus once its entry becomes available.
-    ///
     /// Set when a descendant path is absorbed into an ancestor root but the
     /// descendant's entry has not yet been materialized (e.g. the ancestor
     /// is still lazy-loading). Re-evaluated on every rebuild; cleared when
@@ -302,7 +299,6 @@ struct PendingFocusTarget {
     root: StandardizedPath,
     path: StandardizedPath,
     /// Whether this target has already driven a scroll.
-    ///
     /// The first successful apply scrolls the tree to the target. On
     /// subsequent rebuilds we still re-apply the selection marker so it
     /// doesn't get overridden by a default root-header fallback, but we
@@ -444,7 +440,6 @@ impl FileTreeView {
     /// true, roots already present in `displayed_directories` are skipped
     /// (used for catch-up on reactivation). When false, existing roots are
     /// updated in-place (used for live server push events).
-    ///
     /// Performs a single `rebuild_flattened_items` / `ctx.notify` at the end
     /// regardless of how many roots were processed.
     #[cfg(feature = "local_fs")]
@@ -601,7 +596,6 @@ impl FileTreeView {
                 // New remote roots are pushed by the workspace via
                 // `set_remote_root_directories` when `NavigatedToDirectory`
                 // resolves for a session in this pane group.
-                //
                 // Match on both path and host_id so that two different
                 // hosts that happen to share a path (e.g. /home/user/repo)
                 // don't interfere with each other.
@@ -915,7 +909,6 @@ impl FileTreeView {
     }
 
     /// Sets the remote root directories to display in the file tree.
-    ///
     /// This is the remote equivalent of [`set_root_directories`]. It
     /// inserts or updates the given remote repos and removes any existing
     /// remote roots that are NOT in `repos`. Local roots are unaffected.
@@ -986,11 +979,9 @@ impl FileTreeView {
     }
 
     /// Sets the root directories to display in the file tree.
-    ///
     /// This only manages **local** roots. Remote-backed roots (those with a
     /// `remote_host_id`) are managed by [`set_remote_root_directories`]
     /// and are preserved across calls to this method.
-    ///
     /// When multiple input paths have an ancestor/descendant relationship
     /// among local roots, only the surviving ancestor is displayed and the
     /// absorbed descendants' ancestor chains are auto-expanded so the user
@@ -1159,7 +1150,6 @@ impl FileTreeView {
         // the descendant isn't materialized yet (e.g. the ancestor is still
         // indexing), record it as the pending focus target so we can retry
         // once a later rebuild makes it available.
-        //
         // Skip the pending target when the current selection is already
         // at or under the would-be descendant. This prevents an explicit
         // user selection (e.g. a file that was just clicked) from being
@@ -1193,7 +1183,6 @@ impl FileTreeView {
     /// only when the user takes an explicit focus-changing action (see
     /// `select_id`, `toggle_folder_expansion`) or when the target root
     /// stops being displayed.
-    ///
     /// Scrolling happens only on the first successful apply, so later
     /// metadata-driven rebuilds cannot snap the user's current scroll
     /// position back to the focus target. Returns `true` if the target
@@ -1602,7 +1591,7 @@ impl FileTreeView {
         // `None` here on every re-index and get its already-populated `entry`
         // clobbered with `create_empty_entry`, flashing the tree back to a loading
         // state. Read `repository_state` directly so `Pending` can keep the
-        // existing entry instead. NOT COMPILED -- builds are suspended; verified
+        // existing entry instead. ; verified
         // by reading only.
         let repo_state = RepoMetadataModel::as_ref(ctx).repository_state(&id, ctx);
         if let Some(root_dir) = self.root_directories.get_mut(path) {
@@ -1641,14 +1630,13 @@ impl FileTreeView {
     /// all other roots untouched. Use this when only one root's backing data has
     /// changed (e.g. a `FileTreeEntryUpdated` for one repo) to avoid unnecessarily
     /// re-flattening -- and re-rendering -- unrelated roots.
-    ///
     /// Upstream bd7202f30 ("Fix file tree refresh logic", #10184): a remote SSH
     /// session's file-watcher streams a `FileTreeEntryUpdated { Remote }` event per
     /// filesystem change on the remote host. Every one of those previously called
     /// the unfiltered `rebuild_flattened_items()`, which re-flattens *all* displayed
     /// roots including unrelated local ones -- so the local file tree visibly
     /// blinked/reshuffled on every remote filesystem change. This targets just the
-    /// affected root. NOT COMPILED -- builds are suspended; verified by reading
+    /// affected root. ; verified by reading
     /// only.
     fn rebuild_flattened_items_for_root(&mut self, target_root: &StandardizedPath) {
         self.rebuild_flatten_items_and_select_path(None, None, Some(target_root));
@@ -2178,7 +2166,6 @@ impl FileTreeView {
     /// Selects and expands the most recent directory (the current terminal session's working
     /// directory) in the file tree. Since each terminal CWD is now a top-level root, this
     /// expands the root directory and selects its first item.
-    ///
     /// Preserves any existing selection so a prior focus-follow (from
     /// `set_root_directories`) or an active-file scroll (from
     /// `scroll_to_file`) is not visibly clobbered by a fallback selection

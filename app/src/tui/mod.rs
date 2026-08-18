@@ -18,6 +18,8 @@ pub use mcp::{
 };
 use warpui::{AppContext, Entity, SingletonEntity};
 
+#[cfg(feature = "tui")]
+use crate::ai::mcp::FileBasedMCPManager;
 use crate::TuiMountFn;
 
 /// Login state of the headless TUI, observed by the `warp_tui` root view to
@@ -80,6 +82,20 @@ pub(crate) fn init(mount: TuiMountFn, ctx: &mut AppContext) {
     // Mount the TUI now that the login model exists; the root view goes straight
     // to the input UI since the phase is already `LoggedIn`.
     mount(ctx);
+    // Upstream defers global MCP autostart until device authorization completes
+    // and releases it from the `AuthComplete` handler. BYOP has no login, so the
+    // equivalent release point is "the session exists" — right after mount. The
+    // deferral still does its job: nothing starts during the pre-mount config
+    // scan, and global third-party servers stay manual-start in the TUI.
+    activate_global_mcp_servers(ctx);
+}
+
+/// Releases the file-based manager's deferred global Zap MCP servers.
+#[cfg(feature = "tui")]
+fn activate_global_mcp_servers(ctx: &mut AppContext) {
+    FileBasedMCPManager::handle(ctx).update(ctx, |manager, ctx| {
+        manager.activate_global_warp_servers(ctx);
+    });
 }
 
 /// Logs out the current TUI user. BYOP has no account to log out of, so this is

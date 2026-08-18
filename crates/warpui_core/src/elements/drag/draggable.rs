@@ -65,6 +65,14 @@ impl DraggableState {
         }
     }
 
+    /// Returns the actual mouse position while dragging an element.
+    pub fn dragging_mouse_position(&self) -> Option<Vector2F> {
+        match self.read() {
+            DragState::Dragging { mouse_position, .. } => Some(mouse_position),
+            DragState::None | DragState::WaitingToDrag { .. } => None,
+        }
+    }
+
     pub fn adjust_mouse_position(&self, delta: Vector2F) {
         let mut guard = self.inner.lock();
         if let DragState::Dragging { mouse_position, .. } = &mut *guard {
@@ -260,6 +268,9 @@ pub struct Draggable {
     drop_handler: Option<DragDropHandler>,
     /// Whether to use the copy cursor while dragging on a valid drop target.
     use_copy_cursor_when_dragging_over_drop_target: bool,
+    /// When set, a mouse-down already claimed by a nested `Draggable` does not
+    /// start this drag.
+    defer_to_handled_child_mouse_down: bool,
 }
 
 impl Draggable {
@@ -280,6 +291,7 @@ impl Draggable {
             is_accepted_by_drop_target_handler: None,
             drop_handler: None,
             use_copy_cursor_when_dragging_over_drop_target: false,
+            defer_to_handled_child_mouse_down: false,
         }
     }
 
@@ -314,6 +326,12 @@ impl Draggable {
     /// will be clamped to the minimum value of the bounds along that axis.
     pub fn with_drag_bounds(mut self, bounds: RectF) -> Self {
         self.drag_bounds = DragBounds::Fixed(bounds);
+        self
+    }
+
+    /// Skips initiating this drag when a nested `Draggable` already claimed the mouse-down.
+    pub fn with_defer_to_handled_child_mouse_down(mut self) -> Self {
+        self.defer_to_handled_child_mouse_down = true;
         self
     }
 
@@ -593,6 +611,9 @@ impl Element for Draggable {
 
         match event.raw_event() {
             Event::LeftMouseDown { position, .. } => {
+                if self.defer_to_handled_child_mouse_down && ctx.descendant_draggable_initiated() {
+                    return true;
+                }
                 let origin = self.origin().expect("origin should exist");
                 if let Some(rect) = ctx.visible_rect(origin, size) {
                     let max_z_index = self.child_max_z_index.expect("child z index should exist");
@@ -607,6 +628,7 @@ impl Element for Draggable {
                             mouse_down_position: *position,
                             mouse_down_offset,
                         });
+                        ctx.mark_descendant_draggable_initiated();
 
                         ctx.set_cursor(Cursor::PointingHand, max_z_index);
                         return true;

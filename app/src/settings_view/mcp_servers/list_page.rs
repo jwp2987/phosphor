@@ -138,7 +138,11 @@ impl MCPServersListPageView {
                         me.refresh_file_based_server_cards(ctx);
                     }
                     // Diagnostics don't change which cards are shown, only their status.
-                    FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
+                    // `ServersChanged` is already covered: the card list is rebuilt
+                    // from the watcher's ConfigParsed/ConfigRemoved events below, which
+                    // are what produce every source-set change in the first place.
+                    FileBasedMCPManagerEvent::ServersChanged
+                    | FileBasedMCPManagerEvent::ConfigDiagnosticChanged => {}
                 });
 
                 // Refresh cards when MCP config files are parsed or removed.
@@ -182,7 +186,7 @@ impl MCPServersListPageView {
             }
         });
 
-        let update_modal_body = ctx.add_typed_action_view(|_ctx| UpdateModalBody::new());
+        let update_modal_body = ctx.add_typed_action_view(UpdateModalBody::new);
         ctx.subscribe_to_view(&update_modal_body, |me, _, event, ctx| {
             me.handle_update_modal_body_event(event, ctx);
         });
@@ -708,7 +712,7 @@ impl MCPServersListPageView {
         } else {
             self.update_modal_state.view.update(ctx, |modal, ctx| {
                 modal.body().update(ctx, |body, ctx| {
-                    body.set_installation(installation_uuid, server_name, available_updates);
+                    body.set_installation(installation_uuid, server_name, available_updates, ctx);
                     ctx.notify();
                 });
             });
@@ -929,8 +933,8 @@ impl MCPServersListPageView {
         match event {
             UpdateModalBodyEvent::Cancel => {
                 self.update_modal_state.view.update(ctx, |modal, ctx| {
-                    modal.body().update(ctx, |body, _ctx| {
-                        body.clear();
+                    modal.body().update(ctx, |body, ctx| {
+                        body.clear(ctx);
                     });
                 });
                 self.update_modal_state.close();
@@ -947,8 +951,8 @@ impl MCPServersListPageView {
                 };
                 self.process_server_update(*installation_uuid, update.clone(), ctx);
                 self.update_modal_state.view.update(ctx, |modal, ctx| {
-                    modal.body().update(ctx, |body, _ctx| {
-                        body.clear();
+                    modal.body().update(ctx, |body, ctx| {
+                        body.clear(ctx);
                     });
                 });
                 self.update_modal_state.close();

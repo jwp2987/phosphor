@@ -1,0 +1,917 @@
+=== 28116630b028db745e5b4d54d0b86f2b7ef9fd4e fix(tui): preserve full-width paths and first-row disclosure chevrons (#14381)
+  [M] crates/warp_tui/src/tool_call_labels.rs  -- ALL (1/1)
+      OK : let cmd = executed.unwrap_or(command).trim_end();
+  [M] crates/warp_tui/src/tool_call_labels_tests.rs  -- ALL (4/4)
+      OK : let command = "ls -la /Users/moirahuang/.warp-dev/worktrees/warp/moira/pr-14381-combined/crates/warp_tui/src/t
+      OK : fn shell_command_label_preserves_a_long_path_without_an_ellipsis() {
+      OK : tool_call_label(&action, None, false, None),
+      OK : let action = command_action(command);
+  [M] crates/warp_tui/src/tui_shell_command_view_tests.rs  -- ALL (4/4)
+      OK : let command = "ls -la /Users/moirahuang/.warp-dev/worktrees/warp/moira/pr-14381-combined/crates/warp_tui/src/t
+      OK : let terminal_model = terminal_model_with_command(&action, command, "command output");
+      OK : fn long_path_command_wraps_in_full_with_the_chevron_on_the_first_row() {
+      OK : assert!(lines.len() > 1, "long command should wrap: {lines:?}");
+  [M] crates/warp_tui/src/zero_state.rs  -- PARTIAL (2/4)
+      OK : fn project_section_header_text(cwd: &str, rules: Option<&ProjectRulesResult>) -> String {
+      MISS: let constrained_top = TuiConstrainedBox::new(render_top_section(builder, ctx).finish())
+      MISS: let rules = ProjectContextModel::as_ref(ctx).find_applicable_project_rules(&cwd_path);
+      OK : let header_style = builder.primary_text_style().add_modifier(Modifier::BOLD);
+  [M] crates/warp_tui/src/zero_state_tests.rs  -- PARTIAL (3/4)
+      OK : TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext, TuiPaintContext,
+      OK : let long_cwd = "/home/user/work/projects/my-organisation/very-long-repo-name";
+      OK : ProjectContextModel::as_ref(app_ctx).find_applicable_project_rules(&cwd_path);
+      MISS: let buffer = render_to_buffer(overlay, app_ctx, text_width(&header_text), 12);
+  >> commit-level: ['ALL', 'ALL', 'ALL', 'PARTIAL', 'PARTIAL']
+
+=== 40c9832d0743e3e1f50a5931189c5c96a5903254 color dots in one chunk to fix aliasing issues (#14438)
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- ALL (1/1)
+      OK : "Summarizing conversation"
+  [M] crates/warp_tui/src/warping_indicator.rs  -- ALL (1/1)
+      OK : .with_grouped_suffix("...")
+  [M] crates/warp_tui/src/warping_indicator_tests.rs  -- PARTIAL (1/4)
+      OK : fn shimmer_only_applies_to_the_warping_label_and_groups_its_ellipsis() {
+      MISS: assert_eq!(frame.buffer[(10, 0)].fg, first_dot_color);
+      MISS: assert_eq!(frame.buffer[(11, 0)].fg, first_dot_color);
+      MISS: let first_dot_color = frame.buffer[(9, 0)].fg;
+  >> commit-level: ['ALL', 'ALL', 'PARTIAL']
+
+=== 5ea50d236c74d9519c969b35a793f56adc2f5a08 Fix zero state skill status (#14425)
+  [M] crates/warp_tui/src/zero_state.rs  -- PARTIAL (2/4)
+      MISS: SkillManager, SkillManagerEvent, TuiMcpConfigState, TuiMcpManager, TuiMcpServerStatus,
+      MISS: |_, _, SkillManagerEvent::SkillsChanged { .. }, ctx| ctx.notify(),
+      OK : &SkillManager::handle(ctx),
+      OK : ctx.subscribe_to_model(
+  >> commit-level: ['PARTIAL']
+
+=== d9a5b9054fd78c2e349eb98d90a0b90040c80191 feat(tui): expand diffs by default in approval card, add 'e' expand/collapse all, fix Esc while editing (#14383)
+  [M] crates/warp_tui/src/keybindings.rs  -- ALL (1/1)
+      OK : crate::tui_file_edits_view::init(app);
+  [M] crates/warp_tui/src/tui_file_edits_view.rs  -- ALL (4/4)
+      OK : let predicate = id!(TuiFileEditsView::ui_name()) & id!(FILE_EDITS_PERMISSION_ACTIVE);
+      OK : app.register_tui_binding_validator::<TuiFileEditsView>(is_tui_owned_binding);
+      OK : fn keymap_context(&self, app: &AppContext) -> warpui_core::keymap::Context {
+      OK : const FILE_EDITS_PERMISSION_ACTIVE: &str = "TuiFileEditsPermissionActive";
+  [M] crates/warp_tui/src/tui_file_edits_view_tests.rs  -- PARTIAL (1/4)
+      MISS: fn add_file_edits_view(app: &mut App, action_id: AIAgentActionId) -> ViewHandle<TuiFileEditsView> {
+      OK : fn dispatch_focused_key(app: &mut App, view: &ViewHandle<TuiFileEditsView>, key: &str) -> bool {
+      MISS: AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, DiffSessionType, FileDiff,
+      MISS: let handle = app.read(|ctx| TuiDiffStorageHandle::new(view.as_ref(ctx).storage.clone()));
+  [M] crates/warp_tui/src/tui_generic_tool_call_view.rs  -- exists, no distinctive added lines found (skim manually)
+  [M] crates/warp_tui/src/tui_permission_prompt.rs  -- ALL (4/4)
+      OK : pub(crate) fn list_is_focused(&self, app: &AppContext) -> bool {
+      OK : let header_content = if let Some(trailing) = header_trailing {
+      OK : TuiFlex::row().flex_child(title).child(trailing).finish()
+      OK : let esc_hint = if self.body_editor_is_focused(app) {
+  [M] crates/warp_tui/src/tui_permission_prompt_tests.rs  -- ALL (4/4)
+      OK : "footer must show 'Esc to exit editor' while body editor is focused; got: {lines:?}"
+      OK : "footer must not show 'Esc to cancel' while body editor is focused; got: {lines:?}"
+      OK : queue_tui_permission_action(model, action, AIConversationId::new(), ctx);
+      OK : fn footer_shows_exit_editor_hint_while_body_editor_is_focused() {
+  [M] crates/warp_tui/src/tui_shell_command_view.rs  -- PARTIAL (3/4)
+      OK : Modifier, TuiChildView, TuiElement, TuiFlex, TuiText, tui_collapsible,
+      OK : (" to edit command".to_owned(), builder.muted_text_style()),
+      MISS: app.register_fixed_bindings([FixedBinding::new(
+      OK : ("e".to_owned(), builder.primary_text_style()),
+  [M] crates/warp_tui/src/tui_shell_command_view_tests.rs  -- PARTIAL (2/4)
+      OK : invalidations_for_subscription.set(invalidations_for_subscription.get() + 1);
+      OK : let command_editor = app.read(|ctx| view.as_ref(ctx).command_editor.clone());
+      MISS: assert!(!lines.iter().any(|line| line.contains("Esc to exit editor")));
+      MISS: assert!(lines.iter().any(|line| line.contains("Esc to exit editor")));
+  >> commit-level: ['ALL', 'ALL', 'PARTIAL', 'nodistinctive', 'ALL', 'ALL', 'PARTIAL', 'PARTIAL']
+
+=== 5db117d1e55b66f5f85cd6dc7b7047781b595c8c Fix TUI NLD after agent terminal use (#14270)
+  [M] crates/warp_tui/src/input/view.rs  -- PARTIAL (1/4)
+      MISS: let is_agent_controlled = self.input_mode.as_ref(ctx).last_ai_autodetection_source()
+      OK : pub(crate) fn reset_to_default_agent_mode(&mut self, ctx: &mut ViewContext<Self>) {
+      MISS: pub(crate) fn reset_after_agent_control(&mut self, ctx: &mut ViewContext<Self>) {
+      MISS: pub(crate) fn lock_for_agent_control(&mut self, ctx: &mut ViewContext<Self>) {
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- PARTIAL (1/3)
+      MISS: .update(ctx, |input, ctx| input.lock_for_agent_control(ctx));
+      OK : self.input_view.update(ctx, |input, ctx| {
+      MISS: input.reset_after_agent_control(ctx);
+  [M] crates/warp_tui/src/terminal_session_view_tests.rs  -- ALL (4/4)
+      OK : fn nld_reset_only_unlocks_after_agent_control_and_not_on_user_edit() {
+      OK : let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+      OK : "an explicit Agent lock should be retained while the user edits"
+      OK : AISettings::handle(ctx).update(ctx, |settings, ctx| {
+  >> commit-level: ['PARTIAL', 'PARTIAL', 'ALL']
+
+=== ae9c63f95c971095ee7619f5160ebc0b4458db23 fix(tui): restore file-edit diff stats in conversations (#14211)
+  [M] crates/warp_tui/src/agent_block.rs  -- NONE (0/4)
+      MISS: } else if let AIAgentActionType::RequestFileEdits { file_edits, .. } =
+      MISS: file_edit_actions.push((action.id.clone(), file_edits.clone()));
+      MISS: for (action_id, file_edits) in file_edit_actions {
+      MISS: let mut file_edit_actions = Vec::new();
+  [M] crates/warp_tui/src/tui_file_edits_view.rs  -- PARTIAL (1/4)
+      MISS: let storage = ctx.add_model(|_| TuiDiffStorage::new(initial_diffs, DiffSessionType::Local));
+      MISS: let file_edits_result = result.and_then(|result| match &result.result {
+      OK : AIAgentActionResultType::RequestFileEdits(result) => Some(result),
+      MISS: convert_file_edits_to_file_diffs(file_edits, &None, &None)
+  >> commit-level: ['NONE', 'PARTIAL']
+
+=== 2356ddab297cadb7496382badd78edabab947ac1 Fix settings search filtering for Code and AI subpages (APP-4922) (#14116)
+  [M] app/src/settings_view/mod.rs  -- PARTIAL (1/4)
+      MISS: if current.is_code_subpage() && CodeSubpage::from_section(current).is_some() {
+      MISS: let search_query = self.search_editor.as_ref(ctx).buffer_text(ctx);
+      MISS: self.reapply_search_filter_to_active_subpage(&search_query, ctx);
+      OK : let is_search_active = !search_query.is_empty();
+  [M] app/src/settings_view/mod_tests.rs  -- ALL (4/4)
+      OK : fn render(&self, _: &Self::View, _: &Appearance, _: &AppContext) -> Box<dyn Element> {
+      OK : let FilteredPageType::Uncategorized { widgets, .. } = page.get_filtered() else {
+      OK : "rebuild resets the filter to all widgets when update_filter isn't reapplied"
+      OK : "reapplying the filter after a rebuild keeps only matching widgets visible"
+  [M] app/src/settings_view/settings_page.rs  -- PARTIAL (3/4)
+      MISS: pub(super) fn search_terms_match(terms: &str, query: &str) -> bool {
+      OK : let terms_lower = terms.to_lowercase();
+      OK : .all(|word| terms_lower.contains(word))
+      OK : if query.is_empty() {
+  >> commit-level: ['PARTIAL', 'ALL', 'PARTIAL']
+
+=== 4b04ef71909ca52e2eba54879f7e104b71fdb239 Fix TUI log storage paths (#14071)
+  [M] crates/warp_tui/src/terminal_session_view_tests.rs  -- PARTIAL (1/4)
+      MISS: export_file_success_message, log_bundle_success_message, raw_prompt_if_not_blank,
+      OK : INLINE_MENU_TOP_PADDING_ROWS, LOADING_CONVERSATION_HINT, LOG_BUNDLE_FAILED_HINT,
+      MISS: TuiTerminalSessionEvent, TuiTerminalSessionView, cost_command_unavailable_hint,
+      MISS: SHELL_MODE_HINT, TuiConversationRestoreOrigin, TuiTerminalSessionAction,
+  >> commit-level: ['PARTIAL']
+
+=== 983a97cbe36a293e39b4aa94ec48fa0a2375e376 add overflow arrows to inline menu in the TUI (#14140)
+  [M] crates/warp_tui/src/inline_menu.rs  -- PARTIAL (3/4)
+      OK : fn inline_menu_viewport_end(rows_len: usize, start: usize, visible_rows: usize) -> usize {
+      OK : fn menu_scroll_indicator_row(label: &str, builder: &TuiUiBuilder) -> Box<dyn TuiElement> {
+      OK : let reaches_end = start.saturating_add(rows_without_lower_indicator) >= rows_len;
+      MISS: if let Some(selected_index) = selected_index.filter(|index| *index < rows_len) {
+  [M] crates/warp_tui/src/inline_menu_tests.rs  -- ALL (4/4)
+      OK : fn overflow_in_both_directions_renders_both_arrows_and_keeps_selection_visible() {
+      OK : fn rendered_labels(snapshot: TuiInlineMenuSnapshot, height: u16) -> Vec<String> {
+      OK : fn multiline_conversation_title_is_ellipsized_without_hiding_lower_overflow() {
+      OK : fn short_viewport_prioritizes_three_real_rows_over_scroll_indicators() {
+  [M] crates/warp_tui/src/prompt_history_menu.rs  -- MISSING from fork tree (check rename)
+  [M] crates/warp_tui/src/prompt_history_menu_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['PARTIAL', 'ALL', 'missing', 'missing']
+
+=== 7da3cb63679d2aade2a1abbb39b405b070fc860b move shell edit flow to hint in top right (and fix some focus issues) (#14138)
+  [M] crates/warp_tui/src/option_selector.rs  -- ALL (4/4)
+      OK : let custom_text_was_focused = matches!(self.focus_zone(ctx), SelectorFocusZone::CustomText);
+      OK : TuiEditorVerticalDirection, TuiEditorView, TuiEditorViewAction, TuiEditorViewEvent,
+      OK : let moved_within_editor = self.leading_editor.as_ref().is_some_and(|editor| {
+      OK : editor.handle_action(&TuiEditorViewAction::Command(direction.into()), ctx);
+  [M] crates/warp_tui/src/option_selector_tests.rs  -- ALL (4/4)
+      OK : OptionSelectorHeader, OptionSelectorPage, SELECTOR_NAVIGATION_ACTIVE, SelectorFocusZone,
+      OK : SelectorItem, TuiOptionSelector, TuiOptionSelectorAction, TuiOptionSelectorEvent,
+      OK : set_searchable_page(&mut app, &selector, snapshot(&["a"], Some("a")));
+      OK : fn leading_editor_arrows_move_within_multiline_before_list_handoff() {
+  [M] crates/warp_tui/src/tui_ask_question_view_tests.rs  -- ALL (4/4)
+      OK : fn dispatch_focused_key(app: &mut App, view: &ViewHandle<TuiAskQuestionView>, key: &str) -> bool {
+      OK : AskUserQuestionAction, AskUserQuestionAnswerItem, AskUserQuestionItem, AskUserQuestionOption,
+      OK : AIAgentAction, AIAgentActionId, AIAgentActionType, AIConversationId, Appearance,
+      OK : fn queue_question_action(app: &mut App, view: &ViewHandle<TuiAskQuestionView>) {
+  [M] crates/warp_tui/src/tui_permission_prompt.rs  -- ALL (4/4)
+      OK : if self.body_editor.is_some() && self.selector.as_ref(app).list_is_focused(app) {
+      OK : let editable_predicate = predicate.clone() & id!(PERMISSION_PROMPT_EDITABLE);
+      OK : const PERMISSION_PROMPT_EDITABLE: &str = "TuiPermissionPromptEditable";
+      OK : pub(crate) fn body_editor_is_focused(&self, app: &AppContext) -> bool {
+  [M] crates/warp_tui/src/tui_permission_prompt_tests.rs  -- PARTIAL (3/4)
+      OK : fn present_prompt(app: &mut App, prompt: &ViewHandle<TuiPermissionPrompt>) {
+      OK : PERMISSION_PROMPT_ACTIVE, PERMISSION_PROMPT_EDITABLE, TuiPermissionPrompt,
+      MISS: assert!(lines.iter().any(|line| line.ends_with("e to edit command")));
+      OK : assert!(responder_chain.contains(&prompt.as_ref(ctx).selector.id()));
+  [M] crates/warp_tui/src/tui_shell_command_view.rs  -- ALL (4/4)
+      OK : TuiPermissionPrompt, TuiPermissionPromptEvent, render_permission_card,
+      OK : .with_key_binding("numpadenter"),
+      OK : .body_editor_is_focused(app)
+      OK : .permission_prompt
+  [M] crates/warp_tui/src/tui_shell_command_view_tests.rs  -- ALL (4/4)
+      OK : fn dispatch_focused_key(app: &mut App, view: &ViewHandle<TuiShellCommandView>, key: &str) -> bool {
+      OK : fn present_shell_view(app: &mut App, view: &ViewHandle<TuiShellCommandView>) {
+      OK : prompt.handle_action(&TuiPermissionPromptAction::EditBody, ctx);
+      OK : presenter.invalidate(&invalidation, ctx, view.window_id(ctx));
+  >> commit-level: ['ALL', 'ALL', 'ALL', 'ALL', 'PARTIAL', 'ALL', 'ALL']
+
+=== d58850b2cc0418796a76e7c0c1715d3d9c3e0ee9 fix ask question tool focus (#14137)
+  [M] crates/warp_tui/src/agent_block.rs  -- ALL (4/4)
+      OK : .then(|| TuiBlockingChild::AskQuestion(view.clone())),
+      OK : ctx.emit(TuiAIBlockEvent::BlockingStateChanged);
+      OK : AskQuestion(ViewHandle<TuiAskQuestionView>),
+      OK : TuiToolCallView::AskQuestion(view) => view
+  [M] crates/warp_tui/src/option_selector.rs  -- PARTIAL (2/4)
+      OK : ctx.emit(TuiOptionSelectorEvent::CustomTextClosed);
+      MISS: || self.custom_text.editor.as_ref(app).is_focused()
+      OK : self.cancel_custom_text_editing(ctx);
+      MISS: || self.search_field_is_focused(app)
+  [M] crates/warp_tui/src/option_selector_tests.rs  -- PARTIAL (3/4)
+      OK : assert!(!custom_text_field(&app, &selector).read(&app, |field, _| field.is_focused()));
+      MISS: OptionSelectorHeader, OptionSelectorPage, SELECTOR_NAVIGATION_ACTIVE, SelectorItem,
+      OK : TuiOptionSelector, TuiOptionSelectorAction, TuiOptionSelectorEvent,
+      OK : selector.read(&app, |selector, _| selector.highlighted_index()),
+  [M] crates/warp_tui/src/orchestration_block.rs  -- MISSING from fork tree (check rename)
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- ALL (2/2)
+      OK : view.update(ctx, |view, ctx| view.focus(ctx));
+      OK : TuiBlockingChild::AskQuestion(view) => {
+  [M] crates/warp_tui/src/tui_ask_question_view.rs  -- PARTIAL (3/4)
+      OK : pub(super) fn is_awaiting_answers(&self, app: &AppContext) -> bool {
+      OK : self.session.is_editing() && self.is_waiting_on_answers(app)
+      MISS: pub(super) fn focus(&self, ctx: &mut ViewContext<Self>) {
+      OK : .apply(AskUserQuestionAction::EnterCustomAnswerEditing);
+  [M] crates/warp_tui/src/tui_ask_question_view_tests.rs  -- ALL (4/4)
+      OK : fn opening_and_leaving_other_keeps_selector_and_shared_session_in_sync() {
+      OK : selector.handle_action(&TuiOptionSelectorAction::MoveUp, ctx);
+      OK : .apply(AskUserQuestionAction::EnterCustomAnswerEditing);
+      OK : view.selector.as_ref(ctx).highlighted_question_index(),
+  [M] crates/warp_tui/src/tui_permission_prompt.rs  -- ALL (2/2)
+      OK : | TuiOptionSelectorEvent::CustomTextClosed => self.invalidate_layout(ctx),
+      OK : | TuiOptionSelectorEvent::CustomTextOpened
+  >> commit-level: ['ALL', 'PARTIAL', 'PARTIAL', 'missing', 'ALL', 'PARTIAL', 'ALL', 'ALL']
+
+=== 0fb6c02dc158a8590c367860f9e5414313cf81d6 Fix TUI zero state after shell bootstrap (#13999)
+  [M] crates/warp_tui/src/terminal_block.rs  -- ALL (1/1)
+      OK : pub(super) fn block_content_rows(block: &Block) -> Range<usize> {
+  [M] crates/warp_tui/src/terminal_session_view_tests.rs  -- PARTIAL (3/4)
+      MISS: BlockPadding, PtyIntent, PtyIntentEvent, SizeInfo, SizeUpdate, export_conversation_markdown,
+      OK : terminal_model.update_blockheight_items(TRANSCRIPT_BLOCK_SPACING.block_padding, 0.0);
+      OK : let bootstrap_block_id = terminal_model.block_list().active_block().id().clone();
+      OK : terminal_model.simulate_long_running_block("shell init", "startup output\r\n");
+  [M] crates/warp_tui/src/transcript_view.rs  -- ALL (4/4)
+      OK : && (block.is_restored() || block.bootstrap_stage().is_done() || !block.finished())
+      OK : should_render_terminal_block(block, block_list)
+      OK : !block_list.blocks().iter().any(|block| {
+      OK : && !block_content_rows(block).is_empty()
+  >> commit-level: ['ALL', 'PARTIAL', 'ALL']
+
+=== 6df6a3173ca307417bd962407dd1c4a2040d9578 Fix flaky tui_selection_reconciles_split_and_removed_selection (#13779)
+  [M] crates/warp_tui/src/conversation_selection_tests.rs  -- PARTIAL (3/4)
+      MISS: ConversationSelectionEvent, ConversationSelectionHandle, Harness, TerminalModel,
+      OK : let (replacement_tx, replacement_rx) = futures::channel::oneshot::channel();
+      OK : .expect("removing the selected conversation should select a replacement");
+      OK : let replacement_tx = std::cell::RefCell::new(Some(replacement_tx));
+  >> commit-level: ['PARTIAL']
+
+=== c394918affc39716abcec0c81fb8c1131ce6603e Fix TUI copy inserting newlines and dropping text in multi-line selections (#13741)
+  [M] crates/warp_tui/src/agent_block.rs  -- PARTIAL (2/4)
+      OK : fn last_row_content_width(element: &mut Box<dyn TuiElement>, width: u16, height: usize) -> usize {
+      OK : AppContext, Entity, EntityId, EntityIdMap, ModelHandle, TuiView, TypedActionView, ViewContext,
+      MISS: TuiAIBlockSection::Input(text) | TuiAIBlockSection::PlainText(text) => Some(text.clone()),
+      MISS: TuiBuffer, TuiBufferExt, TuiChildView, TuiConstraint, TuiContainer, TuiElement, TuiFlex,
+  [M] crates/warp_tui/src/tui_block_list_viewport_source.rs  -- ALL (4/4)
+      OK : TuiChildView, TuiElement, TuiLayoutContext, TuiRowResize, TuiSelectionSpan, TuiViewportContent,
+      OK : let item_bottom = item_top.saturating_add(item.height().as_f64().ceil() as usize);
+      OK : let overlaps = item_bottom > selection.start.row && item_top < end_row_exclusive;
+      OK : let item_top = cursor.start().height.as_f64().floor().max(0.0) as usize;
+  [M] crates/warp_tui/src/tui_block_list_viewport_source_tests.rs  -- PARTIAL (3/4)
+      MISS: TuiBufferExt, TuiConstraint, TuiGridPoint, TuiLayoutContext, TuiRect, TuiSelectionSpan,
+      OK : let source = TuiBlockListViewportSource::new(terminal_model.clone(), agent_blocks);
+      OK : let (source, _model, _agent_block) = seeded_agent_block_source(&mut app, 0, 99.0);
+      OK : let (source, _model, agent_block) = seeded_agent_block_source(&mut app, 0, 99.0);
+  >> commit-level: ['PARTIAL', 'ALL', 'PARTIAL']
+
+=== 995e3dd7a2e16d5572db1cb24a9adbfadfe23da8 Fix stray characters in TUI transcript from wide-grapheme cursor shift (#13591)
+  [M] crates/warp_tui/src/editor_element.rs  -- PARTIAL (2/4)
+      MISS: if let Some((start_col, end_col)) = self.selection_span_in_row(row, &lattice) {
+      OK : let start_col = lattice.display_width(row.char_range.start..start_offset);
+      OK : let end_col = lattice.display_width(row.char_range.start..end_offset);
+      MISS: CharCellTemporaryBlock, DisplayLattice, DisplayRow, DisplayRowKind,
+  [M] crates/warp_tui/src/editor_element_tests.rs  -- NONE (0/4)
+      MISS: Modifier, TuiBuffer, TuiBufferExt, TuiConstraint, TuiElement, TuiLayoutContext,
+      MISS: assert!(!buffer[(0, 0)].modifier.contains(Modifier::REVERSED));
+      MISS: assert!(!buffer[(3, 0)].modifier.contains(Modifier::REVERSED));
+      MISS: assert!(buffer[(1, 0)].modifier.contains(Modifier::REVERSED));
+  [M] crates/warp_tui/src/input/view_tests.rs  -- ALL (4/4)
+      OK : "clicking inside the wide grapheme places the cursor before it"
+      OK : assert_eq!(cursor_and_height(&view, ctx), (Some((2, 1)), 2));
+      OK : "clicking after the wide grapheme places the cursor after it"
+      OK : type_str(&view, ctx, &"x".repeat(usize::from(W) - 1));
+  >> commit-level: ['PARTIAL', 'NONE', 'ALL']
+
+=== a01df387ae5697f05d08ac180a081e9e60b7200c Cache TUI transcript block heights to fix long-transcript scroll lag (#13592)
+  [M] crates/warp_tui/src/agent_block.rs  -- PARTIAL (3/4)
+      MISS: AppContext, Entity, EntityId, ModelHandle, TuiView, TypedActionView, ViewContext, ViewHandle,
+      OK : pub(super) fn needs_height_measurement(&self, width: u16, app: &AppContext) -> bool {
+      OK : fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+      OK : TuiShellCommandViewEvent::LayoutChanged => me.invalidate_layout(ctx),
+  [M] crates/warp_tui/src/agent_block_sections.rs  -- PARTIAL (2/3)
+      MISS: event_ctx.dispatch_typed_action(TuiAIBlockAction::SetThinkingCollapsed {
+      OK : message_id: toggle_message_id.clone(),
+      OK : collapsed: !collapsed,
+  [M] crates/warp_tui/src/agent_block_tests.rs  -- PARTIAL (3/4)
+      MISS: Color, Modifier, TuiBufferExt, TuiConstraint, TuiLayoutContext, TuiRect, TuiSize,
+      OK : let message_id = MessageId::new("reasoning-1".to_owned());
+      OK : fn thinking_action_records_a_manual_collapse_override() {
+      OK : ctx.add_typed_action_tui_view(window_id, move |ctx| {
+  [M] crates/warp_tui/src/transcript_view.rs  -- ALL (1/1)
+      OK : let view = ctx.add_typed_action_tui_view(|ctx| {
+  [M] crates/warp_tui/src/transcript_view_tests.rs  -- ALL (3/3)
+      OK : app.read(|ctx| ctx.view_ancestors(window_id, agent_block_id)),
+      OK : let agent_block = ctx.add_typed_action_tui_view(|ctx| {
+      OK : vec![transcript.id(), agent_block_id],
+  [M] crates/warp_tui/src/tui_block_list_viewport_source.rs  -- PARTIAL (2/4)
+      OK : let view_ids_to_measure = self.agent_heights_to_measure(window, available_width, app);
+      MISS: TuiBlockListVisibleItemKind::AgentBlock(view) => TuiChildView::new(&view).finish(),
+      MISS: TuiChildView, TuiElement, TuiLayoutContext, TuiRowResize, TuiViewportContent,
+      OK : element: self.render_element(model, visible_rows, available_width),
+  [M] crates/warp_tui/src/tui_block_list_viewport_source_tests.rs  -- ALL (4/4)
+      OK : fn render_block_lines(app: &App, agent_block: &ViewHandle<TuiAIBlock>, width: u16) -> Vec<String> {
+      OK : AIAgentExchangeId, AIAgentInput, AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType,
+      OK : AIRequestType, Appearance, BlockHeight, BlockHeightItem, CancellationReason, LLMId, MessageId,
+      OK : "expanding the thinking section must grow the re-measured height ({expanded} vs {collapsed})"
+  [M] crates/warp_tui/src/tui_file_edits_view.rs  -- PARTIAL (3/4)
+      OK : fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+      OK : event_ctx.dispatch_typed_action(TuiFileEditsViewAction::ToggleSection(key));
+      MISS: states: RefCell<HashMap<SectionKey, SectionUiState>>,
+      OK : #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+  [M] crates/warp_tui/src/tui_shell_command_view.rs  -- ALL (4/4)
+      OK : fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+      OK : pub(super) fn needs_continuous_height_measurement(&self) -> bool {
+      OK : .set(matches!(block.details.state, CommandBlockState::Running));
+      OK : !self.state.is_collapsed() && self.command_running.get()
+  [M] crates/warp_tui/src/tui_shell_command_view_tests.rs  -- ALL (4/4)
+      OK : view.handle_action(&TuiShellCommandViewAction::ToggleExpanded, ctx);
+      OK : let mut first = ShellCommandViewState::new_collapsed();
+      OK : TuiShellCommandViewEvent::LayoutChanged => {
+      OK : view.update(&mut app, |view, ctx| {
+  >> commit-level: ['PARTIAL', 'PARTIAL', 'PARTIAL', 'ALL', 'ALL', 'PARTIAL', 'ALL', 'PARTIAL', 'ALL', 'ALL']
+
+=== 3e3711ce96bfcca740b5fd6f0f3140e8e2302c6a Fix agent shell commands appearing twice in the TUI transcript (#13594)
+  [M] crates/warp_tui/src/agent_block.rs  -- PARTIAL (1/3)
+      MISS: TuiShellCommandViewEvent::LayoutInvalidated => me.invalidate_layout(ctx),
+      OK : ctx.subscribe_to_view(&view, |me, _, event, ctx| match event {
+      MISS: let view = ctx.add_typed_action_tui_view(|_| {
+  [M] crates/warp_tui/src/agent_block_tests.rs  -- ALL (4/4)
+      OK : invalidations_for_subscription.set(invalidations_for_subscription.get() + 1);
+      OK : status: complete_output_messages(vec![action_message("message-1", action)]),
+      OK : let invalidations_for_subscription = layout_invalidations.clone();
+      OK : fn shell_command_disclosure_invalidates_agent_block_layout() {
+  [M] crates/warp_tui/src/terminal_block.rs  -- PARTIAL (3/4)
+      MISS: && block.is_visible(block_list.agent_view_state())
+      OK : && (block.started() || block.finished())
+      OK : !block.is_agent_requested_command()
+      OK : #[path = "terminal_block_tests.rs"]
+  [A] crates/warp_tui/src/terminal_block_tests.rs  -- PARTIAL (3/4)
+      MISS: AIAgentActionId, AIConversationId, AgentInteractionMetadata, BlockId, TerminalModel,
+      OK : fn mark_agent_monitored_command(model: &mut TerminalModel, block_id: &BlockId) {
+      OK : fn model_with_finished_block(command: &str) -> (TerminalModel, BlockId) {
+      OK : fn hidden_agent_requested_command_block_is_not_rendered_at_top_level() {
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- NONE (0/4)
+      MISS: throttle, AIAgentActionId, AIAgentPtyWriteMode, AcceptSlashCommandOrSavedPrompt, ActiveSession,
+      MISS: StaticCommand, TerminalModel, TerminalSurface, TerminalSurfaceInit, TuiSlashCommandDataSource,
+      MISS: BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController, CLISubagentEvent,
+      MISS: ConversationUsageTotals, ExecuteCommandEvent, GetRelevantFilesController, GitRepoModels,
+  [A] crates/warp_tui/src/terminal_session_view_tests.rs  -- NONE (0/4)
+      MISS: AIAgentActionId, AIConversationId, AgentInteractionMetadata, BlockId, TerminalModel,
+      MISS: mark_visible_agent_requested_command(&mut model, &agent_block_id, &action_id);
+      MISS: TuiBlockListViewportSource::new(model, Rc::new(RefCell::new(HashMap::new())));
+      MISS: fn model_with_finished_block(command: &str) -> (TerminalModel, BlockId) {
+  [M] crates/warp_tui/src/tui_shell_command_view.rs  -- PARTIAL (2/4)
+      MISS: fn handle_action(&mut self, action: &TuiShellCommandViewAction, ctx: &mut ViewContext<Self>) {
+      OK : event_ctx.dispatch_typed_action(TuiShellCommandViewAction::ToggleExpanded);
+      MISS: ctx.emit(TuiShellCommandViewEvent::LayoutInvalidated);
+      OK : impl TypedActionView for TuiShellCommandView {
+  [M] crates/warp_tui/src/tui_shell_command_view_tests.rs  -- ALL (4/4)
+      OK : ShellCommandViewState, TuiShellCommandView, TuiShellCommandViewAction, TuiShellCommandViewEvent,
+      OK : invalidations_for_subscription.set(invalidations_for_subscription.get() + 1);
+      OK : view.handle_action(&TuiShellCommandViewAction::ToggleExpanded, ctx);
+      OK : let invalidations_for_subscription = layout_invalidations.clone();
+  >> commit-level: ['PARTIAL', 'ALL', 'PARTIAL', 'PARTIAL', 'NONE', 'NONE', 'PARTIAL', 'ALL']
+
+=== b193c5efd0fce7c57a8c0cd3a230e050d9e725ba fix(window-tabs-panes): render group header for every multi-pane vertical tab (#9098) (#10738)
+  [M] app/src/workspace/view/vertical_tabs.rs  -- ALL (4/4)
+      OK : has_custom_title || is_being_renamed || visible_pane_count > 1
+      OK : let show_header = should_show_tab_group_header(
+      OK : fn should_show_tab_group_header(
+      OK : visible_pane_count: usize,
+  [M] app/src/workspace/view/vertical_tabs_tests.rs  -- PARTIAL (3/4)
+      MISS: should_show_tab_group_header, sort_summary_primary_labels_status_first, summary_overflow_count,
+      OK : fn tab_group_header_shows_for_multi_pane_tabs_without_custom_title() {
+      OK : fn tab_group_header_distinguishes_two_auto_named_multi_pane_tabs() {
+      OK : fn tab_group_header_hidden_for_single_pane_without_custom_title() {
+  >> commit-level: ['ALL', 'PARTIAL']
+
+=== 6e916958ead2cfac0639a78865eb8a213df863d9 Fix TUI running blocks not rendering until command finishes (#13496)
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- PARTIAL (2/4)
+      MISS: detect_possible_git_repo, throttle, AIAgentPtyWriteMode, ActiveSession, ActiveSessionEvent,
+      MISS: TerminalModel, TerminalSurface, TerminalSurfaceInit, WAKEUP_THROTTLE_PERIOD,
+      OK : model.block_list_mut().update_background_block_height();
+      OK : model.block_list_mut().update_active_block_height();
+  >> commit-level: ['PARTIAL']
+
+=== 56d2022b2b7140399088e35265e612b4c1980ff6 Fix local→cloud handoff failing to start with an invalid model_id (#13458)
+  [M] app/src/workspace/auto_handoff.rs  -- MISSING from fork tree (check rename)
+  [M] app/src/workspace/auto_handoff_tests.rs  -- MISSING from fork tree (check rename)
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      MISS: prefs.copy_agent_mode_selection(source_terminal_view_id, new_terminal_view_id, ctx);
+      OK : LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+      OK : Self::copy_model_and_profile_to_terminal_view(
+      MISS: model_handle.as_ref(ctx).terminal_view_id(),
+  [M] app/src/workspace/view_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['missing', 'missing', 'PARTIAL', 'missing']
+
+=== a612c95919cb101515ad663df9ec0e3436930c47 fix cross-window tab drag crash (#13409)
+  [M] app/src/workspace/cross_window_tab_drag.rs  -- PARTIAL (2/4)
+      MISS: "tab_drag: finalize_preview_as_new_window no workspace for preview_wid={preview_window_id} -> NoOp"
+      MISS: let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) else {
+      OK : ws.set_suppress_detach_panes_on_window_close(false);
+      OK : ws.sync_window_button_visibility(ctx);
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/4)
+      MISS: "tab_drag: handle_drop_result RemoveSourceTabAndClosePreview stale index={transferred_tab_index} tabs_len={} (
+      MISS: "tab_drag: handle_drop_result RemoveSourceTab stale index={transferred_tab_index} tabs_len={} (skipping remove
+      OK : self.remove_tab_without_undo(transferred_tab_index, ctx);
+      MISS: if transferred_tab_index < self.tabs.len() {
+  >> commit-level: ['PARTIAL', 'PARTIAL']
+
+=== fbedf90a24fb15b03d3bf9ef03dd60448564723a Double ctrl-c to exit TUI (#13334)
+  [M] crates/warp_tui/Cargo.toml  -- ALL (2/2)
+      OK : # singleton that the editor-backed TUI input view depends on in tests.
+      OK : instant.workspace = true
+  [D] crates/warp_tui/examples/tui_input_demo.rs  -- MISSING from fork tree (check rename)
+  [A] crates/warp_tui/src/exit_confirmation.rs  -- ALL (4/4)
+      OK : pub(crate) fn disarm_expired(&mut self, window_expires_at: Instant) -> bool {
+      OK : pub(crate) const CTRL_C_EXIT_WINDOW: Duration = Duration::from_secs(1);
+      OK : self.expires_at.is_some_and(|expires_at| now < expires_at)
+      OK : pub(crate) fn should_exit(&self, now: Instant) -> bool {
+  [A] crates/warp_tui/src/exit_confirmation_tests.rs  -- ALL (4/4)
+      OK : let second_expiry = confirmation.arm(now + Duration::from_millis(300));
+      OK : assert!(confirmation.should_exit(now + CTRL_C_EXIT_WINDOW / 2));
+      OK : "the superseded window's timer must not disarm the newer window"
+      OK : assert!(!confirmation.should_exit(now + CTRL_C_EXIT_WINDOW));
+  [M] crates/warp_tui/src/input/mod.rs  -- NONE (0/1)
+      MISS: pub use view::{init, TuiInputView, TuiInputViewEvent};
+  [M] crates/warp_tui/src/input/view.rs  -- NONE (0/4)
+      MISS: EditableBinding::new("tui:input:undo", "Undo", TuiInputAction::Undo)
+      MISS: EditableBinding::new("tui:input:redo", "Redo", TuiInputAction::Redo)
+      MISS: event_ctx.dispatch_typed_action(TuiInputAction::InsertChar(char));
+      MISS: if !keystroke.ctrl && !keystroke.alt && !chars.is_empty() {
+  [M] crates/warp_tui/src/input/view_tests.rs  -- PARTIAL (2/4)
+      OK : assert_eq!(cursor_and_height(&view, ctx).0, Some((0, 0)));
+      OK : type_lines(&view, ctx, 10); // 10 rows > 6-row viewport
+      MISS: assert_eq!(view.as_ref(ctx).scroll_offset, 4);
+      MISS: assert_eq!(view.as_ref(ctx).scroll_offset, 0);
+  [A] crates/warp_tui/src/keybindings.rs  -- ALL (4/4)
+      OK : app.register_tui_binding_validator::<TuiTerminalSessionView>(is_tui_owned_binding);
+      OK : app.register_tui_binding_validator::<TuiTranscriptView>(is_tui_owned_binding);
+      OK : app.register_tui_binding_validator::<TuiInputView>(is_tui_owned_binding);
+      OK : app.register_tui_binding_validator::<RootTuiView>(is_tui_owned_binding);
+  [A] crates/warp_tui/src/keybindings_tests.rs  -- ALL (4/4)
+      OK : assert!(!is_tui_owned("terminal:cancel_command", None));
+      OK : assert!(is_tui_owned("", Some(TUI_BINDING_GROUP)));
+      OK : assert!(!is_tui_owned("input:clear_screen", None));
+      OK : assert!(is_tui_owned("tui:input:submit", None));
+  [M] crates/warp_tui/src/lib.rs  -- ALL (2/2)
+      OK : mod exit_confirmation;
+      OK : mod keybindings;
+  [M] crates/warp_tui/src/root_view.rs  -- ALL (4/4)
+      OK : RootTuiAction::ExitApp => ctx.terminate_app(TerminationMode::ForceTerminate, None),
+      OK : fn handle_action(&mut self, action: &RootTuiAction, ctx: &mut ViewContext<Self>) {
+      OK : app.register_fixed_bindings([FixedBinding::new(
+      OK : pub fn init(app: &mut AppContext) {
+  [M] crates/warp_tui/src/session.rs  -- ALL (1/1)
+      OK : crate::keybindings::init(ctx);
+  [M] crates/warp_tui/src/terminal_session_view.rs  -- PARTIAL (1/4)
+      OK : fn handle_action(&mut self, action: &TuiTerminalSessionAction, ctx: &mut ViewContext<Self>) {
+      MISS: BlocklistAIController, BlocklistAIHistoryModel, BlocklistAIInputModel, CancellationReason,
+      MISS: ExecuteCommandEvent, GetRelevantFilesController, LLMPreferences, LLMPreferencesEvent,
+      MISS: ModelEvent, PtyIntent, PtyIntentEvent, ShellCommandExecutorEvent, TerminalModel,
+  >> commit-level: ['ALL', 'missing', 'ALL', 'ALL', 'NONE', 'NONE', 'PARTIAL', 'ALL', 'ALL', 'ALL', 'ALL', 'ALL', 'PARTIAL']
+
+=== d33823c828dc3822051451c79bd15f1a86de8100 Fix client-side fallback when selected models are disabled (#13331)
+  [M] app/src/settings_view/execution_profile_view.rs  -- PARTIAL (1/4)
+      MISS: .get_default_computer_use_model(app)
+      MISS: .get_default_cli_agent_model(app)
+      MISS: .get_default_base_model(app)
+      OK : .unwrap_or_else(|| {
+  >> commit-level: ['PARTIAL']
+
+=== 8089a74d3c4a214e5cae96d8afc211beefdc3443 Fix tab renaming bug with tab groups in pane view (#13289)
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/4)
+      MISS: .is_some_and(|tab| tab.tab_name_hidden_in_grouped_pane_view(ctx));
+      MISS: self.rename_tab(self.active_tab_index, ctx);
+      OK : .get(self.active_tab_index)
+      MISS: let tab_name_hidden = self
+  >> commit-level: ['PARTIAL']
+
+=== 3015d875b7bbe790e6bd8cd46fcdb8a8828ee6f5 Fix some tab/group renaming bugs (#13261)
+  [M] app/src/workspace/action.rs  -- NONE (0/2)
+      MISS: | CancelActiveRename
+      MISS: CancelActiveRename,
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      MISS: self.cancel_tab_group_rename(ctx);
+      OK : self.cancel_pane_rename(ctx);
+      OK : self.cancel_tab_rename(ctx);
+      MISS: CancelActiveRename => {
+  [M] app/src/workspace/view/vertical_tabs.rs  -- NONE (0/4)
+      MISS: } else if let Some(tab_index) = renamable_tab_index.filter(|_| !is_tab_being_renamed) {
+      MISS: if row_supports_rename && !is_pane_being_renamed && !is_tab_being_renamed {
+      MISS: if matches!(display_granularity, VerticalTabsDisplayGranularity::Panes) {
+      MISS: renamable_tab_index.is_some() || pane_context_menu_tab_index.is_some();
+  >> commit-level: ['NONE', 'PARTIAL', 'NONE']
+
+=== 73ab280eed107b956a7fec2ec8059cd0de5ab41e Escape executable path in "dump debug info" command palette action (#13188)
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/3)
+      MISS: terminal_view.shell_family(ctx).shell_escape(&exec),
+      OK : warp_cli::dump_debug_info_flag()
+      OK : let command = format!(
+  >> commit-level: ['PARTIAL']
+
+=== a59c4b8a9c99ba23c7f56324273d1ae31de81cba fix(mcp): respect secret-redaction toggle when saving MCP server config (#8761) (#10839)
+  [M] app/src/settings_view/mcp_servers/edit_page.rs  -- PARTIAL (2/4)
+      MISS: if should_block_save_for_secrets(safe_mode_enabled, enterprise_enforced, contains_secrets) {
+      OK : let safe_mode_enabled = *SafeModeSettings::as_ref(ctx).safe_mode_enabled.value();
+      MISS: UserWorkspaces::as_ref(ctx).is_enterprise_secret_redaction_enabled();
+      OK : (safe_mode_enabled || enterprise_enforced) && contains_secrets
+  [A] app/src/settings_view/mcp_servers/edit_page_tests.rs  -- ALL (4/4)
+      OK : fn does_not_block_when_redaction_off_even_if_secrets_present() {
+      OK : !should_block_save_for_secrets(safe_mode, enterprise, false),
+      OK : assert!(!should_block_save_for_secrets(false, false, true));
+      OK : assert!(should_block_save_for_secrets(true, false, true));
+  >> commit-level: ['PARTIAL', 'ALL']
+
+=== 79fd1908983dfae390e18d018c118593ebec060f Fix horizontal cross-window tab drag "fuzzy shake" on source re-entry (#13007)
+  [M] app/src/workspace/cross_window_tab_drag.rs  -- PARTIAL (3/4)
+      OK : pub fn collapsed_source_placeholder_index(&self, window_id: WindowId) -> Option<usize> {
+      OK : pub(crate) fn set_reordering_in_source_for_test(&mut self, reordering_in_source: bool) {
+      OK : let has_handoff = matches!(drag.phase, DragPhase::InsertedInTarget { .. });
+      MISS: if drag.source_window_id != window_id || drag.reordering_in_source {
+  [A] app/src/workspace/cross_window_tab_drag_tests.rs  -- ALL (4/4)
+      OK : assert_eq!(drag.collapsed_source_placeholder_index(preview), None);
+      OK : fn multi_tab_drag_collapses_only_the_source_window_placeholder() {
+      OK : assert_eq!(drag.collapsed_source_placeholder_index(source), None);
+      OK : drag.collapsed_source_placeholder_index(WindowId::from_usize(1)),
+  [M] app/src/workspace/view.rs  -- ALL (2/2)
+      OK : drag_model.collapsed_source_placeholder_index(self.window_id);
+      OK : let transferred_tab_index =
+  >> commit-level: ['PARTIAL', 'ALL', 'ALL']
+
+=== 0979019808363232ac06ec3da3af238675db27c2 Fix unreadable agent toolbelt chip text after theme change (#12970)
+  [M] app/src/settings_view/appearance_page.rs  -- PARTIAL (1/2)
+      OK : self.context_chips = Self::get_context_chip_renderers(ctx);
+      MISS: AppearanceEvent::ThemeChanged => {
+  >> commit-level: ['PARTIAL']
+
+=== 6c9604f155453e56ecb77d49ce8cfc4e92e0dd0b fix: focus existing markdown file panes (#12489)
+  [M] app/src/pane_group/mod.rs  -- PARTIAL (2/4)
+      MISS: ) -> impl Iterator<Item = (PaneId, ViewHandle<FileNotebookView>)> + 'a {
+      OK : .map(move |pane| (pane.id(), pane.file_view(app)))
+      MISS: pub fn file_notebook_panes<'a>(
+      OK : self.panes_of::<FilePane>()
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      OK : self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+      MISS: !pane_group.as_ref(ctx).is_pane_hidden_for_close(*pane_id)
+      OK : let pane_group = self.active_tab_pane_group();
+      MISS: && file_view.as_ref(ctx).path() == Some(&path)
+  [M] app/src/workspace/view_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['PARTIAL', 'PARTIAL', 'missing']
+
+=== b101722e9b57af5bf80f48b8c179faeacae3a626 Cross Window Tab Dragging Bug Fixes (#12746)
+  [M] app/src/pane_group/mod.rs  -- NONE (0/4)
+      MISS: fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
+      MISS: self.user_default_shell_changed_banner.id(),
+      MISS: self.shared_session_role_change_modal.id(),
+      MISS: self.share_session_modal.id(),
+  [M] app/src/pane_group/pane/view/mod.rs  -- NONE (0/4)
+      MISS: AppContext, Element, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View,
+      MISS: ids.extend(self.pane_stack.as_ref(app).views().map(|view| view.id()));
+      MISS: fn child_view_ids(&self, app: &AppContext) -> Vec<EntityId> {
+      MISS: let mut ids = vec![self.header.id()];
+  [M] app/src/workspace/cross_window_tab_drag.rs  -- PARTIAL (1/4)
+      MISS: "tab_drag: on_drag_while_floating -> ReorderInSource source_wid={} (reuse detached placeholder)",
+      MISS: "tab_drag: on_drop ReorderInSource -> DropResult::DropInto target_wid={} insertion_index={}",
+      OK : if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(target.window_id, ctx) {
+      MISS: let is_source_reorder = target.window_id == drag.source_window_id
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      OK : pub(crate) fn tab_bar_rects_for_window(window_id: WindowId, app: &AppContext) -> Vec<RectF> {
+      MISS: app.element_position_by_id_at_last_frame(window_id, active_tab_bar_position_id(app))
+      MISS: pub(crate) fn active_tab_bar_position_id(app: &AppContext) -> &'static str {
+      OK : self.calculate_updated_tab_index_vertical(current_index, position, ctx)
+  [M] app/src/workspace/view_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['NONE', 'NONE', 'PARTIAL', 'PARTIAL', 'missing']
+
+=== 79fdd7cebb620495cea9e31775da5d185ae1adad Fix cross window dragging splitting groups (#12753)
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/4)
+      MISS: group_member_index_range(&self.tabs, before).map_or(index, |(_, last)| last + 1)
+      MISS: let mut visible_tabs: Vec<(usize, RectF)> = Vec::with_capacity(self.tabs.len());
+      MISS: if let Some(container_rect) = group_container_rect(window_id, group_id, ctx) {
+      OK : ctx.element_position_by_id_at_last_frame(window_id, tab_position_id(index))
+  >> commit-level: ['PARTIAL']
+
+=== 81d06dae40d0f385b489ca95817c6bd9e0459499 Add show hidden files toggle to Settings UI + fix backward-compat regression (#12710)
+  [M] app/src/settings/code.rs  -- ALL (1/1)
+      OK : default: true,
+  [M] app/src/settings_view/code_page.rs  -- PARTIAL (3/4)
+      MISS: "Show dotfiles and hidden files (starting with .) in the project explorer.".into(),
+      OK : ctx.dispatch_typed_action(CodeSettingsPageAction::ToggleShowHiddenFiles);
+      OK : report_if_error!(settings.show_hidden_files.toggle_and_save_value(ctx));
+      OK : CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
+  [M] app/src/settings_view/mod.rs  -- NONE (0/1)
+      MISS: pub const SHOW_HIDDEN_FILES: &str = "ShowHiddenFiles";
+  [M] app/src/workspace/view.rs  -- NONE (0/2)
+      MISS: if *CodeSettings::as_ref(app).show_hidden_files {
+      MISS: context.set.insert(flags::SHOW_HIDDEN_FILES);
+  >> commit-level: ['ALL', 'PARTIAL', 'NONE', 'NONE']
+
+=== 8794f73251c27b8839bac4ee5d1321eb46db385a Fix tab group bugs for "special tabs" (#12706)
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/4)
+      OK : fn new_tab_index_and_group(&self, ctx: &AppContext) -> (usize, Option<TabGroupId>) {
+      MISS: self.add_tab_from_existing_pane(Box::new(new_pane), new_idx, group_id, ctx);
+      MISS: self.add_tab_from_existing_pane(removed_pane, new_tab_index, group_id, ctx);
+      MISS: self.add_tab_from_existing_pane(Box::new(pane), new_idx, group_id, ctx);
+  >> commit-level: ['PARTIAL']
+
+=== aa873b543dad251654b0d27aa441f8eb49557635 remove redundant path canonicalizations causing UI to freeze with WSL tabs (#12492)
+  [M] app/src/settings_view/appearance_page.rs  -- PARTIAL (1/4)
+      MISS: TabSettingsChangedEvent, UseLatestUserPromptAsConversationTitleInTabNames, UseVerticalTabs,
+      MISS: canonical_directory_key, DirectoryTabColor, HideTitleBarSearchBarInVerticalTabs,
+      MISS: ShowVerticalTabPanelInRestoredWindows, TabCloseButtonPosition, TabSettings,
+      OK : PreserveActiveTabColor, ShowCodeReviewButton, ShowIndicatorsButton,
+  [M] app/src/settings_view/directory_color_add_picker.rs  -- PARTIAL (1/3)
+      MISS: canonical_directory_key, DirectoryTabColor, DirectoryTabColors, TabSettings,
+      MISS: let key = canonical_directory_key(&path);
+      OK : TabSettingsChangedEvent,
+  [M] app/src/workspace/tab_settings.rs  -- PARTIAL (1/4)
+      MISS: pub fn color_for_directory(&self, canonical_dir: &Path) -> Option<DirectoryTabColor> {
+      MISS: pub fn canonical_directory_key(path: &Path) -> String {
+      MISS: map.insert(canonical_directory_key(path), color);
+      OK : .unwrap_or_else(|_| path.to_path_buf())
+  [M] app/src/workspace/view.rs  -- NONE (0/3)
+      MISS: .and_then(|tv| tv.as_ref(ctx).canonical_session_pwd_if_local(ctx))
+      MISS: .color_for_directory(cwd.as_path())
+      MISS: let Some(cwd) = tab
+  [M] app/src/workspace/view/vertical_tabs.rs  -- NONE (0/4)
+      MISS: .and_then(|file_path| dunce::canonicalize(file_path).ok())
+      MISS: if tab.selected_color != SelectedTabColor::Unset {
+      MISS: .canonical_session_pwd_if_local(app)
+      MISS: .color_for_directory(cwd.as_path())
+  >> commit-level: ['PARTIAL', 'PARTIAL', 'PARTIAL', 'NONE', 'NONE']
+
+=== ebaef155b38d0827d5bfb5e62405490f21472020 Resolve tab group bugs: new tab group expansion, pane name duplication, and settings tab splitting group (#12383)
+  [M] app/src/workspace/view.rs  -- PARTIAL (3/4)
+      OK : fn expand_tab_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+      OK : if let Some(group) = self.tab_groups.get_mut(&group_id) {
+      OK : self.expand_tab_group(group_id, ctx);
+      MISS: group_member_indices(&self.tabs, gid)
+  [M] app/src/workspace/view/tab_grouping.rs  -- ALL (3/3)
+      OK : self.expand_tab_group(*group_id, ctx);
+      OK : self.expand_tab_group(group_id, ctx);
+      OK : for group_id in &crossed_group_ids {
+  [M] app/src/workspace/view/vertical_tabs.rs  -- PARTIAL (3/4)
+      MISS: if in_tab_group && matches!(display_granularity, VerticalTabsDisplayGranularity::Panes) {
+      OK : .then(|| pane_group.custom_title(app))
+      OK : let displayed_tab_title_override =
+      OK : (!uses_outer_group_container)
+  [M] app/src/workspace/view_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['PARTIAL', 'ALL', 'PARTIAL', 'missing']
+
+=== 665f0f6578bb9ccd3456dc453844388c3df0ec58 Fix pane spacing and highlighting in tab groups (#12369)
+  [M] app/src/workspace/view/vertical_tabs.rs  -- PARTIAL (1/4)
+      MISS: let allow_per_tab_highlight = !in_tab_group || FeatureFlag::GroupedTabs.is_enabled();
+      MISS: for (row_idx, (pane_id, row_mouse_state)) in row_mouse_states.iter().enumerate() {
+      OK : .with_corner_radius(CornerRadius::with_all(Radius::Pixels(ROW_CORNER_RADIUS)));
+      MISS: } else if allow_per_tab_highlight && (is_active || group_state.is_hovered()) {
+  >> commit-level: ['PARTIAL']
+
+=== a8df317229b99ef511757a076e16d75fa8ab1eb1 Fix block navigation (up/down arrow keys) (#10095)
+  [M] app/src/settings_view/features_page.rs  -- PARTIAL (1/4)
+      MISS: editor_widgets.push(Box::new(PreserveInputFocusOnBlockSelectionWidget::default()));
+      MISS: .check(*BlockListSettings::as_ref(app).preserve_input_focus_on_block_selection)
+      OK : BlockListSettings::handle(ctx).update(ctx, |blocklist_settings, ctx| {
+      MISS: value: to_string(*settings.preserve_input_focus_on_block_selection),
+  [M] app/src/settings_view/mod.rs  -- NONE (0/2)
+      MISS: pub const PRESERVE_INPUT_FOCUS_ON_BLOCK_SELECTION_FLAG: &str =
+      MISS: "Preserve_Input_Focus_On_Block_Selection";
+  >> commit-level: ['PARTIAL', 'NONE']
+
+=== 51c380ce93bb4d4f688be787ab9e575e614a7db8 Fix MCP +Add path bypassing secret redaction check (#11297)
+  [M] app/src/settings_view/mcp_servers/edit_page.rs  -- PARTIAL (1/4)
+      MISS: self.detect_secrets_in_templatable_mcp_server(
+      MISS: &parsed_server.templatable_mcp_server,
+      MISS: .try_for_each(|parsed_server| {
+      OK : if parsed_servers
+  >> commit-level: ['PARTIAL']
+
+=== 9e23bd22f2361716a6735a3787d1fe1bc3cff52e Add tab group more options menu + bug fix (#11903)
+  [M] app/src/workspace/action.rs  -- NONE (0/4)
+      MISS: | ToggleTabGroupRightClickMenu { .. }
+      MISS: CloseTabsOutsideGroup(TabGroupId),
+      MISS: CloseTabsAboveGroup(TabGroupId),
+      MISS: CloseTabsBelowGroup(TabGroupId),
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/4)
+      OK : fn group_member_index_range(tabs: &[TabData], group_id: TabGroupId) -> Option<(usize, usize)> {
+      MISS: fn close_tabs_outside_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+      MISS: if from_index == to_index || from_index >= self.tabs.len() || to_index >= self.tabs.len() {
+      MISS: fn close_tabs_above_group(&mut self, group_id: TabGroupId, ctx: &mut ViewContext<Self>) {
+  [M] app/src/workspace/view/vertical_tabs.rs  -- NONE (0/4)
+      MISS: pub(crate) fn vtab_group_kebab_position_id(tab_group_id: TabGroupId) -> String {
+      MISS: ctx.dispatch_typed_action(WorkspaceAction::ToggleTabGroupRightClickMenu {
+      MISS: hoverable = hoverable.on_right_click(move |ctx, _, position| {
+      MISS: format!("vertical_tabs:group_kebab:{tab_group_id:?}")
+  >> commit-level: ['NONE', 'PARTIAL', 'NONE']
+
+=== 836b73c88d21f3e725363ef66d95b6735dd8fa74 fix(mcp): use ActionButton for install/update modal buttons (#10517) (#10586)
+  [M] app/src/settings_view/mcp_servers/installation_modal.rs  -- PARTIAL (3/4)
+      OK : FormattedTextElement, HighlightedHyperlink, Hoverable, MainAxisAlignment, MouseStateHandle,
+      OK : Align, Border, ChildView, ConstrainedBox, Container, CrossAxisAlignment, Empty, Flex,
+      MISS: .with_child(Container::new(ChildView::new(&self.install_button).finish()).finish())
+      OK : AppContext, Element, Entity, FocusContext, TypedActionView, View, ViewHandle,
+  [M] app/src/settings_view/mcp_servers/list_page.rs  -- PARTIAL (1/4)
+      MISS: body.set_installation(installation_uuid, server_name, available_updates, ctx);
+      MISS: let update_modal_body = ctx.add_typed_action_view(UpdateModalBody::new);
+      OK : modal.body().update(ctx, |body, ctx| {
+      MISS: body.clear(ctx);
+  [M] app/src/settings_view/mcp_servers/update_modal.rs  -- NONE (0/4)
+      MISS: Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
+      MISS: .with_child(Container::new(ChildView::new(&self.update_button).finish()).finish())
+      MISS: Hoverable, MainAxisAlignment, MouseStateHandle, ParentElement, Radius, Text,
+      MISS: AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle,
+  [M] app/src/settings_view/mcp_servers_page.rs  -- NONE (0/1)
+      MISS: let installation_modal_body = ctx.add_typed_action_view(InstallationModalBody::new);
+  >> commit-level: ['PARTIAL', 'PARTIAL', 'NONE', 'NONE']
+
+=== 6984bc390d63e66ddfabfd5fabd9fcb46539af92 fix: remove built-in feedback skill (#11806)
+  [M] app/src/settings/ai.rs  -- exists, no distinctive added lines found (skim manually)
+  [M] app/src/settings_view/ai_page.rs  -- PARTIAL (1/4)
+      MISS: "other oz updates zero state empty changelog new conversation agent what's new use agent footer toolbar layout
+      MISS: IncludeAgentCommandsInHistory, InputSettings, IntelligentAutosuggestionsEnabled, MemoryEnabled,
+      OK : NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, RuleSuggestionsEnabled,
+      MISS: CodebaseContextEnabled, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
+  [M] app/src/settings_view/mod.rs  -- exists, no distinctive added lines found (skim manually)
+  [M] app/src/workspace/mod.rs  -- NONE (0/1)
+      MISS: BindingDescription::new("Send feedback (opens external link)"),
+  [M] app/src/workspace/view.rs  -- ALL (1/1)
+      OK : ctx.open_url(&links::feedback_form_url());
+  [M] app/src/workspace/view_tests.rs  -- MISSING from fork tree (check rename)
+  >> commit-level: ['nodistinctive', 'PARTIAL', 'nodistinctive', 'NONE', 'ALL', 'missing']
+
+=== a530563eb7761c89e8d4d58d95b1cd95ace469fc fix: show vertical tab notification dots when inbox is hidden (#11611)
+  [M] app/src/workspace/header_toolbar_editor.rs  -- exists, no distinctive added lines found (skim manually)
+  [M] app/src/workspace/view/vertical_tabs.rs  -- PARTIAL (3/4)
+      OK : fn has_unread_activity_for_terminal_view(terminal_view_id: EntityId, app: &AppContext) -> bool {
+      OK : has_unread_activity_for_terminal_view(terminal_view.as_ref(app).id(), app)
+      MISS: has_unread_activity_for_terminal_view(terminal_view.id(), app);
+      OK : .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+  [M] app/src/workspace/view/vertical_tabs_tests.rs  -- NONE (0/1)
+      MISS: has_unread_activity: false,
+  >> commit-level: ['nodistinctive', 'PARTIAL', 'NONE']
+
+=== ffe5cff65e2cbb2466b884eee8cd9f96dfaf3c21 fix redirects going haywire (#11353)
+  [M] app/src/workspace/view/wasm_view.rs  -- PARTIAL (2/3)
+      OK : .ambient_agent_task_id_for_details_panel(ctx)
+      MISS: if terminal_view_ref
+      OK : return true;
+  >> commit-level: ['PARTIAL']
+
+=== 90d214af39b58f98cdc95936fbe968bc850a4908 Fix markdown rendering on remote SSH sessions (#11427)
+  [M] app/src/pane_group/mod.rs  -- NONE (0/4)
+      MISS: let source = source.unwrap_or(CodeSource::FileTree { location: path });
+      MISS: ) -> impl Iterator<Item = (EntityId, Option<LocalOrRemotePath>)> + 'a {
+      MISS: let location = diff_view.as_ref(ctx).primary_file_location(ctx);
+      MISS: .tab_at(code_view.as_ref(ctx).active_tab_index())
+  [M] app/src/pane_group/pane/file_pane.rs  -- NONE (0/2)
+      MISS: view.open(path, target_session, ctx);
+      MISS: path: Option<LocalOrRemotePath>,
+  [M] app/src/pane_group/pane/mod.rs  -- PARTIAL (1/2)
+      OK : #[cfg(feature = "local_fs")]
+      MISS: path: LocalOrRemotePath,
+  [M] app/src/pane_group/pane/notebook_pane.rs  -- NONE (0/1)
+      MISS: path: crate::code::buffer_location::LocalOrRemotePath::Local(path.clone()),
+  [M] app/src/pane_group/pane/terminal_pane.rs  -- NONE (0/1)
+      MISS: path: LocalOrRemotePath::Local(path.clone()),
+  [M] app/src/pane_group/working_directories.rs  -- NONE (0/4)
+      MISS: new_remote_display_roots.push(LocalOrRemotePath::Remote(RemotePath::new(
+      MISS: let mut remote_editor_paths: Vec<(EntityId, RemotePath)> = Vec::new();
+      MISS: local_editor_paths.push((*view_id, p.to_string_lossy().into_owned()));
+      MISS: let mut new_remote_display_roots: Vec<LocalOrRemotePath> = Vec::new();
+  [M] app/src/pane_group/working_directories_tests.rs  -- PARTIAL (1/4)
+      MISS: HashSet::from_iter([local(&canonical_1), local(&canonical_2)]),
+      OK : working_directories_handle.update(&mut app, |model, ctx| {
+      MISS: (terminal_1, LocalOrRemotePath::Local(repo_a.clone())),
+      MISS: (terminal_2, LocalOrRemotePath::Local(repo_b.clone())),
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      MISS: log::error!("FileTarget::{target:?} should have been handled before entering local-only branch");
+      OK : "Could not get terminal view handle for new pane when attempting to open file with $EDITOR."
+      MISS: if local_path.is_dir() && matches!(target, FileTarget::CodeEditor(EditorLayout::NewTab))
+      OK : self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
+  [M] app/src/workspace/view/left_panel.rs  -- NONE (0/4)
+      MISS: let remote_repos: Vec<repo_metadata::RemoteRepositoryIdentifier> = active_directories
+      MISS: let remote_repos: Vec<repo_metadata::RemoteRepositoryIdentifier> = directories
+      MISS: let local_directories = deduplicate_by_directory_name(local_paths);
+      MISS: .filter_map(|d| d.path.to_local_path().map(|p| p.to_path_buf()))
+  >> commit-level: ['NONE', 'NONE', 'PARTIAL', 'NONE', 'NONE', 'NONE', 'PARTIAL', 'PARTIAL', 'NONE']
+
+=== 04e0c22970cf213527188d1f5037fd57d4ba6052 Fix QUALITY-668 orchestration child restore persistence (#10794)
+  [M] app/src/pane_group/mod.rs  -- PARTIAL (1/4)
+      MISS: history_model.resolved_parent_conversation_id_for_conversation(conversation)
+      MISS: BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+      MISS: history_model.resolved_parent_conversation_id_for_conversation(
+      OK : RestoredAgentConversations::handle(ctx).read(ctx, |store, _| {
+  [M] app/src/pane_group/mod_tests.rs  -- NONE (0/4)
+      MISS: fn test_ensure_hidden_child_agent_pane_materializes_restored_remote_child_linked_by_parent_agent_id(
+      MISS: AgentConversation, AgentConversationData, AgentConversationRecord, ConversationUsageMetadata,
+      MISS: fn test_entering_remote_parent_agent_view_lazily_restores_remote_hidden_child_pane() {
+      MISS: fn test_create_missing_child_agent_panes_restores_remote_child_from_history_model() {
+  [M] app/src/pane_group/pane/terminal_pane.rs  -- NONE (0/1)
+      MISS: history_model.mark_conversation_as_remote_child(id, ctx);
+  [M] app/src/settings/cloud_preferences_syncer_tests.rs  -- MISSING from fork tree (check rename)
+  [M] app/src/workspace/view.rs  -- PARTIAL (1/3)
+      MISS: history_model.set_server_conversation_token_for_conversation_and_persist(
+      OK : history_model.update(ctx, |history_model, ctx| {
+      MISS: forked_id, server_id, ctx,
+  >> commit-level: ['PARTIAL', 'NONE', 'NONE', 'missing', 'PARTIAL']
+
+=== a2d6833b87f197b32e16ebda7e0158d097eb8b65 Fix review comment routing to use visible terminal views only (#11340)
+  [M] app/src/pane_group/mod.rs  -- PARTIAL (2/4)
+      MISS: pub fn visible_terminal_views(&self, ctx: &AppContext) -> Vec<ViewHandle<TerminalView>> {
+      MISS: .filter_map(|pane_id| self.terminal_view_from_pane_id(pane_id, ctx))
+      OK : .visible_pane_ids()
+      OK : .into_iter()
+  [M] app/src/workspace/view/right_panel.rs  -- NONE (0/1)
+      MISS: let terminal_views = pane_group.read(ctx, |pg, ctx| pg.visible_terminal_views(ctx));
+  >> commit-level: ['PARTIAL', 'NONE']
+
+=== 8e3c8eb89409b4e27f3e29330c6eaaca789b7884 Reset pane flex when double-clicking on a pane divider. (#11293)
+  [M] app/src/pane_group/mod.rs  -- ALL (4/4)
+      OK : pub fn reset_pane_sizes(&mut self, border_id: EntityId, ctx: &mut ViewContext<Self>) {
+      OK : ResetPaneSizes(border_id) => self.reset_pane_sizes(*border_id, ctx),
+      OK : if self.panes.reset_pane_sizes(border_id) {
+      OK : self.clear_hidden_closed_panes(ctx);
+  [M] app/src/pane_group/tree.rs  -- PARTIAL (3/4)
+      OK : SplitDirection::Horizontal => divider.with_width(get_divider_thickness()).finish(),
+      OK : SplitDirection::Vertical => divider.with_height(get_divider_thickness()).finish(),
+      MISS: let hoverable = Hoverable::new(item.mouse_state.clone(), |_| match direction {
+      OK : Container::new(divider.with_height(get_divider_thickness()).finish())
+  [M] app/src/pane_group/tree_tests.rs  -- ALL (4/4)
+      OK : let nested = root.node(1).as_branch().expect("Should be a branch");
+      OK : vec![DEFAULT_FLEX_VALUE, DEFAULT_FLEX_VALUE, DEFAULT_FLEX_VALUE]
+      OK : let root = tree.root.as_branch().expect("Should be a branch");
+      OK : fn test_reset_pane_sizes_only_resets_containing_branch() {
+  >> commit-level: ['ALL', 'PARTIAL', 'ALL']
+
+=== f5fbd5a7ad710887640fdee0e1e435241886b750 [3/5] Reduce duplicate remote codebase index status pushes (#11093)
+  [M] app/src/settings_view/agent_assisted_environment_modal.rs  -- MISSING from fork tree (check rename)
+  [M] app/src/settings_view/code_page.rs  -- PARTIAL (1/3)
+      MISS: | CodebaseIndexManagerEvent::NewIndexCreated { .. }
+      MISS: CodebaseIndexManagerEvent::SyncStateUpdated { .. }
+      OK : if matches!(
+  [M] app/src/settings_view/directory_color_add_picker.rs  -- NONE (0/2)
+      MISS: | CodebaseIndexManagerEvent::SyncStateUpdated { .. }
+      MISS: CodebaseIndexManagerEvent::NewIndexCreated { .. }
+  >> commit-level: ['missing', 'PARTIAL', 'NONE']
+
+=== 8db29ac61a50c40b3dac912edb3652d04c5135f0 fix: enable cloud continuation from WASM tombstones (#11142)
+  [M] app/src/pane_group/mod.rs  -- PARTIAL (1/2)
+      OK : AgentConversationsModel::handle(ctx).update(ctx, |model, ctx| {
+      MISS: model.get_or_async_fetch_task_data(&task_id, ctx);
+  >> commit-level: ['PARTIAL']
+
+=== a2f58658480f32bd0712d3a1a2af053e9730d8da Fix a bunch of convo restoration issues, and show shell command run duration (#10423)
+  [M] app/src/pane_group/mod.rs  -- PARTIAL (1/4)
+      OK : active_conversation_id: terminal_snapshot.active_conversation_id,
+      MISS: |conversations| ConversationRestorationInNewPaneType::Startup {
+      MISS: let conversations = RestoredAgentConversations::handle(ctx)
+      MISS: .set_is_executing_oz_environment_startup_commands(false);
+  >> commit-level: ['PARTIAL']
+
+=== 3ac1efb0326fbc8b7ccf01cc16edfb94f3e5bdcd update MCP update/install modal primary button with correct text color (#10166)
+  [M] app/src/settings_view/mcp_servers/installation_modal.rs  -- NONE (0/4)
+      MISS: Border::all(1.).with_border_fill(coloru_with_opacity(accent_text_color.into(), 60)),
+      MISS: let accent_text_color = theme.font_color(theme.accent());
+      MISS: font_color: Some(theme.disabled_ui_text_color().into()),
+      MISS: font_color: Some(theme.active_ui_text_color().into()),
+  [M] app/src/settings_view/mcp_servers/update_modal.rs  -- PARTIAL (1/4)
+      MISS: .with_border(Border::all(1.).with_border_fill(coloru_with_opacity(label_color.into(), 60)))
+      MISS: ConstrainedBox::new(Icon::CornerDownLeft.to_warpui_icon(label_color).finish())
+      OK : let has_selection = self.selected_updates.iter().any(|&x| x);
+      MISS: font_color: Some(theme.disabled_ui_text_color().into()),
+  >> commit-level: ['NONE', 'PARTIAL']
+
+=== 6ea1a52af1d02914ab43e2f2e4e37f1dedaa99fd Fix new-session "+" dropdown alignment when Tabs Panel is on the right (#9492)
+  [M] app/src/workspace/view.rs  -- PARTIAL (2/4)
+      MISS: Self::tabs_panel_side(&TabSettings::as_ref(app).header_toolbar_chip_selection);
+      OK : (PositionedElementAnchor::BottomRight, ChildAnchor::TopRight)
+      OK : (PositionedElementAnchor::BottomLeft, ChildAnchor::TopLeft)
+      MISS: let (anchor, child_anchor) = match tabs_side {
+  >> commit-level: ['PARTIAL']
+
+=== 53290670c8cec3da5bc88466904acfffc434fc6d Fix vertical tabs panel not opening when tab bar set to Always (#9283)
+  [M] app/src/settings_view/appearance_page.rs  -- PARTIAL (1/4)
+      MISS: "When enabled, reopening or restoring a window opens the vertical tabs panel even if it was closed when the wi
+      OK : fn toggle_show_vertical_tab_panel_in_restored_windows(&mut self, ctx: &mut ViewContext<Self>) {
+      MISS: TabSettingsChangedEvent, UseLatestUserPromptAsConversationTitleInTabNames, UseVerticalTabs,
+      MISS: ShowVerticalTabPanelInRestoredWindows, TabCloseButtonPosition, TabSettings,
+  [M] app/src/workspace/tab_settings.rs  -- ALL (4/4)
+      OK : description: "When restoring a window, open the vertical tabs panel even if it was closed when the session was
+      OK : show_vertical_tab_panel_in_restored_windows: ShowVerticalTabPanelInRestoredWindows {
+      OK : toml_path: "appearance.vertical_tabs.show_panel_in_restored_windows",
+      OK : sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+  [M] app/src/workspace/tab_settings_tests.rs  -- ALL (4/4)
+      OK : fn show_vertical_tab_panel_in_restored_windows_uses_vertical_tabs_path() {
+      OK : fn show_vertical_tab_panel_in_restored_windows_defaults_to_false() {
+      OK : assert!(!*settings.show_vertical_tab_panel_in_restored_windows);
+      OK : Some("appearance.vertical_tabs.show_panel_in_restored_windows")
+  [M] app/src/workspace/view.rs  -- ALL (4/4)
+      OK : TabSettingsChangedEvent::ShowVerticalTabPanelInRestoredWindows { .. } => {
+      OK : && *TabSettings::as_ref(ctx).show_vertical_tab_panel_in_restored_windows
+      OK : && *TabSettings::as_ref(ctx).use_vertical_tabs
+      OK : if FeatureFlag::VerticalTabs.is_enabled()
+  [M] app/src/workspace/view_test.rs  -- ALL (4/4)
+      OK : fn test_vertical_tabs_panel_restored_open_when_show_in_restored_windows_enabled() {
+      OK : let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+      OK : let closed_snapshot = workspace.update(&mut app, |workspace, ctx| {
+      OK : report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+  >> commit-level: ['PARTIAL', 'ALL', 'ALL', 'ALL', 'ALL']

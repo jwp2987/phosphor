@@ -6,6 +6,7 @@ use crate::ai::blocklist::inline_action::requested_script::{RequestedScriptStatu
 use crate::appearance::Appearance;
 use crate::terminal::model::ansi::SystemDetails;
 use crate::terminal::model::escape_sequences;
+use crate::terminal::model::session::SessionId;
 use crate::terminal::warpify::render;
 use crate::terminal::warpify::settings::WarpifySettings;
 use crate::ui_components::blended_colors;
@@ -511,9 +512,20 @@ impl TypedActionView for SshInstallTmuxBlock {
 
 /// If we have an "install tmux" script bundled into the app that matches the system details, then returns
 /// the script as a string. Otherwise, returns None.
+///
+/// `session_id` is substituted into the script's `_on_error` handler so the `TmuxInstallFailed`
+/// hook it emits from the remote host quotes an ID this client minted. The caller must have
+/// registered it with the owning `TerminalModel` first, or a failed install is silently dropped
+/// instead of reporting why (#532). The substitution happens here rather than at send time so
+/// that the script shown to the user in the install block is exactly the one that will run.
 #[cfg(not(test))]
 #[allow(unused_variables)]
-pub fn install_tmux_script(system: &SystemDetails, app: &AppContext) -> Option<String> {
+pub fn install_tmux_script(
+    system: &SystemDetails,
+    session_id: SessionId,
+    app: &AppContext,
+) -> Option<String> {
+    use crate::terminal::bootstrap::SESSION_ID_PLACEHOLDER;
     use asset_macro::bundled_asset;
     use warpui::assets::asset_cache::{AssetCache, AssetState};
 
@@ -538,20 +550,27 @@ pub fn install_tmux_script(system: &SystemDetails, app: &AppContext) -> Option<S
     };
 
     match AssetCache::as_ref(app).load_asset::<String>(asset_source) {
-        AssetState::Loaded { data } => Some(data.to_string()),
+        AssetState::Loaded { data } => Some(
+            data.to_string()
+                .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string()),
+        ),
         _ => panic!("install tmux script should be available as a string"),
     }
 }
 
 /// If we have an "install tmux via root" script bundled into the app that matches the system details, then returns
 /// the script as a string. Otherwise, returns None.
+///
+/// See [`install_tmux_script`] for what `session_id` is for.
 #[cfg(not(test))]
 #[allow(unused_variables)]
 pub fn install_root_tmux_script(
     system: &SystemDetails,
+    session_id: SessionId,
     app: &AppContext,
     can_run_sudo: bool,
 ) -> Option<String> {
+    use crate::terminal::bootstrap::SESSION_ID_PLACEHOLDER;
     use asset_macro::bundled_asset;
     use warpui::assets::asset_cache::{AssetCache, AssetState};
 
@@ -579,7 +598,9 @@ pub fn install_root_tmux_script(
     };
 
     let asset_source = match AssetCache::as_ref(app).load_asset::<String>(asset_source) {
-        AssetState::Loaded { data } => data.to_string(),
+        AssetState::Loaded { data } => data
+            .to_string()
+            .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string()),
         _ => panic!("install tmux script should be available as a string"),
     };
     if !can_run_sudo {
@@ -592,7 +613,11 @@ pub fn install_root_tmux_script(
 /// asset when executing a unit test
 #[cfg(test)]
 #[allow(unused_variables)]
-pub fn install_tmux_script(system: &SystemDetails, app: &AppContext) -> Option<String> {
+pub fn install_tmux_script(
+    system: &SystemDetails,
+    session_id: SessionId,
+    app: &AppContext,
+) -> Option<String> {
     None
 }
 
@@ -602,6 +627,7 @@ pub fn install_tmux_script(system: &SystemDetails, app: &AppContext) -> Option<S
 #[allow(unused_variables)]
 pub fn install_root_tmux_script(
     system: &SystemDetails,
+    session_id: SessionId,
     app: &AppContext,
     can_run_sudo: bool,
 ) -> Option<String> {

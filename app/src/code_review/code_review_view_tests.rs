@@ -363,6 +363,7 @@ fn create_loaded_state_with_editors(
             let chevron_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
             let open_in_tab_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
             let discard_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
+            let stage_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
             let add_context_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
             let copy_path_button = app.add_view(window_id, |_| ActionButton::new("", NakedTheme));
 
@@ -376,6 +377,7 @@ fn create_loaded_state_with_editors(
                     max_line_number: 0,
                     has_hidden_bidi_chars: false,
                     size: DiffSize::Normal,
+                    staged: None,
                 },
                 editor_state: Some(CodeReviewEditorState::new_loaded(editor)),
                 is_expanded: true,
@@ -384,6 +386,7 @@ fn create_loaded_state_with_editors(
                 chevron_button,
                 open_in_tab_button,
                 discard_button,
+                stage_button,
                 add_context_button,
                 copy_path_button,
             };

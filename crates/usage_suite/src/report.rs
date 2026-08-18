@@ -42,8 +42,11 @@ pub struct ScenarioReport {
     /// Number of automatic retries consumed (only meaningful for
     /// `needs-real-shell` scenarios using the `RERUN_EXIT_CODE` loop).
     pub retries: Option<u32>,
-    /// Tail of captured stderr/stdout, included only on failure to aid
-    /// triage without re-running.
+    /// Captured output for THIS scenario, included only on failure to aid
+    /// triage without re-running. For a TUI scenario this is the failing
+    /// test's own output section sliced out of the shared batch run (see
+    /// `tui_failure_detail`), not the tail of the whole batch — a batch tail
+    /// holds the runner's summary rather than the assertion that failed.
     pub failure_detail: Option<String>,
 }
 
@@ -134,6 +137,33 @@ pub fn print_ndjson(reports: &[ScenarioReport], summary: &Summary) {
     println!("{}", summary.to_json());
 }
 
+/// Lines of `detail` to show under a failing row in the human table.
+///
+/// This used to be `detail.lines().rev().take(10)` — the LAST ten lines, which
+/// for a panic is the backtrace note and the tail of whatever value was
+/// printed, never the assertion itself. A rendered-frame comparison (see
+/// `usage_tui_transcript_render`) prints ~20 lines below its panic header, so
+/// the header was always the first thing dropped. Keep both ends instead, and
+/// say how many lines were skipped so nobody reads the excerpt as the whole
+/// thing; the untruncated detail is on the scenario's NDJSON line either way.
+fn detail_lines_for_table(detail: &str) -> Vec<String> {
+    const HEAD: usize = 24;
+    const TAIL: usize = 8;
+
+    let lines: Vec<&str> = detail.lines().collect();
+    if lines.len() <= HEAD + TAIL + 1 {
+        return lines.into_iter().map(str::to_string).collect();
+    }
+
+    let skipped = lines.len() - HEAD - TAIL;
+    let mut out: Vec<String> = lines[..HEAD].iter().map(|l| (*l).to_string()).collect();
+    out.push(format!(
+        "... {skipped} more lines (full detail on this scenario's NDJSON line) ..."
+    ));
+    out.extend(lines[lines.len() - TAIL..].iter().map(|l| (*l).to_string()));
+    out
+}
+
 /// Print the human-readable table + totals line to stderr, matching the
 /// layout shown in SCOPE.md §3.
 pub fn print_human_table(reports: &[ScenarioReport], summary: &Summary) {
@@ -162,7 +192,7 @@ pub fn print_human_table(reports: &[ScenarioReport], summary: &Summary) {
         }
         if report.status == Status::Fail {
             if let Some(detail) = &report.failure_detail {
-                for line in detail.lines().rev().take(10).collect::<Vec<_>>().into_iter().rev() {
+                for line in detail_lines_for_table(detail) {
                     eprintln!("           | {line}");
                 }
             }
@@ -174,4 +204,34 @@ pub fn print_human_table(reports: &[ScenarioReport], summary: &Summary) {
         "{} total | {} passed | {} failed | {} skipped   \u{2192} EXIT {}",
         summary.total, summary.passed, summary.failed, summary.skipped, exit_code
     );
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::detail_lines_for_table;
+
+    #[test]
+    fn a_short_detail_is_shown_whole() {
+        let detail = "thread 'x' panicked\nassertion failed\n  left: a\n right: b";
+        assert_eq!(detail_lines_for_table(detail).len(), 4);
+    }
+
+    /// The panic header is the first line of a failure detail and the single
+    /// most useful one; a tail-only excerpt dropped it.
+    #[test]
+    fn a_long_detail_keeps_its_first_line_and_its_last() {
+        let mut detail = String::from("thread 'x' panicked at src/x.rs:1:1:\n");
+        for i in 0..200 {
+            detail.push_str(&format!("frame line {i}\n"));
+        }
+        detail.push_str("LAST LINE");
+
+        let shown = detail_lines_for_table(&detail);
+        let first = shown.first().expect("excerpt is never empty").as_str();
+        let last = shown.last().expect("excerpt is never empty").as_str();
+        assert_eq!(first, "thread 'x' panicked at src/x.rs:1:1:");
+        assert_eq!(last, "LAST LINE");
+        assert!(shown.iter().any(|line| line.contains("more lines")));
+        assert!(shown.len() < 40, "excerpt should stay table-sized");
+    }
 }

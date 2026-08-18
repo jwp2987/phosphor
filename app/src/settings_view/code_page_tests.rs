@@ -1,11 +1,11 @@
-//! Tests for the Code settings page, focused on the restored language-server
-//! section (LSP step 6b).
+//! Tests for the Code settings page: the restored language-server section (LSP step 6b),
+//! and the pin's remote-index failure-message predicate.
 //!
-//! The pinned oracle's `code_page_tests.rs` tests exactly one thing -- a
-//! remote-index failure-message predicate that does not exist in this fork -- so
-//! these are fork-added rather than ported.
+//! The pinned oracle's `code_page_tests.rs` tests exactly one thing -- that predicate --
+//! and it is now ported verbatim in the `remote_index_limit` module at the bottom of this
+//! file. Everything above it is fork-added.
 //!
-//! They exist because the failure mode this section is most likely to have is not
+//! The fork-added tests exist because the failure mode this section is most likely to have is not
 //! "it renders wrong", it is "it renders and reaches nothing": a page that draws a
 //! switch which never touches `PersistedWorkspace` looks identical to a working one
 //! in a screenshot. So the assertions are on the models behind the controls, plus
@@ -269,4 +269,55 @@ fn code_page_is_hidden_when_the_feature_flag_is_off() {
 
         assert!(!page.read(&app, |view, ctx| view.should_render(ctx)));
     });
+}
+
+/// The pin's `code_page_tests.rs`, ported unchanged.
+///
+/// Gated on `not(wasm)` because the predicate is: `remote_server::codebase_index_model` is
+/// declared under that cfg in `app/src/remote_server/mod.rs`, so on wasm there is no remote
+/// index state to classify.
+///
+/// **The strings are not fixtures invented for the test.** Both are emitted verbatim by this
+/// fork's own SSH daemon in `app/src/remote_server/server_model.rs` -- the limit message at
+/// `:1889`, the "did not start" message at `:1904` -- so these assert the exact pairing the
+/// wire actually produces. If the daemon's wording ever drifts from the client's substring,
+/// the limit case silently degrades to a grey "Unavailable" with no indication that the fix is
+/// to delete an index, which is the regression these two tests are here to catch.
+#[cfg(not(target_family = "wasm"))]
+mod remote_index_limit {
+    use remote_server::codebase_index_proto::{RemoteCodebaseIndexState, RemoteCodebaseIndexStatus};
+
+    // Two levels: this module sits inside `code_page`'s `mod tests`, so `super::super` is
+    // `code_page` itself, where the predicate is a private free function.
+    use super::super::remote_codebase_index_limit_reached;
+
+    fn remote_status_with_failure(failure_message: Option<&str>) -> RemoteCodebaseIndexStatus {
+        RemoteCodebaseIndexStatus {
+            repo_path: "/workspaces/repo".to_string(),
+            state: RemoteCodebaseIndexState::Unavailable,
+            last_updated_epoch_millis: Some(1),
+            progress_completed: None,
+            progress_total: None,
+            failure_message: failure_message.map(ToOwned::to_owned),
+            root_hash: None,
+        }
+    }
+
+    #[test]
+    fn remote_index_limit_failure_is_detected_from_status_message() {
+        let status = remote_status_with_failure(Some(
+            "Cannot index remote codebase because the maximum number of codebase indexes has been reached.",
+        ));
+
+        assert!(remote_codebase_index_limit_reached(&status));
+    }
+
+    #[test]
+    fn other_unavailable_failures_are_not_index_limit_failures() {
+        let status = remote_status_with_failure(Some(
+            "Cannot index remote codebase because indexing did not start.",
+        ));
+
+        assert!(!remote_codebase_index_limit_reached(&status));
+    }
 }

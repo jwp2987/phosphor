@@ -6,7 +6,7 @@ use warp::tui_export::{
     tui_agent_provider_has_connected_key,
 };
 use warp_editor::model::CoreEditorModel;
-use warpui_core::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
+use warpui_core::{AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::inline_menu::{
     MAX_INLINE_MENU_ROWS, TuiInlineMenuHeader, TuiInlineMenuListState, TuiInlineMenuRow,
@@ -22,6 +22,14 @@ const MAX_VISIBLE_ROWS: usize = result_row_capacity(MAX_INLINE_MENU_ROWS, true, 
 /// `tui_agent_provider_has_connected_key` for what "connected" means.
 const KEY_CONNECTED_SUFFIX: &str = "(key connected)";
 
+/// Row suffix marking the active execution profile's own base model -- the model this
+/// surface falls back to once the picker's ad-hoc overrides are out of the way. Mirrors
+/// the GUI picker's "default" badge. See `LLMPreferences::get_active_profile_base_model`.
+const PROFILE_DEFAULT_SUFFIX: &str = "(default)";
+
+/// Both badges on one row, in the pin's order (profile default first).
+const PROFILE_DEFAULT_AND_KEY_CONNECTED_SUFFIX: &str = "(default) (key connected)";
+
 #[derive(Debug, Clone)]
 struct TuiModelMenuRow {
     id: LLMId,
@@ -30,6 +38,10 @@ struct TuiModelMenuRow {
     /// Whether this model's provider currently has a usable, connected API key. Always `false`
     /// for non-BYOP entries (see `tui_agent_provider_has_connected_key`).
     key_connected: bool,
+    /// Whether this row is the active execution profile's base model. Distinct from the
+    /// *selected* row: the picker preselects the effective active model, which a
+    /// per-surface override or the BYOP last-used model can move off the profile default.
+    is_profile_default: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -47,6 +59,9 @@ pub(crate) struct TuiModelMenuEvent;
 pub(crate) struct TuiModelMenuModel {
     input_editor: ModelHandle<CodeEditorModel>,
     suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
+    /// The owning session surface, so model resolution asks about *this* surface
+    /// rather than the global default (see `refresh_rows`).
+    terminal_view_id: EntityId,
     state: TuiModelMenuState,
 }
 
@@ -54,6 +69,7 @@ impl TuiModelMenuModel {
     pub(crate) fn new(
         input_editor: ModelHandle<CodeEditorModel>,
         suggestions_mode: ModelHandle<TuiInputSuggestionsModeModel>,
+        terminal_view_id: EntityId,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         ctx.subscribe_to_model(&input_editor, |model, event, ctx| {
@@ -75,6 +91,7 @@ impl TuiModelMenuModel {
         Self {
             input_editor,
             suggestions_mode,
+            terminal_view_id,
             state: TuiModelMenuState::Closed,
         }
     }
@@ -82,6 +99,9 @@ impl TuiModelMenuModel {
     /// `rows` is `(id, is_selectable, key_connected)`; `key_connected` drives the
     /// "(key connected)" snapshot suffix without needing a live `AppContext` /
     /// `AgentProviderSecrets` singleton (see `refresh_rows` for the real computation).
+    /// `is_profile_default` is always `false` here for the same reason -- resolving it
+    /// needs live `LLMPreferences`, so the "(default)" badge is covered by
+    /// `model_menu_labels_the_profile_default_model` against a real session instead.
     #[cfg(test)]
     pub(crate) fn new_for_test(
         input_editor: ModelHandle<CodeEditorModel>,
@@ -97,6 +117,7 @@ impl TuiModelMenuModel {
                     id,
                     is_selectable,
                     key_connected,
+                    is_profile_default: false,
                 })
                 .collect(),
             false,
@@ -107,6 +128,7 @@ impl TuiModelMenuModel {
         Self {
             input_editor,
             suggestions_mode,
+            terminal_view_id: EntityId::new(),
             state: TuiModelMenuState::Open { list },
         }
     }
@@ -215,18 +237,7 @@ impl TuiModelMenuModel {
                 title: Some("Models".to_owned()),
                 tabs: Vec::new(),
             }),
-            rows: list
-                .rows()
-                .iter()
-                .map(|row| TuiInlineMenuRow {
-                    title: row.title.clone(),
-                    prefix: None,
-                    description: (!row.is_selectable).then(|| "disabled".to_owned()),
-                    state_suffix: row.key_connected.then(|| KEY_CONNECTED_SUFFIX.to_owned()),
-                    is_selectable: row.is_selectable,
-                    style: TuiInlineMenuRowStyle::Default,
-                })
-                .collect(),
+            rows: list.rows().iter().map(snapshot_row).collect(),
             selected_index: list.selected_index(),
             scroll_offset: list.scroll_offset(),
             scroll_anchor: list.scroll_anchor(),
@@ -243,8 +254,18 @@ impl TuiModelMenuModel {
             return;
         }
         let query = input_text(&self.input_editor, ctx);
+        let terminal_view_id = self.terminal_view_id;
         let preferences = LLMPreferences::as_ref(ctx);
-        let active_id = preferences.get_active_base_model(ctx, None).id.clone();
+        let active_id = preferences
+            .get_active_base_model(ctx, Some(terminal_view_id))
+            .id
+            .clone();
+        // The profile's *own* base model, which the effective active model above can
+        // sit off (a per-surface override or the BYOP last-used model wins over it).
+        let profile_default_id = preferences
+            .get_active_profile_base_model(ctx, Some(terminal_view_id))
+            .id
+            .clone();
         let choices = query_model_picker_choices(
             // Zap's `get_base_llm_choices_for_agent_mode` takes no `ctx` (warp/master's does).
             preferences.get_base_llm_choices_for_agent_mode(),
@@ -257,6 +278,7 @@ impl TuiModelMenuModel {
                 let is_selectable = choice.is_selectable();
                 let key_connected = tui_agent_provider_has_connected_key(ctx, &choice.llm.id);
                 TuiModelMenuRow {
+                    is_profile_default: choice.llm.id == profile_default_id,
                     id: choice.llm.id,
                     title: choice.llm.display_name,
                     is_selectable,
@@ -272,6 +294,25 @@ impl TuiModelMenuModel {
             row.is_selectable
         });
         ctx.emit(TuiModelMenuEvent);
+    }
+}
+
+/// Renders one picker row, folding both state badges into the single
+/// `state_suffix` slot the inline-menu row model provides.
+fn snapshot_row(row: &TuiModelMenuRow) -> TuiInlineMenuRow {
+    let state_suffix = match (row.is_profile_default, row.key_connected) {
+        (true, true) => Some(PROFILE_DEFAULT_AND_KEY_CONNECTED_SUFFIX.to_owned()),
+        (true, false) => Some(PROFILE_DEFAULT_SUFFIX.to_owned()),
+        (false, true) => Some(KEY_CONNECTED_SUFFIX.to_owned()),
+        (false, false) => None,
+    };
+    TuiInlineMenuRow {
+        title: row.title.clone(),
+        prefix: None,
+        description: (!row.is_selectable).then(|| "disabled".to_owned()),
+        state_suffix,
+        is_selectable: row.is_selectable,
+        style: TuiInlineMenuRowStyle::Default,
     }
 }
 

@@ -49,7 +49,6 @@ pub struct PersistedCredentials {
     #[serde(flatten)]
     credentials: StoredCredentials,
     /// The client secret for the OAuth application.
-    ///
     /// This is needed to properly refresh tokens when using DCR (Dynamic Client Registration),
     /// as the server expects the client to provide the secret when refreshing.
     client_secret: Option<String>,
@@ -63,7 +62,6 @@ pub type FileBasedPersistedCredentialsMap = HashMap<u64, PersistedCredentials>;
 
 /// A credential store that wraps [`InMemoryCredentialStore`] and persists token
 /// updates to Zap's secure storage via a channel.
-///
 /// When rmcp auto-refreshes an expired access token at runtime, the rotated
 /// tokens are only saved to the in-memory store by default. This wrapper
 /// ensures they also get written back to secure storage so they survive app
@@ -81,7 +79,6 @@ impl PersistingCredentialStore {
     /// subsequent refresh responses. If we blindly persist the new token response,
     /// the refresh token is lost and the next session (or next in-process refresh)
     /// requires a full re-auth.
-    ///
     /// When the new response omits a refresh token, carry forward the one already
     /// in the store. See: <https://datatracker.ietf.org/doc/html/rfc6749#section-6>
     async fn apply_refresh_token_carry_forward(&self, credentials: &mut StoredCredentials) {
@@ -139,11 +136,9 @@ impl CredentialStore for PersistingCredentialStore {
 
 /// Installs a [`PersistingCredentialStore`] on the given auth manager so that
 /// runtime token auto-refreshes are written back to Zap's secure storage.
-///
 /// A background tokio task is spawned to receive credential updates and persist
 /// them via the [`ModelSpawner`]. The task terminates when the auth manager (and
 /// thus the credential store's sender) is dropped.
-///
 /// Note: this store is not responsible for the initial population of credentials.
 /// Instead, the caller seeds the inner store with any existing credentials prior
 /// to installation (see [`install_persisting_credential_store`]). This store's
@@ -153,7 +148,7 @@ async fn install_persisting_credential_store(
     client_secret: Option<String>,
     spawner: ModelSpawner<TemplatableMCPServerManager>,
     installation_uuid: Uuid,
-    // NOT COMPILED -- builds are suspended. Ported from upstream `edfd4149d9`
+    // Ported from upstream `edfd4149d9`
     // ("fix(mcp): persist token_received_at so OAuth refresh fires before
     // expiry", #8863, #9460). Without a real value here, this function's own
     // seed below hardcoded `token_received_at: None` for the in-memory
@@ -182,12 +177,14 @@ async fn install_persisting_credential_store(
     if let Ok((client_id, Some(token_response))) = auth_manager.get_credentials().await {
         let _ = store
             .inner
-            .save(StoredCredentials {
+            // `StoredCredentials` is `#[non_exhaustive]` in rmcp 1.x; its
+            // constructor takes the same four fields in this order.
+            .save(StoredCredentials::new(
                 client_id,
-                token_response: Some(token_response),
-                granted_scopes: Vec::new(),
+                Some(token_response),
+                Vec::new(),
                 token_received_at,
-            })
+            ))
             .await;
     }
 
@@ -227,10 +224,8 @@ pub enum CallbackResult {
 }
 
 /// Makes an authenticated client for the given authorization server.
-///
 /// This takes in the URL of the resource to authenticate for, and uses that
 /// to determine the authorization server.
-///
 /// Upon success, returns the client and a boolean indicating whether the user was required to
 /// re-authenticate (e.g. re-log in).
 pub async fn make_authenticated_client(
@@ -272,17 +267,17 @@ pub async fn make_authenticated_client(
             // If this is a client for which we have a known client secret,
             // update our client config accordingly.
             if let Some(client_secret) = &client_secret {
-                auth_manager.configure_client(OAuthClientConfig {
-                    client_id: client_id.clone(),
-                    client_secret: Some(client_secret.clone()),
-                    scopes: vec![],
-                    redirect_uri: redirect_uri.clone(),
-                })?;
+                // `OAuthClientConfig` is `#[non_exhaustive]` in rmcp 1.x. The
+                // constructor already defaults `scopes` to empty, which is what
+                // the previous literal set.
+                auth_manager.configure_client(
+                    OAuthClientConfig::new(client_id.clone(), redirect_uri.clone())
+                        .with_client_secret(client_secret.clone()),
+                )?;
             }
 
             // GitHub does not issue refresh tokens for OAuth apps; their access tokens are valid
             // until the user explicitly revokes them.
-            //
             // As such, if we have an access token for a GitHub server, we must assume it's valid.
             if provider.as_ref().is_some_and(|p| p.issuer == GITHUB_ISSUER) {
                 return Ok((AuthClient::new(reqwest::Client::new(), auth_manager), false));
@@ -291,7 +286,6 @@ pub async fn make_authenticated_client(
             // Else, make sure we have an up-to-date access token.
             // We need to do this because our fork of rmcp does not properly detect expired tokens.
             // This is fixed in https://github.com/modelcontextprotocol/rust-sdk/pull/680
-            //
             // Install the persisting credential store before refreshing so that
             // the refresh result is automatically written back to secure storage.
             // Threading `credentials.credentials.token_received_at` through (rather than
@@ -363,11 +357,17 @@ pub async fn make_authenticated_client(
 
     // With DCR (Dynamic Client Registration), we don't pass in explicit scopes; they are specified
     // during dynamic registration.
-    //
     // For apps for which we have static client IDs (e.g. GitHub), we manually override scopes.
     let mut scopes: &[&str] = &[];
 
-    let config = match auth_manager.register_client("Phosphor", &redirect_uri).await {
+    // rmcp 1.x added a `scopes` parameter to `register_client`. Passing an
+    // empty slice preserves the previous behaviour and the intent documented
+    // just above: under DCR the scopes come from dynamic registration, not
+    // from us.
+    let config = match auth_manager
+        .register_client("Phosphor", &redirect_uri, &[])
+        .await
+    {
         Ok(config) => config,
         Err(err @ AuthError::RegistrationFailed(_)) => {
             // If we failed dynamic registration, check to see if this is an auth
@@ -387,14 +387,13 @@ pub async fn make_authenticated_client(
                 scopes = &GITHUB_OAUTH_SCOPES;
             }
 
-            OAuthClientConfig {
-                client_id: provider.client_id.into_owned(),
-                client_secret: Some(provider.client_secret.into_owned()),
-                redirect_uri: redirect_uri.clone(),
-                // This `scopes` field appears to be unused by rmcp as of 9/17/25 - we pass scopes
-                // in construction of the authorization url below.
-                scopes: vec![],
-            }
+            // `OAuthClientConfig` is `#[non_exhaustive]` in rmcp 1.x. The
+            // constructor defaults `scopes` to empty, which is what the
+            // previous literal set: that field appeared to be unused by rmcp as
+            // of 9/17/25 — we pass scopes in construction of the authorization
+            // url below.
+            OAuthClientConfig::new(provider.client_id.into_owned(), redirect_uri.clone())
+                .with_client_secret(provider.client_secret.into_owned())
         }
         Err(e) => return Err(e),
     };
@@ -403,11 +402,15 @@ pub async fn make_authenticated_client(
     auth_manager.configure_client(config)?;
 
     let auth_url = auth_manager.get_authorization_url(scopes).await?;
-    oauth_state = OAuthState::Session(AuthorizationSession {
+    // `AuthorizationSession` is `#[non_exhaustive]` in rmcp 1.x, so it can no
+    // longer be built with a struct literal. `for_scope_upgrade` is the
+    // published constructor for exactly this case — an existing manager plus a
+    // pre-computed authorization URL — and simply fills the same three fields.
+    oauth_state = OAuthState::Session(AuthorizationSession::for_scope_upgrade(
         auth_manager,
-        auth_url: auth_url.clone(),
-        redirect_uri,
-    });
+        auth_url.clone(),
+        &redirect_uri,
+    ));
 
     // Extract the CSRF token that rmcp embedded as the `state` query parameter in the
     // authorization URL. We register a csrf→uuid mapping on the manager so that
@@ -481,12 +484,13 @@ pub async fn make_authenticated_client(
     let (client_id, token_response) = oauth_state.get_credentials().await?;
     if let Some(token_response) = token_response {
         let credentials = PersistedCredentials {
-            credentials: StoredCredentials {
+            // `StoredCredentials` is `#[non_exhaustive]` in rmcp 1.x.
+            credentials: StoredCredentials::new(
                 client_id,
-                token_response: Some(token_response),
-                granted_scopes: Vec::new(),
+                Some(token_response),
+                Vec::new(),
                 token_received_at,
-            },
+            ),
             client_secret: client_secret.clone(),
         };
         spawner
@@ -514,7 +518,6 @@ pub async fn make_authenticated_client(
 
 impl TemplatableMCPServerManager {
     /// Handles an incoming OAuth callback URL.
-    ///
     /// Routes the callback to the correct in-flight OAuth flow using the `state` query
     /// parameter (the CSRF token that rmcp embedded in the authorization URL). This avoids
     /// encoding routing data in the redirect URI, keeping it RFC 6749 §3.1.2.2 compliant.

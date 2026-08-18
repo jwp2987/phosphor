@@ -10,12 +10,12 @@
 use std::time::Duration;
 
 use chrono::{Local, NaiveDateTime};
-use warp::settings::{AISettings, TuiStatuslineItem};
+use warp::settings::{AISettings, TuiStatuslineConfig, TuiStatuslineItem};
 use warp::tui_export::{GitRepoModels, GitStatusMetadata, LLMPreferences};
 use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::SingletonEntity;
 use warpui_core::elements::tui::{
-    TuiAnimated, TuiElement, TuiFlex, TuiHoverable, TuiStyle, TuiText,
+    Modifier, TuiAnimated, TuiElement, TuiFlex, TuiHoverable, TuiStyle, TuiText,
 };
 use warpui_core::{AppContext, ViewContext};
 
@@ -72,14 +72,29 @@ pub(super) enum FooterSegment {
     Vim(&'static str),
     ShellMode,
     ActiveIndicator(&'static str),
+    /// The footer's auto-approve control. This replaces the plain
+    /// `ActiveIndicator("Auto-approve")` label with the pin's clickable `▶▶`
+    /// toggle (`render_auto_approve_statusline`): it is present whenever the
+    /// item is enabled and the session is not in shell mode, and carries its
+    /// *state* in colour (muted = off, success = on) rather than by
+    /// appearing/disappearing -- otherwise there would be nothing to click
+    /// while auto-approve is off. Carries a rendered element because it owns
+    /// hover state on a retained handle.
+    AutoApproveIndicator(Box<dyn TuiElement>),
     Model(Box<dyn TuiElement>),
     WorkingDirectory(String),
     GitBranch(String),
+    /// Composite branch item (`⊢ main • ↑1 ↓2`): the branch name plus its
+    /// upstream tracking state. Carries a rendered element rather than a
+    /// string because the counts are accent-styled against a muted branch
+    /// name -- see `render_git_branch_status`.
+    GitBranchStatus(Box<dyn TuiElement>),
     /// The selected conversation's context-window usage. BYOP has no cloud
     /// credits/cost, so unlike upstream's clickable credits⇄cost toggle this
     /// wraps Phosphor's informational context-% entry (`crate::usage`).
     ContextWindowUsage(Box<dyn TuiElement>),
     GitDiff {
+        files_changed: usize,
         additions: usize,
         deletions: usize,
     },
@@ -119,10 +134,21 @@ impl FooterSegment {
             // revision of this port — see warp upstream 311deab98).
             (Self::ShellMode, Self::WorkingDirectory(_)) => " ",
             (Self::WorkingDirectory(_), Self::GitBranch(_)) => " ↬ ",
-            (Self::ActiveIndicator(_), Self::ActiveIndicator(_)) => " • ",
+            // The composite branch status owns its own `⊢` relationship glyph
+            // (see `render_git_branch_status`), so it follows the working
+            // directory with a plain space rather than this fork's `↬` marker.
+            // Matches the pin.
+            (Self::WorkingDirectory(_), Self::GitBranchStatus(_)) => " ",
+            // The auto-approve control stays in the same Figma group as the
+            // remaining plain active indicator ("Queued"), so the pairing
+            // keeps this fork's " • " rather than dropping to " | ".
             (
-                Self::WorkingDirectory(_) | Self::GitBranch(_),
-                Self::WorkingDirectory(_) | Self::GitBranch(_),
+                Self::ActiveIndicator(_) | Self::AutoApproveIndicator(_),
+                Self::ActiveIndicator(_) | Self::AutoApproveIndicator(_),
+            ) => " • ",
+            (
+                Self::WorkingDirectory(_) | Self::GitBranch(_) | Self::GitBranchStatus(_),
+                Self::WorkingDirectory(_) | Self::GitBranch(_) | Self::GitBranchStatus(_),
             )
             | (Self::DateTime(_), Self::DateTime(_))
             | (Self::ShellMode, _)
@@ -130,9 +156,11 @@ impl FooterSegment {
             (
                 Self::Vim(_)
                 | Self::ActiveIndicator(_)
+                | Self::AutoApproveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
                 | Self::GitBranch(_)
+                | Self::GitBranchStatus(_)
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. }
                 | Self::DateTime(_)
@@ -140,9 +168,11 @@ impl FooterSegment {
                 | Self::GitHubPullRequest(_),
                 Self::Vim(_)
                 | Self::ActiveIndicator(_)
+                | Self::AutoApproveIndicator(_)
                 | Self::Model(_)
                 | Self::WorkingDirectory(_)
                 | Self::GitBranch(_)
+                | Self::GitBranchStatus(_)
                 | Self::ContextWindowUsage(_)
                 | Self::GitDiff { .. }
                 | Self::DateTime(_)
@@ -198,10 +228,12 @@ pub(super) fn render_status_footer_row(
                         .finish(),
                 );
             }
-            FooterSegment::Model(model)
+            FooterSegment::AutoApproveIndicator(model)
+            | FooterSegment::Model(model)
             | FooterSegment::ContextWindowUsage(model)
             | FooterSegment::DateTime(model)
             | FooterSegment::AgentTodoList(model)
+            | FooterSegment::GitBranchStatus(model)
             | FooterSegment::GitHubPullRequest(model) => {
                 row = row.child(model);
             }
@@ -209,28 +241,24 @@ pub(super) fn render_status_footer_row(
                 row = row.child(TuiText::new(cwd).with_style(muted).truncate().finish());
             }
             FooterSegment::GitDiff {
+                files_changed,
                 additions,
                 deletions,
             } => {
+                // The file count leads and is always present, so a binary or
+                // whitespace-only change (no counted lines) still shows up.
+                let mut spans = vec![(format!("☰ {files_changed}"), muted)];
+                if additions > 0 || deletions > 0 {
+                    spans.push((" •".to_owned(), muted));
+                }
                 if additions > 0 {
-                    row = row.child(
-                        TuiText::new(format!("+{additions}"))
-                            .with_style(builder.diff_added_style())
-                            .truncate()
-                            .finish(),
-                    );
+                    spans.push((format!(" +{additions}"), builder.diff_added_style()));
                 }
                 if deletions > 0 {
-                    if additions > 0 {
-                        row = row.child(TuiText::new(" ").truncate().finish());
-                    }
-                    row = row.child(
-                        TuiText::new(format!("-{deletions}"))
-                            .with_style(builder.diff_removed_style())
-                            .truncate()
-                            .finish(),
-                    );
+                    spans.push((" ".to_owned(), muted));
+                    spans.push((format!("-{deletions}"), builder.diff_removed_style()));
                 }
+                row = row.child(TuiText::from_spans(spans).truncate().finish());
             }
         }
         if let Some(separator) = separator {
@@ -244,6 +272,56 @@ pub(super) fn render_status_footer_row(
     }
 
     row
+}
+
+/// Renders the composite branch item: `⊢ main • ↑1 ↓2`.
+///
+/// The branch name and the counts are muted; only the direction glyphs are
+/// accented, so the row reads as one unit and the arrows stay findable. The
+/// trailing group is omitted entirely when the branch has no upstream (or the
+/// counts are unavailable), leaving a bare `⊢ main`. A rebase in progress
+/// replaces both counts with `⇅` — `ahead`/`behind` are already `None` in that
+/// case (see `GitBranchTrackingStatus::ahead_display_count`), so `rebased`
+/// is checked first rather than combined with them.
+pub(super) fn render_git_branch_status(
+    branch: &str,
+    rebased: bool,
+    ahead: Option<String>,
+    behind: Option<String>,
+    builder: &TuiUiBuilder,
+) -> Box<dyn TuiElement> {
+    let muted = builder.muted_text_style();
+    let accent = builder.accent_text_style();
+    let has_ahead = ahead.is_some();
+    let has_behind = behind.is_some();
+    let mut spans = vec![(format!("⊢ {branch}"), muted)];
+    if rebased || has_ahead || has_behind {
+        spans.push((" • ".to_owned(), muted));
+    }
+    if rebased {
+        spans.push(("⇅".to_owned(), accent));
+    } else {
+        if let Some(ahead) = ahead {
+            spans.push(("↑".to_owned(), accent));
+            spans.push((
+                format!("{ahead}{}", if has_behind { " " } else { "" }),
+                muted,
+            ));
+        }
+        if let Some(behind) = behind {
+            spans.push(("↓".to_owned(), accent));
+            spans.push((behind, muted));
+        }
+    }
+    TuiText::from_spans(spans).truncate().finish()
+}
+
+/// Whether the plain `GitBranch` item should render. `GitBranchStatus` is a
+/// superset of it — same branch name, plus tracking counts — so enabling both
+/// would print the branch twice; the composite item wins.
+pub(super) fn should_render_plain_git_branch(config: &TuiStatuslineConfig) -> bool {
+    config.is_enabled(TuiStatuslineItem::GitBranch)
+        && !config.is_enabled(TuiStatuslineItem::GitBranchStatus)
 }
 
 impl TuiTerminalSessionView {
@@ -347,13 +425,15 @@ impl TuiTerminalSessionView {
                 continue;
             }
             let segment = match item {
-                TuiStatuslineItem::AutoApprove => (!shell_mode
-                    && self
-                        .conversation_selection
-                        .as_ref(ctx)
-                        .pending_query_autoexecute_override(ctx)
-                        .is_autoexecute_any_action())
-                .then_some(FooterSegment::ActiveIndicator("Auto-approve")),
+                // The footer auto-approve entry is a clickable toggle, not a
+                // presence-only label: it renders in every non-shell-mode
+                // session so it can be clicked to turn auto-approve *on*, and
+                // reports the current state through its colour instead.
+                TuiStatuslineItem::AutoApprove => (!shell_mode).then(|| {
+                    FooterSegment::AutoApproveIndicator(
+                        self.render_auto_approve_statusline(&builder, ctx),
+                    )
+                }),
                 // Zap has no persistent "auto-queue" mode (`/queue` holds a
                 // single specific prompt instead — see `TuiStatuslineItem`'s
                 // doc comment), so this indicates a queued follow-up prompt.
@@ -398,16 +478,33 @@ impl TuiTerminalSessionView {
                 TuiStatuslineItem::WorkingDirectory => self
                     .current_working_directory(ctx)
                     .map(|cwd| FooterSegment::WorkingDirectory(compact_footer_path(&cwd))),
-                TuiStatuslineItem::GitBranch => git_metadata
-                    .map(|metadata| FooterSegment::GitBranch(metadata.current_branch_name.clone())),
+                TuiStatuslineItem::GitBranch => should_render_plain_git_branch(&config)
+                    .then(|| {
+                        git_metadata.map(|metadata| {
+                            FooterSegment::GitBranch(metadata.current_branch_name.clone())
+                        })
+                    })
+                    .flatten(),
+                TuiStatuslineItem::GitBranchStatus => git_metadata.map(|metadata| {
+                    let tracking = &metadata.branch_tracking_status;
+                    FooterSegment::GitBranchStatus(render_git_branch_status(
+                        &metadata.current_branch_name,
+                        tracking.is_rebased(),
+                        tracking.ahead_display_count(),
+                        tracking.behind_display_count(),
+                        &builder,
+                    ))
+                }),
                 TuiStatuslineItem::GitDiffStatus => git_metadata.and_then(|metadata| {
                     let stats = metadata.stats_against_head;
-                    (stats.total_additions > 0 || stats.total_deletions > 0).then_some(
-                        FooterSegment::GitDiff {
-                            additions: stats.total_additions,
-                            deletions: stats.total_deletions,
-                        },
-                    )
+                    // Gated on the file count, not the line counts: a binary or
+                    // whitespace-only change has files but no counted lines and
+                    // must still be visible.
+                    (stats.files_changed > 0).then_some(FooterSegment::GitDiff {
+                        files_changed: stats.files_changed,
+                        additions: stats.total_additions,
+                        deletions: stats.total_deletions,
+                    })
                 }),
                 // Current-branch PR, resolved through the local `gh` CLI. The
                 // link is clickable: `TuiLink` keeps hover state on a retained
@@ -501,6 +598,54 @@ impl TuiTerminalSessionView {
         render_status_footer_row(FooterSegments { ordered }, &builder)
     }
 
+    /// Renders the footer's clickable auto-approve control: a `▶▶` toggle
+    /// styled success when the selected conversation's pending-query
+    /// autoexecute override approves any action and muted when it does not,
+    /// bolded while hovered. Clicking dispatches
+    /// [`TuiTerminalSessionAction::ToggleAutoApprove`] with `show_feedback:
+    /// false` -- the control itself already shows the new state, so the
+    /// transient footer confirmation the keybinding/slash-command path uses
+    /// would be redundant.
+    ///
+    /// Hover state lives on the retained `footer_auto_approve_mouse` handle so
+    /// it survives element-tree rebuilds, and stays distinct from the warping
+    /// indicator's own `warping_auto_approve_mouse`. Purely local state: the
+    /// override lives on the selected conversation, so no account or
+    /// shared-session lookup is involved.
+    pub(super) fn render_auto_approve_statusline(
+        &self,
+        builder: &TuiUiBuilder,
+        ctx: &AppContext,
+    ) -> Box<dyn TuiElement> {
+        let enabled = self
+            .conversation_selection
+            .as_ref(ctx)
+            .pending_query_autoexecute_override(ctx)
+            .is_autoexecute_any_action();
+        let hovered = self
+            .footer_auto_approve_mouse
+            .lock()
+            .is_ok_and(|state| state.is_hovered());
+        let mut style = if enabled {
+            builder.success_glyph_style()
+        } else {
+            builder.muted_text_style()
+        };
+        if hovered {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        TuiHoverable::new(
+            self.footer_auto_approve_mouse.clone(),
+            TuiText::new("▶▶").with_style(style).truncate().finish(),
+        )
+        .on_click(|event_ctx, _| {
+            event_ctx.dispatch_typed_action(TuiTerminalSessionAction::ToggleAutoApprove {
+                show_feedback: false,
+            });
+        })
+        .finish()
+    }
+
     /// Returns a brief vim mode label for the footer (NOR/INS/VIS/V-L/REP)
     /// when vim mode is enabled, or `None` when vim mode is disabled.
     pub(super) fn vim_mode_indicator(&self, ctx: &AppContext) -> Option<&'static str> {
@@ -535,16 +680,11 @@ impl TuiTerminalSessionView {
             ctx.notify();
             return;
         };
-        // Zap's git-status singleton keys on a local `&Path` (BYOP has no remote repos).
-        let local_repo_path = match &repo_path {
-            LocalOrRemotePath::Local(path) => path.clone(),
-            LocalOrRemotePath::Remote(_) => {
-                ctx.notify();
-                return;
-            }
-        };
-        match GitRepoModels::handle(ctx)
-            .update(ctx, |models, ctx| models.subscribe(&local_repo_path, ctx))
+        // The git-status singleton now keys on `LocalOrRemotePath` and serves
+        // remote repos through a push receiver, so the previous narrowing to
+        // `LocalOrRemotePath::Local` (and the early return for remote repos)
+        // is gone.
+        match GitRepoModels::handle(ctx).update(ctx, |models, ctx| models.subscribe(&repo_path, ctx))
         {
             Ok(handle) => {
                 ctx.subscribe_to_model(&handle, |_, _, _, ctx| ctx.notify());
@@ -574,10 +714,7 @@ impl TuiTerminalSessionView {
         if self.github_repo.is_some() {
             return;
         }
-        // Zap's git-status singleton keys on a local `&Path` (BYOP has no
-        // remote repos), the same narrowing `update_git_status_subscription`
-        // applies above.
-        let Some(LocalOrRemotePath::Local(repo_path)) = self.current_repo_path.clone() else {
+        let Some(repo_path) = self.current_repo_path.clone() else {
             return;
         };
         match GitRepoModels::handle(ctx).update(ctx, |models, ctx| {
@@ -595,6 +732,6 @@ impl TuiTerminalSessionView {
     }
 
     fn git_status_metadata<'a>(&self, ctx: &'a AppContext) -> Option<&'a GitStatusMetadata> {
-        self.git_repo_status.as_ref()?.as_ref(ctx).metadata()
+        self.git_repo_status.as_ref()?.as_ref(ctx).metadata(ctx)
     }
 }

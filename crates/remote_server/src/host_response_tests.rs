@@ -171,6 +171,7 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::GitCommitChain(_) => "client::git_commit_chain",
             M::GitPush(_) => "client::git_push",
             M::GitPull(_) => "client::git_pull",
+            M::GitStage(_) => "client::git_stage",
             M::GitCreatePr(_) => "client::git_create_pr",
             M::GetCommittedBranchFiles(_) => "client::get_committed_branch_files",
             M::RipgrepSearch(_) => "client::ripgrep_search",

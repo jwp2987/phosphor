@@ -537,6 +537,52 @@ impl RemoteDiffStateModel {
         );
     }
 
+    /// Stages or un-stages part of the working tree on the remote host
+    /// (Zap #329) — the SSH equivalent of
+    /// [`LocalDiffStateModel::stage_changes`](super::diff_state::LocalDiffStateModel::stage_changes).
+    ///
+    /// Fire-and-forget for the same reason as [`Self::discard_files`]: on
+    /// success the daemon pushes a fresh diff-state snapshot to every
+    /// connection subscribed to this repo, so the new staged column arrives
+    /// through the normal push path and there is nothing to apply from the RPC
+    /// response. On failure this only logs and the UI keeps showing the
+    /// pre-stage state, matching the local backend.
+    pub fn stage_changes(
+        &mut self,
+        request: super::diff_state::StageRequest,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        use super::diff_state::StageTarget;
+
+        let Some(client) = RemoteServerManager::as_ref(ctx)
+            .client_for_host(&self.remote_path.host_id)
+            .cloned()
+        else {
+            // No connected session for the host; nothing to stage against.
+            log::warn!("RemoteDiffStateModel: stage_changes has no connected session for host");
+            return;
+        };
+        let (paths, patch) = match request.target {
+            StageTarget::Paths(paths) => (paths, None),
+            StageTarget::Hunk(patch) => (Vec::new(), Some(patch)),
+        };
+        let request = proto::GitStageRequest {
+            repo_path: self.repo_path_string(),
+            paths,
+            patch,
+            reverse: request.unstage,
+            mode: Some(encode_diff_mode(&self.mode)),
+        };
+        ctx.spawn(
+            async move { client.git_stage(request).await },
+            |_me, result, _ctx| {
+                if let Err(e) = result {
+                    log::error!("RemoteDiffStateModel: stage_changes failed: {e}");
+                }
+            },
+        );
+    }
+
     /// The daemon owns metadata refresh cadence, so this is a no-op.
     pub fn set_code_review_metadata_refresh_enabled(
         &mut self,

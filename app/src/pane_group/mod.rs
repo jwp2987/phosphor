@@ -143,6 +143,7 @@ use crate::workflows::{WorkflowSelectionSource, WorkflowSource, WorkflowType};
 use crate::palette::PaletteMode;
 use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
 use crate::terminal::{TerminalManager, TerminalModel, TerminalView};
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::{
     self, CommandSearchOptions, PaneViewLocator, TabBarLocation, WorkspaceAction,
 };
@@ -709,7 +710,15 @@ pub enum Event {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabBarHoverIndex {
-    BeforeTab(usize),
+    /// Insert the dragged pane as a new tab at `index`. `group` is the tab
+    /// group the insertion lands inside, so the new tab can inherit that
+    /// group's membership. `None` for an ungrouped insertion or a group
+    /// boundary (before/after a group). This is used to differentiate a drop
+    /// right before/after a group from a drop inside the group at its boundaries.
+    BeforeTab {
+        index: usize,
+        group: Option<TabGroupId>,
+    },
     OverTab(usize),
 }
 
@@ -983,6 +992,77 @@ enum AIDocumentPaneVisibilityAction {
     Toggle,
 }
 
+/// The ambient-agent task identity a hidden child agent pane inherits from the
+/// conversation it is restored for.
+///
+/// Ported from the pin's `app/src/pane_group/child_agent/mod.rs:30`
+/// (`42effe840`). This fork has no `child_agent` submodule -- the pin's
+/// `child_agent/mod.rs` is mostly the GUI *dispatch* API, which is not ported
+/// (see [`apply_hidden_child_agent_task_context`]) -- so the one piece of it
+/// that this fork's own code paths reach lives here, next to its only caller.
+#[derive(Clone, Debug)]
+struct HiddenChildAgentTaskContext {
+    task_id: AmbientAgentTaskId,
+    working_dir: Option<PathBuf>,
+}
+
+/// Pushes a hidden child agent's ambient task identity down into that child's
+/// own `BlocklistAIController`, so the requests the child issues carry the task
+/// id (`api::ConversationData::ambient_agent_task_id`, which is what
+/// `AIRequest`'s `is_ambient_agent` gate reads) and its attachments land in the
+/// task's download directory rather than the default one.
+///
+/// Port of the pin's `child_agent::apply_hidden_child_agent_task_context`
+/// (`42effe840:app/src/pane_group/child_agent/mod.rs:58-73`), unchanged.
+///
+/// The task id is live in this fork: `AmbientAgentTaskId::new_local()`
+/// (`app/src/ai/ambient_agents/mod.rs:79`) mints one per locally spawned child
+/// agent in `prepare_local_harness_launch`
+/// (`app/src/pane_group/pane/local_harness_launch.rs:380`), and
+/// `finish_spawning_local_child_agent` stamps it onto the child conversation
+/// via `assign_run_id_for_conversation`. It survives a restart because
+/// `AIConversation`'s `task_id` *is* its `run_id` here (`run_id()` /
+/// `set_run_id`, `app/src/ai/agent/conversation.rs:1008-1025`), which is
+/// persisted -- so a restored child conversation reaches
+/// [`PaneGroup::create_hidden_child_agent_pane`] with `task_id() == Some(..)`.
+///
+/// **Deliberately not ported:** the pin also calls this from
+/// `create_hidden_child_agent_conversation` /
+/// `HiddenChildAgentConversationRequest`, the GUI dispatch API. That request
+/// carries `is_shared_session_creator`, which asks the child pane's terminal to
+/// *share its session* -- a surface this fork cut (`should_share` is hard-coded
+/// `false` at `app/src/ai/agent_sdk/mod.rs:500`, and
+/// `TerminalView::attempt_to_share_session` is a declared no-op). Porting the
+/// dispatch API to reach this helper would drag that in for no local behavior.
+/// It is also unnecessary for parity on the fork's own dispatch path: the pin's
+/// third-party-harness dispatch (`launch_local_harness_child`,
+/// `42effe840:app/src/pane_group/pane/terminal_pane.rs:1771`) passes
+/// `task_context: None`, so this fork's direct analogue
+/// (`finish_spawning_local_child_agent`) not calling this helper matches the
+/// pin exactly. Only the pin's Oz/no-harness dispatch passes a task context,
+/// and that path needs `ServerApiProvider`/`AIClient::create_agent_task`.
+fn apply_hidden_child_agent_task_context(
+    terminal_view: &ViewHandle<TerminalView>,
+    task_context: &HiddenChildAgentTaskContext,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    let task_id = task_context.task_id;
+    let working_dir = task_context.working_dir.clone();
+
+    terminal_view.update(ctx, move |terminal_view, ctx| {
+        terminal_view
+            .ai_controller()
+            .update(ctx, |controller, ctx| {
+                controller.set_ambient_agent_task_id(Some(task_id), ctx);
+                if let Some(working_dir) = working_dir.as_deref() {
+                    controller.set_attachments_download_dir(
+                        crate::ai::attachment_utils::attachments_download_dir(working_dir),
+                    );
+                }
+            });
+    });
+}
+
 impl PaneGroup {
     /// Executes the provided callback for each TerminalView contained within
     /// this pane group.
@@ -1118,7 +1198,7 @@ impl PaneGroup {
                         self.clear_hidden_closed_panes(ctx);
 
                         match tab_hover_index {
-                            TabBarHoverIndex::BeforeTab(_) => {
+                            TabBarHoverIndex::BeforeTab { .. } => {
                                 self.hide_pane_for_move(pane_id, ctx);
                             }
                             TabBarHoverIndex::OverTab(tab_idx) => {
@@ -1532,14 +1612,21 @@ impl PaneGroup {
                     .copied()
                     .collect();
 
-                let conversation_restoration = vec1::Vec1::try_from_vec(filtered_conversation_ids)
-                    .ok()
-                    .map(
-                        |conversation_ids| ConversationRestorationInNewPaneType::Startup {
-                            conversation_ids,
+                // Take the conversations out of the restore store up-front: the restoration
+                // flow needs the conversations themselves (not just their IDs) so the terminal
+                // model can be constructed with their command blocks.
+                let conversation_restoration = {
+                    let conversations = RestoredAgentConversations::handle(ctx)
+                        .update(ctx, |store, _| {
+                            store.take_conversations(&filtered_conversation_ids)
+                        });
+                    vec1::Vec1::try_from_vec(conversations).ok().map(
+                        |conversations| ConversationRestorationInNewPaneType::Startup {
+                            conversations,
                             active_conversation_id: terminal_snapshot.active_conversation_id,
                         },
-                    );
+                    )
+                };
                 let (terminal_view, terminal_manager) = PaneGroup::create_session(
                     startup_directory,
                     HashMap::new(),
@@ -2548,6 +2635,14 @@ impl PaneGroup {
     /// Child panes are excluded from snapshots; children are discovered via the
     /// `children_by_parent` index on the history model and their conversation
     /// data is taken from `RestoredAgentConversations`.
+    ///
+    /// This is the *eager* sweep, and it only runs from `new_internal` and the
+    /// loading-pane swap. Every other route back to a parent agent view --
+    /// `reattach_panes`, `replace_pane`, `restore_closed_pane`,
+    /// `add_pane_with_options`, and entering a fullscreen agent view -- goes
+    /// through [`Self::restore_missing_child_agent_panes_for_parent`] instead,
+    /// which is idempotent against this map and so composes safely with this
+    /// sweep.
     fn create_missing_child_agent_panes(&mut self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {
         let Some(terminal_pane) = self
             .pane_contents
@@ -2586,8 +2681,12 @@ impl PaneGroup {
             }
         }
 
-        // TODO(QUALITY-378): Lazily restore child conversations/panes on demand (for example, on
-        // reveal/message) instead of eagerly materializing every child pane at startup.
+        // TODO(QUALITY-378): the on-demand half of this now exists
+        // (`restore_missing_child_agent_panes_for_parent` /
+        // `ensure_hidden_child_agent_pane_for_conversation`); what remains is
+        // deleting this eager startup sweep in favour of it, which the pin has
+        // already done. Kept for now because it is the only path that runs when
+        // a restored parent never enters a fullscreen agent view.
         let created_any = !children_to_create.is_empty();
         for child_id in children_to_create {
             // Try in-memory first, then fall back to RestoredAgentConversations.
@@ -2612,6 +2711,11 @@ impl PaneGroup {
 
     /// Creates a hidden child agent pane for an existing child conversation,
     /// restoring the conversation and tracking it in `child_agent_panes`.
+    ///
+    /// A child that was spawned locally carries an `AmbientAgentTaskId` on its
+    /// conversation (see [`apply_hidden_child_agent_task_context`]); the restored
+    /// pane gets a brand-new `BlocklistAIController`, so that identity has to be
+    /// re-applied here or the restored child silently loses it.
     fn create_hidden_child_agent_pane(
         &mut self,
         child_conversation: AIConversation,
@@ -2619,10 +2723,27 @@ impl PaneGroup {
         ctx: &mut ViewContext<Self>,
     ) {
         let child_id = child_conversation.id();
+        // Snapshot the task identity before the conversation is moved into
+        // `restore_conversation_after_view_creation` below. Mirrors the pin's
+        // `create_hidden_child_agent_pane`
+        // (`42effe840:app/src/pane_group/child_agent/restoration.rs:251-259`).
+        let child_task_context =
+            child_conversation
+                .task_id()
+                .map(|task_id| HiddenChildAgentTaskContext {
+                    task_id,
+                    working_dir: child_conversation
+                        .current_working_directory()
+                        .or_else(|| child_conversation.initial_working_directory())
+                        .map(PathBuf::from),
+                });
         let new_pane_id =
             self.insert_terminal_pane_hidden_for_child_agent(parent_pane_id, HashMap::new(), ctx);
 
         match self.terminal_view_from_pane_id(new_pane_id, ctx) { Some(new_terminal_view) => {
+            if let Some(task_context) = child_task_context.as_ref() {
+                apply_hidden_child_agent_task_context(&new_terminal_view, task_context, ctx);
+            }
             new_terminal_view.update(ctx, |terminal_view, ctx| {
                 terminal_view.restore_conversation_after_view_creation(
                     RestoredAIConversation::new(child_conversation),
@@ -2643,6 +2764,216 @@ impl PaneGroup {
             log::error!("Failed to get terminal view for child agent pane {child_id:?}");
             self.discard_pane(new_pane_id.into(), ctx);
         }}
+    }
+
+    /// Returns the terminal view currently owning `conversation_id`, even if
+    /// that owner lives outside this pane group.
+    ///
+    /// Fork drift: the pin calls the backing index
+    /// `terminal_surface_id_for_conversation`; this fork still names it
+    /// `terminal_view_id_for_conversation`. Same map
+    /// (`live_conversation_ids_for_terminal_view`), same semantics -- only the
+    /// "surface" rename was never taken here.
+    fn terminal_view_id_for_owned_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<EntityId> {
+        BlocklistAIHistoryModel::as_ref(ctx).terminal_view_id_for_conversation(&conversation_id)
+    }
+
+    /// The pane in *this* group that owns `conversation_id`, if any. `None`
+    /// covers both "nobody owns it" and "the owner is in another tab".
+    fn pane_id_for_owned_conversation(
+        &self,
+        conversation_id: AIConversationId,
+        ctx: &AppContext,
+    ) -> Option<PaneId> {
+        self.terminal_view_id_for_owned_conversation(conversation_id, ctx)
+            .and_then(|terminal_view_id| self.find_pane_id_for_terminal_view(terminal_view_id, ctx))
+    }
+
+    /// True when some *other* pane (in this group or another tab) already owns
+    /// `conversation_id`. Restoration must leave those alone: materializing a
+    /// second hidden pane for a conversation that is already open somewhere
+    /// would fork its transcript.
+    fn is_conversation_owned_outside_pane(
+        &self,
+        conversation_id: AIConversationId,
+        pane_id: PaneId,
+        ctx: &AppContext,
+    ) -> bool {
+        self.terminal_view_id_for_owned_conversation(conversation_id, ctx)
+            .is_some_and(|terminal_view_id| {
+                match self.find_pane_id_for_terminal_view(terminal_view_id, ctx) {
+                    Some(owner_pane_id) => owner_pane_id != pane_id,
+                    None => true,
+                }
+            })
+    }
+
+    /// Lazily restores hidden child panes for the given parent conversation.
+    ///
+    /// Ported from the pin's
+    /// `PaneGroup::restore_missing_child_agent_panes_for_parent`
+    /// (`app/src/pane_group/child_agent/restoration.rs` at the `ORACLE.md`
+    /// pin). Unlike `create_missing_child_agent_panes` -- this fork's *eager*
+    /// startup sweep, which only ever runs from `new_internal` and the
+    /// loading-pane swap -- this runs every time a parent agent view is
+    /// actually restored or entered. That is what makes orchestration children
+    /// survive a tab restore, a pane replacement, or an undo-close, none of
+    /// which re-run the startup sweep.
+    ///
+    /// Children that already belong to some other pane or tab are left alone.
+    fn restore_missing_child_agent_panes_for_parent(
+        &mut self,
+        parent_conversation_id: AIConversationId,
+        parent_pane_id: PaneId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let child_ids = BlocklistAIHistoryModel::as_ref(ctx)
+            .child_conversation_ids_of(&parent_conversation_id)
+            .to_vec();
+
+        for child_id in child_ids {
+            if self
+                .child_agent_panes
+                .get(&child_id)
+                .is_some_and(|pane_id| self.has_pane_id(*pane_id))
+            {
+                continue;
+            }
+
+            if self.is_conversation_owned_outside_pane(child_id, parent_pane_id, ctx) {
+                continue;
+            }
+
+            // Try in-memory first, then fall back to RestoredAgentConversations.
+            let child_conversation = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&child_id)
+                .cloned()
+                .or_else(|| {
+                    RestoredAgentConversations::handle(ctx)
+                        .update(ctx, |store, _| store.take_conversation(&child_id))
+                });
+            let Some(child_conversation) = child_conversation else {
+                log::warn!("Child conversation {child_id:?} not found in memory or restored store");
+                continue;
+            };
+
+            self.create_hidden_child_agent_pane(child_conversation, parent_pane_id, ctx);
+        }
+    }
+
+    /// Restores hidden child panes if this terminal pane is already showing a
+    /// fullscreen agent view. This covers restored or replaced panes whose
+    /// terminal view entered agent view *before* pane-group attachment
+    /// finished, so the `EnteredAgentView` subscription installed by
+    /// `TerminalPane::attach` never saw the entry.
+    fn restore_missing_child_agent_panes_for_terminal_pane_if_needed(
+        &mut self,
+        pane_id: PaneId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(terminal_pane_id) = pane_id.as_terminal_pane_id() else {
+            return;
+        };
+        let Some(parent_conversation_id) = self
+            .terminal_view_from_pane_id(terminal_pane_id, ctx)
+            .and_then(|terminal_view| {
+                let terminal_view = terminal_view.as_ref(ctx);
+                let controller = terminal_view.agent_view_controller().as_ref(ctx);
+                if controller.is_fullscreen() {
+                    controller.agent_view_state().active_conversation_id()
+                } else {
+                    None
+                }
+            })
+        else {
+            return;
+        };
+
+        self.restore_missing_child_agent_panes_for_parent(
+            parent_conversation_id,
+            terminal_pane_id.into(),
+            ctx,
+        );
+    }
+
+    /// Ensures `child_conversation_id` has a hidden child pane if it still
+    /// belongs under a parent conversation in this pane group.
+    ///
+    /// Returns true if the conversation is already reachable through an
+    /// existing pane -- including one owned by a *different* tab, which this
+    /// group must not duplicate -- or if lazy restoration successfully
+    /// materialized the child pane.
+    ///
+    /// This is the navigation-time fallback for the orchestration pill bar:
+    /// after a restart the pill bar can list a child (the parent->child index
+    /// is rebuilt from SQLite) long before any pane exists for it.
+    fn ensure_hidden_child_agent_pane_for_conversation(
+        &mut self,
+        child_conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        if self
+            .child_agent_panes
+            .get(&child_conversation_id)
+            .is_some_and(|pane_id| self.has_pane_id(*pane_id))
+        {
+            return true;
+        }
+
+        // Resolve the parent from the live model first, then from the
+        // startup restore store. `resolved_parent_conversation_id_for_conversation`
+        // handles both the local `parent_conversation_id` placeholder and the
+        // `parent_agent_id` -> `agent_id_to_conversation_id` linkage.
+        let parent_conversation_id = {
+            let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+            let restored_conversations = RestoredAgentConversations::as_ref(ctx);
+            history_model
+                .conversation(&child_conversation_id)
+                .and_then(|conversation| {
+                    history_model.resolved_parent_conversation_id_for_conversation(conversation)
+                })
+                .or_else(|| {
+                    restored_conversations
+                        .get_conversation(&child_conversation_id)
+                        .and_then(|conversation| {
+                            history_model
+                                .resolved_parent_conversation_id_for_conversation(conversation)
+                        })
+                })
+        };
+
+        let Some(parent_conversation_id) = parent_conversation_id else {
+            // No parent linkage: reachable only if some pane already owns it.
+            return self
+                .terminal_view_id_for_owned_conversation(child_conversation_id, ctx)
+                .is_some();
+        };
+
+        let child_owner_terminal_view_id =
+            self.terminal_view_id_for_owned_conversation(child_conversation_id, ctx);
+        let Some(parent_pane_id) = self.pane_id_for_owned_conversation(parent_conversation_id, ctx)
+        else {
+            return child_owner_terminal_view_id.is_some();
+        };
+
+        if self.is_conversation_owned_outside_pane(child_conversation_id, parent_pane_id, ctx) {
+            return true;
+        }
+
+        self.restore_missing_child_agent_panes_for_parent(
+            parent_conversation_id,
+            parent_pane_id,
+            ctx,
+        );
+
+        self.child_agent_panes
+            .get(&child_conversation_id)
+            .is_some_and(|pane_id| self.has_pane_id(*pane_id))
+            || self.is_conversation_owned_outside_pane(child_conversation_id, parent_pane_id, ctx)
     }
 
     /// Helper that creates the initial [`PaneData`] and [`InitialFocus`] given a terminal view.
@@ -3492,17 +3823,22 @@ impl PaneGroup {
     /// Ported from the pin, with two simplifications noted where they
     /// diverge from `02b53fcd8`'s `swap_active_pane_to_conversation`:
     ///
-    /// - Target-pane resolution only tries `child_agent_panes` (this fork's
-    ///   `create_missing_child_agent_panes` populates it eagerly, see that
-    ///   function's doc comment) then a same-group `find_pane_id_for_terminal_view`
+    /// - Target-pane resolution only tries `child_agent_panes` (populated by
+    ///   `create_missing_child_agent_panes` at startup and by
+    ///   `restore_missing_child_agent_panes_for_parent` on demand -- callers
+    ///   that can race the latter go through
+    ///   `ensure_hidden_child_agent_pane_for_conversation` first) then a
+    ///   same-group `find_pane_id_for_terminal_view`
     ///   lookup. The pin also tries `find_visible_terminal_pane_for_conversation`
     ///   and `pane_id_for_conversation_owner`, neither of which exist here;
     ///   those covered visible-but-not-child-tracked panes and a
     ///   cross-group owner lookup this fork's simpler pane model doesn't
     ///   need for the pill bar's own children.
-    /// - Uses `focus_pane` instead of the pin's `focus_pane_preserving_maximized_state`
-    ///   (not ported; this fork's `focus_pane` does not special-case a
-    ///   maximized pane the way the pin's variant does).
+    /// - `focus_pane_preserving_maximized_state` IS now ported (it was not,
+    ///   originally): swapping the conversation shown inside a maximized slot
+    ///   used to silently un-maximize the group, because
+    ///   `FocusState::set_focused_pane` clears the maximized flag on every
+    ///   focus move.
     ///
     /// The revert-swap-on-reclaim behavior (if the target pane is currently
     /// swapped out, revert that swap rather than leaving it in two tree
@@ -3552,7 +3888,7 @@ impl PaneGroup {
         if let Some(replacement_id) = self.panes.replacement_pane_for_original(target_pane_id) {
             self.panes.revert_temporary_replacement(replacement_id);
             self.handle_pane_count_change(ctx);
-            self.focus_pane(target_pane_id, true, ctx);
+            self.focus_pane_preserving_maximized_state(target_pane_id, true, ctx);
             for pane_id in [replacement_id, target_pane_id] {
                 if let Some(terminal_view) = self.terminal_view_from_pane_id(pane_id, ctx) {
                     terminal_view.update(ctx, |view, ctx| {
@@ -3578,7 +3914,7 @@ impl PaneGroup {
         // If revert landed us on the target, just focus and return.
         if anchor == target_pane_id {
             self.handle_pane_count_change(ctx);
-            self.focus_pane(anchor, true, ctx);
+            self.focus_pane_preserving_maximized_state(anchor, true, ctx);
             if let Some(terminal_view) = self.terminal_view_from_pane_id(anchor, ctx) {
                 terminal_view.update(ctx, |view, ctx| {
                     view.update_agent_view_back_button_state(ctx);
@@ -3594,7 +3930,7 @@ impl PaneGroup {
             && !self.panes.is_pane_hidden(&target_pane_id)
         {
             self.handle_pane_count_change(ctx);
-            self.focus_pane(target_pane_id, true, ctx);
+            self.focus_pane_preserving_maximized_state(target_pane_id, true, ctx);
             if let Some(terminal_view) = self.terminal_view_from_pane_id(target_pane_id, ctx) {
                 terminal_view.update(ctx, |view, ctx| {
                     view.update_agent_view_back_button_state(ctx);
@@ -3615,7 +3951,7 @@ impl PaneGroup {
             return;
         }
         self.handle_pane_count_change(ctx);
-        self.focus_pane(target_pane_id, true, ctx);
+        self.focus_pane_preserving_maximized_state(target_pane_id, true, ctx);
         // Refresh the back-button label on both swapped panes; otherwise a
         // stale label would persist until the next agent-view entry.
         for pane_id in [anchor, target_pane_id] {
@@ -4192,6 +4528,16 @@ impl PaneGroup {
                 self.pane_contents.remove(&original_pane_id);
             }
 
+            // The replacement's terminal view may already be in a fullscreen
+            // agent view (it was built and restored before it joined this
+            // group), in which case nothing ever fired the `EnteredAgentView`
+            // subscription for it and its hidden child panes would never be
+            // rebuilt. See `restore_missing_child_agent_panes_for_terminal_pane_if_needed`.
+            self.restore_missing_child_agent_panes_for_terminal_pane_if_needed(
+                replacement_pane_id,
+                ctx,
+            );
+
             // Focus the replacement pane to ensure proper user interaction
             self.focus_pane_by_id(replacement_pane_id, ctx);
         } else {
@@ -4565,6 +4911,11 @@ impl PaneGroup {
                     self.cleanup_closed_pane(pane_id, ctx);
                     return false;
                 }
+
+                // A pane closed while its agent view was fullscreen comes back
+                // still fullscreen, so re-entry never fires; rebuild its hidden
+                // child panes here instead.
+                self.restore_missing_child_agent_panes_for_terminal_pane_if_needed(pane_id, ctx);
 
                 self.focus_pane_and_record_in_history(pane_id, ctx);
 
@@ -5586,6 +5937,11 @@ impl PaneGroup {
             return None;
         }
 
+        // A pane can arrive here already showing a fullscreen agent view (it
+        // was constructed and had its conversation restored before joining
+        // this group). Rebuild its hidden child panes now; nothing else will.
+        self.restore_missing_child_agent_panes_for_terminal_pane_if_needed(pane_id, ctx);
+
         if options.focus_new_pane {
             self.focus_pane_and_record_in_history(pane_id, ctx);
         }
@@ -6013,6 +6369,29 @@ impl PaneGroup {
         true
     }
 
+    /// Focuses `id` without dropping the maximized state of the pane group.
+    ///
+    /// `FocusState::set_focused_pane` clears `is_focused_pane_maximized`
+    /// whenever focus actually moves, which is right for user-driven pane
+    /// navigation but wrong for an in-place *substitution*: swapping the
+    /// visible conversation inside the maximized slot should leave the slot
+    /// maximized. Ported from the pin's `focus_pane_preserving_maximized_state`.
+    fn focus_pane_preserving_maximized_state(
+        &mut self,
+        id: PaneId,
+        focus_pane_contents: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let was_maximized = self.is_focused_pane_maximized(ctx);
+        let focused = self.focus_pane(id, focus_pane_contents, ctx);
+        if focused && was_maximized {
+            self.focus_state.update(ctx, |focus_state, ctx| {
+                focus_state.set_focused_pane_maximized(true, ctx);
+            });
+        }
+        focused
+    }
+
     fn focus_pane_and_record_in_history(
         &mut self,
         id: PaneId,
@@ -6079,9 +6458,20 @@ impl PaneGroup {
     }
 
     /// Reattach all panes to this group. This is called when a closed tab is restored.
+    ///
+    /// Each pane is also given a chance to rebuild its hidden child agent
+    /// panes: a tab that was closed while a parent agent view was fullscreen
+    /// comes back *still* fullscreen, so `TerminalPane::attach`'s freshly
+    /// installed `EnteredAgentView` subscription never fires and the children
+    /// would stay unmaterialized until the next restart.
     pub fn reattach_panes(&mut self, ctx: &mut ViewContext<Self>) {
-        for pane in self.pane_contents.values() {
+        let pane_ids = self.pane_contents.keys().copied().collect_vec();
+        for pane_id in pane_ids {
+            let Some(pane) = self.pane_contents.get(&pane_id) else {
+                continue;
+            };
             self.attach_pane(pane.as_ref(), ctx);
+            self.restore_missing_child_agent_panes_for_terminal_pane_if_needed(pane_id, ctx);
         }
     }
 
@@ -6500,6 +6890,25 @@ impl View for PaneGroup {
         };
 
         ctx
+    }
+
+    fn child_view_ids(&self, _app: &AppContext) -> Vec<EntityId> {
+        // Banners and modals owned directly by the pane group are only
+        // rendered while open, so they're usually absent from the render-time
+        // parent graph. Report them explicitly so they move with the pane
+        // group when it is transferred to another window; otherwise a later
+        // render of one of these handles in the new window would look the
+        // view up in a window that no longer holds it and panic with a
+        // "circular view reference". The per-pane views (and their backing
+        // terminal/editor views) are reached via the structural parent graph
+        // and `PaneView::child_view_ids`.
+        //
+        // Zap: the pinned oracle also lists `share_block_modal`,
+        // `share_session_modal` and `shared_session_role_change_modal` here.
+        // Those fields were physically removed along with the cloud sharing
+        // UI (see the struct definition above), so this fork owns exactly one
+        // such view.
+        vec![self.user_default_shell_changed_banner.id()]
     }
 
     fn render(&self, app: &AppContext) -> Box<dyn Element> {

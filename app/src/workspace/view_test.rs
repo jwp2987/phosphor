@@ -265,7 +265,10 @@ fn transferred_tab_workspace(
 #[cfg(feature = "local_fs")]
 fn open_worktree_sidecar(workspace: &ViewHandle<Workspace>, app: &mut App) {
     workspace.update(app, |workspace, ctx| {
-        workspace.open_new_session_dropdown_menu(Vector2F::zero(), ctx);
+        workspace.open_new_session_dropdown_menu(
+            crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+            ctx,
+        );
 
         let worktree_index = workspace
             .new_session_dropdown_menu
@@ -371,7 +374,10 @@ fn test_worktree_sidecar_pointer_entry_does_not_select_top_repo() {
         });
 
         workspace.update(&mut app, |workspace, ctx| {
-            workspace.open_new_session_dropdown_menu(Vector2F::zero(), ctx);
+            workspace.open_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+                ctx,
+            );
 
             let worktree_index = workspace
                 .new_session_dropdown_menu
@@ -560,6 +566,103 @@ fn test_open_markdown_viewer_target_preserves_requested_line() {
                     range_end: None,
                 })
             );
+        });
+    });
+}
+
+/// The pin's `PaneGroup::file_notebook_panes` accessor does not exist in this fork, and the
+/// `panes_of::<FilePane>()` it is defined in terms of is private to `pane_group`. `panes_of`
+/// iterates `pane_contents.values()` and `pane_ids` iterates `pane_contents.keys()`, and
+/// `downcast_pane_by_id` looks up the same map, so filtering `pane_ids()` by a `FilePane`
+/// downcast enumerates exactly the same panes the pin's accessor does — including panes hidden
+/// for close, which the pin's accessor also does not filter.
+#[cfg(feature = "local_fs")]
+fn file_notebook_pane_ids(pane_group: &PaneGroup) -> Vec<PaneId> {
+    pane_group
+        .pane_ids()
+        .filter(|pane_id| {
+            pane_group
+                .downcast_pane_by_id::<crate::pane_group::FilePane>(*pane_id)
+                .is_some()
+        })
+        .collect()
+}
+
+/// Opening a markdown file that is already open in a file-notebook pane must focus the existing
+/// pane rather than splitting a second copy of it in.
+///
+/// **This test is expected to FAIL on this fork**: it pins a live defect. The pin's
+/// `Workspace::open_file_notebook` starts with an "existing pane?" lookup
+/// (`file_notebook_panes(...).find(|(id, view)| !is_pane_hidden_for_close(*id) && view.path() ==
+/// Some(&path))`) and focuses that pane, returning early. This fork's `open_file_notebook`
+/// (`app/src/workspace/view.rs`) has no such lookup and constructs a `FilePane` unconditionally,
+/// so the second open splits in a duplicate pane. Do not weaken this test to make it green — the
+/// fix belongs in `open_file_notebook`.
+///
+/// Fork drift from the pin, none of it affecting what is asserted:
+/// - `file_notebook_panes` is spelled via the `file_notebook_pane_ids` helper above.
+/// - the pin's `initialize_app` registers `FileModel`; this fork's does not, so the test registers
+///   it the way the sibling file-opening tests in this module do.
+/// - this fork's `open_file_notebook` takes a `PathBuf` where the pin takes `LocalOrRemotePath`;
+///   the public `open_file_with_target` signature driven here is identical in both.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_open_file_notebook_focuses_existing_markdown_pane() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // Opening a file registers it with `FileModel` for save support.
+        app.add_singleton_model(warp_files::FileModel::new);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let markdown_path = temp_dir.path().join("README.md");
+        std::fs::write(&markdown_path, "# Test\n").expect("failed to write markdown file");
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_file_with_target(
+                markdown_path.clone(),
+                FileTarget::MarkdownViewer(EditorLayout::SplitPane),
+                None,
+                CodeSource::Link {
+                    path: markdown_path.clone(),
+                    range_start: None,
+                    range_end: None,
+                },
+                ctx,
+            );
+        });
+
+        let markdown_pane_id = workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            pane_group.update(ctx, |pane_group, ctx| {
+                let markdown_panes = file_notebook_pane_ids(pane_group);
+                assert_eq!(markdown_panes.len(), 1);
+                let pane_id = markdown_panes[0];
+
+                pane_group.add_terminal_pane(Direction::Right, None, ctx);
+                assert_ne!(pane_group.focused_pane_id(ctx), pane_id);
+
+                pane_id
+            })
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.open_file_with_target(
+                markdown_path.clone(),
+                FileTarget::MarkdownViewer(EditorLayout::SplitPane),
+                None,
+                CodeSource::Link {
+                    path: markdown_path,
+                    range_start: None,
+                    range_end: None,
+                },
+                ctx,
+            );
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(file_notebook_pane_ids(pane_group).len(), 1);
+            assert_eq!(pane_group.focused_pane_id(ctx), markdown_pane_id);
         });
     });
 }
@@ -2378,6 +2481,23 @@ fn test_vertical_tabs_panel_visibility_restores_from_window_snapshot() {
 }
 
 #[test]
+fn test_open_vertical_tabs_panel_is_idempotent() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.vertical_tabs_panel_open = false;
+            workspace.handle_action(&WorkspaceAction::OpenVerticalTabsPanel, ctx);
+            assert!(workspace.vertical_tabs_panel_open);
+
+            workspace.handle_action(&WorkspaceAction::OpenVerticalTabsPanel, ctx);
+            assert!(workspace.vertical_tabs_panel_open);
+        });
+    });
+}
+
+#[test]
 fn test_vertical_tabs_panel_restored_open_when_show_in_restored_windows_enabled() {
     let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
 
@@ -2486,6 +2606,37 @@ fn test_vertical_tabs_panel_auto_shows_when_setting_enabled() {
 }
 
 #[test]
+fn test_active_tab_bar_position_id_tracks_layout() {
+    // Cross-window drag hit-testing (`tab_bar_rects_for_window`) targets only
+    // the active tab presentation. Regression guard for the bug where the
+    // inactive horizontal bar registered as a drop zone while vertical tabs
+    // were enabled, lighting up a spurious placeholder over the top bar.
+    let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        // Horizontal tabs (setting off): the horizontal bar is the drop zone.
+        app.read(|ctx| {
+            assert_eq!(active_tab_bar_position_id(ctx), TAB_BAR_POSITION_ID);
+        });
+
+        // Vertical tabs (setting on): only the vertical panel is the drop zone,
+        // so the horizontal bar no longer registers as a cross-window target.
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+            });
+        });
+        app.read(|ctx| {
+            assert_eq!(
+                active_tab_bar_position_id(ctx),
+                VERTICAL_TABS_PANEL_POSITION_ID
+            );
+        });
+    });
+}
+
+#[test]
 fn test_toggle_tab_configs_menu_opens_vertical_tabs_panel_and_menu() {
     let _vertical_tabs_guard = FeatureFlag::VerticalTabs.override_enabled(true);
 
@@ -2547,7 +2698,11 @@ fn test_pointer_opened_tab_configs_menu_does_not_select_top_item() {
         let workspace = mock_workspace(&mut app);
 
         workspace.update(&mut app, |workspace, ctx| {
-            workspace.toggle_new_session_dropdown_menu(Vector2F::zero(), false, ctx);
+            workspace.toggle_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::Pointer(Vector2F::zero()),
+                false,
+                ctx,
+            );
 
             assert!(workspace.show_new_session_dropdown_menu.is_some());
             assert_eq!(
@@ -2556,6 +2711,55 @@ fn test_pointer_opened_tab_configs_menu_does_not_select_top_item() {
                     .read(ctx, |menu, _| menu.selected_index()),
                 None
             );
+        });
+    });
+}
+
+/// The new-session dropdown menu is sized to what's left of the window below its anchor,
+/// so a tall menu in a short window scrolls instead of overflowing off-screen.
+///
+/// Fork drift from the pin, none of it affecting what is asserted: this fork's
+/// `open_new_session_dropdown_menu` / `toggle_new_session_dropdown_menu` still carry an
+/// `is_vertical_tabs` flag that selects the menu width (the pin always renders at 268px),
+/// and `NEW_SESSION_MENU_CHROME_HEIGHT` is built from a local mirror of
+/// `crate::menu::MENU_VERTICAL_PADDING`, which is private in this fork.
+#[test]
+fn test_new_session_menu_is_capped_to_window_height() {
+    let _tab_configs_guard = FeatureFlag::TabConfigs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            let window_height = ctx
+                .windows()
+                .platform_window(ctx.window_id())
+                .expect("expected workspace window")
+                .size()
+                .y();
+
+            workspace.open_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+                ctx,
+            );
+
+            let expected_height =
+                (window_height - NEW_SESSION_MENU_WINDOW_MARGIN - NEW_SESSION_MENU_CHROME_HEIGHT)
+                    .max(NEW_SESSION_MENU_MIN_HEIGHT);
+            let menu_height = workspace.new_session_menu_max_height(
+                crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+                ctx,
+            );
+
+            assert!((menu_height - expected_height).abs() < f32::EPSILON);
+
+            workspace.open_new_session_dropdown_menu(
+                crate::workspace::action::NewSessionMenuAnchor::AddTabButton(Vector2F::zero()),
+                ctx,
+            );
+            assert!(workspace.show_new_session_dropdown_menu.is_some());
         });
     });
 }
@@ -3112,6 +3316,24 @@ fn test_close_last_vertical_tab_activates_tab_above() {
 }
 
 // ── Tab-bar traffic-light padding regressions ───────────────────────────────
+
+#[test]
+fn test_tab_bar_traffic_light_space_regression_for_resource_center_overlap() {
+    // Regression for #10139: the Resource Center/right panel can be open on
+    // Windows/Linux, but vertical-tabs and right-panel state should not decide
+    // whether the tab bar reserves space for titlebar controls.
+    let cases = [
+        (TrafficLightSide::Left, false),
+        (TrafficLightSide::Right, true),
+    ];
+
+    for (side, should_reserve_space) in cases {
+        assert_eq!(
+            should_reserve_traffic_light_space_in_tab_bar(side),
+            should_reserve_space
+        );
+    }
+}
 
 #[test]
 fn test_theme_chooser_does_not_suppress_tab_bar_traffic_light_padding() {
@@ -4948,6 +5170,708 @@ fn closing_down_to_one_tab_leaves_the_mru_order_consistent() {
 
             let remaining = workspace.tabs[0].pane_group.id();
             assert_eq!(workspace.tab_mru_order(), &[remaining]);
+        });
+    });
+}
+
+#[test]
+fn test_cross_window_drop_index_is_clamped_past_a_group() {
+    // A cross-window drop whose insertion index resolves to the middle of a
+    // group's contiguous run must be pushed past the group's last member.
+    // Landing inside wedges an ungrouped tab into the run, which
+    // `move_group_block`'s `first..=last` drain would then drag along -- and
+    // the split membership persists to disk.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            // Four tabs laid out as [ungrouped, g, g, ungrouped]: the group
+            // occupies indices 1..=2.
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 4);
+
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[1].group_id = Some(group_id);
+            workspace.tabs[2].group_id = Some(group_id);
+
+            // The group's outer edges and any index clear of the run are
+            // legitimate drop targets and must be left alone.
+            assert_eq!(workspace.clamp_past_group(0), 0, "start of the tab bar");
+            assert_eq!(
+                workspace.clamp_past_group(1),
+                1,
+                "immediately before the group's first member"
+            );
+            assert_eq!(
+                workspace.clamp_past_group(3),
+                3,
+                "immediately after the group's last member"
+            );
+            assert_eq!(
+                workspace.clamp_past_group(4),
+                4,
+                "end of the tab bar (no tab at this index)"
+            );
+
+            // Strictly inside the run: pushed past the last member.
+            assert_eq!(
+                workspace.clamp_past_group(2),
+                3,
+                "a drop between two members of the same group must not split it"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_drop_between_two_adjacent_groups_is_not_clamped() {
+    // The boundary between two different groups is a real drop target: the
+    // clamp only fires when the tabs on both sides belong to the *same* group.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 4);
+
+            // [a, a, b, b] -- index 2 is the seam between the two groups.
+            let first = TabGroup::new();
+            let first_id = first.id;
+            workspace.tab_groups.insert(first_id, first);
+            let second = TabGroup::new();
+            let second_id = second.id;
+            workspace.tab_groups.insert(second_id, second);
+            workspace.tabs[0].group_id = Some(first_id);
+            workspace.tabs[1].group_id = Some(first_id);
+            workspace.tabs[2].group_id = Some(second_id);
+            workspace.tabs[3].group_id = Some(second_id);
+
+            assert_eq!(
+                workspace.clamp_past_group(2),
+                2,
+                "the seam between two distinct groups splits neither of them"
+            );
+            // Inside either run, the clamp still fires.
+            assert_eq!(workspace.clamp_past_group(1), 2);
+            assert_eq!(workspace.clamp_past_group(3), 4);
+        });
+    });
+}
+
+/// `TabBarSlot` deliberately derives nothing (it mirrors the oracle), so tests
+/// compare a flattened shape instead: `("single", index, 1)` or
+/// `("group", first_index, run_len)`.
+fn tab_bar_slot_shape(slots: &[TabBarSlot]) -> Vec<(&'static str, usize, usize)> {
+    slots
+        .iter()
+        .map(|slot| match slot {
+            TabBarSlot::Single { index } => ("single", *index, 1),
+            TabBarSlot::Group {
+                first_index,
+                run_len,
+                ..
+            } => ("group", *first_index, *run_len),
+        })
+        .collect()
+}
+
+#[test]
+fn test_tab_bar_slots_collapse_contiguous_group_runs() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 5);
+
+            // [ungrouped, a, a, b, ungrouped]
+            let first = TabGroup::new();
+            let first_id = first.id;
+            workspace.tab_groups.insert(first_id, first);
+            let second = TabGroup::new();
+            let second_id = second.id;
+            workspace.tab_groups.insert(second_id, second);
+            workspace.tabs[1].group_id = Some(first_id);
+            workspace.tabs[2].group_id = Some(first_id);
+            workspace.tabs[3].group_id = Some(second_id);
+
+            assert_eq!(
+                tab_bar_slot_shape(&workspace.tab_bar_slots()),
+                vec![
+                    ("single", 0, 1),
+                    ("group", 1, 2),
+                    ("group", 3, 1),
+                    ("single", 4, 1),
+                ],
+                "each contiguous run of same-group tabs collapses into one slot, \
+                 and two adjacent but distinct groups stay separate"
+            );
+        });
+    });
+}
+
+/// Fencepost coverage for the slot walk both `render_tab_bar_contents` and
+/// `raw_tab_insertion_index_for_cursor` share: a group sitting at either end of
+/// the bar must still collapse to exactly one slot. A group at index 0 is the
+/// only slot that renders the tab bar's leading border (`is_first_in_bar`), and
+/// a trailing group is the one whose `first_index` the hit-test falls back to
+/// when the cursor is past every row, so both edges are load-bearing.
+#[test]
+fn test_tab_bar_slots_collapse_groups_at_both_ends_of_the_bar() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 5);
+
+            // [a, a, ungrouped, b, b]
+            let leading = TabGroup::new();
+            let leading_id = leading.id;
+            workspace.tab_groups.insert(leading_id, leading);
+            let trailing = TabGroup::new();
+            let trailing_id = trailing.id;
+            workspace.tab_groups.insert(trailing_id, trailing);
+            workspace.tabs[0].group_id = Some(leading_id);
+            workspace.tabs[1].group_id = Some(leading_id);
+            workspace.tabs[3].group_id = Some(trailing_id);
+            workspace.tabs[4].group_id = Some(trailing_id);
+
+            assert_eq!(
+                tab_bar_slot_shape(&workspace.tab_bar_slots()),
+                vec![("group", 0, 2), ("single", 2, 1), ("group", 3, 2)],
+                "a group at either edge of the bar is still one slot, and the \
+                 leading group keeps first_index 0 so it renders the bar's left border"
+            );
+        });
+    });
+}
+
+/// A collapsed group is still exactly one slot with its full `run_len`. The
+/// renderer needs the real `run_len` (it decides the group's flex weight) and
+/// the hit-test needs a single row per group regardless of collapse state, so
+/// `tab_bar_slots` must not fold collapse into the shape.
+#[test]
+fn test_tab_bar_slots_are_unaffected_by_group_collapse() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            let mut group = TabGroup::new();
+            group.collapsed = true;
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+            workspace.tabs[1].group_id = Some(group_id);
+
+            assert_eq!(
+                tab_bar_slot_shape(&workspace.tab_bar_slots()),
+                vec![("group", 0, 2), ("single", 2, 1)],
+                "collapsing a group hides its member tabs but does not change \
+                 the slot it occupies or the run length the slot reports"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_tab_bar_slots_are_all_singles_when_grouped_tabs_is_disabled() {
+    // The layout must fall back to one slot per tab when the flag is off, even
+    // though the tabs still carry `group_id` from a previous session.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(false);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+            workspace.tabs[1].group_id = Some(group_id);
+
+            assert_eq!(
+                tab_bar_slot_shape(&workspace.tab_bar_slots()),
+                vec![("single", 0, 1), ("single", 1, 1)]
+            );
+        });
+    });
+}
+
+#[test]
+fn test_tab_bar_slots_ignore_group_ids_with_no_group() {
+    // A `group_id` pointing at a group that is no longer in `tab_groups` must
+    // not produce a group slot -- rendering it would read a missing group's
+    // name and color.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            let dangling_id = TabGroup::new().id;
+            workspace.tabs[0].group_id = Some(dangling_id);
+            workspace.tabs[1].group_id = Some(dangling_id);
+
+            assert_eq!(
+                tab_bar_slot_shape(&workspace.tab_bar_slots()),
+                vec![("single", 0, 1), ("single", 1, 1)]
+            );
+        });
+    });
+}
+
+#[test]
+fn test_group_has_single_member_detects_the_sole_grouped_member() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            let sole = TabGroup::new();
+            let sole_id = sole.id;
+            workspace.tab_groups.insert(sole_id, sole);
+            let pair = TabGroup::new();
+            let pair_id = pair.id;
+            workspace.tab_groups.insert(pair_id, pair);
+            let empty_id = TabGroup::new().id;
+
+            workspace.tabs[0].group_id = Some(sole_id);
+            workspace.tabs[1].group_id = Some(pair_id);
+            workspace.tabs[2].group_id = Some(pair_id);
+
+            assert!(group_has_single_member(&workspace.tabs, sole_id));
+            assert!(!group_has_single_member(&workspace.tabs, pair_id));
+            assert!(
+                !group_has_single_member(&workspace.tabs, empty_id),
+                "a group with no members is not a sole-member group"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_opening_a_pane_tab_inside_a_group_joins_it_instead_of_splitting_it() {
+    // Opening a file / notebook / diff / image "in a new tab" from inside a
+    // tab group used to insert an *ungrouped* tab at `active_tab_index + 1`,
+    // which lands inside the group's contiguous run and splits it: the group's
+    // membership is no longer a single block, `move_group_block`'s
+    // `first..=last` drain drags the intruder along, and the broken layout is
+    // persisted. The new tab must inherit the active tab's group instead.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 4);
+
+            // [ungrouped, g, g, ungrouped], collapsed, with the active tab
+            // being the group's first member.
+            let mut group = TabGroup::new();
+            group.collapsed = true;
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[1].group_id = Some(group_id);
+            workspace.tabs[2].group_id = Some(group_id);
+            workspace.activate_tab(1, ctx);
+
+            // `AfterCurrentTab` is the default placement, so the new tab lands
+            // at index 2 -- between the group's two members.
+            let (new_idx, inherited_group_id) = workspace.new_tab_index_and_group(ctx);
+            assert_eq!(new_idx, 2);
+            assert_eq!(
+                inherited_group_id,
+                Some(group_id),
+                "a tab opened next to a grouped tab inherits that tab's group"
+            );
+
+            let pane = crate::workspace::home::create_home_pane(ctx);
+            workspace.add_tab_from_existing_pane(pane, new_idx, inherited_group_id, ctx);
+
+            assert_eq!(workspace.tab_count(), 5);
+            assert_eq!(
+                workspace.tabs[2].group_id,
+                Some(group_id),
+                "the new tab must join the group it landed inside, not split it"
+            );
+
+            // The group's run is still one contiguous block.
+            let members: Vec<usize> = workspace
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, tab)| tab.group_id == Some(group_id))
+                .map(|(idx, _)| idx)
+                .collect();
+            assert_eq!(members, vec![1, 2, 3]);
+            assert!(workspace.tabs[0].group_id.is_none());
+            assert!(workspace.tabs[4].group_id.is_none());
+
+            // Joining a collapsed group expands it so the new tab is visible.
+            assert!(!workspace.tab_groups[&group_id].collapsed);
+        });
+    });
+}
+
+#[test]
+fn test_opening_a_pane_tab_outside_a_group_stays_ungrouped() {
+    // The inverse guard: when the active tab is not in a group, nothing is
+    // inherited and the new tab stays a top-level tab.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            // Group only the last tab; the active tab stays outside it.
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[2].group_id = Some(group_id);
+            workspace.activate_tab(0, ctx);
+
+            let (new_idx, inherited_group_id) = workspace.new_tab_index_and_group(ctx);
+            assert_eq!(new_idx, 1);
+            assert_eq!(inherited_group_id, None);
+
+            let pane = crate::workspace::home::create_home_pane(ctx);
+            workspace.add_tab_from_existing_pane(pane, new_idx, inherited_group_id, ctx);
+
+            assert!(
+                workspace.tabs[1].group_id.is_none(),
+                "a tab opened outside any group must not be pulled into one"
+            );
+            assert_eq!(workspace.tabs[3].group_id, Some(group_id));
+        });
+    });
+}
+
+#[test]
+fn test_move_tab_group_hops_over_whole_neighbor_group() {
+    // `MoveTabGroupDown` moves the whole block one *slot*, where an adjacent
+    // group counts as a single slot — the moved group must never land in the
+    // middle of its neighbor.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            // Four tabs: [a0, a1] in group A, [b0, b1] in group B.
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 4);
+
+            let group_a = TabGroup::new();
+            let group_a_id = group_a.id;
+            workspace.tab_groups.insert(group_a_id, group_a);
+            let group_b = TabGroup::new();
+            let group_b_id = group_b.id;
+            workspace.tab_groups.insert(group_b_id, group_b);
+            workspace.tabs[0].group_id = Some(group_a_id);
+            workspace.tabs[1].group_id = Some(group_a_id);
+            workspace.tabs[2].group_id = Some(group_b_id);
+            workspace.tabs[3].group_id = Some(group_b_id);
+
+            let a0 = workspace.tabs[0].pane_group.id();
+            let a1 = workspace.tabs[1].pane_group.id();
+            let b0 = workspace.tabs[2].pane_group.id();
+            let b1 = workspace.tabs[3].pane_group.id();
+
+            workspace.handle_action(&WorkspaceAction::MoveTabGroupDown(group_a_id), ctx);
+
+            let order: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            assert_eq!(order, vec![b0, b1, a0, a1]);
+
+            // And back again.
+            workspace.handle_action(&WorkspaceAction::MoveTabGroupUp(group_a_id), ctx);
+            let order: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            assert_eq!(order, vec![a0, a1, b0, b1]);
+        });
+    });
+}
+
+#[test]
+fn test_can_move_tab_group_respects_list_bounds() {
+    // The first group cannot move up and the last cannot move down; the menu
+    // uses this to hide the entries rather than offer a no-op.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+
+            assert!(!workspace.can_move_tab_group(group_id, TabMovement::Left));
+            assert!(workspace.can_move_tab_group(group_id, TabMovement::Right));
+
+            workspace.handle_action(&WorkspaceAction::MoveTabGroupDown(group_id), ctx);
+
+            assert_eq!(workspace.tabs[1].group_id, Some(group_id));
+            assert!(workspace.can_move_tab_group(group_id, TabMovement::Left));
+            assert!(!workspace.can_move_tab_group(group_id, TabMovement::Right));
+        });
+    });
+}
+
+#[test]
+fn test_close_tabs_above_and_below_group_spare_the_group() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            // [t0, g1, g2, t3]
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 4);
+
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[1].group_id = Some(group_id);
+            workspace.tabs[2].group_id = Some(group_id);
+
+            let g1 = workspace.tabs[1].pane_group.id();
+            let g2 = workspace.tabs[2].pane_group.id();
+
+            workspace.handle_action(&WorkspaceAction::CloseTabsBelowGroup(group_id), ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            workspace.handle_action(&WorkspaceAction::CloseTabsAboveGroup(group_id), ctx);
+            let order: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            assert_eq!(order, vec![g1, g2]);
+            assert!(workspace.tab_groups.contains_key(&group_id));
+        });
+    });
+}
+
+#[test]
+fn test_close_tabs_outside_group_keeps_only_members() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 3);
+
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[1].group_id = Some(group_id);
+            let g1 = workspace.tabs[1].pane_group.id();
+
+            workspace.handle_action(&WorkspaceAction::CloseTabsOutsideGroup(group_id), ctx);
+
+            let order: Vec<_> = workspace
+                .tabs
+                .iter()
+                .map(|tab| tab.pane_group.id())
+                .collect();
+            assert_eq!(order, vec![g1]);
+            assert!(workspace.tab_groups.contains_key(&group_id));
+        });
+    });
+}
+
+#[test]
+fn test_toggle_tab_group_color_sets_then_clears() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let group = TabGroup::new();
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+
+            assert_eq!(workspace.tab_groups[&group_id].color, SelectedTabColor::Unset);
+
+            let color = AnsiColorIdentifier::Blue;
+            workspace.handle_action(
+                &WorkspaceAction::ToggleTabGroupColor { color, group_id },
+                ctx,
+            );
+            assert_eq!(
+                workspace.tab_groups[&group_id].color,
+                SelectedTabColor::Color(color)
+            );
+
+            // Toggling the same color off clears it rather than cycling.
+            workspace.handle_action(
+                &WorkspaceAction::ToggleTabGroupColor { color, group_id },
+                ctx,
+            );
+            assert_eq!(
+                workspace.tab_groups[&group_id].color,
+                SelectedTabColor::Cleared
+            );
+        });
+    });
+}
+
+#[test]
+fn test_rename_tab_group_seeds_editor_and_commits_on_enter() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let mut group = TabGroup::new();
+            group.name = Some("Backend".to_string());
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+
+            workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
+
+            assert!(
+                workspace
+                    .current_workspace_state
+                    .is_tab_group_being_renamed(group_id)
+            );
+            let selected_text = workspace
+                .tab_group_rename_editor
+                .read(ctx, |editor, ctx| editor.selected_text(ctx));
+            assert_eq!("Backend", selected_text);
+
+            workspace.tab_group_rename_editor.update(ctx, |editor, ctx| {
+                editor.insert_selected_text("Frontend", ctx);
+            });
+            workspace.handle_tab_group_rename_editor_event(&Event::Enter, ctx);
+
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_any_tab_group_being_renamed()
+            );
+            assert_eq!(
+                workspace.tab_groups[&group_id].name.as_deref(),
+                Some("Frontend")
+            );
+        });
+    });
+}
+
+#[test]
+fn test_cancel_tab_group_rename_keeps_the_old_name() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let mut group = TabGroup::new();
+            group.name = Some("Backend".to_string());
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+
+            workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
+            workspace.tab_group_rename_editor.update(ctx, |editor, ctx| {
+                editor.insert_selected_text("Frontend", ctx);
+            });
+            workspace.handle_tab_group_rename_editor_event(&Event::Escape, ctx);
+
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_any_tab_group_being_renamed()
+            );
+            assert_eq!(
+                workspace.tab_groups[&group_id].name.as_deref(),
+                Some("Backend")
+            );
         });
     });
 }

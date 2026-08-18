@@ -204,6 +204,9 @@ impl Sessions {
                 | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
                 | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
                 | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+                | RemoteServerManagerEvent::GitStatusPushReceived { .. }
+                | RemoteServerManagerEvent::GitHubPrInfoPushReceived { .. }
+                | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
                 | RemoteServerManagerEvent::BinaryCheckComplete { .. }
                 | RemoteServerManagerEvent::BinaryInstallComplete { .. }
                 | RemoteServerManagerEvent::ClientRequestFailed { .. }

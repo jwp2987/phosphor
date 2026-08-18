@@ -36,7 +36,6 @@ pub const PTY_TOKEN: mio::Token = mio::Token(1);
 pub const SIGNALS_TOKEN: mio::Token = mio::Token(2);
 
 /// The main event!.. loop.
-///
 /// Handles all the PTY I/O and runs the PTY parser which updates terminal
 /// state.
 pub struct EventLoop<T: local_tty::EventedPty> {
@@ -60,7 +59,6 @@ struct Writing {
 }
 
 /// All of the mutable state needed to run the event loop.
-///
 /// Contains list of items to write, current write state, etc. Anything that
 /// would otherwise be mutated on the `EventLoop` goes here.
 pub struct State {
@@ -159,7 +157,6 @@ where
     }
 
     /// Drain the channel.
-    ///
     /// Returns `false` when a shutdown message was received.
     fn drain_recv_channel(&mut self, state: &mut State) -> ChannelResult {
         while let Ok(msg) = self.rx.try_recv() {
@@ -186,10 +183,8 @@ where
 
     /// Reads from the pty into the provided buffer, using the provided state
     /// information in order to properly advance the ANSI parser.
-    ///
     /// If `writer` is `Some`, a copy of all bytes read will be written to that
     /// writer.
-    ///
     /// Returns the number of bytes read from the PTY.
     #[inline]
     #[allow(clippy::unwrap_in_result)]
@@ -258,8 +253,7 @@ where
             // (see below), so routing through it is what actually
             // guarantees delivery.
             // Upstream: e59c7a491489 "Fix dropped terminal response
-            // sequences when PTY writes block" (#11906). NOT COMPILED --
-            // builds are suspended; verified by reading only.
+            // sequences when PTY writes block" (#11906).
             let mut terminal_response_sequences = Vec::new();
             state.parser.parse_bytes(
                 terminal.deref_mut(),

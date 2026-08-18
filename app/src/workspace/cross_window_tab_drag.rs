@@ -1,29 +1,25 @@
 /// Singleton model that owns all cross-window tab drag state.
-///
 /// # Overview
-///
 /// When a user drags a tab out of a window (or drags a single-tab window), this
 /// model tracks the drag lifecycle through three phases (see [`DragPhase`]):
-/// `Floating` (preview follows the cursor), `InsertedInTarget` (tab has been
-/// handed off into another window's tab bar), and `Transitioning` (a view-tree
-/// transfer is in progress). The `Transitioning` phase blocks `on_drag` from
-/// re-entering the drag handler while views are being moved between windows,
-/// which the WarpUI framework does not support within a single event cycle.
-///
+/// `Floating` (preview follows the cursor), `GhostInTarget` (the cursor hovers
+/// a target tab bar and a lightweight ghost is drawn there, with **no** view
+/// transfer), `InsertedInTarget` (tab has actually been moved into another
+/// window's tab list, held only between `perform_handoff` and `finalize`), and
+/// `Transitioning` (a view-tree transfer is in progress). The `Transitioning`
+/// phase blocks `on_drag` from re-entering the drag handler while views are
+/// being moved between windows, which the WarpUI framework does not support
+/// within a single event cycle.
 /// # Relationship with Workspace views
-///
 /// This model is a singleton: it is not owned by any particular `Workspace`, and
 /// all cross-window coordination flows through it. Workspaces call `on_drag` /
 /// `on_drop` and inspect the returned [`DragResult`] / [`DropResult`] enums to
 /// decide what follow-up action to take (insert a tab, close a window, focus
 /// the target). This indirection avoids direct cross-workspace mutation.
-///
 /// Two drag sources are supported (see [`DragSource`]):
 ///   - **SingleTabWindow**: the source window itself acts as the floating preview.
 ///   - **MultiTabWindow**: a dedicated preview window is created for the tab.
-///
 /// # State machine – single-tab window drag
-///
 /// ```text
 /// [begin_single_tab_drag]
 ///       │
@@ -31,46 +27,46 @@
 ///   Floating ◄──────────────────┐
 ///       │                       │
 ///       │ cursor enters a       │ cursor leaves target tab bar
-///       │ target tab bar        │ (reverse_handoff moves tab back
-///       │                       │  to the preview window)
+///       │ target tab bar        │ (ghost cleared; no view transfer)
 ///       ▼                       │
-///   Transitioning ──► InsertedInTarget
-///       │                       │
-///       │                       │ on_drop while inserted
-///       │                       ▼
-///       │                  FinalizeHandoff
+///   GhostInTarget───────────────┘
 ///       │
-///       │ on_drop while floating
+///       │ on_drop → view-tree transfer → finalize
+///       ▼
+///   FinalizeHandoff  (source window closes; tab lands in target)
+///
+///       on_drop while Floating (no target)
 ///       └──────────────────► FinalizeFloatingWindow  (no target; keep window at drop position)
 /// ```
-///
 /// Because the source window IS the preview in this case, no extra preview window is
 /// created.
-///
 /// # State machine – multi-tab window drag
-///
 /// ```text
 /// [begin_multi_tab_drag]  (creates a dedicated preview window)
 ///       │
 ///       ▼
-///   Floating ◄──────────────────┐
-///       │                       │
-///       │ cursor enters a       │ cursor leaves target tab bar
-///       │ target tab bar        │ (reverse_handoff transfers tab
-///       │                       │  back into the preview window)
-///       ▼                       │
-///   Transitioning ──► InsertedInTarget
-///       │                       │
-///       │                       │ on_drop while inserted
-///       │                       ▼
-///       │                  FinalizeHandoff
-///       │                  (closes preview, removes source tab)
+///   Floating ◄──────────────────────────────────────────────────────┐
+///       │  │                                                         │
+///       │  │ cursor enters source's own tab bar                      │ cursor leaves cross-window
+///       │  │ (stays Floating; reordering_in_source=true)             │ target tab bar
+///       │  ▼                                                         │ (ghost cleared;
+///       │  DragResult::ReorderInSource (caller reorders placeholder) │  no view transfer)
+///       │  on_drop → DropInto(source) → view-tree transfer → finalize│
+///       │  ▼                                                         │
+///       │  FinalizeHandoff  (put-back; preview closes)               │
+///       │                                                            │
+///       │ cursor enters a cross-window tab bar                       │
+///       ▼                                                            │
+///   GhostInTarget───────────────────────────────────────────────────┘
 ///       │
-///       │ on_drop while floating
+///       │ on_drop → view-tree transfer → finalize
+///       ▼
+///   FinalizeHandoff  (preview closes; source loses one tab; tab lands in target)
+///
+///       on_drop while Floating (no target; not reordering_in_source)
 ///       └──────────────────► FinalizePreviewAsNewWindow  (no target; promote preview to permanent
 ///                                                        window, remove source tab)
 /// ```
-///
 /// View transfers between windows are handled by `transfer_view_tree_to_window`.
 use crate::tab::tab_position_id;
 use crate::workspace::view::{tab_bar_rects_for_window, TransferredTab, TAB_BAR_POSITION_ID};
@@ -95,7 +91,6 @@ pub(crate) struct AttachTarget {
 const TAB_BAR_HIT_MARGIN: f32 = 12.0;
 
 /// Singleton model that manages all cross-window tab drag state.
-///
 /// At most one cross-window drag is active at a time. The `active_drag` field is `Some`
 /// for the duration of the drag and is cleared on drop.
 pub struct CrossWindowTabDrag {
@@ -110,7 +105,6 @@ pub struct CrossWindowTabDrag {
     /// `TabData`s whose `pane_group` is the same `ViewHandle<PaneGroup>`,
     /// and saving the app state would insert the same `terminal_panes.uuid`
     /// twice.
-    ///
     /// Entries are added via [`register_pending_source_close`] from
     /// `finalize` and removed via [`finish_pending_source_close`] from
     /// `Workspace::on_window_closed`.
@@ -173,6 +167,13 @@ struct ActiveDrag {
     /// to constrain the ghost chip so it has the same dimensions as the
     /// source tab.
     source_element_size: Vector2F,
+    /// True while the cursor is over the source window's own tab bar during a
+    /// multi-tab drag and we are reordering the existing detached placeholder
+    /// in place instead of showing a `GhostInTarget` slot. Tracked so the
+    /// preview window's alpha is only toggled on the transition in/out of this
+    /// mode; the phase stays `Floating` throughout, which is what keeps the
+    /// gesture's shared `DraggableState` alive across a put-back.
+    reordering_in_source: bool,
     phase: DragPhase,
 }
 
@@ -205,20 +206,20 @@ impl ActiveDrag {
 }
 
 /// Tracks which phase of the drag lifecycle is currently active.
-///
 /// See the module-level doc for full state-transition diagrams.
 enum DragPhase {
     /// The preview window is floating freely, following the cursor. When the cursor
     /// enters another window's tab bar the model transitions to `GhostInTarget`
-    /// (no view-tree transfer yet). For the back-to-caller path (cursor re-enters
-    /// the source window's own tab bar during a multi-tab drag) it returns
-    /// `HandoffNeeded` to trigger a live transfer.
+    /// (no view-tree transfer yet). When the cursor re-enters the source window's
+    /// own tab bar during a multi-tab drag the phase **stays** `Floating` with
+    /// `reordering_in_source = true` and `DragResult::ReorderInSource` is
+    /// returned; the real put-back transfer is deferred to drop time so the
+    /// gesture's `DraggableState` is never cancelled mid-drag.
     Floating,
     /// The cursor is hovering over a target window's tab bar but **no view-tree
     /// transfer has occurred**. The target renders a lightweight visual ghost
     /// (insertion slot + floating chip) so the user can see where the tab will
     /// land. The real `transfer_view_tree_to_window` is deferred to drop time.
-    ///
     /// `ghost_cursor_in_target` is the cursor position in the target window's
     /// coordinate space, updated on every drag event. The target workspace reads
     /// it via `CrossWindowTabDrag::ghost_state_for_window` to position the chip.
@@ -227,17 +228,22 @@ enum DragPhase {
         target_insertion_index: usize,
         ghost_cursor_in_target: Vector2F,
     },
-    /// The tab has been transferred into another window's tab list and is being
-    /// dragged within that window's tab bar. Used only for the back-to-caller
-    /// path (multi-tab drag returning to the source window). The preview window
-    /// stays alive so a reverse-handoff can move the tab back if needed.
+    /// The tab has been transferred into another window's tab list. Entered
+    /// transiently during drop processing — between `perform_handoff` and the
+    /// subsequent `finalize` call — rather than as a long-lived drag-hover
+    /// state. `on_drag_while_inserted` and `reverse_handoff` provide an escape
+    /// hatch if a drag event arrives before `finalize` completes.
     InsertedInTarget {
         target_window_id: WindowId,
         target_insertion_index: usize,
     },
-    /// A handoff (transferring the tab into a target window) or reverse-handoff
-    /// (transferring it back to the preview window) is in progress. Set immediately
-    /// before views are moved between windows to prevent re-entrant drag processing.
+    /// A reverse-handoff is in progress: the tab is being moved back out of a
+    /// target window and into the preview window. Set by `on_drag_while_inserted`
+    /// immediately before the view-tree transfer to block re-entrant `on_drag`
+    /// processing (the WarpUI framework does not support view transfers within a
+    /// single event cycle). In the primary flow `InsertedInTarget` is held only
+    /// briefly between `perform_handoff` and `finalize`, so this state is rarely
+    /// reached.
     Transitioning,
 }
 
@@ -283,13 +289,16 @@ pub enum DragResult {
     /// This happens in the single-tab case where the source window is physically
     /// repositioned and the draggable coordinates must be corrected to match.
     AdjustDraggable { adjustment: Vector2F },
-    /// The cursor is over a target tab bar and a handoff should be initiated.
-    /// The caller must call the appropriate `execute_handoff_*` method.
-    HandoffNeeded { target: AttachTarget },
+    /// The cursor is back over the source window's own tab bar during a
+    /// multi-tab drag. Rather than a deferred ghost slot, the caller should
+    /// reorder its existing detached placeholder in place (like an in-window
+    /// reorder) and report the placeholder's new index via
+    /// [`CrossWindowTabDrag::set_source_placeholder_index`]. The real put-back
+    /// transfer still happens at drop time.
+    ReorderInSource,
 }
 
 /// Result of processing a drop event (`on_drop`).
-///
 /// Cross-workspace mutations (updating the preview/target workspace, focusing
 /// windows) are performed inside `on_drop` itself.  The returned variant only
 /// tells the **calling** workspace what to do with its own state.
@@ -379,7 +388,6 @@ impl CrossWindowTabDrag {
     /// Returns the tab index in the source window of the detached placeholder
     /// that should be hidden (rendered with 0 width / skipped in snapshots)
     /// while a cross-window drag is in progress.
-    ///
     /// Differs from [`Self::transferred_tab_index`] after a put-back handoff
     /// (`target == caller`): once the placeholder has been removed and the
     /// real tab re-inserted into the source, `source_tab_index` no longer
@@ -408,7 +416,6 @@ impl CrossWindowTabDrag {
     /// Returns the index of the detached-placeholder slot that the source
     /// window's **horizontal** tab bar should collapse to zero width, or
     /// `None` to keep every slot at full width.
-    ///
     /// The placeholder is collapsed only while the dragged tab is actually
     /// away from `window_id` — floating in the dedicated preview window, or
     /// handed off into another window. While the dragged tab has been handed
@@ -420,29 +427,14 @@ impl CrossWindowTabDrag {
     /// overlap, makes the placeholder oscillate every frame — the "fuzzy
     /// shake". The vertical tabs panel never collapses the placeholder, which
     /// is why it does not exhibit this.
-    ///
-    /// Adapted from Warp master's `collapsed_source_placeholder_index`: where
-    /// master keys the "stay full width" case off a dedicated
-    /// `reordering_in_source` flag (which stays in `Floating`), the fork
-    /// represents that back-to-caller reorder as a live handoff whose target
-    /// window IS the source window (`InsertedInTarget { target_window_id ==
-    /// source_window_id }`).
+    /// While the cursor is back over this window's own tab bar
+    /// (`reordering_in_source`) the placeholder is the live drag slot,
+    /// reordered in place exactly like an in-window drag, so it must stay full
+    /// width.
     pub fn collapsed_source_placeholder_index(&self, window_id: WindowId) -> Option<usize> {
         let drag = self.active_drag.as_ref()?;
-        if drag.source_window_id != window_id {
+        if drag.source_window_id != window_id || drag.reordering_in_source {
             return None;
-        }
-        // Back-to-caller reorder: the dragged tab has been handed back into the
-        // source window's own tab bar and is being reordered in place. The
-        // placeholder is the live drag slot, so keep it full width to avoid the
-        // "fuzzy shake".
-        if let DragPhase::InsertedInTarget {
-            target_window_id, ..
-        } = &drag.phase
-        {
-            if *target_window_id == drag.source_window_id {
-                return None;
-            }
         }
         let has_handoff = matches!(drag.phase, DragPhase::InsertedInTarget { .. });
         if drag.has_dedicated_preview_window() || has_handoff {
@@ -452,27 +444,15 @@ impl CrossWindowTabDrag {
         }
     }
 
-    /// Test-only override that drives the in-progress drag into (or out of) the
-    /// "reordering back in the source window" state, so unit tests can exercise
+    /// Test-only override of the in-progress drag's `reordering_in_source`
+    /// flag, which is otherwise only set from within `on_drag` once the cursor
+    /// re-enters the source window's tab bar. Lets unit tests exercise
     /// [`Self::collapsed_source_placeholder_index`] without driving a full
     /// multi-window drag.
-    ///
-    /// In Warp master this toggles a dedicated `reordering_in_source` flag that
-    /// stays in `Floating`; the fork instead represents a back-to-caller
-    /// reorder as a live handoff whose target IS the source window, so this
-    /// helper flips the drag phase between that `InsertedInTarget` state and
-    /// `Floating`.
     #[cfg(test)]
     pub(crate) fn set_reordering_in_source_for_test(&mut self, reordering_in_source: bool) {
         if let Some(drag) = self.active_drag.as_mut() {
-            drag.phase = if reordering_in_source {
-                DragPhase::InsertedInTarget {
-                    target_window_id: drag.source_window_id,
-                    target_insertion_index: drag.source_tab_index(),
-                }
-            } else {
-                DragPhase::Floating
-            };
+            drag.reordering_in_source = reordering_in_source;
         }
     }
 
@@ -496,7 +476,6 @@ impl CrossWindowTabDrag {
 
     /// Returns rendering data for the ghost visual in `window_id`'s tab bar,
     /// or `None` if no ghost is active for that window.
-    ///
     /// Called during rendering by the target workspace to position the
     /// floating chip overlay and insertion slot.
     pub fn ghost_state_for_window(&self, window_id: WindowId) -> Option<GhostState> {
@@ -554,6 +533,7 @@ impl CrossWindowTabDrag {
             source_placeholder_consumed: false,
             was_vertical_layout,
             source_element_size,
+            reordering_in_source: false,
             phase: DragPhase::Floating,
         });
     }
@@ -588,6 +568,7 @@ impl CrossWindowTabDrag {
             source_placeholder_consumed: false,
             was_vertical_layout,
             source_element_size,
+            reordering_in_source: false,
             phase: DragPhase::Floating,
         });
     }
@@ -599,6 +580,23 @@ impl CrossWindowTabDrag {
     pub fn mark_source_placeholder_consumed(&mut self) {
         if let Some(drag) = self.active_drag.as_mut() {
             drag.source_placeholder_consumed = true;
+        }
+    }
+
+    /// Updates the recorded index of the detached placeholder in the source
+    /// window after it has been reordered in place during a source-reorder
+    /// drag (see [`DragResult::ReorderInSource`]). Keeps `source_tab_index`
+    /// live so the drop-time put-back, `RemoveSourceTab` cleanup, and
+    /// `source_placeholder_tab_index` all operate on the placeholder's current
+    /// position rather than its original one. No-op for single-tab drags.
+    pub fn set_source_placeholder_index(&mut self, index: usize) {
+        if let Some(drag) = self.active_drag.as_mut() {
+            if let DragSource::MultiTabWindow {
+                source_tab_index, ..
+            } = &mut drag.source
+            {
+                *source_tab_index = index;
+            }
         }
     }
 
@@ -675,7 +673,6 @@ impl CrossWindowTabDrag {
 
     /// Handles a drag event while the cursor is hovering over a target window's
     /// tab bar in ghost mode — no view-tree transfer has occurred yet.
-    ///
     /// On every event this method:
     /// - Repositions the preview window to follow the cursor (so it is in the
     ///   right place if the cursor moves off the target).
@@ -937,10 +934,12 @@ impl CrossWindowTabDrag {
     }
 
     /// Handles a drag event while the tab is floating freely.
-    ///
-    /// Repositions the preview window to follow the cursor, checks whether the cursor
-    /// is now over another window's tab bar, and returns `HandoffNeeded` if the tab
-    /// should be transferred into the target.
+    /// Repositions the preview window to follow the cursor and checks whether the
+    /// cursor is now over a candidate window's tab bar (including the source's own).
+    /// If so, transitions to `GhostInTarget` and shows a lightweight ghost in that
+    /// window; the real view-tree transfer is deferred to drop time. Re-entering
+    /// the source's own tab bar during a multi-tab drag instead stays `Floating`
+    /// and returns `ReorderInSource`.
     fn on_drag_while_floating(
         &mut self,
         caller_window_id: WindowId,
@@ -963,14 +962,6 @@ impl CrossWindowTabDrag {
 
         drag.last_known_target_tab_origin_in_window = target_tab_origin_in_window;
 
-        let handoff_target = cross_window_attach_target(
-            caller_window_id,
-            drag.source_window_id,
-            drag_center_on_screen,
-            preview_window_id,
-            ctx,
-        );
-
         let new_window_origin = drag_origin_on_screen - target_tab_origin_in_window;
         let new_bounds = RectF::new(new_window_origin, drag.window_size);
         ctx.set_and_cache_window_bounds(preview_window_id, new_bounds);
@@ -988,23 +979,98 @@ impl CrossWindowTabDrag {
             }
         };
 
+        // Already reordering the detached placeholder in the source window: use
+        // a direct, z-order-independent stay-check instead of
+        // `cross_window_attach_target` (which only finds windows *behind* the
+        // preview). This lets the source stay focused and in front — required
+        // when returning from another window that was raised over it — without
+        // flip-flopping the preview's visibility.
+        if drag.reordering_in_source {
+            let source_window_id = drag.source_window_id;
+            let still_over_source = ctx
+                .window_bounds(&source_window_id)
+                .map(|wb| {
+                    tab_bar_rects_for_window(source_window_id, ctx)
+                        .into_iter()
+                        .any(|tb| {
+                            let on_screen = RectF::new(
+                                vec2f(wb.min_x() + tb.min_x(), wb.min_y() + tb.min_y()),
+                                tb.size(),
+                            );
+                            expanded_rect(on_screen, TAB_BAR_HIT_MARGIN)
+                                .contains_point(drag_center_on_screen)
+                        })
+                })
+                .unwrap_or(false);
+            if still_over_source {
+                return DragResult::ReorderInSource;
+            }
+            // Cursor left the source's tab bar — restore the preview to the
+            // foreground and exit source-reorder before resolving a new target.
+            drag.reordering_in_source = false;
+            ctx.windows().set_window_alpha(preview_window_id, 1.0);
+            ctx.windows().show_window_and_focus_app(preview_window_id);
+        }
+
+        let handoff_target = cross_window_attach_target(
+            caller_window_id,
+            drag.source_window_id,
+            drag_center_on_screen,
+            preview_window_id,
+            ctx,
+        );
+
         if let Some(target) = handoff_target {
             let Some(drag) = self.active_drag.as_mut() else {
                 return drag_result;
             };
 
-            // Back-to-caller path: cursor returned to the source window's own
-            // tab bar during a multi-tab drag. This requires a live handoff
-            // since the tab needs to be physically re-inserted into the source.
-            if target.window_id == caller_window_id {
+            // Re-entering the source window's own tab bar during a multi-tab
+            // drag: instead of a deferred ghost slot (which would sit on top of
+            // the still-present detached placeholder and show as a second
+            // slot), reuse that placeholder and let the source reorder it in
+            // place like an in-window drag. The real put-back transfer is still
+            // deferred to drop. Skip once a prior put-back already consumed the
+            // placeholder.
+            //
+            // Crucially this does NOT run a live `transfer_view_tree_to_window`
+            // into the source: doing so meant that leaving the source again went
+            // through `reverse_handoff`, which calls `cancel_drag()` on the
+            // gesture's shared `DraggableState` and orphans the whole drag.
+            let is_source_reorder = target.window_id == drag.source_window_id
+                && drag.has_dedicated_preview_window()
+                && !drag.source_placeholder_consumed;
+
+            if is_source_reorder {
+                // Entry into source-reorder. `reordering_in_source` is false
+                // here — a true value would have returned via the stay-check
+                // above. Raise the source to the foreground and focus it so the
+                // in-window reorder is visible and active (important when
+                // returning from another window that was raised over it), then
+                // hide the preview. Raising the source above the preview is
+                // safe: subsequent frames use the z-order-independent stay-check
+                // above, and the drop is resolved directly from
+                // `reordering_in_source` (see `on_drop`), so nothing here
+                // depends on the source staying behind the preview.
+                drag.reordering_in_source = true;
                 log::info!(
-                    "tab_drag: on_drag_while_floating -> HandoffNeeded (back-to-caller) target_wid={} insertion_index={} caller_wid={caller_window_id} (phase Floating->Transitioning)",
-                    target.window_id,
-                    target.insertion_index
+                    "tab_drag: on_drag_while_floating -> ReorderInSource source_wid={} (reuse detached placeholder)",
+                    target.window_id
                 );
-                drag.phase = DragPhase::Transitioning;
-                return DragResult::HandoffNeeded { target };
+                ctx.windows().show_window_and_focus_app(target.window_id);
+                ctx.windows().set_window_alpha(preview_window_id, 0.0);
+                if let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(target.window_id, ctx) {
+                    ws.update(ctx, |_, ctx| ctx.notify());
+                }
+                // The caller reorders the placeholder and reports its new index
+                // via `set_source_placeholder_index`.
+                return DragResult::ReorderInSource;
             }
+
+            // A real cross-window target: leaving any prior source-reorder
+            // mode. Clear the flag; the GhostInTarget alpha handling below keeps
+            // the preview hidden either way.
+            drag.reordering_in_source = false;
 
             // Cross-window target: enter GhostInTarget — show a cheap visual
             // in the target without any view-tree transfer. The real
@@ -1030,14 +1096,12 @@ impl CrossWindowTabDrag {
             // window so it isn't visible during the hover. The real view-tree
             // transfer is still deferred to drop time — hiding is independent
             // of that.
-            //
             // Use `set_window_alpha(0.0)` instead of `hide_window`: the latter
             // calls `[NSWindow orderOut:]` and runs the `PreviousStateHelper`
             // app-activation dance, which is heavy enough to noticeably stall
             // the drag on entry into a target window. `setAlphaValue:` leaves
             // the window in the window list, key/focus state, and z-order
             // unchanged, so this is essentially free.
-            //
             // The preview's alpha is restored in `on_drag_while_ghost` (cursor
             // leaves) and in the `GhostInTarget` failsafe branch of `finalize`.
             ctx.windows().show_window_and_focus_app(target.window_id);
@@ -1055,7 +1119,6 @@ impl CrossWindowTabDrag {
     }
 
     /// Entry point for a mouse-up / drop event.
-    ///
     /// If the drag is `Floating` with a dedicated preview, one last
     /// attach-target resolution is attempted against the most recent cursor
     /// position; if a target is found, returns `DropResult::DropInto` and
@@ -1080,6 +1143,26 @@ impl CrossWindowTabDrag {
                 };
                 log::info!(
                     "tab_drag: on_drop GhostInTarget -> DropResult::DropInto target_wid={} insertion_index={}",
+                    target.window_id,
+                    target.insertion_index
+                );
+                return DropResult::DropInto { target };
+            }
+        }
+
+        // Source-reorder drop: the detached placeholder is already positioned
+        // in the source, so put the real tab back exactly where it sits.
+        // Resolved directly from `reordering_in_source` (not
+        // `cross_window_attach_target`) so it still works now that the source
+        // is focused and in front of the preview.
+        if let Some(drag) = self.active_drag.as_ref() {
+            if drag.reordering_in_source {
+                let target = AttachTarget {
+                    window_id: drag.source_window_id,
+                    insertion_index: drag.source_tab_index(),
+                };
+                log::info!(
+                    "tab_drag: on_drop ReorderInSource -> DropResult::DropInto target_wid={} insertion_index={}",
                     target.window_id,
                     target.insertion_index
                 );
@@ -1160,7 +1243,6 @@ impl CrossWindowTabDrag {
     /// flag, performs cross-workspace updates (preview/target workspace
     /// mutations, window focus), and returns a `DropResult` that tells the
     /// **calling** workspace what source-side cleanup is needed.
-    ///
     /// Callers that received `DropResult::DropInto` from `on_drop` must invoke
     /// this after running `perform_handoff`.
     pub fn finalize(&mut self, ctx: &mut ModelContext<Self>) -> DropResult {
@@ -1273,7 +1355,6 @@ impl CrossWindowTabDrag {
     /// Resolves a `Floating` drop with a dedicated preview. Branches on
     /// whether a prior put-back handoff has already committed the tab back
     /// into the source (`source_placeholder_consumed`):
-    ///
     /// - **Consumed**: the source already owns the tab; the preview window
     ///   still carries a stale `TabData` pointing at the same pane group
     ///   (inserted by the last `reverse_handoff`). Close the preview and
@@ -1315,7 +1396,7 @@ impl CrossWindowTabDrag {
         // called `remove_tab_without_undo` on it unconditionally, tearing out
         // a bystander tab or panicking once the index was stale. Bail with
         // `NoOp` instead so there is nothing left keyed on a workspace that no
-        // longer exists. NOT COMPILED -- builds are suspended; verified by
+        // longer exists. ; verified by
         // reading only.
         let Some(ws) = WorkspaceRegistry::as_ref(ctx).get(preview_window_id, ctx) else {
             log::warn!(
@@ -1429,7 +1510,6 @@ impl CrossWindowTabDrag {
     }
 
     /// Hands off a single-tab drag to another window.
-    ///
     /// Transfers the pane group tree from the source (caller) window into the target,
     /// inserts the tab at the target index, hides the source window, and transitions
     /// the phase to `InsertedInTarget`.
@@ -1483,7 +1563,6 @@ impl CrossWindowTabDrag {
     }
 
     /// Hands off a multi-tab drag back to the caller's own window.
-    ///
     /// Retrieves the tab from the preview window, transfers the pane group tree
     /// back to the caller window, hides the preview (kept alive for a potential
     /// `reverse_handoff` if the user drags out again), and transitions to
@@ -1560,7 +1639,6 @@ impl CrossWindowTabDrag {
     }
 
     /// Hands off a multi-tab drag to a different (non-caller) window.
-    ///
     /// Retrieves the tab from the preview window, transfers the pane group tree
     /// into the target, inserts the tab, hides the preview, and transitions to
     /// `InsertedInTarget`.
@@ -1641,7 +1719,6 @@ impl CrossWindowTabDrag {
     }
 
     /// Reverses a handoff: moves the tab back from the target window into the preview window.
-    ///
     /// Called when the cursor leaves the target tab bar while in `InsertedInTarget`. Extracts
     /// the tab from the target, transfers the view tree back to the preview, removes the tab
     /// from the target, and transitions back to `Floating`.
@@ -1744,13 +1821,11 @@ impl CrossWindowTabDrag {
 }
 
 /// Finds the best attach target for a dragged tab.
-///
 /// Walks the z-ordered window list behind the preview and returns the first
 /// window whose tab bar (expanded by `TAB_BAR_HIT_MARGIN`) contains the
 /// cursor. Iterates all z-behind windows rather than short-circuiting on the
 /// topmost window that contains the cursor, since a lower window's tab bar
 /// can still be exposed where the cursor sits.
-///
 /// When the preview isn't in the ordered list (single-tab case), falls back
 /// to scanning the source window and all other workspaces, picking the tab
 /// bar whose center is closest to the cursor.

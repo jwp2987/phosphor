@@ -20,8 +20,10 @@ use crate::safe_info;
 use crate::terminal::local_tty::{shell::ShellStarter, PtyOptions};
 
 const HONOR_PS1_NAME: &str = "WARP_HONOR_PS1";
+const PROMPT_NODE_VERSION_ENABLED_NAME: &str = "WARP_PROMPT_NODE_VERSION_ENABLED";
 const INITIAL_WORKING_DIR_NAME: &str = "WARP_INITIAL_WORKING_DIR";
 const USE_SSH_WRAPPER_NAME: &str = "WARP_USE_SSH_WRAPPER";
+const SSH_REUSE_CONTROL_MASTER_NAME: &str = "WARP_SSH_REUSE_CONTROL_MASTER";
 const SHELL_DEBUG_MODE_NAME: &str = "WARP_SHELL_DEBUG_MODE";
 const TERM_PROGRAM_NAME: &str = "TERM_PROGRAM";
 const IS_LOCAL_SESSION_NAME: &str = "WARP_IS_LOCAL_SHELL_SESSION";
@@ -62,6 +64,19 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
         },
     );
 
+    // Gate the shell's per-prompt `node --version` detection on whether the
+    // Node.js Version chip is enabled. The bootstrap treats any value other
+    // than "0" as enabled.
+    env.insert(
+        map_key(PROMPT_NODE_VERSION_ENABLED_NAME.into()),
+        EnvEntry {
+            preferred_key: PROMPT_NODE_VERSION_ENABLED_NAME.into(),
+            value: (options.node_version_chip_enabled as usize)
+                .to_string()
+                .into(),
+        },
+    );
+
     if let Some(start_dir) = &options.start_dir {
         env.insert(
             map_key(INITIAL_WORKING_DIR_NAME.into()),
@@ -76,6 +91,15 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
         EnvEntry {
             preferred_key: USE_SSH_WRAPPER_NAME.into(),
             value: (options.enable_ssh_wrapper as usize).to_string().into(),
+        },
+    );
+    env.insert(
+        map_key(SSH_REUSE_CONTROL_MASTER_NAME.into()),
+        EnvEntry {
+            preferred_key: SSH_REUSE_CONTROL_MASTER_NAME.into(),
+            value: (options.reuse_ssh_control_master as usize)
+                .to_string()
+                .into(),
         },
     );
     env.insert(
@@ -192,16 +216,13 @@ pub(super) fn get_shell_environment_variables(options: &PtyOptions) -> Vec<u16> 
 /// for more on how WSLENV should be formatted.
 ///
 /// Ported from Warp (`app/src/terminal/local_tty/windows/environment.rs`,
-/// `wsl_env_allowlist`). Warp's list also forwards
-/// `WARP_SSH_REUSE_CONTROL_MASTER` and `WARP_PROMPT_NODE_VERSION_ENABLED`;
-/// this fork hasn't ported the SSH control-master-reuse setting or the
-/// Node.js Version prompt chip yet (no `PtyOptions` field backs either var),
-/// so there's nothing to forward for them. Add both here once those features
-/// land — see the tracking issue referenced from this file's port commit.
+/// `wsl_env_allowlist`). The entry order matches Warp's, so keep new entries in
+/// the same position the oracle puts them.
 fn wsl_env_allowlist(include_initial_working_dir: bool) -> OsString {
     let mut entries = vec![
         format!("{HONOR_PS1_NAME}/u"),
         format!("{USE_SSH_WRAPPER_NAME}/u"),
+        format!("{SSH_REUSE_CONTROL_MASTER_NAME}/u"),
         format!("{SHELL_DEBUG_MODE_NAME}/u"),
         format!("{TERM_PROGRAM_NAME}/u"),
         format!("{IS_LOCAL_SESSION_NAME}/u"),
@@ -209,6 +230,7 @@ fn wsl_env_allowlist(include_initial_working_dir: bool) -> OsString {
         format!("{WARP_CLIENT_VERSION_ENV}/u"),
         format!("{TERMINAL_SESSION_UUID_ENV}/u"),
         format!("{FOCUS_URL_ENV}/u"),
+        format!("{PROMPT_NODE_VERSION_ENABLED_NAME}/u"),
     ];
 
     if FeatureFlag::HOANotifications.is_enabled() {
@@ -305,6 +327,15 @@ fn add_user_env(env: &mut BTreeMap<OsString, EnvEntry>) {
 }
 
 fn reg_value_to_string(value: &RegValue, key: &str) -> anyhow::Result<OsString> {
+    // Only REG_SZ and REG_EXPAND_SZ are valid for environment variables.
+    // https://github.com/microsoft/terminal/blob/1ba28b298f677d838c3a2e457a8a1f569bff6299/src/inc/til/env.h#L247-L259
+    if value.vtype != RegType::REG_SZ && value.vtype != RegType::REG_EXPAND_SZ {
+        anyhow::bail!(
+            "Unsupported registry type {:?} for env var {key:?}",
+            value.vtype
+        );
+    }
+
     let key_lower = key.to_ascii_lowercase();
     // RegType::REG_EXPAND_SZ requires expansion of nested env vars, e.g. %USERPROFILE%\AppData to
     // C:\Users\andy\AppData
@@ -337,7 +368,13 @@ fn reg_value_to_string(value: &RegValue, key: &str) -> anyhow::Result<OsString> 
     };
 
     // These are null-terminated, but we don't want the terminator here. We add it back later.
-    os_str.map(|v| v.to_string_lossy().trim_end_matches('\0').into())
+    os_str.map(|v| {
+        let s = v.to_string_lossy();
+        match s.find('\0') {
+            Some(pos) => s[..pos].into(),
+            None => v,
+        }
+    })
 }
 
 /// Best-effort lowercase transformation of an OsString.

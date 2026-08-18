@@ -479,6 +479,15 @@ define_settings_group!(TabSettings, settings: [
         toml_path: "appearance.tabs.preserve_active_tab_color",
         description: "Whether to preserve the active tab's color when switching tabs.",
     },
+    enable_tab_groups: EnableTabGroups {
+        type: bool,
+        default: true,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "appearance.tabs.enable_tab_groups",
+        description: "Whether tabs can be collected into named, collapsible tab groups.",
+    },
     use_vertical_tabs: UseVerticalTabs {
         type: bool,
         default: false,

@@ -31,8 +31,8 @@ use crate::ai::agent::api::{self, ServerConversationToken};
 use crate::ai::agent::conversation::{AIConversation, ConversationStatus};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
-    AIAgentActionResult, CancellationReason, PassiveSuggestionResultType, PassiveSuggestionTrigger,
-    PassiveSuggestionTriggerType, RunningCommand,
+    AIAgentActionResult, CancellationOutcome, CancellationReason, PassiveSuggestionResultType,
+    PassiveSuggestionTrigger, PassiveSuggestionTriggerType, RunningCommand,
 };
 use crate::ai::agent::{DocumentContentAttachmentSource, FileContext};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
@@ -566,10 +566,17 @@ impl BlocklistAIController {
                 });
             let has_manual_follow_up = me.pending_passive_follow_ups.contains(conversation_id);
 
-            let is_lrc_command_completed =
-                cancellation_reason.is_some_and(|reason| reason.is_lrc_command_completed());
+            // A `Succeeded` cancellation (an optimistic long-running-command
+            // completion or a revert) is itself the terminal result, so it neither
+            // triggers a follow-up nor counts as a cancellation. Derived from
+            // `CancellationReason::conversation_outcome`, the single source of truth
+            // for the reason -> status mapping, rather than re-tested per reason.
+            let treat_as_success = matches!(
+                cancellation_reason.map(|reason| reason.conversation_outcome()),
+                Some(CancellationOutcome::Succeeded)
+            );
             let should_trigger_follow_up_request = (!is_passive_code_diff
-                && !is_lrc_command_completed
+                && !treat_as_success
                 && finished_action_results
                     .iter()
                     .any(|result| result.result.should_trigger_request_upon_completion()))
@@ -602,7 +609,7 @@ impl BlocklistAIController {
                     let updated_conversation_status = if finished_action_results
                         .iter()
                         .all(|result| result.result.is_successful())
-                        || is_lrc_command_completed
+                        || treat_as_success
                     {
                         ConversationStatus::Success
                     } else {

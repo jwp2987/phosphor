@@ -3,7 +3,7 @@ use warpui::{Entity, SingletonEntity};
 #[cfg(feature = "local_fs")]
 use std::path::{Path, PathBuf};
 #[cfg(feature = "local_fs")]
-use warpui::ModelContext;
+use warpui::{AppContext, ModelContext};
 
 #[cfg(feature = "local_fs")]
 use {
@@ -16,18 +16,30 @@ use {
         Repository, RepositoryUpdate, RepositoryWatchMode,
     },
     std::{collections::HashMap, time::Duration},
+    warp_util::local_or_remote_path::LocalOrRemotePath,
     warpui::{r#async::SpawnedFutureHandle, ModelHandle, WeakModelHandle},
 };
 
 #[cfg(feature = "local_fs")]
 use super::diff_state::DiffStats;
 #[cfg(feature = "local_fs")]
-use super::github_repo_model::{GitHubRepoModel, LocalGitHubRepoModel};
+use super::git_status_update_remote::RemoteGitRepoStatusModel;
+#[cfg(feature = "local_fs")]
+use super::github_repo_model::{GitHubRepoModel, LocalGitHubRepoModel, RemoteGitHubRepoModel};
 #[cfg(feature = "local_fs")]
 use crate::context_chips::display_chip::GitBranchTrackingStatus;
 
 /// Public metadata exposed to consumers — the subset of diff metadata
 /// that the git chip (prompt display, agent view footer) needs.
+///
+/// Still `local_fs`-gated, unlike the pin (which gates only the *local*
+/// backend and marks this type `allow(dead_code)` instead). In the `app` crate
+/// `local_fs` is set by `build.rs` for exactly `target_family != "wasm"`
+/// (`app/build.rs:245-249`), and the remote backend is wasm-gated for the same
+/// reason `diff_state_remote` is — it drives `RemoteServerManager`. The two
+/// predicates therefore select the same builds, so keeping the single existing
+/// gate is equivalent to the pin's split one and avoids an enum with zero
+/// live variants on wasm.
 #[cfg(feature = "local_fs")]
 #[derive(Debug, Clone)]
 pub struct GitStatusMetadata {
@@ -50,12 +62,16 @@ pub struct GitStatusMetadata {
 pub type GitRepoModels = GitStatusUpdateModel;
 
 pub struct GitStatusUpdateModel {
+    /// Per-repo status models, keyed by [`LocalOrRemotePath`] so one cache
+    /// covers both local (watcher-backed) and remote (push receiver) repos.
+    /// Ported from the pin's `GitRepoModels::git_status_models`; before this
+    /// port the key was a bare `PathBuf` and only local repos could be cached.
     #[cfg(feature = "local_fs")]
-    repos: HashMap<PathBuf, WeakModelHandle<GitRepoStatusModel>>,
+    repos: HashMap<LocalOrRemotePath, WeakModelHandle<GitRepoStatusModel>>,
     /// Per-repo GitHub-info models (`gh pr view` / `gh repo view`), cached the
     /// same way as `repos` so every consumer in one repo shares a single model.
     #[cfg(feature = "local_fs")]
-    github_repos: HashMap<PathBuf, WeakModelHandle<GitHubRepoModel>>,
+    github_repos: HashMap<LocalOrRemotePath, WeakModelHandle<GitHubRepoModel>>,
 }
 
 // ── Non-local_fs stub ───────────────────────────────────────────────────────
@@ -79,87 +95,120 @@ impl GitStatusUpdateModel {
         }
     }
 
-    /// Get or create a per-repo status model for `repo_path`.
+    /// Get or create the per-repo status model for `repo`, returning a unified
+    /// [`GitRepoStatusModel`] handle that dispatches to a local watcher-backed
+    /// model or a remote push receiver based on the location.
     ///
-    /// If a live model already exists for this path, returns a new strong handle
-    /// to it.  Otherwise, creates a new [`GitRepoStatusModel`] with an active
-    /// filesystem watcher and returns a handle to it.
+    /// If a live model already exists for this location, returns a new strong
+    /// handle to it.  Otherwise, creates a new sub-model (with an active
+    /// filesystem watcher for local repos, or an `UpdateGitStatus` subscription
+    /// for remote ones) and returns a handle to it.
     ///
     /// Callers hold the returned `ModelHandle` for as long as they need updates.
     /// When all handles are dropped, the model (and its watcher) is torn down.
     pub fn subscribe(
         &mut self,
-        repo_path: &Path,
+        repo: &LocalOrRemotePath,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<ModelHandle<GitRepoStatusModel>> {
-        let repo_path_buf = repo_path.to_path_buf();
-
         // Check the cache for an existing live model.
-        if let Some(weak) = self.repos.get(&repo_path_buf) {
-            if let Some(handle) = weak.upgrade(ctx) {
-                return Ok(handle);
-            }
+        if let Some(handle) = self.repos.get(repo).and_then(|weak| weak.upgrade(ctx)) {
+            return Ok(handle);
         }
 
-        // Create a new sub-model.
-        let Some(repository_model) =
-            DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(repo_path, ctx)
-        else {
-            anyhow::bail!(
-                "No watched repository found for path: {}",
-                repo_path.display()
-            );
+        let handle = match repo {
+            LocalOrRemotePath::Local(repo_path) => {
+                let Some(repository_model) =
+                    DetectedRepositories::as_ref(ctx).get_watched_repo_for_path(repo_path, ctx)
+                else {
+                    anyhow::bail!(
+                        "No watched repository found for path: {}",
+                        repo_path.display()
+                    );
+                };
+                let repo_path = repo_path.clone();
+                let inner = ctx.add_model(|ctx| {
+                    LocalGitRepoStatusModel::new(repo_path, repository_model, ctx)
+                });
+                ctx.add_model(|ctx| {
+                    ctx.subscribe_to_model(&inner, |me, event, ctx| {
+                        GitRepoStatusModel::forward_event(me, event, ctx)
+                    });
+                    GitRepoStatusModel::Local(inner)
+                })
+            }
+            LocalOrRemotePath::Remote(remote_path) => {
+                let remote_path = remote_path.clone();
+                let inner =
+                    ctx.add_model(|ctx| RemoteGitRepoStatusModel::new(remote_path, ctx));
+                ctx.add_model(|ctx| {
+                    ctx.subscribe_to_model(&inner, |me, event, ctx| {
+                        GitRepoStatusModel::forward_event(me, event, ctx)
+                    });
+                    GitRepoStatusModel::Remote(inner)
+                })
+            }
         };
 
-        let handle = ctx
-            .add_model(|ctx| GitRepoStatusModel::new(repo_path_buf.clone(), repository_model, ctx));
-
-        self.repos.insert(repo_path_buf, handle.downgrade());
+        self.repos.insert(repo.clone(), handle.downgrade());
         Ok(handle)
     }
 
-    /// Get or create the per-repo GitHub-info model for `repo_path`.
+    /// Get or create the per-repo GitHub-info model for `repo`, returning a
+    /// unified [`GitHubRepoModel`] handle that dispatches to a local
+    /// `gh`-driven model or a remote push receiver based on the location.
     ///
-    /// The backend subscribes to the sibling git status model to track the
-    /// current branch and fetches PR / repository info on creation, on branch
-    /// change, and on a periodic timer. Multiple callers in the same repo share
-    /// one model; it is torn down when the last strong handle is dropped.
+    /// The local backend subscribes to the sibling git status model to track
+    /// the current branch and fetches PR / repository info on creation, on
+    /// branch change, and on a periodic timer. The remote backend asks the
+    /// daemon to do the same and receives the results as pushes. Multiple
+    /// callers in the same repo share one model; it is torn down when the last
+    /// strong handle is dropped.
     ///
     /// Callers hold the returned `ModelHandle` for as long as they need updates.
     ///
     /// Ported from the pin's `GitRepoModels::subscribe_github_repo`
-    /// (`02b53fcd8:app/src/code_review/git_repo_models.rs`), keyed by `PathBuf`
-    /// rather than `LocalOrRemotePath` because only the local backend exists here.
+    /// (`42effe840:app/src/code_review/git_repo_models.rs`).
     pub fn subscribe_github_repo(
         &mut self,
-        repo_path: &Path,
+        repo: &LocalOrRemotePath,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<ModelHandle<GitHubRepoModel>> {
-        let repo_path_buf = repo_path.to_path_buf();
-
-        if let Some(handle) = self
-            .github_repos
-            .get(&repo_path_buf)
-            .and_then(|weak| weak.upgrade(ctx))
-        {
+        if let Some(handle) = self.github_repos.get(repo).and_then(|weak| weak.upgrade(ctx)) {
             return Ok(handle);
         }
 
-        // `LocalGitHubRepoModel` needs a sibling `GitRepoStatusModel` for branch info.
-        let git_status = self.subscribe(repo_path, ctx)?;
-        let inner = {
-            let repo_path_buf = repo_path_buf.clone();
-            ctx.add_model(|ctx| LocalGitHubRepoModel::new(repo_path_buf, git_status, ctx))
+        let handle = match repo {
+            LocalOrRemotePath::Local(repo_path) => {
+                // `LocalGitHubRepoModel` needs a sibling `GitRepoStatusModel`
+                // for branch info.
+                let git_status = self.subscribe(repo, ctx)?;
+                let repo_path = repo_path.clone();
+                let inner = ctx
+                    .add_model(|ctx| LocalGitHubRepoModel::new(repo_path, git_status, ctx));
+                ctx.add_model(|ctx| {
+                    ctx.subscribe_to_model(&inner, |me, event, ctx| {
+                        GitHubRepoModel::forward_event(me, event, ctx)
+                    });
+                    GitHubRepoModel::Local(inner)
+                })
+            }
+            LocalOrRemotePath::Remote(remote_path) => {
+                // The remote backend needs no sibling status model: the
+                // daemon's own `GitHubRepoModel` tracks the branch, and results
+                // arrive as pushes.
+                let remote_path = remote_path.clone();
+                let inner = ctx.add_model(|ctx| RemoteGitHubRepoModel::new(remote_path, ctx));
+                ctx.add_model(|ctx| {
+                    ctx.subscribe_to_model(&inner, |me, event, ctx| {
+                        GitHubRepoModel::forward_event(me, event, ctx)
+                    });
+                    GitHubRepoModel::Remote(inner)
+                })
+            }
         };
-        let handle = ctx.add_model(|ctx| {
-            ctx.subscribe_to_model(&inner, |me, event, ctx| {
-                GitHubRepoModel::forward_event(me, event, ctx)
-            });
-            GitHubRepoModel::Local(inner)
-        });
 
-        self.github_repos
-            .insert(repo_path_buf, handle.downgrade());
+        self.github_repos.insert(repo.clone(), handle.downgrade());
         Ok(handle)
     }
 }
@@ -170,28 +219,30 @@ impl Entity for GitStatusUpdateModel {
 
 impl SingletonEntity for GitStatusUpdateModel {}
 
-// ── GitRepoStatusModel ──────────────────────────────────────────────────────
-
-/// Per-repository model that owns the filesystem watcher and exposes git status
-/// metadata.  Consumers hold a `ModelHandle<GitRepoStatusModel>` and subscribe
-/// to its events directly — no path-filtering required.
-///
-/// When all strong handles are dropped the model (and its watcher) is
-/// automatically torn down.
-#[cfg(feature = "local_fs")]
-pub struct GitRepoStatusModel {
-    repo_path: PathBuf,
-    repository: ModelHandle<Repository>,
-    subscriber_id: Option<SubscriberId>,
-    metadata: Option<GitStatusMetadata>,
-    computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
-}
+// ── GitRepoStatusModel (unified: local or remote backend) ───────────────────
 
 #[cfg(feature = "local_fs")]
 #[derive(Debug)]
 pub enum GitRepoStatusEvent {
     /// Emitted whenever the metadata changes (branch name, diff stats, etc.).
     MetadataChanged,
+}
+
+/// Unified per-repo git status model that dispatches to a local or remote
+/// backend, mirroring [`crate::code_review::diff_state::DiffStateModel`].
+///
+/// Consumers (prompt chips, tabs, code review, agent context) hold a
+/// `ModelHandle<GitRepoStatusModel>` and subscribe to its [`GitRepoStatusEvent`]s
+/// without caring whether the repository is local or on an SSH host. Only one
+/// variant is populated at a time.
+///
+/// Ported from `42effe840:app/src/code_review/git_repo_model/mod.rs`. Before
+/// this port the fork had a plain struct here — the local backend inlined —
+/// which made the remote push receivers unreachable.
+#[cfg(feature = "local_fs")]
+pub enum GitRepoStatusModel {
+    Local(ModelHandle<LocalGitRepoStatusModel>),
+    Remote(ModelHandle<RemoteGitRepoStatusModel>),
 }
 
 #[cfg(feature = "local_fs")]
@@ -201,6 +252,57 @@ impl Entity for GitRepoStatusModel {
 
 #[cfg(feature = "local_fs")]
 impl GitRepoStatusModel {
+    /// Re-emit a sub-model event so subscribers of the unified model observe
+    /// the same `GitRepoStatusEvent`s regardless of backend.
+    fn forward_event(&mut self, event: &GitRepoStatusEvent, ctx: &mut ModelContext<Self>) {
+        match event {
+            GitRepoStatusEvent::MetadataChanged => ctx.emit(GitRepoStatusEvent::MetadataChanged),
+        }
+    }
+
+    /// Mode-independent status metadata (branch names + HEAD diff stats).
+    pub fn metadata<'a>(&self, ctx: &'a AppContext) -> Option<&'a GitStatusMetadata> {
+        match self {
+            Self::Local(m) => m.as_ref(ctx).metadata(),
+            Self::Remote(m) => m.as_ref(ctx).metadata(),
+        }
+    }
+
+    /// Force a metadata refresh (branch names, diff stats). For the remote
+    /// backend this asks the daemon to push a fresh snapshot.
+    pub fn refresh_metadata(&self, ctx: &mut ModelContext<Self>) {
+        match self {
+            Self::Local(m) => m.update(ctx, |m, ctx| m.refresh_metadata(ctx)),
+            Self::Remote(m) => m.update(ctx, |m, ctx| m.request_snapshot(ctx)),
+        }
+    }
+}
+
+// ── LocalGitRepoStatusModel ─────────────────────────────────────────────────
+
+/// Per-repository model that owns the filesystem watcher and exposes git status
+/// metadata for a repo on the local filesystem.  Consumers do not hold this
+/// directly; they hold the unified [`GitRepoStatusModel`], which forwards its
+/// events.
+///
+/// When all strong handles are dropped the model (and its watcher) is
+/// automatically torn down.
+#[cfg(feature = "local_fs")]
+pub struct LocalGitRepoStatusModel {
+    repo_path: PathBuf,
+    repository: ModelHandle<Repository>,
+    subscriber_id: Option<SubscriberId>,
+    metadata: Option<GitStatusMetadata>,
+    computing_metadata_abort_handle: Option<SpawnedFutureHandle>,
+}
+
+#[cfg(feature = "local_fs")]
+impl Entity for LocalGitRepoStatusModel {
+    type Event = GitRepoStatusEvent;
+}
+
+#[cfg(feature = "local_fs")]
+impl LocalGitRepoStatusModel {
     /// Create a new per-repo status model, set up the filesystem watcher, and
     /// kick off the initial metadata computation.
     fn new(
@@ -236,7 +338,7 @@ impl GitRepoStatusModel {
         // Handle watcher registration.
         ctx.spawn(start.registration_future, |me, result, ctx| {
             if let Err(err) = result {
-                log::warn!("GitRepoStatusModel: watcher registration failed: {err}");
+                log::warn!("LocalGitRepoStatusModel: watcher registration failed: {err}");
                 if let Some(subscriber_id) = me.subscriber_id.take() {
                     me.repository.update(ctx, |repo, ctx| {
                         repo.stop_watching(subscriber_id, ctx);
@@ -278,6 +380,7 @@ impl GitRepoStatusModel {
     }
 
     /// The path to the repository root.
+    #[allow(dead_code)]
     pub fn repo_path(&self) -> &Path {
         &self.repo_path
     }
@@ -308,7 +411,7 @@ impl GitRepoStatusModel {
         match result {
             Ok(metadata) => self.metadata = Some(metadata),
             Err(e) => {
-                log::warn!("GitRepoStatusModel: metadata load failed: {e}");
+                log::warn!("LocalGitRepoStatusModel: metadata load failed: {e}");
                 self.metadata = None;
             }
         }
@@ -429,7 +532,7 @@ impl GitRepoStatusModel {
 }
 
 #[cfg(all(test, feature = "local_fs"))]
-impl GitRepoStatusModel {
+impl LocalGitRepoStatusModel {
     pub(crate) fn new_for_test(
         repository: ModelHandle<Repository>,
         metadata: Option<GitStatusMetadata>,
@@ -453,8 +556,35 @@ impl GitRepoStatusModel {
     }
 }
 
+#[cfg(all(test, feature = "local_fs"))]
+impl GitRepoStatusModel {
+    /// Wraps a local-backend test model in the unified enum.
+    pub(crate) fn new_local_for_test(
+        repository: ModelHandle<Repository>,
+        metadata: Option<GitStatusMetadata>,
+        ctx: &mut ModelContext<Self>,
+    ) -> Self {
+        let inner =
+            ctx.add_model(move |_| LocalGitRepoStatusModel::new_for_test(repository, metadata));
+        ctx.subscribe_to_model(&inner, |me, event, ctx| me.forward_event(event, ctx));
+        Self::Local(inner)
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_metadata_for_test(
+        &mut self,
+        metadata: Option<GitStatusMetadata>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        match self {
+            Self::Local(m) => m.update(ctx, |m, ctx| m.set_metadata_for_test(metadata, ctx)),
+            Self::Remote(_) => unreachable!("remote test models are not used"),
+        }
+    }
+}
+
 #[cfg(feature = "local_fs")]
-impl Drop for GitRepoStatusModel {
+impl Drop for LocalGitRepoStatusModel {
     fn drop(&mut self) {
         // Note: we cannot call `repository.update()` here because `Drop` does
         // not have access to `ModelContext`.  The `Repository` model will clean

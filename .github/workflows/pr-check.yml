@@ -28,7 +28,7 @@ jobs:
   # Fork-boundary guards. Pure grep/git -- no build -- so this job finishes in
   # under a minute and gives fast feedback ahead of the cargo jobs.
   #
-  # These exist because six classes of regression are invisible to the compiler:
+  # These exist because eight classes of regression are invisible to the compiler:
   #   1. Cloud creep. The cloud *crates* were deleted, so the compiler blocks
   #      those. But app/src/server and app/src/cloud_object survive as stubs for
   #      retained call sites, and nothing stopped a port from reaching into them
@@ -68,6 +68,13 @@ jobs:
   #      (18 test_sftp_*, 4 test_websocket_*) survived two deliberate feature
   #      removals that way and were most of why the integration job had never
   #      once been green. See script/check_integration_test_registry.
+  #   8. Unexplained bulk deletion. Four removals of LOCAL subsystems landed
+  #      with no record in DECLINED.md or TODO.md, were found months later by
+  #      accident, and two had to be restored. A removal that compiles is, to
+  #      the compiler, correct, and the parity audit keys on pin tests that a
+  #      removed local subsystem does not carry. This is the one guard here
+  #      that prevents future debt rather than measuring past debt. See
+  #      script/check_large_deletions.
   #
   # This job also runs the packaging scripts' own shell tests. They are bash,
   # need no toolchain, and had no runner at all before -- an unrun test is not
@@ -154,6 +161,42 @@ jobs:
       - name: Integration test registry (every listed test name is registered)
         shell: bash
         run: ./script/check_integration_test_registry
+
+      # Large deletions. `actions/checkout` clones at depth 1, so the PR's base
+      # commit is not in the object store and there is nothing to diff against.
+      # Fetch just that one commit -- same shape, and for the same reason, as
+      # the oracle fetch at the top of this job.
+      #
+      # `if: pull_request` on both steps: on workflow_dispatch there is no base
+      # branch to compare with, and inventing one would be worse than not
+      # running. Every real code change reaches main through a PR.
+      - name: Fetch the PR base commit
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          BASE='${{ github.event.pull_request.base.sha }}'
+          git fetch --depth=1 --no-tags origin "$BASE"
+          git cat-file -e "${BASE}^{commit}" || {
+            echo "::error::PR base $BASE fetched but not present; the deletion guard would have nothing to diff"
+            exit 1
+          }
+
+      # --require-base turns "no base commit" into a failure instead of the
+      # skip-with-diagnostic the script does locally. Without it an unfetched
+      # base reads exactly like "no large deletions here", which is the
+      # silent-disarm shape the oracle fetch above spent weeks in.
+      #
+      # PR_TITLE/PR_BODY are passed through env, never interpolated into the
+      # script: a PR body is attacker-controlled text and `${{ }}` splices it
+      # into the shell source before bash ever sees it.
+      - name: "Large deletions (bulk removal must cite DECLINED.md or a Large-deletion: trailer)"
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          PHOSPHOR_DELETION_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: ./script/check_large_deletions --require-base
 
       # Pure bash; the wrapper's shell logic has nothing macOS-specific in it,
       # so it runs on the ubuntu runner.

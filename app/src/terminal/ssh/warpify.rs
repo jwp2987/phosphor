@@ -5,6 +5,8 @@ use warpui::assets::asset_cache::{AssetCache, AssetState};
 
 use crate::ai::blocklist::inline_action::requested_action::RenderableAction;
 use crate::appearance::Appearance;
+use crate::terminal::bootstrap::SESSION_ID_PLACEHOLDER;
+use crate::terminal::model::session::SessionId;
 use crate::terminal::shell::ShellType;
 use crate::terminal::warpify;
 use crate::terminal::warpify::render::SSH_DOCS_URL;
@@ -144,19 +146,39 @@ impl TypedActionView for SshWarpifyBlock {
 }
 
 /// Convert the begin_warpify_ssh_session script into a string.
-pub fn begin_warpify_ssh_session_command(app: &AppContext) -> String {
+///
+/// Shares `unknown_init_subshell.sh` with the subshell bootstrap path, so it must substitute
+/// [`SESSION_ID_PLACEHOLDER`] too -- leaving it in place would emit `"session_id":
+/// @@WARP_SESSION_ID@@`, which is not valid JSON and would drop the `InitSsh` hook entirely.
+/// The caller must have registered `session_id` with the owning `TerminalModel` first.
+pub fn begin_warpify_ssh_session_command(session_id: SessionId, app: &AppContext) -> String {
     let asset = bundled_asset!("bootstrap/unknown_init_subshell.sh");
 
     match AssetCache::as_ref(app).load_asset::<String>(asset) {
-        AssetState::Loaded { data } => data.to_string().replace("HOOK_NAME", "InitSsh"),
+        AssetState::Loaded { data } => data
+            .to_string()
+            .replace("HOOK_NAME", "InitSsh")
+            .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string()),
         _ => panic!("ssh begin warpify script should be available as a string"),
     }
 }
 
 /// Convert the warpify_ssh_session script into a string.
+///
+/// Substitutes [`SESSION_ID_PLACEHOLDER`] into the script's `_log` helper, so the three
+/// fork-only hooks it emits (`SshTmuxInstaller` and, via `_err`,
+/// `RemoteWarpificationIsUnavailable`) quote an ID this client minted. The caller must have
+/// registered `session_id` with the owning `TerminalModel` first, otherwise the hooks are
+/// dropped by `should_validate_dcs_hook_session_id` and a failed warpification reports nothing
+/// (#532).
+///
+/// The macOS variants are within ~20 bytes of the 1020-byte pty limit that
+/// `test_mac_warpification_script_size` guards; a `session_id` of `u64::MAX` is 20 digits, so
+/// treat that test as the budget before adding anything to those two scripts.
 pub fn warpify_ssh_session_command(
     uname: &str,
     shell_type: ShellType,
+    session_id: SessionId,
     app: &AppContext,
 ) -> Option<String> {
     let asset = match (uname, shell_type) {
@@ -176,7 +198,10 @@ pub fn warpify_ssh_session_command(
 
     // Todo(Jack): look into avoiding an allocation here.
     match AssetCache::as_ref(app).load_asset::<String>(asset) {
-        AssetState::Loaded { data } => Some(data.to_string()),
+        AssetState::Loaded { data } => Some(
+            data.to_string()
+                .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string()),
+        ),
         _ => panic!("ssh warpify script should be available as a string"),
     }
 }

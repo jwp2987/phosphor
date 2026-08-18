@@ -2,8 +2,11 @@ _find() {
     command -v "$1" >/dev/null 2>&1
 }
 
+  # @@WARP_SESSION_ID@@ is substituted by `warpify_ssh_session_command` with an ID this client
+  # minted and registered *before* the script reaches the pty, so the hooks below can be
+  # validated against it (#532). Do not let the remote mint its own.
 _log() {
-    _msg=$(printf "{\"hook\": \"$1\", \"value\": $2}" | command -p od -An -v -tx1 | command -p tr -d " \n")
+    _msg=$(printf "{\"hook\": \"$1\", \"value\": $2, \"session_id\": @@WARP_SESSION_ID@@}" | command -p od -An -v -tx1 | command -p tr -d " \n")
     printf '\033\120\044\144%s\234' "$_msg"
 }
 

@@ -15,8 +15,8 @@ use crate::{
     platform::Cursor,
     scene::{Scene, ZIndex},
     text_layout::LayoutCache,
-    Action, AppContext, ClipBounds, EntityId, TaskId, View, ViewHandle, WindowId,
-    WindowInvalidation,
+    Action, AppContext, ClipBounds, EntityId, EntityIdMap, EntityIdSet, TaskId, View, ViewHandle,
+    WindowId, WindowInvalidation,
 };
 use instant::Instant;
 use pathfinder_geometry::vector::{vec2f, Vector2F};
@@ -33,16 +33,16 @@ pub struct Presenter {
     frame_count: usize,
     window_id: WindowId,
     scene: Option<Rc<Scene>>,
-    rendered_views: HashMap<EntityId, Box<dyn Element>>,
-    parents: HashMap<EntityId, EntityId>,
+    rendered_views: EntityIdMap<Box<dyn Element>>,
+    parents: EntityIdMap<EntityId>,
     text_layout_cache: LayoutCache,
     position_cache: PositionCache,
     highlighted_view: Option<EntityId>,
 }
 
 pub struct LayoutContext<'a> {
-    rendered_views: &'a mut HashMap<EntityId, Box<dyn Element>>,
-    parents: &'a mut HashMap<EntityId, EntityId>,
+    rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
+    parents: &'a mut EntityIdMap<EntityId>,
     pub text_layout_cache: &'a LayoutCache,
     view_stack: Vec<EntityId>,
     pub window_size: Vector2F,
@@ -50,12 +50,12 @@ pub struct LayoutContext<'a> {
 }
 
 pub struct AfterLayoutContext<'a> {
-    rendered_views: &'a mut HashMap<EntityId, Box<dyn Element>>,
+    rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
     pub text_layout_cache: &'a LayoutCache,
 }
 
 pub struct PaintContext<'a> {
-    rendered_views: &'a mut HashMap<EntityId, Box<dyn Element>>,
+    rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
     pub font_cache: &'a FontCache,
     pub text_layout_cache: &'a LayoutCache,
     pub position_cache: &'a mut PositionCache,
@@ -70,7 +70,7 @@ pub struct PaintContext<'a> {
     repaint_at: Option<Instant>,
     pending_assets: HashSet<AssetHandle>,
     /// Keep track of all the views that were actually painted in this scene.
-    views_painted: HashSet<EntityId>,
+    views_painted: EntityIdSet,
 }
 
 #[derive(Default)]
@@ -82,7 +82,7 @@ pub struct DispatchResult {
     pub actions: Vec<DispatchedAction>,
 
     /// All views to notify as a result of the event being handled
-    pub notified: HashSet<EntityId>,
+    pub notified: EntityIdSet,
 
     /// Views that need to be notified after a delay
     pub notify_timers_to_set: HashMap<TaskId, ViewToNotify>,
@@ -225,13 +225,13 @@ pub struct EventContext<'a> {
     // Scene is optional because it's technically possible for a window event to
     // be fired before the first scene has been rendered.
     scene: Option<Rc<Scene>>,
-    rendered_views: &'a mut HashMap<EntityId, Box<dyn Element>>,
+    rendered_views: &'a mut EntityIdMap<Box<dyn Element>>,
     actions: Vec<DispatchedAction>,
     pub font_cache: &'a FontCache,
     pub text_layout_cache: &'a LayoutCache,
     position_cache: &'a PositionCache,
     view_stack: Vec<EntityId>,
-    notified: HashSet<EntityId>,
+    notified: EntityIdSet,
     /// A map of timer ids to (view_id, duration) pairs for delayed notification
     notify_timers_to_set: HashMap<TaskId, ViewToNotify>,
     notify_timers_to_clear: HashSet<TaskId>,
@@ -242,6 +242,8 @@ pub struct EventContext<'a> {
     /// Flag indicating the soft keyboard should be shown.
     /// Used on mobile WASM to trigger the keyboard in user gesture context.
     soft_keyboard_requested: bool,
+    /// Set by a nested `Draggable` claiming mouse-down; read by outer `Draggable`s to defer.
+    descendant_draggable_initiated: bool,
 }
 
 impl<'a> EventContext<'a> {
@@ -309,8 +311,8 @@ impl Presenter {
         Self {
             frame_count: 0,
             window_id,
-            rendered_views: HashMap::new(),
-            parents: HashMap::new(),
+            rendered_views: EntityIdMap::default(),
+            parents: EntityIdMap::default(),
             scene: None,
             text_layout_cache: LayoutCache::new(),
             position_cache: PositionCache::default(),
@@ -430,7 +432,7 @@ impl Presenter {
                 current_selection: None,
                 repaint_at: None,
                 pending_assets: HashSet::new(),
-                views_painted: HashSet::new(),
+                views_painted: EntityIdSet::default(),
             };
             paint_ctx.paint(root_view_id, Vector2F::zero(), ctx);
 
@@ -510,6 +512,7 @@ impl Presenter {
             notify_timers_to_clear: Default::default(),
             cursor_update: Default::default(),
             soft_keyboard_requested: false,
+            descendant_draggable_initiated: false,
         }
     }
 
@@ -556,7 +559,7 @@ impl Presenter {
         self.frame_count
     }
 
-    pub(crate) fn parents(&self) -> HashMap<EntityId, EntityId> {
+    pub(crate) fn parents(&self) -> EntityIdMap<EntityId> {
         self.parents.clone()
     }
 
@@ -759,6 +762,14 @@ impl EventContext<'_> {
     /// This is used on mobile WASM to trigger the keyboard when a text input area is tapped.
     pub fn request_soft_keyboard(&mut self) {
         self.soft_keyboard_requested = true;
+    }
+
+    pub fn descendant_draggable_initiated(&self) -> bool {
+        self.descendant_draggable_initiated
+    }
+
+    pub fn mark_descendant_draggable_initiated(&mut self) {
+        self.descendant_draggable_initiated = true;
     }
 }
 

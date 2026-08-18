@@ -210,6 +210,21 @@ fn agent_block_renders_invalid_api_key_detail_without_usage_notice() {
 #[test]
 fn agent_block_suppresses_recovery_pending_failure() {
     App::test((), |mut app| async move {
+        // The suppression is release-only: `should_suppress_during_recovery`
+        // gates on `!ChannelState::channel().is_dogfood()`, so Local/Dev builds
+        // deliberately keep showing the transient error. Tests run on
+        // `ChannelState::init()`'s default `Channel::Oss`, which is not
+        // dogfood, so this test is exercising the suppressing branch.
+        //
+        // Asserted rather than set: `ChannelState` is a process-global behind a
+        // mutex shared by every test in this binary, so pinning it here would
+        // reach into unrelated tests. If the default channel ever changes to a
+        // dogfood one this assertion fails loudly, instead of the render
+        // assertion below failing for a reason nobody can see.
+        assert!(
+            !warp_core::channel::ChannelState::channel().is_dogfood(),
+            "this test asserts the non-dogfood (suppressing) branch"
+        );
         app.add_singleton_model(|_| Appearance::mock());
         let block = test_agent_block(
             &mut app,

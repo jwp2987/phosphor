@@ -121,7 +121,7 @@ pub(crate) fn command_block_indices_for_exchanges<'a>(
 /// which skips command blocks with `ts <= exchange_timestamp`. Keeping both surfaces on the
 /// same side of a tie ensures a conversation restores in the same order whether the user is
 /// in the TUI or the GUI.
-fn find_block_indices_for_exchange_timestamps(
+pub(crate) fn find_block_indices_for_exchange_timestamps(
     command_blocks: &[(BlockIndex, DateTime<Local>)],
     exchange_timestamps: &[DateTime<Local>],
 ) -> Vec<Option<BlockIndex>> {

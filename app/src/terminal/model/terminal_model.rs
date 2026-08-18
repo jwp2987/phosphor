@@ -118,7 +118,6 @@ pub struct FindOptions {
 
     /// If `Some()`, the find run only surfaces matches that are in blocks with the provided
     /// indices. If `None`, the find run surfaces matches across the entire blocklist.
-    ///
     /// This is ignored when the alt screen is active.
     pub blocks_to_include_in_results: Option<Vec<BlockIndex>>,
 }
@@ -359,7 +358,6 @@ enum IsReceivingKittyActionData {
 
 /// Represents whether or not output from the PTY should be considered part of a shell hook being
 /// sent over via key-value pairs.
-///
 /// This is currently only used for Git Bash.
 enum IsReceivingHook {
     Yes { pending_hook: Box<PendingHook> },
@@ -370,7 +368,6 @@ enum IsReceivingHook {
 #[derive(Debug, Clone)]
 pub struct SubshellSuccessBlockInfo {
     /// The ID of the newly bootstrapped subshell session.
-    ///
     /// This ID is needed in order to associate the success block with the subshell session (and
     /// include it in the subshell "context" UI, with the flag and block border).
     pub subshell_session_id: SessionId,
@@ -515,7 +512,6 @@ pub struct TerminalModel {
     active_shell_launch_data: Option<ShellLaunchData>,
 
     /// Partially populated `SessionInfo` from the `InitShell` DCS payload.
-    ///
     /// This is used to construct a final, populated `SessionInfo` after the session is
     /// bootstrapped.
     pending_session_info: Option<SessionInfo>,
@@ -531,7 +527,6 @@ pub struct TerminalModel {
 
     /// Whether or not the printable bytes read from the PTY (e.g. via the `Handler::input()`
     /// method) should be considered in-band command output.
-    ///
     /// This is updated when `Handler::start_in_band_command_output()` and
     /// `Handler::end_in_band_command_output()` are called.
     is_receiving_in_band_command_output: IsReceivingInBandCommandOutput,
@@ -553,9 +548,7 @@ pub struct TerminalModel {
     is_receiving_hook: IsReceivingHook,
 
     /// `Some(true)` if the model received a SourcedRcFile DCS.
-    ///
     /// The SourcedRcFile DCS is used to trigger subshell bootstrapping.
-    ///
     /// This is only `Some()` in between receiving the SourcedRcFile DCS and the next InitShell
     /// DCS, where it is consumed into `self.pending_session_info`.
     did_receive_rc_file_dcs: Option<bool>,
@@ -588,14 +581,12 @@ pub struct TerminalModel {
     /// This goes through the [`TerminalModel`] because the [`TerminalModel`] is exposed as
     /// a synchronized data structure (i.e. [`FairMutex<TerminalModel>`]) and thus multiple
     /// `send`s via the [`TerminalModel`] will be synchronized.
-    ///
     /// This field is only [`Some`] if this session is shared.
     /// TODO: consider combining this with `shared_session_status` because
     /// the state can technically diverge.
     ordered_terminal_events_for_shared_session_tx: Option<Sender<OrderedTerminalEventType>>,
 
     /// A sender for write to pty events for a shared session viewer.
-    ///
     /// This field is only [`Some`] if this session is shared.
     write_to_pty_events_for_shared_session_tx: Option<Sender<Vec<u8>>>,
 
@@ -616,11 +607,14 @@ pub struct TerminalModel {
     /// by the Kitty protocol
     pub next_kitty_image_id: u32,
 
-    /// Client-generated session IDs accepted as valid by `is_registered_session`. See #419: DCS
-    /// hooks that mutate session/block-lifecycle state should carry one of these IDs before
-    /// being dispatched. Currently unpopulated in production -- see the doc comment on
-    /// `should_validate_dcs_hook_session_id` below for why validation stays off until the
-    /// PTY-spawn side registers the ID it bakes into the shell launch.
+    /// Client-generated session IDs accepted as valid by `is_registered_session`. DCS hooks that
+    /// mutate session/block-lifecycle state must carry one of these IDs to be dispatched once
+    /// `should_validate_dcs_hook_session_id` returns `true`.
+    /// Every ID in here was minted by this client, never asserted by the pty: local/remote-tty
+    /// spawn and subshell spawn register the ID they bake into the launch, and `Self::ssh`
+    /// registers the `remote_session_id` the local ssh wrapper minted from `/dev/urandom` for
+    /// the remote shell. See the doc comment on `should_validate_dcs_hook_session_id` below for
+    /// the full emitter inventory this gate depends on (#532).
     registered_session_ids: HashSet<SessionId>,
 }
 
@@ -1105,6 +1099,7 @@ impl TerminalModel {
         let completion_metadata = CompletionMetadata::default();
         terminal_model.command_finished(CommandFinishedValue {
             completion_metadata: completion_metadata.clone(),
+            session_id: None,
         });
         // A real precmd hook always reports the session the shell was
         // initialised with, and `Block::precmd` copies it onto the newly
@@ -2202,7 +2197,6 @@ impl TerminalModel {
 
     /// Activate the alternate screen. This copies over relevant state from the
     /// block list and clears the alt screen's contents.
-    ///
     /// If the alternate screen is already active, this will not re-initialize
     /// it.
     pub(crate) fn enter_alt_screen(&mut self, save_cursor_and_clear_screen: bool) {
@@ -2254,7 +2248,6 @@ impl TerminalModel {
 
     /// Deactivate the alternate screen, switching back to the block list and
     /// copying over relevant state.
-    ///
     /// If the alternate screen is not active, this has no effect. This guards
     /// against programs that set or unset the alternate screen mode multiple
     /// times, like `info`  (see WAR-5897).
@@ -2295,7 +2288,6 @@ impl TerminalModel {
     }
 
     /// Disables secret obfuscation for shared session creators only.
-    ///
     /// Specifically, secret obfuscation is disabled starting
     /// from the `first_scrollback_block_index` onwards.
     pub fn disable_secret_obfuscation_for_shared_sesson_creator(
@@ -2437,7 +2429,6 @@ impl TerminalModel {
     /// ssh session indicates login is complete. The check_type parameter specifies whether
     /// this is the initial check or a confirmation check (i.e., a previous check has already
     /// succeeded).
-    ///
     /// Overall, the heuristic waits for the line "Last login:" to appear in a line of output,
     /// indicating that login is complete. However, this isn't enough. Users might have a .hushlogin
     /// that suppresses that output line, so we also have a backup check. When we receive
@@ -2609,7 +2600,6 @@ pub enum HandlerEvent {
 
 impl TerminalModel {
     /// Applies the normal command-completion pipeline and its once-per-command side effects.
-    ///
     /// Callers invoke this only when the lifecycle coordinator authorizes the completion
     /// (`AcceptCommandFinished` or `ReconcileCompletionThenApplyPrecmd`). It reconciles a missed
     /// execution (`ensure_active_block_executing_for_completion`) so a recovery completion still
@@ -2686,34 +2676,57 @@ impl ansi::Handler for TerminalModel {
         self.registered_session_ids.contains(&session_id)
     }
 
-    /// Validation stays off in production for now -- and this is a *deeper* gap than just
-    /// missing registration (see #532).
+    /// Validation is ON, and this is now the pin's own one-liner (#532). `is_viewer()` is
+    /// `false` for an ordinary `NotShared` session, so this is `true` for essentially every
+    /// session -- the gate is live, not screen-share-only. A *viewer* is exempt because it
+    /// receives another session's byte stream and never registered that session's ID.
     ///
-    /// PTY-spawn registration is now wired (`local_tty/terminal_manager.rs`'s
-    /// `on_shell_determined`, plus the equivalent remote-tty and subshell-spawn sites in
-    /// `remote_tty/event_loop.rs` and `view.rs`), matching the pin: a generated session ID is
-    /// baked into the shell launch and registered before the shell can write anything back.
+    /// The flip was gated on one thing: every emitter of a `requires_registered_session()` hook
+    /// must quote an ID this client minted and registered before the emitting process could
+    /// write anything back. That now holds for all of them:
+    /// * Local / remote-tty / subshell spawn bake an ID into the launch and register it
+    ///   (`local_tty/terminal_manager.rs`, `remote_tty/event_loop.rs`, `view.rs`).
+    /// * The bootstrap scripts quote `$WARP_SESSION_ID` on `Preexec`, `CommandFinished`,
+    ///   `InputBuffer`, `Clear`, `FinishUpdate`, `PreInteractiveSSHSession` and `Bootstrapped`
+    ///   (`bash_body.sh` / `zsh_body.sh` / `fish.sh`), matching the pin.
+    /// * The SSH-warpification wrapper this fork keeps no longer lets the *remote* shell mint
+    ///   its own ID. `warp_ssh_helper` now draws 64 bits from `/dev/urandom`, bakes them into
+    ///   the remote `WARP_SESSION_ID`, and reports them on the `SSH` hook's `remote_session_id`
+    ///   -- a hook emitted by the already-registered *local* session. `Self::ssh` registers it.
+    ///   This is exactly what the pin does (`bash_body.sh:1006` at `42effe840`); the earlier
+    ///   note here claiming the pin had deprecated the wrapper was wrong, and the
+    ///   trust-on-first-use workaround it proposed is not needed. The old
+    ///   `WARP_SESSION_ID="$(command -p date +%s)$RANDOM"` mint -- a one-second timestamp plus
+    ///   15 bits -- is gone from all three shells.
+    /// * The three fork-only tmux-warpification hooks -- `RemoteWarpificationIsUnavailable`,
+    ///   `SshTmuxInstaller` and `TmuxInstallFailed` -- now carry one too. The 13 scripts under
+    ///   `app/assets/bundled/ssh/` run on the *remote* host and cannot mint an ID, so the client
+    ///   substitutes `SESSION_ID_PLACEHOLDER` into them before they reach the pty
+    ///   (`ssh/warpify.rs`, `ssh/install_tmux.rs`; minted by `TerminalView::
+    ///   mint_registered_session_id`). All three read it from a `session_id` field that sits
+    ///   *beside* `value` rather than inside it -- see the comment on the variants in
+    ///   `dcs_hooks.rs` for why. The two macOS variants were shortened to pay for the 38 extra
+    ///   bytes and now sit ~20 bytes under the 1020-byte pty limit that
+    ///   `test_mac_warpification_script_size` guards.
+    /// * **PowerShell**, which was the last blocker, is now threaded too.
+    ///   `app/assets/bundled/bootstrap/pwsh.ps1` used to emit seven hooks with no `session_id`
+    ///   at all -- `Bootstrapped`, `Preexec`, `FinishUpdate`, `InputBuffer`, `CommandFinished`
+    ///   and `Clear` (twice, `Clear-Host` and `clear`); only its two `Precmd` payloads quoted
+    ///   `$global:_warpSessionId`. All nine now quote it, matching the pin exactly.
+    ///   `pwsh_init_shell.ps1` assigns that global from `SESSION_ID_PLACEHOLDER`, and
+    ///   `pwsh.ps1` is only sourced in response to the `InitShell` hook that same script emits
+    ///   (`PtyController::initialize_shell`), so the global is always set by the time any of
+    ///   these fire.
+    /// * `SourcedRcFileForWarp` is the one hook the pin exempts
+    ///   (`requires_registered_session() == false`), so the auto-warpify snippets in
+    ///   `*_subshell_bootstrap_block_output.txt` need no ID. `ClearOnNextBlock` is not a
+    ///   `DProtoHook` variant at all and never reaches this gate.
     ///
-    /// But flipping this to `!self.shared_session_status().is_viewer()` (the pin's
-    /// implementation) would STILL be unsafe, because `is_viewer()` is `false` for a normal,
-    /// non-shared session too -- so the gate would engage for every ordinary session, not just
-    /// screen-share sharers. And most `DProtoHook` variants don't carry a `session_id` at all
-    /// yet: `DProtoHook::session_id()` unconditionally returns `None` for `CommandFinished`,
-    /// `Preexec`, `Bootstrapped`, `PreInteractiveSSHSession`, `SSH`, `InputBuffer`, `Clear`,
-    /// `InitSubshell`, and `FinishUpdate` (see that function's doc comment in
-    /// `ansi/dcs_hooks.rs`). `validate_hook_session_id` in `ansi/mod.rs` rejects any hook whose
-    /// `requires_registered_session()` is `true` but whose `session_id()` is `None` -- which is
-    /// every one of those hook types. Flipping this gate today would reject `CommandFinished`
-    /// and `Preexec` (the exact hooks the original warning called out) for every real,
-    /// non-viewer session, breaking ordinary command-lifecycle tracking entirely.
-    ///
-    /// Only `InitShell`, `Precmd`, and `ExitShell` carry a real `session_id` right now, which is
-    /// why the PTY-spawn/remote-tty/subshell registration wiring above is real and correct for
-    /// those hooks, but not sufficient on its own to flip this gate. That needs `session_id`
-    /// threaded through the remaining `DProtoHook` variants and the shell-script code that emits
-    /// them (`bash_body.sh` / `zsh_body.sh` / `fish.sh` / `pwsh.ps1`) first. See #532.
+    /// If you add a new emitter, it must carry a registered ID. With this gate on, anything that
+    /// can write to the pty could otherwise forge a lifecycle hook -- most sharply `InputBuffer`,
+    /// which lands in the user's command input line.
     fn should_validate_dcs_hook_session_id(&self) -> bool {
-        false
+        !self.shared_session_status().is_viewer()
     }
 
     fn set_title(&mut self, title: Option<String>) {
@@ -3220,6 +3233,22 @@ impl ansi::Handler for TerminalModel {
     fn ssh(&mut self, value: SSHValue) {
         if !self.ignore_bootstrapping_messages {
             let remote_shell = value.remote_shell.clone();
+            let Some(remote_session_id) = value.remote_session_id.map(SessionId::from) else {
+                log::warn!("Rejected SSH hook without remote_session_id");
+                return;
+            };
+            // The value `0` is the legacy/default session ID, not a client-generated
+            // integrity token.
+            if remote_session_id.as_u64() == 0 {
+                log::warn!("Rejected SSH hook with zero remote_session_id");
+                return;
+            }
+            // The SSH hook is emitted by the *local* (already registered) shell and carries the
+            // ID that same wrapper minted from /dev/urandom and baked into the remote shell's
+            // `WARP_SESSION_ID`. Registering it here means the remote session's hooks are
+            // validated against an ID this client chose, not one the far side asserted -- so no
+            // trust-on-first-use window is needed for warpified SSH.
+            self.register_session_id(remote_session_id);
             if value.external_control_master {
                 log::info!(
                     "SSH wrapper attached to an external ControlMaster at {}; \
@@ -3674,8 +3703,7 @@ impl ansi::Handler for TerminalModel {
                     // files in the working directory. Upstream `f3b9ce1c8f` "[Security]
                     // Disable iterm file download, limit support to inline files"
                     // (#25261, GHSA advisory) removed the write entirely; only inline
-                    // (`inline=1`) image payloads are still handled, below. NOT COMPILED
-                    // -- builds are suspended; verified by reading only.
+                    // (`inline=1`) image payloads are still handled, below.
                     log::warn!(
                         "Ignoring non-inline iTerm file payload; automatic local file writes are disabled."
                     );
@@ -3946,9 +3974,7 @@ impl ModeProvider for TerminalModel {
 /// Validates and decodes in-band command output sent via `warp_send_generator_output_osc_message`.
 /// Upon success, returns the string content of the generator output. The OSC payload is expected
 /// to conform to the following format:
-///
 ///   <content_length>;<content>
-///
 /// where `content_length` is the length (number of bytes) in `content`.  If the
 /// payload does not conform to this format or if expected content length does not
 /// match the actual content length, returns an error.

@@ -358,3 +358,35 @@ fn only_powershell_enumerates_functions_and_builtins_after_bootstrap() {
         assert!(command.contains("[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"));
     }
 }
+
+// `ebedb9fd`: executable discovery on a localized Windows install. PowerShell
+// encodes its stdout with the machine's active code page, so on a GBK (or any
+// other non-UTF-8) system the executable names come back as bytes
+// `CommandOutput::to_string` — which is `String::from_utf8`, not a lossy decode
+// — refuses outright. `executables_from_shell_command_output` then returns an
+// empty Vec and every command in the input stays underlined as unknown for the
+// rest of the session. The fix is at the emitter: have PowerShell write the
+// joined names as explicit UTF-8 bytes, exactly as the deferred function and
+// cmdlet enumerations already do.
+#[test]
+fn powershell_executable_enumeration_writes_utf8_not_the_active_code_page() {
+    let command = ShellType::PowerShell.shell_command_to_get_executables();
+
+    assert!(command.contains("Get-Command -CommandType Application"));
+    assert!(command.contains("[System.Text.UTF8Encoding]::new($false).GetBytes($text)"));
+    assert!(command.contains("[Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"));
+
+    // The bare `Get-Command … | Select-Object -ExpandProperty Name` pipeline is
+    // the pre-fix form: its output goes through PowerShell's own encoder.
+    let pre_fix_form = "Select-Object -ExpandProperty Name";
+    assert!(!command.trim_end().ends_with(pre_fix_form));
+
+    // Only PowerShell needs this; the Unix shells emit UTF-8 already.
+    for shell_type in [ShellType::Bash, ShellType::Zsh, ShellType::Fish] {
+        assert!(
+            !shell_type
+                .shell_command_to_get_executables()
+                .contains("UTF8Encoding")
+        );
+    }
+}

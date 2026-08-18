@@ -26,7 +26,7 @@ use windows::Win32::System::Console::{COORD, HPCON};
 use windows::Win32::System::Threading::{
     CreateProcessW, WaitForSingleObject, CREATE_BREAKAWAY_FROM_JOB, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION,
-    STARTUPINFOEXW, STARTUPINFOW,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW,
 };
 
 use crate::terminal::local_tty::windows::proc_thread_attribute_list::ProcThreadAttributeList;
@@ -140,9 +140,7 @@ pub(super) fn spawn(
     let _ = unsafe { conpty_api.show_hide(pty_handle, true) };
 
     // Spawn the child process, and tell it to communicate via the pseudoconsole.
-    // The default zeros the memory.
-    let mut startup_info = STARTUPINFOEXW::default();
-    startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    let mut startup_info = new_pty_startup_info();
 
     let mut attrs = unsafe {
         ProcThreadAttributeList::new()
@@ -223,6 +221,49 @@ pub(super) fn spawn(
     };
     Ok(PtySpawnInfo { result, child })
 }
+/// Builds the [`STARTUPINFOEXW`] used to launch a pseudoconsole-hosted shell.
+///
+/// Two things matter here, and both are load-bearing:
+///
+/// * `cb` must be the size of the *extended* struct, because we pass
+///   `EXTENDED_STARTUPINFO_PRESENT` and hang the
+///   `PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE` attribute list off it.
+/// * `dwFlags` must contain `STARTF_USESTDHANDLES` while `hStdInput` /
+///   `hStdOutput` / `hStdError` stay null (the zeroed default).
+///
+/// That second point is the subtle one, and it was regressed once already, so
+/// do not "simplify" it away again:
+///
+/// When `STARTF_USESTDHANDLES` is *absent*, `CreateProcessW` copies the
+/// **parent's** standard handles into the child's process parameters. Zap is
+/// frequently launched with its own stdio redirected — from a terminal, from a
+/// test runner, from CI — and the child then comes up believing its stdio is a
+/// redirected pipe rather than the pseudoconsole. For PowerShell that is fatal
+/// in a way that looks like a bootstrap hang: the REPL starts (so `-NoExit` is
+/// honoured and the `InitShell` prompt hook is emitted), then the very first
+/// stdin read hits EOF and pwsh exits with status 0 before it can ever be told
+/// to source the bootstrap script. `#< CLIXML` envelopes on stderr are the
+/// other tell-tale of the same redirection.
+///
+/// Setting the flag with null handles says "this child inherits *no* standard
+/// handles", which is what makes the console subsystem hand it the
+/// pseudoconsole's own ConDrv handles. This is what Warp does (see
+/// `local_tty/windows/mod.rs` at the pinned oracle) and what Windows Terminal
+/// does in `ConptyConnection::_LaunchAttachedClient`.
+///
+/// A previous fork commit removed this flag, citing the MSDN sentence "the
+/// handles must be inheritable and `bInheritHandles` must be TRUE". That
+/// requirement is about *supplied* handles; null handles are the documented way
+/// to request "no inherited stdio" and do not need `bInheritHandles`. Removing
+/// the flag therefore did not fix an argument-validation problem, it just moved
+/// the failure into the child.
+fn new_pty_startup_info() -> STARTUPINFOEXW {
+    let mut startup_info = STARTUPINFOEXW::default();
+    startup_info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+    startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    startup_info
+}
+
 #[derive(Error, Debug)]
 pub enum EncodingError {
     #[error("Could not encode argument {arg:?}")]
@@ -462,3 +503,7 @@ impl Drop for Pty {
         let _ = self.pipe.disconnect();
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

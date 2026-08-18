@@ -57,6 +57,7 @@ fn command_finished_and_precmd(terminal: &mut TerminalModel) {
     };
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: completion_metadata.clone(),
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata,
@@ -64,9 +65,26 @@ fn command_finished_and_precmd(terminal: &mut TerminalModel) {
     });
 }
 
-// Ensures that an ssh session successfully bootstraps even if the block list is empty.
+// Ensures that an SSH session successfully bootstraps even if the block list is empty and that
+// the parent shell resumes after the nested shell exits.
+//
+// The parent-return half is ported from the pin
+// (`terminal_model_tests.rs:361-467`, `42effe840`), which renamed this test when it grew that
+// half; the bootstrap half above it is the fork's pre-existing
+// `ssh_bootstraps_if_blocklist_empty` kept verbatim. One deliberate divergence from the pin's
+// body, pre-existing here and left alone: this fork drives the mid-test prompt with
+// `block_list_mut().prompt_only_precmd(..)` rather than the pin's
+// `precmd_with_completion_metadata`.
+//
+// The `SSHValue` below carries an explicit non-zero `remote_session_id` where the pin passes a
+// bare `SSHValue::default()`. Since #532, `TerminalModel::ssh` rejects a hook whose
+// `remote_session_id` is absent or zero (`None` is exactly what `default()` yields), so the
+// pin's spelling leaves `pending_legacy_ssh_session` at `None` and this test never reaches the
+// SSH branch its name advertises -- `init_shell` would drive the nested-shell epoch entirely on
+// its own. Supplying the ID makes the hook land: it is registered, the pending legacy-SSH
+// session is set, and `init_shell` consumes it into the pending `SessionInfo`.
 #[test]
-fn ssh_bootstraps_if_blocklist_empty() {
+fn ssh_bootstraps_if_blocklist_empty_and_reconciles_parent_return() {
     let mut terminal = TerminalModel::mock(None, None);
     let _recovery_enabled = FeatureFlag::TerminalLifecycleRecovery.override_enabled(true);
     command_finished_and_precmd(&mut terminal);
@@ -94,6 +112,7 @@ fn ssh_bootstraps_if_blocklist_empty() {
         linux_distribution: None,
         wsl_name: None,
         shell_path: None,
+        session_id: None,
     };
     terminal.bootstrapped(bootstrapped_value.clone());
     terminal.command_finished(CommandFinishedValue {
@@ -101,6 +120,7 @@ fn ssh_bootstraps_if_blocklist_empty() {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
     terminal
         .block_list_mut()
@@ -111,7 +131,12 @@ fn ssh_bootstraps_if_blocklist_empty() {
     // Clear all the blocks in the blocklist.
     terminal.clear_screen(ClearMode::ResetAndClear);
 
-    terminal.ssh(SSHValue::default());
+    terminal.ssh(SSHValue {
+        remote_shell: "bash".to_owned(),
+        // Non-zero, or `TerminalModel::ssh` drops the hook. See the note above the test.
+        remote_session_id: Some(167303092612202),
+        ..Default::default()
+    });
     terminal.init_shell(InitShellValue {
         shell: "bash".into(),
         user: "zach".to_owned(),
@@ -129,6 +154,50 @@ fn ssh_bootstraps_if_blocklist_empty() {
     command_finished_and_precmd(&mut terminal);
 
     assert!(terminal.is_active_block_bootstrapped());
+
+    // The nested shell exits. Its final prompt block must be reconciled against the *parent*
+    // shell's completion -- the parent reports the nested shell's exit status (255) and a new
+    // block id, and the model must hand the active block over to that id rather than stranding
+    // the nested prompt in `Executing`.
+    let nested_prompt_block_id = terminal.active_block_id().clone();
+    terminal.exit_shell(ExitShellValue {
+        session_id: 0.into(),
+    });
+    let parent_next_block_id = BlockId::new();
+    let completion_metadata = CompletionMetadata {
+        exit_code: ExitCode::from(255),
+        next_block_id: parent_next_block_id.clone(),
+    };
+    terminal.command_finished(CommandFinishedValue {
+        completion_metadata: completion_metadata.clone(),
+        session_id: None,
+    });
+    terminal.precmd_with_completion_metadata(PrecmdValue {
+        completion_metadata,
+        prompt_metadata: PromptMetadata {
+            pwd: Some("/parent-return".to_owned()),
+            ..Default::default()
+        },
+    });
+
+    let completed_nested_prompt = terminal
+        .block_list()
+        .block_with_id(&nested_prompt_block_id)
+        .expect("The nested shell's final prompt block should be completed.");
+    assert_eq!(
+        completed_nested_prompt.state(),
+        BlockState::DoneWithExecution
+    );
+    assert_eq!(completed_nested_prompt.exit_code(), ExitCode::from(255));
+    assert_eq!(terminal.active_block_id(), &parent_next_block_id);
+    assert_eq!(
+        terminal
+            .block_list()
+            .active_block()
+            .pwd()
+            .map(String::as_str),
+        Some("/parent-return")
+    );
 }
 
 #[test]
@@ -701,6 +770,7 @@ fn test_exit_alt_screen_on_command_finished() {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
 
     assert!(!terminal.alt_screen_active);
@@ -732,6 +802,7 @@ fn lifecycle_repeated_and_executing_command_starts_are_safely_gated() {
     // command.
     terminal.preexec(PreexecValue {
         command: "running".to_owned(),
+        session_id: None,
     });
     assert_eq!(
         terminal.start_command_execution(),
@@ -760,12 +831,14 @@ fn lifecycle_terminal_exit_absorbs_later_inputs() {
     );
     terminal.preexec(PreexecValue {
         command: "ignored".to_owned(),
+        session_id: None,
     });
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: CompletionMetadata {
             exit_code: ExitCode::from(1),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
     terminal.init_shell(InitShellValue {
         shell: "bash".to_owned(),
@@ -790,6 +863,7 @@ fn test_unset_bracketed_paste_mode_on_command_finished() {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
 
     assert!(!terminal.is_term_mode_set(TermMode::BRACKETED_PASTE));
@@ -904,6 +978,7 @@ fn precmd_with_completion_metadata_recovery_cleans_up_alt_screen_and_bracketed_p
     terminal.start_command_execution();
     terminal.preexec(PreexecValue {
         command: "vim".to_owned(),
+        session_id: None,
     });
     let completed_block_id = terminal.active_block_id().clone();
     terminal.set_mode(Mode::BracketedPaste);
@@ -978,12 +1053,14 @@ fn precmd_with_completion_metadata_records_completion_mismatch_without_overwriti
     terminal.start_command_execution();
     terminal.preexec(PreexecValue {
         command: "false".to_owned(),
+        session_id: None,
     });
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: CompletionMetadata {
             exit_code: ExitCode::from(7),
             next_block_id: next_block_id.clone(),
         },
+        session_id: None,
     });
     while event_rx.try_recv().is_ok() {}
 
@@ -1319,6 +1396,7 @@ fn report_shell_typeahead(model: &mut TerminalModel, text: &str) {
     // (Warp's carries a `HookSessionId`). No assertion changed.
     model.input_buffer(InputBufferValue {
         buffer: text.to_owned(),
+        session_id: None,
     });
 }
 
@@ -1383,6 +1461,7 @@ fn normal_command_finished_and_precmd(
     );
     terminal.preexec(PreexecValue {
         command: "completed".to_owned(),
+        session_id: None,
     });
     let completion_metadata = CompletionMetadata {
         exit_code: ExitCode::from(0),
@@ -1390,6 +1469,7 @@ fn normal_command_finished_and_precmd(
     };
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: completion_metadata.clone(),
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata,
@@ -1414,6 +1494,7 @@ fn repeated_and_executing_command_starts_are_safely_gated() {
 
     terminal.preexec(PreexecValue {
         command: "running".to_owned(),
+        session_id: None,
     });
     assert_eq!(
         terminal.start_command_execution(),
@@ -1440,12 +1521,14 @@ fn terminal_exit_absorbs_later_lifecycle_inputs() {
     );
     terminal.preexec(PreexecValue {
         command: "ignored".to_owned(),
+        session_id: None,
     });
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: CompletionMetadata {
             exit_code: ExitCode::from(1),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata: CompletionMetadata {
@@ -1475,6 +1558,7 @@ fn accepted_precmd_and_preexec_target_the_block_list_while_the_alt_screen_is_act
     terminal.enter_alt_screen(true);
     terminal.preexec(PreexecValue {
         command: "accepted".to_owned(),
+        session_id: None,
     });
     assert_eq!(
         terminal.block_list().active_block().state(),
@@ -1488,6 +1572,7 @@ fn accepted_precmd_and_preexec_target_the_block_list_while_the_alt_screen_is_act
             exit_code: ExitCode::from(0),
             next_block_id: next_block_id.clone(),
         },
+        session_id: None,
     });
     terminal.enter_alt_screen(true);
     terminal.precmd_with_completion_metadata(PrecmdValue {
@@ -1517,6 +1602,7 @@ fn duplicate_and_colliding_completion_evidence_is_ignored() {
     terminal.start_command_execution();
     terminal.preexec(PreexecValue {
         command: "first".to_owned(),
+        session_id: None,
     });
     let first_block_id = terminal.active_block_id().clone();
     terminal.command_finished(CommandFinishedValue {
@@ -1524,6 +1610,7 @@ fn duplicate_and_colliding_completion_evidence_is_ignored() {
             exit_code: ExitCode::from(9),
             next_block_id: first_block_id.clone(),
         },
+        session_id: None,
     });
     assert_eq!(terminal.active_block_id(), &first_block_id);
     assert_eq!(
@@ -1537,6 +1624,7 @@ fn duplicate_and_colliding_completion_evidence_is_ignored() {
             exit_code: ExitCode::from(0),
             next_block_id: second_block_id.clone(),
         },
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata: CompletionMetadata {
@@ -1548,12 +1636,14 @@ fn duplicate_and_colliding_completion_evidence_is_ignored() {
     terminal.start_command_execution();
     terminal.preexec(PreexecValue {
         command: "second".to_owned(),
+        session_id: None,
     });
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: CompletionMetadata {
             exit_code: ExitCode::from(7),
             next_block_id: first_block_id,
         },
+        session_id: None,
     });
     assert_eq!(terminal.active_block_id(), &second_block_id);
     assert_eq!(
@@ -1579,6 +1669,7 @@ fn empty_and_syntax_error_commands_without_preexec_complete_as_execution() {
 
         terminal.command_finished(CommandFinishedValue {
             completion_metadata: completion_metadata.clone(),
+            session_id: None,
         });
         terminal.precmd_with_completion_metadata(PrecmdValue {
             completion_metadata,
@@ -1614,6 +1705,7 @@ fn command_finished_recovers_unknown_started_block_with_real_exit_code() {
             exit_code: ExitCode::from(29),
             next_block_id: next_block_id.clone(),
         },
+        session_id: None,
     });
 
     let completed_block = terminal
@@ -1818,9 +1910,11 @@ fn normal_lifecycle_pipeline_emits_completion_and_prompt_side_effects_once() {
     terminal.start_command_execution();
     terminal.preexec(PreexecValue {
         command: "false".to_owned(),
+        session_id: None,
     });
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: completion_metadata.clone(),
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata,
@@ -1929,6 +2023,7 @@ fn recovery_advances_finished_active_block_without_republishing_completion() {
     };
     terminal.command_finished(CommandFinishedValue {
         completion_metadata: completion_metadata.clone(),
+        session_id: None,
     });
     terminal.precmd_with_completion_metadata(PrecmdValue {
         completion_metadata,
@@ -2149,18 +2244,16 @@ fn hex_encoded_json_dcs(payload: &str) -> Vec<u8> {
     [HEX_ENCODED_JSON_DCS_START, &encoded, DCS_END].concat()
 }
 
-// Ported from the pinned oracle (`02b53fcd8`, `app/src/terminal/model/terminal_model_tests.rs`).
-// Unchanged from the pin except that `CommandFinishedValue` here has no `session_id` field to
-// set to `None` -- see #532: unlike the pin, `CommandFinished` doesn't carry a `session_id` in
-// this fork yet (`DProtoHook::session_id()` returns `None` for it unconditionally), so there is
-// nothing to omit; the direct `command_finished` call below only exists to seed an active block
-// so the `pwd` assertions below are meaningful, and does not itself go through DCS validation.
+// Ported from the pinned oracle, and now byte-identical to it: `CommandFinishedValue` carries a
+// `session_id` here as it does in the pin (#532). The direct `command_finished` call below only
+// exists to seed an active block so the `pwd` assertions are meaningful; it does not itself go
+// through DCS validation.
 //
 // Exercises the real `TerminalModel::should_validate_dcs_hook_session_id` gate: for a *viewer*
 // (a session passively receiving another session's shared events), the pin's implementation
 // (`!self.shared_session_status().is_viewer()`) evaluates to `false`, so validation is skipped
-// and an unregistered session_id is accepted. This should pass unconditionally, since the fork's
-// current hardcoded `false` produces identical behavior for a viewer.
+// and an unregistered session_id is accepted. The fork now carries that same implementation
+// (#532), so this exercises the viewer arm of the live gate.
 #[test]
 fn viewer_processes_dcs_hook_with_unregistered_session_id() {
     let mut terminal = TerminalModel::mock(None, None);
@@ -2171,6 +2264,7 @@ fn viewer_processes_dcs_hook_with_unregistered_session_id() {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
 
     let bytes = hex_encoded_json_dcs(
@@ -2194,29 +2288,27 @@ fn viewer_processes_dcs_hook_with_unregistered_session_id() {
     );
 }
 
-// Ported from the pinned oracle (`02b53fcd8`, `app/src/terminal/model/terminal_model_tests.rs`).
-// Same adaptation as `viewer_processes_dcs_hook_with_unregistered_session_id` above (no
-// `session_id` field on this fork's `CommandFinishedValue`).
+// Ported from the pinned oracle, and now byte-identical to it.
 //
 // Exercises the real gate for a *sharer* (owns the PTY, would have registered its own session
 // ID): the pin's `!is_viewer()` evaluates to `true`, so an unregistered session_id must be
 // rejected.
 //
-// NOTE (#532): this assertion is written against the pin's real
-// `should_validate_dcs_hook_session_id` implementation, which this fork does NOT enable yet --
-// `should_validate_dcs_hook_session_id` stays hardcoded `false` in production (see the doc
-// comment on that function in `terminal_model.rs`), because most `DProtoHook` variants
-// (`CommandFinished`, `Preexec`, `Bootstrapped`, `SSH`, ...) don't carry a `session_id` yet, so
-// flipping the gate would reject those hooks for every ordinary session, not just this one. This
-// test is expected to FAIL against the current hardcoded-`false` gate (it would observe
-// `Some("/sharer")`, not `None`) until that gate is safely enabled. Written, unverified -- see
-// `docs/sweep/outcome-532-session-wiring.md`.
+// LIVE as of the #532 gate flip. It was ignored while `should_validate_dcs_hook_session_id` was
+// hardcoded `false`; that hardcode is gone and the fork now carries the pin's
+// `!self.shared_session_status().is_viewer()`.
+//
+// The flip was unblocked in three steps, each of which had to land before this test could run:
+// the bootstrap scripts thread `$WARP_SESSION_ID` on every hook the pin validates; the SSH
+// wrapper's remote ID is minted locally from /dev/urandom and registered via the `SSH` hook's
+// `remote_session_id`; the fork's three tmux-warpification hooks
+// (`RemoteWarpificationIsUnavailable`, `SshTmuxInstaller`, `TmuxInstallFailed`) get
+// `SESSION_ID_PLACEHOLDER` substituted into the remote-side scripts under
+// `app/assets/bundled/ssh/` before they reach the pty. The last of the three was PowerShell:
+// `pwsh.ps1` now quotes `$global:_warpSessionId` on all nine of its hooks, not just its two
+// `Precmd` payloads, so a PowerShell session still bootstraps, closes blocks and reports input
+// with the gate on.
 #[test]
-#[ignore = "Blocked: DProtoHook::session_id() returns None for CommandFinished/Preexec/\
-Bootstrapped/InputBuffer/Clear and others, so enabling should_validate_dcs_hook_session_id \
-would reject those hooks for EVERY non-shared session (NotShared.is_viewer() == false), not \
-just shared ones. Registration is now wired (this commit); threading session_id through the \
-remaining hook variants is the remaining prerequisite. Un-ignore with that work, not before."]
 fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
     let mut terminal = TerminalModel::mock(None, None);
     terminal.set_shared_session_status(SharedSessionStatus::ActiveSharer);
@@ -2226,6 +2318,7 @@ fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
             exit_code: ExitCode::from(0),
             next_block_id: BlockId::new(),
         },
+        session_id: None,
     });
 
     let bytes = hex_encoded_json_dcs(

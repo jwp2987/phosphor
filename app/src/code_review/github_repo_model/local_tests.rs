@@ -2,10 +2,10 @@
 //! (`02b53fcd8:app/src/code_review/github_repo_model/local_tests.rs`).
 //!
 //! The pin's `GitRepoStatusModel::new_local_for_test(repository, metadata, ctx)`
-//! is this fork's `GitRepoStatusModel::new_for_test(repository, metadata)` (the
-//! fork flattened `git_repo_model/{mod,local,remote}.rs` into
-//! `git_status_update.rs` and its test constructor takes no `ModelContext`), so
-//! these port with only that rename.
+//! now exists under that name in this fork too; the fork flattens
+//! `git_repo_model/{mod,local}.rs` into `git_status_update.rs`, with the remote
+//! backend in the sibling `git_status_update_remote.rs`. So these port
+//! verbatim.
 
 use repo_metadata::DirectoryWatcher;
 use warp_util::standardized_path::StandardizedPath;
@@ -55,7 +55,8 @@ fn new_github_repo_model_for_test(
 ) -> (tempfile::TempDir, ModelHandle<LocalGitHubRepoModel>) {
     let temp_dir = tempfile::TempDir::new().unwrap();
     let repository = test_repository_handle(app, &temp_dir);
-    let git_status = app.add_model(move |_| GitRepoStatusModel::new_for_test(repository, None));
+    let git_status =
+        app.add_model(move |ctx| GitRepoStatusModel::new_local_for_test(repository, None, ctx));
     let model = app.add_model(move |_| LocalGitHubRepoModel::new_for_test(git_status));
     (temp_dir, model)
 }

@@ -245,6 +245,15 @@ if [[ -x ./script/check_integration_test_registry ]]; then
     ./script/check_integration_test_registry >/dev/null 2>&1 && ok "integration test registry" \
         || fail "integration test registry -- run ./script/check_integration_test_registry for detail"
 fi
+# Diffs against the merge-base with origin/main, working tree included, so this
+# sees an unexplained bulk deletion before it is even committed. Without
+# --require-base it SKIPS rather than fails when origin/main is unavailable
+# (shallow clone, offline worktree) -- CI passes --require-base and is the
+# authority. See the script's header for why the thresholds are what they are.
+if [[ -x ./script/check_large_deletions ]]; then
+    ./script/check_large_deletions >/dev/null 2>&1 && ok "large deletions" \
+        || fail "large deletions -- run ./script/check_large_deletions for detail"
+fi
 
 # ------------------------------------------------------------- shell tests
 # The packaging scripts are shell, so their tests are shell too -- no cargo,

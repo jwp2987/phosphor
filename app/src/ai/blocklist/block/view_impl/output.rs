@@ -194,7 +194,6 @@ pub(crate) struct Props<'a> {
 /// Matches opencode TUI's `showDetails` default behavior — only show in-progress /
 /// error / cancelled, and collapse successfully-completed cards so long sessions
 /// don't get buried under a pile of them.
-///
 /// **Not hidden**:
 /// - failed / cancelled actions (the user needs to see the error to retry)
 /// - cards still streaming (state not yet settled)
@@ -1412,7 +1411,6 @@ pub fn render_read_files_text<A: Action>(
 }
 
 /// Returns the display text for a `read_skill` action.
-///
 /// When the skill is found in the manager, formats it as a slash command
 /// (e.g. `/hello-world`). When the skill is unknown, falls back to the
 /// raw reference label **without** prepending an extra `/`, which would
@@ -1482,7 +1480,6 @@ fn render_read_skill(
 
 /// Resolves the skill a `ReadFiles` action's files belong to, if every file resolves to
 /// the *same* skill's `SKILL.md` location.
-///
 /// Ported from the pin's `ai/blocklist/block/view_impl/output.rs::
 /// parsed_skill_for_common_locations` (`02b53fcd8`). Refuses to guess when the files
 /// don't share one owning skill — including when they were read from different remote
@@ -2083,7 +2080,7 @@ fn create_formatted_text_for_grep(
         .as_ref()
         .is_some_and(|status| status.is_queued());
 
-    // NOT COMPILED -- builds are suspended. Ported from upstream `d793e7f939`
+    // Ported from upstream `d793e7f939`
     // ("Fix doubled file separators in grep & file-glob tool-call headers
     // (Windows)", #13160): rendering the raw tool-call `path` argument
     // verbatim doubled up path separators in the displayed header on
@@ -2205,7 +2202,7 @@ fn create_formatted_text_for_file_glob(
         .as_ref()
         .is_some_and(|status| status.is_queued());
 
-    // NOT COMPILED -- builds are suspended. Ported from upstream `d793e7f939`
+    // Ported from upstream `d793e7f939`
     // (#13160) -- see the comment in `create_formatted_text_for_grep` above,
     // same fix applied to the file-glob tool-call header.
     let path = path
@@ -2884,7 +2881,6 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
 
 /// Whether a `use_computer` block should tell the user their captured screenshot never
 /// reached the model.
-///
 /// The pin decorates this block with a *recording* footer instead
 /// (`should_decorate_recorded_use_computer` / `render_recording_footer` in the pin's
 /// `output.rs`, gated on `RecordingSpanInfo`): a `UseComputer` call whose actions are
@@ -2893,7 +2889,6 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
 /// session recording, which this fork has declined (`DECLINED.md`, "computer_use
 /// session recording", #350) -- there is no `RecordingSpanInfo`/recording controller
 /// here to decorate with, on purpose.
-///
 /// What this fork has instead, as of tonight, is a screenshot that may or may not
 /// reach the model at all (`ai::agent_providers::tools::computer::ScreenshotDelivery`):
 /// the "View screenshot" button below always shows the capture to the *user* once one
@@ -2901,7 +2896,6 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
 /// identically even though the agent could not see the screen. That is the one
 /// dimension the block can decorate honestly, so it replaces the pin's recording
 /// footer rather than porting it.
-///
 /// Deliberately one-sided: it only renders the case it can state with confidence.
 /// Whether an image-capable model's screenshot was actually attached on a *given* turn
 /// (vs. `ScreenshotDelivery::Superseded`/`Undeliverable`) is decided per-request in
@@ -2918,7 +2912,6 @@ fn should_decorate_blind_use_computer_screenshot(
 }
 
 /// The attachment caps of the model that produced this block's output, if resolvable.
-///
 /// Uses the same resolution `chat_stream`'s screenshot-attachment planning and the
 /// model-picker's vision chip both use -- `resolve_for_model` first, `caps_for` as the
 /// fallback when the model has dropped out of `provider.models` -- so this can only

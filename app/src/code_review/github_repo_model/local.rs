@@ -91,7 +91,7 @@ impl LocalGitHubRepoModel {
     ) -> Self {
         let branch = git_status
             .as_ref(ctx)
-            .metadata()
+            .metadata(ctx)
             .map(|m| m.current_branch_name.clone());
 
         // Track branch changes from the sibling. Only PR info depends on the
@@ -101,7 +101,7 @@ impl LocalGitHubRepoModel {
                 let new_branch = me
                     .git_status
                     .as_ref(ctx)
-                    .metadata()
+                    .metadata(ctx)
                     .map(|m| m.current_branch_name.clone());
                 if new_branch != me.branch {
                     me.branch = new_branch;
@@ -292,7 +292,23 @@ impl LocalGitHubRepoModel {
         }
     }
 
+    /// Whether the user-facing settings group backing the default-PR-chip
+    /// validation flag is registered.
+    ///
+    /// It is not on the remote-server daemon, which runs headless and never
+    /// calls `crate::settings::init` — and where there is no prompt chip to
+    /// suppress in the first place. Both `maybe_*_github_pr_default` are pure
+    /// UI bookkeeping, so skipping them there is the right behaviour, not a
+    /// degradation; without the guard `SessionSettings::as_ref` would panic on
+    /// the daemon's first `gh` result.
+    fn session_settings_available(ctx: &ModelContext<Self>) -> bool {
+        ctx.has_singleton_model::<SessionSettings>()
+    }
+
     fn maybe_suppress_github_pr_default(ctx: &mut ModelContext<Self>) {
+        if !Self::session_settings_available(ctx) {
+            return;
+        }
         let current = *SessionSettings::as_ref(ctx).github_pr_chip_default_validation;
         if current != GithubPrPromptChipDefaultValidation::Suppressed {
             SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -304,6 +320,9 @@ impl LocalGitHubRepoModel {
     }
 
     fn maybe_validate_github_pr_default(ctx: &mut ModelContext<Self>) {
+        if !Self::session_settings_available(ctx) {
+            return;
+        }
         let current = *SessionSettings::as_ref(ctx).github_pr_chip_default_validation;
         if current != GithubPrPromptChipDefaultValidation::Validated {
             SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -319,10 +338,21 @@ impl LocalGitHubRepoModel {
 ///
 /// Uses the shell's interactive `PATH` so `gh` can be found when the app was
 /// launched outside a login shell, e.g. from the macOS GUI.
+///
+/// `None` when `LocalShellState` is not registered. That is the remote-server
+/// daemon: it runs headless, registers no shell/settings singletons, and would
+/// panic here otherwise. Falling back to the daemon process PATH is also what
+/// the daemon's own `ServerModel::interactive_path_future` yields on a build
+/// without a local tty, so daemon-run `gh` behaves the same either way.
 #[cfg(feature = "local_tty")]
 fn interactive_path_future(
     ctx: &mut ModelContext<LocalGitHubRepoModel>,
 ) -> futures::future::BoxFuture<'static, Option<String>> {
+    use futures::FutureExt as _;
+
+    if !ctx.has_singleton_model::<LocalShellState>() {
+        return futures::future::ready(None).boxed();
+    }
     LocalShellState::handle(ctx).update(ctx, |shell_state, ctx| {
         shell_state.get_interactive_path_env_var(ctx)
     })

@@ -523,6 +523,7 @@ impl Workspace {
             context_menu.set_items(menu_items, view_ctx);
         });
         self.show_tab_right_click_menu = None;
+        self.show_tab_group_right_click_menu = None;
         self.hide_move_to_group_sidecar(ctx);
         self.show_tab_selection_right_click_menu = Some((tab_index, anchor));
         ctx.focus(&self.tab_right_click_menu);

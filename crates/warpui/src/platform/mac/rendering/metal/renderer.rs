@@ -74,13 +74,22 @@ impl<'a> RenderPass<'a> {
         mut self,
         drawable_size: pathfinder_geometry::vector::Vector2F,
         should_capture: bool,
+        presents_with_transaction: bool,
     ) -> Option<CapturedFrame> {
         self.encoder.endEncoding();
-
         self.encoding_finished = true;
 
-        self.buffer.commit();
+        // If we're able to do asynchronous presentation, do so - it allows us to avoid
+        // blocking on the GPU for the duration of the frame.
+        if !should_capture && !presents_with_transaction {
+            self.buffer
+                .presentDrawable(ProtocolObject::from_ref(self.drawable));
+            self.buffer.commit();
+            return None;
+        }
 
+        // Otherwise, commit the buffer and wait for it to complete before continuing.
+        self.buffer.commit();
         self.buffer.waitUntilCompleted();
 
         let captured = if should_capture {
@@ -277,6 +286,7 @@ impl Renderer {
         scene: &Scene,
         ctx: &MetalDrawContext,
         should_capture: bool,
+        presents_with_transaction: bool,
     ) -> Option<CapturedFrame> {
         self.resources
             .glyph_cache
@@ -286,7 +296,11 @@ impl Renderer {
 
         Frame::new(scene, &render_pass.encoder, &mut self.resources, ctx).draw();
 
-        render_pass.finish_with_capture(ctx.drawable_size, should_capture)
+        render_pass.finish_with_capture(
+            ctx.drawable_size,
+            should_capture,
+            presents_with_transaction,
+        )
     }
 }
 
@@ -1050,6 +1064,7 @@ impl super::super::Renderer for Renderer {
         let metal_device: &ProtocolObject<dyn MTLDevice> = metal_device;
 
         let metal_layer = window.metal_layer();
+        let presents_with_transaction = metal_layer.presentsWithTransaction();
         let drawable = metal_layer
             .nextDrawable()
             .expect("CAMetalLayer with allowsNextDrawableTimeout disabled always vends a drawable");
@@ -1074,7 +1089,7 @@ impl super::super::Renderer for Renderer {
 
         let capture_callback = window.capture_callback.borrow_mut().take();
         let should_capture = capture_callback.is_some();
-        let captured = Self::render(self, scene, ctx, should_capture);
+        let captured = Self::render(self, scene, ctx, should_capture, presents_with_transaction);
         if let (Some(frame), Some(callback)) = (captured, capture_callback) {
             callback(frame);
         }

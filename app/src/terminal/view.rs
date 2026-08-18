@@ -599,11 +599,9 @@ lazy_static! {
 
     /// The delay between receiving the RC file snippet for subshell bootstrap and writing the
     /// subshell InitShell command to the PTY.
-    ///
     /// This is necessary because some subshells may execute initialization commands (for example,
     /// `poetry shell` executes a command that sources the project's python virtualenv), and we
     /// want to submit the InitShell command _after_ those commands have finished execution.
-    ///
     /// This is purely a heuristic and may be subject to change based on user reports.
     static ref TRIGGER_RC_FILE_SUBSHELL_BOOTSTRAP_DELAY: Duration = Duration::from_millis(100);
 
@@ -613,13 +611,11 @@ lazy_static! {
 
     /// A list of alt-screen apps that are known to cause problems when resizing
     /// during initialization.
-    ///
     /// See [`TerminalView::resize_alt_screen_redundantly`] for more details.
     static ref ALT_SCREEN_APPS_WITH_RESIZE_PROBLEMS: HashSet<&'static str> = HashSet::from(["emacs"]);
 
     /// A list of alt-screen apps that should never use custom-padding in the alt-screen
     /// and should instead match blocklist padding.
-    ///
     /// See [`TerminalView::resize_alt_screen_redundantly`] for more details.
     static ref ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING: HashSet<&'static str> = HashSet::from(["k9s", "lazygit"]);
 }
@@ -827,15 +823,12 @@ impl NotificationsTrigger {
     /// Notifications have the following format
     /// - title: "'{start_of_command}...' {trigger_specific_details}"
     /// - body: "{additional_context} ...{end_of_output}"
-    ///
     /// For the command, we show the prefix (if not the whole command) since the user
     /// will likely be able to identify the command more easily by its prefix
     /// e.g. 'ssh user@...' vs '...nux.a.b.com'
-    ///
     /// For the output, we show the suffix (if not the whole output) since
     /// the end of the output is what the user likely missed when the terminal
     /// wasn't focused.
-    ///
     /// Note: we trim the ends of commands and outputs to remove whitespace
     /// which cause unpleasing gaps in the MacOS notifications.
     pub fn create_notification_content(
@@ -1286,21 +1279,17 @@ impl SizeUpdateBuilder {
                         .to_lines(new_size.cell_height_px());
 
                 // Here there be dragons!!!
-                //
                 // When the inline menu is open in waterfall mode, we apply a paint-time
                 // translation of the blocklist element to simulate the blocklist 'sliding'
                 // upwards, which allows the inline menu to be rendered beneath the blocklist,
                 // but preserves the input's vertical position.
-                //
                 // The fact that this is paint-time is important - it minimizes the surface area of
                 // logic that needs to even be aware of the inline menu visibility.
-                //
                 // However, it also means that the blocklist datamodel (heights in the sumtree)
                 // needs to be totally decoupled from inline menu visibility. This is the one place
                 // where the rendered positioning/size of the input element (which includes the
                 // inline menu) can actually affect sumtree heights -- when we recompute the 'gap'
                 // size in waterfall mode, which depends on the rendered input element size.
-                //
                 // Thus, when there is a gap and the inline menu is open, the gap should not
                 // account for the inline menu being open - it should remain the same size, and
                 // we explicitly subtract the height of the inline menu from the height of the input
@@ -2077,7 +2066,6 @@ pub enum AIContextInclusionState {
 pub struct BlocklistAIRenderContext {
     /// The set of `BlockId`s corresponding to blocks to be included or previously included as AI
     /// context.
-    ///
     /// This map is keyed by `ContextInclusionState`, where the corresponding set represents the
     /// blocks for that state.
     block_ids: HashMap<AIContextInclusionState, HashSet<BlockId>>,
@@ -2496,7 +2484,6 @@ pub struct TerminalView {
 
     /// Zap: cache of directory listings for remote SSH sessions' cwds, used to
     /// precisely validate terminal file links.
-    ///
     /// The key is `(session_id, absolute cwd path)`; the value is the real list of
     /// entries in that directory; `None` means the listing for that cwd is
     /// currently being fetched asynchronously (via a daemon `ListDirectory` RPC).
@@ -2532,7 +2519,6 @@ pub struct TerminalView {
     /// This field is an "&&" combination of two other pieces of state:
     ///   1. Whether this View (or one of its children) is the focused View.
     ///   2. Whether this View's window is the active window.
-    ///
     /// We need to derive and cache this state on this View in order to correctly implement focus
     /// reporting. Because focus is window-scoped, i.e. warpui does not consider activating a
     /// different window as blurring the focused View in the previously active window, we cannot
@@ -2617,7 +2603,6 @@ pub struct TerminalView {
     content_element_position_id: String,
 
     /// The position ID of the terminal input.
-    ///
     /// This is cached, as opposed to read from `Input` on demand, to prevent otherwise-possible
     /// circular view references that could occur because `TerminalView` implements the `MenuPositioningProvider`
     /// that's used as a dependency of certain `Input` methods. `MenuPositioningProvider`
@@ -2626,7 +2611,6 @@ pub struct TerminalView {
     input_position_id: String,
 
     /// A handle for the [`Hoverable`] that we render the [`Input`] view in.
-    ///
     /// While the [`Input`] itself might internally render with a [`Hoverable`]
     /// around it, we use a dedicated [`Hoverable`] at the [`TerminalView`] level because
     /// 1. the [`Input`] implementation might change, and
@@ -2639,7 +2623,6 @@ pub struct TerminalView {
     warpify_state: WarpifyState,
 
     /// The keystroke bound to canceling a command.
-    ///
     /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
     /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
     cancel_command_keystroke: Option<Keystroke>,
@@ -2702,7 +2685,27 @@ pub struct TerminalView {
     conversation_completed_callbacks: Vec<ConversationFinishedCallback>,
 
     /// Path to the current repository, or None if not currently in a repo.
+    /// Local only: this is populated from `DetectedRepositories` against the
+    /// local filesystem, and the detection block that sets it bails out early
+    /// via `active_session_path_if_local`. See `current_remote_repo_path` for
+    /// the SSH counterpart and `current_repo_location` for the union the
+    /// git-status / GitHub-info subscriptions consume.
     current_repo_path: Option<PathBuf>,
+
+    /// Repository root on the SSH host this terminal is connected to, when the
+    /// daemon's `NavigatedToDirectory` reported one for *this* session.
+    /// Deviation from the pin, which widens `current_repo_path` itself to
+    /// `Option<LocalOrRemotePath>` (`42effe840:app/src/terminal/view.rs:2837`).
+    /// That type change ripples through roughly a dozen consumers here plus the
+    /// `repo_path` fields of the code-review panel, pane-group events and
+    /// telemetry payloads it feeds — all of which are local-only by
+    /// construction. Carrying the remote root in its own field keeps those
+    /// untouched while giving the two subscription paths that *are*
+    /// location-agnostic (`update_git_status_subscription`,
+    /// `sync_pr_info_subscription`) the location they need. At most one of the
+    /// two fields is ever populated: a session is local or remote, not both.
+    #[cfg(feature = "local_fs")]
+    current_remote_repo_path: Option<warp_util::remote_path::RemotePath>,
 
     /// The title of the terminal view to show when there is no selected conversation.
     terminal_title: String,
@@ -2738,7 +2741,6 @@ pub struct TerminalView {
     /// is an enum with variants like Aws, Gcp, Azure.
     is_pending_aws_login: bool,
     /// `true` if this view explicitly requested a PTY shutdown.
-    ///
     /// Once set, this remains true for the rest of the view's lifecycle and
     /// suppresses `AgentExitedShellProcess` telemetry so manual shutdown paths
     /// (tab close, update relaunch, etc.) are not attributed to agent commands.
@@ -2818,9 +2820,32 @@ enum BlockMetadataUpdateSource {
 }
 
 impl TerminalView {
-    /// Returns the path to the current repository, if any.
+    /// Returns the path to the current *local* repository, if any.
     pub fn current_repo_path(&self) -> Option<&PathBuf> {
         self.current_repo_path.as_ref()
+    }
+
+    /// Returns the current repository as a location, local or remote.
+    /// This is what the git-status and GitHub-info subscriptions key on, since
+    /// `GitStatusUpdateModel` caches both kinds under one `LocalOrRemotePath`.
+    /// The remote root wins when both are set, which is not merely a tie-break.
+    /// The local repo-detection spawn assigns `current_repo_path` from
+    /// `DetectedRepositories` *before* it checks whether the session is local
+    /// at all, so on an SSH session it probes the remote shell's OSC 7 CWD
+    /// string against the **local** filesystem. That yields `None` most of the
+    /// time and a coincidentally same-named local repo the rest of the time —
+    /// never the repo the user is actually in. A live
+    /// `current_remote_repo_path` came from the daemon and is authoritative.
+    #[cfg(feature = "local_fs")]
+    fn current_repo_location(&self) -> Option<warp_util::local_or_remote_path::LocalOrRemotePath> {
+        use warp_util::local_or_remote_path::LocalOrRemotePath;
+
+        if let Some(remote) = self.current_remote_repo_path.as_ref() {
+            return Some(LocalOrRemotePath::Remote(remote.clone()));
+        }
+        self.current_repo_path
+            .as_ref()
+            .map(|path| LocalOrRemotePath::Local(path.clone()))
     }
 
     /// Create a SyncEvent for other terminals to use based on
@@ -2849,7 +2874,6 @@ impl TerminalView {
     }
 
     /// Marks rich content views as dirty if their metadata matches the given predicate.
-    ///
     /// Rich content heights are stored in the blocklist sumtree. When a view's rendered height
     /// changes (e.g., due to state changes that affect its layout), the sumtree entry becomes
     /// stale. Marking items as dirty ensures they are re-measured on the next layout frame,
@@ -3812,10 +3836,16 @@ impl TerminalView {
         );
 
         let block_list_settings_handle = BlockListSettings::handle(ctx);
-        ctx.subscribe_to_model(&block_list_settings_handle, |_, _, evt, ctx| match evt {
-            BlockListSettingsChangedEvent::ShowJumpToBottomOfBlockButton { .. } => ctx.notify(),
-            BlockListSettingsChangedEvent::SnackbarEnabled { .. } => ctx.notify(),
-            BlockListSettingsChangedEvent::ShowBlockDividers { .. } => ctx.notify(),
+        ctx.subscribe_to_model(&block_list_settings_handle, |me, _, evt, ctx| match evt {
+            BlockListSettingsChangedEvent::ShowJumpToBottomOfBlockButton { .. }
+            | BlockListSettingsChangedEvent::SnackbarEnabled { .. }
+            | BlockListSettingsChangedEvent::ShowBlockDividers { .. } => ctx.notify(),
+            BlockListSettingsChangedEvent::PreserveInputFocusOnBlockSelection { .. } => {
+                // Fires for every terminal view, so use the focus-gated variant to avoid
+                // stealing focus from another pane or Settings.
+                me.redetermine_terminal_focus(ctx);
+                ctx.notify();
+            }
         });
 
         ctx.subscribe_to_model(&SessionSettings::handle(ctx), move |me, _, evt, ctx| {
@@ -4084,6 +4114,8 @@ impl TerminalView {
             block_completed_callbacks: Default::default(),
             conversation_completed_callbacks: Default::default(),
             current_repo_path: None,
+            #[cfg(feature = "local_fs")]
+            current_remote_repo_path: None,
             terminal_title: Default::default(),
             ignore_next_set_title_event: false,
             cli_subagent_views: Default::default(),
@@ -4340,6 +4372,44 @@ impl TerminalView {
                                 indexed_path: indexed_path.clone(),
                                 is_git: *is_git,
                             }));
+
+                            // Track the remote repo root so the git-status and
+                            // GitHub-info subscriptions have a location to key
+                            // on. `current_repo_path` cannot serve here: it is
+                            // filled from local repo detection and its writer
+                            // bails out through `active_session_path_if_local`,
+                            // so on SSH it stayed `None` and neither model was
+                            // ever created. The PR chip has no shell fallback
+                            // (its generator is `|_| None`), which is why it was
+                            // empty for the whole session.
+                            #[cfg(feature = "local_fs")]
+                            {
+                                let new_remote_repo = if *is_git {
+                                    warp_util::standardized_path::StandardizedPath::try_new(
+                                        indexed_path,
+                                    )
+                                    .ok()
+                                    .map(|path| {
+                                        warp_util::remote_path::RemotePath::new(
+                                            crate::code::buffer_location::core_host_id_to_util(
+                                                host_id,
+                                            ),
+                                            path,
+                                        )
+                                    })
+                                } else {
+                                    None
+                                };
+                                if me.current_remote_repo_path != new_remote_repo {
+                                    me.current_remote_repo_path = new_remote_repo;
+                                    // Drop handles bound to the previous repo
+                                    // (unsubscribes automatically), then
+                                    // re-evaluate.
+                                    me.git_repo_status = None;
+                                    me.clear_github_repo_model(ctx);
+                                    me.update_git_status_subscription(ctx);
+                                }
+                            }
                         }
                     }
                     RemoteServerManagerEvent::SessionConnecting { .. }
@@ -4354,6 +4424,13 @@ impl TerminalView {
                     | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
                     | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
                     | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+                    // Consumed by the per-repo `RemoteGitRepoStatusModel` /
+                    // `RemoteGitHubRepoModel`, which subscribe to the manager
+                    // directly; the view sees their `GitRepoStatusEvent` /
+                    // `GitHubRepoEvent` instead.
+                    | RemoteServerManagerEvent::GitStatusPushReceived { .. }
+                    | RemoteServerManagerEvent::GitHubPrInfoPushReceived { .. }
+                    | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
                     | RemoteServerManagerEvent::CodebaseIndexStatusesSnapshot { .. }
                     | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
                     | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
@@ -4569,7 +4646,11 @@ impl TerminalView {
     /// an AI-enabled terminal in a repo needs the model even with no PR chip.
     #[cfg(feature = "local_fs")]
     fn needs_pr_info_for_agent_context(&self, ctx: &AppContext) -> bool {
-        self.current_repo_path.is_some() && self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+        // Location, not `current_repo_path`: an SSH session is in a repo too,
+        // and starving the agent of PR context there was the sharper half of
+        // this gap.
+        self.current_repo_location().is_some()
+            && self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
     }
 
     #[cfg(feature = "local_fs")]
@@ -4579,7 +4660,6 @@ impl TerminalView {
 
     /// Re-evaluate whether the terminal needs a PR-info subscription, and
     /// acquire or drop the handle accordingly.
-    ///
     /// Ported from `02b53fcd8:app/src/terminal/view.rs::sync_pr_info_subscription`.
     #[cfg(feature = "local_fs")]
     fn sync_pr_info_subscription(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4591,11 +4671,11 @@ impl TerminalView {
         if self.github_repo_model.is_some() {
             return;
         }
-        let Some(repo_path) = self.current_repo_path.clone() else {
+        let Some(repo) = self.current_repo_location() else {
             return;
         };
         let result = GitStatusUpdateModel::handle(ctx)
-            .update(ctx, |model, ctx| model.subscribe_github_repo(&repo_path, ctx));
+            .update(ctx, |model, ctx| model.subscribe_github_repo(&repo, ctx));
         match result {
             Ok(handle) => {
                 let weak_for_prompt = handle.downgrade();
@@ -4634,7 +4714,7 @@ impl TerminalView {
     fn git_status_metadata<'a>(&'a self, ctx: &'a AppContext) -> Option<&'a GitStatusMetadata> {
         self.git_repo_status
             .as_ref()
-            .and_then(|h| h.as_ref(ctx).metadata())
+            .and_then(|h| h.as_ref(ctx).metadata(ctx))
     }
 
     /// Returns whether this terminal view should subscribe to git status
@@ -4676,9 +4756,9 @@ impl TerminalView {
         if should_subscribe {
             // Subscribe if we have a repo path but no active subscription.
             if self.git_repo_status.is_none() {
-                if let Some(repo_path) = self.current_repo_path.clone() {
+                if let Some(repo) = self.current_repo_location() {
                     let result = GitStatusUpdateModel::handle(ctx)
-                        .update(ctx, |model, ctx| model.subscribe(&repo_path, ctx));
+                        .update(ctx, |model, ctx| model.subscribe(&repo, ctx));
                     match result {
                         Ok(handle) => {
                             ctx.subscribe_to_model(&handle, |me, _, _, ctx| {
@@ -4974,7 +5054,6 @@ impl TerminalView {
     /// `PendingUserQueryIndicator` path), then `conversation_completed_callbacks`. Both
     /// mechanisms coexist: the former is a one-shot armed by those commands, the latter is a
     /// general-purpose queue drained on every call.
-    ///
     /// This is deliberately driven by the pane-global finish reason
     /// ([`Self::last_ai_block`]), not [`Self::finish_reason_for_conversation`] — these
     /// callbacks are armed against "the pane's current turn ending", not a specific
@@ -5031,7 +5110,6 @@ impl TerminalView {
                 // just-finished exchange will be skipped. Clear any pending
                 // user query now to prevent its callback from firing when
                 // the new exchange eventually completes.
-                //
                 // However, if the active block belongs to the same conversation
                 // that has the queued prompt (e.g. a blocked tool-call approval),
                 // keep the pending query — the conversation hasn't truly moved on.
@@ -5361,7 +5439,6 @@ impl TerminalView {
 
                 // If we updated the AI context as a result of changing text selection,
                 // we don't need to re-sync the selected text here.
-                //
                 // Note it's not possible to re-sync non-empty text selections because we have
                 // no way of locating text selections from the string alone. In any case, the
                 // only current use case for re-syncing selected text is when the pending
@@ -7158,7 +7235,6 @@ impl TerminalView {
     }
 
     /// The active local session's working directory, canonicalized.
-    ///
     /// Returns `None` for remote sessions, for a session with no known pwd, and
     /// when canonicalization fails. The result is memoized against the
     /// non-canonical path so that repeated calls (notably the LSP idle-shutdown
@@ -7576,7 +7652,6 @@ impl TerminalView {
     }
 
     /// Cancels a local agent conversation and tears down the command it is driving.
-    ///
     /// Used by a follow-up Ctrl-C after the user already took control via `Stop`: it cancels
     /// the conversation's progress, interrupts the still-running command, and marks the
     /// conversation `Cancelled` when there was no in-flight stream to cancel.
@@ -7780,23 +7855,19 @@ impl TerminalView {
     /// are focused. This helps ensure AI block interactions (which are primarily async)
     /// don't steal focus from the user if they've focused another part of the app
     /// (e.g. another session).
-    ///
     /// Skips the steal when the user is navigating another AI block / code diff
     /// (e.g. arrowing diff hunks), unless the target block is blocked on user input. Also skips
     /// while the queued-prompt inline editor is focused so async AI/tool updates don't commit and
     /// close the edit by blurring it.
-    ///
     /// Warning: this should not be called when focusing the [`TerminalView`]. It could
     /// lead to a focus cycle because [`AIBlock::try_focus`] conditionally yields focus
     /// back to the [`TerminalView`].
-    ///
     /// Upstream: `edf83549f5` "Don't steal focus while navigating an AI block's code
     /// diff" (#12107) and `9e3d6826b0` "fix focus stealing" (#12833) — both fully
     /// unported here; `is_any_ai_block_focused` and the
     /// `is_queued_prompt_inline_editor_focused` guard were entirely missing from this
     /// function, so every async AI/tool-call update re-stole focus from a user
-    /// navigating a code diff or mid-edit in the queued-prompt panel. NOT COMPILED --
-    /// builds are suspended; verified by reading only.
+    /// navigating a code diff or mid-edit in the queued-prompt panel.
     fn focus_ai_block_if_self_focused(
         &self,
         block: &ViewHandle<AIBlock>,
@@ -7816,7 +7887,6 @@ impl TerminalView {
 
     /// Returns `true` if focus is inside any AI block (e.g. the user is arrowing
     /// through a code diff's hunks).
-    ///
     /// Upstream `edf83549f5` (#12107); see `focus_ai_block_if_self_focused`.
     fn is_any_ai_block_focused(&self, ctx: &mut ViewContext<Self>) -> bool {
         self.rich_content_views.iter().any(|rich_content| {
@@ -7888,7 +7958,6 @@ impl TerminalView {
     }
 
     /// Returns whether ctrl-c should exit the agent view.
-    ///
     /// This is true when:
     /// - Agent view feature is enabled
     /// - Agent view is active and can be exited
@@ -7952,7 +8021,6 @@ impl TerminalView {
 
     /// If there is an active rich content block that is set up to handle ctrl-c
     /// events, allow it to handle the event.
-    ///
     /// TODO(CORE-3415): We should probably remove the FixedBindings for ctrl-c
     /// in the SSH warpification blocks and handle them here as well.
     fn maybe_handle_ctrl_c_in_rich_content_block(&mut self, ctx: &mut ViewContext<Self>) {
@@ -8194,7 +8262,6 @@ impl TerminalView {
 
             // Only clear selected blocks and text if we're not in AI mode since in AI mode we
             // don't want to clear the selected blocks or text (context) when we start typing.
-            //
             // When `FeatureFlag::AgentView` is enabled, blocks are attachable as AI context in
             // terminal mode. Selections are preserved so they can be attached to the query when
             // entering the agent view.
@@ -8615,7 +8682,6 @@ impl TerminalView {
         // if the user has already closed it.  When we open the banner initially, we
         // store the session ID in here, so if the stored value matches the current
         // session, we've already shown the banner.
-        //
         // TODO(vorporeal): This logic falls apart for nested ssh sessions - we could
         // show the banner in the outer ssh session, show it again for the inner ssh
         // session, then forgot that we already showed it for the outer session.  This
@@ -8808,13 +8874,20 @@ impl TerminalView {
                     }
                 }
 
-                if let Some(tmux_install_script) = install_tmux_script(system_details, ctx) {
+                // The install scripts emit `TmuxInstallFailed` from the remote host; bake in an
+                // ID we minted so that hook survives validation. Both candidate scripts share
+                // it -- the user runs at most one of them.
+                let session_id = self.mint_registered_session_id();
+                if let Some(tmux_install_script) =
+                    install_tmux_script(system_details, session_id, ctx)
+                {
                     let root_access = RootAccess::from_str(root_access).unwrap_or_default();
                     let tmux_root_install_script = if root_access == RootAccess::NoRootAccess {
                         None
                     } else {
                         install_root_tmux_script(
                             system_details,
+                            session_id,
                             ctx,
                             root_access == RootAccess::CanRunSudo,
                         )
@@ -8837,7 +8910,11 @@ impl TerminalView {
                     }
                 }
 
-                if let Some(tmux_install_script) = install_tmux_script(system_details, ctx) {
+                // See the sibling branch above: `TmuxInstallFailed` needs an ID we minted.
+                let session_id = self.mint_registered_session_id();
+                if let Some(tmux_install_script) =
+                    install_tmux_script(system_details, session_id, ctx)
+                {
                     self.add_ssh_install_tmux_block(
                         system_details,
                         tmux_install_script,
@@ -9895,7 +9972,6 @@ impl TerminalView {
 
     /// Checks if the current model request could be served via AWS Bedrock and the user
     /// isn't already using it. If so, inserts a banner prompting the user to log in.
-    ///
     /// The banner is shown when the user could be using AWS Bedrock to save on warp AI spend, but isn't.
     fn maybe_insert_aws_bedrock_login_banner(
         &mut self,
@@ -10118,7 +10194,6 @@ impl TerminalView {
 
     /// Redetermine focus in the terminal view -- note that this will not steal focus
     /// from other parts of the app, the find bar, or the block filter editor.
-    ///
     /// See [`Self::redetermine_global_focus`] to change focus without checking that the terminal is focused.
     fn redetermine_terminal_focus(&mut self, ctx: &mut ViewContext<Self>) -> bool {
         // Only reset focus if this terminal is focused; don't steal it from another part
@@ -10126,10 +10201,9 @@ impl TerminalView {
         // An inline edit of a queued prompt is an interactive child the user is
         // actively typing into; async focus reconciliation must not yank focus
         // back to the terminal mid-edit.
-        //
         // Upstream `edf83549f5` (#12107) added the `is_any_ai_block_focused` guard here;
         // it was missing even though the queued-prompt guard beside it had already been
-        // ported. NOT COMPILED -- builds are suspended; verified by reading only.
+        // ported. ; verified by reading only.
         let reset_focus = ctx.is_self_or_child_focused()
             && !self.find_bar.is_self_or_child_focused(ctx)
             && !self.block_filter_editor.is_self_or_child_focused(ctx)
@@ -10218,7 +10292,6 @@ impl TerminalView {
         // (because no new block is live yet), and nothing moves it back once the queued
         // block starts. By the time we arrive here `is_active_and_long_running()` is true,
         // so `redetermine_global_focus` correctly returns focus to the terminal view.
-        //
         // Skip this pre-bootstrap: long-running pre-bootstrap blocks (e.g. a `.zshrc` that
         // issues a `read` prompt) need the input box to remain focused so the user can type
         // a response to unblock bootstrap.
@@ -10292,10 +10365,8 @@ impl TerminalView {
     }
 
     /// Returns true if the block is considered remote.
-    ///
     /// Note that we don't know for sure if a block is remote, because we can only detect
     /// warpified remote blocks.
-    ///
     /// For some organizations, we accept a regex list that we run against commands to
     /// further make the determination.
     fn is_block_considered_remote(
@@ -10402,10 +10473,8 @@ impl TerminalView {
     }
 
     /// Cleans up and removes the conversation associated with the given AI block.
-    ///
     /// This removes the AI block from the blocklist (and cached `rich_content_views` list) and
     /// deletes its associated conversation.
-    ///
     /// This assumes that the deleted conversation only contains a single block -- should there
     /// be other blocks besides `passive_block` in the same conversation, we're left in invalid
     /// state (AI blocks rely on conversation state in the history model to render). If there is
@@ -10707,11 +10776,9 @@ impl TerminalView {
                     // 1. If this terminal or its children were focused, redraw immediately after
                     //    this event.
                     // 2. Otherwise, redraw after the next terminal wakeup.
-                    //
                     // Additionally, our API for measuring the latency requires installing a
                     // callback for the next redraw. We only want to install this callback in the
                     // first case because otherwise, it could be inaccurate.
-                    //
                     // Since our baseline commands are all very small, when the command finishes,
                     // the same terminal almost certainly still has the focus.
                     if reset_focus {
@@ -11368,7 +11435,6 @@ impl TerminalView {
                 // fires mid-command — the block never completes — so without
                 // this call the chip text stays stuck on the previous CWD
                 // even though the underlying block metadata is up to date.
-                //
                 // Skip in-band-command blocks for the same reason
                 // `apply_block_metadata_update` bails early on them: in-band
                 // commands don't change CWD, and refreshing the prompt here
@@ -11847,7 +11913,18 @@ impl TerminalView {
 
                             let Some(active_directory) = me.active_session_path_if_local(ctx)
                             else {
-                                me.clear_git_repo_status(ctx);
+                                // A remote session has no local active
+                                // directory; its repo comes from the daemon's
+                                // `NavigatedToDirectory` instead. Only tear the
+                                // subscription down when there is no remote
+                                // repo either — otherwise every prompt would
+                                // drop the remote git-status / GitHub-info
+                                // models this view just acquired, since this
+                                // spawn also fires for remote OSC 7 / precmd
+                                // updates.
+                                if me.current_remote_repo_path.is_none() {
+                                    me.clear_git_repo_status(ctx);
+                                }
                                 return;
                             };
 
@@ -12291,13 +12368,11 @@ impl TerminalView {
     }
 
     /// The conversation a CLI agent's status change should be written to.
-    ///
     /// Prefers the active conversation when it is a child agent conversation.
     /// Falls back to the sole live child conversation when there is exactly one —
     /// without that fallback, a CLI agent running in a terminal whose agent view
     /// is not open never propagates its status, so the conversation stays
     /// `InProgress` forever even after the agent reports `Stop`.
-    ///
     /// Deliberately gives up when several child conversations are live: there is
     /// no way to tell which one the status belongs to, and guessing would write a
     /// completion onto an unrelated conversation.
@@ -12501,7 +12576,6 @@ impl TerminalView {
     }
 
     /// Handles the initialization of a session within this terminal pane.
-    ///
     /// This does not indicate that the session has bootstrapped, but only
     /// that we're aware of the beginning of a session that we will attempt
     /// to bootstrap.
@@ -12647,7 +12721,6 @@ impl TerminalView {
 
         // Suppress the shell's next title ONLY if the title we just set did not come
         // from the terminal in the first place.
-        //
         // This used to be an unconditional `= true`, which silently ate the shell's
         // first real title. The shell's `warp_set_title_idle_on_precmd` runs *after*
         // `warp_precmd` in `precmd_functions`, so the OSC-0 that carries the working
@@ -12658,7 +12731,6 @@ impl TerminalView {
         // integration tests that assert the post-bootstrap title
         // (test_restore_snapshot_with_markdown_file, test_restore_snapshot_with_notebooks,
         // test_open_and_close_settings) could never pass.
-        //
         // Nothing is lost by honouring it in the terminal-title case:
         // `update_pane_configuration` re-derives the title from the same priority
         // order every time (CLI agent > long-running terminal title > conversation >
@@ -13163,7 +13235,6 @@ impl TerminalView {
 }
 
 /// Constructs the keybindings struct for the onboarding callout.
-///
 /// Gets display strings for:
 /// - Toggle input mode: from TerminalKeybindings (editable binding)
 /// - Submit to local agent: fixed binding (cmd-enter / ctrl-shift-enter)
@@ -13480,7 +13551,6 @@ impl TerminalView {
 
     // Redundantly issues resize changes to increase the chances that the alt-screen program
     // gets the latest winsize when it has a resize handler setup.
-    //
     // When the alt-screen is activated, the terminal size changes because the blocklist has
     // padding that the alt-screen doesn't. So we do this to avoid a race condition between
     // (1) resizing right after swapping terminal modes, and
@@ -13739,7 +13809,6 @@ impl TerminalView {
     }
 
     /// Removes hidden AI blocks for passive requests from the sumtree.
-    ///
     /// Hidden AI blocks are only generated when generating passive codegen suggestions after a
     /// compiler error.
     fn drop_hidden_passive_ai_blocks(&mut self, ctx: &mut ViewContext<Self>) {
@@ -13846,7 +13915,6 @@ impl TerminalView {
 
     /// Zap BYOP: when the model proactively calls the `suggest_prompt` tool, the
     /// executor emits this event carrying prompt + label + action_id.
-    ///
     /// **Design semantics**: `suggest_prompt` is fire-and-forget (matching
     /// opencode's agentic tool behavior) — as soon as the chip is displayed, the
     /// oneshot is **immediately** completed (feeding Accepted{query: prompt} back
@@ -13857,7 +13925,6 @@ impl TerminalView {
     ///    `resolve_prompt_suggestion` → `enter_agent_view(Some(prompt))` submits the
     ///    prompt as a **new round of user input**, equivalent to the user manually
     ///    typing that prompt (independent of the oneshot channel)
-    ///
     /// Previously, "the user clicked the chip" was mistakenly treated as the oneshot
     /// completion signal, so if the user never clicked, the conversation would hang
     /// forever.
@@ -13892,7 +13959,6 @@ impl TerminalView {
                 // would get stuck on "Phosphorizing..." yet again. Cancelled makes the
                 // controller not trigger a follow-up request, and the current turn
                 // ends naturally.
-                //
                 // The user clicking the chip is a separate path:
                 // `resolve_prompt_suggestion` → `enter_agent_view(Some(prompt))` sends
                 // the prompt as a new user query (equivalent to mastra's
@@ -14594,7 +14660,6 @@ impl TerminalView {
 
     // Try to execute the provided command. If we cannot execute it now, set it as the pending
     // command.
-    //
     // If we set it as pending, the command will execute when we trigger another call to
     // `execute_pending_command` (either from a `BlockCompleted` or `BootstrapPrecmdDone` event)
     pub fn execute_command_or_set_pending(&mut self, command: &str, ctx: &mut ViewContext<Self>) {
@@ -14690,7 +14755,6 @@ impl TerminalView {
     }
 
     /// Called once the bootstrap timer completes
-    ///
     /// Will send telemetry if the current session is not bootstrapped and will show a banner to
     /// the user if this is the first bootstrap in the session.
     fn on_bootstrap_failed_timer_complete(&mut self, _: (), ctx: &mut ViewContext<Self>) {
@@ -15087,7 +15151,6 @@ impl TerminalView {
 
     /// Whether a `BlockStarted` for `command` would actually reach the block list
     /// as a normal command block.
-    ///
     /// Warpify-compatible subshell commands (`ssh`, `python`, `docker run`, ...)
     /// are handled by the warpification path instead, so arming the
     /// password-prompt poller for them produces a spurious "needs attention"
@@ -17257,7 +17320,6 @@ impl TerminalView {
 
     /// Zap: returns the `HostId` if the currently active block's session is a
     /// remote-server session.
-    ///
     /// Used when Ctrl/Cmd+clicking a file path in the terminal, to decide whether
     /// to go through the local or remote buffer-sync open flow. Returns `None` for
     /// non-remote-server sessions (local behavior stays unchanged).
@@ -17301,7 +17363,6 @@ impl TerminalView {
 
     /// Zap: determines whether the remote path from a terminal file link points to
     /// a directory.
-    ///
     /// Based on the cached remote cwd directory listing (fetched and written by
     /// `link_detection.rs`). Returns `false` if not cached or not a directory
     /// (treated as a file).
@@ -17324,7 +17385,6 @@ impl TerminalView {
     }
 
     /// Zap: `cd`s into the given directory in the current (remote) terminal session.
-    ///
     /// Aligned with local directory-link click behavior — a remote directory can't
     /// be opened in the editor, so instead we run `cd <dir>` in that remote shell
     /// session.
@@ -17803,6 +17863,29 @@ impl TerminalView {
 
     pub fn is_selecting(&self) -> bool {
         self.is_selecting
+    }
+
+    /// Ensures that `block_list_mouse_states` has entries for every block index currently in the
+    /// block list. Blocks created outside the normal `BlockCompleted` event path (e.g. restored
+    /// conversation command blocks) would otherwise lack mouse states, which prevents the label
+    /// hover tooltip, bookmark button, and filter button from rendering.
+    pub(crate) fn ensure_mouse_states_for_all_blocks(&mut self) {
+        let block_count = self.model.lock().block_list().active_block_index() + BlockIndex::from(1);
+        for i in 0..block_count.0 {
+            let idx = BlockIndex::from(i);
+            self.block_list_mouse_states
+                .label_mouse_states
+                .entry(idx)
+                .or_default();
+            self.block_list_mouse_states
+                .bookmark_mouse_states
+                .entry(idx)
+                .or_default();
+            self.block_list_mouse_states
+                .filter_mouse_states
+                .entry(idx)
+                .or_default();
+        }
     }
 
     #[cfg(test)]
@@ -18588,7 +18671,6 @@ impl TerminalView {
             // gated at paint time on `is_find_bar_open()`, but AI blocks are
             // separate child views that won't repaint on their own when the
             // find bar closes.
-            //
             // Uses `clear_rich_content_matches` (rich-content only) rather
             // than the broader `clear_matches`: on the async-find path the
             // latter drops `current_find_options`, breaking `open_find_bar`'s
@@ -18728,12 +18810,13 @@ impl TerminalView {
             ctx.notify();
         });
 
-        // In Agent Mode, block selection is used to attach blocks as context. To allow users to
-        // submit queries quickly, we don't want to divert the focus away from the input box. With
-        // AgentView enabled, blocks can be attached as context in terminal mode too.
-        if !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
-            && !FeatureFlag::AgentView.is_enabled()
-        {
+        // In AI input mode, block selection is used to attach blocks as context. To allow users to
+        // submit queries quickly, we don't want to divert the focus away from the input box.
+        // In shell mode, selecting a block should focus the terminal so blocklist navigation keeps
+        // working, unless the user has opted to preserve input focus on block selection.
+        let preserve_input_focus =
+            *BlockListSettings::as_ref(ctx).preserve_input_focus_on_block_selection;
+        if !self.ai_input_model.as_ref(ctx).is_ai_input_enabled() && !preserve_input_focus {
             self.focus_terminal(ctx);
         }
 
@@ -19164,7 +19247,6 @@ impl TerminalView {
 
     /// Clears selected text across all types of blocks and handles side effects (i.e. Agent Mode
     /// context, etc.). Never invoke `block_list_mut().clear_selection()` elsewhere on its own.
-    ///
     /// Provides the option of keeping the existing text selection for one rich content view, whose
     /// view ID must be passed in via `exempt_rich_content_view_id`. This is helpful for ensuring that
     /// text selections don't simultaneously exist on unrelated views (i.e. a regular command block
@@ -19177,11 +19259,9 @@ impl TerminalView {
         // The below function clears all text selections within the underlying `TerminalModel`:
         // - Text selection rendering on regular blocks is tied to the underlying model.
         // - Text selection rendering on rich content blocks is **not** tied to the underlying model.
-        //
         // Thus, not only is invoking `clear_selection()` on its own insufficient for clearing all
         // on-screen text selections, but the invocation must also be followed by supplementary logic
         // to clear visual text selections on rich content views.
-        //
         // This also explains why we don't invoke this function unless we're attempting to clear
         // **all** selected text; because rich content text copying will stop working otherwise.
         if exempt_rich_content_view_id.is_none() {
@@ -19247,7 +19327,6 @@ impl TerminalView {
 
     fn clear_selections_when_shell_mode(&mut self, ctx: &mut ViewContext<Self>) {
         // Don't clear selected blocks or text in AI mode because those are context blocks.
-        //
         // When `FeatureFlag::AgentView` is enabled, blocks are attachable as AI context in terminal
         // mode. Selections are preserved so they can be attached to the query when entering the
         // agent view.
@@ -19274,7 +19353,6 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         // Don't clear selected blocks or text in AI mode because those are context blocks.
-        //
         // When `FeatureFlag::AgentView` is enabled, blocks are attachable as AI context in terminal
         // mode. Selections are preserved so they can be attached to the query when entering the
         // agent view.
@@ -19290,7 +19368,6 @@ impl TerminalView {
     fn focus_input_box(&mut self, ctx: &mut ViewContext<Self>) {
         // Only clear selected blocks and text if we're not in AI mode since in AI mode we don't want to clear
         // the selected blocks or text (context) when we focus the input.
-        //
         // When `FeatureFlag::AgentView` is enabled, blocks are attachable as AI context in terminal
         // mode. Selections are preserved so they can be attached to the query when entering the
         // agent view.
@@ -19624,7 +19701,6 @@ impl TerminalView {
     }
 
     /// Mirrors an AI block's own text selection into the terminal model.
-    ///
     /// Rich content blocks render and own their text selections independently of
     /// the point-based model selection used for regular command blocks, so the
     /// model can't derive this on its own. Mirroring it here is what allows the
@@ -19663,7 +19739,6 @@ impl TerminalView {
 
     /// Returns the exchange ID of the most recent user-query exchange in the
     /// given conversation, which marks the start of the current thread.
-    ///
     /// Returns `None` if the conversation has no user-query exchanges.
     fn thread_start_exchange_id(
         conversation_id: &AIConversationId,
@@ -19681,7 +19756,6 @@ impl TerminalView {
     /// Returns an iterator over the `AIBlockMetadata` entries that belong to the
     /// current thread of `conversation_id` (newest first, bounded by the most
     /// recent user query).
-    ///
     /// This does **not** dereference view handles; callers add their own
     /// `.map()` to obtain `&AIBlock` references.
     fn ai_block_metadata_for_current_thread<'a>(
@@ -19771,7 +19845,6 @@ impl TerminalView {
     /// Returns the finish reason of the most recent AI block belonging to
     /// `conversation_id`, or `None` when the conversation has no AI blocks in
     /// this view or its most recent block is still in flight.
-    ///
     /// Scoped to `conversation_id` rather than the pane-global most-recent
     /// block ([`Self::last_ai_block`]) so that an orchestration pane's
     /// still-streaming sibling conversation can't be mistaken for the
@@ -19797,7 +19870,6 @@ impl TerminalView {
     }
 
     /// Searches for user-selected text across all visible AI block subview layers.
-    ///
     /// An AI block's rich content selection is maintained by `SelectableArea`,
     /// which is a separate system from the terminal grid selection that doesn't
     /// talk to it; `selection_to_string` only reads the grid selection, so both
@@ -19857,13 +19929,10 @@ impl TerminalView {
     }
 
     /// Examines the local state of the [`TerminalView`] and chooses where best to assign focus.
-    ///
     /// WARNING: this can steal focus even when the user is working in a separate terminal view!
     /// Consider using [`Self::redetermine_terminal_focus`] instead.
-    ///
     /// WARNING: this method takes a lock on the TerminalModel.
     /// Caller must ensure the model is not already locked!
-    ///
     /// TODO: https://linear.app/warpdotdev/issue/CORE-277
     pub fn redetermine_global_focus(&mut self, ctx: &mut ViewContext<Self>) {
         if self.context_menu_state.is_some() {
@@ -19914,12 +19983,12 @@ impl TerminalView {
 
             // Leave the input box focused when selecting blocks or text as context in AI input
             // mode so users can quickly submit queries.
-            //
-            // In the new modality, block selection always represents context attachment and the
-            // input should remain focused.
-            let has_block_or_text_selection_in_shell_mode = is_shell_mode
-                && !FeatureFlag::AgentView.is_enabled()
-                && (are_blocks_selected || is_text_selected);
+            // In shell mode, selected blocks/text should focus the terminal so blocklist
+            // navigation continues to work, unless the user has opted to preserve input focus.
+            let preserve_input_focus =
+                *BlockListSettings::as_ref(ctx).preserve_input_focus_on_block_selection;
+            let has_block_or_text_selection_in_shell_mode =
+                is_shell_mode && !preserve_input_focus && (are_blocks_selected || is_text_selected);
 
             has_active_user_terminal_command || has_block_or_text_selection_in_shell_mode
         };
@@ -20730,7 +20799,6 @@ impl TerminalView {
         // When we insert rich content (including agent view blocks) we insert it immediately before
         // the active block (unless explicitly inserting below a long-running block). The active
         // block is a special "warp input" block that often exists even when it isn't user-visible.
-        //
         // So, for dedupe we check the first visible (non-zero height) item *immediately before the
         // active block*. This avoids false negatives caused by the active block itself.
         let active_block_index = block_list.active_block_index();
@@ -21252,12 +21320,10 @@ impl TerminalView {
 
     /// Enters the agent view for the most recent agent activity and scrolls to
     /// its latest message.
-    ///
     /// Agent messages only render inside the agent view; in the terminal they
     /// collapse to a hidden, zero-height block. So "jump to latest agent message"
     /// makes sure we are in the agent view for the right conversation and then
     /// scrolls to its latest exchange.
-    ///
     /// NOTE(adapted): the oracle sends `TelemetryEvent::JumpToLatestAgentMessage`
     /// here. This fork has no such variant and its telemetry is inert, so the send
     /// is omitted rather than inventing an event -- behaviour is otherwise identical.
@@ -21811,7 +21877,6 @@ impl TerminalView {
 
     /// Sends `text` to the active CLI agent, routing to rich input when it is open
     /// or directly to the PTY when it is closed.
-    ///
     /// Returns `Some(CliAgentRouting)` indicating how the text was sent, or
     /// `None` if no CLI agent is active.
     pub fn try_send_text_to_cli_agent_or_rich_input(
@@ -22016,10 +22081,10 @@ impl TerminalView {
         };
 
         let start = block.start_ts().map_or_else(String::new, |b| {
-            format!("Started at: {}", b.format("%a %b %-d at %-I:%M %p"))
+            format!("Started at: {}", b.format("%a %b %-d at %-I:%M:%S %p"))
         });
         let end = block.completed_ts().map_or_else(String::new, |b| {
-            format!("\nCompleted at: {}", b.format("%a %b %-d at %-I:%M %p"))
+            format!("\nCompleted at: {}", b.format("%a %b %-d at %-I:%M:%S %p"))
         });
         format!("{start}{end}")
     }
@@ -22368,7 +22433,7 @@ impl TerminalView {
                                 tool_tip,
                                 OffsetPositioning::offset_from_parent(
                                     Vector2F::new(30., 5.),
-                                    ParentOffsetBounds::Unbounded,
+                                    ParentOffsetBounds::ParentByPosition,
                                     ParentAnchor::BottomMiddle,
                                     ChildAnchor::TopMiddle,
                                 ),
@@ -22378,7 +22443,7 @@ impl TerminalView {
                                 tool_tip,
                                 OffsetPositioning::offset_from_parent(
                                     Vector2F::new(30., -5.),
-                                    ParentOffsetBounds::Unbounded,
+                                    ParentOffsetBounds::ParentByPosition,
                                     ParentAnchor::TopMiddle,
                                     ChildAnchor::BottomMiddle,
                                 ),
@@ -23066,7 +23131,6 @@ impl TerminalView {
         // in this case, the input would still have room to render underneath the blocklist (since
         // it doesn't take up the whole pane, and would try to render beneath it, rather than shrinking
         // the visible blocklist height and 'sliding' it upwards.
-        //
         // On the other hand, when the blocklist height exceeds the pane height and there is no gap,
         // this necessarily means that the input is at the bottom of the viewport, so when the inline
         // menu renders it will necessarily push the blocklist element up because the element is ultimatelyx
@@ -23281,7 +23345,6 @@ impl TerminalView {
     }
 
     /// Renders the bookmark indicators over the given block list or waterfall gap element
-    ///
     /// Will only create indicators if there are blocks bookmarked
     fn render_bookmark_indicators(
         &self,
@@ -23355,10 +23418,8 @@ impl TerminalView {
     }
 
     /// Create the indicator for a bookmark
-    ///
     /// The indicator will be scaled to match the height of the block relative to the total block
     /// list.
-    ///
     /// We also return the offset vector from the top-right of the screen to position the indicator
     /// properly.
     #[allow(clippy::too_many_arguments)]
@@ -23982,7 +24043,6 @@ impl TerminalView {
 
     /// Toggles the block filter on the last selected block, or the last non-hidden
     /// block if none are selected.
-    ///
     /// When a filter is toggled off, it is set as inactive but the query remains
     /// saved on the block. It can be reactivated by toggling on. If there is no
     /// inactive query, toggling on a filter will simply open the filter editor.
@@ -24382,7 +24442,6 @@ impl TerminalView {
         // paste keystroke, not as text. Without this branch the fallback below
         // writes a shell-escaped *path string* into the agent's prompt, which is
         // never what the user meant by dropping a picture on it.
-        //
         // Only when the drop is images-only, the agent owns the foreground, and
         // rich input is closed -- with rich input open the composer handles the
         // attachment itself.
@@ -24498,11 +24557,31 @@ impl TerminalView {
             .and_then(|info| info.ssh_connection_info.clone())
     }
 
+    /// Mints a session ID and registers it with the model *before* the script that quotes it
+    /// reaches the pty, so the hooks that script provokes are validated against an ID this
+    /// client chose rather than one the remote host made up.
+    ///
+    /// Every remote-side script under `app/assets/bundled/ssh/` gets one of these: the SSH
+    /// warpification flow has no single long-lived remote session to attribute hooks to, and
+    /// each script is written to the pty at a different moment. Registering a fresh ID per
+    /// script is as strong as reusing one -- the check is "did we mint this?", not "is this the
+    /// session?" -- and avoids threading state through the warpify state machine (#532).
+    fn mint_registered_session_id(&mut self) -> SessionId {
+        let session_id = generate_session_id();
+        self.model.lock().register_session_id(session_id);
+        session_id
+    }
+
     fn warpify_ssh_session(&mut self, ctx: &mut ViewContext<Self>) {
         self.warpify_state.set_shell_detection_in_progress();
         self.begin_ssh_warpify_timeout(SSH_WARPIFY_TIMEOUT_DURATION, ctx);
+        // Mint and register the ID *before* the probe reaches the pty, so the `InitSsh` hook it
+        // provokes is validated against an ID this client chose. Mirrors
+        // `write_init_subshell_bytes_to_pty`.
+        let session_id = self.mint_registered_session_id();
         self.clear_line_editor_and_write_to_pty(
-            convert_script_to_one_line(&begin_warpify_ssh_session_command(ctx)).into_bytes(),
+            convert_script_to_one_line(&begin_warpify_ssh_session_command(session_id, ctx))
+                .into_bytes(),
             ctx,
         );
     }
@@ -24515,7 +24594,10 @@ impl TerminalView {
     ) {
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
-        if let Some(script) = warpify_ssh_session_command(uname, shell_type, ctx) {
+        // The warpify script emits `SshTmuxInstaller` and `RemoteWarpificationIsUnavailable` from
+        // the remote host; both quote this ID.
+        let session_id = self.mint_registered_session_id();
+        if let Some(script) = warpify_ssh_session_command(uname, shell_type, session_id, ctx) {
             self.clear_line_editor_and_write_to_pty_with_mac_workaround_hack(
                 convert_script_to_one_line(&script).into_bytes(),
                 ctx,
@@ -24590,7 +24672,6 @@ impl TerminalView {
                 // For example, say the output that kicked off this event was "Permission denied, please try again." and
                 // ssh will subsequently re-prompt for user input. We want to avoid assuming that ssh authentication is completed until
                 // we confirm twice that user input is not currently being requested.
-                //
                 // Note: 100ms is an estimate, not backed by any particular technical happenings.
                 let active_block_id = self.model.lock().block_list().active_block_id().clone();
                 ctx.spawn(
@@ -26314,8 +26395,7 @@ impl View for TerminalView {
                 // Upstream `427e1ab16f` "Clip terminal view column to prevent split-pane
                 // footer overflow" (#11099): without `Clipped`, a footer taller than its
                 // pane (e.g. a long queued-prompt list) overflows into the neighboring
-                // split pane instead of being clipped to this one. NOT COMPILED -- builds
-                // are suspended; verified by reading only.
+                // split pane instead of being clipped to this one.
                 let stack = Stack::new()
                     .with_constrain_absolute_children()
                     .with_child(Clipped::new(column.finish()).finish());
@@ -27072,7 +27152,6 @@ impl Drop for TerminalView {
 
 /// Returns an instance of [`SizeInfo`] that is to be used
 /// when in the blocklist.
-///
 /// This should really only be used when it's only possible to be
 /// in the blocklist (e.g. starting a session / creating a [`TerminalModel`]).
 /// Otherwise, use [`create_size_info`].

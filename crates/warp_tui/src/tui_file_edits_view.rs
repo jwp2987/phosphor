@@ -279,8 +279,7 @@ impl TuiFileEditsView {
         // `fallback_label` rendered the legacy persisted result's
         // `lines_added`/`lines_removed` -- both hardcoded `0` on old data --
         // producing the wrong "Edited N files (+0 −0)" instead of real diff
-        // stats and an expandable body. NOT COMPILED -- builds are
-        // suspended; verified by reading only.
+        // stats and an expandable body.
         let (is_restored, is_restored_success) = {
             let restored_result = action_model
                 .as_ref(ctx)

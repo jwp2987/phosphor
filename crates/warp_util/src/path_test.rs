@@ -736,6 +736,17 @@ fn test_convert_wsl_to_windows_host_path() {
         .unwrap(),
         PathBuf::from(r"\\WSL$\Ubuntu\home\andy")
     );
+    // Paths inside the distribution are returned as the UNC path they were built from, with no
+    // symlink resolution. Resolving them would mean a `read_link` over the 9p transport for every
+    // conversion, which is what froze the UI while WSL tabs were open (upstream #12492). Only the
+    // `/mnt/<drive>` arm above touches the filesystem. `/bin` is a symlink to `/usr/bin` on every
+    // usr-merged distribution, so on a host that really has a distro installed this asserts the
+    // link is *not* followed.
+    assert_eq!(
+        convert_wsl_to_windows_host_path(&TypedPathBuf::from_unix("/bin").to_path(), "Ubuntu")
+            .unwrap(),
+        PathBuf::from(r"\\WSL$\Ubuntu\bin")
+    );
     assert!(matches!(
         convert_wsl_to_windows_host_path(
             &TypedPathBuf::from_unix("some/relative/path").to_path(),

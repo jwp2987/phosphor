@@ -184,14 +184,20 @@ const RUNNING_COMMAND_DETACH_HINT: &str = "ctrl-c to return to command";
 const STARTING_SHELL_HINT: &str = "Starting shell...";
 const SETTINGS_PARSE_FAILED_HINT: &str = "Settings failed to load: invalid syntax.";
 const SETTINGS_INVALID_VALUES_HINT: &str = "Settings failed to load: invalid values.";
+/// Distinct from the two above: nothing failed to load. The file is fine, it
+/// just also contains lines naming settings this build doesn't have, and those
+/// lines do nothing. The keys themselves are in the log.
+const SETTINGS_UNKNOWN_KEYS_HINT: &str = "Settings file has unrecognized keys; they're ignored.";
 
 /// One-line summary for the footer's transient error slot. The full detail
-/// (the parse error, or the list of rejected keys) stays in the log, written
-/// by `settings::init`.
+/// (the parse error, the list of rejected keys, or the list of unrecognized
+/// keys) stays in the log, written by `settings::init` and
+/// `settings::settings_file_diagnostics`.
 fn settings_file_error_hint(error: &SettingsFileError) -> &'static str {
     match error {
         SettingsFileError::FileParseFailed(_) => SETTINGS_PARSE_FAILED_HINT,
         SettingsFileError::InvalidSettings(_) => SETTINGS_INVALID_VALUES_HINT,
+        SettingsFileError::UnknownKeys(_) => SETTINGS_UNKNOWN_KEYS_HINT,
     }
 }
 
@@ -697,7 +703,17 @@ pub(crate) struct TuiTerminalSessionView {
     transient_hint: TransientHint,
     auto_approve_feedback_conversation_id: Option<AIConversationId>,
     auto_approve_feedback_timer: Option<SpawnedFutureHandle>,
-    auto_approve_mouse: MouseStateHandle,
+    /// Retained mouse state for the *footer's* clickable auto-approve control
+    /// (`render_auto_approve_statusline`). Kept separate from
+    /// [`Self::warping_auto_approve_mouse`] so the two controls -- which can
+    /// be on screen at the same time -- never share hover/armed-click state:
+    /// pressing one must not arm or cancel the other. Matches the pin's
+    /// `footer_auto_approve_mouse`/`warping_auto_approve_mouse` split.
+    footer_auto_approve_mouse: MouseStateHandle,
+    /// Retained mouse state for the auto-approve control inside the warping
+    /// indicator row (`render_warping_indicator`). See
+    /// [`Self::footer_auto_approve_mouse`].
+    warping_auto_approve_mouse: MouseStateHandle,
     conversation_restore_state: ConversationRestoreState,
     next_restore_request_id: u64,
     exit_summary: TuiExitSummaryHandle,
@@ -1842,7 +1858,12 @@ impl TuiTerminalSessionView {
             }
         });
         let model_menu = ctx.add_model(|ctx| {
-            TuiModelMenuModel::new(input_editor_model.clone(), suggestions_mode.clone(), ctx)
+            TuiModelMenuModel::new(
+                input_editor_model.clone(),
+                suggestions_mode.clone(),
+                terminal_surface_id,
+                ctx,
+            )
         });
         ctx.subscribe_to_model(&model_menu, |_, _, _: &TuiModelMenuEvent, ctx| {
             ctx.notify();
@@ -2407,7 +2428,8 @@ impl TuiTerminalSessionView {
             transient_hint: TransientHint::default(),
             auto_approve_feedback_conversation_id: None,
             auto_approve_feedback_timer: None,
-            auto_approve_mouse: MouseStateHandle::default(),
+            footer_auto_approve_mouse: MouseStateHandle::default(),
+            warping_auto_approve_mouse: MouseStateHandle::default(),
             conversation_restore_state: ConversationRestoreState::Idle,
             next_restore_request_id: 0,
             exit_summary,
@@ -3296,7 +3318,7 @@ impl TuiTerminalSessionView {
     ) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(ctx);
         let is_hovered = self
-            .auto_approve_mouse
+            .warping_auto_approve_mouse
             .lock()
             .is_ok_and(|state| state.is_hovered());
         let style = if is_hovered {
@@ -3312,7 +3334,7 @@ impl TuiTerminalSessionView {
             .pending_query_autoexecute_override(ctx)
             .is_autoexecute_any_action();
         let auto_approve = TuiHoverable::new(
-            self.auto_approve_mouse.clone(),
+            self.warping_auto_approve_mouse.clone(),
             TuiText::new(format!(
                 "▶▶ Auto approve {}",
                 if enabled { "on" } else { "off" }

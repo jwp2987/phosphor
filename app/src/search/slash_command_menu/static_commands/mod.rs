@@ -14,6 +14,15 @@ bitflags! {
     /// * If neither [`Self::AGENT_VIEW`] nor [`Self::TERMINAL_VIEW`] is set, the command is available in all modes.
     ///   A command should *not* set both flags to be available in both modes - this results in requirements that cannot be satisfied.
     /// * Most `/fork`-like slash commands require [`Self::NO_LRC_CONTROL`] and [`Self::ACTIVE_CONVERSATION`]
+    ///
+    /// **On the backing integer.** The pin widens this to `u16`
+    /// (`42effe840:.../static_commands/mod.rs:19`) purely to fit three cloud bits at
+    /// positions 8-10 — `NOT_CLOUD_AGENT`, `CLOUD_AGENT` and `CLOUD_MODE_V2_COMPOSER`.
+    /// This fork has no cloud-agent mode and no V2 cloud composer, so those three are
+    /// deliberately absent (see the `SlashCommandKind::Logout` note below for the same
+    /// reasoning applied to a command), and every flag the fork does carry fits in `u8`
+    /// with bit 6 being the last one spent. Widening here would buy nothing today and
+    /// would silently change the size of every `StaticCommand`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Availability: u8 {
         /// No requirements — always available.
@@ -30,6 +39,9 @@ bitflags! {
         const NO_LRC_CONTROL = 1 << 4;
         /// Requires an active AI conversation.
         const ACTIVE_CONVERSATION = 1 << 5;
+        /// Requires codebase context to be enabled
+        /// (`UserWorkspaces::is_codebase_context_enabled`).
+        const CODEBASE_CONTEXT = 1 << 6;
         /// Requires AI to be globally enabled.
         const AI_ENABLED = 1 << 7;
     }
@@ -273,6 +285,18 @@ impl StaticCommand {
             "/model" => SlashCommandKind::Model,
             "/profile" => SlashCommandKind::Profile,
             "/compact" => SlashCommandKind::Compact,
+            // The pin carries the kind as an explicit `kind:` field on each
+            // `StaticCommand` (`42effe840:.../commands.rs:624` is
+            // `kind: SlashCommandKind::Plan`). This fork derives it from the
+            // name instead, and the `/plan` mapping was lost in that refactor:
+            // `SlashCommandKind::Plan` had exactly one reference left in the
+            // tree -- the match arm in `slash_command_is_submitted_as_prompt`
+            // -- so nothing ever constructed it and `/plan` silently fell
+            // through to `Other`, meaning it was never submitted as a prompt.
+            // Unlike `/orchestrate` (see the note on ORCHESTRATE in
+            // `commands.rs`, which is deliberately absent because it executes
+            // directly), no decision was ever recorded for `/plan`.
+            "/plan" => SlashCommandKind::Plan,
             "/compact-and" => SlashCommandKind::CompactAnd,
             "/queue" => SlashCommandKind::Queue,
             "/fork-and-compact" => SlashCommandKind::ForkAndCompact,

@@ -53,6 +53,12 @@ impl FileBasedMCPManager {
     pub fn installation_by_hash(&self, _hash: u64) -> Option<&TemplatableMCPServerInstallation> {
         None
     }
+
+    /// Mirrors `file_based_manager::FileBasedMCPManager::activate_global_warp_servers`
+    /// so the TUI entry point compiles without `local_fs`. Without the filesystem
+    /// layer there are no file-based servers to defer or release.
+    #[cfg(any(feature = "tui", test))]
+    pub fn activate_global_warp_servers(&mut self, _ctx: &mut ModelContext<Self>) {}
 }
 
 /// The fields of a config diagnostic the TUI catalog reads. Mirrors

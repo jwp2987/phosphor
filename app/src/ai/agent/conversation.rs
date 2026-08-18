@@ -14,7 +14,8 @@ use crate::terminal::model::block::{
 };
 
 use crate::ai::agent::api::convert_conversation::{
-    compute_time_to_first_token_ms_from_messages, ConvertToExchanges,
+    compute_time_to_first_token_ms_from_messages, proto_timestamp_to_local_datetime,
+    ConvertToExchanges,
 };
 use ai::document::AIDocumentId;
 use ai::skills::SkillPathOrigin;
@@ -40,7 +41,7 @@ use warp_multi_agent_api::{self as api, response_event::stream_finished::TokenUs
 use warpui::color::ColorU;
 use warpui::{EntityId, ModelContext, SingletonEntity};
 
-use crate::ai::agent::{AIIdentifiers, CancellationReason};
+use crate::ai::agent::{AIIdentifiers, CancellationOutcome, CancellationReason};
 use crate::{
     ai::{
         agent::{
@@ -104,9 +105,17 @@ pub(crate) struct CommandBlockInfo {
     pub(crate) requested_command_action_id: Option<AIAgentActionId>,
     /// Records the CLI subagent task id, used to restore the read-only detail card association.
     pub(crate) subagent_task_id: Option<TaskId>,
-    /// The api message ID that this command block was extracted from.
-    /// Used to find the corresponding exchange for timestamp and PWD.
+    /// The api message ID of the tool call that initiated this command.
+    /// Used to find the corresponding exchange for PWD and the `start_ts` fallback.
     pub(crate) message_id: String,
+    /// Estimated timestamp when the command started.
+    /// Note that this may not be perfectly accurate, because it may come from the tool call
+    /// timestamp, which is when the agent made the tool call, before the command actually started.
+    pub(crate) start_ts: Option<DateTime<Local>>,
+    /// Estimated timestamp when the command finished.
+    /// Note that this may not be perfectly accurate, because it may come from the tool call result
+    /// timestamp, which is when the server receives the result, after the command actually finished.
+    pub(crate) completed_ts: Option<DateTime<Local>>,
 }
 
 #[derive(Debug, Clone)]
@@ -430,85 +439,121 @@ impl AIConversation {
         }
     }
 
-    // TODO: derive todo list state from tasks instead of taking args.
-    //
-    // This would make it possible to fully restore a convo from tasks, instead of having to persist this additional data.
+    /// Strict restore: returns `Err(NoRootTask)` if `tasks` is empty. Use for
+    /// cloud-restore and fork-insert paths, where an empty payload is malformed
+    /// input rather than a not-yet-populated child.
     pub fn new_restored(
         id: AIConversationId,
         tasks: Vec<api::Task>,
         conversation_data: Option<AgentConversationData>,
     ) -> Result<Self, RestoreConversationError> {
-        let api_tasks_by_id: HashMap<String, api::Task> =
-            tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
-
-        // To process a task, we need to reference some of the data in its parent task.  To
-        // avoid cloning, we process the task tree from deepest tasks to shallowest tasks.  This
-        // ensures that children are always processed before their parents, avoiding any need to
-        // clone task data to ensure the parent is available when processing the child.
-        let depths = compute_task_depths(&api_tasks_by_id);
-        let mut task_ids: Vec<String> = api_tasks_by_id.keys().cloned().collect();
-        task_ids.sort_by(|a, b| {
-            depths
-                .get(b.as_str())
-                .unwrap_or(&0)
-                .cmp(depths.get(a.as_str()).unwrap_or(&0))
-        });
-
-        let mut api_tasks_and_exchanges_by_id: HashMap<_, _> = api_tasks_by_id
-            .into_iter()
-            .map(|(id, task)| {
-                let exchanges = task.into_exchanges();
-                (id, (task, exchanges))
-            })
-            .collect();
-
-        let mut tasks_by_id = HashMap::new();
-        // Defer root selection until we've seen every parentless task so we can
-        // deterministically prefer a candidate with non-empty messages. Heals legacy DB
-        // rows that contain an orphan optimistic-UUID stub alongside the real server
-        // root; without this dedupe, `HashMap` iteration order picks between them
-        // non-deterministically.
-        let mut parentless_candidates: Vec<(api::Task, Vec<AIAgentExchange>)> = Vec::new();
-        for task_id in task_ids {
-            let Some((task, exchanges)) = api_tasks_and_exchanges_by_id.remove(&task_id) else {
-                continue;
-            };
-
-            if let Some(parent_id) = task.parent_id() {
-                if let Some((parent_task, _)) = api_tasks_and_exchanges_by_id.get(parent_id) {
-                    tasks_by_id.insert(
-                        TaskId::new(task.id.clone()),
-                        Task::new_restored_subtask(task, parent_task, exchanges),
-                    );
-                } else {
-                    log::error!(
-                        "Could not find parent task (id: {}) for task (id: {})",
-                        parent_id,
-                        task.id
-                    );
-                }
-            } else {
-                parentless_candidates.push((task, exchanges));
-            }
-        }
-
-        // Prefer the parentless candidate with non-empty messages (the real server root)
-        // over an empty stub. If multiple have messages or none have messages, fall back
-        // to the first-encountered candidate.
-        let root_task_pick = parentless_candidates
-            .iter()
-            .position(|(task, _)| !task.messages.is_empty())
-            .or_else(|| (!parentless_candidates.is_empty()).then_some(0))
-            .map(|idx| parentless_candidates.swap_remove(idx));
-
-        let Some((root_api_task, root_exchanges)) = root_task_pick else {
+        if tasks.is_empty() {
             return Err(RestoreConversationError::NoRootTask);
+        }
+        Self::new_restored_synthesizing_on_empty(id, tasks, conversation_data)
+    }
+
+    // TODO: derive todo list state from tasks instead of taking args.
+    //
+    // This would make it possible to fully restore a convo from tasks, instead of having to persist this additional data.
+    //
+    /// Lenient restore: when `tasks` is empty, synthesizes a fresh in-memory
+    /// conversation with a new `Optimistic(Root)` root task and the persisted
+    /// overlay metadata applied (mirroring the shape `AIConversation::new()`
+    /// produces). Use for the local-DB restore path, where an empty
+    /// `agent_tasks` set is the normal shape of a child conversation persisted
+    /// before its first server response.
+    pub fn new_restored_synthesizing_on_empty(
+        id: AIConversationId,
+        tasks: Vec<api::Task>,
+        conversation_data: Option<AgentConversationData>,
+    ) -> Result<Self, RestoreConversationError> {
+        let (task_store, todo_lists, status) = if tasks.is_empty() {
+            // Bypass `derive_status_from_root_task`: it would return `Success`
+            // for a root with no exchanges, silently misclassifying a restored
+            // "child waiting on server response" as done.
+            let root_task = Task::new_optimistic_root();
+            let task_store = TaskStore::with_root_task(root_task);
+            (task_store, Vec::new(), ConversationStatus::InProgress)
+        } else {
+            let api_tasks_by_id: HashMap<String, api::Task> =
+                tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
+
+            // To process a task, we need to reference some of the data in its parent task.  To
+            // avoid cloning, we process the task tree from deepest tasks to shallowest tasks.  This
+            // ensures that children are always processed before their parents, avoiding any need to
+            // clone task data to ensure the parent is available when processing the child.
+            let depths = compute_task_depths(&api_tasks_by_id);
+            let mut task_ids: Vec<String> = api_tasks_by_id.keys().cloned().collect();
+            task_ids.sort_by(|a, b| {
+                depths
+                    .get(b.as_str())
+                    .unwrap_or(&0)
+                    .cmp(depths.get(a.as_str()).unwrap_or(&0))
+            });
+
+            let mut api_tasks_and_exchanges_by_id: HashMap<_, _> = api_tasks_by_id
+                .into_iter()
+                .map(|(id, task)| {
+                    let exchanges = task.into_exchanges();
+                    (id, (task, exchanges))
+                })
+                .collect();
+
+            let mut tasks_by_id = HashMap::new();
+            // Defer root selection until we've seen every parentless task so we can
+            // deterministically prefer a candidate with non-empty messages. Heals legacy DB
+            // rows that contain an orphan optimistic-UUID stub alongside the real server
+            // root; without this dedupe, `HashMap` iteration order picks between them
+            // non-deterministically.
+            let mut parentless_candidates: Vec<(api::Task, Vec<AIAgentExchange>)> = Vec::new();
+            for task_id in task_ids {
+                let Some((task, exchanges)) = api_tasks_and_exchanges_by_id.remove(&task_id) else {
+                    continue;
+                };
+
+                if let Some(parent_id) = task.parent_id() {
+                    if let Some((parent_task, _)) = api_tasks_and_exchanges_by_id.get(parent_id) {
+                        tasks_by_id.insert(
+                            TaskId::new(task.id.clone()),
+                            Task::new_restored_subtask(task, parent_task, exchanges),
+                        );
+                    } else {
+                        log::error!(
+                            "Could not find parent task (id: {}) for task (id: {})",
+                            parent_id,
+                            task.id
+                        );
+                    }
+                } else {
+                    parentless_candidates.push((task, exchanges));
+                }
+            }
+
+            // Prefer the parentless candidate with non-empty messages (the real server root)
+            // over an empty stub. If multiple have messages or none have messages, fall back
+            // to the first-encountered candidate.
+            let root_task_pick = parentless_candidates
+                .iter()
+                .position(|(task, _)| !task.messages.is_empty())
+                .or_else(|| (!parentless_candidates.is_empty()).then_some(0))
+                .map(|idx| parentless_candidates.swap_remove(idx));
+
+            let Some((root_api_task, root_exchanges)) = root_task_pick else {
+                return Err(RestoreConversationError::NoRootTask);
+            };
+            let root_task = Task::new_restored_root(root_api_task, root_exchanges.into_iter());
+            // Derive todo lists from tasks by replaying UpdateTodos operations
+            let todo_lists = derive_todo_lists_from_root_task(&root_task);
+            let root_task_id = root_task.id().clone();
+            tasks_by_id.insert(root_task.id().clone(), root_task);
+
+            // Determine the correct status based on the exchanges before constructing
+            let status = Self::derive_status_from_root_task(&tasks_by_id.get(&root_task_id));
+
+            let task_store = TaskStore::from_tasks(tasks_by_id, root_task_id);
+            (task_store, todo_lists, status)
         };
-        let root_task = Task::new_restored_root(root_api_task, root_exchanges.into_iter());
-        // Derive todo lists from tasks by replaying UpdateTodos operations
-        let todo_lists = derive_todo_lists_from_root_task(&root_task);
-        let root_task_id = root_task.id().clone();
-        tasks_by_id.insert(root_task.id().clone(), root_task);
 
         let (
             server_conversation_token,
@@ -624,11 +669,6 @@ impl AIConversation {
 
         // Convert these from the persistence type to the runtime one.
         let reverted_action_ids = reverted_action_ids.into_iter().map_into().collect();
-
-        // Determine the correct status based on the exchanges before constructing
-        let status = Self::derive_status_from_root_task(&tasks_by_id.get(&root_task_id));
-
-        let task_store = TaskStore::from_tasks(tasks_by_id, root_task_id);
 
         Ok(Self {
             id,
@@ -2200,12 +2240,23 @@ impl AIConversation {
 
         self.write_updated_conversation_state(ctx);
 
-        // Don't mark the conversation as Cancelled if we're just cancelling to send a follow-up
-        // on the same conversation (it will be immediately set back to InProgress), or if the
-        // shell exited under the agent -- `fail_conversation_due_to_shell_exit` finalizes that
-        // as a terminal `Error` directly and must not be overwritten with `Cancelled` here.
-        if !reason.is_follow_up_for_same_conversation() && !reason.is_agent_exited_shell() {
-            self.update_status(ConversationStatus::Cancelled, terminal_view_id, ctx);
+        // Finalize the conversation status from the single source of truth for
+        // this cancellation reason (`CancellationReason::conversation_outcome`):
+        // * `KeepInProgress` leaves the status untouched -- we're only cancelling to
+        //   send a follow-up on the same conversation, which immediately sets it back
+        //   to `InProgress`.
+        // * `Succeeded` (an optimistic long-running-command completion, or a revert)
+        //   is a successful completion, not a cancellation.
+        // * `FinalizedExternally` (shell exit) is finalized as a terminal `Error` by
+        //   `fail_conversation_due_to_shell_exit`, so we must not stamp a status here.
+        match reason.conversation_outcome() {
+            CancellationOutcome::Succeeded => {
+                self.update_status(ConversationStatus::Success, terminal_view_id, ctx);
+            }
+            CancellationOutcome::Cancelled => {
+                self.update_status(ConversationStatus::Cancelled, terminal_view_id, ctx);
+            }
+            CancellationOutcome::KeepInProgress | CancellationOutcome::FinalizedExternally => {}
         }
         Ok(())
     }
@@ -3325,7 +3376,11 @@ impl AIConversation {
                 .filter_map(|task| task.source().cloned())
                 .collect(),
             conversation_data: AgentConversationData {
-                is_remote_child: false,
+                // Must round-trip: the restore path reads this flag back
+                // (`data.is_remote_child`), so a hard-coded `false` silently
+                // demotes every remote child across a restart. The pin writes
+                // the field too (`42effe840:app/src/ai/agent/conversation.rs:3619`).
+                is_remote_child: self.is_remote_child,
                 server_conversation_token: self
                     .server_conversation_token
                     .clone()
@@ -3654,29 +3709,6 @@ impl AIConversation {
         self.write_updated_conversation_state(ctx);
     }
 
-    /// Finds the RunShellCommand result for a given tool_call_id.
-    /// Returns both the result and the message ID of the result message.
-    pub(crate) fn find_run_shell_command_result(
-        &self,
-        tool_call_id: &str,
-    ) -> Option<(api::RunShellCommandResult, String)> {
-        let root_task = self.get_root_task()?;
-        let api_task = root_task.source()?;
-
-        // Find the last tool call result with this tool call ID
-        api_task.messages.iter().rev().find_map(|msg| {
-            let result = msg.tool_call_result()?;
-            if result.tool_call_id == tool_call_id {
-                if let Some(api::message::tool_call_result::Result::RunShellCommand(cmd_result)) =
-                    &result.result
-                {
-                    return Some((cmd_result.clone(), msg.id.clone()));
-                }
-            }
-            None
-        })
-    }
-
     /// Extracts all shell command blocks, in order, from the conversation's API task
     /// messages.
     ///
@@ -3697,7 +3729,26 @@ impl AIConversation {
             return command_blocks;
         };
 
-        self.extract_command_blocks_from_messages(&api_task.messages, &mut command_blocks);
+        // Build a map from message ID to exchange for timestamp lookups. The exchange's
+        // `start_time` (derived from the CurrentTime input context) is combined with the result
+        // message's proto timestamp to pick the earlier of the two as `completed_ts` when the
+        // `ShellCommandFinished` proto carries no timestamps of its own.
+        let message_id_to_exchange: HashMap<&str, &AIAgentExchange> = self
+            .all_exchanges()
+            .into_iter()
+            .flat_map(|exchange| {
+                exchange
+                    .added_message_ids
+                    .iter()
+                    .map(move |mid| (&**mid, exchange))
+            })
+            .collect();
+
+        self.extract_command_blocks_from_messages(
+            &api_task.messages,
+            &message_id_to_exchange,
+            &mut command_blocks,
+        );
 
         command_blocks
     }
@@ -3709,6 +3760,7 @@ impl AIConversation {
     fn extract_command_blocks_from_messages(
         &self,
         messages: &[api::Message],
+        message_id_to_exchange: &HashMap<&str, &AIAgentExchange>,
         command_blocks: &mut Vec<CommandBlockInfo>,
     ) {
         // Record a stable command id for each RunShellCommand; the CLI subagent uses this id
@@ -3716,16 +3768,26 @@ impl AIConversation {
         // just the most recent command.
         let mut run_shell_command_block_indices_by_id = HashMap::new();
 
-        // Build a map from tool_call_id to (RunShellCommandResult, result_message_id)
-        // for efficient lookup within this message set.
-        let tool_call_results: HashMap<&str, (&api::RunShellCommandResult, &str)> = messages
+        // Build a map from tool_call_id to (RunShellCommandResult, result_message_id,
+        // result_proto_timestamp) for efficient lookup within this message set.
+        let tool_call_results: HashMap<
+            &str,
+            (&api::RunShellCommandResult, &str, Option<DateTime<Local>>),
+        > = messages
             .iter()
             .filter_map(|msg| {
                 let result = msg.tool_call_result()?;
                 if let Some(api::message::tool_call_result::Result::RunShellCommand(cmd_result)) =
                     &result.result
                 {
-                    Some((result.tool_call_id.as_str(), (cmd_result, msg.id.as_str())))
+                    let ts = msg
+                        .timestamp
+                        .as_ref()
+                        .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos));
+                    Some((
+                        result.tool_call_id.as_str(),
+                        (cmd_result, msg.id.as_str(), ts),
+                    ))
                 } else {
                     None
                 }
@@ -3746,6 +3808,7 @@ impl AIConversation {
                                 // Recursively extract from subtask (in case of nested summarization).
                                 self.extract_command_blocks_from_messages(
                                     &subtask_source.messages,
+                                    message_id_to_exchange,
                                     command_blocks,
                                 );
                             }
@@ -3763,7 +3826,7 @@ impl AIConversation {
                     let command = &run_cmd.command;
 
                     // Find the corresponding tool call result in this message set.
-                    if let Some((cmd_result, result_message_id)) =
+                    if let Some((cmd_result, result_message_id, result_proto_ts)) =
                         tool_call_results.get(tool_call_id.as_str())
                     {
                         if let Some(api::run_shell_command_result::Result::CommandFinished(
@@ -3771,12 +3834,50 @@ impl AIConversation {
                                 command_id,
                                 output: command_output,
                                 exit_code,
-                                // Timestamps upstream added; not used when rebuilding blocks.
-                                start_ts: _,
-                                finish_ts: _,
+                                start_ts: proto_start_ts,
+                                finish_ts: proto_finish_ts,
                             },
                         )) = &cmd_result.result
                         {
+                            // start_ts: prefer the block timestamp stored on
+                            // `ShellCommandFinished`, falling back to the tool call message's
+                            // proto timestamp.
+                            let start_ts = proto_start_ts
+                                .as_ref()
+                                .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                                .or_else(|| {
+                                    message.timestamp.as_ref().map(|ts| {
+                                        proto_timestamp_to_local_datetime(ts.seconds, ts.nanos)
+                                    })
+                                });
+                            if start_ts.is_none() {
+                                log::error!(
+                                    "RunShellCommand tool call message has no timestamp (message_id: {message_id})"
+                                );
+                            }
+
+                            // completed_ts: prefer the block timestamp stored on
+                            // `ShellCommandFinished`. Fall back to the earlier of (1) the start
+                            // time of the exchange containing the result message (from the
+                            // CurrentTime input context) and (2) the result message's proto
+                            // timestamp.
+                            let completed_ts = proto_finish_ts
+                                .as_ref()
+                                .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                                .or_else(|| {
+                                    let exchange_ts = message_id_to_exchange
+                                        .get(*result_message_id)
+                                        .map(|exchange| exchange.start_time);
+                                    match (*result_proto_ts, exchange_ts) {
+                                        (Some(proto_ts), Some(exchange_ts)) => {
+                                            Some(proto_ts.min(exchange_ts))
+                                        }
+                                        (Some(proto_ts), None) => Some(proto_ts),
+                                        (None, Some(exchange_ts)) => Some(exchange_ts),
+                                        (None, None) => None,
+                                    }
+                                });
+
                             command_blocks.push(CommandBlockInfo {
                                 command: command.clone(),
                                 output: command_output.clone(),
@@ -3795,7 +3896,13 @@ impl AIConversation {
                                 block_id: None,
                                 requested_command_action_id: Some(tool_call_id.clone().into()),
                                 subagent_task_id: None,
-                                message_id: (*result_message_id).to_string(),
+                                // Use the tool call message ID (not the result message ID) so
+                                // that `to_serialized_blocklist_items` looks up the exchange in
+                                // which the command was initiated — the right exchange for PWD
+                                // and for the `start_ts` fallback.
+                                message_id: message_id.clone(),
+                                start_ts,
+                                completed_ts,
                             });
                             if let Some(index) = command_blocks.len().checked_sub(1) {
                                 run_shell_command_block_indices_by_id
@@ -3837,6 +3944,11 @@ impl AIConversation {
                 _ => vec![],
             };
 
+            let msg_ts = message
+                .timestamp
+                .as_ref()
+                .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos));
+
             for attachment in attachments {
                 // Attachments have ExecutedShellCommand in their value oneof.
                 if let Some(api::attachment::Value::ExecutedShellCommand(cmd)) = &attachment.value {
@@ -3849,6 +3961,16 @@ impl AIConversation {
                         requested_command_action_id: None,
                         subagent_task_id: None,
                         message_id: message_id.clone(),
+                        start_ts: cmd
+                            .started_ts
+                            .as_ref()
+                            .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                            .or(msg_ts),
+                        completed_ts: cmd
+                            .finished_ts
+                            .as_ref()
+                            .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                            .or(msg_ts),
                     });
                 }
             }
@@ -3875,6 +3997,16 @@ impl AIConversation {
                             requested_command_action_id: None,
                             subagent_task_id: None,
                             message_id: message_id.clone(),
+                            start_ts: executed_shell_command
+                                .started_ts
+                                .as_ref()
+                                .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                                .or(msg_ts),
+                            completed_ts: executed_shell_command
+                                .finished_ts
+                                .as_ref()
+                                .map(|ts| proto_timestamp_to_local_datetime(ts.seconds, ts.nanos))
+                                .or(msg_ts),
                         });
                     }
                 }
@@ -3904,10 +4036,11 @@ impl AIConversation {
             }
         }
 
-        // Get a fallback exchange for working directory and timestamp (used if message ID not found)
-        let first_exchange = self.root_task_exchanges().next();
-        let fallback_pwd = first_exchange.and_then(|e| e.working_directory.clone());
-        let fallback_time = first_exchange.map(|e| e.start_time).unwrap_or_default();
+        // Get a fallback working directory from the first exchange (used if message ID not found)
+        let fallback_pwd = self
+            .root_task_exchanges()
+            .next()
+            .and_then(|e| e.working_directory.clone());
 
         // Create serialized blocks from the extracted command blocks
         for command_block in command_blocks {
@@ -3930,11 +4063,15 @@ impl AIConversation {
                 continue;
             }
 
-            // Find the exchange that contains this command block's message ID
-            let (pwd, timestamp) = message_id_to_exchange
+            // Find the exchange that contains this command block's message ID for PWD and a
+            // fallback timestamp. The exchange start time is a last-resort fallback for when
+            // proto-level timestamps are unavailable, because `restore_block` treats
+            // `start_ts: None` as "block was never started" and skips `start()`/`finish()`,
+            // which would leave the block unfinished with zero height.
+            let (pwd, exchange_time) = message_id_to_exchange
                 .get(command_block.message_id.as_str())
-                .map(|exchange| (exchange.working_directory.clone(), exchange.start_time))
-                .unwrap_or((fallback_pwd.clone(), fallback_time));
+                .map(|exchange| (exchange.working_directory.clone(), Some(exchange.start_time)))
+                .unwrap_or((fallback_pwd.clone(), None));
 
             // On CLI subagent restore, serialize visible, read-only agent association metadata; other blocks keep their original metadata.
             let ai_metadata = if let Some(subagent_task_id) = command_block.subagent_task_id.clone()
@@ -3969,8 +4106,8 @@ impl AIConversation {
                 node_version: None,
                 exit_code: command_block.exit_code,
                 did_execute: true,
-                start_ts: Some(timestamp),
-                completed_ts: Some(timestamp),
+                start_ts: command_block.start_ts.or(exchange_time),
+                completed_ts: command_block.completed_ts.or(exchange_time),
                 ps1: None,
                 rprompt: None,
                 honor_ps1: false,

@@ -1,9 +1,10 @@
 use crate::ai::agent::conversation::ConversationStatus;
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::pane_group::pane::IPaneType;
-use crate::pane_group::{PaneId, TerminalPaneId};
+use crate::pane_group::{PaneId, TabBarHoverIndex, TerminalPaneId};
 use crate::safe_triangle::SafeTriangle;
 use crate::terminal::CLIAgent;
+use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
@@ -17,7 +18,9 @@ use super::{
     detail_target_for_hovered_row, format_summary_primary_labels,
     non_terminal_search_text_fragments, pane_ids_for_display_granularity,
     pane_search_text_fragments, preferred_agent_tab_titles, push_normalized_unique_summary_label,
-    search_fragments_contain_query, select_summary_pane_kind_icons,
+    search_fragments_contain_query, select_summary_pane_kind_icons, select_unique_pane_kinds,
+    htab_group_position_id, show_before_indicator, vtab_group_kebab_position_id,
+    vtab_group_position_id,
     should_keep_detail_sidecar_visible_for_mouse_position, should_show_tab_group_header,
     shows_synced_inputs_indicator, sort_summary_primary_labels_status_first, summary_overflow_count,
     summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
@@ -112,6 +115,43 @@ fn summary_pane_kind_icons_distinguish_agent_terminals_from_plain_terminals() {
             },
         })
     );
+}
+
+#[test]
+fn select_unique_pane_kinds_dedupes_in_creation_order_and_caps_at_max_count() {
+    // The horizontal tab-group collage asks for up to 4 kinds; the vertical
+    // Summary pair asks for 2. Both must see the same ordering and dedup rule.
+    let kinds = [
+        (EntityId::from_usize(40), SummaryPaneKind::CodeDiff),
+        (EntityId::from_usize(10), SummaryPaneKind::Terminal),
+        (EntityId::from_usize(30), code_summary_kind("main.rs")),
+        (EntityId::from_usize(20), SummaryPaneKind::Terminal),
+        (
+            EntityId::from_usize(50),
+            SummaryPaneKind::Notebook { is_plan: false },
+        ),
+    ];
+
+    assert_eq!(
+        select_unique_pane_kinds(kinds.clone(), 4),
+        vec![
+            SummaryPaneKind::Terminal,
+            code_summary_kind("main.rs"),
+            SummaryPaneKind::CodeDiff,
+            SummaryPaneKind::Notebook { is_plan: false },
+        ]
+    );
+
+    assert_eq!(
+        select_unique_pane_kinds(kinds, 2),
+        vec![SummaryPaneKind::Terminal, code_summary_kind("main.rs")],
+        "the cap applies after dedup, not before"
+    );
+}
+
+#[test]
+fn select_unique_pane_kinds_returns_nothing_for_no_panes() {
+    assert_eq!(select_unique_pane_kinds([], 4), Vec::new());
 }
 
 #[test]
@@ -1049,6 +1089,7 @@ fn summary_search_fragments_include_hidden_overflow_values() {
                 pull_request_label: Some("#789".to_string()),
             },
         ],
+        has_unread_activity: false,
     };
 
     let fragments = summary_search_text_fragments(&summary, Some("Custom tab"));
@@ -1198,4 +1239,71 @@ fn synced_inputs_indicator_respects_tab_indicators_setting() {
 #[test]
 fn synced_inputs_indicator_hidden_on_non_terminal_rows() {
     assert!(!shows_synced_inputs_indicator(false, true, true));
+}
+
+#[test]
+fn before_indicator_matches_same_index_and_group() {
+    let group = TabGroupId::new();
+    let hovered = Some(TabBarHoverIndex::BeforeTab {
+        index: 3,
+        group: Some(group),
+    });
+    assert!(show_before_indicator(hovered, 3, Some(group)));
+}
+
+#[test]
+fn before_indicator_distinguishes_group_boundary_from_group_interior() {
+    let group = TabGroupId::new();
+    // The before-group boundary and the first in-group slot share an index;
+    // only the group they represent tells them apart.
+    let boundary = Some(TabBarHoverIndex::BeforeTab {
+        index: 3,
+        group: None,
+    });
+    assert!(show_before_indicator(boundary, 3, None));
+    assert!(!show_before_indicator(boundary, 3, Some(group)));
+
+    let interior = Some(TabBarHoverIndex::BeforeTab {
+        index: 3,
+        group: Some(group),
+    });
+    assert!(!show_before_indicator(interior, 3, None));
+}
+
+#[test]
+fn before_indicator_rejects_other_indices_and_over_tab() {
+    let hovered = Some(TabBarHoverIndex::BeforeTab {
+        index: 3,
+        group: None,
+    });
+    assert!(!show_before_indicator(hovered, 4, None));
+    assert!(!show_before_indicator(Some(TabBarHoverIndex::OverTab(3)), 3, None));
+    assert!(!show_before_indicator(None, 3, None));
+}
+
+/// The vertical group container writes its `SavePosition` under
+/// `vtab_group_position_id`, which is exactly the key
+/// `Workspace::group_container_rect` reads on the vertical branch. If the two
+/// ever drift apart, vertical drop hit-testing silently sees no groups — a
+/// failure with no visible cause — so pin the ids apart from each other and
+/// from the kebab anchor here.
+#[test]
+fn tab_group_save_position_ids_are_distinct_per_axis_and_role() {
+    let group = TabGroupId::new();
+    let vertical = vtab_group_position_id(group);
+    let horizontal = htab_group_position_id(group);
+    let kebab = vtab_group_kebab_position_id(group);
+
+    assert_ne!(vertical, horizontal);
+    assert_ne!(vertical, kebab);
+    assert_ne!(horizontal, kebab);
+    assert!(vertical.starts_with("vertical_tabs:group:"));
+    assert!(horizontal.starts_with("horizontal_tabs:group:"));
+    assert!(kebab.starts_with("vertical_tabs:group_kebab:"));
+
+    // Same group id must always resolve to the same key: the writer and the
+    // reader are separate call sites in separate files.
+    assert_eq!(vertical, vtab_group_position_id(group));
+    // Distinct groups must not collide.
+    assert_ne!(vertical, vtab_group_position_id(TabGroupId::new()));
 }

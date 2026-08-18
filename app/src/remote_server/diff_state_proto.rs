@@ -18,8 +18,8 @@ use std::sync::Arc;
 use crate::code_review::diff_size_limits::{DiffSize, MAX_DIFF_SIZE, UnrenderableReason};
 use crate::code_review::diff_state::{
     DiffHunk, DiffLine, DiffLineType, DiffMetadata, DiffMetadataAgainstBase, DiffMode, DiffState,
-    DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffData, GitDiffWithBaseContent,
-    GitFileStatus,
+    DiffStats, FileDiff, FileDiffAndContent, FileStagedState, FileStatusInfo, GitDiffData,
+    GitDiffWithBaseContent, GitFileStatus,
 };
 use crate::util::git::{Commit, FileChangeEntry, PrInfo};
 
@@ -188,6 +188,34 @@ pub(super) fn proto_to_diff_size(size: i32) -> DiffSize {
     }
 }
 
+// ── FileStagedState ──────────────────────────────────────────────
+//
+// `None` <-> `FILE_STAGED_STATE_UNSPECIFIED`. Unspecified means "this backend
+// is not reporting staging for this file" -- either a base-branch diff mode
+// (no index to compare against) or a daemon built before Zap #329 -- and must
+// not collapse to `Unstaged`, which would offer the user a "stage" button
+// that the daemon has no handler for.
+
+fn file_staged_state_to_proto(staged: Option<FileStagedState>) -> proto::FileStagedState {
+    match staged {
+        None => proto::FileStagedState::Unspecified,
+        Some(FileStagedState::Staged) => proto::FileStagedState::Staged,
+        Some(FileStagedState::Unstaged) => proto::FileStagedState::Unstaged,
+        Some(FileStagedState::PartiallyStaged) => proto::FileStagedState::PartiallyStaged,
+    }
+}
+
+fn proto_to_file_staged_state(staged: i32) -> Option<FileStagedState> {
+    // `try_from` rejects a tag this build does not know; an unrecognised value
+    // is treated the same as unspecified rather than guessed at.
+    match proto::FileStagedState::try_from(staged).ok()? {
+        proto::FileStagedState::Unspecified => None,
+        proto::FileStagedState::Staged => Some(FileStagedState::Staged),
+        proto::FileStagedState::Unstaged => Some(FileStagedState::Unstaged),
+        proto::FileStagedState::PartiallyStaged => Some(FileStagedState::PartiallyStaged),
+    }
+}
+
 // ── FileDiff ─────────────────────────────────────────────────────
 // The fork's `FileDiff` has no base-content field (that lives in the separate
 // `FileDiffAndContent`), so `content_at_base` is passed in / returned out.
@@ -230,6 +258,7 @@ pub(super) fn file_diff_to_proto(
         has_hidden_bidi_chars: diff.has_hidden_bidi_chars,
         size: size as i32,
         content_at_base,
+        staged: file_staged_state_to_proto(diff.staged) as i32,
     }
 }
 
@@ -249,6 +278,7 @@ pub(super) fn proto_to_file_diff(diff: &proto::FileDiff) -> (FileDiff, Option<St
         max_line_number: diff.max_line_number as usize,
         has_hidden_bidi_chars: diff.has_hidden_bidi_chars,
         size: proto_to_diff_size(diff.size),
+        staged: proto_to_file_staged_state(diff.staged),
     };
     (file_diff, diff.content_at_base.clone())
 }

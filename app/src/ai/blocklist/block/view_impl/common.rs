@@ -536,7 +536,6 @@ pub struct WarpingIndicatorProps {
 }
 
 /// Computes the fixed height of the warping-indicator footer.
-///
 /// The warping text occupies a single line. When a secondary element (an agent
 /// tip or fallback-model explanation) is present, it renders on a second line
 /// below the warping text, so the footer must reserve room for that extra line;
@@ -1780,7 +1779,6 @@ struct VisualMarkdownBlockOptions<A: 'static> {
 }
 
 /// Choose the text shown when a block-list image fails to render.
-///
 /// Per product invariant 8, non-empty alt text takes precedence over the raw
 /// markdown source so authored alt text is surfaced on load failure.
 fn image_fallback_text(image: &AgentOutputImage) -> String {
@@ -1839,7 +1837,7 @@ fn load_renderable_image_asset(
 
     #[cfg(not(feature = "local_fs"))]
     let asset_source = blocklist_image_asset_source(&image.source, current_working_directory)?;
-    // NOT COMPILED -- builds are suspended. Ported from upstream `dbca9ac43`
+    // Ported from upstream `dbca9ac43`
     // ("Prevent WASM blocklist local image loads", #11515): in a WASM build, a
     // blocklist Markdown image can resolve to a local-filesystem `AssetSource`
     // (e.g. a path written by an agent that ran outside the browser sandbox,
@@ -1876,7 +1874,7 @@ fn can_render_blocklist_image(
     .is_some()
 }
 
-// NOT COMPILED -- builds are suspended. Ported from upstream `dbca9ac43`
+// Ported from upstream `dbca9ac43`
 // (#11515), see the comment above `load_renderable_image_asset`'s call site.
 #[cfg(target_arch = "wasm32")]
 fn should_load_blocklist_image_asset(asset_source: &AssetSource) -> bool {
@@ -3555,7 +3553,6 @@ pub(super) fn query_prefix_highlight_len(
 }
 
 /// Determines whether the current block's user-query bubble should render.
-///
 /// When "Hide responses" is enabled, the query itself must also be hidden here, to
 /// avoid a UI that hides only the output but not the input, which would leave the
 /// user seeing leftover sent content.
@@ -3723,7 +3720,6 @@ pub fn render_query_text(props: UserQueryProps<'_>, app: &AppContext) -> Text {
 
 /// Renders a scrollable collapsible content area with auto-scroll-to-bottom
 /// during streaming. Returns `None` if the state is collapsed.
-///
 /// While streaming, the content is capped at `max_height` inside a nested
 /// scroll pane that auto-pins to the bottom, so in-progress generation
 /// cannot shove the rest of the conversation off-screen. Once streaming has
@@ -3731,7 +3727,6 @@ pub fn render_query_text(props: UserQueryProps<'_>, app: &AppContext) -> Text {
 /// entirely: a block the user has deliberately expanded to read flows
 /// inline and is scrolled by the conversation's own scroll view like any
 /// other message, instead of sitting in a fixed-height porthole.
-///
 /// Shared by reasoning/summarization blocks and structured event blocks.
 pub(crate) fn render_scrollable_collapsible_content(
     message_id: &MessageId,

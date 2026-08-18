@@ -552,6 +552,16 @@ pub struct LLMPreferences {
         (crate::settings::AgentProviderApiType, String),
         crate::settings::ReasoningEffortSetting,
     >,
+    /// Whether the most recent attempt to (re)build the agent-mode model list
+    /// failed, leaving `models_by_feature` stale or empty.
+    ///
+    /// It exists so a validator can tell "your model id is wrong" apart from "we
+    /// could not find out what the valid ids are" — without it, a failed refresh
+    /// is reported to the user as an unknown model id, blaming them for someone
+    /// else's failure. Set by whoever handed us a failed model-list result (see
+    /// [`Self::update_feature_model_choices`]) and cleared by any successful
+    /// update.
+    agent_mode_models_unavailable: bool,
 }
 
 impl LLMPreferences {
@@ -628,6 +638,8 @@ impl LLMPreferences {
             base_llm_for_terminal_view,
             reasoning_effort_per_terminal: HashMap::new(),
             last_used_reasoning,
+            // `models_by_feature` was just built successfully above.
+            agent_mode_models_unavailable: false,
         };
 
         // In agent mode eval builds, eagerly kick off a fetch of the model list from the server
@@ -712,6 +724,23 @@ impl LLMPreferences {
             }
         }
 
+        self.get_active_profile_base_model(app, terminal_view_id)
+    }
+
+    /// Returns the active execution profile's effective base model, *without*
+    /// applying the per-terminal-view override or the BYOP picker's globally
+    /// last-used model.
+    ///
+    /// This is the "profile default" the model picker labels as such: the model
+    /// a fresh surface would fall back to once the ad-hoc overrides above it are
+    /// out of the way. Kept separate from [`Self::get_active_base_model`] for
+    /// exactly that reason — the two differ whenever the user has switched
+    /// models in the picker without saving the choice into the profile.
+    pub fn get_active_profile_base_model<'a>(
+        &'a self,
+        app: &AppContext,
+        terminal_view_id: Option<EntityId>,
+    ) -> &'a LLMInfo {
         let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
 
         profile
@@ -1004,6 +1033,52 @@ impl LLMPreferences {
         });
     }
 
+    /// Copies the Agent Mode model *selection* from one terminal view to
+    /// another, for pane/tab operations that clone a session (e.g. `/fork`).
+    ///
+    /// This copies the raw per-view override -- including its absence, which is
+    /// itself a meaningful state ("follow the profile default") -- rather than
+    /// the model the source *resolved* to. Two things follow from that:
+    ///
+    /// * It never writes `AISettings::byop_last_used_model_id`. That tier
+    ///   exists to carry an explicit picker switch over to new tabs and across
+    ///   restarts, and a fork is not a picker switch: writing it there would
+    ///   silently repoint every future new tab at the forked pane's model.
+    /// * Copying the resolved model would also collapse "no override" into an
+    ///   explicit override (and, when the resolved id happens to equal the
+    ///   *target's* current profile default, drop the source's real override),
+    ///   so the fork would stop tracking its profile.
+    pub fn copy_agent_mode_selection(
+        &mut self,
+        source_terminal_view_id: EntityId,
+        new_terminal_view_id: EntityId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let source_override = self
+            .base_llm_for_terminal_view
+            .get(&source_terminal_view_id)
+            .cloned();
+
+        let changed = match source_override {
+            Some(llm_id) => {
+                let previous = self
+                    .base_llm_for_terminal_view
+                    .insert(new_terminal_view_id, llm_id.clone());
+                previous.as_ref() != Some(&llm_id)
+            }
+            // The source follows its profile's default, so the copy must too.
+            None => self
+                .base_llm_for_terminal_view
+                .remove(&new_terminal_view_id)
+                .is_some(),
+        };
+
+        if changed {
+            self.trigger_snapshot_save(ctx);
+            ctx.emit(LLMPreferencesEvent::UpdatedActiveAgentModeLLM);
+        }
+    }
+
     /// Triggers a snapshot save to persist LLM override changes.
     fn trigger_snapshot_save(&self, ctx: &mut ModelContext<Self>) {
         ctx.dispatch_global_action("workspace:save_app", ());
@@ -1082,10 +1157,34 @@ impl LLMPreferences {
         *last_update.popup_visibility_state.lock() = UpdatePopupVisibilityState::Hidden;
     }
 
+    /// Returns `true` when the most recent model-list update failed, so the
+    /// agent-mode list is stale or empty rather than authoritative.
+    ///
+    /// Callers that validate a user-supplied model id should consult this before
+    /// reporting an id as unknown — see
+    /// `crate::ai::agent_sdk::common::validate_agent_mode_base_model_id`.
+    pub fn agent_mode_models_unavailable(&self) -> bool {
+        self.agent_mode_models_unavailable
+    }
+
+    /// Sets whether the agent-mode model list is currently unavailable. Set on a
+    /// failed model-list result, cleared by [`Self::on_server_update`] and by a
+    /// successful BYOP rebuild.
+    pub(crate) fn set_agent_mode_models_unavailable(&mut self, unavailable: bool) {
+        self.agent_mode_models_unavailable = unavailable;
+    }
+
     /// BYOP-only mode: the picker is populated entirely from local `agent_providers`,
     /// and no longer pulls models from the warp backend. These two refresh functions
     /// keep their signatures so existing call sites (NetworkOnline / AuthComplete /
     /// TeamsChanged) can still trigger them, but they're no-ops internally.
+    ///
+    /// Upstream's version fetches the account's model catalogue over the network and
+    /// is where `agent_mode_models_unavailable` gets *set*. There is no such fetch
+    /// here — [`Self::refresh_byop_models`] rebuilds the list synchronously from local
+    /// settings and cannot fail — so this stays inert rather than acquiring an
+    /// invented failure mode. The flag is still set by whoever hands
+    /// [`Self::update_feature_model_choices`] a failed result.
     pub fn refresh_authed_models(&self, _ctx: &mut ModelContext<Self>) {}
 
     fn refresh_public_models(&self, _ctx: &mut ModelContext<Self>) {}
@@ -1097,6 +1196,10 @@ impl LLMPreferences {
         if new != self.models_by_feature {
             self.on_server_update(new, ctx);
         }
+        // The rebuild succeeded, so the list is authoritative again. Cleared here
+        // as well as in `on_server_update` because that call is skipped when the
+        // rebuild produced an identical list.
+        self.set_agent_mode_models_unavailable(false);
     }
 
     pub fn refresh_available_models(&self, ctx: &mut ModelContext<Self>) {
@@ -1112,12 +1215,23 @@ impl LLMPreferences {
         choices_result: Result<ModelsByFeature, anyhow::Error>,
         ctx: &mut ModelContext<Self>,
     ) {
-        if let Ok(choices) = choices_result {
-            self.on_server_update(choices, ctx);
+        match choices_result {
+            Ok(choices) => self.on_server_update(choices, ctx),
+            Err(e) => {
+                // Previously dropped on the floor, which left the stale list looking
+                // authoritative: a user whose model-list refresh failed was told their
+                // model id was unknown. Record the failure instead, so validators can
+                // say what actually went wrong.
+                log::error!("Failed to update feature model choices: {e:#}");
+                self.set_agent_mode_models_unavailable(true);
+            }
         }
     }
 
     fn on_server_update(&mut self, update: ModelsByFeature, ctx: &mut ModelContext<Self>) {
+        // Any successful model-list update makes the list authoritative again.
+        self.set_agent_mode_models_unavailable(false);
+
         let has_existing_persisted_config = get_cached_models(ctx).is_some();
 
         let old = std::mem::replace(&mut self.models_by_feature, update);

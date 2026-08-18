@@ -65,7 +65,6 @@ fn add_executor(app: &mut App) -> ModelHandle<RequestFileEditsExecutor> {
 }
 
 /// Registers a `TestStorage` for `action_id` and returns its observable state.
-///
 /// NOTE: Warp's `RequestFileEditsExecutor::register_requested_edits` takes a
 /// `Box<dyn RegisteredDiffStorage>` directly (a single unified `diff_storages`
 /// map for both GUI and non-GUI surfaces). The fork split this into two maps:
@@ -165,7 +164,6 @@ fn execute_accepts_through_registered_storage() {
         assert!(storage.accepted.get());
         // The entry stays registered until the action's terminal result
         // funnels through `discard_pending`.
-        //
         // NEEDS-ADAPTATION: Warp's `RequestFileEditsExecutor` has a
         // `discard_pending` method that removes an action's entry from the
         // (unified) `diff_storages` map once its terminal result is known.
@@ -224,7 +222,6 @@ fn discard_pending_drops_state_in_any_state() {
         let executor = add_executor(&mut app);
 
         // Registered storage entry (e.g. rejected during review).
-        //
         // NOTE: Warp keeps one unified `diff_storages` map; the fork splits it
         // into `diff_views` (GUI) and `tui_diff_storages` (TUI), and
         // `register_storage` above registers into the latter.
@@ -248,7 +245,7 @@ fn discard_pending_drops_state_in_any_state() {
     });
 }
 
-// NOT COMPILED -- builds are suspended. Ported from upstream `89f61b63ba`
+// Ported from upstream `89f61b63ba`
 // ("Limit apply diff results to changed ranges", #11987) -- see
 // `updated_file_contexts_from_editor_buffers`'s doc comment in
 // request_file_edits.rs. `AnyFileContent`/`FileLocations` come in via `use

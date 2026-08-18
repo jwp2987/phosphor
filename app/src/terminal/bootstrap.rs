@@ -245,7 +245,7 @@ pub fn init_subshell_command(
                 init_subshell_script_for_shell(shell_type, &crate::ASSETS, vars, session_id, ctx);
             format!(r#" [ -z $WARP_BOOTSTRAPPED ] && eval '{subshell_script}'"#)
         }
-        None => init_subshell_script_for_unknown_shell(&crate::ASSETS),
+        None => init_subshell_script_for_unknown_shell(&crate::ASSETS, session_id),
     }
 }
 
@@ -299,14 +299,17 @@ fn init_subshell_script_for_shell(
 /// The returned script is one line and has escaped single-quotes for the purposes of being passed
 /// as a single-quoted argument to 'eval'.
 ///
-/// NOTE: unlike [`init_subshell_script_for_shell`], this does not bake in a session ID -- the
-/// `InitSubshell` hook it emits does not (yet) carry a `session_id` field to validate against
-/// (see the `DProtoHook::session_id` doc comment in `ansi/dcs_hooks.rs`), so there is nothing for
-/// a baked-in ID to be checked against today.
-fn init_subshell_script_for_unknown_shell(assets: &dyn AssetProvider) -> String {
+/// The caller must have registered `session_id` with the owning `TerminalModel` first: it is
+/// baked into the emitted `InitSubshell` hook so the hook can be validated against an ID this
+/// client minted.
+fn init_subshell_script_for_unknown_shell(
+    assets: &dyn AssetProvider,
+    session_id: SessionId,
+) -> String {
     // Load and escape the shell-specific init script
     load_and_escape_script("bundled/bootstrap/unknown_init_subshell.sh", assets)
         .replace("HOOK_NAME", "InitSubshell")
+        .replace(SESSION_ID_PLACEHOLDER, &session_id.as_u64().to_string())
 }
 
 /// Returns the raw init shell script for the given `shell_type`, without

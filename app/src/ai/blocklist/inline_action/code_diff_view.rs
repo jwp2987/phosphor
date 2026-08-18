@@ -313,10 +313,8 @@ impl FileDiff {
 }
 
 /// The state of the saving diffs for a list of files.
-///
 /// When the requested edit is accepted, we have to 1) wait for the diff to be computed
 /// by the CodeDiffModel for each file 2) wait for the changes to be saved locally.
-///
 /// After the above two conditions are all met, we can emit the Accepted event with all of the diffs.
 /// This tracks which diffs have been computed.
 #[derive(Clone, Debug)]
@@ -753,7 +751,6 @@ impl CodeDiffView {
     }
 
     /// Creates a passive `CodeDiffView` for out-of-band code diff suggestions.
-    ///
     /// Unlike [`Self::new`], this does not require an `AIBlockModel` or
     /// `BlocklistAIActionModel` — the view is standalone and not tied to the
     /// action executor pipeline.
@@ -955,7 +952,6 @@ impl CodeDiffView {
     }
 
     /// Set the session type for this diff view.
-    ///
     /// When `Remote`, `set_candidate_diffs` registers files with the
     /// remote backend instead of the local filesystem.
     pub fn set_diff_session_type(&mut self, session_type: DiffSessionType) {
@@ -2236,7 +2232,6 @@ impl CodeDiffView {
     /// Returns the currently selected text within the entire `CodeDiffView` view sub-hierarchy.
     /// There **shouldn't** be more than one instance of selected text at any given time across
     /// any **visible** view within the same `CodeDiffView` view sub-hierarchy.
-    ///
     /// Only text selections in the selected diff tab are considered.
     pub fn selected_text(&self, ctx: &AppContext) -> Option<String> {
         let diff = self.pending_diffs.get(self.selected_tab)?;
@@ -2287,7 +2282,6 @@ impl CodeDiffView {
 
     /// We are processing unified diff and saving files concurrently. That's why
     /// we need to have separate handlers for diff calculation and save completed.
-    ///
     /// The diffs applied for each CodeEditorView are received individually.
     /// Store this diff, and try to emit the diffs saved event.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -2307,7 +2301,6 @@ impl CodeDiffView {
 
     /// We are processing unified diff and saving files concurrently. That's why
     /// we need to have separate handlers for diff calculation and save completed.
-    ///
     /// The save state for each CodeEditorView are received individually.
     /// Update the accepted diff state, and try to emit the diffs saved event.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -2378,7 +2371,7 @@ impl CodeDiffView {
                             file_path_str = rename.to_string_lossy().to_string();
                         }
                         let was_edited = diff.diff_view.as_ref(ctx).was_edited();
-                        // NOT COMPILED -- builds are suspended. Ported from upstream
+                        // Ported from upstream
                         // `89f61b63ba` (#11987) -- see the doc comment on
                         // `updated_file_contexts_from_editor_buffers` in
                         // `request_file_edits.rs` for why this half of the fix matters too:
@@ -3203,7 +3196,6 @@ fn accept_keystroke_source(is_passive: bool) -> KeystrokeSource {
 }
 
 /// Returns a keystroke based on key, OS, and passive state.
-///
 /// This assumes that when the diff is passive, the keybindings are cmd or ctrl-shift modified,
 /// depending on the host OS.
 fn keystroke_for_mode(key: &str, is_passive: bool) -> Keystroke {
@@ -3217,7 +3209,7 @@ fn keystroke_for_mode(key: &str, is_passive: bool) -> Keystroke {
     }
 }
 
-// NOT COMPILED -- builds are suspended. Ported from upstream `89f61b63ba`
+// Ported from upstream `89f61b63ba`
 // ("Limit apply diff results to changed ranges", #11987) -- see the call
 // site's comment above for why the editor's own `changed_lines(ctx)` isn't
 // always enough on its own.

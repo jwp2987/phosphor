@@ -18,7 +18,10 @@ use crate::terminal::model::block::SerializedBlock;
 #[cfg(feature = "local_fs")]
 use crate::persistence::agent::read_agent_conversation_by_id;
 
-use super::{AIConversationMetadata, BlocklistAIHistoryModel, MAX_HISTORICAL_CONVERSATIONS};
+use super::{
+    AIConversationMetadata, BlocklistAIHistoryModel, MAX_HISTORICAL_CONVERSATIONS,
+    agent_id_key_from_persisted_data,
+};
 
 /// A conversation transcript from a CLI agent harness (e.g. Claude Code).
 #[derive(Debug, Clone)]
@@ -75,7 +78,17 @@ pub fn convert_persisted_conversation_to_ai_conversation_with_metadata(
 
     let conversation_data = serde_json::from_str::<AgentConversationData>(&conversation_data).ok();
 
-    match AIConversation::new_restored(conversation_id, tasks, conversation_data) {
+    // Local-DB restore: an empty `agent_tasks` row is the normal shape of a
+    // child conversation persisted before its first server response, so
+    // synthesize a fresh optimistic root rather than failing the restore. This
+    // is the pin's only non-test call site of the lenient constructor
+    // (`42effe840:app/src/ai/blocklist/history_model/conversation_loader.rs:92`);
+    // every other caller stays on the strict `new_restored`.
+    match AIConversation::new_restored_synthesizing_on_empty(
+        conversation_id,
+        tasks,
+        conversation_data,
+    ) {
         Ok(mut conversation) => {
             // Old messages in a persisted Task may lack CurrentTime/timestamp,
             // falling back to the Unix epoch when the exchange is restored. SQLite's
@@ -218,16 +231,36 @@ impl BlocklistAIHistoryModel {
     /// from their tasks here. Preferring the persisted `summary` column
     /// means startup does not need to decode `agent_tasks` (or the tasks may
     /// not even be present) just to build the history list.
+    ///
+    /// Runs in two passes, matching the pin
+    /// (`42effe840:app/src/ai/blocklist/history_model/conversation_loader.rs:489-575`).
+    /// Pass 1 decodes every restorable row and seeds the agent-id and server-token
+    /// lookups from *all* of them; pass 2 resolves each row's parent. The split
+    /// exists because a child may be linked to its parent by `parent_agent_id`
+    /// alone, and that can only be resolved once the parent's own `run_id` is in
+    /// `agent_id_to_conversation_id` — which, with a single pass, it is not when
+    /// the child sorts ahead of the parent.
     pub(super) fn initialize_historical_conversations(
         &mut self,
         conversations: &[AgentConversation],
     ) {
-        let conversations = conversations
+        /// One decoded historical row, carried from pass 1 to pass 2 so the
+        /// summary and `conversation_data` are parsed exactly once.
+        struct HistoricalConversationRow<'a> {
+            agent_conversation: &'a AgentConversation,
+            conversation_id: AIConversationId,
+            conversation_data: Option<AgentConversationData>,
+            summary: AgentConversationSummary,
+        }
+
+        // Pass 1: decode, drop unrestorable rows, and seed the agent-id and
+        // server-token indices for every surviving row -- including parents,
+        // whose `run_id` is what a `parent_agent_id`-only child resolves
+        // through in pass 2.
+        let historical_rows: Vec<_> = conversations
             .iter()
             .sorted_by_key(|c| c.conversation.last_modified_at)
-            .rev();
-
-        let collected: HashMap<AIConversationId, AIConversationMetadata> = conversations
+            .rev()
             .take(MAX_HISTORICAL_CONVERSATIONS)
             .filter_map(|agent_conv| {
                 // Try to convert the conversation ID
@@ -257,46 +290,69 @@ impl BlocklistAIHistoryModel {
                     return None;
                 }
 
+                let conversation_data = serde_json::from_str::<AgentConversationData>(
+                    &agent_conv.conversation.conversation_data,
+                )
+                .ok();
+
+                if let Some(data) = conversation_data.as_ref() {
+                    if let Some(agent_id) = agent_id_key_from_persisted_data(data) {
+                        self.agent_id_to_conversation_id
+                            .insert(agent_id.to_owned(), conversation_id);
+                    }
+                    if let Some(token) = data.server_conversation_token.as_ref() {
+                        self.server_token_to_conversation_id
+                            .insert(ServerConversationToken::new(token.clone()), conversation_id);
+                    }
+                }
+
+                Some(HistoricalConversationRow {
+                    agent_conversation: agent_conv,
+                    conversation_id,
+                    conversation_data,
+                    summary,
+                })
+            })
+            .collect();
+
+        // Pass 2: resolve each row's parent against the now fully-seeded
+        // indices and build the history metadata for everything that is not a
+        // child agent.
+        let collected: HashMap<AIConversationId, AIConversationMetadata> = historical_rows
+            .into_iter()
+            .filter_map(|row| {
+                let HistoricalConversationRow {
+                    agent_conversation: agent_conv,
+                    conversation_id,
+                    conversation_data,
+                    summary,
+                } = row;
+
                 // Child agent conversations are managed by their parent's
                 // status card and should not appear in navigation/history.
                 // Record the parent→child mapping before filtering so that
                 // create_missing_child_agent_panes can discover children
                 // before they are loaded into conversations_by_id.
-                let conversation_data = serde_json::from_str::<AgentConversationData>(
-                    &agent_conv.conversation.conversation_data,
-                )
-                .ok();
-                if let Some(parent_id_str) = conversation_data
-                    .as_ref()
-                    .and_then(|data| data.parent_conversation_id.as_deref())
-                {
-                    if let Ok(parent_id) = AIConversationId::try_from(parent_id_str.to_string()) {
-                        let children = self.children_by_parent.entry(parent_id).or_default();
-                        if !children.contains(&conversation_id) {
-                            children.push(conversation_id);
-                        }
+                // Bound to a local so the `&self` borrow taken by the resolver
+                // is over before `children_by_parent` is borrowed mutably below.
+                let resolved_parent_id = conversation_data.as_ref().and_then(|data| {
+                    self.resolved_parent_conversation_id_from_persisted_data(data)
+                });
+                if let Some(parent_id) = resolved_parent_id {
+                    let children = self.children_by_parent.entry(parent_id).or_default();
+                    if !children.contains(&conversation_id) {
+                        children.push(conversation_id);
                     }
 
-                    // Eagerly hydrate the child conversation -- and the
-                    // agent-id/token indices `conversation_id_for_agent_id`
-                    // reads -- into memory so orchestration transcript and
-                    // pill-bar name resolution (`resolve_orchestration_participant`)
-                    // can find a restored child before its parent's hidden
-                    // pane materializes it lazily via `restore_conversations`.
+                    // Eagerly hydrate the child conversation into memory so
+                    // orchestration transcript and pill-bar name resolution
+                    // (`resolve_orchestration_participant`) can find a
+                    // restored child before its parent's hidden pane
+                    // materializes it lazily via `restore_conversations`.
                     // Restricted to orchestration children only; other
                     // historical conversations still load lazily. A
                     // subsequent `restore_conversations` call replaces this
                     // entry idempotently.
-                    if let Some(data) = conversation_data.as_ref() {
-                        if let Some(run_id) = data.run_id.as_deref() {
-                            self.agent_id_to_conversation_id
-                                .insert(run_id.to_owned(), conversation_id);
-                        }
-                        if let Some(token) = data.server_conversation_token.as_ref() {
-                            self.server_token_to_conversation_id
-                                .insert(ServerConversationToken::new(token.clone()), conversation_id);
-                        }
-                    }
                     let child_conversation = if agent_conv.tasks.is_empty() {
                         self.load_conversation_from_db(&conversation_id)
                     } else {
@@ -374,14 +430,10 @@ impl BlocklistAIHistoryModel {
             })
             .collect();
 
-        // Populate the token → conversation reverse index alongside the
-        // forward metadata map.
-        for (conversation_id, metadata) in &collected {
-            if let Some(token) = &metadata.server_conversation_token {
-                self.server_token_to_conversation_id
-                    .insert(token.clone(), *conversation_id);
-            }
-        }
+        // The token → conversation reverse index no longer needs a trailing
+        // fill-in pass: pass 1 seeds it from every restorable row, which is a
+        // superset of the rows that reach `collected`. Matches the pin, which
+        // has no such loop.
         self.all_conversations_metadata = collected;
     }
 }

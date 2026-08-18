@@ -27,6 +27,7 @@ use super::TuiTerminalSessionView;
 use crate::completions_menu::TuiAcceptedCompletion;
 use crate::inline_menu::active_inline_menu;
 use crate::input::view::TuiCompletionInputSnapshot;
+use crate::input_suggestions_mode::TuiInputSuggestionsMode;
 
 #[derive(Default)]
 pub(super) struct CompletionRequestState {
@@ -85,15 +86,26 @@ impl TuiTerminalSessionView {
     }
 
     /// Tab-completion entry point. When the completions popup is already
-    /// open, Tab cycles to the next candidate; otherwise it fetches
+    /// open, Tab cycles to the next candidate; when some *other* inline menu
+    /// is open it owns Tab and the press is swallowed; otherwise Tab fetches
     /// candidates for the token under the cursor from the shared completer
     /// engine and opens the popup.
     pub(super) fn request_shell_completion(&mut self, ctx: &mut ViewContext<Self>) {
-        if self.completions_menu.as_ref(ctx).is_open(ctx) {
-            self.completions_menu
-                .update(ctx, |menu, ctx| menu.select_next(ctx));
-            ctx.notify();
-            return;
+        let mode = self.suggestions_mode.as_ref(ctx).mode();
+        let other_inline_menu_is_open = mode != TuiInputSuggestionsMode::Completions
+            && active_inline_menu(&self.inline_menus, mode, ctx).is_some();
+        match shell_completion_tab_action(
+            self.completions_menu.as_ref(ctx).is_open(ctx),
+            other_inline_menu_is_open,
+        ) {
+            ShellCompletionTabAction::CycleCandidates => {
+                self.completions_menu
+                    .update(ctx, |menu, ctx| menu.select_next(ctx));
+                ctx.notify();
+                return;
+            }
+            ShellCompletionTabAction::ConsumedByOpenInlineMenu => return,
+            ShellCompletionTabAction::RequestCandidates => {}
         }
         let Some(input) = self.input_view.as_ref(ctx).completion_snapshot(ctx) else {
             return;
@@ -285,6 +297,42 @@ impl TuiTerminalSessionView {
             current_working_directory.as_deref(),
             has_active_inline_menu,
         )
+    }
+}
+
+/// What a Tab press does, given what is already on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShellCompletionTabAction {
+    /// Nothing owns Tab: fetch candidates for the token under the cursor.
+    RequestCandidates,
+    /// The completions popup is already open: advance to the next candidate.
+    CycleCandidates,
+    /// A *different* inline menu (slash commands, conversations, MCP, the
+    /// model picker, ...) is open, so Tab belongs to it and is swallowed.
+    ConsumedByOpenInlineMenu,
+}
+
+/// Resolves Tab's owner. Extracted from `request_shell_completion` so the
+/// precedence is testable without a live shell session.
+///
+/// The third arm is the one that used to be missing: the entry point checked
+/// only the completions popup, so Tab pressed over any other open inline menu
+/// started a completion request behind that menu. `completion_request_is_current`
+/// then discarded the results (its `has_active_inline_menu` dimension), which
+/// hid the defect -- but the request had already aborted the in-flight one,
+/// bumped the generation, and spawned a completer task with a shell round-trip
+/// on it. Refusing at the entry point is what the pin does, one layer up, in
+/// `TuiInputView::handle_inline_menu_action`.
+fn shell_completion_tab_action(
+    completions_menu_is_open: bool,
+    other_inline_menu_is_open: bool,
+) -> ShellCompletionTabAction {
+    if completions_menu_is_open {
+        ShellCompletionTabAction::CycleCandidates
+    } else if other_inline_menu_is_open {
+        ShellCompletionTabAction::ConsumedByOpenInlineMenu
+    } else {
+        ShellCompletionTabAction::RequestCandidates
     }
 }
 

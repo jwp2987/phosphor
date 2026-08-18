@@ -898,9 +898,15 @@ impl<V: Entity> GetSingletonModelHandle for ViewContext<'_, V> {
     }
 }
 
-// GUI-only context methods that genuinely require `T: View` (the underlying
-// `AppContext` desktop-notification APIs are View-bound). The headless TUI has no
-// desktop notifications, so these stay out of the `T: Entity` block above.
+// Desktop-notification context methods, deliberately kept out of the `T: Entity`
+// block above so that only GUI views can reach them: whether the Zap TUI gets
+// desktop notifications is a product decision the fork has not taken, and per
+// AGENTS.md §5.10 it needs maintainer sign-off rather than arriving as a side
+// effect of a bound relaxation.
+//
+// The `AppContext` methods underneath are `T: Entity` and resolve the view in
+// whichever registry holds it (GUI `views` or Zap `tui_views`), so lifting this
+// gate is the only change that decision would require.
 impl<'a, T: View> ViewContext<'a, T> {
     /// Requests permissions to send desktop notifications. The `on_completion callback` can be invoked to
     /// propagate the outcome of the request (accepted/denied/other) back to the app.

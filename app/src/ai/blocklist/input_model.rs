@@ -154,7 +154,8 @@ pub struct BlocklistAIInputModel {
 
     /// View-supplied policy for decisions the model cannot make view-agnostically:
     /// lock gating, the autodetection setting for the surface's current context,
-    /// and reactive config transitions driven by AI-settings events.
+    /// and reactive config transitions driven by AI-settings and
+    /// conversation-selection events.
     policy: InputModePolicyHandle,
 
     autodetect_abort_handle: Option<AbortHandle>,
@@ -284,6 +285,26 @@ impl BlocklistAIInputModel {
                 is_autodetection_enabled_for_current_context,
                 ctx,
             ) {
+                me.apply_policy_update(update, ctx);
+            }
+        });
+
+        // Reactive config transitions driven by the surface's conversation selection. The
+        // selection handle is not a constructor parameter: both surfaces already hand the same
+        // handle to the context model (`AgentViewConversationSelection` on the GUI,
+        // `TuiConversationSelection` on the TUI), so it is read back from there instead of being
+        // threaded through `new`/`new_tui` and every call site a second time.
+        //
+        // The `.clone()` releases the borrow of `ctx` taken by `as_ref` before
+        // `subscribe_to_model` takes it mutably.
+        let conversation_selection = ai_context_model.as_ref(ctx).conversation_selection().clone();
+        ctx.subscribe_to_model(&conversation_selection, |me, event, ctx| {
+            // A policy that returns `None` leaves the config untouched -- no unconditional
+            // rewrite on every selection event.
+            if let Some(update) =
+                me.policy
+                    .config_on_conversation_selection_changed(event, me.input_config(), ctx)
+            {
                 me.apply_policy_update(update, ctx);
             }
         });
@@ -924,13 +945,14 @@ impl Entity for BlocklistAIInputModel {
 /// on whether a CLI agent rich input session is open. This is a pure refactor —
 /// it does not change GUI behavior.
 ///
-/// `config_on_conversation_selection_changed` always returns `None` here: even though the GUI
-/// now has a `ConversationSelection` implementation (`AgentViewConversationSelection`, #316),
-/// this policy doesn't consume it -- agent-view enter/exit still drives config transitions via
-/// the `AgentViewController` subscription in `BlocklistAIInputModel::new_inner`, unchanged from
-/// before this policy existed. Routing `GuiInputModePolicy` through `ConversationSelection`
-/// instead is a separate, larger feature gap than #313 (which is scoped to lock gating / initial
-/// config / AI-settings transitions).
+/// `config_on_conversation_selection_changed` always returns `None` here. `new_inner` does now
+/// subscribe to the surface's `ConversationSelection` and route its events at the policy, so the
+/// hook is live -- but this policy deliberately opts out of it: agent-view enter/exit still
+/// drives GUI config transitions via the `AgentViewController` subscription in `new_inner`,
+/// unchanged from before this policy existed, and consuming both would apply each transition
+/// twice. Migrating the GUI off the `AgentViewController` subscription and onto
+/// `ConversationSelection` is a separate, larger change than #313 (which is scoped to lock
+/// gating / initial config / AI-settings transitions).
 pub(crate) struct GuiInputModePolicy {
     agent_view_controller: Option<ModelHandle<AgentViewController>>,
     terminal_view_id: EntityId,

@@ -8,13 +8,20 @@
 //!   `test_entering_remote_parent_agent_view_*`) or the ambient-agent UI
 //!   subsystem that was physically removed (see the `Zap Wave 7-3` comments
 //!   in `mod.rs`).
-//! - A handful more depend on a *lazy* hidden-child-agent-pane restoration
+//! - A handful more depended on a *lazy* hidden-child-agent-pane restoration
 //!   mechanism (`restore_missing_child_agent_panes_for_parent`,
 //!   `ensure_hidden_child_agent_pane_for_conversation`, the pin's
-//!   `enter_agent_view_for_conversation` test helper) that this fork does not
-//!   have -- it only restores child panes *eagerly*, once, at
-//!   `PaneGroup::new_internal`/`reattach_panes` time
-//!   (`create_missing_child_agent_panes`).
+//!   `enter_agent_view_for_conversation` test helper) that this fork did not
+//!   have -- it only restored child panes *eagerly*, once, at
+//!   `PaneGroup::new_internal` time (`create_missing_child_agent_panes`).
+//!   **That mechanism is now ported** (see the "Lazy hidden-child-agent pane
+//!   restoration" section below and the production code in `mod.rs` /
+//!   `pane/terminal_pane.rs`), so the non-cloud half of those tests is live
+//!   here. The cloud half -- anything whose subject is a *remote* child agent
+//!   (`is_remote_child`, `hydrate_task_backed_hidden_child_pane`, ambient
+//!   session re-attach) -- stays out of scope: this fork has no remote runner,
+//!   and `BlocklistAIHistoryModel::mark_conversation_as_remote_child`'s doc
+//!   comment records that `is_remote_child` is permanently `false` here.
 //! - `test_start_shared_session_from_modal` / `test_stop_shared_session` call
 //!   `TerminalView::attempt_to_share_session`, which is a declared no-op here
 //!   ("Zap: the Shared Session network entry point has been cut" --
@@ -41,6 +48,7 @@ use pathfinder_geometry::vector::Vector2F;
 use warpui::App;
 use warpui::platform::{WindowBounds, WindowStyle};
 
+use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
 use crate::notebooks::notebook::NotebookView;
 use crate::terminal::shared_session::SharedSessionStatus;
 use warpui::windowing::state::ApplicationStage;
@@ -82,6 +90,160 @@ fn is_active_session(panes: &PaneGroup, pane_id: PaneId, ctx: &AppContext) -> bo
 
 fn new_notebook(ctx: &mut ViewContext<PaneGroup>) -> ViewHandle<NotebookView> {
     ctx.add_typed_action_view(NotebookView::new)
+}
+
+/// A second, independent `PaneGroup` living in its own workspace window, for
+/// the cross-tab ownership cases.
+///
+/// The pin's `mod_tests.rs` just calls its own `mock_pane_group` twice. This
+/// fork's `mock_pane_group` (above) also runs `initialize_app`, which registers
+/// singleton models and must run exactly once per `App`, so the second group
+/// goes through `mock_workspace` only. Both groups still share the one
+/// `BlocklistAIHistoryModel` singleton, which is what these tests are about.
+fn additional_mock_pane_group(app: &mut App) -> ViewHandle<PaneGroup> {
+    let workspace = crate::workspace::view::tests::mock_workspace(app);
+    workspace
+        .read(app, |workspace, _| workspace.tab_views().next().cloned())
+        .expect("mock_workspace has an initial tab")
+}
+
+/// Fork drift: the pin's `BlocklistAIHistoryModel::start_new_conversation`
+/// takes three booleans (`is_autoexecute_override`, `is_ambient_agent`,
+/// `is_viewing_shared_session`); this fork's takes two -- the ambient-agent
+/// flag went with the ambient-agent UI subsystem (see the `Zap Wave 7-3`
+/// comments in `mod.rs`).
+fn start_parent_conversation_for_terminal_view(
+    terminal_view_id: EntityId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+        history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+    })
+}
+
+fn start_parent_conversation(
+    panes: &PaneGroup,
+    parent_pane_id: PaneId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    let parent_terminal_view_id = panes
+        .terminal_view_from_pane_id(parent_pane_id, ctx)
+        .expect("parent pane should have a terminal view")
+        .id();
+    start_parent_conversation_for_terminal_view(parent_terminal_view_id, ctx)
+}
+
+fn restore_conversation_for_terminal_view(
+    terminal_view_id: EntityId,
+    conversation: AIConversation,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    let conversation_id = conversation.id();
+
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
+        history_model.restore_conversations(terminal_view_id, vec![conversation], ctx);
+    });
+
+    conversation_id
+}
+
+/// Fork drift: `AIConversation::new` takes a single `is_viewing_shared_session`
+/// flag here; the pin's takes two (the second is the dropped cloud
+/// `is_ambient_agent`).
+fn restore_child_conversation_for_terminal_view(
+    terminal_view_id: EntityId,
+    parent_conversation_id: AIConversationId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    let mut child_conversation = AIConversation::new(false);
+    child_conversation.set_parent_conversation_id(parent_conversation_id);
+    restore_conversation_for_terminal_view(terminal_view_id, child_conversation, ctx)
+}
+
+fn restore_child_conversation(
+    panes: &PaneGroup,
+    pane_id: PaneId,
+    parent_conversation_id: AIConversationId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> AIConversationId {
+    let terminal_view_id = panes
+        .terminal_view_from_pane_id(pane_id, ctx)
+        .expect("child pane should have a terminal view")
+        .id();
+    restore_child_conversation_for_terminal_view(terminal_view_id, parent_conversation_id, ctx)
+}
+
+fn enter_agent_view_for_conversation(
+    panes: &PaneGroup,
+    pane_id: PaneId,
+    conversation_id: AIConversationId,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    panes
+        .terminal_view_from_pane_id(pane_id, ctx)
+        .expect("pane should have a terminal view")
+        .update(ctx, |terminal_view, ctx| {
+            terminal_view.enter_agent_view_for_conversation(
+                None,
+                AgentViewEntryOrigin::RestoreExistingConversation,
+                conversation_id,
+                ctx,
+            );
+        });
+}
+
+/// Builds a detached `TerminalPane` whose terminal view is *already* in a
+/// fullscreen agent view with a restored child conversation underneath it --
+/// i.e. the state a pane is in when it is handed to `add_pane_with_direction`
+/// or `replace_pane` after being restored, which is exactly the case where
+/// nothing ever fires the `EnteredAgentView` subscription for it.
+///
+/// Fork drift: this fork's `create_terminal_pane_data` takes no
+/// `IsSharedSessionCreator` argument (the shared-session network entry point
+/// is cut here), so the pin's fourth positional argument is absent.
+fn create_already_fullscreen_parent_pane_data(
+    panes: &PaneGroup,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> (TerminalPane, PaneId, AIConversationId) {
+    let (pane_data, terminal_view) =
+        panes.create_terminal_pane_data(None, HashMap::new(), None, None, ctx);
+    let pane_id = pane_data.terminal_pane_id().into();
+    let parent_conversation_id =
+        start_parent_conversation_for_terminal_view(terminal_view.id(), ctx);
+    let child_conversation_id = restore_child_conversation_for_terminal_view(
+        terminal_view.id(),
+        parent_conversation_id,
+        ctx,
+    );
+
+    terminal_view.update(ctx, |terminal_view, ctx| {
+        terminal_view.enter_agent_view_for_conversation(
+            None,
+            AgentViewEntryOrigin::RestoreExistingConversation,
+            parent_conversation_id,
+            ctx,
+        );
+    });
+
+    (pane_data, pane_id, child_conversation_id)
+}
+
+/// Reads back the ambient task id that a hidden child pane's own
+/// `BlocklistAIController` is carrying.
+///
+/// Ported verbatim from the pin's test helper
+/// (`42effe840:app/src/pane_group/mod_tests.rs:592`).
+fn request_ambient_agent_task_id_for_hidden_child(
+    panes: &PaneGroup,
+    child_pane_id: PaneId,
+    ctx: &mut ViewContext<PaneGroup>,
+) -> Option<AmbientAgentTaskId> {
+    let terminal_view = panes
+        .terminal_view_from_pane_id(child_pane_id, ctx)
+        .expect("child pane should have a terminal view");
+    let ai_controller = terminal_view.as_ref(ctx).ai_controller().clone();
+
+    ai_controller.update(ctx, |controller, _| controller.get_ambient_agent_task_id())
 }
 
 #[test]
@@ -180,6 +342,428 @@ fn test_insert_hidden_child_agent_pane_keeps_focus_and_active_session() {
             // Creating a hidden child pane should not steal focus or active session.
             assert_eq!(panes.focused_pane_id(ctx), parent_pane_id);
             assert_eq!(panes.active_session_id(ctx), initial_active_session);
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Lazy hidden-child-agent pane restoration.
+//
+// Ported from the pin's `mod_tests.rs`. The production side lives in
+// `mod.rs` (`restore_missing_child_agent_panes_for_parent`,
+// `restore_missing_child_agent_panes_for_terminal_pane_if_needed`,
+// `ensure_hidden_child_agent_pane_for_conversation`) and in
+// `pane/terminal_pane.rs` (the `EnteredAgentView` subscription). Before it,
+// this fork only ever rebuilt child panes in the *eager*
+// `create_missing_child_agent_panes` sweep at `PaneGroup::new_internal`, so a
+// tab restore, a pane replacement or an undo-close silently lost every child
+// agent until the next cold start.
+//
+// One assertion differs from the pin in every test below, deliberately and
+// with no loss of coverage: the pin asserts
+// `!panes.panes.is_pane_in_tree(child_pane_id)` because its hidden child panes
+// are attached entirely off the split tree (`attach_child_pane_off_tree`).
+// This fork routes them through the ordinary `add_pane_with_options` ->
+// `PaneData::split` path with `NewPaneVisibility::HiddenForChildAgent`, so the
+// pane *is* in the tree but is registered in `hidden_panes`; `is_pane_in_tree`
+// does not exist in this fork's `tree.rs` at all. The fork-equivalent
+// invariant -- "the materialized child pane is excluded from the visible
+// layout" -- is asserted as `panes.panes.is_pane_hidden(&child_pane_id)`, and
+// the surrounding `pane_count()` / `visible_pane_count()` assertions (which
+// the fork's `pane_count` compensates for via
+// `PaneData::num_child_agent_hidden_panes`) are kept exactly as the pin has
+// them. See the divergence note on
+// `test_insert_hidden_child_agent_pane_keeps_focus_and_active_session` above.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_reattach_panes_restores_hidden_child_when_parent_is_already_fullscreen() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            let parent_conversation_id = start_parent_conversation(panes, parent_pane_id, ctx);
+            let child_conversation_id =
+                restore_child_conversation(panes, parent_pane_id, parent_conversation_id, ctx);
+            let initial_pane_count = panes.pane_count();
+            let initial_visible_pane_count = panes.visible_pane_count();
+
+            // Detaching drops the `EnteredAgentView` subscription, so the
+            // parent goes fullscreen with nobody listening -- the tab-restore
+            // race this test exists for.
+            panes.detach_panes(ctx);
+            enter_agent_view_for_conversation(panes, parent_pane_id, parent_conversation_id, ctx);
+            assert!(!panes.child_agent_panes.contains_key(&child_conversation_id));
+
+            panes.reattach_panes(ctx);
+
+            let child_pane_id = panes
+                .child_agent_panes
+                .get(&child_conversation_id)
+                .copied()
+                .expect(
+                    "reattaching an already-fullscreen parent should materialize the child pane",
+                );
+
+            assert!(panes.has_pane_id(child_pane_id));
+            assert_eq!(panes.pane_count(), initial_pane_count);
+            assert_eq!(panes.visible_pane_count(), initial_visible_pane_count);
+            assert!(panes.panes.is_pane_hidden(&child_pane_id));
+            assert_eq!(
+                panes.pane_id_for_owned_conversation(child_conversation_id, ctx),
+                Some(child_pane_id)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_restore_closed_pane_restores_hidden_child_when_parent_is_already_fullscreen() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+    let _undo_closed_panes = FeatureFlag::UndoClosedPanes.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            // A second pane so `close_pane` takes the hide-for-undo branch
+            // instead of emitting `Exited` for an empty group.
+            panes.add_pane_with_direction(
+                Direction::Right,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                false,
+                ctx,
+            );
+
+            let parent_conversation_id = start_parent_conversation(panes, parent_pane_id, ctx);
+            let child_conversation_id =
+                restore_child_conversation(panes, parent_pane_id, parent_conversation_id, ctx);
+            let initial_pane_count = panes.pane_count();
+            let initial_visible_pane_count = panes.visible_pane_count();
+
+            panes.close_pane(parent_pane_id, ctx);
+            assert!(panes.is_pane_hidden_for_close(parent_pane_id));
+
+            enter_agent_view_for_conversation(panes, parent_pane_id, parent_conversation_id, ctx);
+            assert!(!panes.child_agent_panes.contains_key(&child_conversation_id));
+
+            assert!(panes.restore_closed_pane(parent_pane_id, ctx));
+
+            let child_pane_id = panes
+                .child_agent_panes
+                .get(&child_conversation_id)
+                .copied()
+                .expect(
+                    "restoring an already-fullscreen closed parent should materialize the child \
+                     pane",
+                );
+
+            assert!(panes.has_pane_id(child_pane_id));
+            assert_eq!(panes.pane_count(), initial_pane_count);
+            assert_eq!(panes.visible_pane_count(), initial_visible_pane_count);
+            assert!(panes.panes.is_pane_hidden(&child_pane_id));
+            assert_eq!(panes.focused_pane_id(ctx), parent_pane_id);
+            assert_eq!(
+                panes.pane_id_for_owned_conversation(child_conversation_id, ctx),
+                Some(child_pane_id)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_replace_pane_restores_hidden_child_when_replacement_is_already_fullscreen() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let original_pane_id = get_newly_created_pane_id(panes, &[]);
+            let initial_pane_count = panes.pane_count();
+            let initial_visible_pane_count = panes.visible_pane_count();
+            let (replacement_pane, replacement_pane_id, child_conversation_id) =
+                create_already_fullscreen_parent_pane_data(panes, ctx);
+
+            assert!(panes.replace_pane(original_pane_id, replacement_pane, false, ctx));
+
+            let child_pane_id = panes
+                .child_agent_panes
+                .get(&child_conversation_id)
+                .copied()
+                .expect(
+                    "replacing with an already-fullscreen parent should materialize the child pane",
+                );
+
+            assert!(!panes.has_pane_id(original_pane_id));
+            assert!(panes.has_pane_id(replacement_pane_id));
+            assert!(panes.has_pane_id(child_pane_id));
+            assert_eq!(panes.pane_count(), initial_pane_count);
+            assert_eq!(panes.visible_pane_count(), initial_visible_pane_count);
+            assert!(panes.panes.is_pane_hidden(&child_pane_id));
+            assert_eq!(panes.focused_pane_id(ctx), replacement_pane_id);
+            assert_eq!(
+                panes.pane_id_for_owned_conversation(child_conversation_id, ctx),
+                Some(child_pane_id)
+            );
+        });
+    });
+}
+
+#[test]
+fn test_ensure_hidden_child_agent_pane_skips_child_owned_by_another_pane_group() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let parent_pane_group = mock_pane_group(&mut app);
+        let other_pane_group = additional_mock_pane_group(&mut app);
+
+        let parent_conversation_id = parent_pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            start_parent_conversation(panes, parent_pane_id, ctx)
+        });
+        let (child_conversation_id, child_owner_terminal_view_id) =
+            other_pane_group.update(&mut app, |panes, ctx| {
+                let child_pane_id = get_newly_created_pane_id(panes, &[]);
+                let child_conversation_id =
+                    restore_child_conversation(panes, child_pane_id, parent_conversation_id, ctx);
+                let initial_owner_terminal_view_id = panes
+                    .terminal_view_from_pane_id(child_pane_id, ctx)
+                    .expect("child pane should have a terminal view")
+                    .id();
+
+                enter_agent_view_for_conversation(panes, child_pane_id, child_conversation_id, ctx);
+                (child_conversation_id, initial_owner_terminal_view_id)
+            });
+
+        parent_pane_group.update(&mut app, |panes, ctx| {
+            let initial_pane_count = panes.pane_count();
+
+            assert!(
+                panes.ensure_hidden_child_agent_pane_for_conversation(child_conversation_id, ctx),
+                "cross-tab child ownership should be treated as already reachable"
+            );
+            assert!(!panes.child_agent_panes.contains_key(&child_conversation_id));
+            assert_eq!(panes.pane_count(), initial_pane_count);
+            // Fork drift: the pin renamed this lookup to
+            // `terminal_surface_id_for_conversation`; the index and its
+            // semantics are unchanged here.
+            assert_eq!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .terminal_view_id_for_conversation(&child_conversation_id),
+                Some(child_owner_terminal_view_id)
+            );
+        });
+    });
+}
+
+/// Ported from the pin's
+/// `test_restored_hidden_child_pane_reapplies_ambient_task_id_to_controller`
+/// (`42effe840:app/src/pane_group/mod_tests.rs:909`).
+///
+/// A locally spawned child agent carries an `AmbientAgentTaskId` on its
+/// conversation (`AmbientAgentTaskId::new_local()` in
+/// `prepare_local_harness_launch`, stamped on by
+/// `assign_run_id_for_conversation`), and that id survives a restart because
+/// `AIConversation`'s `task_id` *is* its persisted `run_id` here. A restored
+/// child pane, though, gets a brand-new `BlocklistAIController` -- so
+/// `create_hidden_child_agent_pane` has to re-apply the id, or the restored
+/// child loses the task identity its requests are supposed to carry
+/// (`api::ConversationData::ambient_agent_task_id`).
+///
+/// Fork drift from the pin: `AIConversation::new` takes one flag here (the
+/// pin's second is the dropped cloud `is_ambient_agent`), and the task id is
+/// minted with this fork's own `AmbientAgentTaskId::new_local()` rather than
+/// the pin's `new_ambient_agent_task_id` test helper -- both are a
+/// `Uuid::new_v4()`, the fork's just has a production constructor for it.
+///
+/// The pin's sibling test `test_hidden_child_creation_applies_ambient_task_id_to_controller`
+/// is *not* ported: it drives `create_hidden_child_agent_conversation` /
+/// `HiddenChildAgentConversationRequest`, the GUI dispatch API this fork does
+/// not have, whose request carries the session-sharing `is_shared_session_creator`
+/// that this fork cut. See `apply_hidden_child_agent_task_context` in `mod.rs`.
+#[test]
+fn test_restored_hidden_child_pane_reapplies_ambient_task_id_to_controller() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            let parent_conversation_id = start_parent_conversation(panes, parent_pane_id, ctx);
+            let task_id = AmbientAgentTaskId::new_local();
+
+            let mut child_conversation = AIConversation::new(false);
+            child_conversation.set_parent_conversation_id(parent_conversation_id);
+            child_conversation.set_task_id(task_id);
+            let child_conversation_id = child_conversation.id();
+
+            panes.create_hidden_child_agent_pane(child_conversation, parent_pane_id, ctx);
+
+            let child_pane_id = panes
+                .child_agent_panes
+                .get(&child_conversation_id)
+                .copied()
+                .expect("restored hidden child pane should be tracked");
+
+            assert_eq!(
+                request_ambient_agent_task_id_for_hidden_child(panes, child_pane_id, ctx),
+                Some(task_id)
+            );
+        });
+    });
+}
+
+/// Integration coverage for the restart loop: after the history model has been
+/// restored, the orchestration topology must already be wired up *before* the
+/// parent's fullscreen agent view is entered, and entering it must then lazily
+/// materialize the hidden child pane.
+///
+/// Fork drift from the pin: the pin's version additionally asserts
+/// `history.conversation_id_for_agent_id(...)` round-trips for run ids minted
+/// as `AmbientAgentTaskId`s; run ids are plain `String`s on this side of
+/// `assign_run_id_for_conversation`, so they are minted as UUID strings here.
+#[test]
+fn test_pane_group_restore_loop_keeps_orchestration_topology_and_materializes_child_pane() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        let (
+            parent_pane_id,
+            parent_conversation_id,
+            parent_run_id,
+            child_conversation_id,
+            child_run_id,
+            child_agent_name,
+        ) = pane_group.update(&mut app, |panes, ctx| {
+            let parent_pane_id = get_newly_created_pane_id(panes, &[]);
+            let parent_terminal_view_id = panes
+                .terminal_view_from_pane_id(parent_pane_id, ctx)
+                .expect("parent pane should have a terminal view")
+                .id();
+
+            let parent_conversation_id = start_parent_conversation(panes, parent_pane_id, ctx);
+            let parent_run_id = Uuid::new_v4().to_string();
+            let child_run_id = Uuid::new_v4().to_string();
+            let child_agent_name = "Agent 1".to_string();
+
+            // Restore a child conversation into the parent's terminal view --
+            // the same code path `RestoredAgentConversations` feeds during
+            // pane restoration.
+            let mut child_conversation = AIConversation::new(false);
+            child_conversation.set_parent_conversation_id(parent_conversation_id);
+            child_conversation.set_agent_name(child_agent_name.clone());
+            let child_conversation_id = child_conversation.id();
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                history.restore_conversations(
+                    parent_terminal_view_id,
+                    vec![child_conversation],
+                    ctx,
+                );
+                // Stamp run_ids so orchestration agent_id lookups resolve.
+                history.assign_run_id_for_conversation(
+                    parent_conversation_id,
+                    parent_run_id.clone(),
+                    None,
+                    parent_terminal_view_id,
+                    ctx,
+                );
+                history.assign_run_id_for_conversation(
+                    child_conversation_id,
+                    child_run_id.clone(),
+                    None,
+                    parent_terminal_view_id,
+                    ctx,
+                );
+            });
+
+            (
+                parent_pane_id,
+                parent_conversation_id,
+                parent_run_id,
+                child_conversation_id,
+                child_run_id,
+                child_agent_name,
+            )
+        });
+
+        // BEFORE the parent's fullscreen agent view is entered, the
+        // orchestration data layer must already know:
+        //   (a) the parent -> child topology (pill bar source),
+        //   (b) the child's local conversation (with agent name set), and
+        //   (c) the child's run_id -> conversation id.
+        pane_group.read(&app, |panes, ctx| {
+            let history = BlocklistAIHistoryModel::as_ref(ctx);
+
+            assert_eq!(
+                history.child_conversation_ids_of(&parent_conversation_id),
+                &[child_conversation_id],
+                "orchestration topology must list the restored child under its parent before any \
+                 pane materializes",
+            );
+            assert_eq!(
+                descendant_conversation_ids_in_spawn_order(history, parent_conversation_id),
+                vec![child_conversation_id],
+                "pill bar pre-order walker must reach the restored child before any pane \
+                 materializes",
+            );
+
+            let child_conversation = history
+                .conversation(&child_conversation_id)
+                .expect("restored child must be in conversations_by_id before parent fullscreen");
+            assert_eq!(
+                child_conversation.agent_name(),
+                Some(child_agent_name.as_str()),
+                "restored child must retain its display name for transcript / pill bar rendering",
+            );
+
+            assert_eq!(
+                history.conversation_id_for_agent_id(&child_run_id),
+                Some(child_conversation_id),
+                "child run_id must resolve to the restored child conversation",
+            );
+            assert_eq!(
+                history.conversation_id_for_agent_id(&parent_run_id),
+                Some(parent_conversation_id),
+                "parent run_id must resolve to the parent conversation",
+            );
+
+            // Hidden child pane must NOT exist yet -- restoration is lazy and
+            // only materializes when the parent's agent view is entered.
+            assert!(
+                !panes.child_agent_panes.contains_key(&child_conversation_id),
+                "hidden child pane must not exist before parent fullscreen entry",
+            );
+        });
+
+        // Enter the parent's fullscreen agent view. This is the trigger for
+        // `restore_missing_child_agent_panes_for_parent`, i.e. the PaneGroup
+        // side of the user-visible restart-loop bug.
+        pane_group.update(&mut app, |panes, ctx| {
+            enter_agent_view_for_conversation(panes, parent_pane_id, parent_conversation_id, ctx);
+        });
+
+        pane_group.read(&app, |panes, _ctx| {
+            let child_pane_id = panes
+                .child_agent_panes
+                .get(&child_conversation_id)
+                .copied()
+                .expect("parent fullscreen entry must materialize the hidden child pane");
+            assert!(
+                panes.has_pane_id(child_pane_id),
+                "materialized child pane must be tracked by the pane group",
+            );
+            assert!(
+                panes.panes.is_pane_hidden(&child_pane_id),
+                "materialized child pane must stay out of the visible layout",
+            );
         });
     });
 }
@@ -1285,6 +1869,69 @@ fn test_undo_close_keeps_a_file_pane_watching_its_file() {
                 file_view.as_ref(ctx).file_id_for_test().is_none(),
                 "a permanently discarded pane should release its file"
             );
+        });
+    });
+}
+
+/// Regression test for the missing `View::child_view_ids` overrides.
+///
+/// `AppContext::transfer_view_tree_to_window` (used by cross-window tab drag
+/// and by tearing a tab into a new window) walks the render-time parent graph
+/// plus each view's `child_view_ids`. Views that a `PaneGroup`/`PaneView` owns
+/// but does not currently render -- the pane group's banner, and every
+/// non-active view in a pane's `pane_stack` -- are reachable *only* through
+/// `child_view_ids`, so without these overrides they stay behind in the source
+/// window and later trip a "circular view reference" panic when the new window
+/// renders them.
+///
+/// `crates/warpui_core` already covers the walk itself, but only against its
+/// own mock views, which is exactly why the production overrides being absent
+/// went unnoticed. This asserts the *real* `PaneGroup`/`PaneView` report their
+/// children, so it fails against the default `Vec::new()` impl.
+#[test]
+fn test_child_view_ids_reports_owned_but_unrendered_views() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.read(&app, |pane_group, ctx| {
+            // The pane group's banner is only rendered while it is open, so it
+            // is absent from the render-time parent graph.
+            let group_children = View::child_view_ids(pane_group, ctx);
+            assert!(
+                group_children.contains(&pane_group.user_default_shell_changed_banner.id()),
+                "PaneGroup::child_view_ids must report the shell-changed banner, \
+                 or a cross-window transfer orphans it"
+            );
+
+            let terminal_panes = pane_group.panes_of::<TerminalPane>().collect_vec();
+            assert_eq!(terminal_panes.len(), 1);
+
+            let pane_view_handle = terminal_panes[0].pane_view();
+            let pane_view = pane_view_handle.as_ref(ctx);
+            let pane_children = View::child_view_ids(pane_view, ctx);
+
+            assert!(
+                pane_children.contains(&pane_view.header().id()),
+                "PaneView::child_view_ids must report its header"
+            );
+
+            let backing_view_ids = pane_view
+                .pane_stack()
+                .as_ref(ctx)
+                .views()
+                .map(|view| view.id())
+                .collect_vec();
+            assert!(
+                !backing_view_ids.is_empty(),
+                "a mock terminal pane should have at least one backing view"
+            );
+            for backing_view_id in backing_view_ids {
+                assert!(
+                    pane_children.contains(&backing_view_id),
+                    "PaneView::child_view_ids must report every pane_stack view, \
+                     or a cross-window transfer orphans the non-active ones"
+                );
+            }
         });
     });
 }

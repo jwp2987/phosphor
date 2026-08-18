@@ -128,7 +128,9 @@ impl ReadMCPResourceExecutor {
             ActionExecution::new_async(
                 async move {
                     reconnecting_peer
-                        .read_resource(rmcp::model::ReadResourceRequestParam { uri })
+                        // `ReadResourceRequestParams` (was `…Param`) is
+                        // `#[non_exhaustive]` in rmcp 1.x; use its constructor.
+                        .read_resource(rmcp::model::ReadResourceRequestParams::new(uri))
                         .await
                 },
                 |res, _ctx| handle_read_resource_result(res),

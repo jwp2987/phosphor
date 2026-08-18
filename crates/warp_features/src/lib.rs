@@ -418,6 +418,10 @@ pub enum FeatureFlag {
     /// Enables discarding per-file and discarding all changes
     DiscardPerFileAndAllChanges,
 
+    /// Enables staging and un-staging from the code review pane: a per-file
+    /// toggle in each file header, and a per-hunk toggle in the diff gutter.
+    StageChanges,
+
     /// Enables UI zoom support (scaling the entire UI by a given percentage).
     UIZoom,
 
@@ -656,6 +660,9 @@ pub enum FeatureFlag {
 
     /// Enables header rows on all inline menus (label, tabs, resize handle).
     InlineMenuHeaders,
+    /// Clears the current prompt when opening the inline model selector from the
+    /// model chip, then restores that prompt when the selector closes.
+    RestorePromptOnInlineModelSelectorSearch,
 
     /// Enables associating a tab color with a directory so tabs automatically
     /// adopt the configured color when their working directory matches.
@@ -838,6 +845,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::ConfigurableContextWindow,
     FeatureFlag::DragTabsToWindows,
     FeatureFlag::TerminalLifecycleRecovery,
+    FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
     FeatureFlag::WarpControlCli,
     FeatureFlag::JupyterNotebookRendering,
 ];

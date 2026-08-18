@@ -81,7 +81,6 @@ impl ConnectAndHandshakeError {
     /// whose real cause was printed on the remote side ("command not found",
     /// a permission error, an OOM kill) reports that cause instead of only
     /// the client-side symptom.
-    ///
     /// Draining is destructive by design: the tail is reported once, at the
     /// point the connection is declared failed.
     fn with_proxy_stderr(self, stderr_tail: &crate::client::RemoteServerLog) -> Self {
@@ -119,7 +118,6 @@ pub enum RemoteServerOperation {
 }
 
 /// Which codebase-index mutation a request represents.
-///
 /// Ported from the pin. `is_auto_index` / `is_full_sync` are carried purely so
 /// the caller can tell a user-initiated action from a background one when it
 /// reports the outcome; neither changes the wire message beyond the resync
@@ -204,7 +202,6 @@ impl RemoteServerErrorKind {
 
 /// Returns `true` if the client and server are on compatible versions for
 /// the initialize handshake.
-///
 /// Semantics:
 /// - Both sides carry a non-empty release tag (`Some(_)` client, non-empty
 ///   `server` string): the tags must match exactly. Mismatched releases
@@ -224,7 +221,6 @@ fn version_is_compatible(client: Option<&str>, server: &str) -> bool {
 }
 
 /// Whether to enforce strict tag matching against the remote `server_version`.
-///
 /// For [`Channel::Oss`](Zap), a local source build has no `GIT_RELEASE_TAG`,
 /// but the SSH Extension may install a remote-server from the latest release.
 /// If strict checking were enforced, the client's `None` vs the server's
@@ -238,7 +234,6 @@ fn should_enforce_remote_version_check(channel: Channel) -> bool {
 
 /// Per-session connection state. Encodes which data is available at each
 /// lifecycle stage so the compiler prevents invalid combinations.
-///
 /// For subprocess-backed transports (SSH), the `Initializing` and
 /// `Connected` variants also own the transport's `Child`. Dropping or
 /// replacing the state sends SIGKILL to the subprocess via
@@ -246,7 +241,6 @@ fn should_enforce_remote_version_check(channel: Channel) -> bool {
 /// on both explicit deregistration and spontaneous disconnect, and is
 /// unaffected by lingering `Arc<RemoteServerClient>` clones held
 /// elsewhere (e.g. the per-session command executor).
-///
 /// They also optionally carry a `control_path` pointing at the SSH
 /// `ControlMaster` socket for this session. On explicit teardown
 /// (after the user's shell exits), `deregister_session` uses this to
@@ -307,7 +301,6 @@ pub enum RemoteSessionState {
     /// `Initializing`-state connection-failure path upstream actually
     /// patched to this fork's remaining `try_status()`-based race, in the
     /// spontaneous-disconnect-after-`Connected` path.
-    ///
     /// Carries `host_id` for the same reason `Connected` and `Reconnecting`
     /// do: `deregister_session` must be able to call `remove_from_host_index`
     /// for a session torn down while parked here. Omitting it leaked the
@@ -352,7 +345,6 @@ pub enum RemoteServerManagerEvent {
     /// subscribers that they should drop any `Arc<RemoteServerClient>` they
     /// hold for this session. Carries `host_id` so consumers don't need to
     /// look it up from the already-transitioned state.
-    ///
     /// Note this is about *transport* state, not manager tracking: after
     /// this event fires the session may still be present in the manager
     /// in the `Disconnected` state (e.g. when the stream dropped on its
@@ -378,7 +370,6 @@ pub enum RemoteServerManagerEvent {
     /// removed from the `sessions` map via `deregister_session`. Fires
     /// exactly once per session, and only on explicit teardown (never as
     /// a result of a spontaneous connection drop).
-    ///
     /// If the session was `Connected` at the point of deregistration, a
     /// `SessionDisconnected` event is emitted first so transport-level
     /// subscribers can release their client references.
@@ -459,8 +450,31 @@ pub enum RemoteServerManagerEvent {
         delta: crate::proto::DiffStateFileDelta,
     },
 
+    // --- Remote git-chip / PR-context pushes (forwarded from ClientEvent) ---
+    // Deviation from the pin, same reason as the codebase-index block below:
+    // the pin's variants carry a `warp_util::remote_path::RemotePath` built
+    // inside the manager, but this fork has two non-converting `HostId`
+    // families bridged only in `app`. These therefore carry `host_id` plus the
+    // raw proto push (which holds `repo_path` as a string), and the app-side
+    // receivers do the matching -- exactly the shape the diff-state pushes
+    // above already use.
+    /// The daemon pushed aggregate git status for one of its repos.
+    GitStatusPushReceived {
+        host_id: HostId,
+        push: crate::proto::GitStatusPush,
+    },
+    /// The daemon pushed PR info for one of its repos' current branch.
+    GitHubPrInfoPushReceived {
+        host_id: HostId,
+        push: crate::proto::GitHubPrInfoPush,
+    },
+    /// The daemon pushed repository name/owner info for one of its repos.
+    GitHubRepositoryInfoPushReceived {
+        host_id: HostId,
+        push: crate::proto::GitHubRepositoryInfoPush,
+    },
+
     // --- Remote codebase indexing (Delta D2, remote-daemon leg) ---
-    //
     // Deviation from the pin, stated here because it is load-bearing for every
     // consumer: the pin's variants carry a `warp_util::remote_path::RemotePath`,
     // built inside the manager. This fork has two non-converting `HostId`
@@ -579,6 +593,11 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::DiffStateSnapshotReceived { .. }
             | RemoteServerManagerEvent::DiffStateMetadataUpdateReceived { .. }
             | RemoteServerManagerEvent::DiffStateFileDeltaReceived { .. }
+            // Host-scoped: git status / GitHub info are keyed by (host, repo),
+            // not by the session whose navigation happened to trigger them.
+            | RemoteServerManagerEvent::GitStatusPushReceived { .. }
+            | RemoteServerManagerEvent::GitHubPrInfoPushReceived { .. }
+            | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
             // Host-scoped: the agent-context snapshot is keyed by `HostId`, not by
             // any one session on that host.
             | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. } => None,
@@ -588,7 +607,6 @@ impl RemoteServerManagerEvent {
 
 /// Errors from [`RemoteServerManager::send_host_request`] and its typed
 /// wrappers (e.g. [`RemoteServerManager::start_ripgrep_search`]).
-///
 /// #438 dependent features 4/5. Deviation from the pin: no `Timeout` variant
 /// — this port doesn't arm a per-request timeout (the pin's
 /// `schedule_host_request_timeout`/`timeout_host_request`), since nothing in
@@ -657,7 +675,6 @@ pub struct RipgrepSearchParams {
 /// A host-scoped remote ripgrep search registered synchronously with
 /// [`RemoteServerManager`], whose typed result can be awaited off-thread.
 /// #438 dependent feature 5.
-///
 /// Synchronous registration (the request is dispatched and, on success,
 /// inserted into `pending_host_requests` before `start_ripgrep_search`
 /// returns) means [`RemoteServerManager::abort_host_request`] can always
@@ -706,7 +723,6 @@ fn ripgrep_search_result(
 }
 
 /// Shell info recorded by [`RemoteServerManager::notify_session_bootstrapped`].
-///
 /// Persists for the lifetime of the session (removed only in
 /// `deregister_session`) so that `mark_session_connected` can re-send
 /// the notification after a reconnect.
@@ -718,7 +734,6 @@ struct SessionBootstrapInfo {
 
 /// Singleton model that manages connections to `remote_server` processes on
 /// remote hosts.
-///
 /// Each SSH session gets its own `RemoteServerClient` and SSH connection.
 /// Deduplication of the underlying long-lived server process happens on the
 /// remote host. The `HostId` returned by the server's `InitializeResponse`
@@ -798,7 +813,6 @@ impl RemoteServerManager {
 
     /// Records new client preferences and pushes them to every connected
     /// daemon.
-    ///
     /// No-ops when nothing changed, so a settings observer can call this on
     /// every settings event without generating traffic.
     pub fn update_client_preferences(&mut self, preferences: crate::client::ClientPreferences) {
@@ -844,7 +858,6 @@ impl RemoteServerManager {
 
     /// Checks if the remote server binary is installed and executable.
     /// Emits `BinaryCheckComplete { result }`.
-    ///
     /// Returns Ok(true) if the binary is installed and executable,
     /// Ok(false) if it is definitively not installed, and
     /// Err(_) if the check failed (e.g. SSH timeout/unreachable).
@@ -949,7 +962,6 @@ impl RemoteServerManager {
     /// binary, based on a positive classification from the preinstall
     /// check. The setup state transitions to `Unsupported`, which the
     /// downstream UI treats as a clean fall-back to the legacy SSH flow.
-    ///
     /// No-op on WASM (remote server connections use a different transport).
     #[cfg(target_family = "wasm")]
     pub fn mark_setup_unsupported(
@@ -980,7 +992,6 @@ impl RemoteServerManager {
 
     /// Installs the remote server binary.
     /// Emits `BinaryInstallComplete { result }`.
-    ///
     /// Returns Ok(()) if the install succeeded, and
     /// Err(_) if the install failed (e.g. SSH timeout/unreachable).
     #[cfg_attr(target_family = "wasm", allow(unused_variables))]
@@ -1039,13 +1050,11 @@ impl RemoteServerManager {
     /// Entry point for establishing a remote server connection for a session.
     /// This assumes the binary is already installed and executable.
     /// Callers should first call `check_binary` and `install_binary` to ensure the binary is present.
-    ///
     /// The full flow is:
     /// 1. **Connect** — `transport.connect()` establishes the I/O streams and
     ///    creates the `RemoteServerClient`.
     /// 2. **Handshake** — perform the initialize handshake (which returns the
     ///    `HostId`) and transition to `Connected`.
-    ///
     /// No-op on WASM (remote server connections use a different transport).
     #[cfg_attr(target_family = "wasm", allow(unused_variables, unused_mut))]
     pub fn connect_session<T>(
@@ -1144,12 +1153,10 @@ impl RemoteServerManager {
 
     /// Shared connect + handshake logic used by both `connect_session` and
     /// `attempt_reconnect`.
-    ///
     /// 1. Calls `transport.connect()` to establish streams.
     /// 2. Transitions the session to `Initializing` and starts draining the
     ///    event channel.
     /// 3. Runs the initialize handshake with the current auth token, if any.
-    ///
     /// Returns `Ok(host_id)` on success, or a phase-tagged error.
     #[cfg(not(target_family = "wasm"))]
     async fn run_connect_and_handshake(
@@ -1248,7 +1255,6 @@ impl RemoteServerManager {
         // Version compatibility check. If the server reports a different release
         // tag than the client expects, the binary on disk is stale. Remove it so
         // the next reconnect (or explicit reconnect by the user) will reinstall.
-        //
         // Under `Channel::Oss` (Zap), the official release binary is
         // temporarily reused, but the client itself has no `GIT_RELEASE_TAG`
         // and would never match the server, so strict checking is skipped.
@@ -1284,7 +1290,6 @@ impl RemoteServerManager {
     }
 
     /// Removes a session from the manager and tears down its connection.
-    ///
     /// Assumes the caller has already observed that the user's shell
     /// has exited (in practice this is only invoked from the
     /// `ExitShell` teardown path). Under that assumption we also force
@@ -1293,22 +1298,18 @@ impl RemoteServerManager {
     /// user's interactive ssh process and, without the explicit
     /// `-O exit`, it hangs waiting for remote-side cleanup of
     /// multiplexed channels (see [`crate::ssh::stop_control_master`]).
-    ///
     /// Mechanically:
     /// 1. Remove the session entry. Dropping the `RemoteSessionState`
     ///    drops the transport's owned `Child`, which SIGKILLs the
     ///    `ssh … remote-server-proxy` subprocess via `kill_on_drop`.
     /// 2. If the session had a ControlMaster `control_path`, spawn a
     ///    background task that runs `ssh -O exit` against it.
-    ///
     /// The `Child` is owned by the manager's state, *not* by
     /// `Arc<RemoteServerClient>`. Lingering `Arc` clones held elsewhere
     /// (e.g. by the per-session command executor) do *not* keep the
     /// subprocess alive -- removing the state here always SIGKILLs the
     /// child, regardless of client refcount.
-    ///
     /// Two separate events can fire here, and they mean different things:
-    ///
     /// * `SessionDisconnected` -- the *transport* went away. Emitted only
     ///   when the session was `Connected` at the time of deregistration.
     ///   Subscribers can use this to drop their
@@ -1348,7 +1349,6 @@ impl RemoteServerManager {
         };
 
         // Extract `host_id` from states that track a host connection.
-        //
         // `AwaitingExitStatus` MUST be listed here. The `f0ca7861` port introduced
         // it as a window — up to `EXIT_STATUS_WAIT_TIMEOUT` plus executor latency —
         // that did not exist before, because the reconnect-vs-disconnect decision
@@ -1360,7 +1360,6 @@ impl RemoteServerManager {
         // read `is_first_session = !host_to_sessions.contains_key(..)` as `false`
         // and never re-emitted `HostConnected`, silently skipping the host-scoped
         // one-time init gated on it (repo metadata, codebase index model).
-        //
         // Found by the refutation pass, not by a test — nothing in
         // `manager_tests.rs` exercises `mark_session_disconnected` or this state.
         let host_id = match &prev {
@@ -1405,12 +1404,10 @@ impl RemoteServerManager {
     }
 
     /// Rotates the daemon-wide auth credential on each connected remote host.
-    ///
     /// Only sessions whose stored `identity_key` matches the current identity
     /// (from `auth_context`) receive the notification. This prevents a stale
     /// session established under a previous user identity from receiving a
     /// newly-rotated bearer token that belongs to a different user.
-    ///
     /// Within the matching identity, a daemon may have multiple client
     /// connections. The credential is stored daemon-wide, so sending one
     /// notification per connected host is sufficient.
@@ -1488,7 +1485,6 @@ impl RemoteServerManager {
 
     /// Sends a `NavigatedToDirectory` request to the remote server for
     /// the given session and emits the response as a manager event.
-    ///
     /// Deduplicates: if the same `(session_id, path)` was already requested,
     /// the call is a no-op.
     pub fn navigate_to_directory(
@@ -1550,7 +1546,6 @@ impl RemoteServerManager {
     }
 
     /// Sends a `SessionBootstrapped` notification to the remote server.
-    ///
     /// If the session is already in `Connected` state the notification is sent
     /// immediately. Otherwise it is stashed and automatically flushed when
     /// `mark_session_connected` transitions the session to `Connected`.
@@ -1696,6 +1691,18 @@ impl RemoteServerManager {
             ClientEvent::DiffStateFileDeltaReceived { delta } => {
                 ctx.emit(RemoteServerManagerEvent::DiffStateFileDeltaReceived { host_id, delta });
             }
+            ClientEvent::GitStatusPushReceived { push } => {
+                ctx.emit(RemoteServerManagerEvent::GitStatusPushReceived { host_id, push });
+            }
+            ClientEvent::GitHubPrInfoPushReceived { push } => {
+                ctx.emit(RemoteServerManagerEvent::GitHubPrInfoPushReceived { host_id, push });
+            }
+            ClientEvent::GitHubRepositoryInfoPushReceived { push } => {
+                ctx.emit(RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived {
+                    host_id,
+                    push,
+                });
+            }
             ClientEvent::RemoteAgentContextSnapshotReceived { snapshot } => {
                 // #438 dependent feature 1 / #487: dedup by revision per host,
                 // store for the `remote_agent_context_snapshot()` query method,
@@ -1809,7 +1816,6 @@ impl RemoteServerManager {
 
     /// Asynchronously awaits the exit status of a `Child` process with a
     /// short timeout.
-    ///
     /// Uses `Child::status()`, which resolves only once the process has
     /// actually exited, instead of the non-blocking `Child::try_status()`
     /// this replaced. `try_status()` raced against a just-killed child: on
@@ -1821,7 +1827,6 @@ impl RemoteServerManager {
     /// which in turn made `mark_session_disconnected` misclassify an
     /// already-dead daemon as a transient network blip and attempt an
     /// immediate reconnect that was bound to fail.
-    ///
     /// Upstream: f0ca7861fe5603e31e1a43118ddf2ff5c17782ca (#10728),
     /// "Wait on child process to exit before showing error". Upstream fixed
     /// a different call site — the `Initializing`-state connection-failure
@@ -1832,7 +1837,7 @@ impl RemoteServerManager {
     /// `try_status()` race lives on in exactly one place in this fork —
     /// `mark_session_disconnected`'s spontaneous-disconnect-after-Connected
     /// path below — so the async-wait pattern is adapted here instead of
-    /// diffed in verbatim. NOT COMPILED: verified by reading only. The
+    /// diffed in verbatim. The
     /// `ModelSpawner::spawn` closure bound
     /// (`FnOnce(&mut M, &mut ModelContext<M>) -> R`, `crates/warpui_core/
     /// src/core/model/context.rs`) is synchronous, so this await cannot
@@ -1947,7 +1952,6 @@ impl RemoteServerManager {
     /// and updates session state accordingly. Split out so the exit-status
     /// wait can happen off the entity-model thread — see
     /// `mark_session_disconnected`'s doc comment.
-    ///
     /// This is the same decision logic `mark_session_disconnected` ran
     /// synchronously before the `f0ca7861` port; only the exit-status
     /// source changed (async `await_exit_status` instead of sync
@@ -2220,7 +2224,6 @@ impl RemoteServerManager {
     }
 
     // --- Host-scoped request tracking (#438 dependent features 3/4/5) ------
-    //
     // Deviation from the pin: this only carries request dispatch + response
     // matching, not the pin's cross-connection failover (retry on writer
     // failure through a sibling session, `HostRequestHandle`, per-request
@@ -2259,14 +2262,12 @@ impl RemoteServerManager {
 
     /// Sends a host-scoped request to any connected session for the given
     /// host.
-    ///
     /// The caller constructs the `ClientMessage` (already wrapped in
     /// `HostScopedRequest`). The manager dispatches it via
     /// `client.send_host_scoped()` and, on success, registers the request in
     /// `pending_host_requests`. The response arrives asynchronously on the
     /// host-response channel drained in `run_connect_and_handshake` and is
     /// matched by `request_id` in `resolve_host_response`.
-    ///
     /// Returns a `oneshot::Receiver` that resolves with the raw
     /// `ServerMessage` on success, or `HostRequestError` on failure (no
     /// connected session for the host, or a server-reported error).
@@ -2368,7 +2369,6 @@ impl RemoteServerManager {
 
     /// Dispatches one codebase-index mutation and reports its outcome as an
     /// event.
-    ///
     /// Returns `false` (and emits nothing) when there is no connected session
     /// for the host — the caller has not started an operation, so there is
     /// nothing to report the failure of. Every other outcome, including
@@ -2689,14 +2689,11 @@ impl RemoteServerManager {
 }
 
 /// Handle for dispatching host-scoped requests from async contexts.
-///
 /// Pure-async callers don't have direct access to `&mut RemoteServerManager`.
 /// This handle wraps a `ModelSpawner` so the async function can bounce each
 /// request to the main thread for registration in `pending_host_requests`,
 /// then await the response on the caller's thread.
-///
 /// Obtain via [`RemoteServerManager::host_request_handle`].
-///
 /// Deviation from the pin: only `send` plus typed convenience wrappers for
 /// `read_file_context`, `get_fragment_metadata_from_hash` and
 /// `search_remote_codebase` are ported (what `FileNotebookView::open_remote`
@@ -2704,7 +2701,6 @@ impl RemoteServerManager {
 /// convenience methods (`write_file`, `delete_file`, `save_buffer`,
 /// `open_buffer`, ...) aren't ported here — add them the same way (wrap
 /// [`Self::send`], match the response variant) when a caller needs them.
-///
 /// `Clone` so a caller (e.g. `app::ai::codebase_retrieval::
 /// CodebaseRetrievalHandle::Remote`) can hold one alongside a resolved repo
 /// path as a single sendable, request-scoped ticket, the same way the local
@@ -2717,7 +2713,6 @@ pub struct HostRequestHandle {
 
 impl HostRequestHandle {
     /// Sends a host-scoped request and awaits the raw `ServerMessage`.
-    ///
     /// Bounces to the main thread to call `send_host_request`, then awaits
     /// the response on the caller's thread.
     pub async fn send(
@@ -2738,7 +2733,6 @@ impl HostRequestHandle {
 
     /// Resolves content hashes returned by a codebase-index query back to file
     /// paths and line ranges on the remote host.
-    ///
     /// Only the daemon can answer this: the hashes identify fragments of files
     /// the client cannot read.
     pub async fn get_fragment_metadata_from_hash(
@@ -2763,7 +2757,6 @@ impl HostRequestHandle {
 
     /// Asks the daemon owning this host to answer `get_relevant_files`
     /// against its own private codebase index and return ranked file paths.
-    ///
     /// Unlike [`Self::get_fragment_metadata_from_hash`] (a hash → path lookup
     /// over data the client already found), the search itself must run on
     /// the daemon: this fork's daemon vectors live in a private per-daemon
@@ -2790,7 +2783,6 @@ impl HostRequestHandle {
 
     /// Batch-reads one or more files from the remote host with full context
     /// (line ranges, binary/image support, metadata, size limits).
-    ///
     /// Per-file failures are reported in `ReadFileContextResponse::failed_files`
     /// rather than as a top-level error; this only returns `Err` for transport
     /// or unexpected-response failures.

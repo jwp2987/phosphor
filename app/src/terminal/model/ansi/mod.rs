@@ -721,17 +721,19 @@ impl<'a, H: Handler + 'a, W: io::Write> Performer<'a, H, W> {
                 log::error!("Received hex-encoded SourcedRcFileForWarp escape sequence.");
             }
             Ok(DProtoHook::FinishUpdate { value }) => self.handler.finish_update(value),
-            Ok(DProtoHook::RemoteWarpificationIsUnavailable { value }) => {
+            Ok(DProtoHook::RemoteWarpificationIsUnavailable { value, .. }) => {
                 self.handler.remote_warpification_is_unavailable(value)
             }
-            Ok(DProtoHook::SshTmuxInstaller { value }) => {
+            Ok(DProtoHook::SshTmuxInstaller { value, .. }) => {
                 match TmuxInstallationState::from_str(&value) { Ok(tmux_installation) => {
                     self.handler.notify_ssh_tmux_is_installed(tmux_installation)
                 } _ => {
                     log::error!("Received invalid SSH tmux installer value: '{value}'");
                 }}
             }
-            Ok(DProtoHook::TmuxInstallFailed { value }) => self.handler.tmux_install_failed(value),
+            Ok(DProtoHook::TmuxInstallFailed { value, .. }) => {
+                self.handler.tmux_install_failed(value)
+            }
             Ok(DProtoHook::ExitShell { value }) => self.handler.exit_shell(value),
 
             Err(e) => safe_error!(

@@ -384,6 +384,40 @@ fn test_local_project_fallback_update_reuses_repository_update_handler() {
     });
 }
 
+/// A plain directory appearing in a repository update carries no `SKILL.md`, so the watcher must
+/// stay silent rather than emitting an empty project event for every new folder.
+#[test]
+fn test_handle_repository_update_non_skill_directory_added_does_not_emit_project_event() {
+    let (tx, rx) = async_channel::unbounded();
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        let skill_watcher_handle = app.add_model(|ctx| SkillWatcher::new_for_testing(ctx, tx));
+
+        let temp_dir = TempDir::new().unwrap();
+        let new_dir = temp_dir.path().join("new-feature");
+        fs::create_dir_all(&new_dir).unwrap();
+
+        let update = RepositoryUpdate {
+            added: HashSet::from([TargetFile::new(new_dir, false)]),
+            modified: HashSet::new(),
+            deleted: HashSet::new(),
+            moved: HashMap::new(),
+            commit_updated: false,
+            index_lock_detected: false,
+            remote_ref_updated: false,
+        };
+
+        skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
+            skill_watcher.handle_repository_update(&update, ctx);
+        });
+
+        assert!(rx.try_recv().is_err());
+    });
+}
+
 #[test]
 fn test_local_project_fallback_directory_addition_scans_filesystem() {
     let (tx, rx) = async_channel::unbounded();
@@ -455,6 +489,55 @@ fn test_local_project_fallback_scans_filesystem_when_repo_metadata_fails() {
         let mut expected = vec![root_skill, subdir_skill];
         expected.sort_by_key(|skill| skill.path.display_path());
         assert_eq!(skills, expected);
+    });
+}
+
+/// The fallback scanner walks the filesystem itself, so a skill directory that is only reachable
+/// through a symlink inside `.agents/skills` must still be picked up — and reported under the
+/// symlink path the user sees, not the resolved target.
+#[test]
+#[cfg(unix)]
+fn test_local_project_fallback_initial_scan_loads_symlinked_skill_directory() {
+    let (tx, rx) = async_channel::unbounded();
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        app.add_singleton_model(RepoMetadataModel::new);
+        let skill_watcher_handle = app.add_model(|ctx| SkillWatcher::new_for_testing(ctx, tx));
+
+        let repo_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new().unwrap();
+        let target_skill = create_skill_file(
+            &target_dir,
+            "fallback-linked-skill",
+            "Fallback linked skill",
+            "Linked content",
+        );
+        let repo = dunce::canonicalize(repo_dir.path()).unwrap();
+        let symlink_parent = repo.join(".agents/skills");
+        fs::create_dir_all(&symlink_parent).unwrap();
+        let symlink_skill_dir = symlink_parent.join("fallback-linked-skill");
+        std::os::unix::fs::symlink(
+            local_path(&target_skill).parent().unwrap(),
+            &symlink_skill_dir,
+        )
+        .unwrap();
+
+        let mut expected_skill = target_skill;
+        expected_skill.path = LocalOrRemotePath::Local(symlink_skill_dir.join("SKILL.md"));
+
+        let repo_id = RepositoryIdentifier::try_local(&repo).unwrap();
+        skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
+            skill_watcher.fallback_to_local_project_watcher(&repo_id, ctx);
+        });
+
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            SkillWatcherEvent::SkillsAdded {
+                skills: vec![expected_skill]
+            }
+        );
     });
 }
 
@@ -553,6 +636,75 @@ fn test_refresh_project_skills_for_repo_uses_repo_metadata_without_fallback_watc
                 skills: vec![skill]
             }
         );
+    });
+}
+
+/// The metadata-backed refresh has to merge two sources of truth: entries the indexer walked into
+/// the file tree, and standing-query hits for skill files behind symlinks (which the indexer does
+/// not descend into). Both must land in a single `SkillsAdded` event.
+#[test]
+#[cfg(unix)]
+fn test_refresh_project_skills_for_repo_loads_indexed_and_symlinked_skill_directories() {
+    let (tx, rx) = async_channel::unbounded();
+
+    App::test((), |mut app| async move {
+        app.add_singleton_model(DirectoryWatcher::new_for_testing);
+        app.add_singleton_model(|_| DetectedRepositories::default());
+        let repo_metadata_handle = app.add_singleton_model(RepoMetadataModel::new);
+        let skill_watcher_handle = app.add_model(|ctx| SkillWatcher::new_for_testing(ctx, tx));
+
+        let repo_dir = TempDir::new().unwrap();
+        let target_dir = TempDir::new().unwrap();
+        let indexed_skill = create_skill_file(
+            &repo_dir,
+            "indexed-skill",
+            "Indexed skill",
+            "Indexed content",
+        );
+        let target_skill = create_skill_file(
+            &target_dir,
+            "linked-skill",
+            "Linked skill",
+            "Linked content",
+        );
+        let repo = repo_dir.path().to_path_buf();
+        let symlink_parent = repo.join(".agents/skills");
+        fs::create_dir_all(&symlink_parent).unwrap();
+        let symlink_skill_dir = symlink_parent.join("linked-skill");
+        std::os::unix::fs::symlink(
+            local_path(&target_skill).parent().unwrap(),
+            &symlink_skill_dir,
+        )
+        .unwrap();
+
+        let mut expected_skill = target_skill;
+        expected_skill.path = LocalOrRemotePath::Local(symlink_skill_dir.join("SKILL.md"));
+
+        let repo_id = RepositoryIdentifier::try_local(&repo).unwrap();
+        let repo_key = StandardizedPath::try_from_local(&repo).unwrap();
+        repo_metadata_handle.update(&mut app, |model, ctx| {
+            model.insert_test_state(
+                repo_key.clone(),
+                project_state(&repo, Some(&indexed_skill)),
+                ctx,
+            );
+            let mut standing_results = project_standing_results(&repo, Some(&indexed_skill));
+            standing_results.insert_project_skill(StandingQueryContent::file(
+                StandardizedPath::try_from_local(&local_path(&expected_skill)).unwrap(),
+            ));
+            model.insert_test_standing_results(repo_key, standing_results, ctx);
+        });
+
+        skill_watcher_handle.update(&mut app, |skill_watcher, ctx| {
+            skill_watcher.refresh_project_skills_for_repo(&repo_id, ctx);
+        });
+        let SkillWatcherEvent::SkillsAdded { mut skills } = rx.recv().await.unwrap() else {
+            panic!("Expected SkillsAdded event");
+        };
+        skills.sort_by_key(|skill| skill.path.display_path());
+        let mut expected = vec![indexed_skill, expected_skill];
+        expected.sort_by_key(|skill| skill.path.display_path());
+        assert_eq!(skills, expected);
     });
 }
 

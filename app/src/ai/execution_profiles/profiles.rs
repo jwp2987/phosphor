@@ -118,7 +118,6 @@ pub struct AIExecutionProfilesModel {
     /// - Unsynced: No cloud object backing the profile. It's purely local read-only data.
     /// - Synced: A cloud object backs the profile, created either when edited locally or received from cloud.
     /// - CLI: When running in CLI mode, a more permissive default profile that doesn't sync to cloud.
-    ///
     /// Note that the default_profile_state becomes synced either (1) when an edit happens on
     /// this client or (2) when a default profile is received from the object store (say, it was
     /// created for the user on another client). Once the profile is synced, it's never unsynced
@@ -144,7 +143,7 @@ impl AIExecutionProfilesModel {
                 let object_store_model = ObjectStoreModel::handle(ctx).as_ref(ctx);
                 let all_profile_objects: Vec<&super::AIExecutionProfileObject> = object_store_model
                     .get_all_objects_of_type::<GenericStringObjectId, AIExecutionProfileObjectModel>()
-                    // NOT COMPILED -- builds are suspended. Ported from upstream `c2954dcbc0`
+                    // Ported from upstream `c2954dcbc0`
                     // ("Prevent the client from reading non-personal AI execution profiles",
                     // #25377, GHSA-cqw8-cqq2-8cjm): a stored object whose owner isn't the
                     // current user must never be treated as one of the user's own execution
@@ -261,8 +260,7 @@ impl AIExecutionProfilesModel {
     }
 
     /// Returns true iff `profile`'s stored owner is the current user's personal drive.
-    ///
-    /// NOT COMPILED -- builds are suspended. Ported from upstream `c2954dcbc0` ("Prevent the
+    /// Ported from upstream `c2954dcbc0` ("Prevent the
     /// client from reading non-personal AI execution profiles", #25377,
     /// GHSA-cqw8-cqq2-8cjm). Upstream's `CloudObject` trait is this fork's `StoredObject`
     /// (`app/src/cloud_object/mod.rs`), and `CloudAIExecutionProfile` is this fork's
@@ -381,7 +379,6 @@ impl AIExecutionProfilesModel {
 
     /// Returns the active permissions profile for a specific terminal view.
     /// If no terminal_view is provided, returns the default profile.
-    ///
     /// If you need to account for enterprise overrides, call `BlocklistAIPermissions::active_permissions_profile` instead.
     pub fn active_profile(
         &self,
@@ -1327,7 +1324,6 @@ impl AIExecutionProfilesModel {
     /// * `profile_id`: The id of the profile to edit
     /// * `edit_fn`: a closure that safely modifies the AIExecutionProfile. It should return `true` if the profile was changed, `false` otherwise. When `true`, it syncs the changes to the cloud, and otherwise exits early to prevent excessive cloud operations if no changes occurred.
     /// * `ctx`: The model context
-    ///
     /// Returns `true` if the profile was actually changed (and synced),
     /// `false` otherwise. Callers can use this to gate side effects such as
     /// telemetry on real changes.
@@ -1482,13 +1478,11 @@ impl AIExecutionProfilesModel {
     }
 
     /// Reconcile model state with `ObjectStoreModel` once local object restore completes.
-    ///
     /// Stored objects can be present in `ObjectStoreModel` before this model observes
     /// per-object `ObjectCreated` events. That means the normal
     /// `handle_ai_execution_profile_created` handler may never fire for the
     /// restored default profile, and the model stays in `Unsynced` even though
     /// the user already has a saved default profile.
-    ///
     /// Without this reconciliation, a subsequent edit from `apply_agent_settings`
     /// (onboarding) would hit the `Unsynced` branch of `edit_profile_internal`
     /// and *create a duplicate* cloud default profile rather than editing the

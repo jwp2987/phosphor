@@ -31,6 +31,9 @@ pub enum Icon {
     Pin,
     /// Solid pin glyph, used for the orchestration pill bar's pinned state.
     PinFilled,
+    /// Solid pin glyph rotated to a diagonal, used as the pinned-tab indicator
+    /// that a pinned tab shows in its close-button slot.
+    PinFilledDiagonal,
     Terminal,
     TerminalInput,
     TextInput,
@@ -351,6 +354,7 @@ impl From<Icon> for &'static str {
             Icon::Trash => "bundled/svg/trash-02.svg",
             Icon::Pin => "bundled/svg/pin-01.svg",
             Icon::PinFilled => "bundled/svg/pin-filled.svg",
+            Icon::PinFilledDiagonal => "bundled/svg/pin-filled-diagonal.svg",
             Icon::Terminal => "bundled/svg/terminal.svg",
             Icon::TerminalInput => "bundled/svg/terminal-input.svg",
             Icon::TextInput => "bundled/svg/text-input.svg",
@@ -659,3 +663,7 @@ impl Icon {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "icons_tests.rs"]
+mod tests;

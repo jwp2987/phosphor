@@ -199,6 +199,8 @@ fn label_prefers_executed_command_over_streamed_command() {
             command: "git status -sb".to_owned(),
             output: String::new(),
             exit_code: ExitCode::from(0),
+            start_ts: None,
+            completed_ts: None,
         },
     ));
     assert_eq!(

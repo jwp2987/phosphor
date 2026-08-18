@@ -479,6 +479,9 @@ code-review-open-repository-tooltip = 前往仓库并初始化用于编码
 code-review-open-file = 打开文件
 code-review-add-file-diff-context = 将文件 diff 添加为上下文
 code-review-copy-file-path = 复制文件路径
+code-review-stage-file = 暂存文件
+code-review-stage-remaining = 暂存剩余更改
+code-review-unstage-file = 取消暂存文件
 code-review-no-open-changes = 没有打开的变更
 code-review-header-reviewing-changes = 正在查看代码变更
 code-review-search-diff-placeholder = 搜索要比较的 diff 集或分支…
@@ -1172,6 +1175,19 @@ settings-code-embedding-model-none = 未配置
 settings-code-embedding-model-none-desc = 没有任何服务商列出嵌入模型，因此索引会直接报错，而不会回退到默认模型。请在“设置 > AI”中为某个服务商添加下列模型之一。
 settings-code-embedding-candidate-available = {$model} — 由 {$provider} 提供
 settings-code-embedding-candidate-unavailable = {$model} — 没有服务商列出该模型
+settings-code-remote-indexed-folders = 远程已索引文件夹
+settings-code-remote-indexed-folders-desc = 已请求远程 Agent 守护进程建立索引的 SSH 主机仓库，以及各主机回报的状态。索引在主机上构建，此处的内容不会发送到 任何外部服务器。
+settings-code-remote-index-not-created = 未创建索引
+settings-code-remote-index-limit-reached = 已达索引数量上限
+settings-code-remote-index-unavailable = 不可用
+settings-code-remote-index-disabled = 已禁用
+settings-code-remote-index-queued = 排队中
+settings-code-remote-index-indexing = 正在索引…
+settings-code-remote-index-indexing-progress = 正在索引 - { $completed } / { $total }
+settings-code-remote-index-indexing-completed = 正在索引 - { $completed }
+settings-code-remote-index-synced = 已同步
+settings-code-remote-index-stale = 已过期
+settings-code-remote-index-failed = 失败
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
@@ -1416,6 +1432,7 @@ settings-appearance-tab-close-position-right = 右侧
 settings-appearance-tab-close-position-left = 左侧
 settings-appearance-tab-show-indicators-label = 显示标签页指示器
 settings-appearance-tab-show-code-review-label = 显示代码审查按钮
+settings-appearance-tab-enable-tab-groups-label = 启用标签页分组
 settings-appearance-tab-preserve-active-color-label = 新标签页保留当前标签页颜色
 settings-appearance-tab-vertical-layout-label = 使用垂直标签页布局
 settings-appearance-tab-show-vertical-panel-in-restored-windows-label = 恢复窗口时显示垂直标签页面板

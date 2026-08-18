@@ -111,6 +111,61 @@ impl GutterButton for RevertHunkButton {
     }
 }
 
+/// Gutter toggle for staging a single diff hunk (Zap #329).
+///
+/// `is_staged` is the *file's* staged state, not the hunk's: the code-review
+/// diff is `git diff HEAD`, which merges both sides of the index, so nothing
+/// in a rendered hunk says whether that hunk is already staged. It only
+/// changes this button's label and direction; see
+/// `CodeReviewView::toggle_hunk_staged` for why that is the honest choice
+/// available here.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct StageHunkButton {
+    is_enabled: bool,
+    is_staged: bool,
+}
+
+impl StageHunkButton {
+    pub fn new(is_enabled: bool) -> Self {
+        Self {
+            is_enabled,
+            is_staged: false,
+        }
+    }
+
+    /// Whether the enclosing file is fully staged, which flips this button
+    /// from "stage this hunk" to "unstage this hunk".
+    pub fn with_staged(mut self, is_staged: bool) -> Self {
+        self.is_staged = is_staged;
+        self
+    }
+
+}
+
+impl GutterButton for StageHunkButton {
+    fn is_enabled(&self) -> bool {
+        self.is_enabled
+    }
+
+    fn tooltip_text(&self) -> Option<&'static str> {
+        if !self.is_enabled {
+            Some("Save changes to stage")
+        } else if self.is_staged {
+            Some("Unstage hunk")
+        } else {
+            Some("Stage hunk")
+        }
+    }
+
+    fn icon(&self) -> Icon {
+        if self.is_staged {
+            Icon::Minus
+        } else {
+            Icon::Plus
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy)]
 #[allow(dead_code)]
 pub enum CommentButton {

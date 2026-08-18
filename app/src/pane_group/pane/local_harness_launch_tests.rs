@@ -16,6 +16,7 @@ use super::{
 use crate::ai::local_harness_setup::{
     LOCAL_CODEX_HARNESS_DISABLED_MESSAGE, LocalHarnessSetupState,
 };
+use crate::features::FeatureFlag;
 use crate::terminal::cli_agent_sessions::plugin_manager::{
     CliAgentPluginManager, PluginInstallError, PluginInstructions,
 };
@@ -320,6 +321,67 @@ async fn prepare_local_harness_child_launch_rejects_disabled_codex_before_shell_
         // `codex_launch_precondition_refuses_launch_when_product_disabled` above.
         Err(err) => assert!(err.contains(LOCAL_CODEX_HARNESS_DISABLED_MESSAGE)),
     }
+}
+
+/// Adapted from the pin (`local_harness_launch_tests.rs:322-364`, `42effe840`).
+/// The companion of the rejection test above: with
+/// `FeatureFlag::LocalClaudeCodexChildHarnesses` overridden on and a `codex`
+/// executable on `PATH`, `prepare_local_harness_child_launch` composes the
+/// launch end to end. This is the only test that covers the Codex arm's
+/// *success* composition -- `build_local_codex_child_command_quotes_the_prompt`
+/// pins the command string in isolation and
+/// `codex_launch_precondition_allows_launch_when_ready` pins the gate in
+/// isolation, but nothing joined them.
+///
+/// Two drops from the pin version, the same two as the Claude tests below:
+/// no `ai_client` argument (this fork's `prepare_local_harness_child_launch`
+/// no longer creates a cloud agent task -- see `local_harness_launch.rs`'s
+/// "no longer used" note -- so `MockAIClient`/`expect_create_agent_task` have
+/// nothing to mock), and no assertion on the exact `run_id` value (the pin's
+/// mock returns a fixed uuid; this fork generates one locally via
+/// `AmbientAgentTaskId::new_local`, so only its shape is checked).
+///
+/// `ignored-model` is passed deliberately: `harness_model_env_vars` only acts
+/// on `Harness::Claude`, so a model selected for a Codex child must not leak
+/// out as `ANTHROPIC_MODEL`. The `~/.codex` assertion is the pin's, and pins
+/// the reason the Codex arm skips the shared `prepare_environment_config`
+/// step: preparing a local Codex child must not rewrite the machine-wide
+/// `~/.codex/auth.json` / `~/.codex/config.toml`.
+#[tokio::test]
+#[serial_test::serial]
+async fn prepare_local_codex_child_launch_succeeds_when_testing_flag_is_enabled() {
+    let _local_codex = FeatureFlag::LocalClaudeCodexChildHarnesses.override_enabled(true);
+    let fake_home = TempDir::new().unwrap();
+    let fake_bin_dir = TempDir::new().unwrap();
+    let working_dir = fake_home.path().join("workspace");
+    fs::create_dir_all(&working_dir).unwrap();
+    write_fake_cli(fake_bin_dir.path(), "codex");
+
+    let _home = EnvVarGuard::set("HOME", fake_home.path().as_os_str().to_os_string());
+    let _path = EnvVarGuard::set("PATH", fake_bin_dir.path().as_os_str().to_os_string());
+
+    let prepared = prepare_local_harness_child_launch(
+        "hello world".to_string(),
+        "codex".to_string(),
+        Some("ignored-model".to_string()),
+        Some("parent-run".to_string()),
+        Some(ShellType::Zsh),
+        Some(working_dir),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        prepared.command,
+        "codex --dangerously-bypass-approvals-and-sandbox 'hello world'"
+    );
+    assert!(
+        !prepared
+            .env_vars
+            .contains_key(&OsString::from("ANTHROPIC_MODEL"))
+    );
+    assert!(!prepared.run_id.is_empty());
+    assert!(!fake_home.path().join(".codex").exists());
 }
 
 /// Adapted from the pin (`local_harness_launch_tests.rs:320-375`, `02b53fcd8`),

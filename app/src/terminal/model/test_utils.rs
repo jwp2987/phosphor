@@ -372,6 +372,7 @@ impl TerminalModel {
         self.process_bytes(input.as_bytes());
         self.preexec(PreexecValue {
             command: std::str::from_utf8(input.as_bytes()).unwrap().to_owned(),
+            session_id: None,
         });
     }
 
@@ -384,6 +385,7 @@ impl TerminalModel {
         };
         self.command_finished(CommandFinishedValue {
             completion_metadata: completion_metadata.clone(),
+            session_id: None,
         });
         self.precmd_with_completion_metadata(PrecmdValue {
             completion_metadata,

@@ -178,6 +178,8 @@ pub use parsing::ParsedTemplatableMCPServerResult;
 pub mod http_client;
 #[cfg(not(target_family = "wasm"))]
 pub mod reconnecting_peer;
+#[cfg(not(target_family = "wasm"))]
+pub mod sse_transport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(target_family = "wasm", expect(dead_code))]

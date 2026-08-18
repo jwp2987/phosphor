@@ -99,7 +99,6 @@ impl RequestFileEditsExecutor {
 
     /// Drops any per-action state for a cancelled or rejected action so
     /// prepared file contents don't outlive the action.
-    ///
     /// Warp keeps a single unified `diff_storages` map for both surfaces; the
     /// fork split it into `diff_views` (GUI) and `tui_diff_storages` (TUI), so
     /// both are dropped here to match Warp's coverage.
@@ -478,7 +477,7 @@ impl RequestFileEditsExecutor {
     }
 }
 
-// NOT COMPILED -- builds are suspended. Ported from upstream `89f61b63ba`
+// Ported from upstream `89f61b63ba`
 // ("Limit apply diff results to changed ranges", #11987). Root cause (from
 // upstream's PR description): remote apply-diff support switched the result
 // source to accepted editor-buffer contents, but the success path here

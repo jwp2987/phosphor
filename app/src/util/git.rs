@@ -31,10 +31,7 @@ pub async fn run_git_command_with_env(
     );
     let mut git_args = vec!["-c", "diff.autoRefreshIndex=false"];
     git_args.extend_from_slice(args);
-    let mut env = vec![("GIT_OPTIONAL_LOCKS", "0")];
-    if let Some(path_env) = path_env {
-        env.push(("PATH", path_env));
-    }
+    let env = git_child_env(path_env);
 
     let mut cmd = git_command(repo_path, &git_args, &env);
     cmd.stdout(Stdio::piped())
@@ -57,6 +54,36 @@ pub async fn run_git_command_with_env(
     } else {
         Err(anyhow!("Git command failed: {}, {}", stderr, stdout))
     }
+}
+
+/// Environment applied to every git subprocess this module spawns.
+///
+/// - `GIT_OPTIONAL_LOCKS=0` stops Phosphor's own background git calls from
+///   taking the index lock and fighting the user's terminal git.
+/// - `GIT_TERMINAL_PROMPT=0` makes a git command that needs credentials fail
+///   fast instead of blocking on a prompt. This is a correctness fix, not
+///   hygiene: the code-review git dialogs run these commands with no tty they
+///   can service, and `GitDialogAction::Cancel` early-returns while the dialog
+///   is loading, so a blocked prompt is an unrecoverable spinner rather than a
+///   slow operation. Git converts the suppressed prompt into
+///   `could not read Username for '<url>': terminal prompts disabled`, which
+///   `code_review::git_dialog::user_facing_git_error` maps onto the normal
+///   authentication toast.
+///
+///   This disables only *terminal* prompting. `GIT_ASKPASS` / `core.askPass`
+///   GUI helpers and configured credential helpers still run, so users on a
+///   credential manager (the common macOS and Windows setup) are unaffected;
+///   only the case that would otherwise hang changes behaviour.
+///
+/// `PATH` is appended only when the caller supplies one — see
+/// [`run_git_command_with_env`] for why that matters to LFS hooks.
+#[cfg(feature = "local_fs")]
+fn git_child_env(path_env: Option<&str>) -> Vec<(&'static str, &str)> {
+    let mut env = vec![("GIT_OPTIONAL_LOCKS", "0"), ("GIT_TERMINAL_PROMPT", "0")];
+    if let Some(path_env) = path_env {
+        env.push(("PATH", path_env));
+    }
+    env
 }
 
 /// Builds the command that runs `git` with `args` in `repo_path`, with `env` set on the child.
@@ -892,55 +919,17 @@ pub async fn run_pull(_repo_path: &Path, _branch: &str, _path_env: Option<&str>)
     Err(anyhow!("Not supported on wasm"))
 }
 
-/// Creates `branch` and checks it out, from the current HEAD.
-///
-/// `git checkout -b` rather than `git switch -c` deliberately: `checkout` is
-/// available on every git version this app supports, and the rest of this
-/// module already speaks `checkout`/`restore`. Fails if the branch already
-/// exists, which is the behaviour a caller wants — silently switching to a
-/// pre-existing branch when the user asked to create one would be a data
-/// hazard, not a convenience.
-#[cfg(feature = "local_fs")]
-pub async fn run_create_branch(
-    repo_path: &Path,
-    branch: &str,
-    path_env: Option<&str>,
-) -> Result<String> {
-    run_git_command_with_env(repo_path, &["checkout", "-b", branch], path_env).await
-}
-
-#[cfg(not(feature = "local_fs"))]
-pub async fn run_create_branch(
-    _repo_path: &Path,
-    _branch: &str,
-    _path_env: Option<&str>,
-) -> Result<String> {
-    Err(anyhow!("Not supported on wasm"))
-}
-
-/// Switches to an existing `branch`.
-///
-/// Deliberately NOT `--force`: git refuses to switch when the working tree has
-/// changes that would be overwritten, and that refusal is the safety property
-/// we want. The caller surfaces the error rather than discarding the user's
-/// uncommitted work.
-#[cfg(feature = "local_fs")]
-pub async fn run_switch_branch(
-    repo_path: &Path,
-    branch: &str,
-    path_env: Option<&str>,
-) -> Result<String> {
-    run_git_command_with_env(repo_path, &["checkout", branch], path_env).await
-}
-
-#[cfg(not(feature = "local_fs"))]
-pub async fn run_switch_branch(
-    _repo_path: &Path,
-    _branch: &str,
-    _path_env: Option<&str>,
-) -> Result<String> {
-    Err(anyhow!("Not supported on wasm"))
-}
+// Branch create/switch is deliberately NOT provided as an async primitive here.
+// `run_create_branch` / `run_switch_branch` existed with zero callers and were
+// removed 2026-08-18 (maintainer decision). They were fork-original -- the pin
+// has neither -- and they were LOCAL-ONLY (`local_fs`, `&Path`), whereas the
+// shipping path emits a shell command through the context chip
+// (`PromptChipShellCommand::{GitCheckout, GitCreateAndCheckoutBranch}` ->
+// `app/src/terminal/input.rs`), which therefore also works on remote/SSH
+// sessions and shows the user the command and its output. Routing the chip
+// through local primitives would have broken branch switching over SSH.
+// Reinstate only alongside a dialog-based Git panel that has a remote story
+// (Zap #329); git history holds the original bodies.
 
 /// Applies `patch` to the index only, leaving the working tree untouched —
 /// the primitive behind hunk-level staging. With `reverse`, un-stages instead.
@@ -983,6 +972,66 @@ pub async fn run_apply_patch_cached(
     _repo_path: &Path,
     _patch: &str,
     _reverse: bool,
+) -> Result<String> {
+    Err(anyhow!("Not supported on wasm"))
+}
+
+/// Stages (or, with `unstage`, un-stages) whole files by repo-relative path —
+/// the primitive behind per-file staging (Zap #329).
+///
+/// Paths are repo-relative and passed after `--` so a path that looks like an
+/// option or a rev (`-x`, `HEAD`) is still treated as a path.
+///
+/// Staging is `git add`, which since git 2.0 also stages deletions, so a
+/// deleted file needs no separate `git rm` branch. Un-staging is
+/// `git restore --staged`, which reverts the index entry to HEAD *without*
+/// touching the working tree — deliberately unlike the Discard Files path in
+/// `code_review::diff_state`, which passes `--staged --worktree` and therefore
+/// destroys the edit. The two differ by exactly that one flag, which is why
+/// this lives here rather than being folded into the discard helpers.
+///
+/// Before the first commit there is no HEAD to restore an index entry from and
+/// `git restore --staged` fails; `git rm --cached` is the equivalent there, and
+/// it is only reached on that failure so a genuine error is still surfaced.
+#[cfg(feature = "local_fs")]
+pub async fn run_stage_paths(
+    repo_path: &Path,
+    relative_paths: &[String],
+    unstage: bool,
+) -> Result<String> {
+    if relative_paths.is_empty() {
+        return Err(anyhow!("No paths given to stage"));
+    }
+
+    let mut args: Vec<&str> = if unstage {
+        vec!["restore", "--staged", "--"]
+    } else {
+        vec!["add", "--"]
+    };
+    for path in relative_paths {
+        args.push(path.as_str());
+    }
+
+    match run_git_command(repo_path, &args).await {
+        Ok(output) => Ok(output),
+        Err(err) if unstage && err.to_string().contains("could not resolve HEAD") => {
+            // Pre-first-commit repo: the index has no HEAD version to restore
+            // from, so removing the entry outright is what "unstage" means.
+            let mut rm_args: Vec<&str> = vec!["rm", "--cached", "--"];
+            for path in relative_paths {
+                rm_args.push(path.as_str());
+            }
+            run_git_command(repo_path, &rm_args).await
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(not(feature = "local_fs"))]
+pub async fn run_stage_paths(
+    _repo_path: &Path,
+    _relative_paths: &[String],
+    _unstage: bool,
 ) -> Result<String> {
     Err(anyhow!("Not supported on wasm"))
 }

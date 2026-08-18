@@ -1373,6 +1373,9 @@ fn initialize_app(
         .and_then(|err| match err {
             settings::SettingsFileError::FileParseFailed(msg) => Some(msg.clone()),
             settings::SettingsFileError::InvalidSettings(_) => None,
+            // Unknown keys mean the file parsed and the loader was happy with
+            // every value it did recognize, so local state is fine.
+            settings::SettingsFileError::UnknownKeys(_) => None,
         });
     let settings_file_error = user_defaults_on_startup.settings_file_error;
     ctx.add_singleton_model(move |_ctx| {
@@ -1395,6 +1398,7 @@ fn initialize_app(
         object_actions,
         experiments,
         ai_queries,
+        nld_prompts,
         persisted_workspaces,
         workspace_language_servers,
         multi_agent_conversations,
@@ -1416,6 +1420,7 @@ fn initialize_app(
                 sqlite_data.object_actions,
                 sqlite_data.experiments,
                 sqlite_data.ai_queries,
+                sqlite_data.nld_prompts,
                 sqlite_data.codebase_indices,
                 sqlite_data.workspace_language_servers,
                 sqlite_data.multi_agent_conversations,
@@ -1427,7 +1432,10 @@ fn initialize_app(
             )
         })
         .unwrap_or_else(|| {
+            // One `Default::default()` per binding above; adding a field to `PersistedData`
+            // means adding one here too, or the tuple arms stop agreeing on arity.
             (
+                Default::default(),
                 Default::default(),
                 Default::default(),
                 Default::default(),
@@ -1927,14 +1935,20 @@ fn initialize_app(
 
     {
         let conversations = &multi_agent_conversations;
-        // #256 item 2 / #312: the NLD-classification consumer now exists
-        // (`input_model.rs`'s `detect_and_set_input_type`, gated on
-        // `FeatureFlag::NldPromptHistoryMatch`, itself off by default), but no
-        // `nld_prompts`-equivalent SQLite read exists in this fork yet (the pin reads
-        // `sqlite_data.nld_prompts`), so this snapshot is empty until that loading path
-        // lands (superseded by #336/#337/#331).
+        // #256 item 2 / #312: the NLD-classification consumer (`input_model.rs`'s
+        // `detect_and_set_input_type`, gated on `FeatureFlag::NldPromptHistoryMatch`) is now fed
+        // by a real snapshot. `nld_prompts` comes from `sqlite.rs`'s startup read, which is
+        // itself gated on the same flag -- off by default here and at the pin -- so this is an
+        // empty vec in a default build, exactly as the hard-coded `vec![]` was, and non-empty
+        // the moment the flag is turned on.
+        //
+        // The comment this replaces said the read was "superseded by #336/#337/#331". That was
+        // a misread: those three (fork_conversation preserve_task_ids, the persisted summary
+        // column, the ask-user-question speedbump setting) supersede items 1/3/4 of #256, not
+        // its item 2, and all three are closed. Nothing superseded this read; it was simply
+        // unported.
         ctx.add_singleton_model(move |_| {
-            BlocklistAIHistoryModel::new(ai_queries, vec![], conversations)
+            BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations)
         });
     }
     // Seed the orchestration pin set from persisted conversation data before
@@ -3077,6 +3091,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::DiffSetAsContext,
         #[cfg(feature = "discard_per_file_and_all_changes")]
         FeatureFlag::DiscardPerFileAndAllChanges,
+        #[cfg(feature = "stage_changes")]
+        FeatureFlag::StageChanges,
         #[cfg(feature = "summarization_cancellation_confirmation")]
         FeatureFlag::SummarizationCancellationConfirmation,
         #[cfg(feature = "code_review_find")]
@@ -3173,6 +3189,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::KittyKeyboardProtocol,
         #[cfg(feature = "inline_menu_headers")]
         FeatureFlag::InlineMenuHeaders,
+        #[cfg(feature = "restore_prompt_on_inline_model_selector_search")]
+        FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
         #[cfg(feature = "directory_tab_colors")]
         FeatureFlag::DirectoryTabColors,
         #[cfg(feature = "open_warp_new_settings_modes")]

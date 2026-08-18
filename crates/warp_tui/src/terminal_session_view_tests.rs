@@ -20,7 +20,7 @@ use warp::tui_export::{
     AskUserQuestionOption, AskUserQuestionType, BlockPadding, BlocklistAIHistoryEvent,
     BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMId, LLMPreferences,
     MessageId, OutputStatusUpdateCallback, PtyIntent, PtyIntentEvent, ServerOutputId, Session,
-    Shared, SizeInfo, SizeUpdate, TaskId, TuiMcpAction, TuiMcpServerId,
+    Shared, SizeInfo, SizeUpdate, SlashCommandKind, TaskId, TuiMcpAction, TuiMcpServerId,
     TuiUpArrowHistoryItemKind, WarpConfig, WarpConfigUpdateEvent, export_conversation_markdown,
     queue_tui_permission_action, register_tui_session_view_test_singletons, slash_commands,
 };
@@ -38,15 +38,15 @@ use warpui_core::elements::tui::{
 use warpui_core::r#async::Timer;
 use warpui_core::event::ModifiersState;
 use warpui_core::keymap::{Context, Keystroke, Trigger};
-use warpui_core::presenter::tui::TuiPresenter;
+use warpui_core::presenter::tui::{TuiFrame, TuiPresenter};
 use warpui_core::{
     App, AppContext, TuiView, TypedActionView as _, ViewContext, WindowInvalidation,
 };
 
 use super::statusline::{
     FooterSegment, FooterSegments, format_statusline_date, format_statusline_time_12_hour,
-    format_statusline_time_24_hour, format_todo_progress, render_status_footer_row,
-    render_statusline_datetime,
+    format_statusline_time_24_hour, format_todo_progress, render_git_branch_status,
+    render_status_footer_row, render_statusline_datetime, should_render_plain_git_branch,
 };
 use super::{
     ATTACH_AGENT_TO_RUNNING_COMMAND_BINDING_NAME, AUTO_APPROVE_DISABLED_HINT,
@@ -191,12 +191,17 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             let row = render_status_footer_row(
                 FooterSegments {
                     ordered: vec![
-                        FooterSegment::ActiveIndicator("Auto-approve"),
+                        // The auto-approve entry is now the clickable `▶▶`
+                        // control (`FooterSegment::AutoApproveIndicator`), not
+                        // a plain label; it stays in the active-indicator
+                        // group, so the " • " within-group join is unchanged.
+                        FooterSegment::AutoApproveIndicator(TuiText::new("▶▶").finish()),
                         FooterSegment::ActiveIndicator("Auto-queue"),
                         FooterSegment::Model(TuiText::new("model").finish()),
                         FooterSegment::WorkingDirectory("/tmp/warp".to_owned()),
                         FooterSegment::GitBranch("main".to_owned()),
                         FooterSegment::GitDiff {
+                            files_changed: 6,
                             additions: 31,
                             deletions: 12,
                         },
@@ -213,7 +218,7 @@ fn footer_uses_pipes_between_figma_groups_and_preserves_within_group_separators(
             assert_eq!(
                 render_element(row, ctx, 160).to_lines(),
                 vec![
-                    "Auto-approve • Auto-queue | model | /tmp/warp ↬ main | +31 -12 | PR #123 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
+                    "▶▶ • Auto-queue | model | /tmp/warp ↬ main | ☰ 6 • +31 -12 | PR #123 | 43% context | July 20, 2026 • 1:08pm | ❒ 1/10"
                         .to_owned()
                 ],
             );
@@ -244,8 +249,15 @@ fn empty_configurable_footer_has_zero_height() {
 /// feature Zap has not ported. Zap's `/queue` instead holds one specific
 /// prompt (`TuiTerminalSessionView::queued_follow_up`), so this test drives
 /// that field directly instead of `QueuedQueryModel`.
+///
+/// The two enabled items now behave differently, which is what this asserts:
+/// `Queued` is a presence-only indicator and disappears when no follow-up is
+/// held, while `AutoApprove` is the pin's clickable `▶▶` control and stays on
+/// the row in both states so it can be clicked to turn auto-approve on. Its
+/// state is carried by colour, asserted in
+/// `enabled_auto_approve_indicator_is_always_visible_with_state_aware_color`.
 #[test]
-fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
+fn enabled_auto_indicators_reflect_their_effective_states() {
     App::test((), |mut app| async move {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
@@ -304,7 +316,7 @@ fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
         // one-shot queued follow-up prompt, not a persistent auto-queue mode.
         assert_eq!(
             render_footer_lines(&mut app, &view, 80),
-            vec!["Auto-approve • Queued".to_owned()],
+            vec!["▶▶ • Queued".to_owned()],
         );
 
         view.update(&mut app, |view, ctx| {
@@ -313,7 +325,13 @@ fn enabled_auto_indicators_render_only_while_their_effective_states_are_on() {
             });
             view.queued_follow_up = None;
         });
-        assert!(render_footer_lines(&mut app, &view, 80).is_empty());
+        // The queued follow-up indicator is gone, but the auto-approve control
+        // remains: it is a toggle, not a status label, so switching
+        // auto-approve off must not remove its own click target.
+        assert_eq!(
+            render_footer_lines(&mut app, &view, 80),
+            vec!["▶▶".to_owned()],
+        );
 
         // See the comment in `saving_statusline_configuration_persists_and_restores_input_focus`:
         // `tui_statusline` persists across tests in this process, so restore
@@ -468,6 +486,79 @@ fn status_slash_command_opens_the_status_menu() {
     });
 }
 
+/// `/api-keys` opens the inline key manager in place, flips the shared suggestions mode over to
+/// it, and consumes the typed command so the composer is left empty (and the command text is no
+/// longer painted anywhere on screen).
+///
+/// The pin additionally asserts on its fixed cloud provider list ("Anthropic API key", "enter to
+/// set api key", no "ctrl + x"). This fork's menu is BYOP: it lists whatever agent providers the
+/// user has configured, with no built-in provider entries, so those strings have no counterpart
+/// here and the header assertion stands in their place.
+#[test]
+fn api_keys_slash_command_opens_inline_and_clears_the_input() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.input_view
+                .update(ctx, |input, ctx| input.set_text("/api-keys", ctx));
+            view.execute_tui_slash_command(&slash_commands::API_KEYS, None, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            assert!(view.api_keys_menu.as_ref(ctx).is_open(ctx));
+            assert_eq!(
+                view.suggestions_mode.as_ref(ctx).mode(),
+                TuiInputSuggestionsMode::ApiKeys
+            );
+            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
+        });
+        let rendered = render_session(&mut app, &view, 100, 40).join("\n");
+        assert!(rendered.contains("API keys"), "{rendered}");
+        assert!(!rendered.contains("/api-keys"), "{rendered}");
+    });
+}
+
+/// `/fork` is one of the commands both front-ends implement, so neither surface filter may drop
+/// it. This fork derives surfaces from the command name rather than carrying the pin's
+/// `supported_surfaces` field, so the same claim is made through `supports_gui`/`supports_tui`.
+#[test]
+fn fork_slash_command_is_available_on_both_surfaces() {
+    assert_eq!(slash_commands::FORK.name, "/fork");
+    assert!(slash_commands::FORK.supports_gui());
+    assert!(slash_commands::FORK.supports_tui());
+}
+
+/// `/fork` needs something to branch from, so it must refuse — with a hint, not a silent
+/// no-op — when the session has nothing selected, and must still consume the typed command.
+///
+/// The pin calls the refusal `FORK_EMPTY_CONVERSATION_HINT`; this fork's single guard is
+/// `FORK_REQUIRES_CONVERSATION_HINT` (`fork_current_conversation`'s `let Some(source) = …
+/// else`). The user-visible situation is the same one: a TUI session that has never submitted
+/// a prompt has no selected conversation at all, which is what "empty conversation" means
+/// here.
+#[test]
+fn fork_slash_command_rejects_an_empty_conversation() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view
+                .update(ctx, |input, ctx| input.set_text("/fork", ctx));
+            view.execute_tui_slash_command(&slash_commands::FORK, None, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            assert_eq!(
+                view.transient_hint.current().map(|(text, _)| text),
+                Some(super::FORK_REQUIRES_CONVERSATION_HINT),
+            );
+            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
+        });
+    });
+}
+
 #[test]
 fn statusline_slash_command_clears_input_focuses_one_picker_and_cancels_cleanly() {
     App::test((), |mut app| async move {
@@ -530,6 +621,72 @@ fn statusline_slash_command_clears_input_focuses_one_picker_and_cancels_cleanly(
     });
 }
 
+/// The stricter sibling of the test above: focus is asserted through
+/// `check_view_or_child_focused`, so the picker is allowed to delegate focus down to a child row
+/// and a redraw still has to leave that *nested* focus alone. Dismissing the surface must then
+/// hand focus back to the input and — the part rendering-only assertions miss — bring the input's
+/// terminal cursor back with it.
+#[test]
+fn statusline_slash_command_preserves_nested_focus_and_restores_the_input_cursor() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/statusline", ctx);
+            });
+            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
+        });
+
+        let (picker_id, picker_focus_id) = view.read(&app, |view, ctx| {
+            let picker = view
+                .statusline_config_view
+                .as_ref()
+                .expect("statusline picker should be open");
+            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
+            assert!(ctx.check_view_or_child_focused(fixture.window_id, &picker.id()));
+            (
+                picker.id(),
+                ctx.focused_view_id(fixture.window_id)
+                    .expect("the statusline picker should own or delegate focus"),
+            )
+        });
+
+        assert!(view.update(&mut app, |view, ctx| { view.handle_terminal_wakeup(ctx) }));
+        app.read(|ctx| {
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(picker_focus_id),
+                "a redraw must preserve the interaction surface's delegated child focus"
+            );
+        });
+
+        view.update(&mut app, |view, ctx| {
+            view.execute_tui_slash_command(&slash_commands::STATUSLINE, None, ctx);
+        });
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.statusline_config_view.as_ref().map(ViewHandle::id)
+            }),
+            Some(picker_id),
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.handle_statusline_config_event(&TuiStatuslineConfigEvent::Cancelled, ctx);
+        });
+        view.read(&app, |view, ctx| {
+            assert!(view.statusline_config_view.is_none());
+            assert!(ctx.check_view_or_child_focused(fixture.window_id, &view.input_view.id()));
+        });
+        assert!(
+            render_session_frame(&mut app, &view, 80, 24)
+                .cursor
+                .is_some(),
+            "dismissing the interaction surface should restore the input cursor"
+        );
+    });
+}
+
 #[test]
 fn saving_statusline_configuration_persists_and_restores_input_focus() {
     App::test((), |mut app| async move {
@@ -575,6 +732,57 @@ fn saving_statusline_configuration_persists_and_restores_input_focus() {
                     .tui_statusline
                     .set_value(TuiStatuslineConfig::default(), ctx);
             });
+        });
+    });
+}
+
+/// `/reset-statusline` is the escape hatch from a hand-edited configuration: it must put
+/// *both* halves — which items are enabled and the order they sit in — back to the shipped
+/// default, without opening the picker, and confirm through the same hint slot the save path
+/// uses. It also consumes the typed command like every other executed slash command.
+///
+/// The pin's custom fixture is built from its cloud `CreditUsage` item; this fork has no such
+/// statusline item (BYOP has no credits), so the same "not the default, in a different order"
+/// shape is built from `ContextWindowUsage` — the entry that replaced it.
+#[test]
+fn reset_statusline_command_restores_default_items_and_ordering() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let custom = TuiStatuslineConfig {
+            order: vec![
+                TuiStatuslineItem::ContextWindowUsage,
+                TuiStatuslineItem::Model,
+            ],
+            enabled: vec![TuiStatuslineItem::ContextWindowUsage],
+        }
+        .normalized();
+        assert_ne!(custom, TuiStatuslineConfig::default());
+
+        view.update(&mut app, |view, ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .tui_statusline
+                    .set_value(custom, ctx)
+                    .expect("custom statusline should persist");
+            });
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/reset-statusline", ctx);
+            });
+            view.execute_tui_slash_command(&slash_commands::RESET_STATUSLINE, None, ctx);
+        });
+
+        assert_eq!(
+            app.read(|ctx| AISettings::as_ref(ctx).tui_statusline.normalized()),
+            TuiStatuslineConfig::default(),
+        );
+        view.read(&app, |view, ctx| {
+            assert!(view.statusline_config_view.is_none());
+            assert!(view.input_view.as_ref(ctx).is_empty(ctx));
+            assert_eq!(
+                view.transient_hint.current().map(|(text, _)| text),
+                Some(super::STATUSLINE_RESET_HINT),
+            );
         });
     });
 }
@@ -648,6 +856,37 @@ fn left_mouse_up(x: u16, y: u16) -> TuiEvent {
     }
 }
 
+/// Lays out, paints and retains an already-built element so a test can
+/// dispatch mouse events against the same element + scene the paint produced.
+/// Ported from the pin's helper of the same name; `render_retained_session`
+/// below is the whole-session-view caller it was extracted from.
+fn render_retained_element(
+    mut element: Box<dyn TuiElement>,
+    ctx: &AppContext,
+    width: u16,
+    height: u16,
+) -> (Box<dyn TuiElement>, Rc<TuiScene>, TuiBuffer) {
+    let mut rendered_views = EntityIdMap::default();
+    let mut layout_ctx = TuiLayoutContext {
+        rendered_views: &mut rendered_views,
+    };
+    let size = element.layout(
+        TuiConstraint::loose(TuiSize::new(width, height)),
+        &mut layout_ctx,
+        ctx,
+    );
+    element.after_layout(&mut layout_ctx, ctx);
+    let area = TuiRect::new(0, 0, size.width.min(width), size.height.min(height));
+    let mut buffer = TuiBuffer::empty(area);
+    let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
+    {
+        let mut surface = TuiPaintSurface::new(&mut buffer);
+        element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
+    }
+    let scene = Rc::new(paint_ctx.scene.clone());
+    (element, scene, buffer)
+}
+
 /// Renders the session view's element tree outside the presenter so the test
 /// can dispatch mouse events against the retained element + scene. Child views
 /// (transcript/input/attachment bar) are absent from `rendered_views`, so they
@@ -660,28 +899,10 @@ fn render_retained_session(
     height: u16,
 ) -> (Box<dyn TuiElement>, Rc<TuiScene>, TuiBuffer) {
     app.read(|ctx| {
-        let mut element = ctx
+        let element = ctx
             .render_tui_view(view.window_id(ctx), view.id())
             .expect("session view should render");
-        let mut rendered_views = EntityIdMap::default();
-        let mut layout_ctx = TuiLayoutContext {
-            rendered_views: &mut rendered_views,
-        };
-        let size = element.layout(
-            TuiConstraint::loose(TuiSize::new(width, height)),
-            &mut layout_ctx,
-            ctx,
-        );
-        element.after_layout(&mut layout_ctx, ctx);
-        let area = TuiRect::new(0, 0, size.width.min(width), size.height.min(height));
-        let mut buffer = TuiBuffer::empty(area);
-        let mut paint_ctx = TuiPaintContext::new(&mut rendered_views);
-        {
-            let mut surface = TuiPaintSurface::new(&mut buffer);
-            element.render(TuiScreenPosition::new(0, 0), &mut surface, &mut paint_ctx);
-        }
-        let scene = Rc::new(paint_ctx.scene.clone());
-        (element, scene, buffer)
+        render_retained_element(element, ctx, width, height)
     })
 }
 
@@ -1732,6 +1953,45 @@ fn render_session(
     })
 }
 
+/// Like [`render_session`], but hands back the whole painted frame rather than just its text, so
+/// a test can assert on the cursor the terminal is told to place.
+fn render_session_frame(
+    app: &mut App,
+    view: &ViewHandle<super::TuiTerminalSessionView>,
+    width: u16,
+    height: u16,
+) -> TuiFrame {
+    let mut presenter = TuiPresenter::new();
+    app.update(|ctx| {
+        let mut invalidation = WindowInvalidation::default();
+        invalidation.updated.insert(view.id());
+        invalidation
+            .updated
+            .extend(view.as_ref(ctx).child_view_ids(ctx));
+        presenter.invalidate(&invalidation, ctx, view.window_id(ctx));
+        presenter.present(ctx, view, TuiRect::new(0, 0, width, height))
+    })
+}
+
+/// Like [`render_session`], but keeps the styled cell grid so a test can assert on colors as
+/// well as glyphs.
+fn render_session_buffer(
+    app: &mut App,
+    view: &ViewHandle<super::TuiTerminalSessionView>,
+    width: u16,
+    height: u16,
+) -> TuiBuffer {
+    render_session_frame(app, view, width, height).buffer
+}
+
+/// Column of the first non-blank cell in `line`. Used to compare where separately rendered
+/// surfaces begin, which is what "aligned to the input's outer edge" means in the buffer.
+fn first_visible_column(line: &str) -> usize {
+    line.chars()
+        .position(|character| !character.is_whitespace())
+        .unwrap_or_else(|| panic!("line must contain visible content: {line:?}"))
+}
+
 /// Every one of the six editor rows the composer is sized for must actually
 /// render: the input box's `TuiConstrainedBox` budget has to cover the border
 /// rows *and* the padding row inside each border
@@ -1846,6 +2106,7 @@ fn typeahead_event_inserts_and_overwrites_the_tui_input() {
                 model.finish_block();
                 model.input_buffer(InputBufferValue {
                     buffer: "ec".to_owned(),
+                    session_id: None,
                 });
             }
             view.handle_typeahead_event(ctx);
@@ -1855,6 +2116,7 @@ fn typeahead_event_inserts_and_overwrites_the_tui_input() {
         view.update(&mut app, |view, ctx| {
             view.terminal_model.lock().input_buffer(InputBufferValue {
                 buffer: "echo hi".to_owned(),
+                session_id: None,
             });
             view.handle_typeahead_event(ctx);
         });
@@ -2498,6 +2760,7 @@ fn footer_renders_agent_sections_left_aligned() {
                         FooterSegment::GitBranch("main".to_owned()),
                         FooterSegment::ContextWindowUsage(usage),
                         FooterSegment::GitDiff {
+                            files_changed: 2,
                             additions: 3,
                             deletions: 1,
                         },
@@ -2511,7 +2774,7 @@ fn footer_renders_agent_sections_left_aligned() {
 
             assert_eq!(
                 lines,
-                vec!["TestModel | /home/user/warp ↬ main | 18% context | +3 -1"],
+                vec!["TestModel | /home/user/warp ↬ main | 18% context | ☰ 2 • +3 -1"],
                 "agent footer is left-aligned in order model → cwd/branch → usage → diff"
             );
             assert!(
@@ -2592,6 +2855,7 @@ fn footer_renders_bash_sections_without_model_or_usage() {
                         FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
                         FooterSegment::GitBranch("main".to_owned()),
                         FooterSegment::GitDiff {
+                            files_changed: 2,
                             additions: 3,
                             deletions: 1,
                         },
@@ -2613,7 +2877,7 @@ fn footer_renders_bash_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | +3 -1")],
+                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1")],
                 "bash footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(
@@ -2786,6 +3050,45 @@ fn startup_settings_parse_failure_renders_as_an_error_footer_hint() {
     });
 }
 
+/// Fork addition (no equivalent at the pin): keys that match no setting are
+/// their own `SettingsFileError` variant, so the TUI must not describe them
+/// with the "invalid values" hint -- nothing failed to load, the lines are
+/// merely inert.
+#[test]
+fn unrecognized_settings_keys_render_as_their_own_error_footer_hint() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        app.update(|ctx| {
+            WarpConfig::handle(ctx).update(ctx, |_, ctx| {
+                ctx.emit(WarpConfigUpdateEvent::SettingsErrors(
+                    SettingsFileError::UnknownKeys(vec!["cloud_sync".to_owned()]),
+                ));
+            });
+        });
+
+        assert_eq!(
+            view.read(&app, |view, _| {
+                view.transient_hint
+                    .current()
+                    .map(|(text, tone)| (text.to_owned(), tone))
+            }),
+            Some((
+                super::SETTINGS_UNKNOWN_KEYS_HINT.to_owned(),
+                crate::transient_hint::TransientHintTone::Error
+            ))
+        );
+        assert_ne!(
+            super::SETTINGS_UNKNOWN_KEYS_HINT,
+            super::SETTINGS_INVALID_VALUES_HINT
+        );
+
+        let lines = render_footer_lines(&mut app, &view, 120);
+        assert_eq!(lines, vec![super::SETTINGS_UNKNOWN_KEYS_HINT]);
+    });
+}
+
 /// Ported from Warp's `crates/warp_tui/src/terminal_session_view_tests.rs` at
 /// the pinned oracle (`02b53fcd8`) as part of #384. An initial-load failure
 /// (a configured `TuiZeroStateObject::AsciiFile` that never resolves, e.g. a
@@ -2860,9 +3163,13 @@ fn footer_conversations_callout_no_longer_renders() {
             !row.contains('←'),
             "no conversations-callout glyph remains: {row}"
         );
+        // The clickable `▶▶` auto-approve control leads the default statusline
+        // (it is the first enabled item and now renders in every non-shell-mode
+        // session); the model label follows it.
         assert!(
-            row.starts_with(&format!("{model_name} ")),
-            "the model-led status row renders in place of the callout: {row}"
+            row.starts_with(&format!("▶▶ | {model_name} ")),
+            "the auto-approve control and model-led status row render in place \
+             of the callout: {row}"
         );
     });
 }
@@ -4049,6 +4356,7 @@ fn footer_renders_shell_mode_sections_without_model_or_usage() {
                         FooterSegment::WorkingDirectory("/home/user/warp".to_owned()),
                         FooterSegment::GitBranch("main".to_owned()),
                         FooterSegment::GitDiff {
+                            files_changed: 2,
                             additions: 3,
                             deletions: 1,
                         },
@@ -4070,7 +4378,7 @@ fn footer_renders_shell_mode_sections_without_model_or_usage() {
 
             assert_eq!(
                 lines,
-                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | +3 -1")],
+                vec![format!("{SHELL_MODE_HINT} /home/user/warp ↬ main | ☰ 2 • +3 -1")],
                 "shell footer leads with the shell-mode indicator and hides model/usage"
             );
             assert!(
@@ -5439,6 +5747,697 @@ fn copy_debugging_id_footer_hint_renders_in_session() {
         assert!(
             rendered.contains(super::COPY_DEBUGGING_ID_NO_TOKEN_HINT),
             "rendered session must contain the no-token hint in the footer; got:\n{rendered}"
+        );
+    });
+}
+
+/// Ported from the pin (`42effe840`): the Figma git-diff item leads with a
+/// file count, so a change with no counted lines (binary, mode-only,
+/// whitespace-normalised) is still visible.
+#[test]
+fn git_diff_status_matches_figma_file_count_content_and_styles() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let row = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![FooterSegment::GitDiff {
+                        files_changed: 6,
+                        additions: 31,
+                        deletions: 12,
+                    }],
+                },
+                &builder,
+            )
+            .finish();
+            let buffer = render_element(row, ctx, 80);
+            assert_eq!(buffer.to_lines(), vec!["☰ 6 • +31 -12".to_owned()]);
+            assert_eq!(
+                buffer[(0, 0)].fg,
+                builder
+                    .muted_text_style()
+                    .fg
+                    .expect("file glyph should use the muted foreground"),
+            );
+            assert_eq!(
+                buffer[(
+                    (0..buffer.area.width)
+                        .find(|column| buffer[(*column, 0)].symbol() == "+")
+                        .expect("addition glyph should render"),
+                    0,
+                )]
+                    .fg,
+                builder
+                    .diff_added_style()
+                    .fg
+                    .expect("addition count should use the added foreground"),
+            );
+            assert_eq!(
+                buffer[(
+                    (0..buffer.area.width)
+                        .find(|column| buffer[(*column, 0)].symbol() == "-")
+                        .expect("deletion glyph should render"),
+                    0,
+                )]
+                    .fg,
+                builder
+                    .diff_removed_style()
+                    .fg
+                    .expect("deletion count should use the removed foreground"),
+            );
+
+            let file_only = render_status_footer_row(
+                FooterSegments {
+                    ordered: vec![FooterSegment::GitDiff {
+                        files_changed: 1,
+                        additions: 0,
+                        deletions: 0,
+                    }],
+                },
+                &builder,
+            )
+            .finish();
+            assert_eq!(
+                render_element(file_only, ctx, 80).to_lines(),
+                vec!["☰ 1".to_owned()],
+                "binary or zero-line changes should remain visible through their file count",
+            );
+        });
+    });
+}
+
+/// Ported from the pin (`42effe840`). `GitBranchStatus` reads the same local
+/// `git status` metadata the plain branch item does -- no Warp backend is
+/// involved -- and adds the upstream tracking counts.
+#[test]
+fn git_branch_status_matches_figma_content_styles_and_tracking_variants() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| Appearance::mock());
+            let builder = TuiUiBuilder::from_app(ctx);
+            let status = render_element(
+                render_git_branch_status(
+                    "main",
+                    false,
+                    Some("1".to_owned()),
+                    Some("2".to_owned()),
+                    &builder,
+                ),
+                ctx,
+                80,
+            );
+            assert_eq!(status.to_lines(), vec!["⊢ main • ↑1 ↓2".to_owned()]);
+            let muted = builder
+                .muted_text_style()
+                .fg
+                .expect("muted status text has a foreground");
+            let accent = builder
+                .accent_text_style()
+                .fg
+                .expect("branch status arrows have a foreground");
+            assert_eq!(status[(0, 0)].fg, muted);
+            assert_eq!(status[(9, 0)].fg, accent);
+            assert_eq!(status[(10, 0)].fg, muted);
+            assert_eq!(status[(12, 0)].fg, accent);
+            assert_eq!(status[(13, 0)].fg, muted);
+
+            assert_eq!(
+                render_element(
+                    render_git_branch_status("main", false, Some("1".to_owned()), None, &builder),
+                    ctx,
+                    80,
+                )
+                .to_lines(),
+                vec!["⊢ main • ↑1".to_owned()]
+            );
+            assert_eq!(
+                render_element(
+                    render_git_branch_status("main", false, None, Some("2".to_owned()), &builder),
+                    ctx,
+                    80,
+                )
+                .to_lines(),
+                vec!["⊢ main • ↓2".to_owned()]
+            );
+            assert_eq!(
+                render_element(
+                    render_git_branch_status("main", true, None, None, &builder),
+                    ctx,
+                    80,
+                )
+                .to_lines(),
+                vec!["⊢ main • ⇅".to_owned()]
+            );
+            assert_eq!(
+                render_element(
+                    render_git_branch_status("main", false, None, None, &builder),
+                    ctx,
+                    80,
+                )
+                .to_lines(),
+                vec!["⊢ main".to_owned()]
+            );
+        });
+    });
+}
+
+/// Ported from the pin (`42effe840`): the composite branch item is a superset
+/// of the plain one, so enabling both must not print the branch name twice.
+#[test]
+fn composite_git_branch_status_suppresses_the_plain_branch_item() {
+    let branch_only = TuiStatuslineConfig {
+        order: TuiStatuslineItem::ALL.to_vec(),
+        enabled: vec![TuiStatuslineItem::GitBranch],
+    };
+    assert!(should_render_plain_git_branch(&branch_only));
+
+    let branch_and_status = TuiStatuslineConfig {
+        order: TuiStatuslineItem::ALL.to_vec(),
+        enabled: vec![
+            TuiStatuslineItem::GitBranch,
+            TuiStatuslineItem::GitBranchStatus,
+        ],
+    };
+    assert!(!should_render_plain_git_branch(&branch_and_status));
+}
+
+/// Ported from the pin (`42effe840`). The TUI creates a blank conversation
+/// eagerly, and `/copy-debugging-id` must be offered against it the same way
+/// the GUI offers it against an active conversation -- the command is about a
+/// *local* debugging identifier, so nothing here depends on being signed in.
+#[test]
+fn copy_debugging_id_available_in_active_commands_at_zero_state() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.read(&app, |view, ctx| {
+            let has_copy_debugging_id = view
+                .slash_commands_source
+                .as_ref(ctx)
+                .active_commands()
+                .any(|(_, command)| command.kind() == SlashCommandKind::CopyDebuggingId);
+            assert!(
+                has_copy_debugging_id,
+                "/copy-debugging-id must be available for the blank active conversation",
+            );
+        });
+    });
+}
+
+/// Ported from the pin (`42effe840`): exactly one model-picker row is badged
+/// as the active execution profile's default. The badged row is *not*
+/// necessarily the selected one -- a per-surface override or the BYOP
+/// last-used model can move the effective active model off the profile
+/// default, which is the whole reason the badge exists.
+#[test]
+fn model_menu_labels_the_profile_default_model() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::ToggleModelMenu, ctx);
+        });
+
+        view.read(&app, |view, ctx| {
+            let default_name = LLMPreferences::as_ref(ctx)
+                .get_active_profile_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone();
+            let snapshot = view
+                .model_menu
+                .as_ref(ctx)
+                .snapshot(ctx)
+                .expect("model menu should be open");
+            let default_row = snapshot
+                .rows
+                .iter()
+                .find(|row| row.title == default_name)
+                .expect("profile default model should be listed");
+            assert!(
+                default_row
+                    .state_suffix
+                    .as_deref()
+                    .is_some_and(|suffix| suffix.contains("(default)"))
+            );
+            assert_eq!(
+                snapshot
+                    .rows
+                    .iter()
+                    .filter(|row| {
+                        row.state_suffix
+                            .as_deref()
+                            .is_some_and(|suffix| suffix.contains("(default)"))
+                    })
+                    .count(),
+                1
+            );
+        });
+    });
+}
+
+/// The footer element rendered to a buffer rather than to text, so a test can
+/// assert per-cell styling. Mirrors the pin's `render_footer` helper, renamed
+/// here to avoid reading like the view method of the same name that it calls.
+fn render_footer_buffer(
+    app: &mut App,
+    view: &ViewHandle<super::TuiTerminalSessionView>,
+    width: u16,
+) -> TuiBuffer {
+    app.update(|ctx| {
+        let footer = view.as_ref(ctx).render_footer(ctx).finish();
+        render_element(footer, ctx, width)
+    })
+}
+
+/// Ported from the pin (`42effe840`). The footer's auto-approve entry is a
+/// control, not a status label: it renders whenever the item is enabled and
+/// the session is not in shell mode, and reports its state through colour --
+/// muted while auto-approve is off, `success_glyph_style` while it is on. It
+/// has to stay on the row while off, otherwise there would be nothing to click
+/// to turn auto-approve on.
+#[test]
+fn enabled_auto_approve_indicator_is_always_visible_with_state_aware_color() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            // A fresh session's input defaults to `InputType::Shell`, and
+            // `render_footer` hides the agent-only auto-approve entry in shell
+            // mode. Switch to AI input mode the same way a real conversation
+            // entry would.
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start")
+            });
+        });
+        set_enabled_statusline_items(&mut app, vec![TuiStatuslineItem::AutoApprove]);
+
+        let disabled = render_footer_buffer(&mut app, &view, 80);
+        assert_eq!(disabled.to_lines(), vec!["▶▶".to_owned()]);
+        assert_eq!(
+            disabled[(0, 0)].fg,
+            app.read(|ctx| {
+                TuiUiBuilder::from_app(ctx)
+                    .muted_text_style()
+                    .fg
+                    .expect("muted text style should have a foreground")
+            }),
+            "the control is muted while auto-approve is off"
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection.toggle_pending_query_autoexecute(ctx);
+            });
+        });
+        let enabled = render_footer_buffer(&mut app, &view, 80);
+        assert_eq!(enabled.to_lines(), vec!["▶▶".to_owned()]);
+        assert_eq!(
+            enabled[(0, 0)].fg,
+            app.read(|ctx| {
+                TuiUiBuilder::from_app(ctx)
+                    .success_glyph_style()
+                    .fg
+                    .expect("success glyph style should have a foreground")
+            }),
+            "the control turns success-coloured while auto-approve is on"
+        );
+
+        restore_default_statusline(&mut app);
+    });
+}
+
+/// Ported from the pin (`42effe840`). The footer's auto-approve control and
+/// the warping indicator's auto-approve control can be on screen at the same
+/// time, so each keeps its own retained `MouseStateHandle`: pressing one must
+/// neither arm nor cancel the other. Before the split both read a single
+/// `auto_approve_mouse` field, so an armed click on either control was
+/// observable -- and cancellable -- through the other.
+#[test]
+fn auto_approve_controls_retain_independent_mouse_state() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.read(&app, |view, _| {
+            assert!(
+                !Arc::ptr_eq(
+                    &view.footer_auto_approve_mouse,
+                    &view.warping_auto_approve_mouse,
+                ),
+                "footer and warping controls must not share retained mouse state",
+            );
+        });
+
+        // Unlike the pin's, this fork's `render_warping_indicator` takes the
+        // conversation whose auto-approve feedback window it styles, so a
+        // conversation has to exist before the row can be rendered.
+        let conversation_id = view.update(&mut app, |view, ctx| {
+            view.conversation_selection.update(ctx, |selection, ctx| {
+                selection
+                    .try_start_new_conversation(AgentViewEntryOrigin::Tui, ctx)
+                    .expect("test conversation should start")
+            })
+        });
+
+        // Both controls in one retained tree, which is the situation the split
+        // exists for: the warping row on top, the footer control beneath it.
+        let (mut element, scene, buffer) = view.read(&app, |view, ctx| {
+            let builder = TuiUiBuilder::from_app(ctx);
+            let controls = warpui_core::elements::tui::TuiFlex::column()
+                .child(view.render_warping_indicator(
+                    "Phosphorizing",
+                    Duration::ZERO,
+                    conversation_id,
+                    ctx,
+                ))
+                .child(view.render_auto_approve_statusline(&builder, ctx))
+                .finish();
+            render_retained_element(controls, ctx, 80, 2)
+        });
+        let lines = buffer.to_lines();
+        let footer_row = lines
+            .iter()
+            .position(|line| line.trim_end() == "▶▶")
+            .expect("footer control should render") as u16;
+        let footer_col = first_visible_column(&lines[usize::from(footer_row)]) as u16;
+        let (warping_col, warping_row) = footer_label_position(&buffer, "▶▶ Auto approve off");
+
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &left_mouse_down(footer_col, footer_row),
+        ));
+        view.read(&app, |view, _| {
+            assert!(view.footer_auto_approve_mouse.lock().unwrap().is_clicked());
+            assert!(!view.warping_auto_approve_mouse.lock().unwrap().is_clicked());
+        });
+        assert!(
+            dispatch_session_event(
+                &app,
+                &view,
+                &mut element,
+                scene.clone(),
+                &left_mouse_up(footer_col, footer_row),
+            ),
+            "warping control must not cancel the footer's armed click",
+        );
+        view.read(&app, |view, _| {
+            assert!(!view.footer_auto_approve_mouse.lock().unwrap().is_clicked());
+            assert!(!view.warping_auto_approve_mouse.lock().unwrap().is_clicked());
+        });
+
+        assert!(dispatch_session_event(
+            &app,
+            &view,
+            &mut element,
+            scene.clone(),
+            &left_mouse_down(warping_col, warping_row),
+        ));
+        view.read(&app, |view, _| {
+            assert!(!view.footer_auto_approve_mouse.lock().unwrap().is_clicked());
+            assert!(view.warping_auto_approve_mouse.lock().unwrap().is_clicked());
+        });
+        assert!(
+            dispatch_session_event(
+                &app,
+                &view,
+                &mut element,
+                scene,
+                &left_mouse_up(warping_col, warping_row),
+            ),
+            "footer control must not cancel the warping control's armed click",
+        );
+    });
+}
+
+/// Ported from the pin (`42effe840`). The zero state is drawn above the input,
+/// so anything that appears or disappears *between* them -- the shell-bootstrap
+/// status line -- must not move it. The pin's own
+/// `bootstrap_renders_starting_shell_above_input` above pins the ORDER (status
+/// above input); this pins POSITION STABILITY, which order alone does not imply:
+/// a bootstrap row inserted above the zero state would keep the order and still
+/// shift the title down a row on every shell restart.
+///
+/// One-string adaptation: this fork's zero-state title is "Phosphor Agent"
+/// (`zero_state.rs`), the pin's is "Warp Agent CLI".
+#[test]
+fn zero_state_position_stays_stable_across_shell_bootstrap() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        let ready_lines = render_session(&mut app, &view, 80, 40);
+        assert!(
+            ready_lines
+                .iter()
+                .all(|line| line.trim() != "Starting shell..."),
+            "ready state must not render the bootstrap hint:\n{}",
+            ready_lines.join("\n")
+        );
+
+        view.update(&mut app, |view, _| {
+            view.terminal_model.lock().block_list_mut().reinit_shell();
+        });
+        let bootstrap_lines = render_session(&mut app, &view, 80, 40);
+        assert!(
+            bootstrap_lines
+                .iter()
+                .any(|line| line.trim() == "Starting shell..."),
+            "bootstrap state must render the starting-shell hint:\n{}",
+            bootstrap_lines.join("\n")
+        );
+
+        let title_row = |lines: &[String]| {
+            lines
+                .iter()
+                .position(|line| line.contains("Phosphor Agent"))
+                .unwrap_or_else(|| panic!("zero-state title should render:\n{}", lines.join("\n")))
+        };
+        assert_eq!(
+            title_row(&bootstrap_lines),
+            title_row(&ready_lines),
+            "zero state must not shift when the bootstrap hint disappears\nbootstrap:\n{}\nready:\n{}",
+            bootstrap_lines.join("\n"),
+            ready_lines.join("\n")
+        );
+    });
+}
+
+/// Ported from the pin (`42effe840`). The manual-attach counterpart to
+/// `agent_controlled_alt_screen_keeps_output_and_composer_visible` above: the
+/// agent was tagged into a long-running command the *user* started, and that
+/// command then switched to the alternate screen. The two mechanisms are
+/// separately covered (`manual_attach_and_detach_switch_running_command_input_ownership`
+/// for attach/detach, the agent-controlled test for alt-screen + composer);
+/// only this combination was untested, and it is the one where the composer can
+/// plausibly be lost -- a full-screen app owns the whole pane in the
+/// user-controlled case.
+///
+/// Leaving the tagged composer with ctrl-c must detach, not interrupt: the
+/// alternate-screen program keeps running and never sees the keystroke.
+#[test]
+fn tagged_in_alt_screen_keeps_output_and_composer_visible() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        let interrupt_count = Rc::new(RefCell::new(0));
+        let interrupt_count_for_events = interrupt_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(event, TuiTerminalSessionEvent::InterruptPty) {
+                    *interrupt_count_for_events.borrow_mut() += 1;
+                }
+            });
+        });
+        view.update(&mut app, |view, ctx| {
+            let mut terminal_model = view.terminal_model.lock();
+            terminal_model.simulate_long_running_block("vim", "");
+            terminal_model.set_mode(Mode::SwapScreen {
+                save_cursor_and_clear_screen: true,
+            });
+            for character in "TAGGED ALT SCREEN".chars() {
+                terminal_model.alt_screen_mut().input(character);
+            }
+            drop(terminal_model);
+            view.handle_action(&TuiTerminalSessionAction::AttachAgentToRunningCommand, ctx);
+        });
+
+        assert!(view.read(&app, |view, _| {
+            view.input_target().agent_editor_owns_input()
+        }));
+        let lines = render_session(&mut app, &view, 80, 12);
+        let compact_output = lines
+            .iter()
+            .flat_map(|line| line.chars())
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(
+            compact_output.contains("TAGGEDALTSCREEN"),
+            "tagged-in alternate-screen output should remain visible:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines.iter().any(|line| line.contains('▏')),
+            "tagged-in alternate screen should render the composer:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.trim() == RUNNING_COMMAND_DETACH_HINT),
+            "tagged-in alternate screen should show the detach footer hint:\n{}",
+            lines.join("\n")
+        );
+        view.update(&mut app, |view, ctx| {
+            view.handle_action(&TuiTerminalSessionAction::Interrupt, ctx);
+            assert!(
+                !view.exit_confirmation.is_armed(),
+                "leaving a tagged alternate-screen LRC must not arm TUI exit"
+            );
+            assert!(view.input_target().pty_owns_input());
+            assert!(
+                !view
+                    .terminal_model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .is_agent_tagged_in()
+            );
+        });
+        assert_eq!(
+            *interrupt_count.borrow(),
+            0,
+            "leaving the tagged composer must not send ctrl-c to the alternate-screen command"
+        );
+    });
+}
+
+/// Ported from the pin (`42effe840`). Every surface stacked against the input
+/// -- the statusline below it and the inline menus above it -- is aligned on the
+/// input border's OUTER edge, not on the text inside the border. The one
+/// deliberate exception is the read-only (shortcuts) sheet, whose *background*
+/// starts at the outer edge while its text keeps a one-cell internal padding.
+///
+/// Two adaptations, neither of which changes what is asserted:
+///
+/// * The pin anchors the statusline row on its cloud default's display name,
+///   "auto (cost-efficient)". This fork is BYOP-only, so the active model is
+///   whatever the user configured; read the name from `LLMPreferences` the way
+///   `agent_controlled_alt_screen_keeps_output_and_composer_visible` does. The
+///   statusline's `Model` segment renders only outside shell mode, and a fresh
+///   session defaults to `InputType::Shell`, so switch to AI input first --
+///   exactly what `footer_model_label_is_a_bounded_click_target` does.
+/// * The pin anchors the inline-menu row on the literal "/agent". Locate the
+///   selected row by its selection background at the border column instead, so
+///   the assertion does not depend on which command this fork's mixer ranks
+///   first. That background lookup IS the pin's second assertion, so nothing is
+///   dropped: a selection that starts one cell in fails here as a panic rather
+///   than an `assert_eq`.
+#[test]
+fn input_adjacent_surfaces_follow_figma_outer_edge_alignment() {
+    App::test((), |mut app| async move {
+        app.update(crate::keybindings::init);
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+        view.update(&mut app, |view, ctx| {
+            view.ai_input_model.update(ctx, |input_model, ctx| {
+                input_model.set_input_type(InputType::AI, ctx);
+            });
+        });
+        let model_name = view.read(&app, |view, ctx| {
+            LLMPreferences::as_ref(ctx)
+                .get_active_base_model(ctx, Some(view.terminal_surface_id))
+                .display_name
+                .clone()
+        });
+
+        let lines = render_session(&mut app, &view, 80, 24);
+        let input_border_column = lines
+            .iter()
+            .find(|line| line.contains('▏'))
+            .map(|line| first_visible_column(line))
+            .unwrap_or_else(|| panic!("input border must render:\n{}", lines.join("\n")));
+        let statusline_column = lines
+            .iter()
+            .find(|line| line.contains(&model_name))
+            .map(|line| first_visible_column(line))
+            .unwrap_or_else(|| {
+                panic!(
+                    "statusline must render (model {model_name:?}):\n{}",
+                    lines.join("\n")
+                )
+            });
+        assert_eq!(
+            statusline_column,
+            input_border_column,
+            "statusline must begin at the input border's outer edge:\n{}",
+            lines.join("\n")
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.input_view.update(ctx, |input, ctx| {
+                input.set_text("/", ctx);
+            });
+        });
+        futures_lite::future::yield_now().await;
+        let buffer = render_session_buffer(&mut app, &view, 80, 24);
+        let lines = buffer.to_lines();
+        let selection_background =
+            app.read(|ctx| TuiUiBuilder::from_app(ctx).slash_command_selection_background());
+        let slash_command_column = lines
+            .iter()
+            .enumerate()
+            .find(|(row, _)| {
+                buffer[(input_border_column as u16, *row as u16)].bg == selection_background
+            })
+            .map(|(_, line)| first_visible_column(line))
+            .unwrap_or_else(|| {
+                panic!(
+                    "selected inline-menu background must begin at the input border's outer edge:\n{}",
+                    lines.join("\n")
+                )
+            });
+        assert_eq!(
+            slash_command_column,
+            input_border_column,
+            "inline-menu content must begin at the input border's outer edge:\n{}",
+            lines.join("\n")
+        );
+
+        view.update(&mut app, |view, ctx| {
+            view.suggestions_mode.update(ctx, |mode, ctx| {
+                mode.set_mode(
+                    TuiInputSuggestionsMode::ReadOnlyMenu(TuiReadOnlyMenuKind::Shortcuts),
+                    ctx,
+                );
+            });
+        });
+        let buffer = render_session_buffer(&mut app, &view, 80, 24);
+        let lines = buffer.to_lines();
+        let (shortcuts_row, shortcuts_column) = lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| line.contains("Shortcuts"))
+            .map(|(row, line)| (row, first_visible_column(line)))
+            .unwrap_or_else(|| panic!("shortcuts surface must render:\n{}", lines.join("\n")));
+        assert_eq!(
+            shortcuts_column,
+            input_border_column + 1,
+            "shortcuts text keeps its designed one-cell internal padding:\n{}",
+            lines.join("\n")
+        );
+        assert_eq!(
+            buffer[(input_border_column as u16, shortcuts_row as u16)].bg,
+            app.read(|ctx| TuiUiBuilder::from_app(ctx).read_only_menu_background()),
+            "shortcuts background must begin at the input border's outer edge"
         );
     });
 }

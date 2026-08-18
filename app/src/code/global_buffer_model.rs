@@ -75,7 +75,6 @@ struct PendingEditBatch {
 impl PendingEditBatch {
     /// Flush this batch: send accumulated edits as a single `BufferEdit`
     /// to the remote server and cancel the debounce timer.
-    ///
     /// Returns `Err` if the edit could not be enqueued (the connection is
     /// dead). Zap's `send_buffer_edit` is fallible (unlike Warp's
     /// fire-and-forget variant) precisely so the caller can flag a conflict /
@@ -161,7 +160,6 @@ struct InternalBufferState {
 impl InternalBufferState {
     /// Returns the base content version for local/server-local buffers,
     /// `None` for remote.
-    ///
     /// Remote buffers return `None` because they don't use the file-watcher
     /// auto-reload path. Version tracking for remote buffers is handled by
     /// `SyncClock` instead.
@@ -198,7 +196,6 @@ impl InternalBufferState {
 
     /// Returns the initial content version for local/server-local buffers,
     /// `None` for remote.
-    ///
     /// Remote buffers return `None` because the initial-version guard is only
     /// needed to avoid a spurious LSP `didChange` on first load. Remote
     /// buffers don't interact with the local LSP (it runs on the server side),
@@ -281,7 +278,6 @@ pub enum GlobalBufferModelEvent {
     /// A server-local buffer was updated from a file-watcher event.
     /// Carries the incremental diff edits for the ServerModel to push
     /// to connected clients as `BufferUpdatedPush`.
-    ///
     /// Note: this event is NOT emitted from `apply_client_edit`. See that
     /// method's doc comment for the V0 single-client limitation.
     ServerLocalBufferUpdated {
@@ -308,7 +304,6 @@ impl GlobalBufferModelEvent {
 }
 
 /// A text edit using 1-indexed character offsets (matching `CharOffset`).
-///
 /// Used to carry incremental edits in `ServerLocalBufferUpdated` events
 /// and `handle_buffer_updated_push` without coupling `GlobalBufferModel`
 /// to proto types. Offsets use the same 1-indexed coordinate system as
@@ -320,7 +315,6 @@ pub struct CharOffsetEdit {
 }
 
 /// Global singleton model for managing shared buffers across editors.
-///
 /// This allows multiple editors to share the same buffer when editing the same file,
 /// enabling consistent content synchronization and more efficient memory usage.
 pub struct GlobalBufferModel {
@@ -336,7 +330,6 @@ impl GlobalBufferModel {
         // When an LSP server finishes starting, open every already-loaded buffer
         // under its workspace, so a server that came up after the file did still
         // receives the document.
-        //
         // The registration check is not optional. `LspManagerModel` is registered
         // by `lsp::init` on the client app's `workspace::init` path only; the
         // remote-server daemon registers `GlobalBufferModel` too (see
@@ -362,7 +355,6 @@ impl GlobalBufferModel {
     /// Client-app only: subscribes to `RemoteServerManager`'s buffer push events,
     /// applying `BufferUpdated` pushes from the remote daemon to the local
     /// Remote buffer.
-    ///
     /// Must be called explicitly by the client app when registering
     /// `GlobalBufferModel` — it **cannot** live in `new()`: the remote-server
     /// daemon also registers `GlobalBufferModel` (for server-side sync of
@@ -490,7 +482,6 @@ impl GlobalBufferModel {
     /// Actively closes a buffer: removes it from the client-side map, and for
     /// remote buffers additionally sends `CloseBuffer` so the daemon frees its
     /// in-memory buffer.
-    ///
     /// Doesn't rely on whether the `WeakHandle` has become invalid —
     /// `remove_deallocated_buffers` only cleans up once the handle has been
     /// dropped, but on the tab-close path the buffer usually still has a
@@ -727,8 +718,7 @@ impl GlobalBufferModel {
             // `BufferUpdatedFromFileEvent`/push handler doesn't know the edit list
             // was empty) without the buffer content itself having changed underneath
             // it, producing the same spurious "unsaved changes" mismatch on their
-            // end that the local half of this fix prevents here. NOT COMPILED --
-            // builds are suspended; verified by reading only.
+            // end that the local half of this fix prevents here.
             if !char_offset_edits.is_empty()
                 && let BufferSource::ServerLocal { sync_clock, .. } = &mut state.source
             {
@@ -972,7 +962,6 @@ impl GlobalBufferModel {
 
     /// Remap an existing buffer from `old_file_id` to a new path, preserving the buffer
     /// content and unsaved edits. Re-registers the new path with FileModel.
-    ///
     /// Used for file rename.
     #[cfg(feature = "local_fs")]
     pub fn rename(
@@ -1137,7 +1126,6 @@ impl GlobalBufferModel {
     }
 
     /// Open a buffer at the given location.
-    ///
     /// Dispatches to the appropriate private opener based on the location variant.
     /// If a buffer already exists for this location and is loaded, returns the
     /// existing `BufferState`.
@@ -1154,11 +1142,9 @@ impl GlobalBufferModel {
     }
 
     /// Open a local buffer for the given file path.
-    ///
     /// If a buffer already exists for this path and is loaded, returns the existing BufferState.
     /// If no buffer exists, creates a new Buffer and BufferState using FileModel.
     /// File system updates are automatically subscribed to for all buffers.
-    ///
     /// When `is_server_local` is true, the buffer is created with a `ServerLocal`
     /// source (with a `SyncClock`) instead of a plain `Local` source.
     #[cfg(feature = "local_fs")]
@@ -1327,7 +1313,6 @@ impl GlobalBufferModel {
     }
 
     /// Resolves the language server that owns `path`, if one is running.
-    ///
     /// Returns `None` when `LspManagerModel` was never registered. That is not a
     /// defensive nicety: `GlobalBufferModel` is also registered by the
     /// remote-server daemon and by the model test harnesses, neither of which
@@ -1358,13 +1343,10 @@ impl GlobalBufferModel {
 
     /// Attempts to retrieve specific lines from an in-memory buffer for the given file path.
     /// Returns `Some(Vec<(usize, String)>)` if the file is loaded in a buffer, `None` otherwise.
-    ///
     /// This is a fast, synchronous operation that avoids disk I/O.
-    ///
     /// # Arguments
     /// * `path` - Path to the file
     /// * `line_numbers` - A list of 0-based line numbers to retrieve. Supports non-consecutive lines.
-    ///
     /// # Returns
     /// A vector of (line_number, line_content) tuples for each requested line that exists.
     /// Lines that don't exist in the buffer are omitted from the result.
@@ -1652,10 +1634,8 @@ impl GlobalBufferModel {
     // ── Remote buffer operations (client side) ────────────────────────
 
     /// Open a remote buffer identified by a `RemotePath`.
-    ///
     /// Sends `OpenBuffer` to the remote server, creates a local `Buffer` model,
     /// and sets up bidirectional sync via `BufferEvent` → `BufferEdit`.
-    ///
     /// Returns a `BufferState` immediately (buffer content is populated asynchronously).
     #[cfg_attr(not(feature = "local_tty"), allow(unused_variables, unused_mut))]
     fn open_remote_buffer(
@@ -1875,16 +1855,13 @@ impl GlobalBufferModel {
 
     /// Re-open an existing remote buffer by sending `OpenBuffer` with
     /// `force_reload = true` to the server.
-    ///
     /// The server re-reads the file from disk into the existing buffer and
     /// broadcasts a `BufferUpdatedPush` to the other connections. The requesting
     /// connection receives the fresh content in the `OpenBufferResponse`, which
     /// replaces the local buffer and resets the sync clock -- i.e. this is
     /// "discard my local edits and take the server's copy".
-    ///
     /// On failure, emits `FailedToLoad`; the caller keeps the current buffer
     /// state (and its conflict banner) so the user can retry.
-    ///
     /// `local_tty`-gated for the same reason as `close_buffer`'s remote arm:
     /// `remote_server::manager` is only reachable on platforms that have one.
     #[cfg(feature = "local_tty")]
@@ -2002,7 +1979,6 @@ impl GlobalBufferModel {
     }
 
     /// Handle an incoming `BufferUpdatedPush` from the remote server.
-    ///
     /// Accepts incremental edits (1-indexed char offsets matching `CharOffset`)
     /// and applies them to the local buffer via `insert_at_char_offset_ranges`.
     /// If the expected client version doesn't match, a conflict event is emitted.
@@ -2096,7 +2072,6 @@ impl GlobalBufferModel {
     }
 
     /// Accumulate edits into the pending batch for a remote buffer.
-    ///
     /// Bumps `sync_clock.client_version` immediately so conflict detection
     /// sees the true current C even before the batch is flushed. If no batch
     /// exists yet, creates one capturing the current `server_version` as
@@ -2145,7 +2120,6 @@ impl GlobalBufferModel {
     // ── Server-local buffer operations (daemon side) ────────────────
 
     /// Open a server-local buffer for the given file path on the daemon.
-    ///
     /// Delegates to `open_local` with `is_server_local = true` so the buffer
     /// is created directly with a `ServerLocal` source and `SyncClock`.
     #[cfg(feature = "local_fs")]
@@ -2158,12 +2132,10 @@ impl GlobalBufferModel {
     }
 
     /// Apply a client edit to a server-local buffer.
-    ///
     /// If `expected_server_version` matches the buffer's current server version,
     /// the edits are applied to the in-memory buffer (no disk write) and the
     /// client version is updated. Returns `true` if accepted, `false` if rejected
     /// (stale edit — silently discarded, per `BufferEdit` proto spec).
-    ///
     /// V0 limitation (single-client per buffer):
     /// this intentionally does NOT emit `ServerLocalBufferUpdated`. That event
     /// would broadcast the edit to every other connection that has the buffer
@@ -2173,7 +2145,6 @@ impl GlobalBufferModel {
     /// `client_version` is independent of A's). Until `SyncClock` becomes
     /// per-connection, only one client should hold a writable view of a
     /// given remote buffer at a time.
-    ///
     /// TODO(ssh-remote, multi-client): make `SyncClock.client_version` a
     /// `HashMap<ConnectionId, ContentVersion>` and forward A's edits to
     /// peers with the per-peer expected `client_version`.
@@ -2210,7 +2181,6 @@ impl GlobalBufferModel {
         };
 
         // Wire offsets are 1-indexed (matching CharOffset), so no conversion needed.
-        //
         // Apply each edit sequentially: the offsets are in sequential
         // coordinates (each relative to the buffer *after* all preceding edits
         // in the batch have been applied), so a length-changing edit shifts the
@@ -2248,7 +2218,6 @@ impl GlobalBufferModel {
 
     /// Force-reload a server-local buffer from disk, discarding any in-memory
     /// edits.
-    ///
     /// Reads the file, replaces the buffer content, bumps the server version in
     /// the `SyncClock`, and emits both `BufferLoaded` (so the requesting
     /// connection gets the new content) and `ServerLocalBufferUpdated` (so the
@@ -2465,7 +2434,6 @@ impl GlobalBufferModel {
     }
 
     /// Whether this buffer is a client-side `Remote` buffer (a remote SSH file).
-    ///
     /// Used by the editor on save: remote files can't go through the local
     /// `FileModel` (no local path, would get `NoFilePath`) and must use the
     /// buffer-sync `SaveBuffer` protocol instead.
@@ -2477,7 +2445,6 @@ impl GlobalBufferModel {
     }
 
     /// Client-side: persists the remote buffer's current content to disk on the daemon.
-    ///
     /// The daemon's in-memory buffer has already been kept in sync with user
     /// edits in real time via `BufferEdit` (see the `ContentChanged`
     /// subscription in `open_remote_buffer`), so this only needs to send a

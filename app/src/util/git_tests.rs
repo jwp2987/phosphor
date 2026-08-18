@@ -833,3 +833,40 @@ mod wsl_unc_git {
         assert_eq!(translated.wslenv, "GIT_OPTIONAL_LOCKS/u");
     }
 }
+
+/// [`git_child_env`] is the single place every git subprocess in this module
+/// gets its environment, so these assertions are what keep `GIT_TERMINAL_PROMPT`
+/// from being dropped by a later refactor of the env plumbing.
+///
+/// Without it, a git command that needs credentials blocks on a prompt no
+/// code-review dialog can service, and `GitDialogAction::Cancel` early-returns
+/// while the dialog is loading -- so the dialog becomes an unrecoverable
+/// spinner. That is a user-visible hang, which is why it is pinned by a test
+/// rather than left to the doc comment.
+#[cfg(feature = "local_fs")]
+mod child_env {
+    use super::super::git_child_env;
+
+    #[test]
+    fn disables_index_locks_and_terminal_prompts_by_default() {
+        assert_eq!(
+            git_child_env(None),
+            [("GIT_OPTIONAL_LOCKS", "0"), ("GIT_TERMINAL_PROMPT", "0")]
+        );
+    }
+
+    /// The `PATH` override is additive: supplying one must not displace the
+    /// two defaults, since the LFS `pre-push` hook needs `PATH` *and* the
+    /// prompt suppression applies to the very push that runs that hook.
+    #[test]
+    fn appending_path_keeps_both_defaults() {
+        assert_eq!(
+            git_child_env(Some("/opt/homebrew/bin:/usr/bin")),
+            [
+                ("GIT_OPTIONAL_LOCKS", "0"),
+                ("GIT_TERMINAL_PROMPT", "0"),
+                ("PATH", "/opt/homebrew/bin:/usr/bin"),
+            ]
+        );
+    }
+}

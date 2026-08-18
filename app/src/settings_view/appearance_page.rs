@@ -57,8 +57,9 @@ use crate::window_settings::{
 };
 use crate::workspace::header_toolbar_editor::HeaderToolbarInlineEditor;
 use crate::workspace::tab_settings::{
-    DirectoryTabColor, PreserveActiveTabColor, ShowCodeReviewButton, ShowIndicatorsButton,
-    ShowTitleBarSearchBar, ShowVerticalTabPanelInRestoredWindows, TabCloseButtonPosition,
+    DirectoryTabColor, EnableTabGroups, PreserveActiveTabColor, ShowCodeReviewButton,
+    ShowIndicatorsButton, ShowTitleBarSearchBar, ShowVerticalTabPanelInRestoredWindows,
+    TabCloseButtonPosition,
     TabSettings, TabSettingsChangedEvent, UseLatestUserPromptAsConversationTitleInTabNames,
     UseVerticalTabs, WorkspaceDecorationVisibility,
 };
@@ -478,6 +479,7 @@ pub enum AppearancePageAction {
     ToggleMatchAIToTerminalFontFamily,
     ToggleTabIndicators,
     ToggleShowCodeReviewButton,
+    ToggleEnableTabGroups,
     TogglePreserveActiveTabColor,
     ToggleVerticalTabs,
     ToggleShowVerticalTabPanelInRestoredWindows,
@@ -638,6 +640,7 @@ impl TypedActionView for AppearanceSettingsPageView {
             }
             ToggleTabIndicators => self.toggle_tab_indicators(ctx),
             ToggleShowCodeReviewButton => self.toggle_show_code_review_button(ctx),
+            ToggleEnableTabGroups => self.toggle_enable_tab_groups(ctx),
             TogglePreserveActiveTabColor => self.toggle_preserve_active_tab_color(ctx),
             ToggleVerticalTabs => self.toggle_vertical_tabs(ctx),
             ToggleShowVerticalTabPanelInRestoredWindows => {
@@ -1578,6 +1581,13 @@ impl AppearanceSettingsPageView {
         if FeatureFlag::TabCloseButtonOnLeft.is_enabled() {
             tab_settings_widgets.push(Box::new(TabCloseButtonPositionWidget::default()));
         }
+        // Deliberately gated on the cargo feature, not on
+        // `FeatureFlag::GroupedTabs.is_enabled()`: this toggle drives that flag,
+        // so testing the flag here would make the row vanish the moment it is
+        // switched off, leaving no way to switch it back on.
+        if cfg!(feature = "grouped_tabs") {
+            tab_settings_widgets.push(Box::new(TabGroupsWidget::default()));
+        }
         tab_settings_widgets.push(Box::new(PreserveActiveTabColorWidget::default()));
 
         if FeatureFlag::VerticalTabs.is_enabled() {
@@ -1670,6 +1680,12 @@ impl AppearanceSettingsPageView {
             }
             AppearanceEvent::UiFontFamilyChanged { .. } => {
                 self.update_font_dropdown(ctx);
+            }
+            AppearanceEvent::ThemeChanged => {
+                // Context-chip colors are theme-derived and cached here, so
+                // rebuild the Input preview chips when the theme changes to keep
+                // them in sync.
+                self.context_chips = Self::get_context_chip_renderers(ctx);
             }
             _ => {}
         }
@@ -2845,6 +2861,16 @@ impl AppearanceSettingsPageView {
             report_if_error!(tab_settings
                 .show_code_review_button
                 .set_value(new_value, ctx));
+        });
+    }
+
+    /// Flips `appearance.tabs.enable_tab_groups`. Nothing else to do here: the
+    /// subscription in `settings::init` pushes the new value onto
+    /// `FeatureFlag::GroupedTabs`, which every tab-group code path already
+    /// checks.
+    fn toggle_enable_tab_groups(&mut self, ctx: &mut ViewContext<Self>) {
+        TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+            report_if_error!(settings.enable_tab_groups.toggle_and_save_value(ctx));
         });
     }
 
@@ -5388,6 +5414,51 @@ impl SettingsWidget for CodeReviewButtonWidget {
                 .build()
                 .on_click(move |ctx, _, _| {
                     ctx.dispatch_typed_action(AppearancePageAction::ToggleShowCodeReviewButton);
+                })
+                .finish(),
+            None,
+        )
+    }
+}
+
+#[derive(Default)]
+struct TabGroupsWidget {
+    switch_state: SwitchStateHandle,
+}
+
+impl SettingsWidget for TabGroupsWidget {
+    type View = AppearanceSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "tab groups grouping group tabs collapse"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let tab_settings = TabSettings::as_ref(app);
+
+        render_body_item::<AppearancePageAction>(
+            crate::t!("settings-appearance-tab-enable-tab-groups-label"),
+            None,
+            LocalOnlyIconState::for_setting(
+                EnableTabGroups::storage_key(),
+                EnableTabGroups::sync_to_cloud(),
+                &mut view.local_only_icon_tooltip_states.borrow_mut(),
+                app,
+            ),
+            ToggleState::Enabled,
+            appearance,
+            appearance
+                .ui_builder()
+                .switch(self.switch_state.clone())
+                .check(*tab_settings.enable_tab_groups)
+                .build()
+                .on_click(move |ctx, _, _| {
+                    ctx.dispatch_typed_action(AppearancePageAction::ToggleEnableTabGroups);
                 })
                 .finish(),
             None,

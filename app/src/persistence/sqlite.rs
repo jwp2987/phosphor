@@ -91,7 +91,8 @@ use crate::features::FeatureFlag;
 use crate::notebooks::{NotebookId, NotebookObject};
 use crate::persistence::agent::{backfill_conversation_summaries, read_agent_conversation_metadata};
 use crate::persistence::block_list::{
-    get_all_restored_blocks, process_ai_queries_for_uparrow_prompt, read_recent_ai_queries,
+    get_all_restored_blocks, process_ai_queries_for_nld_history_match,
+    process_ai_queries_for_uparrow_prompt, read_recent_ai_queries,
 };
 use crate::persistence::model::{
     NewGenericStringObject, NewObjectStoreRefresh, NewPersistedObjectAction, NewTeamSettings,
@@ -3824,8 +3825,20 @@ fn read_sqlite_data(
             .map(|refresh| refresh.time_of_next_refresh.and_utc())
             .min();
 
-    // Seed up-arrow prompt history from a single SQLite read of the most recent queries.
+    // Seed up-arrow prompt history and (optionally) NLD prompt-history matching from a single
+    // SQLite read, deriving both from the same in-memory query vector instead of reading twice.
+    // The NLD derivation runs first because it borrows the vector that the up-arrow derivation
+    // then consumes.
+    // TODO: Once up-arrow prompt history supports pagination, drop the 100-row up-arrow cap and
+    // serve both up-arrow and NLD matching from one consolidated query list.
     let recent_ai_queries = read_recent_ai_queries(conn)?;
+    // Gated because the scan is 20x wider than the up-arrow one and nothing reads the result
+    // with the flag off; `NldPromptHistoryMatch` is off by default here and at the pin.
+    let nld_prompts = if FeatureFlag::NldPromptHistoryMatch.is_enabled() {
+        process_ai_queries_for_nld_history_match(&recent_ai_queries)
+    } else {
+        Vec::new()
+    };
     let ai_queries = process_ai_queries_for_uparrow_prompt(recent_ai_queries);
 
     // #431: metadata-only read (no `agent_tasks` blob decoding except for the rare row that
@@ -3855,6 +3868,7 @@ fn read_sqlite_data(
         object_actions,
         experiments: server_experiments,
         ai_queries,
+        nld_prompts,
         codebase_indices,
         workspace_language_servers,
         multi_agent_conversations,

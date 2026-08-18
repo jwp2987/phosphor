@@ -290,6 +290,20 @@ app/src/workspace/view.rs use crate::server::telemetry::{NotificationsTurnedOnSo
 app/src/workspace/view/launch_modal/cta_button.rs use crate::server::telemetry::TelemetryEvent;
 app/src/workspace/view/left_panel.rs use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
 app/src/workspace/view/left_panel.rs use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
+# MAINTAINER SIGN-OFF 2026-08-17. Test-harness mock fixtures only -- their sole
+# uses are app.add_singleton_model(UpdateManager::mock) / (ObjectStoreModel::mock)
+# at llms_tests.rs:203-204, so the app fixture will start. No cloud surface is
+# re-grown. Same two imports are already allowlisted for workspace/view_test.rs
+# immediately below, for the same reason.
+#
+# NOTE, and the reason this was allowlisted rather than 'fixed': the guard matches
+# `use` statements only. app/src/ai/agent_providers/mod_test.rs:48 and
+# app/src/ai/agent_sdk/common_tests.rs:122 register the SAME mock via an inline
+# fully-qualified path and are invisible to it. Rewriting llms_tests.rs that way
+# would go green while making the dependency HARDER to see -- strictly worse.
+# The guard's blind spot is filed separately.
+app/src/ai/llms_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
+app/src/ai/llms_tests.rs use crate::cloud_object::update_manager::UpdateManager;
 app/src/workspace/view_test.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
 app/src/workspace/view_test.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
 app/src/workspace/view_test.rs use crate::cloud_object::update_manager::UpdateManager;

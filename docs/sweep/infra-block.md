@@ -147,7 +147,7 @@ task's constraints forbid filing one. Proposed `DECLINED.md` text below.
 
 | test | verdict | evidence |
 |---|---|---|
-| `process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_oldest_first` | MISSING-SUBSYSTEM (already tracked) | `process_ai_queries_for_nld_history_match` does not exist in `block_list.rs` — only `process_ai_queries_for_uparrow_prompt`. **Already tracked, not a new finding**: `app/src/ai/blocklist/history_model.rs:2240-2244`'s doc comment states the SQLite-backed `nld_prompts` read "is tracked separately (superseded by #336/#337/#331)", and `FeatureFlag::NldPromptHistoryMatch` is off by default (matching the pin), so "in production this currently has no observable effect either way." Not ported — porting the bare function without the `FeatureFlag`-gated `sqlite.rs` read-path wiring would be exactly the "ported but never wired" class `TODO.md` calls out. |
+| `process_ai_queries_for_nld_history_match_filters_empty_and_whitespace_inputs_oldest_first` | PORTED 2026-08-18 -- and the "already tracked / superseded" basis was FALSE, see note below | `process_ai_queries_for_nld_history_match` does not exist in `block_list.rs` — only `process_ai_queries_for_uparrow_prompt`. **Already tracked, not a new finding**: `app/src/ai/blocklist/history_model.rs:2240-2244`'s doc comment states the SQLite-backed `nld_prompts` read "is tracked separately (superseded by #336/#337/#331)", and `FeatureFlag::NldPromptHistoryMatch` is off by default (matching the pin), so "in production this currently has no observable effect either way." Not ported — porting the bare function without the `FeatureFlag`-gated `sqlite.rs` read-path wiring would be exactly the "ported but never wired" class `TODO.md` calls out. |
 
 ### `sqlite_tests.rs`
 
@@ -489,3 +489,12 @@ compliance, not type-correctness or borrow-checking.
    **`crates/remote_server/src/manager_tests.rs`'s port** — lowest risk: both are near-mechanical
    copies against symbols verified present with matching signatures, in files whose
    existing sibling tests use the identical pattern one function away.
+
+
+> **CORRECTION 2026-08-18.** This file recorded the `nld_prompts` SQLite read as *superseded by
+> #336/#337/#331*. That is wrong and it propagated from a misread of `TODO.md:4986`, which says
+> *"superseded by #336/#337/#331; **only item 2 remains**"* — the supersession covers items 1/3/4 of
+> #256, and this read **is** item 2. The three cited issues are `fork_conversation preserve_task_ids`,
+> the persisted-summary column, and the ask-user-question speedbump setting: unrelated, and closed.
+> The same false clause had reached `app/src/lib.rs` and `app/src/ai/blocklist/history_model.rs:2336`.
+> Both source comments and this file are now corrected; the read was ported 2026-08-18.

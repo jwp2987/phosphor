@@ -6,7 +6,7 @@
 // added automated tests (both were verified manually against real Sentry
 // events / local runs per their PR descriptions), so these are fork-original,
 // covering the pure predicates `handle_daemon_connection` gates its log
-// severity on. NOT COMPILED: verified by reading only.
+// severity on.
 
 use super::*;
 use std::io;

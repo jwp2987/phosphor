@@ -219,3 +219,45 @@ pub fn test_backspace_inside_rendered_mermaid_block_is_atomic() -> Builder {
                 .add_assertion(assert_notebook_contents(0, 0, "Before\nAfter")),
         )
 }
+
+pub fn test_backspace_inside_raw_mermaid_block_edits_text_without_removing_block() -> Builder {
+    FeatureFlag::MarkdownMermaid.set_enabled(true);
+    FeatureFlag::EditableMarkdownMermaid.set_enabled(true);
+
+    let markdown = "Before\n```mermaid\ngraph TD\nA --> B\n```\nAfter";
+    let cursor_offset = markdown
+        .find("graph TD")
+        .expect("Mermaid source should exist")
+        + 3;
+
+    new_builder()
+        .with_step(
+            create_a_personal_notebook("the notebook", "Mermaid Notebook")
+                .add_assertion(save_active_window_id("the window")),
+        )
+        .with_step(
+            open_notebook("the window", "the notebook")
+                .add_named_assertion_with_data_from_prior_step(
+                    "Verify notebook is open",
+                    assert_notebook_id(0, 0, "the notebook"),
+                ),
+        )
+        .with_step(
+            // Mermaid blocks default to Raw mode (see
+            // `set_notebook_mermaid_display_rendered`); diagram rendering
+            // requires the user to click the Rendered toggle. This step only
+            // verifies the markdown content was set correctly.
+            enter_notebook_edit_mode_and_set_markdown(0, 0, markdown)
+                .add_assertion(assert_notebook_contents(0, 0, markdown)),
+        )
+        .with_step(move_notebook_cursor_to_offset(0, 0, cursor_offset))
+        .with_step(
+            TestStep::new("Backspace from inside raw Mermaid")
+                .with_keystrokes(&["backspace"])
+                .add_assertion(assert_notebook_contents(
+                    0,
+                    0,
+                    "Before\n```mermaid\ngraph TD\nA -> B\n```\nAfter",
+                )),
+        )
+}

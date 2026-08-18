@@ -314,6 +314,7 @@ fn block_list_for_test(max_block_index: usize) -> BlockList {
                 exit_code: ExitCode::from(0),
                 next_block_id: i.to_string().into(),
             },
+            session_id: None,
         });
         block_list.prompt_only_precmd(Default::default());
     }

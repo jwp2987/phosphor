@@ -12,8 +12,10 @@ use warpui::{
 
 use crate::{
     ai::{
-        agent::conversation::AIConversationId, blocklist::BlocklistAIHistoryModel,
-        llms::LLMPreferences, skills::SkillManager,
+        agent::conversation::AIConversationId,
+        blocklist::{agent_view::AgentViewControllerEvent, BlocklistAIHistoryModel},
+        llms::LLMPreferences,
+        skills::SkillManager,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
@@ -274,7 +276,35 @@ impl PaneContent for TerminalPane {
         agent_view_controller.update(ctx, |controller, _ctx| {
             controller.set_pane_group_id(pane_group_id);
         });
-        let _ = (agent_view_controller, terminal_view_id);
+
+        // Lazy hidden-child-agent restoration. Entering a *fullscreen* agent
+        // view is the moment the orchestration pill bar becomes visible, so it
+        // is also the moment the parent's children need real panes behind
+        // them. Before this subscription existed, child panes were only ever
+        // built by the eager `PaneGroup::create_missing_child_agent_panes`
+        // sweep at construction, which meant a child agent restored from
+        // SQLite had no pane at all until the *next* cold start.
+        // Mirrors the pin's subscription in `TerminalPane::attach`; the
+        // matching `unsubscribe_to_model` is in `detach` below, so a detached
+        // (hidden-for-close) tab does not materialize panes behind the user's
+        // back.
+        ctx.subscribe_to_model(&agent_view_controller, move |group, _, event, ctx| {
+            if let AgentViewControllerEvent::EnteredAgentView {
+                conversation_id,
+                display_mode,
+                ..
+            } = event
+                && display_mode.is_fullscreen()
+            {
+                group.restore_missing_child_agent_panes_for_parent(
+                    *conversation_id,
+                    terminal_pane_id.into(),
+                    ctx,
+                );
+            }
+        });
+
+        let _ = terminal_view_id;
     }
 
     fn detach(
@@ -319,6 +349,19 @@ impl PaneContent for TerminalPane {
         ctx.unsubscribe_to_model(&pane_stack);
 
         ctx.unsubscribe_to_view(&self.view);
+
+        // Drops the `EnteredAgentView` subscription installed by `attach`.
+        // Without this, a detached (hidden-for-close) pane would keep
+        // materializing hidden child panes into a pane group it is no longer
+        // part of; `reattach_panes` reinstalls it and re-runs the restoration
+        // explicitly.
+        ctx.unsubscribe_to_model(
+            &self
+                .terminal_view(ctx)
+                .as_ref(ctx)
+                .agent_view_controller()
+                .clone(),
+        );
 
         #[cfg(feature = "local_fs")]
         {
@@ -951,6 +994,10 @@ fn handle_terminal_view_event(
                 });
             }
             Event::RevealChildAgent { conversation_id } => {
+                // Materialize the child pane first if the parent was restored
+                // from SQLite and its children have not been rebuilt yet --
+                // otherwise the pill is a dead click after every restart.
+                group.ensure_hidden_child_agent_pane_for_conversation(*conversation_id, ctx);
                 if let Some(&child_pane_id) = group.child_agent_panes.get(conversation_id) {
                     group.panes.show_pane_for_child_agent(child_pane_id);
                     group.handle_pane_count_change(ctx);
@@ -972,29 +1019,29 @@ fn handle_terminal_view_event(
                 }
             }
             Event::OpenChildAgentInNewPane { conversation_id } => {
-                // Only reveals an already-materialized hidden pane, same as
-                // `Event::RevealChildAgent` above. Warp's on-demand pane
-                // materialization (`ensure_hidden_child_agent_pane_for_conversation`)
-                // is pill-bar-adjacent `PaneGroup` machinery that doesn't exist in
-                // this fork yet -- see `TerminalAction::OpenChildAgentInNewPane`'s
-                // doc comment and #304's pill-bar Step 2.
+                // Reveals the hidden child pane as a visible sibling rather
+                // than a genuinely new pane (see
+                // `TerminalAction::OpenChildAgentInNewPane`'s doc comment and
+                // #304's pill-bar Step 2), but it now materializes the pane on
+                // demand first, so a child restored from SQLite is reachable
+                // without waiting for the next cold start.
+                group.ensure_hidden_child_agent_pane_for_conversation(*conversation_id, ctx);
                 if let Some(&child_pane_id) = group.child_agent_panes.get(conversation_id) {
                     group.panes.show_pane_for_child_agent(child_pane_id);
                     group.handle_pane_count_change(ctx);
                     group.focus_pane(child_pane_id, true, ctx);
                 } else {
                     log::warn!(
-                        "OpenChildAgentInNewPane: no hidden pane for child conversation \
-                         {conversation_id:?} yet, and this fork cannot materialize one \
-                         on demand (needs #304's pill-bar Step 2)"
+                        "OpenChildAgentInNewPane: could not materialize a hidden pane for \
+                         child conversation {conversation_id:?}"
                     );
                 }
             }
             Event::OpenChildAgentInNewTab { conversation_id } => {
-                // Degraded, same as OpenChildAgentInNewPane above: reveals an
-                // already-materialized hidden pane as a sibling pane rather
-                // than a real new tab. See
+                // Degraded, same as OpenChildAgentInNewPane above: reveals the
+                // hidden pane as a sibling pane rather than a real new tab. See
                 // `TerminalAction::OpenChildAgentInNewTab`'s doc comment.
+                group.ensure_hidden_child_agent_pane_for_conversation(*conversation_id, ctx);
                 if let Some(&child_pane_id) = group.child_agent_panes.get(conversation_id) {
                     group.panes.show_pane_for_child_agent(child_pane_id);
                     group.handle_pane_count_change(ctx);
@@ -1007,7 +1054,17 @@ fn handle_terminal_view_event(
                 }
             }
             Event::SwapPaneToConversation { conversation_id } => {
-                group.swap_active_pane_to_conversation(pane_id, *conversation_id, ctx);
+                // Swap visibility instead of cloning so in-flight state in the
+                // target pane is preserved -- but the target has to exist
+                // first, which after a restart means materializing it.
+                if group.ensure_hidden_child_agent_pane_for_conversation(*conversation_id, ctx) {
+                    group.swap_active_pane_to_conversation(pane_id, *conversation_id, ctx);
+                } else {
+                    log::warn!(
+                        "SwapPaneToConversation: failed to materialize conversation \
+                         {conversation_id:?}"
+                    );
+                }
             }
             Event::StopAgentConversation { conversation_id } => {
                 stop_agent_conversation(group, *conversation_id, ctx);

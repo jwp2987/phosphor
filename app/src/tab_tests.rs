@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
-use super::{next_tab_color, tab_group_menu_entry_flags, SelectedTabColor};
+use super::{next_tab_color, tab_group_menu_entry_flags, SelectedTabColor, TabData};
+use crate::menu::MenuItem;
 use crate::themes::theme::AnsiColorIdentifier;
 use crate::ui_components::color_dot::TAB_COLOR_OPTIONS;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
+use crate::workspace::WorkspaceAction;
 
 /// Build a `tab_groups` map containing exactly the given group ids.
 fn groups(ids: &[TabGroupId]) -> HashMap<TabGroupId, TabGroup> {
@@ -116,5 +118,64 @@ fn next_tab_color_follows_the_canonical_palette_and_clears_after_the_last_color(
     assert_eq!(
         next_tab_color(Some(AnsiColorIdentifier::White)),
         SelectedTabColor::Color(TAB_COLOR_OPTIONS[0])
+    );
+}
+
+// The metadata-copy entries must never offer a copy that would put an empty
+// string on the clipboard: a pane with no resolved branch, pwd or PR reports
+// `None`, and a title that is only whitespace is treated the same way.
+#[test]
+fn copyable_metadata_value_rejects_missing_and_blank_values() {
+    assert_eq!(TabData::copyable_metadata_value(None), None);
+    assert_eq!(TabData::copyable_metadata_value(Some(String::new())), None);
+    assert_eq!(
+        TabData::copyable_metadata_value(Some("   \t \n".to_string())),
+        None,
+        "whitespace-only metadata should be treated as absent"
+    );
+    assert_eq!(
+        TabData::copyable_metadata_value(Some("main".to_string())),
+        Some("main".to_string())
+    );
+    assert_eq!(
+        TabData::copyable_metadata_value(Some("  padded  ".to_string())),
+        Some("  padded  ".to_string()),
+        "a non-blank value is copied verbatim, not trimmed"
+    );
+}
+
+// A metadata entry with nothing to copy is omitted from the menu entirely,
+// rather than rendered as an item that silently does nothing when selected.
+#[test]
+fn push_copy_metadata_menu_item_skips_entries_with_no_value() {
+    let mut menu_items = vec![];
+    TabData::push_copy_metadata_menu_item(&mut menu_items, "Copy branch".to_string(), None);
+
+    assert!(
+        menu_items.is_empty(),
+        "an entry with no value should not be pushed at all"
+    );
+}
+
+#[test]
+fn push_copy_metadata_menu_item_copies_the_value_it_was_given() {
+    let mut menu_items = vec![];
+    TabData::push_copy_metadata_menu_item(
+        &mut menu_items,
+        "Copy working directory".to_string(),
+        Some("/home/user/project".to_string()),
+    );
+
+    assert_eq!(menu_items.len(), 1);
+    let MenuItem::Item(fields) = &menu_items[0] else {
+        panic!("expected a plain menu item");
+    };
+    assert_eq!(fields.label(), "Copy working directory");
+    assert!(
+        matches!(
+            fields.on_select_action(),
+            Some(WorkspaceAction::CopyTextToClipboard(text)) if text.as_str() == "/home/user/project"
+        ),
+        "selecting the entry should copy exactly the value it was built with"
     );
 }

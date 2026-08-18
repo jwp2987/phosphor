@@ -32,6 +32,7 @@ mod privacy;
 mod same_line_prompt_block;
 mod scroll;
 mod select;
+mod settings_file_diagnostics;
 mod ssh;
 mod theme;
 mod tui_autoupdate;
@@ -42,6 +43,10 @@ mod vim_banner;
 #[cfg(test)]
 #[path = "schema_validation_tests.rs"]
 mod schema_validation_tests;
+
+#[cfg(test)]
+#[path = "settings_file_error_tests.rs"]
+mod settings_file_error_tests;
 
 pub use accessibility::*;
 pub use ai::*;
@@ -69,6 +74,7 @@ pub use privacy::*;
 pub use same_line_prompt_block::*;
 pub use scroll::*;
 pub use select::*;
+pub use settings_file_diagnostics::*;
 pub use ssh::*;
 pub use theme::*;
 pub use tui_autoupdate::*;
@@ -85,6 +91,18 @@ pub enum SettingsFileError {
     /// Individual setting values failed to deserialize. Contains the storage
     /// keys of the settings that could not be loaded.
     InvalidSettings(Vec<String>),
+    /// The file parsed and every value it holds was accepted, but it also
+    /// contains keys that match no setting this build knows about. Contains
+    /// the dotted `settings.toml` paths of those keys, as computed by
+    /// [`unknown_settings_file_keys`].
+    ///
+    /// Deliberately *not* folded into [`Self::InvalidSettings`]: that variant
+    /// means "there is such a setting, and the default is being used instead
+    /// of your value". Here there is no such setting at all, nothing fell back
+    /// to a default, and the line simply has no effect. Lowest-priority of the
+    /// three -- a file that failed to parse, or that has values the loader
+    /// rejected, has a more urgent thing to say first.
+    UnknownKeys(Vec<String>),
 }
 
 impl std::fmt::Display for SettingsFileError {
@@ -96,6 +114,14 @@ impl std::fmt::Display for SettingsFileError {
             Self::InvalidSettings(keys) => match keys.as_slice() {
                 [key] => write!(f, "Invalid value for '{key}'"),
                 _ => write!(f, "Invalid values for: {}", keys.join(", ")),
+            },
+            Self::UnknownKeys(keys) => match keys.as_slice() {
+                [key] => write!(f, "'{key}' isn't a setting in this build"),
+                _ => write!(
+                    f,
+                    "These aren't settings in this build: {}",
+                    keys.join(", ")
+                ),
             },
         }
     }
@@ -120,6 +146,25 @@ impl SettingsFileError {
                 _ => (
                     "Your settings file contains errors.".to_owned(),
                     format!("{self}. Default values are being used."),
+                ),
+            },
+            // Never phrased as an invalid *value*: there is no such setting,
+            // so nothing fell back to a default. The only true statement is
+            // that the line is being ignored.
+            Self::UnknownKeys(keys) => match keys.len() {
+                1 => (
+                    "Your settings file has a key this build doesn't recognize.".to_owned(),
+                    format!(
+                        "{self}, so the line is being ignored. It's either a typo, or a setting \
+                         this build doesn't have."
+                    ),
+                ),
+                _ => (
+                    "Your settings file has keys this build doesn't recognize.".to_owned(),
+                    format!(
+                        "{self}, so those lines are being ignored. They're either typos, or \
+                         settings this build doesn't have."
+                    ),
                 ),
             },
         }

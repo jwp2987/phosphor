@@ -169,8 +169,7 @@ fn build_restored_conversation_with_cli_subagent_for_test(
                                 command_id: block_id_string.clone(),
                                 output: "jump output".to_string(),
                                 exit_code: 0,
-                                // The fork's shell-command results carry no timestamps, so the fields
-                                // upstream added stay empty. See #11.
+                                // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                 start_ts: None,
                                 finish_ts: None,
                             },
@@ -294,8 +293,7 @@ fn build_restored_conversation_with_cli_subagent_snapshot_for_test(
                                 command_id: block_id_string.clone(),
                                 output: "short task output".to_string(),
                                 exit_code: 0,
-                                // The fork's shell-command results carry no timestamps, so the fields
-                                // upstream added stay empty. See #11.
+                                // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                 start_ts: None,
                                 finish_ts: None,
                             },
@@ -2411,6 +2409,92 @@ fn test_navigate_blocks() {
 // fn test_navigate_blocks_inverted_blocklist() {
 //     run_navigation_test(InputMode::PinnedToTop);
 // }
+
+/// Regression test for upstream #10095 (`a8df31722`): in shell mode, selecting a block must move
+/// focus to the terminal, otherwise the up/down arrow keys -- which are dispatched from the
+/// terminal context -- stop navigating the block list.
+///
+/// The pre-fix code gated the focus move on `!FeatureFlag::AgentView.is_enabled()`. `agent_view`
+/// is a default cargo feature here, so the guard was always false and block navigation was dead.
+/// The gate is now the `preserve_input_focus_on_block_selection` setting, which defaults to off.
+#[test]
+fn block_selection_focuses_terminal_in_shell_mode() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(ImportedConfigModel::new);
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+        });
+        // The defect only appeared with `AgentView` on, which is the default build.
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+            }
+            view.focus_input_box(ctx);
+        });
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(terminal.id()),
+            "the input box should hold focus before any block is selected"
+        );
+
+        terminal.update(&mut app, |view, ctx| {
+            view.select_most_recent_blocks(1, ctx);
+        });
+        assert_eq!(
+            app.focused_view_id(window_id),
+            Some(terminal.id()),
+            "selecting a block in shell mode must focus the terminal so arrow-key block \
+             navigation keeps working"
+        );
+    });
+}
+
+/// The opposite of [`block_selection_focuses_terminal_in_shell_mode`]: with
+/// `preserve_input_focus_on_block_selection` turned on, the input box keeps focus so a selected
+/// block can be attached as context and a query submitted without a second click.
+#[test]
+fn block_selection_preserves_input_focus_when_setting_is_enabled() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.add_singleton_model(ImportedConfigModel::new);
+        app.update(|ctx| {
+            crate::terminal::init(ctx);
+            crate::editor::init(ctx);
+        });
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let (window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            {
+                let mut model = view.model.lock();
+                model.simulate_block("ls", "foo");
+            }
+            BlockListSettings::handle(ctx).update(ctx, |settings, ctx| {
+                let _ = settings
+                    .preserve_input_focus_on_block_selection
+                    .set_value(true, ctx);
+            });
+            view.focus_input_box(ctx);
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.select_most_recent_blocks(1, ctx);
+        });
+        assert_ne!(
+            app.focused_view_id(window_id),
+            Some(terminal.id()),
+            "with preserve_input_focus_on_block_selection enabled the input box keeps focus"
+        );
+    });
+}
 
 #[test]
 fn test_alt_scroll_sequences() {

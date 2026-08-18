@@ -14,10 +14,19 @@ pub mod editor_state;
 pub(crate) mod find_model;
 pub(crate) mod git_dialog;
 pub mod git_status_update;
-// Per-repo GitHub metadata (`gh pr view` / `gh repo view`). Only the local
-// backend is ported from the pin, and it drives the local `gh` CLI, so the whole
-// module is gated on `local_fs` (the pin gates only its `Local` variant, since it
-// also carries a remote push-receiver variant this fork does not have yet).
+// Remote git-status backend. Talks to the `RemoteServerManager`, like
+// `diff_state_remote` above, but gated on `local_fs` instead of on wasm so the
+// gate matches `GitRepoStatusModel`'s and every `use` site carries one
+// predicate. The two select the same builds: `app/build.rs:245-249` sets
+// `local_fs` for exactly `target_family != "wasm"`.
+#[cfg(feature = "local_fs")]
+pub mod git_status_update_remote;
+// Per-repo GitHub metadata (`gh pr view` / `gh repo view`). Both backends are
+// ported: the local one drives the `gh` CLI here, the remote one receives the
+// daemon's results as pushes. Still gated on `local_fs` as a whole rather than
+// per-variant like the pin, because in this crate `local_fs` is set by
+// `build.rs` for exactly `target_family != "wasm"` (`app/build.rs:245-249`) —
+// the same set the remote backend's `RemoteServerManager` dependency requires.
 #[cfg(feature = "local_fs")]
 pub mod github_repo_model;
 mod hidden_lines;

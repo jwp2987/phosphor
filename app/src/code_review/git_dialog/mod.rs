@@ -167,6 +167,25 @@ fn should_send_git_ops_ai_request(app: &AppContext) -> bool {
 /// Maps a raw git error string to a user-friendly toast message. Known
 /// failure modes get dedicated copy; anything else falls back to a generic
 /// message (the raw error is always logged separately at the call site).
+///
+/// Every mode funnels through here from both of its arms: the local arm passes
+/// the `anyhow` text built by `util::git::run_git_command_with_env`
+/// (`"Git command failed: {stderr}, {stdout}"`), and the remote arm passes
+/// `GitOpError::message`, which the daemon formats from the same error. So any
+/// substring that appears in git's own stderr is matchable from either side.
+///
+/// # Pull's failure modes
+///
+/// Pull is the only verb here that touches the working tree, so it fails in
+/// ways push and `gh pr create` never do. Every arm below is keyed on a string
+/// taken verbatim from real `git pull --ff-only` output (git 2.53), and
+/// `mod_tests.rs` pins that output so a reworded upstream message surfaces as a
+/// failing test rather than as a silent regression to the generic fallback.
+///
+/// The diverged case is the one that matters most: `--ff-only` refusing to
+/// merge *is* the Stage 1 design (see `pull::start_confirm`), so it is the
+/// single most likely pull outcome after "already up to date" — it must not
+/// read "Git operation failed."
 fn user_facing_git_error(raw: &str) -> &'static str {
     let lower = raw.to_lowercase();
     if lower.contains("nothing to commit") {
@@ -180,13 +199,58 @@ fn user_facing_git_error(raw: &str) -> &'static str {
         || lower.contains("fetch first")
     {
         "Remote has new changes \u{2014} pull before pushing."
+    // ── Pull: history relationship ───────────────────────────────
+    //
+    // Git's ff-only refusal reads "Not possible to fast-forward" and the
+    // accompanying advice reads "can't be fast-forwarded". Neither contains
+    // the substring "non-fast-forward", so neither is shadowed by the push
+    // rejection arm directly above — that near-miss is the whole reason this
+    // arm has to exist separately.
+    } else if lower.contains("not possible to fast-forward")
+        || lower.contains("can't be fast-forwarded")
+        || lower.contains("cannot be fast-forwarded")
+    {
+        "Branch has diverged from the remote \u{2014} merge or rebase manually."
+    // ── Pull: working-tree state ─────────────────────────────────
+    //
+    // Tracked and untracked collisions get separate copy because the remedies
+    // differ: commit/stash versus move/remove.
+    } else if lower.contains("local changes to the following files would be overwritten") {
+        "Uncommitted changes would be overwritten. Commit or stash them first."
+    } else if lower.contains("untracked working tree files would be overwritten") {
+        "Untracked files would be overwritten. Move or remove them first."
+    // Stage 1 deliberately ships no conflict-resolution UX, so when the tree is
+    // already conflicted or mid-merge the toast has to name the state the user
+    // must clear before any pull can run.
+    } else if lower.contains("unmerged files") || lower.contains("unresolved conflict") {
+        "Unresolved merge conflicts in the working tree. Resolve them first."
+    } else if lower.contains("not concluded your merge")
+        || lower.contains("merge_head exists")
+        || lower.contains("unfinished merge")
+    {
+        "A merge is already in progress. Finish or abort it first."
+    } else if lower.contains("couldn't find remote ref")
+        || lower.contains("could not find remote ref")
+    {
+        "Branch not found on the remote."
+    // ── Remote / credentials ─────────────────────────────────────
     } else if lower.contains("does not appear to be a git repository")
         || lower.contains("no configured push destination")
         || lower.contains("no such remote")
+        // `run_pull` always names `origin <branch>` explicitly, so this form
+        // only arrives from an out-of-band pull, but the advice is the same.
+        || lower.contains("no tracking information for the current branch")
     {
         "No remote configured for this branch."
     } else if lower.contains("authentication failed")
         || lower.contains("permission denied (publickey)")
+        // `util::git::git_child_env` sets `GIT_TERMINAL_PROMPT=0`, which turns
+        // what would otherwise be a hung credential prompt into these forms.
+        // All three mean "git needed credentials it could not obtain without
+        // a tty".
+        || lower.contains("terminal prompts disabled")
+        || lower.contains("could not read username")
+        || lower.contains("could not read password")
     {
         "Authentication failed. Check your Git credentials."
     } else if lower.contains("could not resolve host")
@@ -929,3 +993,7 @@ impl TypedActionView for GitDialog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;

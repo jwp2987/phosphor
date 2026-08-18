@@ -5,7 +5,8 @@ use warpui::App;
 
 use super::*;
 use crate::terminal::event_listener::ChannelEventListener;
-use crate::terminal::model::session::Sessions;
+use crate::terminal::model::session::{SessionId, Sessions};
+use crate::terminal::shell::Shell;
 
 #[derive(Clone, Default)]
 struct TestEventLoopSender {
@@ -291,6 +292,172 @@ fn write_command_sends_expected_bytes_for_user_source() {
         assert_input_matches(
             &messages[0],
             bytes_to_execute_command("echo foo", shell_type, false),
+        );
+
+        drop(model_events_tx);
+    });
+}
+
+/// A bootstrapped zsh session, registered as the active session so
+/// `PtyController`'s `LineEditorStatus` subscription can resolve
+/// `Shell::input_reporting_sequence()`.
+///
+/// The shell must be overridden: `SessionInfo::new_for_test` builds a bash session with no
+/// version string, and `input_reporting_sequence` returns `None` for bash unless the version
+/// parses at or above `BASH_INPUT_REPORTING_MINIMUM_VERSION`. Zsh returns `ESC i`
+/// unconditionally, which is the byte pair the pin's tests assert on.
+fn zsh_session_info() -> SessionInfo {
+    let mut session_info = SessionInfo::new_for_test();
+    session_info.shell = Shell::new(ShellType::Zsh, None, None, Default::default(), None);
+    session_info
+}
+
+/// When the shell's line editor becomes active, `PtyController` writes the shell's input
+/// reporting sequence (`ESC i` for zsh) -- the binding that makes the shell report its input
+/// buffer back through the `InputBuffer` DCS hook.
+///
+/// This is the current-API analog of the orphaned
+/// `test_pty_controller_writes_input_buffer_sequence_after_block_completed`. That test drove the
+/// same write through `PtyController::set_state_after_block_completed(&BlockType::User(..),
+/// true)`; `set_state_after_block_completed` no longer exists in *either* tree (it is absent
+/// from the pin's `pty_controller.rs` at `42effe840` too -- the pin's
+/// `pty_controller_tests.rs` is an orphan file that no `mod` declaration includes, so it has not
+/// compiled upstream since the rewrite). The surviving mechanism is the `LineEditorStatusEvent::
+/// Active` subscription in `PtyController::new`, which is what this pins.
+///
+/// The assertion is made after draining `pending_writes` by hand, per this file's harness note:
+/// nothing here activates `LineEditorStatus`'s own `is_line_editor_active` flag, so
+/// `execute_next_queued_write` is a no-op and the queued bytes must be sent explicitly.
+#[test]
+fn input_reporting_sequence_is_queued_when_the_line_editor_becomes_active() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        sessions.update(&mut app, |sessions, _| {
+            sessions.register_session_for_test(zsh_session_info())
+        });
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        model_events.update(&mut app, |dispatcher, _| {
+            dispatcher.set_active_session_id(SessionId::from(0))
+        });
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status.clone(),
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        line_editor_status.update(&mut app, |_, ctx| ctx.emit(LineEditorStatusEvent::Active));
+
+        let sent = controller.update(&mut app, |controller, ctx| {
+            assert_eq!(
+                controller.pending_writes.len(),
+                1,
+                "activating the line editor should queue exactly the input reporting sequence."
+            );
+            let write = controller
+                .pending_writes
+                .pop_front()
+                .expect("the input reporting sequence should be queued.");
+            controller.send_write_to_event_loop(write, ctx)
+        });
+
+        assert!(sent);
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 1);
+        assert_input_matches(&messages[0], vec![escape_sequences::C0::ESC, b'i']);
+
+        drop(model_events_tx);
+    });
+}
+
+/// The input reporting sequence goes to the *front* of the queue, so it reaches the shell before
+/// an in-band command that was already waiting -- the shell must have its input-buffer binding
+/// installed before the command that will consume the line editor is written.
+///
+/// This is the current-API analog of the orphaned
+/// `test_pty_controller_writes_in_band_command_after_input_buffer_sequence`, which asserted the
+/// same two-message ordering through the removed
+/// `set_state_after_block_completed` + `write_in_band_command` pair. The ordering is produced
+/// here by the `pending_writes.push_front(..)` in the `LineEditorStatusEvent::Active` handler;
+/// a `push_back` there would leave the two writes in the wrong order and this test is what
+/// catches it.
+#[test]
+fn input_reporting_sequence_is_written_before_an_already_queued_in_band_command() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        sessions.update(&mut app, |sessions, _| {
+            sessions.register_session_for_test(zsh_session_info())
+        });
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        model_events.update(&mut app, |dispatcher, _| {
+            dispatcher.set_active_session_id(SessionId::from(0))
+        });
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events.clone(),
+                line_editor_status.clone(),
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+        let (cancel_tx, cancel_rx) = async_channel::unbounded();
+        let shell_type = ShellType::Zsh;
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.queue_in_band_command(
+                "echo foo",
+                shell_type,
+                "command-id".to_owned(),
+                cancel_tx,
+                ctx,
+            );
+        });
+
+        line_editor_status.update(&mut app, |_, ctx| ctx.emit(LineEditorStatusEvent::Active));
+
+        controller.update(&mut app, |controller, ctx| {
+            assert_eq!(
+                controller.pending_writes.len(),
+                2,
+                "the input reporting sequence should be queued alongside the in-band command."
+            );
+            while let Some(write) = controller.pending_writes.pop_front() {
+                controller.send_write_to_event_loop(write, ctx);
+            }
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(messages.len(), 2);
+        assert_input_matches(&messages[0], vec![escape_sequences::C0::ESC, b'i']);
+        assert_input_matches(
+            &messages[1],
+            bytes_to_execute_command("echo foo", shell_type, false),
+        );
+        assert!(
+            cancel_rx.try_recv().is_err(),
+            "an accepted in-band command must not be cancelled."
         );
 
         drop(model_events_tx);

@@ -86,7 +86,6 @@ use crate::code_review::comments::{CommentId, CommentOrigin, LineDiffContent};
 /// position preservation. Contains an internal anchor that tracks through
 /// buffer edits so the line position remains accurate even after insertions
 /// or deletions elsewhere in the file.
-///
 /// Obtain via [`CodeEditorModel::line_at_vertical_offset`]; resolve back to a
 /// pixel offset via [`CodeEditorModel::line_top`].
 #[derive(Debug, Clone)]
@@ -508,7 +507,7 @@ impl CodeEditorModel {
     /// `code_text`'s tab size below rather than leaving it `None`. In this fork `None`
     /// happens to fall back to the same `DEFAULT_CHAR_CELL_TAB_SIZE` (4), so this was not
     /// a live bug, but an explicit value avoids the two silently diverging if the default
-    /// ever changes. NOT COMPILED -- builds are suspended; verified by reading only.
+    /// ever changes. ; verified by reading only.
     fn tui_stub_text_styles() -> RichTextStyles {
         use warp_editor::render::model::{
             BlockSpacings, BrokenLinkStyle, CheckBoxStyle, HorizontalRuleStyle, InlineCodeStyle,
@@ -1080,7 +1079,6 @@ impl CodeEditorModel {
 
     /// Find the 0-based index of the temporary block containing the given
     /// content-space vertical offset within its diff hunk.
-    ///
     /// Uses the render state's sumtree cursor for an O(log n) seek plus
     /// an O(k) backward walk (k = position within hunk). Called only on
     /// scroll-settle (debounced), not per-frame.
@@ -1096,7 +1094,6 @@ impl CodeEditorModel {
     /// removed) is at that position. Returns the stable line identifier
     /// (including an internal anchor for edit-tracking) and the intra-line
     /// pixel offset from the top of that line.
-    ///
     /// Returns `None` if the offset is beyond the content height or the block
     /// lookup fails.
     pub fn line_at_vertical_offset(
@@ -1165,7 +1162,6 @@ impl CodeEditorModel {
     /// Returns the content-space vertical offset of the top of the given line.
     /// The internal anchor is resolved to obtain the current line position,
     /// so this remains accurate after buffer edits.
-    ///
     /// Returns `None` if the line no longer exists in the render model.
     pub fn line_top(&self, line: &StableEditorLine, ctx: &AppContext) -> Option<Pixels> {
         let selection_model = self.selection_model.as_ref(ctx);
@@ -1219,7 +1215,6 @@ impl CodeEditorModel {
 
                     // If the replacement range spans the entire buffer and the buffer is empty, special
                     // case to ensure we are actually replacing the initial block marker
-                    //
                     // Internally, an empty buffer has an initial plaintext block marker (a buffer with no markers is considered invalid).
                     // If we try to replace range (0..0), we'll end up replacing everything except
                     // the trailing newline produced by this marker, which will cause us to inadvertently keep an extra newline
@@ -1654,7 +1649,6 @@ impl CodeEditorModel {
 
                 // This could be optimized to not rebuild the entire layout and only the part of the hidden ranges that are changed.
                 // It is challenging tho because we will need to somehow expand and calculate style blocks based on past buffer versions.
-                //
                 // Realistically, the impact of rebuilding layout should be minimal given 1) it is only triggered on the first edit within
                 // the hidden range 2) we are not re-rendering hidden sections.
                 if will_rebuild_layout {
@@ -2187,7 +2181,6 @@ impl CodeEditorModel {
     /// The visual-mode range for a single cursor given its stored
     /// `visual_tail` and current selection `head`, before any
     /// `include_newline` adjustment.
-    ///
     /// Shared by [`Self::vim_visual_selection_ranges`] and
     /// [`Self::vim_visual_selection_range`] so the tail/head swap, the
     /// inclusive-end bump, and the linewise expansion live in exactly one
@@ -2261,7 +2254,6 @@ impl CodeEditorModel {
     /// Expand the current selection(s) for a visual-mode operation using stored visual tails.
     /// Charwise visual mode includes the character under the block cursor; linewise visual mode
     /// expands to the full line bounds.
-    ///
     /// This is used by operators to get the actual selection range for visual operations.
     pub fn vim_visual_selection_range(
         &mut self,
@@ -3905,7 +3897,6 @@ impl CodeEditorModel {
                 .unwrap_or(0);
 
             // Check if the range is wrapped in a bracket for enter behavior.
-            //
             // This is relevant in cases like fn {|}, if the cursor is the | and
             // we want to create a higher level of indentation and extra newline
             // when we press enter.

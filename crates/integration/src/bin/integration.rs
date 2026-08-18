@@ -199,6 +199,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_warp_auto_title_disabled);
     register_test!(test_warp_honors_user_title_bash);
     register_test!(test_warp_honors_user_title_zsh);
+    register_test!(test_osc7_updates_current_working_directory);
     register_test!(test_input_focused_after_executing_command);
     register_test!(test_new_session_focuses_input);
     register_test!(test_executable_completions);
@@ -260,8 +261,11 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_color_overrides_in_prompt_dont_crash);
     register_test!(test_copy_prompt_from_block_honor_ps1_disabled);
     register_test!(test_copy_prompt_from_block_honor_ps1_enabled);
+    register_test!(test_copy_block_command_and_output_honor_ps1_disabled);
+    register_test!(test_copy_block_command_and_output_honor_ps1_enabled);
     register_test!(test_copy_prompt_from_input_honor_ps1_disabled);
     register_test!(test_copy_prompt_from_input_honor_ps1_enabled);
+    register_test!(test_warp_prompt_unsets_zsh_rprompt);
     register_test!(test_copy_rprompt_from_input_honor_ps1_enabled);
     register_test!(test_rprompt_doesnt_show_when_not_enough_space);
     register_test!(test_block_cursor_navigation_using_escape_codes);
@@ -270,6 +274,9 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_open_input_context_menu);
     register_test!(test_copy_all_from_input_context_menu);
     register_test!(test_cut_paste_from_input_context_menu);
+    register_test!(test_inline_model_selector_restores_prompt_on_dismissal);
+    register_test!(test_inline_model_selector_restores_prompt_on_model_selection);
+    register_test!(test_inline_model_selector_restores_prompt_on_chip_toggle_close);
     register_test!(test_paste_and_type_characters_before_bootstrap);
     register_test!(test_code_review_scroll_anchor_preserved_when_inserting_above);
     register_test!(test_code_review_scroll_anchor_unchanged_when_inserting_below);
@@ -277,6 +284,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_code_review_scroll_preserved_deleted_range);
     register_test!(test_code_review_scroll_preserved_header_range);
     register_test!(test_code_review_scroll_preserved_footer_range);
+    register_test!(test_code_review_double_click_fully_expands_hidden_section);
     register_test!(test_alt_screen_context_menu_with_sgr_with_mouse_reporting);
     register_test!(test_alt_screen_context_menu_with_sgr_without_mouse_reporting);
     register_test!(test_alt_screen_context_menu_without_sgr_with_mouse_reporting);
@@ -336,6 +344,9 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
 
     register_test!(test_cycle_active_tab_color_with_keybinding);
     register_test!(test_active_session_follows_focus);
+    register_test!(test_tab_context_menu_copies_metadata);
+    register_test!(test_vertical_tab_context_menu_copies_metadata);
+    register_test!(test_vertical_pane_context_menu_copies_metadata);
 
     register_test!(test_focus_panes_on_hover);
 
@@ -344,6 +355,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_detach_tab_to_new_window_with_drag);
     register_test!(test_attach_tab_to_other_window_and_continue_drag);
     register_test!(test_single_tab_handoff_continues_drag);
+    register_test!(test_multi_tab_drag_back_to_source_and_out_again);
 
     register_test!(test_restore_single_closed_pane);
     register_test!(test_restore_multiple_closed_panes);
@@ -356,6 +368,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_open_in_warp_banner);
     register_test!(test_close_notebook_window);
     register_test!(test_backspace_inside_rendered_mermaid_block_is_atomic);
+    register_test!(test_backspace_inside_raw_mermaid_block_edits_text_without_removing_block);
 
     // Workflow tests
     register_test!(test_open_workflow_in_pane);
@@ -404,6 +417,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_selection_ai_to_last_lines);
     register_test!(test_selection_last_to_ai_simple);
     register_test!(test_copy_on_select_within_ai_simple);
+    register_test!(test_copy_selection_within_ai_block);
     register_test!(test_selection_last_to_ai_semantic);
     register_test!(test_selection_last_to_ai_lines);
     register_test!(test_restored_ai_block_renders_mermaid_and_local_images);
@@ -439,6 +453,8 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_goto_line_jumps_to_line);
     register_test!(test_goto_line_with_column);
     register_test!(test_goto_line_clamps_out_of_range);
+    register_test!(test_code_editor_line_numbers_default_to_absolute);
+    register_test!(test_code_editor_relative_line_numbers_follow_cursor);
 
     // AI document tests
     register_test!(test_copy_ai_document_as_markdown_from_overflow_menu);
@@ -456,6 +472,12 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
 
     // Video recording test (manual only)
     register_test!(test_video_recording);
+
+    // Rich Input Ctrl+Enter submit toggle (issue #11588)
+    // Full-stack wiring guard: toggle ON → Enter inserts newline, Ctrl+Enter submits.
+    register_test!(test_rich_input_toggle_on_enter_inserts_newline_and_ctrl_enter_submits);
+    // Regression: Enter must accept inline menus (not insert newline) when toggle=true (PR #11723)
+    register_test!(test_rich_input_enter_accepts_menu_item_when_toggle_is_true);
 
     // Chunk B: GUI usage / acceptance smoke scenarios (`usage_*`).
     register_test!(usage_launch_bootstrap);

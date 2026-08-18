@@ -4,6 +4,8 @@ use crate::ai::agent::{
     TransferShellCommandControlToUserResult,
 };
 use crate::terminal::model::block::BlockId;
+use chrono::DateTime;
+use chrono::Utc;
 use warp_core::command::ExitCode;
 use warp_multi_agent_api as api;
 
@@ -161,6 +163,8 @@ fn transfer_control_snapshot_result_converts_to_tool_call_result_input() {
 #[test]
 fn transfer_control_finished_result_converts_to_tool_call_result_input() {
     let block_id = BlockId::default();
+    let start_ts = DateTime::from(Utc::now());
+    let completed_ts = DateTime::from(Utc::now());
     let input =
         api::request::input::user_inputs::user_input::Input::try_from(AIAgentActionResult {
             id: "tool_call".to_string().into(),
@@ -170,6 +174,8 @@ fn transfer_control_finished_result_converts_to_tool_call_result_input() {
                     block_id: block_id.clone(),
                     output: "done".to_string(),
                     exit_code: ExitCode::from(17),
+                    start_ts: Some(start_ts),
+                    completed_ts: Some(completed_ts),
                 },
             ),
         })
@@ -188,6 +194,14 @@ fn transfer_control_finished_result_converts_to_tool_call_result_input() {
                         assert_eq!(finished.command_id, block_id.to_string());
                         assert_eq!(finished.output, "done");
                         assert_eq!(finished.exit_code, 17);
+                        assert_eq!(
+                            finished.start_ts,
+                            Some(super::local_datetime_to_timestamp(start_ts))
+                        );
+                        assert_eq!(
+                            finished.finish_ts,
+                            Some(super::local_datetime_to_timestamp(completed_ts))
+                        );
                     }
                     other => panic!("Expected command-finished result, got {other:?}"),
                 },

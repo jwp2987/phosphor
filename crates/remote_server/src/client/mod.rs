@@ -15,7 +15,8 @@ use crate::proto::{
     DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
     GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
     GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse,
+    GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush, GitPullRequest,
+    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush,
     Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
     LoadRepoMetadataDirectoryResponse,
     NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
@@ -23,15 +24,18 @@ use crate::proto::{
     RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
     ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
     RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, UpdatePreferences, WriteFile, WriteFileChunk,
+    TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
+    UpdatePreferences, WriteFile, WriteFileChunk,
     WriteFileChunkResponse,
-    discard_files_response, host_scoped_request, notification, read_file_chunk_response,
+    discard_files_response, git_stage_response, host_scoped_request, notification,
+    read_file_chunk_response,
     server_message, session_scoped_request,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
 
 use warp_core::SessionId;
+use warp_util::standardized_path::StandardizedPath;
 use warpui::r#async::TransportStream;
 
 mod remote_server_log;
@@ -146,6 +150,16 @@ pub enum ClientEvent {
     CodebaseIndexStatusUpdated {
         status: crate::codebase_index_proto::RemoteCodebaseIndexStatus,
     },
+    /// The daemon pushed aggregate git status for one of its repos (watcher
+    /// tick, post-navigation snapshot, or an answer to `update_git_status`).
+    /// Carries the raw proto message; the `GitRepoStatusModel` remote backend
+    /// (in `app`) converts it to domain types, exactly as the diff-state
+    /// pushes above do.
+    GitStatusPushReceived { push: GitStatusPush },
+    /// The daemon pushed PR info for one of its repos' current branch.
+    GitHubPrInfoPushReceived { push: GitHubPrInfoPush },
+    /// The daemon pushed repository name/owner info for one of its repos.
+    GitHubRepositoryInfoPushReceived { push: GitHubRepositoryInfoPush },
 }
 /// Client for communicating with a `remote_server` process over the remote server protocol.
 ///
@@ -693,6 +707,30 @@ impl RemoteServerClient {
         }
     }
 
+    /// Stages or un-stages part of the working tree on the remote host —
+    /// whole files (`paths`) or a single hunk (`patch`). Backs
+    /// `RemoteDiffStateModel::stage_changes` over SSH (Zap #329).
+    pub async fn git_stage(&self, request: GitStageRequest) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::GitStage(request),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::GitStageResponse(resp)) => match resp.result {
+                Some(git_stage_response::Result::Success(_)) | None => Ok(()),
+                Some(git_stage_response::Result::Error(e)) => {
+                    Err(ClientError::FileOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for GitStage: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
     /// Zap: lists the immediate children of a directory on the remote host.
     ///
     /// Used by terminal file link detection to precisely validate the shape of
@@ -993,11 +1031,54 @@ impl RemoteServerClient {
                 crate::codebase_index_proto::proto_to_codebase_index_status_updated(&update)
                     .map(|status| ClientEvent::CodebaseIndexStatusUpdated { status })
             }
+            server_message::Message::GitStatusPush(push) => {
+                Some(ClientEvent::GitStatusPushReceived { push })
+            }
+            server_message::Message::GithubPrInfoPush(push) => {
+                Some(ClientEvent::GitHubPrInfoPushReceived { push })
+            }
+            server_message::Message::GithubRepositoryInfoPush(push) => {
+                Some(ClientEvent::GitHubRepositoryInfoPushReceived { push })
+            }
             other => {
                 log::warn!("Unhandled push message variant: {other:?}");
                 None
             }
         }
+    }
+
+    /// Sends an `UpdateGitStatus` notification (fire-and-forget). The daemon
+    /// creates the per-repo git status model if needed and broadcasts the
+    /// current snapshot as a `GitStatusPush`.
+    pub fn update_git_status(&self, repo_path: &StandardizedPath) {
+        let msg =
+            ClientMessage::notification(notification::Message::UpdateGitStatus(UpdateGitStatus {
+                repo_path: repo_path.to_string(),
+            }));
+        self.send_notification(msg);
+    }
+
+    /// Sends an `UpdateGitHubPrInfo` notification (fire-and-forget). The daemon
+    /// refreshes PR info and broadcasts the result as a `GitHubPrInfoPush`.
+    pub fn update_github_pr_info(&self, repo_path: &StandardizedPath) {
+        let msg = ClientMessage::notification(notification::Message::UpdateGithubPrInfo(
+            UpdateGitHubPrInfo {
+                repo_path: repo_path.to_string(),
+            },
+        ));
+        self.send_notification(msg);
+    }
+
+    /// Sends an `UpdateGitHubRepoInfo` notification (fire-and-forget). The
+    /// daemon refreshes repository info and broadcasts the result as a
+    /// `GitHubRepositoryInfoPush`.
+    pub fn update_github_repo_info(&self, repo_path: &StandardizedPath) {
+        let msg = ClientMessage::notification(notification::Message::UpdateGithubRepoInfo(
+            UpdateGitHubRepoInfo {
+                repo_path: repo_path.to_string(),
+            },
+        ));
+        self.send_notification(msg);
     }
 
     /// Sends a `RunCommand` request

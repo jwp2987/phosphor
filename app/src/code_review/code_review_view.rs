@@ -44,10 +44,10 @@ use crate::{
         comments::AttachedReviewCommentTarget,
         context::convert_file_diffs_to_diffset_hunks,
         diff_state::{
-            DiffHunk, DiffLineType, DiffMode, DiffState, DiffStateModel, DiffStateModelEvent,
-            LocalDiffStateModel,
-            DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo, GitDiffWithBaseContent,
-            GitFileStatus, InvalidationBehavior,
+            hunk_to_patch, DiffHunk, DiffLineType, DiffMode, DiffState, DiffStateModel,
+            DiffStateModelEvent, DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo,
+            GitDiffWithBaseContent, GitFileStatus, InvalidationBehavior, LocalDiffStateModel,
+            StageRequest, StageTarget,
         },
         editor_state::CodeReviewEditorState,
         hidden_lines::calculate_hidden_lines,
@@ -323,6 +323,33 @@ enum InitButtons {
     None,
 }
 
+/// Icon and tooltip for a file's stage/unstage toggle, or `None` when the file
+/// has no staging affordance at all (Zap #329).
+///
+/// `None` covers the two cases where [`FileDiff::staged`] is `None` — a
+/// base-branch diff mode, which has no index, and a remote daemon that predates
+/// the wire field — plus the conflicted case, which git refuses to stage until
+/// the conflict is resolved. Offering a button in any of those would produce a
+/// click the backend cannot honour.
+///
+/// A *partially* staged file gets the stage action, not the unstage one:
+/// `git add` on it stages the remainder, which is the overwhelmingly common
+/// intent, whereas the toggle's alternative would throw away the part already
+/// staged.
+fn stage_button_appearance(file_diff: &FileDiff) -> Option<(Icon, String)> {
+    if matches!(file_diff.status, GitFileStatus::Conflicted) {
+        return None;
+    }
+    let staged = file_diff.staged?;
+    Some(if staged.is_fully_staged() {
+        (Icon::Minus, crate::t!("code-review-unstage-file"))
+    } else if staged.is_staged() {
+        (Icon::Plus, crate::t!("code-review-stage-remaining"))
+    } else {
+        (Icon::Plus, crate::t!("code-review-stage-file"))
+    })
+}
+
 pub fn get_discard_button_disabled_tooltip(git_operation_blocked: bool) -> String {
     if git_operation_blocked {
         "Cannot discard changes while a git operation (merge, rebase, etc.) is in progress"
@@ -374,6 +401,11 @@ pub enum CodeReviewAction {
     ShowDiscardConfirmDialog(Option<PathBuf>),
     ConfirmDiscardFile,
     CancelDiscardFile,
+    /// Stage or un-stage a whole file (Zap #329). Carries only the path: the
+    /// direction is read from the file's current staged column at click time,
+    /// so a click that races a background diff reload cannot act on a stale
+    /// decision baked in when the button was built.
+    ToggleFileStaged(PathBuf),
     ToggleStashChanges,
     ToggleFileSelection(PathBuf),
     AddDiffSetAsContext(DiffSetScope),
@@ -405,6 +437,7 @@ pub struct FileState {
     chevron_button: ViewHandle<ActionButton>,
     open_in_tab_button: ViewHandle<ActionButton>,
     discard_button: ViewHandle<ActionButton>,
+    stage_button: ViewHandle<ActionButton>,
     add_context_button: ViewHandle<ActionButton>,
     copy_path_button: ViewHandle<ActionButton>,
 }
@@ -2472,6 +2505,19 @@ impl CodeReviewView {
                                 .unwrap_or(true);
                             if should_apply {
                                 current.file_diff = diff.file_diff;
+                                // The stage toggle's icon and tooltip are
+                                // derived from the staged column, and this
+                                // branch swaps the diff without rebuilding
+                                // the header's buttons — so re-label it here
+                                // or it keeps offering "Stage" on a file that
+                                // is now staged.
+                                let appearance = stage_button_appearance(&current.file_diff);
+                                current.stage_button.update(ctx, |button, ctx| {
+                                    let (icon, tooltip) = appearance
+                                        .unwrap_or((Icon::Plus, String::new()));
+                                    button.set_icon(Some(icon), ctx);
+                                    button.set_tooltip(Some(tooltip), ctx);
+                                });
                             }
                             self.viewported_list_state
                                 .invalidate_height_for_index(index);
@@ -2766,6 +2812,34 @@ impl CodeReviewView {
                 button
             });
 
+            // Built even when the file currently has no staging affordance:
+            // `render_file_header` decides whether to show it, and the
+            // in-place refresh in `update_from_single_file_diff_result`
+            // re-labels it when the staged column moves, so the handle must
+            // already exist.
+            let stage_path = file.file_diff.file_path.clone();
+            let stage_appearance = stage_button_appearance(&file.file_diff);
+            let stage_button = ctx.add_typed_action_view(move |ctx| {
+                let (icon, tooltip) = stage_appearance
+                    .clone()
+                    .unwrap_or((Icon::Plus, String::new()));
+                let mut button = ActionButton::new("", NakedTheme)
+                    .with_icon(icon)
+                    .with_size(ButtonSize::InlineActionHeader)
+                    .with_tooltip(tooltip);
+
+                if git_operation_blocked {
+                    button.set_disabled(true, ctx);
+                } else {
+                    button = button.on_click(move |ctx| {
+                        ctx.dispatch_typed_action(CodeReviewAction::ToggleFileStaged(
+                            stage_path.clone(),
+                        ))
+                    });
+                }
+                button
+            });
+
             let context_path = file.file_diff.file_path.clone();
             let add_context_button = ctx.add_typed_action_view(move |_ctx| {
                 ActionButton::new("", NakedTheme)
@@ -2797,6 +2871,7 @@ impl CodeReviewView {
                 chevron_button,
                 open_in_tab_button,
                 discard_button,
+                stage_button,
                 add_context_button,
                 copy_path_button,
                 sidebar_mouse_state: MouseStateHandle::default(),
@@ -3076,6 +3151,13 @@ impl CodeReviewView {
         } else {
             let self_handle = ctx.handle();
             let full_file_path = repo_path.join(&file.file_diff.file_path);
+            // Zap #329: does this file's hunk gutter offer "stage" or
+            // "unstage"? `None` leaves the button off entirely — see
+            // `CodeEditorView::with_stage_diff_hunk_button`.
+            let stage_hunk_direction = file
+                .file_diff
+                .staged
+                .map(|staged| staged.is_fully_staged());
 
             let local_code_view = ctx.add_typed_action_view(|ctx| {
                 let editor = LocalCodeEditorView::new_with_global_buffer(
@@ -3100,6 +3182,7 @@ impl CodeReviewView {
                             )
                             .with_add_context_button() // Enable add context button for code review
                             .with_revert_diff_hunk_button() // Enable revert diff button for code review
+                            .with_stage_diff_hunk_button(stage_hunk_direction) // Zap #329
                             .with_comment_button() // Enable comment button for code review
                             .with_collapsible_diffs(false) // Disable collapsible diffs
                             .disable_diff_indicator_expansion_on_hover()
@@ -3171,6 +3254,13 @@ impl CodeReviewView {
             None
         } else {
             let self_handle = ctx.handle();
+            // Zap #329: does this file's hunk gutter offer "stage" or
+            // "unstage"? `None` leaves the button off entirely — see
+            // `CodeEditorView::with_stage_diff_hunk_button`.
+            let stage_hunk_direction = file
+                .file_diff
+                .staged
+                .map(|staged| staged.is_fully_staged());
             let code_editor_view = ctx.add_typed_action_view(|ctx| {
                 let mut editor_view = CodeEditorView::new(
                     None,
@@ -3188,6 +3278,7 @@ impl CodeReviewView {
                 )
                 .with_add_context_button() // Enable add context button for code review
                 .with_revert_diff_hunk_button() // Enable revert diff button for code review
+                .with_stage_diff_hunk_button(stage_hunk_direction) // Zap #329
                 .with_comment_button() // Enable comment button for code review
                 .with_collapsible_diffs(false) // Disable collapsible diffs
                 .disable_diff_indicator_expansion_on_hover()
@@ -5137,6 +5228,23 @@ impl CodeReviewView {
             );
         }
 
+        // Only when this backend actually reports a staged column for the
+        // file — see `stage_button_appearance` for the cases that don't.
+        if FeatureFlag::StageChanges.is_enabled()
+            && stage_button_appearance(&file.file_diff).is_some()
+        {
+            right_row.add_child(
+                EventHandler::new(
+                    Container::new(ChildView::new(&file.stage_button).finish())
+                        .with_margin_left(4.)
+                        .finish(),
+                )
+                .on_left_mouse_up(|_, _, _| DispatchEventResult::StopPropagation)
+                .on_left_mouse_down(|_, _, _| DispatchEventResult::StopPropagation)
+                .finish(),
+            );
+        }
+
         right_row.add_child(
             EventHandler::new(
                 Container::new(ChildView::new(&file.open_in_tab_button).finish())
@@ -5682,6 +5790,122 @@ impl CodeReviewView {
         FileStatusInfo { path, status }
     }
 
+    /// Stages, or un-stages, a whole file (Zap #329).
+    ///
+    /// The direction is read here rather than baked into the button, so a
+    /// click that lands after a background diff reload acts on the state the
+    /// user is actually looking at. A file with no staged column (base-branch
+    /// mode, or a pre-#329 daemon) and a conflicted file both no-op: neither
+    /// renders the button in the first place, and re-checking here keeps a
+    /// keyboard or test-driven dispatch from reaching a git command that
+    /// would fail.
+    fn toggle_file_staged(&mut self, path: &Path, ctx: &mut ViewContext<Self>) {
+        let CodeReviewViewState::Loaded(state) = self.state() else {
+            return;
+        };
+        let Some(file_state) = state.file_states.get(path) else {
+            return;
+        };
+        if stage_button_appearance(&file_state.file_diff).is_none() {
+            return;
+        }
+        // `is_none` above already rejected the `None` case.
+        let Some(staged) = file_state.file_diff.staged else {
+            return;
+        };
+        // Diff paths come straight out of `git status`, so they are already
+        // repo-relative — which is what the daemon requires (it rejects
+        // absolute paths) and what `git add --` expects locally.
+        let Some(relative) = path.to_str().map(str::to_owned) else {
+            log::warn!("Cannot stage a path that is not valid UTF-8: {path:?}");
+            return;
+        };
+        let mut paths = vec![relative];
+        // A rename is two index entries, and the view only knows the file by
+        // its new path. Staging just that one leaves the deletion of the old
+        // path unstaged, at which point git stops seeing a rename at all and
+        // the old path reappears in the diff as a separate deleted file.
+        // `Copied` is deliberately not included: its source still exists and
+        // is unchanged, so it has nothing to stage.
+        if let GitFileStatus::Renamed { old_path } = &file_state.file_diff.status {
+            paths.push(old_path.clone());
+        }
+
+        let request = StageRequest {
+            target: StageTarget::Paths(paths),
+            unstage: staged.is_fully_staged(),
+        };
+        self.diff_state_model.update(ctx, |model, ctx| {
+            model.stage_changes(request, ctx);
+        });
+    }
+
+    /// Stages, or un-stages, the single diff hunk covering `line_range`
+    /// (Zap #329).
+    ///
+    /// Direction uses the *file's* staged column, the same predicate as
+    /// [`Self::toggle_file_staged`], because nothing in the rendered diff
+    /// distinguishes a staged hunk from an unstaged one: the code-review view
+    /// shows `git diff HEAD`, which merges both sides of the index. So a fully
+    /// staged file's hunks un-stage and every other file's hunks stage. On a
+    /// *partially* staged file that guesses "stage", and re-staging an
+    /// already-staged hunk is rejected by `git apply` on its context check
+    /// rather than corrupting the index — the failure is logged by the model
+    /// layer. Reporting per-hunk index state honestly would need a second
+    /// `git diff --cached` parse per file, which is a separate change.
+    fn toggle_hunk_staged(
+        &mut self,
+        path: &Path,
+        line_range: &Range<LineCount>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let CodeReviewViewState::Loaded(state) = self.state() else {
+            return;
+        };
+        let Some(file_state) = state.file_states.get(path) else {
+            return;
+        };
+        let Some(staged) = file_state.file_diff.staged else {
+            return;
+        };
+        let Some(hunk) = Self::hunk_covering_line_range(&file_state.file_diff, line_range) else {
+            return;
+        };
+
+        let request = StageRequest {
+            target: StageTarget::Hunk(hunk_to_patch(path, &hunk)),
+            unstage: staged.is_fully_staged(),
+        };
+        self.diff_state_model.update(ctx, |model, ctx| {
+            model.stage_changes(request, ctx);
+        });
+    }
+
+    /// The whole hunk overlapping `line_range`, for reconstructing a patch.
+    ///
+    /// Distinct from [`Self::extract_diff_hunk_data`], which returns the hunk
+    /// *filtered* to the requested lines: that is right for quoting a
+    /// selection as agent context and wrong for `git apply`, which needs every
+    /// line the `@@` header counts or it rejects the patch.
+    fn hunk_covering_line_range(
+        file_diff: &FileDiff,
+        line_range: &Range<LineCount>,
+    ) -> Option<DiffHunk> {
+        // Editor lines are 0-indexed; hunk line numbers are git's 1-indexed.
+        let requested_start = line_range.start.as_usize() + 1;
+        let requested_end = line_range.end.as_usize() + 1;
+
+        file_diff
+            .hunks
+            .iter()
+            .find(|hunk| {
+                let hunk_start = hunk.new_start_line;
+                let hunk_end = hunk_start + hunk.lines.len();
+                requested_start <= hunk_end && requested_end >= hunk_start
+            })
+            .cloned()
+    }
+
     fn discard_file(&mut self, path: &Path, should_stash: bool, ctx: &mut ViewContext<Self>) {
         let file_info = self.create_file_status_info(path.to_path_buf());
 
@@ -5736,6 +5960,12 @@ impl CodeReviewView {
         match event {
             CodeEditorEvent::DiffHunkContextAdded { line_range } => {
                 self.insert_diff_hunk_as_context(file_path, line_range.clone(), ctx);
+            }
+            CodeEditorEvent::DiffHunkStageRequested { line_range } => {
+                // The editor already gates this on `FeatureFlag::StageChanges`
+                // before emitting; re-checking here would only diverge.
+                let line_range = line_range.clone();
+                self.toggle_hunk_staged(&file_path, &line_range, ctx);
             }
             CodeEditorEvent::DiffReverted => {
                 // Show toast notification that diff was removed.
@@ -7489,6 +7719,12 @@ impl TypedActionView for CodeReviewView {
                 self.discard_dialog_state.file_checkbox_mouse_states.clear();
                 self.discard_dialog_state.stash_changes_enabled = false;
                 ctx.notify();
+            }
+            CodeReviewAction::ToggleFileStaged(path) => {
+                if FeatureFlag::StageChanges.is_enabled() {
+                    let path = path.clone();
+                    self.toggle_file_staged(&path, ctx);
+                }
             }
             CodeReviewAction::CancelDiscardFile => {
                 self.discard_dialog_state.show_discard_confirm_dialog = false;

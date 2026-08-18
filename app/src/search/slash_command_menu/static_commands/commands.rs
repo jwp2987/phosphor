@@ -205,6 +205,28 @@ pub static OPEN_CODE_REVIEW: LazyLock<StaticCommand> = LazyLock::new(|| StaticCo
     argument: None,
 });
 
+/// `/index`: builds (or refreshes) the local embedding index for the current repository.
+///
+/// Ported from the pin (`42effe840:.../static_commands/commands.rs:406`) with the pin's
+/// gate unchanged: `REPOSITORY | CODEBASE_CONTEXT | AI_ENABLED`. Indexing here is
+/// entirely local — `ai::index::full_source_code_embedding::CodebaseIndexManager` writes
+/// to the local index store and embeds through the user's own configured provider — so
+/// this is not one of the cloud-coupled commands the fork drops.
+///
+/// GUI-only, matching the pin's `SlashCommandSurfaces::GuiOnly`: the fork expresses
+/// surfaces by name, and `/index` is absent from both [`super::StaticCommand::supports_tui`]
+/// and [`super::StaticCommand::is_tui_only`], which is exactly "GUI only".
+pub static INDEX: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
+    name: "/index",
+    description: t_static!("slash-cmd-index-desc"),
+    icon_path: "bundled/svg/find-all.svg",
+    availability: Availability::REPOSITORY
+        .union(Availability::CODEBASE_CONTEXT)
+        .union(Availability::AI_ENABLED),
+    auto_enter_ai_mode: false,
+    argument: None,
+});
+
 pub const INIT_NAME: &str = "/init";
 
 pub static INIT: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
@@ -707,6 +729,18 @@ fn all_commands() -> Vec<StaticCommand> {
 
     commands.push(OPEN_CODE_REVIEW.clone());
 
+    // The pin registers `/index` unconditionally and re-checks
+    // `FeatureFlag::FullSourceCodeEmbedding` in the handler. The check is kept (see the
+    // `/index` arm in `terminal::input::slash_commands`), but the registration is gated on
+    // the same flag as well, because without it `CodebaseIndexManager::index_directory`
+    // returns `false` for every path and the row would be a menu entry that cannot do
+    // anything — the same reason `codebase_indexing_settings_supported` hides the settings
+    // controls. `local_fs` for the same reason: there is nothing to index without a
+    // filesystem.
+    if FeatureFlag::FullSourceCodeEmbedding.is_enabled() && cfg!(feature = "local_fs") {
+        commands.push(INDEX.clone());
+    }
+
     if FeatureFlag::CreateProjectFlow.is_enabled() {
         commands.push(CREATE_NEW_PROJECT.clone());
     }
@@ -1010,6 +1044,35 @@ mod tests {
             // no conversation open, and their handlers say so in words.
             assert_eq!(registered.availability, Availability::AI_ENABLED);
         }
+    }
+
+    /// Fork-authored (AGENTS §5.10). The pin has no registry test for `/index` -- it
+    /// registers the command unconditionally, so there is nothing surface-specific to
+    /// assert. Here registration is gated (see the comment on the push in `all_commands`),
+    /// which is exactly the kind of divergence that needs pinning down: the gate must match
+    /// the one the `/index` handler re-checks, or the row appears and then refuses.
+    #[test]
+    fn index_command_is_registered_with_the_pin_gate() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        // The pin's gate, unchanged (`42effe840:.../commands.rs:413-415`).
+        assert_eq!(
+            INDEX.availability,
+            Availability::REPOSITORY | Availability::CODEBASE_CONTEXT | Availability::AI_ENABLED
+        );
+        assert_eq!(INDEX.kind(), SlashCommandKind::Index);
+        // The pin's `SlashCommandSurfaces::GuiOnly`, expressed the way this fork expresses
+        // surfaces.
+        assert!(INDEX.supports_gui());
+        assert!(!INDEX.supports_tui());
+        assert!(INDEX.argument.is_none());
+        assert!(!INDEX.auto_enter_ai_mode);
+
+        assert_eq!(
+            COMMAND_REGISTRY.get_command_with_name(INDEX.name).is_some(),
+            FeatureFlag::FullSourceCodeEmbedding.is_enabled() && cfg!(feature = "local_fs"),
+            "/index registration must track the same gate its handler re-checks"
+        );
     }
 
     /// Ported from the pinned oracle's `commands_tests.rs::view_logs_command_is_registered_only_for_tui_mode`

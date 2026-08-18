@@ -8,6 +8,7 @@ use crate::code::editor::{
     element::{
         AddAsContextButton, CommentButton, EditorWrapper, EditorWrapperStateHandle,
         GutterHoverTarget, GutterRange, InnerEditor, LineNumberConfig, RevertHunkButton,
+        StageHunkButton,
     },
     find::view::{CodeEditorFind as Find, Event as FindViewEvent},
     goto_line::view::{Event as GoToLineEvent, GoToLineView},
@@ -123,6 +124,13 @@ pub enum CodeEditorEvent {
     },
     /// Emitted when a diff hunk is reverted
     DiffReverted,
+    /// Emitted when the stage icon is clicked on a diff hunk (Zap #329). The
+    /// editor does not touch the index itself — it has no repo path and no git
+    /// backend — so the owning code-review view resolves the range to a hunk
+    /// and drives the staging model.
+    DiffHunkStageRequested {
+        line_range: Range<LineCount>,
+    },
     HiddenSectionExpanded,
     /// Emitted when a comment is saved. This gets propagated up so that it
     /// can be augmented with the file and repo paths and saved to the comment model.
@@ -179,6 +187,8 @@ struct CodeEditorViewDisplayOptions {
     diff_hunk_as_context: Option<AddAsContextButton>,
     /// The revert diff button, or `None` if it is not currently visible.
     revert_diff_hunk: Option<RevertHunkButton>,
+    /// The stage-hunk button, or `None` if it is not currently visible.
+    stage_diff_hunk: Option<StageHunkButton>,
     /// The add comment button, or `None` if it is not currently visible.
     comment_button: Option<CommentButton>,
     /// Whether to expand the width of the diff indicator in the gutter on hover.
@@ -395,6 +405,7 @@ impl CodeEditorView {
                 show_nav_bar: true,
                 diff_hunk_as_context: Default::default(),
                 revert_diff_hunk: Default::default(),
+                stage_diff_hunk: Default::default(),
                 comment_button: Default::default(),
                 // By default expand diff indicators on hover.
                 expand_diff_indicator_width_on_hover: true,
@@ -466,6 +477,27 @@ impl CodeEditorView {
     pub fn with_revert_diff_hunk_button(mut self) -> Self {
         self.display_options.revert_diff_hunk =
             Some(RevertHunkButton::new(true /* is_enabled */));
+        self
+    }
+
+    /// Enables the "stage hunk" button on diff hunks (Zap #329). Only enable
+    /// this for code review views.
+    ///
+    /// `staged` is the *enclosing file's* index state, which decides whether
+    /// the button reads "stage" or "unstage" — see [`StageHunkButton`] for why
+    /// the hunk's own state is not available here. `None` means the file has no
+    /// index state to speak of (a base-branch diff, or a remote daemon that
+    /// does not report one) and leaves the button off entirely, since there is
+    /// no operation to offer.
+    ///
+    /// The direction is fixed for the editor's lifetime. Every staging action
+    /// reloads the whole diff and rebuilds these editors, so the only way to
+    /// see a stale direction is an out-of-band `git add` in a terminal, which
+    /// reaches the view through the single-file watcher path that swaps the
+    /// diff without rebuilding editors.
+    pub fn with_stage_diff_hunk_button(mut self, staged: Option<bool>) -> Self {
+        self.display_options.stage_diff_hunk = staged
+            .map(|is_staged| StageHunkButton::new(true /* is_enabled */).with_staged(is_staged));
         self
     }
 
@@ -618,6 +650,9 @@ impl CodeEditorView {
             self.model.as_ref(ctx).diff_navigation_state().clone(),
             None,
             Default::default(),
+            Default::default(),
+            // stage_hunk_button: a lens is a read-only excerpt with no gutter
+            // buttons at all, matching the three neighbouring defaults.
             Default::default(),
             Default::default(),
             vec![],
@@ -898,6 +933,36 @@ impl CodeEditorView {
             model.set_visible_line_range(lines_to_unhide, ctx);
         });
         ctx.emit(CodeEditorEvent::HiddenSectionExpanded);
+    }
+
+    /// The number of collapsed hidden sections currently in this editor. Fully
+    /// expanding a section removes its range (count drops by one); a chunked
+    /// reveal only shrinks a range (count unchanged).
+    #[cfg(feature = "integration_tests")]
+    pub fn hidden_section_count_for_test(&self, ctx: &AppContext) -> usize {
+        self.model.as_ref(ctx).hidden_ranges(ctx).iter().count()
+    }
+
+    /// Fully expand the first hidden section the same way a bar double-click
+    /// does: resolve the section's full line range from its offset and expand
+    /// with [`ExpansionType::Both`]. Returns whether a section was expanded.
+    #[cfg(feature = "integration_tests")]
+    pub fn fully_expand_first_hidden_section_for_test(
+        &mut self,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
+        let Some(line_range) = self
+            .model
+            .as_ref(ctx)
+            .render_state()
+            .as_ref(ctx)
+            .content()
+            .first_hidden_section_line_range()
+        else {
+            return false;
+        };
+        self.expand_hidden_section(line_range, &ExpansionType::Both, ctx);
+        true
     }
 
     pub(crate) fn with_can_show_diff_ui(mut self, can_show_diff_ui: bool) -> Self {
@@ -2231,6 +2296,7 @@ impl View for CodeEditorView {
             },
             self.display_options.diff_hunk_as_context,
             self.display_options.revert_diff_hunk,
+            self.display_options.stage_diff_hunk,
             self.display_options.comment_button,
             self.comment_locations.clone(),
             self.display_options.expand_diff_indicator_width_on_hover,
@@ -2432,6 +2498,22 @@ impl CodeEditorView {
             input: input.to_string(),
         };
         self.handle_goto_line_event(&event, ctx);
+    }
+
+    /// The line number the gutter renders for `one_based_line_number`, i.e. the
+    /// absolute number in [`CodeEditorLineNumberMode::Absolute`] and the
+    /// distance from the cursor line in
+    /// [`CodeEditorLineNumberMode::Relative`]. `None` when this editor does not
+    /// show line numbers at all.
+    pub fn displayed_line_number_for_test(
+        &self,
+        one_based_line_number: usize,
+        ctx: &AppContext,
+    ) -> Option<usize> {
+        let line_number_config = self.line_number_config(ctx)?;
+        let line_count = LineCount::from(one_based_line_number.checked_sub(1)?);
+
+        Some(line_number_config.display_line_number(line_count))
     }
 }
 

@@ -7,7 +7,7 @@
 //! Design points:
 //! - Three tiers of [`ProxyMode`]: `System` / `Custom` / `Off`.
 //! - `System` falls back to reqwest's default behavior; the workspace's reqwest
-//!   already enables the `system-proxy` + `macos-system-configuration` features,
+//!   builds with default features, which include system proxy detection,
 //!   so macOS reads SystemConfiguration, Windows reads WinINET, and Linux reads
 //!   `HTTP_PROXY` and other environment variables — no need to implement this
 //!   ourselves.

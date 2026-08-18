@@ -3178,75 +3178,6 @@ impl BlockList {
         );
     }
 
-    /// Creates a restored command block with the given command, output, and exit code.
-    /// This is used for creating command blocks from restored AI conversation data.
-    /// The block is created hidden by default and can be toggled visible by the RequestedCommandView.
-    pub fn create_restored_command_block(
-        &mut self,
-        command: &str,
-        output: &str,
-        current_working_directory: Option<String>,
-        exit_code: i32,
-        action_id: Option<AIAgentActionId>,
-        conversation_id: Option<AIConversationId>,
-    ) {
-        let did_active_block_receive_precmd_already = self.active_block().has_received_precmd();
-        let prompt_metadata = PromptMetadata {
-            pwd: current_working_directory,
-            ..Default::default()
-        };
-
-        let block_id = BlockId::new();
-        self.create_new_block(
-            block_id,
-            // Hardcode to PostBootstrapPrecmd so they show up even in the conversation transcript view
-            // when bootstrapping is skipped because there's no shell.
-            BootstrapStage::PostBootstrapPrecmd,
-            Some(prompt_metadata),
-            None, // restored_block_was_local
-        );
-
-        // Set up the block with command and output
-        let mut processor = Processor::new();
-
-        // Start the block and add the command
-        self.active_block_mut().start();
-        self.active_block_mut().disable_reset_grid_checks();
-        processor.parse_bytes(self, command.as_bytes(), &mut io::sink());
-
-        // Simulate preexec to transition to Executing state
-        self.preexec(PreexecValue {
-            command: command.to_string(),
-        });
-
-        // Add the command output
-        processor.parse_bytes(self, output.as_bytes(), &mut io::sink());
-
-        // Finish the block (should transition from Executing to DoneWithExecution)
-        self.active_block_mut().finish(exit_code);
-        self.update_active_block_height();
-
-        // Set AI metadata if provided
-        if let (Some(action_id), Some(conversation_id)) = (action_id, conversation_id) {
-            self.active_block_mut()
-                .set_agent_interaction_mode_for_requested_command(action_id, None, conversation_id);
-        }
-
-        // Create a new active block for the next operations
-        let new_active_block_id = BlockId::new();
-        self.create_new_block(
-            new_active_block_id,
-            self.bootstrap_stage,
-            // If the active block (prior to the insertion of the restore block) had received
-            // precmd, ensure the next active block receives the same precmd payload (as if it had
-            // received the most recent precmd hook).
-            did_active_block_receive_precmd_already
-                .then(|| self.last_populated_precmd_payload.clone())
-                .flatten(),
-            None,
-        );
-    }
-
     /// Splice a background block into the blocklist. This is called once the
     /// block has meaningful output.
     pub(super) fn insert_background_block(&mut self, block: Block) {
@@ -3501,7 +3432,7 @@ impl BlockList {
 
         if block.did_execute {
             let command = self.active_block_mut().command_to_string();
-            self.preexec(PreexecValue { command });
+            self.preexec(PreexecValue { command, session_id: None });
         }
 
         if block.did_execute || block.is_background {

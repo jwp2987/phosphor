@@ -483,6 +483,13 @@ pub(crate) async fn read_bundled_skills(skills_dir: &Path) -> HashMap<String, Pa
     skills
 }
 
+/// Renders an optional path for skill variable substitution: an unavailable
+/// path becomes the empty string rather than leaving the `{{variable}}` in the
+/// rendered skill text. Ported verbatim from the pin's `bundled.rs`.
+fn display_optional_path(path: Option<PathBuf>) -> String {
+    path.unwrap_or_default().display().to_string()
+}
+
 /// Builds the context map for bundled skill variable substitution.
 ///
 /// Supported variables:
@@ -521,14 +528,10 @@ pub(crate) fn build_bundled_skill_context() -> HashMap<String, String> {
         // the skill instructs the agent to stop when the path is missing.
         (
             "warpctrl_wrapper_path".to_owned(),
-            warp_core::paths::bundled_resources_dir()
-                .map(|dir| {
-                    dir.join("bin")
-                        .join(ChannelState::channel().warpctrl_command_name())
-                })
-                .unwrap_or_default()
-                .display()
-                .to_string(),
+            display_optional_path(warp_core::paths::bundled_resources_dir().map(|dir| {
+                dir.join("bin")
+                    .join(ChannelState::channel().warpctrl_command_name())
+            })),
         ),
         (
             "warp_url_scheme".to_owned(),

@@ -1,0 +1,360 @@
+#!/usr/bin/env bash
+# Fail when a change removes a lot of code without saying anywhere that it
+# meant to.
+#
+# WHY THIS EXISTS
+# ---------------
+# On 2026-08-10 four deliberate removals of LOCAL subsystems surfaced in one
+# day -- client-side computer-use dispatch (`9765692e1`), the InitProject
+# wizard (`b0b1faef9`), the whole LSP stack (`efcaa42b8`), and
+# PersistedWorkspace + codebase indexing (`d84dd8e4d`). Every one was found by
+# an agent doing unrelated work. Every one was recorded in NEITHER DECLINED.md
+# NOR TODO.md. Two of them had to be restored; a third is still an open
+# maintainer question. See TODO.md's "Four deliberate removals" section.
+#
+# The parity audit could not have caught them: it keys on pin tests, and a
+# removed local subsystem carries few or none. The compiler could not catch
+# them either -- a removal that compiles is, to the compiler, correct. Nothing
+# in this project forced a removal to be WRITTEN DOWN, so the fork spent months
+# re-deriving gaps it had created on purpose and then forgotten.
+#
+# This is the only guard in script/ that prevents future debt rather than
+# measuring past debt. It deliberately catches none of the four above -- they
+# predate it. It exists so there is never a fifth.
+#
+# HOW IT WORKS
+# ------------
+# Diffs the change under review against its base and asks two questions. Either
+# one firing is enough:
+#
+#   T1  deletion-dominant change: at least LINES_REMOVED_LIMIT lines removed
+#       across the guarded paths, AND at least twice as many lines removed as
+#       added. Rename detection (-M) is on, so moving a file is not a deletion.
+#
+#   T2  bulk whole-file removal: at least WHOLE_FILE_LINES_LIMIT lines removed
+#       by files deleted OUTRIGHT, regardless of what the change adds
+#       elsewhere. T2 exists because T1 alone is defeated by bundling: see the
+#       measurement below.
+#
+# Paths matched by script/large_deletion_allowlist.txt are excluded BEFORE
+# either question is asked -- lockfiles, prose, agent scratch, build output --
+# so they can never be part of why a trigger fired.
+#
+# If a trigger fires the change must EXPLAIN itself. Either of these clears it:
+#
+#   * the change description (commit messages in BASE..HEAD, plus $PR_TITLE and
+#     $PR_BODY when CI supplies them) mentions `DECLINED.md`; or
+#   * that description carries a `Large-deletion:` trailer line with a
+#     non-empty reason -- an issue number, a DECLINED.md row, a sentence.
+#
+# The bar is ONE LINE, on purpose. This guard does not adjudicate whether a
+# removal is right -- it cannot, and pretending to would make it an obstacle
+# people route around. It only forces the removal to become a visible,
+# reviewable claim instead of a silent diff nobody read to the bottom of.
+#
+# THRESHOLDS, AND THE MEASUREMENT THAT SET THEM (2026-08-17)
+# ----------------------------------------------------------
+# Measured over all 2,295 non-merge commits in this repository's history
+# (2026-04-28 .. 2026-08-17), counting only the guarded paths.
+#
+# Removed lines per commit are extremely skewed: p50=5, p75=32, p90=153,
+# p95=420, p98=1797, max=27,380. So any round number under ~500 sits inside
+# ordinary churn.
+#
+#   LINES_REMOVED_LIMIT=750 is the largest round value that still catches the
+#   smallest of the four removals this guard exists for: `9765692e1` is
+#   +25/-936. 750 leaves ~20% headroom under it, and only 75 of the 2,295
+#   commits (3.3%) remove that much at all -- i.e. it sits at about p96.7.
+#
+#   WHOLE_FILE_LINES_LIMIT=1500 is set against `44f71a6cc` ("update website"),
+#   the one commit in this history that removes 27 files / 2,988 lines outright
+#   while adding 12,776 elsewhere -- the bundling shape T1 structurally cannot
+#   see. One observed instance is a sample of one, so pinning the limit just
+#   under 2,988 would be overfitting; 1,500 is roughly half, and costs exactly
+#   TWO extra firings across the whole history versus 2,000 (both of them
+#   genuine cloud-sweep removals). Whole-file deletion is rare enough to carry
+#   a low limit: only 113 of the 2,295 commits (4.9%) delete any guarded file
+#   at all, and 33 exceed 1,500 such lines.
+#
+# Combined firing rate on real history:
+#
+#   * all 2,295 commits ................ 57 fire (2.5%)
+#   * 2026-06 onward (1,600 commits) ...  7 fire (0.44%)
+#   * 2026-08 alone (1,256 commits) ....  3 fire (0.24%)
+#
+# Reading the 57: the overwhelming majority are literally titled as removals
+# ("Remove codebase indexing runtime", "Retire shared session cloud protocol",
+# "remove the fork-original SSH Manager feature"). They are the de-clouding
+# sweep -- exactly the class this guard wants stated out loud. In the whole
+# post-sweep era (2026-06 onward) SEVEN commits fire and every one of the seven
+# is a deliberate subsystem removal by its own subject line. That is a 0.44%
+# firing rate with, as far as this measurement can tell, no false positives.
+#
+# All four of the 2026-08-10 removals fire. Three fire on both triggers;
+# `9765692e1` (+25/-936, only 208 lines in outright-deleted files) fires on T1
+# alone, which is what fixes LINES_REMOVED_LIMIT at 750 rather than higher.
+#
+# WHAT WAS TRIED AND REJECTED WHILE BUILDING THIS
+# -----------------------------------------------
+# A guard that cries wolf on legitimate refactors is disabled within a week, so
+# three simpler designs were measured first and all three were thrown out:
+#
+#   1. Raw removed-lines alone, no add/remove ratio. Fires on every large
+#      rewrite -- 197 commits (8.6%) clear 200 removed lines, 98 clear 500 --
+#      most of which add as much as they remove. Rejected: that is the
+#      cry-wolf shape.
+#
+#   2. NET lines (removed minus added) alone. Cleaner on refactors, but
+#      `44f71a6cc` is net +9,709: it deletes 27 files and adds a great deal
+#      more elsewhere in the same commit, so net says the change GREW. A
+#      net-only guard is blind to exactly the removal that is hardest to see in
+#      review -- one buried in a big feature diff. Rejected, and T2 exists
+#      because of it.
+#
+#   3. Accepting a bare `#123` anywhere in the description as the citation
+#      (which is how the TODO.md entry that asked for this guard first framed
+#      it). GitHub's squash-merge subject line ends in `(#49)` on every single
+#      merged PR in this repo, so a bare issue reference would auto-clear every
+#      change and the guard would be decorative from day one. Hence the
+#      explicit `Large-deletion:` trailer: an issue number counts, but only
+#      where someone typed it on purpose.
+#
+# A fourth was rejected on principle rather than measurement: keying the
+# exemption on "is this path cloud?" the way script/check_cloud_boundary does.
+# The four removals this guard exists for were all LOCAL subsystems, and three
+# of the four were initially mis-framed as cloud. A cloud-shaped exemption
+# would have cleared them.
+#
+# WHY IT CANNOT SILENTLY DISARM
+# -----------------------------
+# Without a base commit there is nothing to diff, and the honest answer is
+# "cannot check". Locally that exits 0 with a diagnostic, so a shallow clone or
+# a detached worktree does not block anyone. In CI that reads identically to
+# "nothing to do", which is precisely how the pr-check oracle fetch stayed
+# broken for weeks while reporting green -- so CI passes --require-base, which
+# turns an unresolvable base into a hard failure.
+#
+# USAGE
+#     script/check_large_deletions                  # vs merge-base with origin/main, incl. worktree
+#     script/check_large_deletions BASE             # vs BASE, incl. worktree
+#     script/check_large_deletions BASE HEAD        # a committed range (used to audit history)
+#     script/check_large_deletions --require-base   # unresolvable base is an error, not a skip
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# --- thresholds. See "THRESHOLDS, AND THE MEASUREMENT THAT SET THEM" above.
+# Deliberately not environment-overridable: an env knob on a guard is a disarm
+# switch, and this one already has a documented, reviewable escape hatch.
+LINES_REMOVED_LIMIT=750
+WHOLE_FILE_LINES_LIMIT=1500
+
+ALLOWLIST_FILE="script/large_deletion_allowlist.txt"
+
+require_base=0
+args=()
+for a in "$@"; do
+    case "$a" in
+    --require-base) require_base=1 ;;
+    -h | --help)
+        sed -n '2,150p' "$0" | sed 's/^# \{0,1\}//;s/^#$//'
+        exit 0
+        ;;
+    -*)
+        echo "check_large_deletions: unknown option $a" >&2
+        exit 2
+        ;;
+    *) args+=("$a") ;;
+    esac
+done
+
+base="${args[0]:-${PHOSPHOR_DELETION_BASE:-}}"
+head_rev="${args[1]:-}"
+
+if [[ -z "$base" ]]; then
+    if git rev-parse --verify --quiet origin/main >/dev/null; then
+        base="$(git merge-base HEAD origin/main 2>/dev/null)" || base=""
+    fi
+fi
+
+if [[ -z "$base" ]] || ! git rev-parse --verify --quiet "${base}^{commit}" >/dev/null; then
+    if [[ "$require_base" -eq 1 ]]; then
+        echo "error: no usable base commit to diff against (looked at argv, \$PHOSPHOR_DELETION_BASE, merge-base with origin/main)" >&2
+        echo "       --require-base was passed, so this is a failure rather than a skip." >&2
+        exit 2
+    fi
+    echo "large deletions: SKIPPED -- no base commit to diff against (pass one as \$1)"
+    exit 0
+fi
+base="$(git rev-parse "$base")"
+
+# --- allowlist. One bash glob per line; `#` comments and blanks ignored.
+# Matching is `[[ path == pattern ]]`, where `*` DOES cross `/` -- so `docs/*`
+# covers `docs/a/b.md`. A trailing `/` means "this directory and everything
+# under it".
+allow_patterns=()
+if [[ -f "$ALLOWLIST_FILE" ]]; then
+    while IFS= read -r line; do
+        line="${line%%$'\r'}"
+        [[ -z "${line// /}" || "$line" == \#* ]] && continue
+        allow_patterns+=("$line")
+    done < "$ALLOWLIST_FILE"
+fi
+
+is_allowed() {
+    local path="$1" pat
+    for pat in "${allow_patterns[@]:-}"; do
+        [[ -z "$pat" ]] && continue
+        if [[ "$pat" == */ ]]; then
+            [[ "$path" == "$pat"* ]] && return 0
+        else
+            # shellcheck disable=SC2053  # glob match is the point
+            [[ "$path" == $pat ]] && return 0
+        fi
+    done
+    return 1
+}
+
+# --- collect the numbers.
+#
+# `-z` rather than plain `--numstat` is not cosmetic, and getting this wrong
+# already cost one round of this script. git quotes paths containing spaces or
+# non-ASCII, and this repo has both (a commit history written in Chinese, and
+# `docs/OpenWarp Plan <CJK>.md`). A whitespace-split parser reads
+# `"docs/OpenWarp` as the path, so the `docs/` allowlist entry silently stops
+# matching. The threshold measurement was FIRST RUN with such a parser and it
+# produced two wrong conclusions that went straight into the header above:
+# `93e738bb9` scored as a 4,445-line source deletion when it deletes one
+# markdown file, and `b0b1faef9` scored as +4,716/-2,794 -- "a subsystem
+# removal bundled with a bigger feature" -- when it is really +271/-2,794 and
+# 4,445 of those adds were the same class of CJK-named markdown. The real
+# bundling case is `44f71a6cc`, and T2's threshold had to be re-derived.
+added=0
+removed=0
+whole_removed=0
+whole_files=0
+deleted_paths=()
+skipped_paths=0
+
+scan() {
+    local filter="$1" a d p rec
+    while IFS= read -r -d '' rec; do
+        a="${rec%%$'\t'*}"
+        rec="${rec#*$'\t'}"
+        d="${rec%%$'\t'*}"
+        p="${rec#*$'\t'}"
+        if [[ -z "$p" ]]; then
+            # Rename/copy: the two NUL-terminated paths follow. -M means this
+            # is a move, not a deletion, so it must not count either way.
+            IFS= read -r -d '' _old || true
+            IFS= read -r -d '' p || true
+        fi
+        [[ "$a" == "-" || "$d" == "-" ]] && continue # binary
+        if is_allowed "$p"; then
+            # Counted on the "all" pass only -- the D pass revisits the same
+            # paths and would double-count them in the summary line.
+            [[ "$filter" != "D" ]] && skipped_paths=$((skipped_paths + 1))
+            continue
+        fi
+        if [[ "$filter" == "D" ]]; then
+            whole_removed=$((whole_removed + d))
+            whole_files=$((whole_files + 1))
+            deleted_paths+=("$p")
+        else
+            added=$((added + a))
+            removed=$((removed + d))
+        fi
+    done
+}
+
+if [[ -n "$head_rev" ]]; then
+    range=("$base" "$head_rev")
+else
+    range=("$base")
+fi
+
+scan all < <(git diff -z --numstat -M "${range[@]}" -- 2>/dev/null)
+scan D < <(git diff -z --numstat -M --diff-filter=D "${range[@]}" -- 2>/dev/null)
+
+t1=0
+t2=0
+[[ "$removed" -ge "$LINES_REMOVED_LIMIT" && $((added * 2)) -lt "$removed" ]] && t1=1
+[[ "$whole_removed" -ge "$WHOLE_FILE_LINES_LIMIT" ]] && t2=1
+
+summary="$(printf '+%d/-%d lines, %d file(s) deleted outright (-%d lines), %d path(s) allowlisted' \
+    "$added" "$removed" "$whole_files" "$whole_removed" "$skipped_paths")"
+
+if [[ "$t1" -eq 0 && "$t2" -eq 0 ]]; then
+    echo "large deletions: ok (${summary}; base ${base:0:9})"
+    exit 0
+fi
+
+# --- a trigger fired. Look for the explanation.
+description="$(git log --format='%B' "${base}..${head_rev:-HEAD}" 2>/dev/null || true)"
+description+=$'\n'"${PR_TITLE:-}"$'\n'"${PR_BODY:-}"
+
+cites_declined=0
+has_trailer=0
+grep -qF 'DECLINED.md' <<< "$description" && cites_declined=1
+grep -qE '^[[:space:]]*Large-deletion:[[:space:]]*[^[:space:]]' <<< "$description" && has_trailer=1
+
+# There is deliberately NO third "the allowlist covers it" branch here. The
+# allowlist works by exclusion at scan time, so an allowlisted path never
+# reaches a counter and can never be part of the reason a trigger fired. An
+# earlier draft carried an `all_deletions_allowlisted` clause as well; it was
+# unreachable-by-construction dead logic that only made the guard look more
+# forgiving than it is. If a firing here is genuinely structural, the fix is to
+# add the path to the allowlist, not to add another way past this check.
+if [[ "$cites_declined" -eq 1 || "$has_trailer" -eq 1 ]]; then
+    why="cites DECLINED.md"
+    [[ "$has_trailer" -eq 1 ]] && why="has a Large-deletion: trailer"
+    echo "large deletions: ok -- explained (${why}) (${summary}; base ${base:0:9})"
+    exit 0
+fi
+
+{
+    echo "error: this change removes a lot of code and does not say why."
+    echo
+    printf '  base ............... %s\n' "${base:0:9}"
+    printf '  lines +/- .......... +%d / -%d\n' "$added" "$removed"
+    printf '  deleted outright ... %d file(s), -%d lines\n' "$whole_files" "$whole_removed"
+    [[ "$t1" -eq 1 ]] && printf '  TRIGGER T1 ......... >= %d lines removed and >2x more removed than added\n' "$LINES_REMOVED_LIMIT"
+    [[ "$t2" -eq 1 ]] && printf '  TRIGGER T2 ......... >= %d lines removed by outright file deletion\n' "$WHOLE_FILE_LINES_LIMIT"
+    if [[ "${#deleted_paths[@]}" -gt 0 ]]; then
+        echo
+        echo "  files deleted outright:"
+        printf '    %s\n' "${deleted_paths[@]}" | sort | head -40
+        [[ "${#deleted_paths[@]}" -gt 40 ]] && printf '    ... and %d more\n' $(("${#deleted_paths[@]}" - 40))
+    fi
+    cat <<'EOF'
+
+Four removals of local subsystems landed in this fork with no record anywhere,
+were found months later by accident, and two had to be restored (TODO.md,
+"Four deliberate removals"). This guard exists so there is never a fifth. It is
+not asking you to justify the removal to a script -- it is asking you to write
+the removal down where a reviewer will see it.
+
+Clear it with ANY ONE of:
+
+  1. Say what decision this implements, by naming DECLINED.md in the commit
+     message or PR body -- and add the row if it is genuinely a new decision.
+
+  2. Add a trailer line to the commit message or PR body:
+
+         Large-deletion: removes the X subsystem, refs #1234
+
+     An issue number, a DECLINED.md row, or a plain sentence all count. It has
+     to be typed on purpose: a bare `(#49)` in a squash subject does not.
+
+  3. If the deletion is structural (vendored code, generated output, lockfiles,
+     scratch), add the path to script/large_deletion_allowlist.txt WITH A
+     COMMENT saying why. That file may shrink freely; growing it is a claim
+     that the path is not fork behaviour, and needs the same scrutiny as any
+     other boundary change (AGENTS.md 5.10).
+
+Do NOT clear this by splitting the removal across several commits so each one
+lands under the limit. That defeats the guard and is worse than the original
+gap, because the diff then looks routine.
+EOF
+} >&2
+exit 1

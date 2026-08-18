@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use crate::{
-    elements::ChildView, AppContext, Element, Entity, EntityId, TypedActionView, View, ViewContext,
-    ViewHandle, WindowId,
+    elements::ChildView, AppContext, Element, Entity, EntityId, EntityIdMap, TypedActionView, View,
+    ViewContext, ViewHandle, WindowId,
 };
 
 use super::view_tree_debug_view::ViewTreeDebugView;
@@ -19,7 +17,7 @@ impl TypedActionView for DebugRootView {
 impl DebugRootView {
     pub fn new(
         target_window_id: WindowId,
-        view_parent_map: HashMap<EntityId, EntityId>,
+        view_parent_map: EntityIdMap<EntityId>,
         root_view_id: EntityId,
         ctx: &mut ViewContext<Self>,
     ) -> Self {

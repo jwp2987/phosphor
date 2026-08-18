@@ -166,6 +166,32 @@ impl SettingsManager {
             .map(|(key, _)| key.as_str())
     }
 
+    /// Returns the full dotted `toml_path` of every public setting — that is,
+    /// the complete set of key paths that may legitimately appear in
+    /// `settings.toml`.
+    ///
+    /// `SettingsInfo` stores each path already split into `hierarchy` (every
+    /// segment but the last) and `toml_key` (the last one), because that is the
+    /// shape the preferences backend reads with. Callers that reason about the
+    /// *file* rather than about one setting need the path whole — the
+    /// unknown-key diagnostic, which has to decide whether a key someone typed
+    /// corresponds to any setting at all, is the motivating one.
+    ///
+    /// Note what this can and cannot see: registration is unconditional (the
+    /// `feature_flag:` argument to `define_setting!` only affects the generated
+    /// JSON schema, not `register_setting`), so a flag being off never removes a
+    /// path from this set. `#[cfg]`-gated settings groups DO — a Linux-only
+    /// group is not compiled into a macOS build, so its keys are unknown there.
+    pub fn public_settings_file_paths(&self) -> impl Iterator<Item = String> + '_ {
+        self.settings
+            .iter()
+            .filter(|(_, info)| !info.is_private)
+            .map(|(_, info)| match info.hierarchy {
+                Some(hierarchy) => format!("{hierarchy}.{}", info.toml_key),
+                None => info.toml_key.to_owned(),
+            })
+    }
+
     /// Returns whether the setting with the given storage key should be synced even if the
     /// user has disabled syncing.
     pub fn sync_regardless_of_users_syncing_setting(&self, storage_key: &str) -> bool {

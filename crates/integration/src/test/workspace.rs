@@ -1,18 +1,24 @@
 //! Integration tests for workspace-level behavior.
 
 use std::fs;
+use std::time::Duration;
 
 use pathfinder_geometry::{
     rect::RectF,
     vector::{vec2f, Vector2F},
 };
 use settings::Setting as _;
+use warp::features::FeatureFlag;
+use warp::integration_testing::clipboard::assert_clipboard_contains_string;
+use warp::integration_testing::terminal::util::current_shell_starter_and_version;
 use warp::integration_testing::terminal::{
     assert_command_executed_for_single_terminal_in_tab, assert_focused_editor_in_tab,
     assert_input_editor_contents, assert_long_running_block_executing_for_single_terminal_in_tab,
 };
 use warp::search::command_palette::mixer::CommandPaletteItemAction;
+use warp::terminal::shell::ShellType;
 use warp::themes::theme::AnsiColorIdentifier;
+use warp::workspace::tab_settings::{TabSettings, VerticalTabsDisplayGranularity};
 use warp::workspace::WorkspaceAction;
 use warp::integration_testing::command_palette::assert_command_palette_is_closed;
 use warp::integration_testing::view_getters::{command_palette_view, terminal_view, workspace_view};
@@ -39,10 +45,10 @@ use warp::{
 use warpui::{
     async_assert, async_assert_eq,
     event::{Event, ModifiersState},
-    integration::{AssertionCallback, AssertionOutcome, TestStep},
+    integration::{AssertionCallback, AssertionOutcome, StepDataMap, TestStep},
     keymap::DescriptionContext,
     windowing::WindowManager,
-    EntityId, SingletonEntity, WindowId,
+    EntityId, SingletonEntity, TypedActionView, WindowId,
 };
 
 use crate::{util::skip_if_powershell_core_2303, Builder};
@@ -52,6 +58,12 @@ use super::new_builder;
 const SOURCE_WINDOW_KEY: &str = "source window";
 const TARGET_WINDOW_KEY: &str = "target window";
 const DETACHED_WINDOW_KEY: &str = "detached window";
+const METADATA_TAB_TITLE: &str = "Integration Metadata Tab";
+const METADATA_BRANCH: &str = "main";
+const METADATA_CLICKED_PANE_TITLE: &str = "Integration Metadata Clicked Pane";
+const METADATA_PANE_TITLE: &str = "Integration Metadata Pane";
+const METADATA_PANE_BRANCH: &str = "pane-branch";
+const METADATA_PANE_DIRECTORY: &str = "active-pane";
 const CYCLE_TAB_COLOR_BINDING: &str = "workspace:cycle_active_tab_color";
 const CYCLE_TAB_COLOR_LABEL: &str = "Cycle current tab color";
 const CYCLE_TAB_COLOR_DISPLAY_LABEL: &str = "Cycle Current Tab Color";
@@ -797,6 +809,219 @@ pub fn test_attach_tab_to_other_window_and_continue_drag() -> Builder {
         .with_step(focus_saved_window(SOURCE_WINDOW_KEY).add_assertion(assert_tab_count(1)))
 }
 
+/// Regression test for a cross-window tab drag that re-enters the source
+/// window's own tab bar (a "put-back") and then drags back out again, all
+/// within one continuous gesture.
+///
+/// The put-back must not break the gesture. If it performs a live view-tree
+/// transfer back into the source, then leaving the source again reverses it via
+/// `reverse_handoff`, which cancels the drag's shared `DraggableState` —
+/// orphaning the gesture so no further drag events are processed (no preview
+/// follows the cursor and no window is brought to the foreground). The drop
+/// would then never transfer the tab, leaving the preview window stranded as a
+/// third window.
+///
+/// The source-reorder state is now encoded the way the pin encodes it: an
+/// `ActiveDrag::reordering_in_source` flag that keeps the drag in
+/// `DragPhase::Floating`, with `DragResult::ReorderInSource` telling the
+/// calling workspace to reorder its existing detached placeholder in place
+/// (see `app/src/workspace/cross_window_tab_drag.rs`). A put-back no longer
+/// reaches `DragPhase::InsertedInTarget`; that phase is now only the transient
+/// state between `perform_handoff` and `finalize` for a genuine cross-window
+/// drop. The assertions below are still written against observable end state
+/// — how many windows are open and how many tabs each holds — rather than
+/// against that internal encoding, so they hold whichever representation the
+/// model uses: the gesture survives the oscillation and the final drop on the
+/// target window transfers the tab (two windows, not a stranded third).
+pub fn test_multi_tab_drag_back_to_source_and_out_again() -> Builder {
+    new_builder()
+        .set_should_run_test(drag_tabs_feature_enabled)
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(
+            execute_command_for_single_terminal_in_tab(
+                0,
+                "echo source-zero".to_string(),
+                ExpectedExitStatus::Success,
+                (),
+            )
+            .add_assertion(save_active_window_id(SOURCE_WINDOW_KEY)),
+        )
+        .with_step(
+            new_step_with_default_assertions("Open a new tab")
+                .with_keystrokes(&[cmd_or_ctrl_shift("t")]),
+        )
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(1))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            1,
+            "echo source-one".to_string(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(add_and_save_window(TARGET_WINDOW_KEY))
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "echo target-only".to_string(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(set_saved_window_origin(
+            SOURCE_WINDOW_KEY,
+            vec2f(100.0, 100.0),
+        ))
+        .with_step(set_saved_window_origin(
+            TARGET_WINDOW_KEY,
+            vec2f(900.0, 100.0),
+        ))
+        .with_step(focus_saved_window(SOURCE_WINDOW_KEY))
+        .with_step(
+            TestStep::new("Detach, hover target, return to source, leave again, drop on target")
+                .with_action(|app, _, data| {
+                    let source_window_id = *data
+                        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+                        .expect("saved source window id should exist");
+                    let start = tab_center(app, source_window_id, 1);
+                    dispatch_mouse_event(
+                        app,
+                        source_window_id,
+                        Event::LeftMouseDown {
+                            position: start,
+                            modifiers: ModifiersState::default(),
+                            click_count: 1,
+                            is_first_mouse: false,
+                        },
+                    );
+                })
+                .with_action(|app, _, data| {
+                    let source_window_id = *data
+                        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+                        .expect("saved source window id should exist");
+                    let start = tab_center(app, source_window_id, 1);
+                    dispatch_mouse_event(
+                        app,
+                        source_window_id,
+                        Event::LeftMouseDragged {
+                            position: start + vec2f(12.0, 0.0),
+                            modifiers: ModifiersState::default(),
+                        },
+                    );
+                })
+                .with_action(|app, _, data| {
+                    let source_window_id = *data
+                        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+                        .expect("saved source window id should exist");
+                    let start = tab_center(app, source_window_id, 1);
+                    dispatch_mouse_event(
+                        app,
+                        source_window_id,
+                        Event::LeftMouseDragged {
+                            position: start + vec2f(0.0, 140.0),
+                            modifiers: ModifiersState::default(),
+                        },
+                    );
+                })
+                // Hover the target window's tab bar (GhostInTarget on target).
+                .with_action(drag_over_target_tab_bar)
+                .with_action(drag_over_target_tab_bar)
+                // Return to the source window's own tab bar: the source-reorder
+                // state (`InsertedInTarget { target == source }` in this fork).
+                .with_action(drag_over_source_tab_bar)
+                .with_action(drag_over_source_tab_bar)
+                // Leave the source again and hover the target once more. This is
+                // the step that a reverse-handoff would orphan.
+                .with_action(drag_over_target_tab_bar)
+                .with_action(drag_over_target_tab_bar)
+                // Release over the target: the tab should transfer there.
+                .with_action(|app, _, data| {
+                    let source_window_id = *data
+                        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+                        .expect("saved source window id should exist");
+                    let target_window_id = *data
+                        .get::<_, WindowId>(TARGET_WINDOW_KEY)
+                        .expect("saved target window id should exist");
+                    let target_tab_bounds = tab_bounds(app, target_window_id, 0);
+                    let drop_point = tab_screen_point(
+                        app,
+                        target_window_id,
+                        0,
+                        8.0,
+                        target_tab_bounds.height() / 2.0,
+                    );
+                    let source_local_target =
+                        source_local_point_for_screen_point(app, source_window_id, drop_point);
+                    dispatch_mouse_event(
+                        app,
+                        source_window_id,
+                        Event::LeftMouseUp {
+                            position: source_local_target,
+                            modifiers: ModifiersState::default(),
+                        },
+                    );
+                })
+                // Two windows (not a stranded preview) and the tab moved out
+                // of the source and into the target.
+                .add_assertion(assert_num_windows_open(2))
+                .add_assertion(assert_total_tab_count(3)),
+        )
+        .with_step(focus_saved_window(TARGET_WINDOW_KEY).add_assertion(assert_tab_count(2)))
+        .with_step(focus_saved_window(SOURCE_WINDOW_KEY).add_assertion(assert_tab_count(1)))
+}
+
+/// Dispatches a drag event whose cursor lands on the target window's tab bar,
+/// addressed to the source window (which owns the active drag gesture).
+fn drag_over_target_tab_bar(app: &mut warpui::App, _window_id: WindowId, data: &mut StepDataMap) {
+    let source_window_id = *data
+        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+        .expect("saved source window id should exist");
+    let target_window_id = *data
+        .get::<_, WindowId>(TARGET_WINDOW_KEY)
+        .expect("saved target window id should exist");
+    let target_tab_bounds = tab_bounds(app, target_window_id, 0);
+    let over_target = tab_screen_point(
+        app,
+        target_window_id,
+        0,
+        8.0,
+        target_tab_bounds.height() / 2.0,
+    );
+    let source_local_target =
+        source_local_point_for_screen_point(app, source_window_id, over_target);
+    dispatch_mouse_event(
+        app,
+        source_window_id,
+        Event::LeftMouseDragged {
+            position: source_local_target,
+            modifiers: ModifiersState::default(),
+        },
+    );
+}
+
+/// Dispatches a drag event whose cursor lands back on the source window's own
+/// tab bar (the put-back case), addressed to the source window.
+fn drag_over_source_tab_bar(app: &mut warpui::App, _window_id: WindowId, data: &mut StepDataMap) {
+    let source_window_id = *data
+        .get::<_, WindowId>(SOURCE_WINDOW_KEY)
+        .expect("saved source window id should exist");
+    let source_tab_bounds = tab_bounds(app, source_window_id, 0);
+    let over_source = tab_screen_point(
+        app,
+        source_window_id,
+        0,
+        8.0,
+        source_tab_bounds.height() / 2.0,
+    );
+    let source_local_target =
+        source_local_point_for_screen_point(app, source_window_id, over_source);
+    dispatch_mouse_event(
+        app,
+        source_window_id,
+        Event::LeftMouseDragged {
+            position: source_local_target,
+            modifiers: ModifiersState::default(),
+        },
+    );
+}
+
 pub fn test_single_tab_handoff_continues_drag() -> Builder {
     new_builder()
         .set_should_run_test(drag_tabs_feature_enabled)
@@ -954,4 +1179,365 @@ pub fn test_single_tab_handoff_continues_drag() -> Builder {
                 .add_assertion(assert_focused_editor_in_tab(0)),
         )
         .with_step(focus_saved_window(TARGET_WINDOW_KEY).add_assertion(assert_tab_count(1)))
+}
+
+// ---------------------------------------------------------------------------
+// Tab / pane context-menu metadata copy (ported from the pin)
+// ---------------------------------------------------------------------------
+//
+// Menu entries are clicked by *saved position*, and `app/src/menu.rs` keys that
+// position on the item's RENDERED label (`SavePosition::new(element, self.label())`).
+// This fork routes those labels through `crate::t!`, and `app/src/lib.rs` calls
+// `i18n::init(None)` — the *system* locale — so hardcoding the pin's English
+// literals would pass on an English host and silently fail elsewhere. Resolve
+// each label through the same catalog the menu renders from instead; the English
+// string stays as the fallback for a catalog that has no entry.
+
+fn metadata_menu_label(message_id: &str, english_fallback: &str) -> String {
+    warp::i18n::t_or(message_id, english_fallback)
+}
+
+fn copy_tab_title_label() -> String {
+    metadata_menu_label("menu-tab-copy-tab-title", "Copy tab title")
+}
+
+fn copy_pane_title_label() -> String {
+    metadata_menu_label("menu-tab-copy-pane-title", "Copy pane title")
+}
+
+fn copy_branch_label() -> String {
+    metadata_menu_label("menu-tab-copy-branch", "Copy branch")
+}
+
+fn copy_working_directory_label() -> String {
+    metadata_menu_label("menu-tab-copy-working-directory", "Copy working directory")
+}
+
+fn copy_pull_request_link_label() -> String {
+    metadata_menu_label("menu-tab-copy-pull-request-link", "Copy pull request link")
+}
+
+fn vertical_tab_pane_row_position_id(app: &mut warpui::App, window_id: WindowId) -> String {
+    let workspace = workspace_view(app, window_id);
+    let pane_group = workspace.read(app, |workspace, _ctx| {
+        workspace
+            .get_pane_group_view(0)
+            .expect("pane group should exist")
+            .clone()
+    });
+    let pane_group_id = pane_group.id();
+    pane_group.read(app, |pane_group, ctx| {
+        let pane_id = pane_group.focused_pane_id(ctx);
+        format!("vertical_tabs:pane_row:{pane_group_id:?}:{pane_id}")
+    })
+}
+
+fn vertical_tab_pane_row_position_id_for_pane_index(
+    app: &mut warpui::App,
+    window_id: WindowId,
+    pane_index: usize,
+) -> String {
+    let workspace = workspace_view(app, window_id);
+    let pane_group = workspace.read(app, |workspace, _ctx| {
+        workspace
+            .get_pane_group_view(0)
+            .expect("pane group should exist")
+            .clone()
+    });
+    let pane_group_id = pane_group.id();
+    pane_group.read(app, |pane_group, _ctx| {
+        let pane_id = pane_group
+            .pane_id_from_index(pane_index)
+            .expect("pane should exist at index");
+        format!("vertical_tabs:pane_row:{pane_group_id:?}:{pane_id}")
+    })
+}
+
+fn first_vertical_tab_pane_row_position_id(app: &mut warpui::App, window_id: WindowId) -> String {
+    vertical_tab_pane_row_position_id_for_pane_index(app, window_id, 0)
+}
+
+fn should_run_tab_context_menu_metadata_test() -> bool {
+    let (starter, _) = current_shell_starter_and_version();
+    starter.shell_type() != ShellType::PowerShell
+}
+
+fn set_active_tab_name(name: &'static str) -> TestStep {
+    TestStep::new("Set active tab name").with_action(move |app, window_id, _| {
+        let workspace = workspace_view(app, window_id);
+        workspace.update(app, |workspace, ctx| {
+            workspace.handle_action(&WorkspaceAction::SetActiveTabName(name.to_string()), ctx);
+        });
+    })
+}
+
+fn set_active_pane_name(name: &'static str) -> TestStep {
+    TestStep::new("Set active pane name").with_action(move |app, window_id, _| {
+        let workspace = workspace_view(app, window_id);
+        let pane_group = workspace.read(app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(0)
+                .expect("pane group should exist")
+                .clone()
+        });
+        pane_group.update(app, |pane_group, ctx| {
+            let pane_id = pane_group.focused_pane_id(ctx);
+            let pane = pane_group
+                .pane_by_id(pane_id)
+                .expect("focused pane should exist");
+            pane.pane_configuration().update(ctx, |configuration, ctx| {
+                configuration.set_custom_vertical_tabs_title(name, ctx);
+            });
+        });
+    })
+}
+
+fn enable_vertical_tabs(display_granularity: VerticalTabsDisplayGranularity) -> TestStep {
+    FeatureFlag::VerticalTabs.set_enabled(true);
+    new_step_with_default_assertions("Enable vertical tabs").add_assertion(
+        move |app, _window_id| {
+            TabSettings::handle(app).update(app, |settings, ctx| {
+                settings
+                    .use_vertical_tabs
+                    .set_value(true, ctx)
+                    .expect("vertical tabs setting should update");
+                settings
+                    .vertical_tabs_display_granularity
+                    .set_value(display_granularity, ctx)
+                    .expect("vertical tabs display granularity should update");
+                async_assert!(
+                    *settings.use_vertical_tabs
+                        && *settings.vertical_tabs_display_granularity.value()
+                            == display_granularity
+                )
+            })
+        },
+    )
+}
+
+fn open_horizontal_tab_context_menu(step_name: &'static str) -> TestStep {
+    new_step_with_default_assertions(step_name)
+        .with_right_click_on_saved_position(tab_position_id(0))
+}
+
+fn open_vertical_tab_context_menu(step_name: &'static str) -> TestStep {
+    new_step_with_default_assertions(step_name)
+        .with_right_click_on_saved_position_fn(vertical_tab_pane_row_position_id)
+}
+
+fn open_first_vertical_tab_pane_context_menu(step_name: &'static str) -> TestStep {
+    new_step_with_default_assertions(step_name)
+        .with_right_click_on_saved_position_fn(first_vertical_tab_pane_row_position_id)
+}
+
+fn add_tab_context_metadata_setup_steps(builder: Builder) -> Builder {
+    builder
+        .set_should_run_test(should_run_tab_context_menu_metadata_test)
+        .use_tmp_filesystem_for_test_root_directory()
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(set_active_tab_name(METADATA_TAB_TITLE))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            format!(
+                "git init -b {METADATA_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\""
+            ),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "touch file".into(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(
+            new_step_with_default_assertions("Git branch metadata should be populated")
+                .set_timeout(Duration::from_secs(15))
+                .add_assertion(assert_current_git_branch(0, METADATA_BRANCH)),
+        )
+}
+
+fn add_active_pane_context_metadata_setup_steps(builder: Builder) -> Builder {
+    builder
+        .with_step(set_active_pane_name(METADATA_CLICKED_PANE_TITLE))
+        .with_step(
+            new_step_with_default_assertions("Create active split pane")
+                .with_keystrokes(&[cmd_or_ctrl_shift("d")]),
+        )
+        .with_step(wait_until_bootstrapped_pane(0, 1))
+        .with_step(set_active_pane_name(METADATA_PANE_TITLE))
+        .with_step(execute_command(
+            0,
+            1,
+            format!(
+                "mkdir {METADATA_PANE_DIRECTORY}; cd {METADATA_PANE_DIRECTORY}; git init -b {METADATA_PANE_BRANCH}; git config user.email \"test@test.com\"; git config user.name \"Git TestUser\"; touch file"
+            ),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(
+            new_step_with_default_assertions("Active pane git branch metadata should be populated")
+                .set_timeout(Duration::from_secs(15))
+                .add_assertion(assert_current_git_branch(1, METADATA_PANE_BRANCH)),
+        )
+}
+
+fn add_horizontal_tab_context_metadata_copy_steps(
+    builder: Builder,
+    open_tab_context_menu: fn(&'static str) -> TestStep,
+) -> Builder {
+    builder
+        .with_step(
+            open_tab_context_menu("Open tab context menu for title copy").add_assertion(
+                // The horizontal tab bar deliberately offers only "Copy tab
+                // title"; `TabData::copy_metadata_menu_items` returns early
+                // there. The other four entries must be absent.
+                assert_saved_positions_absent(vec![
+                    copy_branch_label(),
+                    copy_pane_title_label(),
+                    copy_working_directory_label(),
+                    copy_pull_request_link_label(),
+                ]),
+            ),
+        )
+        .with_step(
+            new_step_with_default_assertions("Copy tab title from tab context menu")
+                .with_click_on_saved_position(copy_tab_title_label())
+                .add_assertion(assert_clipboard_contains_string(
+                    METADATA_TAB_TITLE.to_string(),
+                )),
+        )
+}
+
+fn add_vertical_tab_context_metadata_copy_steps(
+    builder: Builder,
+    open_tab_context_menu: fn(&'static str) -> TestStep,
+) -> Builder {
+    builder
+        .with_step(open_tab_context_menu(
+            "Open tab context menu for branch copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy branch from tab context menu")
+                .with_click_on_saved_position(copy_branch_label())
+                .add_assertion(assert_clipboard_contains_string(
+                    METADATA_BRANCH.to_string(),
+                )),
+        )
+        .with_step(open_tab_context_menu(
+            "Open tab context menu for title copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy tab title from tab context menu")
+                .with_click_on_saved_position(copy_tab_title_label())
+                .add_assertion(assert_clipboard_contains_string(
+                    METADATA_TAB_TITLE.to_string(),
+                )),
+        )
+        .with_step(open_tab_context_menu(
+            "Open tab context menu for working directory copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy working directory from tab context menu")
+                .with_click_on_saved_position(copy_working_directory_label())
+                .add_assertion(assert_clipboard_contains_home()),
+        )
+}
+
+fn add_vertical_pane_context_metadata_copy_steps(
+    builder: Builder,
+    open_tab_context_menu: fn(&'static str) -> TestStep,
+) -> Builder {
+    builder
+        .with_step(open_tab_context_menu(
+            "Open pane context menu for branch copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy branch from pane context menu")
+                .with_click_on_saved_position(copy_branch_label())
+                .add_assertion(assert_clipboard_contains_string(
+                    METADATA_BRANCH.to_string(),
+                )),
+        )
+        .with_step(open_tab_context_menu(
+            "Open pane context menu for title copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy pane title from pane context menu")
+                .with_click_on_saved_position(copy_pane_title_label())
+                .add_assertion(assert_clipboard_contains_string(
+                    METADATA_CLICKED_PANE_TITLE.to_string(),
+                )),
+        )
+        .with_step(open_tab_context_menu(
+            "Open pane context menu for working directory copy",
+        ))
+        .with_step(
+            new_step_with_default_assertions("Copy working directory from pane context menu")
+                .with_click_on_saved_position(copy_working_directory_label())
+                .add_assertion(assert_clipboard_contains_home()),
+        )
+}
+
+fn assert_current_git_branch(
+    pane_index: usize,
+    expected_branch: &'static str,
+) -> AssertionCallback {
+    Box::new(move |app, window_id| {
+        let terminal_view = terminal_view(app, window_id, 0, pane_index);
+        terminal_view.read(app, |terminal_view, ctx| {
+            async_assert_eq!(
+                terminal_view.current_git_branch(ctx),
+                Some(expected_branch.to_string())
+            )
+        })
+    })
+}
+
+fn assert_saved_positions_absent(labels: Vec<String>) -> AssertionCallback {
+    Box::new(move |app, window_id| {
+        let presenter = app.presenter(window_id).expect("presenter should exist");
+        let presenter = presenter.borrow();
+        let position_cache = presenter.position_cache();
+        async_assert!(
+            labels
+                .iter()
+                .all(|label| position_cache.get_position(label).is_none())
+        )
+    })
+}
+
+fn assert_clipboard_contains_home() -> AssertionCallback {
+    Box::new(|app, _window_id| {
+        let clipboard = app.update(|ctx| ctx.clipboard().read());
+        let content = match clipboard.paths {
+            Some(paths) => paths.join(" "),
+            None => clipboard.plain_text,
+        };
+        let home = std::env::var("HOME").expect("HOME should be set for integration tests");
+
+        async_assert_eq!(content, home)
+    })
+}
+
+pub fn test_tab_context_menu_copies_metadata() -> Builder {
+    let builder = add_tab_context_metadata_setup_steps(new_builder());
+    add_horizontal_tab_context_metadata_copy_steps(builder, open_horizontal_tab_context_menu)
+}
+
+pub fn test_vertical_tab_context_menu_copies_metadata() -> Builder {
+    let builder = add_tab_context_metadata_setup_steps(new_builder())
+        .with_step(enable_vertical_tabs(VerticalTabsDisplayGranularity::Tabs));
+    add_vertical_tab_context_metadata_copy_steps(builder, open_vertical_tab_context_menu)
+}
+
+pub fn test_vertical_pane_context_menu_copies_metadata() -> Builder {
+    let builder = add_active_pane_context_metadata_setup_steps(
+        add_tab_context_metadata_setup_steps(new_builder())
+            .with_step(enable_vertical_tabs(VerticalTabsDisplayGranularity::Panes)),
+    );
+    add_vertical_pane_context_metadata_copy_steps(
+        builder,
+        open_first_vertical_tab_pane_context_menu,
+    )
 }

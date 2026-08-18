@@ -197,9 +197,7 @@ pub(crate) fn handle(
             instance_id,
             action,
             SurfaceDestination::VerticalTabs,
-            // Same limitation again: only `ToggleVerticalTabsPanel` exists in this fork
-            // (the pin's `OpenVerticalTabsPanel` does not).
-            WorkspaceAction::ToggleVerticalTabsPanel,
+            WorkspaceAction::OpenVerticalTabsPanel,
             target,
             ctx,
         ),

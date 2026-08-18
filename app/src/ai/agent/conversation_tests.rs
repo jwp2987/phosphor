@@ -520,8 +520,7 @@ fn test_cli_subagent_serialized_block_preserves_block_id_and_metadata() {
                                             command_id: "cli-block-1".to_string(),
                                             output: "hi".to_string(),
                                             exit_code: 0,
-                                            // The fork's shell-command results carry no timestamps, so the fields
-                                            // upstream added stay empty. See #11.
+                                            // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                             start_ts: None,
                                             finish_ts: None,
                                         },
@@ -612,8 +611,7 @@ fn test_cli_subagent_serialized_block_prefers_persisted_snapshot_output() {
                                             command_id: String::from(block_id.clone()),
                                             output: "truncated task output".to_string(),
                                             exit_code: 0,
-                                            // The fork's shell-command results carry no timestamps, so the fields
-                                            // upstream added stay empty. See #11.
+                                            // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                             start_ts: None,
                                             finish_ts: None,
                                         },
@@ -743,8 +741,7 @@ fn test_cli_subagent_serialized_block_ignores_later_attachment_and_context_block
                                             command_id: "cli-block-1".to_string(),
                                             output: "hi".to_string(),
                                             exit_code: 0,
-                                            // The fork's shell-command results carry no timestamps, so the fields
-                                            // upstream added stay empty. See #11.
+                                            // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                             start_ts: None,
                                             finish_ts: None,
                                         },
@@ -854,8 +851,7 @@ fn test_cli_subagent_serialized_block_uses_metadata_command_id_not_latest_comman
                                             command_id: "cli-block-1".to_string(),
                                             output: "first".to_string(),
                                             exit_code: 0,
-                                            // The fork's shell-command results carry no timestamps, so the fields
-                                            // upstream added stay empty. See #11.
+                                            // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                             start_ts: None,
                                             finish_ts: None,
                                         },
@@ -879,8 +875,7 @@ fn test_cli_subagent_serialized_block_uses_metadata_command_id_not_latest_comman
                                             command_id: "other-block".to_string(),
                                             output: "second".to_string(),
                                             exit_code: 0,
-                                            // The fork's shell-command results carry no timestamps, so the fields
-                                            // upstream added stay empty. See #11.
+                                            // This fixture doesn't exercise run duration, so the timestamps stay empty.
                                             start_ts: None,
                                             finish_ts: None,
                                         },
@@ -1080,6 +1075,56 @@ fn child_conversation_detection_uses_parent_agent_id() {
 
     assert!(conversation.is_child_agent_conversation());
     assert_eq!(conversation.parent_conversation_id(), None);
+}
+
+/// When the persisted task list is empty (e.g. a child conversation persisted
+/// before any server response), restoring via `new_restored_synthesizing_on_empty`
+/// must produce a fresh in-progress optimistic root, mirroring
+/// `AIConversation::new()`.
+#[test]
+fn restored_conversation_with_empty_task_list_creates_in_progress_optimistic_root() {
+    let conversation =
+        AIConversation::new_restored_synthesizing_on_empty(AIConversationId::new(), vec![], None)
+            .expect("empty task list must synthesize an optimistic root");
+
+    let root_task = conversation
+        .get_root_task()
+        .expect("synthesized root task should exist");
+    assert!(root_task.is_root_task());
+    assert!(
+        root_task.source().is_none(),
+        "synthesized root is optimistic and has no api::Task source"
+    );
+    assert!(
+        !root_task.id().to_string().is_empty(),
+        "synthesized optimistic root must have a non-empty UUID id"
+    );
+    assert_eq!(conversation.status(), &ConversationStatus::InProgress);
+    assert!(conversation.status_error_message().is_none());
+}
+
+/// The legacy `root_task_is_optimistic` flag is ignored when restoring an
+/// empty task list via `new_restored_synthesizing_on_empty`.
+#[test]
+fn restored_conversation_ignores_legacy_root_task_is_optimistic_flag_with_empty_tasks() {
+    let conversation_data: AgentConversationData = serde_json::from_str(
+        r#"{"server_conversation_token":null,"root_task_is_optimistic":true}"#,
+    )
+    .unwrap();
+
+    let conversation = AIConversation::new_restored_synthesizing_on_empty(
+        AIConversationId::new(),
+        vec![],
+        Some(conversation_data),
+    )
+    .expect("empty task list must synthesize an optimistic root regardless of legacy flag");
+
+    let root_task = conversation
+        .get_root_task()
+        .expect("synthesized root task should exist");
+    assert!(root_task.is_root_task());
+    assert!(root_task.source().is_none());
+    assert_eq!(conversation.status(), &ConversationStatus::InProgress);
 }
 
 #[test]

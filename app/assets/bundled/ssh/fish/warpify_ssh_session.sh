@@ -2,10 +2,13 @@ function _is
     command -v $argv[1] >/dev/null 2>&1
 end
 
+  # @@WARP_SESSION_ID@@ is substituted by `warpify_ssh_session_command` with an ID this client
+  # minted and registered *before* the script reaches the pty, so the hooks below can be
+  # validated against it (#532). Do not let the remote mint its own.
 function _log
     set _hook $argv[1]
     set _value $argv[2]
-    set _m (printf "{\"hook\": \"%s\", \"value\": %s}" $_hook $_value | od -An -v -tx1 | tr -d " \n")
+    set _m (printf "{\"hook\": \"%s\", \"value\": %s, \"session_id\": @@WARP_SESSION_ID@@}" $_hook $_value | od -An -v -tx1 | tr -d " \n")
     printf '\033\120\044\144%s\234' $_m
 end
 

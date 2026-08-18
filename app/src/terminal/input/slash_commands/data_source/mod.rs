@@ -40,8 +40,12 @@ use crate::{
         },
         SyncDataSource,
     },
-    settings::{AISettings, AISettingsChangedEvent, InputSettings, InputSettingsChangedEvent},
+    settings::{
+        AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent, InputSettings,
+        InputSettingsChangedEvent,
+    },
     terminal::model::session::active_session::{ActiveSession, ActiveSessionEvent},
+    workspaces::user_workspaces::UserWorkspaces,
 };
 
 pub struct DataSourceArgs {
@@ -146,6 +150,19 @@ impl SlashCommandDataSource {
             if matches!(
                 event,
                 InputSettingsChangedEvent::EnableSlashCommandsInTerminal { .. }
+            ) {
+                me.recompute_active_commands(ctx);
+            }
+        });
+        // The other half of `Availability::CODEBASE_CONTEXT`: `is_codebase_context_enabled`
+        // is the global AI toggle (covered by the `AISettings` subscription above) ANDed
+        // with this setting, so without this the bit would stay latched at whatever it was
+        // when the data source was constructed and `/index` would keep appearing (or keep
+        // missing) after the user flips the Code settings switch.
+        ctx.subscribe_to_model(&CodeSettings::handle(ctx), |me, event, ctx| {
+            if matches!(
+                event,
+                CodeSettingsChangedEvent::CodebaseContextEnabled { .. }
             ) {
                 me.recompute_active_commands(ctx);
             }
@@ -268,6 +285,17 @@ impl SlashCommandDataSource {
         };
         if has_active_conversation {
             session_context |= Availability::ACTIVE_CONVERSATION;
+        }
+
+        // Same source the agent itself reads (`ai::codebase_auto_indexing`,
+        // `ai::codebase_retrieval`): the global AI toggle ANDed with the user's
+        // codebase-context setting. Ported from the pin's
+        // `SlashCommandDataSource::base_availability`
+        // (`42effe840:.../data_source/core.rs:343`), which sets this bit from the same
+        // call — the fork's `is_codebase_context_enabled` differs only in having dropped
+        // the pin's server-delivered team override (see that method).
+        if UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx) {
+            session_context |= Availability::CODEBASE_CONTEXT;
         }
 
         if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {

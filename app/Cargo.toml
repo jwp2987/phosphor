@@ -149,6 +149,7 @@ pathfinder_color = "0.5.0"
 pathfinder_geometry.workspace = true
 persistence.workspace = true
 pin-project.workspace = true
+pin-project-lite.workspace = true
 plist = "1"
 pprof = { workspace = true, optional = true, features = ["protobuf-codec"] }
 prost.workspace = true
@@ -307,12 +308,19 @@ aws-credential-types = "1"
 aws-sdk-sts = "1"
 aws-types = "1"
 
+# `transport-sse-client-reqwest` no longer exists: rmcp deleted the SSE client
+# transport in v0.11.0. `client-side-sse` (the SSE *parsing* primitives, which
+# the streamable-HTTP client also uses) is what remains, and it is what the
+# vendored `ai::mcp::sse_transport` port needs. Matches the oracle's feature set
+# at `42effe840:crates/mcp/Cargo.toml:36`.
 rmcp = { workspace = true, features = [
     "auth",
+    "client-side-sse",
     "transport-streamable-http-client-reqwest",
-    "transport-sse-client-reqwest",
     "transport-child-process",
 ] }
+# Required by the vendored legacy SSE transport (`ai::mcp::sse_transport`).
+sse-stream = "0.2"
 notify-debouncer-full.workspace = true
 rquickjs = { workspace = true, optional = true }
 rustls.workspace = true
@@ -530,6 +538,17 @@ default = [
     "code_review_save_changes",
     "create_project_flow",
     "get_started_tab",
+    # Maintainer decision 2026-08-17: default-on. Had 3 call sites
+    # (pane_group/mod.rs:1860, workspace/view.rs:3755, :20067) and was in no
+    # feature list at all, i.e. dark code that shipped disabled.
+    "welcome_tab",
+    # Maintainer decision 2026-08-17: default-on. Pulls nld_onnx_model ->
+    # input_classifier/onnx_candle, which is LOCAL inference (candle), not a
+    # provider call -- no BYOP cost implication. Models ship in-repo
+    # (crates/input_classifier/models/onnx/bert_tiny.onnx + tokenizer) and
+    # InputClassifierModel::new degrades to the fasttext/heuristic path on
+    # load failure, so enabling it cannot hard-fail startup.
+    "nld_improvements",
     "file_tree",
     "vim_code_editor",
     "code_launch_modal",
@@ -542,6 +561,7 @@ default = [
     "summarization_cancellation_confirmation",
     "ui_zoom",
     "discard_per_file_and_all_changes",
+    "stage_changes",
     "auto_open_code_review_pane",
     "diff_set_as_context",
     "summarize_conversation_command",
@@ -859,6 +879,7 @@ api_key_authentication = []
 api_key_management = []
 diff_set_as_context = []
 discard_per_file_and_all_changes = []
+stage_changes = []
 ui_zoom = []
 summarization_cancellation_confirmation = []
 code_review_find = []
@@ -899,6 +920,7 @@ incremental_auto_reload = []
 pending_user_query_indicator = []
 queue_slash_command = []
 inline_menu_headers = []
+restore_prompt_on_inline_model_selector_search = []
 directory_tab_colors = []
 open_warp_new_settings_modes = []
 hoa_code_review = []

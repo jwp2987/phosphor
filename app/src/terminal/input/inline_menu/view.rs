@@ -234,13 +234,11 @@ impl<A: InlineMenuAction> QueryResultRenderer<A> {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DetailsRenderConfig {
     /// The minimum amount of width required to render the detail.
-    ///
     /// If `Some()` and the available space to render the details is less than this, no details
     /// are rendered.
     pub min_required_details_width: Option<f32>,
 
     // If not provided, the details pane will be rendered with half the width of the menu.
-    //
     // Else, this is used to apply a max constraint on the result items, and the details pane will
     // take up the rest of the space.
     pub max_result_width: Option<f32>,
@@ -255,7 +253,6 @@ pub enum InlineMenuClickBehavior {
 
 /// The `Action` type that is dispatched when an item in the menu is 'accepted' (via enter keypress
 /// or click).
-///
 /// This trait includes one additional method that must be implemented to drive the content of
 /// menu 'message' bar, which contains contextual hints for navigation and item selection.
 pub trait InlineMenuAction: Action + Clone {
@@ -281,14 +278,12 @@ pub trait InlineMenuAction: Action + Clone {
 }
 
 /// A generic inline menu view that renders search results with selection and navigation.
-///
 /// This view is generic over the action type `A` that is emitted when an item is selected.
 /// It handles:
 /// - Rendering results from a `SearchMixer<A>`
 /// - Selection state management
 /// - Keyboard navigation (up/down)
 /// - Scrolling
-///
 /// Domain-specific views (e.g., `InlineSlashCommandView`) should wrap this and:
 /// - Create and configure the mixer with appropriate data sources
 /// - Subscribe to `InlineMenuEvent` and map to domain-specific events
@@ -314,7 +309,6 @@ pub struct InlineMenuView<A: InlineMenuAction, T: 'static + Send + Sync = ()> {
 
 impl<A: InlineMenuAction> InlineMenuView<A> {
     /// Create a new InlineMenuView with the given mixer, positioner, and styles.
-    ///
     /// The view subscribes to mixer events and updates result_renderers automatically.
     /// It also manages its own `InlineMenuModel<A>`, updating it when selection changes
     /// and clearing it when the menu is closed.
@@ -849,7 +843,7 @@ impl<A: InlineMenuAction, T: 'static + Send + Sync> InlineMenuView<A, T> {
 
         // Clip so trailing controls don't paint past the pane in a narrow split pane.
         // Upstream `53da563522` "Clip inline menu header to prevent split-pane overflow"
-        // (#10811). NOT COMPILED -- builds are suspended; verified by reading only.
+        // (#10811). ; verified by reading only.
         Some(Clipped::new(header).finish())
     }
 

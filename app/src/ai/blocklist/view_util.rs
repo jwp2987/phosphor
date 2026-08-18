@@ -104,13 +104,15 @@ pub enum FailedOutputPresentation {
 /// `UserWorkspaces`/`AIRequestUsageModel`) are dropped — BYOP uses the user's own
 /// provider keys, so a quota/rate limit is surfaced as a plain message, not an
 /// out-of-credits upsell. Recovery-pending failures are suppressed so an
-/// automatic resume isn't interrupted by an alarming error.
+/// automatic resume isn't interrupted by an alarming error — but only on
+/// non-dogfood channels, so Local/Dev builds still show developers every
+/// transport failure. See `RenderableAIError::should_suppress_during_recovery`.
 pub fn failed_output_presentation(
     error: &crate::ai::agent::RenderableAIError,
     _app: &warpui::AppContext,
 ) -> Option<FailedOutputPresentation> {
     use crate::ai::agent::RenderableAIError;
-    if error.will_attempt_resume() {
+    if error.should_suppress_during_recovery() {
         return None;
     }
     Some(match error {

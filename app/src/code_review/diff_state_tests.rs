@@ -242,6 +242,215 @@ fn test_parse_git_status_file_without_spaces_still_works() {
     assert_eq!(result[0].1, GitFileStatus::Modified);
 }
 
+// ─── Staged column (Zap #329) ────────────────────────────────────────────────
+
+#[test]
+fn parse_git_status_entries_reads_the_index_column() {
+    // `XY`: X is index-vs-HEAD, Y is worktree-vs-index. `.` means clean.
+    let status_output = "1 M. N... 100644 100644 100644 abc1234 def5678 staged.txt\0\
+         1 .M N... 100644 100644 100644 abc1234 def5678 unstaged.txt\0\
+         1 MM N... 100644 100644 100644 abc1234 def5678 partial.txt";
+    let result = LocalDiffStateModel::parse_git_status_entries(status_output).unwrap();
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].staged, FileStagedState::Staged);
+    assert_eq!(result[1].staged, FileStagedState::Unstaged);
+    assert_eq!(result[2].staged, FileStagedState::PartiallyStaged);
+}
+
+#[test]
+fn parse_git_status_entries_reads_the_index_column_for_renames() {
+    // A rename is a type-2 entry; its `XY` lives in the same field.
+    let status_output =
+        "2 R. N... 100644 100644 100644 abc1234 def5678 R100 new.txt\0old.txt\0\
+         2 RM N... 100644 100644 100644 abc1234 def5678 R100 new2.txt\0old2.txt";
+    let result = LocalDiffStateModel::parse_git_status_entries(status_output).unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].staged, FileStagedState::Staged);
+    assert_eq!(result[1].staged, FileStagedState::PartiallyStaged);
+}
+
+#[test]
+fn untracked_and_unmerged_entries_are_never_staged() {
+    // An untracked path has no index entry, and an unmerged one cannot be
+    // staged until the conflict is resolved. Neither has an `XY` to read.
+    let status_output = "? untracked.txt\0\
+         u UU N... 100644 100644 100644 100644 abc1234 def5678 ghi9012 conflict.txt";
+    let result = LocalDiffStateModel::parse_git_status_entries(status_output).unwrap();
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0].staged, FileStagedState::Unstaged);
+    assert_eq!(result[1].staged, FileStagedState::Unstaged);
+}
+
+#[test]
+fn partially_staged_is_staged_but_not_fully_staged() {
+    // The two predicates differ exactly here, and the UI depends on it: a
+    // partially staged file offers "stage the rest", not "unstage".
+    assert!(FileStagedState::PartiallyStaged.is_staged());
+    assert!(!FileStagedState::PartiallyStaged.is_fully_staged());
+    assert!(FileStagedState::Staged.is_staged());
+    assert!(FileStagedState::Staged.is_fully_staged());
+    assert!(!FileStagedState::Unstaged.is_staged());
+    assert!(!FileStagedState::Unstaged.is_fully_staged());
+}
+
+/// A repo with one committed file, ready for staging tests.
+#[cfg(feature = "local_fs")]
+async fn init_repo_for_staging(contents: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo_path = dir.path().to_path_buf();
+
+    run_git_command(&repo_path, &["init", "-b", "main"])
+        .await
+        .expect("git init");
+    run_git_command(&repo_path, &["config", "user.email", "test@test.com"])
+        .await
+        .expect("git config email");
+    run_git_command(&repo_path, &["config", "user.name", "Test"])
+        .await
+        .expect("git config name");
+    std::fs::write(repo_path.join("file.txt"), contents).expect("write file.txt");
+    run_git_command(&repo_path, &["add", "file.txt"])
+        .await
+        .expect("git add");
+    run_git_command(&repo_path, &["commit", "-m", "initial"])
+        .await
+        .expect("git commit");
+
+    (dir, repo_path)
+}
+
+/// The parsed staged state of `file.txt`, straight from `git status`.
+#[cfg(feature = "local_fs")]
+async fn staged_state_of_file(repo_path: &Path) -> Option<FileStagedState> {
+    let output = run_git_command(
+        repo_path,
+        &["status", "--untracked-files=all", "--porcelain=2", "-z"],
+    )
+    .await
+    .expect("git status");
+    LocalDiffStateModel::parse_git_status_entries(&output)
+        .expect("parse git status")
+        .into_iter()
+        .find(|entry| entry.path == PathBuf::from("file.txt"))
+        .map(|entry| entry.staged)
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn stage_paths_moves_a_file_into_the_index_and_back_out() {
+    let (_dir, repo_path) = init_repo_for_staging("one\ntwo\nthree\n").await;
+
+    std::fs::write(repo_path.join("file.txt"), "one\ntwo changed\nthree\n")
+        .expect("edit file.txt");
+    assert_eq!(
+        staged_state_of_file(&repo_path).await,
+        Some(FileStagedState::Unstaged)
+    );
+
+    crate::util::git::run_stage_paths(&repo_path, &["file.txt".to_string()], false)
+        .await
+        .expect("stage file.txt");
+    assert_eq!(
+        staged_state_of_file(&repo_path).await,
+        Some(FileStagedState::Staged)
+    );
+
+    // Un-staging must leave the working tree edit alone — this is the whole
+    // difference from the Discard Files path, which also passes `--worktree`.
+    crate::util::git::run_stage_paths(&repo_path, &["file.txt".to_string()], true)
+        .await
+        .expect("unstage file.txt");
+    assert_eq!(
+        staged_state_of_file(&repo_path).await,
+        Some(FileStagedState::Unstaged)
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo_path.join("file.txt")).expect("read file.txt"),
+        "one\ntwo changed\nthree\n"
+    );
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn stage_paths_unstages_a_new_file_before_the_first_commit() {
+    // Pre-first-commit there is no HEAD to restore an index entry from, so
+    // `git restore --staged` fails and the `git rm --cached` fallback is what
+    // makes "unstage" mean anything at all.
+    let dir = tempfile::tempdir().expect("create temp repo dir");
+    let repo_path = dir.path().to_path_buf();
+    run_git_command(&repo_path, &["init", "-b", "main"])
+        .await
+        .expect("git init");
+    std::fs::write(repo_path.join("new.txt"), "hello\n").expect("write new.txt");
+    run_git_command(&repo_path, &["add", "new.txt"])
+        .await
+        .expect("git add");
+
+    crate::util::git::run_stage_paths(&repo_path, &["new.txt".to_string()], true)
+        .await
+        .expect("unstage new.txt before the first commit");
+
+    let output = run_git_command(
+        &repo_path,
+        &["status", "--untracked-files=all", "--porcelain=2", "-z"],
+    )
+    .await
+    .expect("git status");
+    let entries = LocalDiffStateModel::parse_git_status_entries(&output).expect("parse");
+    let entry = entries
+        .iter()
+        .find(|entry| entry.path == PathBuf::from("new.txt"))
+        .expect("new.txt still present");
+    assert_eq!(entry.status, GitFileStatus::Untracked);
+    // The file itself must survive; only the index entry goes away.
+    assert!(repo_path.join("new.txt").exists());
+}
+
+#[cfg(feature = "local_fs")]
+#[tokio::test]
+async fn stage_changes_impl_stages_one_hunk_and_leaves_the_other() {
+    // Two edits far enough apart that `git diff` emits two hunks.
+    let original: String = (1..=20)
+        .map(|n| format!("line {n}\n"))
+        .collect::<Vec<_>>()
+        .concat();
+    let (_dir, repo_path) = init_repo_for_staging(&original).await;
+
+    let edited = original
+        .replace("line 2\n", "line 2 edited\n")
+        .replace("line 19\n", "line 19 edited\n");
+    std::fs::write(repo_path.join("file.txt"), &edited).expect("edit file.txt");
+
+    let diff_output = run_git_command(
+        &repo_path,
+        &["diff", "--no-color", "--", "file.txt"],
+    )
+    .await
+    .expect("git diff");
+    let hunks = LocalDiffStateModel::parse_diff_hunks(&diff_output).expect("parse hunks");
+    assert_eq!(hunks.len(), 2, "expected two separate hunks");
+
+    let request = StageRequest {
+        target: StageTarget::Hunk(hunk_to_patch(Path::new("file.txt"), &hunks[0])),
+        unstage: false,
+    };
+    LocalDiffStateModel::stage_changes_impl(&repo_path, &request)
+        .await
+        .expect("stage the first hunk");
+
+    // Only the first edit is in the index; the second is still worktree-only,
+    // which is exactly what `PartiallyStaged` means.
+    let staged_diff = run_git_command(&repo_path, &["diff", "--cached", "--no-color"])
+        .await
+        .expect("git diff --cached");
+    assert!(staged_diff.contains("line 2 edited"));
+    assert!(!staged_diff.contains("line 19 edited"));
+    assert_eq!(
+        staged_state_of_file(&repo_path).await,
+        Some(FileStagedState::PartiallyStaged)
+    );
+}
+
 // ─── Ported from Warp: `warp/master:app/src/util/git_tests.rs` ───────────────
 //
 // Warp keeps `committed_branch_files_excludes_uncommitted_and_untracked` next
@@ -484,6 +693,7 @@ async fn untracked_directory_diff_is_empty_and_non_binary() {
         repo_dir.path(),
         &PathBuf::from("nested-repo/"),
         &GitFileStatus::Untracked,
+        Some(FileStagedState::Unstaged),
         false,
         None,
     )
@@ -609,6 +819,7 @@ async fn staged_rename_and_modify_produces_non_empty_diff() {
         &GitFileStatus::Renamed {
             old_path: "old.txt".to_string(),
         },
+        Some(FileStagedState::Staged),
         false,
         None,
     )

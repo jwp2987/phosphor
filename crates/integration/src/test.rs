@@ -21,6 +21,7 @@ mod osc8_hyperlinks;
 mod pane_restoration;
 #[cfg(target_os = "macos")]
 mod preview_config_migration;
+mod rich_input_ctrl_enter;
 mod rules;
 mod secrets;
 mod session_restoration;
@@ -58,6 +59,7 @@ pub use osc8_hyperlinks::*;
 pub use pane_restoration::*;
 #[cfg(target_os = "macos")]
 pub use preview_config_migration::*;
+pub use rich_input_ctrl_enter::*;
 pub use rules::*;
 pub use secrets::*;
 pub use session_restoration::*;
@@ -3511,6 +3513,72 @@ precmd_functions+=(set_title)
         ))
 }
 
+/// Checks that an OSC 7 escape sequence (`\e]7;file://host/path\a`) emitted by
+/// the running command updates the block's current working directory mid-command
+/// without waiting for the next prompt. This lets external tools that change
+/// directory (for example `wt switch` from worktrunk) keep Warp's per-block CWD
+/// in sync with the shell. See issue #9125.
+pub fn test_osc7_updates_current_working_directory() -> Builder {
+    new_builder()
+        .set_should_run_test(|| {
+            let (starter, _) = current_shell_starter_and_version();
+            matches!(
+                starter.shell_type(),
+                shell::ShellType::Bash | shell::ShellType::Zsh
+            )
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(clear_blocklist_to_remove_bootstrapped_blocks())
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0, /*tab_idx*/
+            // OSC 7 is only honored when the host portion matches the local
+            // hostname; substitute it dynamically so the test works on any
+            // machine.
+            r#"mkdir -p /tmp/osc7-test && cd /tmp/osc7-test && printf "\033]7;file://$(hostname)/tmp/osc7-test\a""#.to_string(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(
+            new_step_with_default_assertions("Assert OSC 7 updated the previous block's pwd")
+                .add_assertion(|app, window_id| {
+                    let terminal_view = single_terminal_view_for_tab(app, window_id, 0);
+                    terminal_view.read(app, |view, _ctx| {
+                        let model = view.model.lock();
+                        let last_finished_pwd = model
+                            .block_list()
+                            .blocks()
+                            .iter()
+                            .rev()
+                            .find(|block| block.finished() && !block.is_background())
+                            .and_then(|block| block.pwd().cloned());
+                        async_assert_eq!(
+                            Some("/tmp/osc7-test".to_string()),
+                            last_finished_pwd,
+                            "expected OSC 7 to set the printf block's pwd to /tmp/osc7-test"
+                        )
+                    })
+                })
+                // Locks in the fix for the user-visible regression Zach saw:
+                // the `WorkingDirectory` prompt chip text (read by
+                // `display_working_directory`, which feeds the vertical-tab
+                // subtitle) must be refreshed after OSC 7. Without
+                // `refresh_warp_prompt` in the `BlockWorkingDirectoryUpdated`
+                // path, the block's `pwd` updates but the chip text stays on
+                // the old CWD until the next `BlockCompleted`.
+                .add_assertion(|app, window_id| {
+                    let terminal_view = single_terminal_view_for_tab(app, window_id, 0);
+                    terminal_view.read(app, |view, ctx| {
+                        let displayed = view.display_working_directory(ctx);
+                        async_assert_eq!(
+                            Some("/tmp/osc7-test".to_string()),
+                            displayed,
+                            "expected the WorkingDirectory chip / tab subtitle to reflect the OSC 7 CWD"
+                        )
+                    })
+                }),
+        )
+}
+
 /// Checks that we focus the prompt after executing a command, regardless
 /// of if the find bar is open or not.
 pub fn test_input_focused_after_executing_command() -> Builder {
@@ -5829,6 +5897,101 @@ function prompt {{
         )
 }
 
+pub fn test_copy_block_command_and_output_honor_ps1_disabled() -> Builder {
+    let command = "echo WARP_COPY_E2E_OUTPUT";
+    new_builder()
+        .use_tmp_filesystem_for_test_root_directory()
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            command.into(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(
+            new_step_with_default_assertions("Select last block")
+                .with_keystrokes(&["cmdorctrl-up"])
+                .add_assertion(assert_selected_block_index_is_last_renderable()),
+        )
+        .with_steps(open_context_menu_for_selected_block())
+        .with_step(
+            new_step_with_default_assertions("Copy block copies command and output")
+                .with_click_on_saved_position("Copy")
+                .add_assertion(assert_clipboard_contains_string(format!(
+                    "{command}\nWARP_COPY_E2E_OUTPUT"
+                ))),
+        )
+}
+
+pub fn test_copy_block_command_and_output_honor_ps1_enabled() -> Builder {
+    let prompt_text = "this is my custom prompt";
+    let command = "echo WARP_PS1_COPY_E2E_OUTPUT";
+    new_builder()
+        // TODO(CORE-2732): Flakey on linux
+        .set_should_run_test(skip_if_powershell_core_2303)
+        .with_user_defaults(HashMap::from([(
+            HonorPS1::storage_key().to_owned(),
+            true.to_string(),
+        )]))
+        .with_setup(move |utils| {
+            let dir = utils.test_dir();
+            write_rc_files_for_test(
+                &dir,
+                format!(r#"export PS1="{prompt_text}""#),
+                [ShellRcType::Bash, ShellRcType::Zsh],
+            );
+            write_rc_files_for_test(
+                &dir,
+                format!(
+                    r#"
+function fish_prompt
+  echo -n "{prompt_text}"
+end
+"#
+                ),
+                [ShellRcType::Fish],
+            );
+            write_rc_files_for_test(
+                &dir,
+                format!(
+                    r#"
+function prompt {{
+    "{prompt_text}"
+}}
+"#
+                ),
+                [ShellRcType::PowerShell],
+            )
+        })
+        .with_step(
+            wait_until_bootstrapped_single_pane_for_tab(0).add_assertion(move |app, window_id| {
+                let input = single_input_view_for_tab(app, window_id, 0);
+                let input_text = input.read(app, |input, ctx| input.prompt_and_rprompt_text(ctx).0);
+
+                async_assert_eq!(input_text, prompt_text)
+            }),
+        )
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            command.into(),
+            ExpectedExitStatus::Success,
+            (),
+        ))
+        .with_step(
+            new_step_with_default_assertions("Select last block")
+                .with_keystrokes(&["cmdorctrl-up"])
+                .add_assertion(assert_selected_block_index_is_last_renderable()),
+        )
+        .with_steps(open_context_menu_for_selected_block())
+        .with_step(
+            new_step_with_default_assertions("Copy block includes PS1 prompt, command, and output")
+                .with_click_on_saved_position("Copy")
+                .add_assertion(assert_clipboard_contains_string(format!(
+                    "{prompt_text}{command}\nWARP_PS1_COPY_E2E_OUTPUT"
+                ))),
+        )
+}
+
 pub fn test_copy_prompt_from_input_honor_ps1_disabled() -> Builder {
     new_builder()
         .use_tmp_filesystem_for_test_root_directory()
@@ -5849,6 +6012,29 @@ pub fn test_copy_prompt_from_input_honor_ps1_disabled() -> Builder {
                 .with_click_on_saved_position("Copy prompt")
                 .add_assertion(assert_clipboard_contains_string("~".into())),
         )
+}
+
+pub fn test_warp_prompt_unsets_zsh_rprompt() -> Builder {
+    new_builder()
+        .set_should_run_test(|| {
+            let (starter, _) = current_shell_starter_and_version();
+            starter.shell_type() == shell::ShellType::Zsh
+        })
+        .with_user_defaults(HashMap::from([(
+            HonorPS1::storage_key().to_owned(),
+            false.to_string(),
+        )]))
+        .with_setup(|utils| {
+            let dir = utils.test_dir();
+            write_rc_files_for_test(&dir, r#"export RPROMPT="right prompt""#, [ShellRcType::Zsh]);
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "print -r -- ${+RPROMPT}".into(),
+            ExpectedExitStatus::Success,
+            ExactLine::from("0"),
+        ))
 }
 
 pub fn test_copy_prompt_from_input_honor_ps1_enabled() -> Builder {
