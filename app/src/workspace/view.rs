@@ -24536,6 +24536,116 @@ impl Workspace {
         None
     }
 
+    /// Returns the group the dragged tab is over along the active axis so it can
+    /// join it, or `None`. Vertical tabs inset both ends of the group rect by a
+    /// fixed margin (`LEADING_EDGE_MARGIN` / `TRAILING_EDGE_MARGIN`). Horizontal
+    /// tabs pivot entering and leaving on the header's midpoint; the trailing
+    /// edge anchors on the trailing spacer, since tab groups resize dynamically.
+    ///
+    /// Ported from `42effe840:view.rs:29024`. Distinct from `insertion_group`,
+    /// which serves the pane-drop path: this one drives `on_tab_drag`.
+    fn target_group_at_axis(
+        &self,
+        cursor: f32,
+        source_group: Option<TabGroupId>,
+        is_vertical: bool,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<TabGroupId> {
+        const LEADING_EDGE_MARGIN: f32 = 4.0;
+        const TRAILING_EDGE_MARGIN: f32 = 8.0;
+        self.tab_groups.keys().copied().find(|group_id| {
+            let id = if is_vertical {
+                vtab_group_position_id(*group_id)
+            } else {
+                htab_group_position_id(*group_id)
+            };
+            let Some(rect) = ctx.element_position_by_id(id) else {
+                return false;
+            };
+
+            // Vertical tabs: fixed margin at each end of the group rect.
+            if is_vertical {
+                return rect.min_y() + LEADING_EDGE_MARGIN <= cursor
+                    && cursor <= rect.max_y() - TRAILING_EDGE_MARGIN;
+            }
+
+            // An expanded group lays out as [header][spacer][members][spacer].
+            let collapsed = self
+                .tab_groups
+                .get(group_id)
+                .is_some_and(|group| group.collapsed);
+            // The last member's rect (expanded only), reused below.
+            let last_member_rect = (!collapsed)
+                .then(|| group_member_index_range(&self.tabs, *group_id))
+                .flatten()
+                .and_then(|(_, last)| ctx.element_position_by_id(tab_position_id(last)));
+            // Last member's right edge = trailing spacer's inner edge.
+            let last_member_max_x = last_member_rect.map(|last_rect| last_rect.max_x());
+            // The header is exactly one tab-slot wide so we can use current tab width
+            // to resolve its midpoint.
+            let header_mid_x = match last_member_rect {
+                Some(member) => rect.min_x() + member.width() / 2.,
+                None => (rect.min_x() + rect.max_x()) / 2.,
+            };
+
+            // Leading: entering and leaving both pivot on the header's midpoint.
+            let leading = header_mid_x;
+
+            // Trailing resolves two opposite needs. Your own group releases at
+            // its inner edge, so the trailing spacer is cushion before the cursor
+            // reaches the next tab (leaving doesn't instantly swap). Any other
+            // group accepts out to its outer edge, so dropping into its last slot
+            // stays easy.
+            let trailing = if Some(*group_id) == source_group {
+                last_member_max_x.unwrap_or(rect.max_x())
+            } else {
+                rect.max_x()
+            };
+
+            leading <= cursor && cursor <= trailing
+        })
+    }
+
+    /// Moves the tab at `from_index` to `to_index`, shifting the tabs between
+    /// them, and keeps `active_tab_index` pointing at the same tab.
+    ///
+    /// Unlike a swap this preserves the relative order of everything it steps
+    /// over, which is what keeps a tab group's members one contiguous block
+    /// when a tab is dragged into it. Ported from `42effe840:view.rs:7830`.
+    fn hop_tab_to_index(
+        &mut self,
+        from_index: usize,
+        to_index: usize,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if from_index == to_index || from_index >= self.tabs.len() || to_index >= self.tabs.len() {
+            return;
+        }
+        let tab = self.tabs.remove(from_index);
+        self.tabs.insert(to_index, tab);
+
+        let old_active = self.active_tab_index;
+        self.active_tab_index = if old_active == from_index {
+            // The active tab is the one we just moved; it follows to `to_index`.
+            to_index
+        } else if from_index < to_index {
+            // Forward move: tabs in `(from_index, to_index]` slid left by one.
+            if old_active > from_index && old_active <= to_index {
+                old_active - 1
+            } else {
+                old_active
+            }
+        } else if old_active >= to_index && old_active < from_index {
+            // Backward move: tabs in `[to_index, from_index)` slid right by one.
+            old_active + 1
+        } else {
+            // Active tab is outside the affected span; its index is unchanged.
+            old_active
+        };
+
+        ctx.notify();
+    }
+
     fn clamp_past_group(&self, index: usize) -> usize {
         // Record the group of the tab before our insertion.
         let Some(before) = index
@@ -25166,9 +25276,87 @@ impl Workspace {
             return;
         }
 
-        let new_index = if FeatureFlag::VerticalTabs.is_enabled()
-            && *TabSettings::as_ref(ctx).use_vertical_tabs
-        {
+        let use_vertical_tabs =
+            FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::as_ref(ctx).use_vertical_tabs;
+
+        // Group membership during a drag. Without this block a tab can never
+        // enter or LEAVE a group, and -- worse -- a tab dragged through a group
+        // lands inside its contiguous run without joining it, splitting the
+        // group. `tab_bar_slots` only collapses *contiguous* runs, so a split
+        // group renders as two headers sharing one id: the duplicate a user
+        // sees, where only the one whose range matches will close.
+        // Ported from `42effe840:view.rs:28635`.
+        if FeatureFlag::GroupedTabs.is_enabled() {
+            // Reassign membership when the dragged tab enters a different
+            // expanded group. Collapsed groups are handled by the safety-net
+            // hop below so we don't drop into it.
+            let midpoint_drag = if use_vertical_tabs {
+                (position.min_y() + position.max_y()) / 2.
+            } else {
+                (position.min_x() + position.max_x()) / 2.
+            };
+            let source_group = self.tabs[current_index].group_id;
+            let hovered_group =
+                self.target_group_at_axis(midpoint_drag, source_group, use_vertical_tabs, ctx);
+            let expanded_target =
+                hovered_group.filter(|gid| !self.tab_groups.get(gid).is_some_and(|g| g.collapsed));
+            // A pinned tab keeps its individual pin while dragging over a
+            // pinned group (it's committed on drop -- see the `DropTab` handler).
+            let was_pinned = self.tabs[current_index].pinned;
+            let target_group_pinned = expanded_target
+                .and_then(|gid| self.tab_groups.get(&gid))
+                .is_some_and(|g| g.pinned);
+            // Dragging a pinned tab into an unpinned group is not supported, as
+            // pinned items cannot leave the pinned area.
+            let pinned_into_unpinned_group =
+                was_pinned && expanded_target.is_some() && !target_group_pinned;
+
+            if expanded_target != source_group && !pinned_into_unpinned_group {
+                // A tab leaving a pinned group. If the tab is itself pinned the
+                // user is repositioning it within the pinned area and merely
+                // passed over a group, which does not count as leaving one.
+                let leaving_pinned_group = expanded_target.is_none()
+                    && source_group
+                        .and_then(|gid| self.tab_groups.get(&gid))
+                        .is_some_and(|g| g.pinned)
+                    && !was_pinned;
+
+                // Where a tab leaving a pinned group may next land.
+                let unpinned_region_start =
+                    leaving_pinned_group.then(|| self.pinned_boundary_index(&self.tabs));
+
+                // The bounds of the group the tab could be dragged into.
+                let target_group_range =
+                    expanded_target.and_then(|gid| group_member_index_range(&self.tabs, gid));
+
+                // Assign the tab to the group we're dragging over (or clear its
+                // group if none). This intentionally leaves the pin untouched:
+                // a pinned tab dragged into a pinned group keeps its pin for the
+                // duration of the drag and only loses it on drop.
+                self.assign_tab_to_group(current_index, expanded_target, ctx);
+
+                // Hop into the target group's contiguous block so the group stays
+                // one rendered container. Land at the near edge: the front when
+                // entering from above/left, the end when entering from below/right.
+                if let Some((first, last)) = target_group_range {
+                    let insert_at = if current_index < first {
+                        first - 1
+                    } else {
+                        last + 1
+                    };
+                    if insert_at != current_index {
+                        self.hop_tab_to_index(current_index, insert_at, ctx);
+                    }
+                } else if let Some(target) = unpinned_region_start {
+                    // Relocate the now-unpinned tab to the first unpinned slot so
+                    // the pinned region stays contiguous.
+                    self.move_tab_to_index(current_index, target, ctx);
+                }
+                return;
+            }
+        }
+
+        let new_index = if use_vertical_tabs {
             self.calculate_updated_tab_index_vertical(current_index, position, ctx)
         } else {
             self.calculate_updated_tab_index(current_index, position, ctx)
