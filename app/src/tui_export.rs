@@ -90,7 +90,7 @@ pub use crate::ai::blocklist::diff_storage::{
 };
 pub use crate::ai::blocklist::history_model::{
     AIQueryHistory, BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatusUpdate,
-    FORK_PREFIX, LoadedConversationData, PRE_REWIND_PREFIX,
+    FORK_PREFIX, ForkConversationError, LoadedConversationData, PRE_REWIND_PREFIX,
 };
 pub use crate::ai::blocklist::inline_action::code_diff_view::{
     DiffSessionType, FileDiff, convert_file_edits_to_file_diffs,

@@ -26,7 +26,8 @@ use warp::tui_export::{
     BlocklistAIInputModel, CLISubagentController, CLISubagentEvent, CLISubagentTarget,
     COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
     CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, GitHubRepoModel,
+    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, ForkConversationError,
+    GitHubRepoModel,
     GitRepoStatusModel, LLMId, LLMPreferences,
     LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
     LoadedConversationData, ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput,
@@ -303,6 +304,12 @@ const QUEUE_REQUIRES_CONVERSATION_HINT: &str = "/queue requires an active conver
 const QUEUE_REQUIRES_PROMPT_HINT: &str = "/queue requires a prompt argument";
 const QUEUE_QUEUED_HINT: &str = "Queued — will send when the current turn finishes";
 const FORK_REQUIRES_CONVERSATION_HINT: &str = "/fork requires an active conversation";
+/// Distinct from [`FORK_REQUIRES_CONVERSATION_HINT`]: a conversation IS selected,
+/// it just has nothing in it yet. `fork_conversation` reports this as
+/// `ForkConversationError::EmptyConversation`, and without this arm it fell through
+/// to the generic [`FORK_FAILED_HINT`], which reads like a malfunction rather than a
+/// refusal. The pin distinguishes the two the same way.
+const FORK_EMPTY_CONVERSATION_HINT: &str = "Nothing to fork \u{2014} start a conversation first.";
 const FORK_FAILED_HINT: &str = "Failed to fork the conversation";
 const FORKED_HINT: &str = "Forked conversation";
 const ORCHESTRATE_REQUIRES_CONVERSATION_HINT: &str = "/orchestrate requires an active conversation";
@@ -3926,6 +3933,18 @@ impl TuiTerminalSessionView {
             self.show_transient_hint(FORK_REQUIRES_CONVERSATION_HINT.to_owned(), ctx);
             return;
         };
+        // An empty conversation is a refusal, not a failure. Check it up front with the
+        // typed validator rather than inspecting the `anyhow::Error` that
+        // `fork_conversation` returns, matching the pin
+        // (`42effe840:crates/warp_tui/src/terminal_session_view.rs:4413`). Without this the
+        // case fell through to the generic `FORK_FAILED_HINT`, which reads like a
+        // malfunction rather than a refusal.
+        if let Err(ForkConversationError::EmptyConversation) =
+            BlocklistAIHistoryModel::validate_fork_source(&source)
+        {
+            self.show_transient_hint(FORK_EMPTY_CONVERSATION_HINT.to_owned(), ctx);
+            return;
+        }
         // `fork_conversation[_at_exchange]` copies the tasks under a new
         // conversation id and inserts the fork into the history model in memory.
         // `/fork-from` forks up to the chosen exchange (fork_from_exact_exchange

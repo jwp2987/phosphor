@@ -532,11 +532,15 @@ fn fork_slash_command_is_available_on_both_surfaces() {
 /// `/fork` needs something to branch from, so it must refuse — with a hint, not a silent
 /// no-op — when the session has nothing selected, and must still consume the typed command.
 ///
-/// The pin calls the refusal `FORK_EMPTY_CONVERSATION_HINT`; this fork's single guard is
-/// `FORK_REQUIRES_CONVERSATION_HINT` (`fork_current_conversation`'s `let Some(source) = …
-/// else`). The user-visible situation is the same one: a TUI session that has never submitted
-/// a prompt has no selected conversation at all, which is what "empty conversation" means
-/// here.
+/// A TUI session that has never submitted a prompt DOES have a selected conversation --
+/// it is simply empty -- so `fork_current_conversation`'s `let Some(source) = … else` guard
+/// (`FORK_REQUIRES_CONVERSATION_HINT`) is not the one that fires. `fork_conversation`
+/// returns `ForkConversationError::EmptyConversation`, which now has its own refusal hint
+/// rather than falling through to the generic `FORK_FAILED_HINT`.
+///
+/// This test asserted `FORK_REQUIRES_CONVERSATION_HINT` when it was written, on the stated
+/// assumption that no conversation exists at all. That assumption was wrong and the test had
+/// never been run. Corrected 2026-08-18 together with the missing production arm.
 #[test]
 fn fork_slash_command_rejects_an_empty_conversation() {
     App::test((), |mut app| async move {
@@ -552,7 +556,7 @@ fn fork_slash_command_rejects_an_empty_conversation() {
         view.read(&app, |view, ctx| {
             assert_eq!(
                 view.transient_hint.current().map(|(text, _)| text),
-                Some(super::FORK_REQUIRES_CONVERSATION_HINT),
+                Some(super::FORK_EMPTY_CONVERSATION_HINT),
             );
             assert!(view.input_view.as_ref(ctx).is_empty(ctx));
         });
