@@ -7,8 +7,15 @@
 // `persist_provider_key`) differs. See issues #392 / #225.
 use ai::LLMProvider;
 use clap::Parser;
+use warp::tui_export::register_tui_session_view_test_singletons;
+use warpui::platform::WindowStyle;
+use warpui::{AddWindowOptions, SingletonEntity};
+use warpui_core::App;
 
-use super::{TuiArgs, parse_resume_token};
+use super::{TuiArgs, create_terminal_session_after_login, parse_resume_token};
+use crate::root_view::RootTuiView;
+use crate::session_registry::TuiSessions;
+use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
 
 #[test]
 fn parses_provider_api_key_setup_flag() {
@@ -98,6 +105,36 @@ fn parses_resume_server_token() {
             .as_str(),
         token
     );
+}
+
+/// Startup bootstrap must not spawn a second terminal when one already exists. Upstream calls the
+/// bootstrap `ensure_terminal_session`; this fork names it `create_terminal_session_after_login`,
+/// but the guard (`!sessions.is_empty()` → bail) and therefore the behaviour under test is the same.
+#[test]
+fn terminal_bootstrap_is_idempotent_after_background_terminal_exists() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        app.update(add_test_semantic_selection);
+        app.update(crate::autoupdate::TuiAutoupdater::register);
+        let (window_id, root) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| RootTuiView::new(),
+            )
+        });
+        let sessions = app.add_singleton_model(|_| TuiSessions::new_for_test());
+        let (surface, manager) = add_test_terminal_session(&mut app, window_id);
+        app.update(|ctx| {
+            TuiSessions::register_session(&sessions, surface, manager, true, ctx);
+            create_terminal_session_after_login(&sessions, &root, ctx);
+            create_terminal_session_after_login(&sessions, &root, ctx);
+        });
+
+        app.read(|ctx| assert_eq!(TuiSessions::as_ref(ctx).len(), 1));
+    });
 }
 
 #[test]

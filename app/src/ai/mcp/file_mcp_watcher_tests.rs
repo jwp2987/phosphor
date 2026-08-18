@@ -1,12 +1,15 @@
 use super::{
     FileMCPConfigDiagnosticKind, FileMCPConfigParseOutcome, FileMCPWatcher, FileMCPWatcherEvent,
-    parse_mcp_config_file, substitute_env_vars,
+    config_change_flags, home_subdir_to_watch, parse_mcp_config_file, providers_in_scope,
+    substitute_env_vars,
 };
 use crate::ai::mcp::MCPProvider;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use futures::stream::AbortHandle;
 use repo_metadata::{
-    RepoMetadataModel, repositories::DetectedRepositories, watcher::DirectoryWatcher,
+    RepoMetadataModel,
+    repositories::DetectedRepositories,
+    watcher::{DirectoryWatcher, RepositoryUpdate, TargetFile},
 };
 use std::collections::{HashMap, HashSet};
 use std::env;
@@ -146,6 +149,80 @@ fn update_servers_from_config_file_aborts_previous_inflight_parse() {
             "the event actually applied must be the new parse's result"
         );
     });
+}
+
+/// A home-directory scan is scoped to the watcher it came from: Claude's config sits directly in
+/// `~` (so it needs no subdirectory watcher of its own), while Codex and Agents each live one level
+/// down and must be discovered by the watcher registered on that subdirectory.
+#[test]
+fn global_provider_initial_scans_cover_claude_codex_and_agents() {
+    let home = PathBuf::from("/home/test");
+
+    assert_eq!(home_subdir_to_watch(MCPProvider::Claude), None);
+    assert_eq!(
+        home.join(MCPProvider::Claude.home_config_path()),
+        home.join(".claude.json")
+    );
+
+    for (provider, subdir, config) in [
+        (MCPProvider::Codex, ".codex", ".codex/config.toml"),
+        (MCPProvider::Agents, ".agents", ".agents/.mcp.json"),
+    ] {
+        assert_eq!(home_subdir_to_watch(provider), Some(PathBuf::from(subdir)));
+        let discovered =
+            providers_in_scope(home.clone(), home.join(subdir)).collect::<HashSet<_>>();
+        assert!(
+            discovered.contains(&(provider, home.join(config))),
+            "{provider:?} config should be included in its home subdirectory scan"
+        );
+    }
+}
+
+/// A project watcher (`watched_dir == root_path`) sees every provider's project config.
+#[test]
+fn project_initial_scan_covers_each_supported_provider_config() {
+    let repo = PathBuf::from("/work/repository");
+    let discovered = providers_in_scope(repo.clone(), repo.clone()).collect::<HashSet<_>>();
+
+    for provider in [
+        // The fork names Warp's own provider `Zap`.
+        MCPProvider::Zap,
+        MCPProvider::Claude,
+        MCPProvider::Codex,
+        MCPProvider::Agents,
+    ] {
+        assert!(
+            discovered.contains(&(provider, repo.join(provider.project_config_path()))),
+            "{provider:?} project config should be included in a repository scan"
+        );
+    }
+}
+
+/// Incremental repository updates have to flag an added or deleted config for every provider, not
+/// just the one whose config path happens to be checked first.
+#[test]
+fn incremental_updates_detect_each_supported_provider_config() {
+    let repo = PathBuf::from("/work/repository");
+    for provider in [
+        // The fork names Warp's own provider `Zap`.
+        MCPProvider::Zap,
+        MCPProvider::Claude,
+        MCPProvider::Codex,
+        MCPProvider::Agents,
+    ] {
+        let config_path = repo.join(provider.project_config_path());
+        let mut added = RepositoryUpdate::default();
+        added
+            .added
+            .insert(TargetFile::new(config_path.clone(), false));
+        assert_eq!(config_change_flags(&added, &config_path), (false, true));
+
+        let mut deleted = RepositoryUpdate::default();
+        deleted
+            .deleted
+            .insert(TargetFile::new(config_path.clone(), false));
+        assert_eq!(config_change_flags(&deleted, &config_path), (true, false));
+    }
 }
 
 #[test]

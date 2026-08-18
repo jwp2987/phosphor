@@ -13,7 +13,7 @@ use warpui_core::{App, TuiView as _, TypedActionView as _, ViewHandle};
 
 use super::{TuiAskQuestionView, TuiAskQuestionViewAction};
 use crate::option_selector::TuiOptionSelectorAction;
-use crate::test_fixtures::add_test_action_model;
+use crate::test_fixtures::{TestHostView, add_test_action_model};
 
 fn question(
     id: &str,
@@ -217,6 +217,67 @@ fn focusing_an_active_question_delegates_to_the_selector() {
         assert!(app.read(|ctx| selector.is_focused(ctx)));
     });
 }
+
+/// The mirror image of `tui_permission_prompt_tests::permission_blocking_transition_does_not_replace_existing_focus`:
+/// there the action blocks while the view already exists, here the action is *already* blocked when
+/// the view is constructed. Materializing the question view for a background session must still not
+/// steal focus from whatever the user is looking at (QUALITY-1333).
+#[test]
+fn already_blocked_question_does_not_replace_existing_focus_when_materialized() {
+    App::test((), |mut app| async move {
+        app.add_singleton_model(|_| Appearance::mock());
+        let action_model = add_test_action_model(&mut app);
+        let conversation_id = AIConversationId::new();
+        let action_id = AIAgentActionId::from("materialized-background-question".to_owned());
+        let questions = vec![question(
+            "single",
+            "Which shell?",
+            false,
+            false,
+            &["zsh", "fish"],
+        )];
+        let action = AIAgentAction {
+            id: action_id.clone(),
+            task_id: TaskId::new("task".to_owned()),
+            action: AIAgentActionType::AskUserQuestion {
+                questions: questions.clone(),
+            },
+            requires_result: true,
+        };
+        let (window_id, foreground) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| TestHostView,
+            )
+        });
+        action_model.update(&mut app, |model, ctx| {
+            queue_tui_permission_action(model, action, conversation_id, ctx);
+        });
+        let action_model_for_view = action_model.clone();
+        app.update(|ctx| {
+            foreground.update(ctx, |_, ctx| ctx.focus_self());
+            ctx.add_typed_action_tui_view(window_id, move |ctx| {
+                TuiAskQuestionView::new(
+                    action_model_for_view,
+                    conversation_id,
+                    action_id,
+                    questions,
+                    ctx,
+                )
+            });
+        });
+
+        assert_eq!(
+            app.read(|ctx| ctx.focused_view_id(window_id)),
+            Some(foreground.id()),
+            "materializing an already-blocked background question must preserve foreground focus"
+        );
+    });
+}
+
 #[test]
 fn enter_selects_options_and_other_before_shift_enter_advances_multiselect() {
     App::test((), |mut app| async move {

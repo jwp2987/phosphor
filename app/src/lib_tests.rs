@@ -47,6 +47,32 @@ fn app_and_tui_accept_api_keys() {
     );
 }
 
+/// `LaunchMode::CommandLine` carries its API key inside `GlobalOptions` rather than in a variant
+/// field of its own, so it needs its own case: the CLI's `--api-key` must reach the same
+/// key-extraction path the GUI and TUI use.
+///
+/// Adapted: upstream asserts on `LaunchMode::auth_initialization()` returning
+/// `AuthInitialization::PendingApiKey`, which is part of the dropped cloud auth machinery. This
+/// fork extracts the key with `api_key_from_launch_mode` instead, so the assertion is on that.
+#[test]
+fn command_line_api_key_requires_validation() {
+    let command_line = LaunchMode::CommandLine {
+        command: CliCommand::Whoami,
+        global_options: GlobalOptions {
+            api_key: Some("cli-api-key".to_owned()),
+            ..Default::default()
+        },
+        debug: false,
+        is_sandboxed: false,
+        computer_use_override: None,
+    };
+
+    assert_eq!(
+        api_key_from_launch_mode(&command_line).as_deref(),
+        Some("cli-api-key")
+    );
+}
+
 #[test]
 fn launch_modes_select_expected_logging_frontend() {
     let tui = LaunchMode::Tui {

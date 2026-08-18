@@ -13,7 +13,7 @@ use super::{
     CURRENT_LINK_NAME, InstallLayout, InstallLock, LOCK_FILE_NAME, LOCK_OWNER_FILE_NAME,
     TuiAutoupdateStatus, UpdateOutcome, VERSION_LEASES_DIR_NAME, VersionDirState, VersionLease,
     create_unique_staging_dir_with, download_endpoint, is_complete_version_dir, latest_version_for,
-    settled_status, version_dir_state,
+    parse_safe_version_component, settled_status, version_dir_state,
 };
 #[cfg(unix)]
 use super::{
@@ -52,6 +52,54 @@ fn failed_check_preserves_pending_restart_status() {
         settled_status(&result, TuiAutoupdateStatus::PendingRestart),
         TuiAutoupdateStatus::PendingRestart
     );
+}
+
+/// The version string reported by the update server is joined straight onto `versions/`, so it has
+/// to be a single, safe path component.
+///
+/// Adapted: upstream tests a dedicated `is_safe_version_component` predicate that accepts any
+/// separator-free, non-reserved name (`"preview-1"`, `"A"`). This fork's gate is strictly narrower
+/// -- the string must also parse as a version -- so those two upstream "valid" cases are rejected
+/// here and are asserted as such rather than dropped. Upstream's Windows-only cases (`"CON"`, a
+/// trailing dot) are rejected here too, for the different reason that they do not parse; the
+/// Windows install layout itself is deferred.
+#[test]
+fn version_directory_names_are_single_safe_components() {
+    for valid in [
+        "v0.2026.07.28.12.00.dev_00",
+        "v0.2026.07.29.09.05.stable_00",
+        // openWarp-style OSS tag, accepted by `ParsedVersion`'s OSS fallback.
+        "v2026.05.26.2",
+    ] {
+        assert!(
+            parse_safe_version_component(valid).is_ok(),
+            "{valid} should be accepted"
+        );
+    }
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "v1..dev",
+        "../v1",
+        "nested/v1",
+        "nested\\v1",
+        "version:stream",
+        "CON",
+        "trailing.",
+        "contains space",
+        // Rejected by this fork but accepted upstream, per the note above.
+        "preview-1",
+        "A",
+        // A well-formed version is still refused once it can escape `versions/`; `ParsedVersion`'s
+        // regex is unanchored, so this parses and only the separator check stops it.
+        "../v0.2026.07.28.12.00.dev_00",
+    ] {
+        assert!(
+            parse_safe_version_component(invalid).is_err(),
+            "{invalid} should be rejected"
+        );
+    }
 }
 
 fn layout(root: &Path, running_version: &str) -> InstallLayout {

@@ -478,6 +478,24 @@ enum CheckDecision {
     NeedsInstall { latest_version: String },
 }
 
+/// Parses a server-supplied version string that is about to be used as a
+/// *single* directory component under `versions/`.
+///
+/// Both halves matter: it has to be a version this build understands, and it
+/// must not be able to escape `versions/`. `ParsedVersion`'s regex is
+/// unanchored, so the separator rejection is not redundant — `../v0.…dev_00`
+/// parses fine and would otherwise be joined onto `versions/`.
+///
+/// Extracted verbatim from [`check_for_update`] so the rule can be tested
+/// without a live update server; the accept/reject decision is unchanged.
+fn parse_safe_version_component(value: &str) -> Result<ParsedVersion> {
+    let parsed = ParsedVersion::try_from(value)?;
+    if value.contains(['/', '\\']) {
+        bail!("version {value:?} is not a single path component");
+    }
+    Ok(parsed)
+}
+
 /// Performs the check phase of an update pass: a single lightweight
 /// `/client_version` request plus local filesystem checks, deciding whether
 /// the (heavier) install phase is needed.
@@ -490,11 +508,8 @@ async fn check_for_update(layout: InstallLayout) -> Result<CheckDecision> {
 
     // Version strings become directory names below; reject anything that
     // doesn't parse as a Warp version outright.
-    let latest_parsed = ParsedVersion::try_from(latest_version.as_str())
+    let latest_parsed = parse_safe_version_component(&latest_version)
         .with_context(|| format!("invalid latest version {latest_version:?}"))?;
-    if latest_version.contains(['/', '\\']) {
-        bail!("invalid latest version {latest_version:?}");
-    }
 
     // Only ever move strictly forward. If the server reports an older (or
     // equal) version — e.g. a rollback — keep the running build; users can

@@ -504,10 +504,7 @@ impl FileMCPWatcher {
         let mut configs_to_update = Vec::new();
 
         for (provider, config_path) in providers_in_scope(root_path.clone(), watched_dir.clone()) {
-            let was_deleted = update.deleted.iter().any(|f| f.path == config_path)
-                || update.moved.values().any(|f| f.path == config_path);
-            let was_added = update.added_or_modified().any(|f| f.path == config_path)
-                || update.moved.keys().any(|f| f.path == config_path);
+            let (was_deleted, was_added) = config_change_flags(&update, &config_path);
             configs_to_update.push((provider, config_path, was_deleted, was_added));
         }
 
@@ -584,6 +581,20 @@ impl FileMCPWatcher {
         );
         self.parse_abort_handles.insert(key, parse.abort_handle());
     }
+}
+
+/// Returns `(was_deleted, was_added)` for `config_path` given a repository update.
+///
+/// A move counts as a deletion of its source and an addition of its destination, so both halves of
+/// `moved` have to be consulted alongside the plain added/deleted sets.
+fn config_change_flags(update: &RepositoryUpdate, config_path: &Path) -> (bool, bool) {
+    let was_deleted = update.deleted.iter().any(|file| file.path == config_path)
+        || update.moved.values().any(|file| file.path == config_path);
+    let was_added = update
+        .added_or_modified()
+        .any(|file| file.path == config_path)
+        || update.moved.keys().any(|file| file.path == config_path);
+    (was_deleted, was_added)
 }
 
 /// Returns an iterator of `(provider, config_path)` pairs for MCP providers whose configuration file

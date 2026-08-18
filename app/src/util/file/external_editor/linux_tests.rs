@@ -58,6 +58,29 @@ fn test_exec_ending_on_percent_fails() {
 }
 
 #[test]
+fn test_unterminated_quote_errors() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec="unterminated %f
+    "#;
+    with_files(
+        "test_unterminated_quote_errors",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let result = metadata.build_default_command(&content);
+            // The fork tokenizes Exec= with `shell_words::split` instead of a hand-rolled
+            // tokenizer, so an unterminated quote surfaces as the generic `MalformedFieldCode`
+            // rather than upstream's dedicated `UnterminatedQuote` variant.
+            assert!(matches!(result, Err(DesktopExecError::MalformedFieldCode)));
+            Ok(())
+        },
+    )
+}
+
+#[test]
 fn test_basic_exec_no_field_codes() {
     let data = r#"
     [Desktop Entry]
