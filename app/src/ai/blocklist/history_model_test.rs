@@ -1308,6 +1308,11 @@ fn test_find_by_token_after_initialize_output_for_response_stream() {
 #[test]
 fn test_find_by_token_after_assign_run_id_for_conversation() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 

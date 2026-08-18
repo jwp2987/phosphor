@@ -7,14 +7,36 @@ pub fn initialize_settings_for_tests(app: &mut App) {
     initialize_settings_for_tests_with_mode(app, ExecutionMode::App, false);
 }
 
+/// Registers what `BlocklistAIHistoryModel::start_new_child_conversation`'s persist path
+/// legitimately needs: `GeneralSettings` (it reads `persist_conversations`) and the
+/// sqlite-backed `GlobalResourceHandlesProvider` the write goes through.
+///
+/// **Idempotent on purpose.** Tests reach this path from harnesses that already register
+/// some or all of these -- `initialize_app_for_terminal_view`, `mock_pane_group`,
+/// `initialize_app` -- and `add_singleton_model` debug-asserts on a second registration
+/// for the same type ("was called twice for ..."). Registering blindly turned 51 green
+/// tests into 12 differently-red ones, so each half is guarded by `has_singleton_model`
+/// and this is safe to call before or after any other initializer.
+///
+/// Deliberately does NOT register `QueuedQueryModel` or `FileModel`, even though the
+/// restore counterpart of this persist reaches both. Constructing them reads
+/// `BlocklistAIHistoryModel`, which most callers register *after* this helper -- adding
+/// them here took the suite from 8 failures to 44. They belong at the individual call
+/// sites that need them, after the history model exists.
 #[cfg(test)]
 pub fn initialize_history_persistence_for_tests(app: &mut App) {
+    use crate::terminal::general_settings::GeneralSettings;
     use crate::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 
-    initialize_settings_for_tests(app);
+    if !app.read(|ctx| ctx.has_singleton_model::<GeneralSettings>()) {
+        initialize_settings_for_tests(app);
+    }
 
-    let global_resource_handles = GlobalResourceHandles::mock(app);
-    app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+    if !app.read(|ctx| ctx.has_singleton_model::<GlobalResourceHandlesProvider>()) {
+        let global_resource_handles = GlobalResourceHandles::mock(app);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+    }
+
 }
 
 #[cfg(test)]

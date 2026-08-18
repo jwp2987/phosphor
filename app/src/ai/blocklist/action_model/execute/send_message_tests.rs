@@ -50,6 +50,11 @@ fn initialize_history(app: &mut App) -> ModelHandle<BlocklistAIHistoryModel> {
 fn execute_delivers_to_the_target_mailbox_and_reports_success() {
     with_isolated_mailbox(|mailbox_root| {
         App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
             let terminal_view_id = EntityId::new();
             let history = initialize_history(&mut app);
             let executor = app.add_model(|_| SendMessageToAgentExecutor::new());

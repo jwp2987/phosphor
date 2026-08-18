@@ -993,6 +993,16 @@ pub async fn run_apply_patch_cached(
 /// Before the first commit there is no HEAD to restore an index entry from and
 /// `git restore --staged` fails; `git rm --cached` is the equivalent there, and
 /// it is only reached on that failure so a genuine error is still surfaced.
+///
+/// Git reports the missing HEAD as `fatal: could not resolve 'HEAD'` — the ref
+/// name is quoted, and the quoting style has changed between git releases, so
+/// the fallback matches the two stable halves of the message instead of one
+/// fixed string.
+#[cfg(feature = "local_fs")]
+fn is_unresolvable_head_error(message: &str) -> bool {
+    message.contains("could not resolve") && message.contains("HEAD")
+}
+
 #[cfg(feature = "local_fs")]
 pub async fn run_stage_paths(
     repo_path: &Path,
@@ -1014,7 +1024,7 @@ pub async fn run_stage_paths(
 
     match run_git_command(repo_path, &args).await {
         Ok(output) => Ok(output),
-        Err(err) if unstage && err.to_string().contains("could not resolve HEAD") => {
+        Err(err) if unstage && is_unresolvable_head_error(&err.to_string()) => {
             // Pre-first-commit repo: the index has no HEAD version to restore
             // from, so removing the entry outright is what "unstage" means.
             let mut rm_args: Vec<&str> = vec!["rm", "--cached", "--"];

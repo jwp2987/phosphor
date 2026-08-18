@@ -5507,6 +5507,15 @@ fn test_opening_a_pane_tab_inside_a_group_joins_it_instead_of_splitting_it() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Opening a file/notebook pane reads `FileModel`. Registered here rather than in the
+        // shared helper, which runs before some harnesses register their prerequisites.
+        app.add_singleton_model(warp_files::FileModel::new);
 
         let workspace = mock_workspace(&mut app);
         workspace.update(&mut app, |workspace, ctx| {
@@ -5571,6 +5580,15 @@ fn test_opening_a_pane_tab_outside_a_group_stays_ungrouped() {
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Opening a file/notebook pane reads `FileModel`. Registered here rather than in the
+        // shared helper, which runs before some harnesses register their prerequisites.
+        app.add_singleton_model(warp_files::FileModel::new);
 
         let workspace = mock_workspace(&mut app);
         workspace.update(&mut app, |workspace, ctx| {

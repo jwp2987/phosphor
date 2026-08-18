@@ -5311,6 +5311,12 @@ fn status_in_progress_auto_opens_rich_input_after_blocked() {
 fn cli_session_status_updates_active_child_conversation() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
@@ -8239,6 +8245,12 @@ fn updated_conversation_metadata_refreshes_selected_conversation_pane_title() {
 fn cli_session_status_updates_single_child_conversation_without_agent_view() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);
@@ -8341,6 +8353,12 @@ fn cli_session_status_updates_single_child_conversation_without_agent_view() {
 fn cli_session_stop_failure_marks_child_conversation_errored() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let _agent_view = FeatureFlag::AgentView.override_enabled(true);
 
         let terminal = add_window_with_terminal(&mut app, None);

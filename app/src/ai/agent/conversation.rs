@@ -4116,7 +4116,13 @@ impl AIConversation {
                 is_background: false,
                 prompt_snapshot: None,
                 ai_metadata,
-                is_local: Some(true),
+                // Conversation-derived command blocks have no session provenance, so
+                // `restored_block_was_local` must stay unset. `insert_restored_block`
+                // restores at `PostBootstrapPrecmd`, where `set_restored_block_was_local`
+                // debug-asserts; and `contains_restored_remote_blocks` reads this via
+                // `unwrap_or(true)`, so `None` and `Some(true)` are behaviourally identical
+                // for every consumer. Matches the pin (42effe840).
+                is_local: None,
                 agent_view_visibility: Some(
                     AgentViewVisibility::new_from_conversation(self.id).into(),
                 ),

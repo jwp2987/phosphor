@@ -382,6 +382,17 @@ fn test_reattach_panes_restores_hidden_child_when_parent_is_already_fullscreen()
 
     App::test((), |mut app| async move {
         let pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         pane_group.update(&mut app, |panes, ctx| {
             let parent_pane_id = get_newly_created_pane_id(panes, &[]);
@@ -427,6 +438,17 @@ fn test_restore_closed_pane_restores_hidden_child_when_parent_is_already_fullscr
 
     App::test((), |mut app| async move {
         let pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         pane_group.update(&mut app, |panes, ctx| {
             let parent_pane_id = get_newly_created_pane_id(panes, &[]);
@@ -481,6 +503,17 @@ fn test_replace_pane_restores_hidden_child_when_replacement_is_already_fullscree
 
     App::test((), |mut app| async move {
         let pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         pane_group.update(&mut app, |panes, ctx| {
             let original_pane_id = get_newly_created_pane_id(panes, &[]);
@@ -520,6 +553,17 @@ fn test_ensure_hidden_child_agent_pane_skips_child_owned_by_another_pane_group()
 
     App::test((), |mut app| async move {
         let parent_pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
         let other_pane_group = additional_mock_pane_group(&mut app);
 
         let parent_conversation_id = parent_pane_group.update(&mut app, |panes, ctx| {
@@ -592,6 +636,17 @@ fn test_restored_hidden_child_pane_reapplies_ambient_task_id_to_controller() {
 
     App::test((), |mut app| async move {
         let pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         pane_group.update(&mut app, |panes, ctx| {
             let parent_pane_id = get_newly_created_pane_id(panes, &[]);
@@ -634,6 +689,17 @@ fn test_pane_group_restore_loop_keeps_orchestration_topology_and_materializes_ch
 
     App::test((), |mut app| async move {
         let pane_group = mock_pane_group(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        // Restoring the persisted child reaches
+        // `TerminalView::maybe_send_lrc_queued_prompts_after_subagent_handoff`, which reads
+        // `QueuedQueryModel`. Registered here rather than in the shared helper: constructing
+        // it reads `BlocklistAIHistoryModel`, so it must come after the harness above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         let (
             parent_pane_id,

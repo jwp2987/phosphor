@@ -398,6 +398,11 @@ fn breadcrumb_ids_show_only_root_when_parent_is_root() {
     use warpui::App;
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let (history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
         history_model.read(&app, |history, _| {
             assert_eq!(breadcrumb_ids(history, mid_id), (Some(root_id), None));
@@ -410,6 +415,11 @@ fn breadcrumb_ids_show_root_and_parent_when_two_levels_deep() {
     use warpui::App;
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let (history_model, root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
         history_model.read(&app, |history, _| {
             assert_eq!(
@@ -425,6 +435,11 @@ fn breadcrumb_ids_are_empty_at_the_root() {
     use warpui::App;
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let (history_model, root_id, _mid_id, _grandchild_id) = build_three_level_tree(&mut app);
         history_model.read(&app, |history, _| {
             assert_eq!(breadcrumb_ids(history, root_id), (None, None));
@@ -437,6 +452,11 @@ fn drill_down_anchor_is_the_parent_level_for_a_leaf() {
     use warpui::App;
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let (_history_model, _root_id, mid_id, grandchild_id) = build_three_level_tree(&mut app);
         app.read(|ctx| {
             let grandchild = BlocklistAIHistoryModel::as_ref(ctx)
@@ -456,6 +476,11 @@ fn drill_down_anchor_is_the_node_itself_when_it_has_children() {
     use warpui::App;
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let (_history_model, root_id, mid_id, _grandchild_id) = build_three_level_tree(&mut app);
         app.read(|ctx| {
             let history = BlocklistAIHistoryModel::as_ref(ctx);
@@ -483,6 +508,11 @@ fn drill_down_anchor_matches_root_anchoring_at_depth_one() {
     use warpui::{App, EntityId};
 
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let root_id = history_model.update(&mut app, |history, ctx| {
@@ -573,6 +603,12 @@ fn conversation_agent_id_assignment_rerenders_the_pill_bar() {
 
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Must come AFTER the harness above: the helper
+        // guards on `has_singleton_model`, so calling it first would let that harness
+        // re-register the same singletons and trip the debug-assert.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal = add_window_with_terminal(&mut app, None);
         let terminal_view_id = terminal.read(&app, |terminal, _| terminal.id());
         let agent_view_controller =

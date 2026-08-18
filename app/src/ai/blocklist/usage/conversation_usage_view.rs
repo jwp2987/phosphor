@@ -998,6 +998,11 @@ mod tests {
     #[test]
     fn handle_action_toggles_details_and_show_more_and_resets_on_collapse() {
         App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which reads
+        // `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
             app.add_singleton_model(|_| Appearance::mock());
             let terminal_view_id = warpui::EntityId::new();
             let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());

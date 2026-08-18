@@ -668,12 +668,20 @@ impl TerminalView {
         // This runs *before* `restore_missing_cli_subagent_blocks_for_conversation` so that
         // function's `block_with_id` guard sees the CLI subagent snapshots we just inserted
         // and doesn't add them a second time.
+        //
+        // Unlike the pin, this fork also reaches here from panes whose blocklist was already
+        // seeded with the same serialized blocks at construction time (new-pane init and
+        // `TerminalView::new_for_test`). Inserting unconditionally would append a second block
+        // carrying an id already in `block_id_to_block_index`, so skip anything already present.
         let serialized_items = restored.ai_conversation.to_serialized_blocklist_items();
         if !serialized_items.is_empty() {
             let mut model = self.model.lock();
             let block_list = model.block_list_mut();
             for item in &serialized_items {
                 let SerializedBlockListItem::Command { block } = item;
+                if block_list.block_with_id(&block.id).is_some() {
+                    continue;
+                }
                 block_list.insert_restored_block(block);
             }
         }

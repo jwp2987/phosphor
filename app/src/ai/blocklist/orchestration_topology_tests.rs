@@ -8,6 +8,11 @@ use crate::ai::blocklist::BlocklistAIHistoryModel;
 #[test]
 fn participant_resolution_uses_the_direct_parent_as_orchestrator() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let surface_id = EntityId::new();
         let root_run_id = Uuid::new_v4().to_string();
@@ -113,6 +118,11 @@ fn pill_order_keys_sort_done_conversations_by_most_recent_first() {
 #[test]
 fn descendant_conversation_ids_in_spawn_order_flattens_nested_children_preorder() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -270,6 +280,11 @@ fn adjacent_orchestration_child_navigation_uses_pinned_first_order() {
 #[test]
 fn orchestration_aware_status_uses_aggregated_status_for_known_parent() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -338,6 +353,11 @@ fn orchestration_aware_status_uses_direct_status_for_non_parent() {
 #[test]
 fn has_local_orchestrated_children_detects_active_local_children() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -467,6 +487,11 @@ fn descendant_conversation_ids_in_spawn_order_returns_empty_without_children() {
 #[test]
 fn adjacent_orchestration_child_navigation_enters_child_list_from_orchestrator() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (_, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -495,6 +520,11 @@ fn adjacent_orchestration_child_navigation_enters_child_list_from_orchestrator()
 #[test]
 fn adjacent_orchestration_child_navigation_wraps_within_child_list() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (_, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -523,6 +553,11 @@ fn adjacent_orchestration_child_navigation_wraps_within_child_list() {
 #[test]
 fn adjacent_orchestration_child_navigation_noops_for_single_child() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -607,6 +642,11 @@ fn build_orchestrator_with_two_children(
 #[test]
 fn aggregated_status_is_in_progress_when_any_descendant_is_running() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -647,6 +687,11 @@ fn aggregated_status_is_in_progress_when_any_descendant_is_running() {
 #[test]
 fn aggregated_status_prefers_blocked_over_terminal_states() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -691,6 +736,11 @@ fn aggregated_status_prefers_blocked_over_terminal_states() {
 #[test]
 fn aggregated_status_falls_back_to_worst_terminal_outcome() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -730,6 +780,11 @@ fn aggregated_status_falls_back_to_worst_terminal_outcome() {
 #[test]
 fn aggregated_status_is_cancelled_when_no_errors_present() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -767,6 +822,11 @@ fn aggregated_status_is_cancelled_when_no_errors_present() {
 #[test]
 fn aggregated_status_is_success_when_orchestrator_and_all_descendants_succeeded() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -804,6 +864,11 @@ fn aggregated_status_is_success_when_orchestrator_and_all_descendants_succeeded(
 #[test]
 fn aggregated_status_respects_orchestrator_own_in_progress_state() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -848,6 +913,11 @@ fn aggregated_status_respects_orchestrator_own_in_progress_state() {
 #[test]
 fn aggregated_status_is_waiting_when_orchestrator_yields_and_children_succeeded() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -889,6 +959,11 @@ fn aggregated_status_is_waiting_when_orchestrator_yields_and_children_succeeded(
 #[test]
 fn aggregated_status_prefers_parent_waiting_over_descendant_in_progress() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -927,6 +1002,11 @@ fn aggregated_status_prefers_parent_waiting_over_descendant_in_progress() {
 #[test]
 fn aggregated_status_prefers_cancelled_parent_over_descendant_waiting_for_events() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -967,6 +1047,11 @@ fn aggregated_status_prefers_cancelled_parent_over_descendant_waiting_for_events
 #[test]
 fn aggregated_status_prefers_errored_parent_over_descendant_waiting_for_events() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -1006,6 +1091,11 @@ fn aggregated_status_prefers_errored_parent_over_descendant_waiting_for_events()
 #[test]
 fn aggregated_status_returns_in_progress_when_parent_is_in_progress_too() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -1047,6 +1137,11 @@ fn aggregated_status_returns_in_progress_when_parent_is_in_progress_too() {
 #[test]
 fn aggregated_status_prefers_blocked_over_waiting_for_events() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -1091,6 +1186,11 @@ fn aggregated_status_prefers_blocked_over_waiting_for_events() {
 #[test]
 fn aggregated_status_prefers_waiting_for_events_over_error() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
@@ -1136,6 +1236,11 @@ fn adjacent_orchestration_child_navigation_cycles_whole_tree_from_grandchild() {
     // Navigation must root at the TOP of the tree (not one parent hop), so
     // cycling from a grandchild covers the root and every descendant.
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -1195,6 +1300,11 @@ fn adjacent_orchestration_child_navigation_cycles_whole_tree_from_grandchild() {
 #[test]
 fn child_conversations_in_pill_order_returns_direct_children_only() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let terminal_view_id = EntityId::new();
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
 
@@ -1238,6 +1348,11 @@ fn child_conversations_in_pill_order_returns_direct_children_only() {
 #[test]
 fn loaded_subtree_rollup_excludes_unloaded_descendants_from_the_count() {
     App::test((), |mut app| async move {
+        // `start_new_child_conversation` persists the new child conversation, which
+        // reads `GeneralSettings::persist_conversations` and then the sqlite-backed
+        // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+        // singletons it legitimately needs.
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let (terminal_view_id, orchestrator_id, child_a, _child_b) =
             build_orchestrator_with_two_children(&mut app, &history_model);
