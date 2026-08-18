@@ -47,6 +47,9 @@ pub enum PaneViewEvent {
         origin: ActionOrigin,
         tab_hover_index: TabBarHoverIndex,
         hidden_pane_preview_direction: Direction,
+        /// Drag cursor rect, forwarded to the workspace so it can resolve which
+        /// tab group a `BeforeTab` insertion lands in.
+        drag_position: pathfinder_geometry::rect::RectF,
     },
     PaneDraggedOutsideTabBarOrPaneGroup,
     PaneDragEnded,
@@ -289,6 +292,7 @@ impl<P: BackingView> PaneView<P> {
                 origin,
                 tab_hover_index,
                 hidden_pane_preview_direction,
+                drag_position,
             } => {
                 // Adds a neutral background to the pane if it's being dragged over the workspace tab group.
                 if matches!(origin, ActionOrigin::Pane) {
@@ -299,6 +303,7 @@ impl<P: BackingView> PaneView<P> {
                     origin: *origin,
                     tab_hover_index: *tab_hover_index,
                     hidden_pane_preview_direction: *hidden_pane_preview_direction,
+                    drag_position: *drag_position,
                 });
                 ctx.notify();
             }

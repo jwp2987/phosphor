@@ -72,6 +72,9 @@ pub enum Event<A: ActionPayload, B: ActionPayload> {
         origin: ActionOrigin,
         tab_hover_index: TabBarHoverIndex,
         hidden_pane_preview_direction: Direction,
+        /// Drag cursor rect, forwarded to the workspace so it can resolve which
+        /// tab group a `BeforeTab` insertion lands in.
+        drag_position: RectF,
     },
     /// The pane header was dragged over some part of the terminal that is not the pane group
     /// or tab bar
@@ -894,6 +897,7 @@ impl<P: BackingView> TypedActionView for PaneHeader<P> {
                         } else {
                             Direction::Left
                         },
+                        drag_position: *drag_position,
                     });
                 }
                 PaneDragDropLocation::PaneGroup(target_id) => {
