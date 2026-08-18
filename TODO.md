@@ -2380,6 +2380,71 @@ moving the pin:
       **REFUTATION AUDIT 2026-08-17 (v0.1.0, oracle-backed)** — Confirmed and re-measured: guard exits 0; independent count is 1,856 `Zap` / 285 `Oz` in `.rs` (entry says ~1,820/~271, within its own tolerance). `Harness::Oz` carries `#[value(name = "oz")]` — a real clap wire surface; `MCPProvider::Zap` derives no serde, so it is internal-only. The carve-out reasoning holds.
 
 ### Defects — user-visible
+**FOUND 2026-08-17 by the oracle-backed refutation fleet.** Each was
+confirmed by an agent tasked to REFUTE it, not to confirm it, and
+spot-checked against the pin. None was visible in any ledger count.
+
+- [ ] **Child/orchestration agents do not survive a restart.** Four
+      independent audits converged on one subsystem; three separate
+      failures compound:
+      (a) `start_new_child_conversation` (`app/src/ai/blocklist/history_model.rs:511-546`)
+      never calls `persist_conversation_state`; the pin does, at its `:578`.
+      A child spawned via `/orchestrate` that has not yet taken a turn is
+      absent from SQLite, so a crash or restart drops it and its parent link.
+      **One-line fix, matches the pin.**
+      (b) `restore_conversations` (`:1021-1055`) indexes `children_by_parent`
+      only by `parent_conversation_id()`, dropping the `parent_agent_id`
+      fallback that `resolved_parent_conversation_id_for_conversation`
+      (`:555-573`) already uses. The fork's own commit `1a351db1b` (#383)
+      states this data shape occurs: "a child spawned by an agent run carries
+      `parent_agent_id` and no `parent_conversation_id`". Such a child is
+      invisible to the parent's pill bar, status card and pane group after
+      restore. **One-line fix, matches the pin.**
+      (c) No lazy hidden-child-pane materialisation.
+      `create_missing_child_agent_panes` runs once from `new_internal`
+      (`app/src/pane_group/mod.rs:2540`) and is never re-invoked by
+      `reattach_panes` (`:6082`), `replace_pane` (`:4163`) or
+      `restore_closed_pane` (`:4557`). The pin's
+      `ensure_hidden_child_agent_pane_for_conversation` exists here only in
+      comments describing its absence. **Larger; 9 ledger rows depend on it.**
+- [ ] **Cross-window tab drag accepts a drop on an inactive tab bar.**
+      `tab_bar_rects_for_window` (`app/src/workspace/view.rs:23886-23897`)
+      unions `TAB_BAR_POSITION_ID` and `VERTICAL_TABS_PANEL_POSITION_ID`
+      unconditionally, and all three consumers hit-test the union. With
+      vertical tabs on, the horizontal strip still renders (toolbar only, no
+      tabs); dragging a tab from another window over it is accepted, an
+      insertion ghost appears at the top or bottom of the *vertical* list, and
+      releasing drops the tab there. Both `vertical_tabs` and
+      `drag_tabs_to_windows` are in `app/Cargo.toml`'s `default`. The pin
+      guards this with `active_tab_bar_position_id` (`42effe840:view.rs:29443`),
+      whose doc comment says the bug shipped upstream once already. Fork-original
+      code (`f2e0a1d6f`, #9275), not unported.
+- [ ] **Traffic-light space regression (#10139) is live.**
+      `app/src/workspace/view.rs:17936-17940` ties the reservation to
+      `vertical_tabs_active || !right_panel_open`; the pin's fixed predicate is
+      `side == TrafficLightSide::Right` alone (`42effe840:view.rs:29252`).
+      Divergent in exactly one state — vertical tabs off (**the default**) with
+      the right panel open — where window controls overlap tab-bar content.
+      **Not macOS**: `traffic_lights.rs:70` returns `Left` there, so the branch
+      is dead; it bites Windows and non-tiling-WM Linux. Inherited from
+      `0dbd3d567` and never revisited.
+- [ ] **Autoupdate version-component guard is weaker than the pin's.**
+      `crates/warp_tui/src/autoupdate.rs:490-497` gates on
+      `ParsedVersion::try_from` plus `contains(['/', '\\'])`; the pin uses
+      `is_safe_version_component` — an ASCII allowlist with `..`, reserved-name
+      and trailing-dot rejection plus `Path::components()`. The raw server
+      string is joined at `:525`, so junk around a valid version survives into a
+      directory name. **Not exploitable today**: `oss.rs:42` sets
+      `autoupdate_config: None` and `server_root_url()` is the reserved
+      `192.0.2.0:9`, so the fetch is severed in the only shipped binary. Note
+      `VERSION_RE` is unanchored in the pin too — the regex is not the defect,
+      the replaced guard is.
+- [ ] **`request_shell_completion` has no guard against other inline menus.**
+      `crates/warp_tui/src/terminal_session_view/completions.rs:91-97` checks
+      only `completions_menu.is_open`, so Tab is not consumed by an existing
+      non-completion menu. The module doc lists two deliberate deviations from
+      the pin and this is not one of them. Needs production code.
+
 
 - [x] **#587 — `(key connected)` renders only on DISABLED models.** Inverted.
       **FIXED, pending merge** — on `repin-gap-keymarker`. `menu_result_row` now
