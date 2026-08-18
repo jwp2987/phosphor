@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **18 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **19 commit(s) since**
 
 | guard | |
 |---|---|
@@ -52,15 +52,15 @@ this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
 - **~87.0% of the pin's non-cloud tests exist here** (8076 of ~9279)
-- **~95.3% are present or deliberately resolved** (adding 647 declined, 61 divergent, 61 covered-elsewhere)
+- **~95.4% are present or deliberately resolved** (adding 655 declined, 61 divergent, 61 covered-elsewhere)
 
 ## Ledger
 
 | verdict | tests |
 |---|---:|
 | CLOUD | 1255 |
-| DECLINED | 647 |
-| MISSING-SUBSYSTEM | 76 |
+| DECLINED | 655 |
+| MISSING-SUBSYSTEM | 69 |
 | DIVERGENT | 61 |
 | COVERED-ELSEWHERE | 61 |
 | UNPARSED | 0 |
@@ -78,7 +78,7 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 
 | source | open work | authority |
 |---|---:|---|
-| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **76 tests** | primary; a test is open until ported/declined/covered/divergent |
+| `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **69 tests** | primary; a test is open until ported/declined/covered/divergent |
 | `TODO.md` checkboxes | **48 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
 
-> **Check the gap:** the ledger has 76 open tests; `TODO.md` tracks 62 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
+> **Check the gap:** the ledger has 69 open tests; `TODO.md` tracks 62 items total. On 2026-08-11 this file reported `MISSING-SUBSYSTEM 50` and `37 open` at the same time, and the status given to the maintainer quoted a stale `195` from `TODO.md` instead of either. The generated number was correct and went unread. **Quote this section; never narrate a percentage.**
