@@ -3144,6 +3144,34 @@ moving the pin:
 
 ### Defects — user-visible
 
+- [ ] **Collapsed-group drag: FIXED but UNTESTED.** `on_tab_drag`'s collapsed-group hop was
+      ported 2026-08-19 (`view.rs`, matching `42effe840:view.rs:28734`), and it is the third and
+      last piece of the duplicate-header bug. But the six new tab-group integration tests cover
+      only **expanded** groups — `test_drag_through_group_keeps_it_contiguous` does not collapse
+      first. So the exact path that produced the reported duplicate for a collapsed group has a
+      fix and no regression test. Add one: collapse a group, drag a non-member over it, assert
+      one header and one contiguous run.
+
+- [ ] **`index_avoiding_group_split` is still unported** — restoring a CLOSED tab can land inside
+      a group and split it, which renders as a duplicate header exactly like the drag bug did.
+      Not ported because its only pin caller, `index_for_restored_tab`, does not exist here
+      (`42effe840:view.rs:12486`), so it would be dead code. Porting requires bringing the caller
+      too. Reproduce with: close a tab inside a group, then undo-close it.
+
+- [ ] **Credits round to 1dp PER AGENT before the rollup sums them.** `AIConversation::credits_spent()`
+      rounds before `compute_orchestration_rollup` sees the value, so three agents at 0.04 each
+      (0.12 real) report as nothing spent and the usage footer never appears. **Same at the pin**
+      (`42effe840:app/src/ai/agent/conversation.rs:769-773`), so it was pinned as a
+      characterization test rather than changed unilaterally — but this fork is BYOP, the user is
+      paying the provider directly, and silently erasing sub-5c spend is a real accounting
+      question. **Needs a maintainer decision:** keep pin parity, or sum before rounding.
+
+- [ ] **The release build has never been run.** Everything to date is `cargo check` plus debug
+      test binaries. A `--release` build exercises ThinLTO and codegen paths `check` never
+      touches, and ~35k lines landed since the last one. `script/bundle` (the real release path,
+      producing a macOS DMG / Windows installer) is additionally unexercised and cannot be run
+      from the Linux build host.
+
 > **HOW TO RUN THE TESTS (2026-08-18) — two mistakes that cost real time today.**
 >
 > **1. Use the CI configuration, or you will measure phantom failures.**
