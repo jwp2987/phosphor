@@ -3144,6 +3144,24 @@ moving the pin:
 
 ### Defects — user-visible
 
+- [ ] **The nightly `Usage Test Suite` has failed EIGHT NIGHTS RUNNING (2026-08-12 → 08-19),
+      Windows only.** Linux and macOS pass every night. Nobody is watching it.
+      **This corrects a framing error in this file:** `usage_tui_transcript_render` was recorded
+      as needing "a Windows machine" to verify. It does not — **CI is a Windows machine and has
+      been reporting this failure nightly for over a week.** Anything gated on "we have no
+      Windows box" should be re-checked against this workflow before being deferred again.
+      Two failures, from run `32228845452`:
+      1. **`usage_tui_transcript_render`** — panics at
+         `app/src/terminal/model/grid/ansi_handler.rs:189`: *"Grid received input but did not
+         receive Reset Grid OSC"*. Tagged **`reliable-here`**, i.e. explicitly not expected to
+         be flaky, and it still fails all 3 retries. This is the real one.
+      2. **`usage_secret_redaction`** — expected `"Phone: … abcdef."`, got
+         `"Phone: … abcdef\n."`. A newline where the assertion wants none: line-wrap or CRLF
+         handling on Windows. Tagged `needs-real-shell`, so lower confidence, but the diff is
+         one character and looks genuine rather than environmental.
+      Reproduce without hardware: `gh run view <id> --log-failed` on the nightly, or dispatch
+      `usage-test.yml` manually.
+
 - [ ] **Collapsed-group drag: FIXED but UNTESTED.** `on_tab_drag`'s collapsed-group hop was
       ported 2026-08-19 (`view.rs`, matching `42effe840:view.rs:28734`), and it is the third and
       last piece of the duplicate-header bug. But the six new tab-group integration tests cover
