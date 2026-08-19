@@ -91,7 +91,7 @@ fn focus_other_window(other_window_key: &'static str, known_window_key: &'static
     })
 }
 
-fn dispatch_mouse_event(app: &mut warpui::App, window_id: WindowId, event: Event) {
+pub(super) fn dispatch_mouse_event(app: &mut warpui::App, window_id: WindowId, event: Event) {
     let window = app.read(|ctx| {
         ctx.windows()
             .platform_window(window_id)
@@ -102,7 +102,7 @@ fn dispatch_mouse_event(app: &mut warpui::App, window_id: WindowId, event: Event
     });
 }
 
-fn tab_bounds(app: &mut warpui::App, window_id: WindowId, tab_index: usize) -> RectF {
+pub(super) fn tab_bounds(app: &mut warpui::App, window_id: WindowId, tab_index: usize) -> RectF {
     let presenter = app.presenter(window_id).expect("presenter should exist");
     let bounds = presenter
         .borrow()
@@ -112,7 +112,7 @@ fn tab_bounds(app: &mut warpui::App, window_id: WindowId, tab_index: usize) -> R
     bounds
 }
 
-fn tab_center(app: &mut warpui::App, window_id: WindowId, tab_index: usize) -> Vector2F {
+pub(super) fn tab_center(app: &mut warpui::App, window_id: WindowId, tab_index: usize) -> Vector2F {
     tab_bounds(app, window_id, tab_index).center()
 }
 

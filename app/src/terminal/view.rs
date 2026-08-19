@@ -20207,11 +20207,15 @@ impl TerminalView {
                 let block_str = match entity {
                     BlockEntity::Command => block.command_to_string(),
                     BlockEntity::Output => block.output_to_string_force_full_grid_contents(),
-                    BlockEntity::CommandAndOutput => format!(
-                        "{}\n{}",
-                        block.command_to_string(),
-                        block.output_to_string(),
-                    ),
+                    // `Block::command_and_output_to_string` is the PS1-aware
+                    // form: with `honor_ps1` on it copies the block's whole
+                    // grid bounds, so the user's own prompt is included ahead
+                    // of the command exactly as rendered. Inlining the
+                    // non-PS1 `command + "\n" + output` formula here silently
+                    // dropped the prompt from every "Copy" of a block, while
+                    // the correct method sat unused with its own unit tests
+                    // passing. Matches `42effe840:app/src/terminal/view.rs:21379`.
+                    BlockEntity::CommandAndOutput => block.command_and_output_to_string(),
                     BlockEntity::FilteredOutput => block.output_to_string(),
                 };
 

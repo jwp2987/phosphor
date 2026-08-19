@@ -1,8 +1,12 @@
-use warpui::{async_assert, async_assert_eq, integration::AssertionCallback};
+use warpui::{SingletonEntity, async_assert, async_assert_eq, integration::AssertionCallback};
 
 use crate::{
+    ai::llms::LLMPreferences,
     integration_testing::view_getters::{input_view, single_input_view_for_tab},
-    terminal::input::InputSuggestionsMode,
+    terminal::input::{
+        InputSuggestionsMode,
+        models::{ModelPickerChoice, query_model_picker_choices},
+    },
 };
 
 pub fn assert_workflow_info_box_is_open(tab_idx: usize, pane_idx: usize) -> AssertionCallback {
@@ -138,5 +142,36 @@ pub fn assert_autosuggestion_state(
             };
             async_assert!(assertion)
         })
+    })
+}
+
+/// Asserts that at least one *selectable* model in the inline model picker
+/// matches `query_text`.
+///
+/// Guards inline-model-selector tests against passing vacuously. This fork
+/// builds the picker's model list entirely from the user's configured BYOP
+/// providers (`build_byop_models_by_feature`); the Warp-hosted catalog — "auto"
+/// included — is not present. A fresh profile with no provider configured holds
+/// exactly one entry, `placeholder_llm_info()`, which carries
+/// `DisableReason::Unavailable`. Pressing enter over a list with no selectable
+/// row emits no `SelectedModel` event at all, so a test that means to exercise
+/// model *selection* silently exercises nothing.
+pub fn selectable_model_matches(query_text: &'static str) -> AssertionCallback {
+    Box::new(move |app, _window_id| {
+        let selectable = app.read(|ctx| {
+            let choices = LLMPreferences::as_ref(ctx)
+                .get_base_llm_choices_for_agent_mode()
+                .collect::<Vec<_>>();
+            query_model_picker_choices(choices, query_text, ctx)
+                .into_iter()
+                .filter(ModelPickerChoice::is_selectable)
+                .map(|choice| choice.llm.display_name.clone())
+                .collect::<Vec<_>>()
+        });
+        async_assert!(
+            !selectable.is_empty(),
+            "no selectable model matches {query_text:?}, so pressing enter in the \
+             inline model selector cannot accept one"
+        )
     })
 }

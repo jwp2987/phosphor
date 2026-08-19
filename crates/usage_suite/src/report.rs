@@ -235,3 +235,176 @@ mod table_tests {
         assert!(shown.len() < 40, "excerpt should stay table-sized");
     }
 }
+
+#[cfg(test)]
+mod json_tests {
+    use super::*;
+
+    fn report(status: Status, surface: Surface) -> ScenarioReport {
+        ScenarioReport {
+            surface,
+            scenario: "usage_example".into(),
+            status,
+            duration_ms: Some(42),
+            tags: vec!["reliable-here"],
+            reason: None,
+            retries: None,
+            failure_detail: None,
+        }
+    }
+
+    fn keys(value: &Value) -> Vec<String> {
+        value
+            .as_object()
+            .expect("a scenario line is always a JSON object")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The NDJSON line is the machine-readable half of this suite (SCOPE.md
+    /// §3); a consumer keys off these names, so the exact field set for a
+    /// clean pass is the contract.
+    #[test]
+    fn a_passing_scenario_reports_only_the_five_always_present_fields() {
+        let json = report(Status::Pass, Surface::Gui).to_json();
+        assert_eq!(
+            keys(&json),
+            vec!["surface", "scenario", "status", "duration_ms", "tags"]
+        );
+        assert_eq!(json["surface"], "gui");
+        assert_eq!(json["scenario"], "usage_example");
+        assert_eq!(json["status"], "pass");
+        assert_eq!(json["duration_ms"], 42);
+        assert_eq!(json["tags"], serde_json::json!(["reliable-here"]));
+    }
+
+    /// A skipped scenario never ran, so it must not claim a duration — a
+    /// `duration_ms` of 0 would be indistinguishable from an instant pass in
+    /// an aggregated report. It carries its reason instead.
+    #[test]
+    fn a_skipped_scenario_omits_duration_and_carries_its_reason() {
+        let mut skipped = report(Status::Skip, Surface::Gui);
+        skipped.duration_ms = None;
+        skipped.reason = Some("needs-byop-provider (no --include-byop)".into());
+
+        let json = skipped.to_json();
+        assert_eq!(json["status"], "skip");
+        assert!(
+            json.get("duration_ms").is_none(),
+            "a scenario that never ran must not report a duration"
+        );
+        assert_eq!(json["reason"], "needs-byop-provider (no --include-byop)");
+    }
+
+    /// The failure detail is what makes a CI log actionable without a
+    /// re-run, so it has to survive onto the line untruncated — the table
+    /// excerpt is the only place shortening happens.
+    #[test]
+    fn a_failing_scenario_carries_its_untruncated_detail() {
+        let mut failed = report(Status::Fail, Surface::Tui);
+        let detail = format!("thread panicked\n{}", "x".repeat(20_000));
+        failed.failure_detail = Some(detail.clone());
+
+        let json = failed.to_json();
+        assert_eq!(json["status"], "fail");
+        assert_eq!(json["surface"], "tui");
+        assert_eq!(json["failure_detail"], Value::String(detail));
+    }
+
+    /// `retries` is reported only when a scenario actually retried; emitting
+    /// `"retries":0` on every GUI line would turn "this one was flaky" into
+    /// noise nobody greps for.
+    #[test]
+    fn retries_appear_only_when_a_scenario_retried() {
+        let mut without = report(Status::Pass, Surface::Gui);
+        without.retries = None;
+        assert!(without.to_json().get("retries").is_none());
+
+        let mut with = report(Status::Pass, Surface::Gui);
+        with.retries = Some(3);
+        assert_eq!(with.to_json()["retries"], 3);
+    }
+
+    #[test]
+    fn each_status_serializes_to_its_documented_wire_value() {
+        assert_eq!(
+            report(Status::Pass, Surface::Gui).to_json()["status"],
+            "pass"
+        );
+        assert_eq!(
+            report(Status::Fail, Surface::Gui).to_json()["status"],
+            "fail"
+        );
+        assert_eq!(
+            report(Status::Skip, Surface::Gui).to_json()["status"],
+            "skip"
+        );
+    }
+
+    /// The summary is what decides the suite's exit code, so miscounting a
+    /// status is the difference between a red build and a silent one.
+    #[test]
+    fn the_summary_counts_every_status_and_every_surface() {
+        let reports = vec![
+            report(Status::Pass, Surface::Gui),
+            report(Status::Pass, Surface::Tui),
+            report(Status::Fail, Surface::Gui),
+            report(Status::Skip, Surface::Tui),
+            report(Status::Skip, Surface::Tui),
+        ];
+        let summary = Summary::from_reports(&reports);
+
+        assert_eq!(summary.total, 5);
+        assert_eq!(summary.passed, 2);
+        assert_eq!(summary.failed, 1);
+        assert_eq!(summary.skipped, 2);
+        assert_eq!(summary.surfaces.gui, 2);
+        assert_eq!(summary.surfaces.tui, 3);
+        // Surface counts partition the run: every report lands in exactly one.
+        assert_eq!(summary.surfaces.gui + summary.surfaces.tui, summary.total);
+        assert_eq!(
+            summary.passed + summary.failed + summary.skipped,
+            summary.total
+        );
+    }
+
+    /// A run where every selected scenario was gated out is not a failure —
+    /// `failed == 0` is what `main` turns into exit 0. Pinned because it is
+    /// also the shape of a suite that has silently stopped testing anything.
+    #[test]
+    fn an_all_skipped_run_has_no_failures() {
+        let reports = vec![
+            report(Status::Skip, Surface::Gui),
+            report(Status::Skip, Surface::Tui),
+        ];
+        let summary = Summary::from_reports(&reports);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.skipped, 2);
+        assert_eq!(summary.passed, 0);
+    }
+
+    #[test]
+    fn an_empty_run_summarizes_as_all_zeroes() {
+        let summary = Summary::from_reports(&[]);
+        assert_eq!(summary.total, 0);
+        assert_eq!(summary.passed, 0);
+        assert_eq!(summary.failed, 0);
+        assert_eq!(summary.skipped, 0);
+        assert_eq!(summary.surfaces.gui, 0);
+        assert_eq!(summary.surfaces.tui, 0);
+    }
+
+    /// The final line is `{"summary":{...}}` — a scraper distinguishes it
+    /// from a scenario line by that wrapper key alone.
+    #[test]
+    fn the_summary_line_is_wrapped_under_a_summary_key() {
+        let summary = Summary::from_reports(&[report(Status::Pass, Surface::Gui)]);
+        let json = summary.to_json();
+        assert_eq!(keys(&json), vec!["summary"]);
+        assert_eq!(json["summary"]["total"], 1);
+        assert_eq!(json["summary"]["passed"], 1);
+        assert_eq!(json["summary"]["surfaces"]["gui"], 1);
+        assert_eq!(json["summary"]["surfaces"]["tui"], 0);
+    }
+}

@@ -235,6 +235,17 @@ integration_tests! {
     test_single_tab_handoff_continues_drag,
     test_multi_tab_drag_back_to_source_and_out_again,
 
+    // Tab groups (GH-reported: could not drag a tab out of a group; duplicate
+    // group header that would not close). All three symptoms were one defect in
+    // `Workspace::on_tab_drag`, unreachable from a unit harness because it
+    // resolves groups from laid-out element rects.
+    test_drag_tab_out_of_group,
+    test_drag_tab_into_group,
+    test_drag_through_group_keeps_it_contiguous,
+    test_create_collapse_expand_and_rename_tab_group,
+    test_close_tab_group_closes_its_tabs,
+    test_open_file_in_new_tab_from_group_joins_group,
+
     test_restore_single_closed_pane,
     test_restore_multiple_closed_panes,
     test_undo_close_grace_period_cleanup,

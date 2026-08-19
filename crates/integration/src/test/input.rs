@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use warp::integration_testing::mock_provider::wire_mock_provider_config;
 use warp::integration_testing::terminal::util::current_shell_starter_and_version;
 use warp::terminal::shell::ShellType;
 use warp::{
@@ -7,10 +8,10 @@ use warp::{
     integration_testing::{
         clipboard::write_to_clipboard,
         input::{
-            assert_autosuggestion_state, input_contains_string, input_is_empty,
-            latest_buffer_operations_are_empty, open_inline_model_selector_from_chip,
+            AutosuggestionState, assert_autosuggestion_state, input_contains_string,
+            input_is_empty, latest_buffer_operations_are_empty,
+            open_inline_model_selector_from_chip, selectable_model_matches,
             tab_completions_menu_is_open, toggle_inline_model_selector_from_chip,
-            AutosuggestionState,
         },
         step::new_step_with_default_assertions,
         terminal::{
@@ -20,7 +21,7 @@ use warp::{
         view_getters::{single_input_view_for_tab, single_terminal_view_for_tab},
     },
 };
-use warpui::{async_assert_eq, integration::TestStep, Event};
+use warpui::{Event, async_assert_eq, integration::TestStep};
 
 use crate::Builder;
 
@@ -259,12 +260,47 @@ pub fn test_inline_model_selector_restores_prompt_on_dismissal() -> Builder {
         )
 }
 
+/// Search text that matches the mock BYOP model registered by
+/// [`register_mock_byop_provider`]. Its display name is
+/// `"<provider name> / <model id>"` — see `build_byop_llm_infos`.
+const MOCK_MODEL_SEARCH_TEXT: &str = "mock";
+
+/// Registers the mock BYOP provider so the inline model selector has a real,
+/// *selectable* model to accept.
+///
+/// This fork builds `LLMPreferences::models_by_feature` entirely from the
+/// user's configured BYOP providers (`build_byop_models_by_feature`); the
+/// Warp-hosted catalog, including the "auto" router model, is not present. A
+/// fresh integration profile has no provider configured, so the picker holds
+/// exactly one entry — `placeholder_llm_info()`, "No custom provider
+/// configured — add one in Settings → AI", which carries
+/// `DisableReason::Unavailable`. With only a disabled row there is nothing for
+/// Enter to accept, so no `SelectedModel` event is ever emitted and the
+/// selection path under test never runs. Wiring the mock provider (no server
+/// needed — nothing is ever sent to it here) puts one enabled model in the
+/// list.
+fn register_mock_byop_provider() -> TestStep {
+    new_step_with_default_assertions("Register mock BYOP provider")
+        .with_action(|app, _, _| {
+            app.update(|ctx| {
+                // Never contacted: this test only needs the model to exist in
+                // the picker, not to answer a request.
+                wire_mock_provider_config(ctx, "http://127.0.0.1:9/v1");
+            });
+        })
+        .add_named_assertion(
+            "A selectable model matches the search text",
+            selectable_model_matches(MOCK_MODEL_SEARCH_TEXT),
+        )
+}
+
 pub fn test_inline_model_selector_restores_prompt_on_model_selection() -> Builder {
     FeatureFlag::RestorePromptOnInlineModelSelectorSearch.set_enabled(true);
 
     let original_prompt = "summarize this output without losing details";
     new_builder()
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(register_mock_byop_provider())
         .with_step(
             new_step_with_default_assertions("Type prompt before opening model selector")
                 .with_typed_characters(&[original_prompt])
@@ -276,10 +312,10 @@ pub fn test_inline_model_selector_restores_prompt_on_model_selection() -> Builde
         .with_step(open_inline_model_selector_from_chip())
         .with_step(
             new_step_with_default_assertions("Type model search")
-                .with_typed_characters(&["auto"])
+                .with_typed_characters(&[MOCK_MODEL_SEARCH_TEXT])
                 .add_named_assertion(
                     "Model search text is in the input",
-                    input_contains_string(0, "auto".to_owned()),
+                    input_contains_string(0, MOCK_MODEL_SEARCH_TEXT.to_owned()),
                 ),
         )
         .with_step(

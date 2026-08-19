@@ -1147,4 +1147,281 @@ mod tests {
             });
         });
     }
+
+    // -----------------------------------------------------------------------
+    // Pure helpers and constructors — no `ViewContext` needed.
+    // -----------------------------------------------------------------------
+
+    /// The usage footer renders "1 file changed" / "2 files changed" from this
+    /// one helper, so its pluralisation rule is the whole rule.
+    #[test]
+    fn format_value_text_pluralizes_everything_except_exactly_one() {
+        assert_eq!(format_value_text(1, "file"), "1 file");
+        assert_eq!(format_value_text(0, "file"), "0 files");
+        assert_eq!(format_value_text(2, "file"), "2 files");
+        assert_eq!(format_value_text(11, "command"), "11 commands");
+        // Negative counts are not expected, but the rule is "== 1", not
+        // "abs() == 1": -1 must not read as singular.
+        assert_eq!(format_value_text(-1, "line"), "-1 lines");
+    }
+
+    /// `new` is the settings/no-rollup constructor and `new_footer_with_rollup`
+    /// is the footer one; the difference between them is exactly which
+    /// conversation the rollup is computed for, so pin it directly rather than
+    /// only through the render path.
+    #[test]
+    fn the_two_constructors_differ_only_in_display_mode_and_rollup_wiring() {
+        let settings_view = ConversationUsageView::new(
+            placeholder_usage_info(),
+            DisplayMode::Settings,
+            None,
+            MouseStateHandle::default(),
+        );
+        assert_eq!(settings_view.display_mode, DisplayMode::Settings);
+        assert!(
+            settings_view.parent_conversation_id.is_none(),
+            "`new` must never wire up a rollup"
+        );
+        assert!(!settings_view.details_expanded);
+        assert!(!settings_view.show_all_clicked);
+
+        let parent_id = AIConversationId::new();
+        let footer_view = ConversationUsageView::new_footer_with_rollup(
+            placeholder_usage_info(),
+            None,
+            MouseStateHandle::default(),
+            parent_id,
+        );
+        assert_eq!(
+            footer_view.display_mode,
+            DisplayMode::Footer,
+            "`new_footer_with_rollup` forces footer mode regardless of caller"
+        );
+        assert_eq!(footer_view.parent_conversation_id, Some(parent_id));
+        assert!(!footer_view.details_expanded);
+        assert!(!footer_view.show_all_clicked);
+    }
+
+    /// `rollup` is gated twice: footer mode, and a known parent conversation.
+    /// Both gates are load-bearing — the settings usage page shows historical
+    /// usage for one conversation and must never sprout the footer's
+    /// per-agent orchestration breakdown — so exercise them against a history
+    /// model that would otherwise produce a rollup.
+    #[test]
+    fn rollup_is_gated_on_footer_mode_and_a_known_parent_conversation() {
+        App::test((), |mut app| async move {
+            crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+            app.add_singleton_model(|_| Appearance::mock());
+            let terminal_view_id = warpui::EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let orchestrator_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            let child_id = history.update(&mut app, |history, ctx| {
+                history.start_new_child_conversation(
+                    terminal_view_id,
+                    "ChildAgent".to_string(),
+                    orchestrator_id,
+                    None,
+                    ctx,
+                )
+            });
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&child_id)
+                    .expect("child conversation is loaded")
+                    .set_credits_spent_for_test(7.0);
+            });
+
+            history.read(&app, |_, app_ctx| {
+                // Wired up: this is the case that must produce a breakdown.
+                let footer = ConversationUsageView::new_footer_with_rollup(
+                    placeholder_usage_info(),
+                    None,
+                    MouseStateHandle::default(),
+                    orchestrator_id,
+                );
+                let rollup = footer
+                    .rollup(app_ctx)
+                    .expect("a footer view over a spending orchestration tree rolls up");
+                assert_eq!(rollup.total_credits, 7.0);
+
+                // Footer mode but no parent conversation: the `new` path.
+                let footer_without_parent = ConversationUsageView::new(
+                    placeholder_usage_info(),
+                    DisplayMode::Footer,
+                    None,
+                    MouseStateHandle::default(),
+                );
+                assert!(
+                    footer_without_parent.rollup(app_ctx).is_none(),
+                    "no parent conversation means nothing to roll up"
+                );
+
+                // Settings mode: gated even though the same history model is
+                // in place.
+                let settings = ConversationUsageView::new(
+                    placeholder_usage_info(),
+                    DisplayMode::Settings,
+                    None,
+                    MouseStateHandle::default(),
+                );
+                assert!(
+                    settings.rollup(app_ctx).is_none(),
+                    "the settings usage page must never show the footer breakdown"
+                );
+            });
+        });
+    }
+
+    // -----------------------------------------------------------------------
+    // `collect_models_by_category` — the model/category/key-icon grouping the
+    // usage panel renders from.
+    // -----------------------------------------------------------------------
+
+    /// A model used with both the user's own key and without it appears twice
+    /// in its category, once per key bucket — the two rows carry different
+    /// icons, so collapsing them would lose which spend was BYOK.
+    #[test]
+    fn one_model_used_with_and_without_an_external_key_yields_two_rows() {
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![ModelTokenUsage {
+                    model_id: "claude-x".to_string(),
+                    warp_token_usage_by_category: HashMap::from([(
+                        PRIMARY_AGENT_CATEGORY.to_string(),
+                        10,
+                    )]),
+                    byok_token_usage_by_category: HashMap::from([(
+                        PRIMARY_AGENT_CATEGORY.to_string(),
+                        20,
+                    )]),
+                    ..Default::default()
+                }],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        let by_category = view.collect_models_by_category();
+        let mut rows = by_category
+            .get(PRIMARY_AGENT_CATEGORY)
+            .expect("the primary agent category is present")
+            .clone();
+        rows.sort();
+        assert_eq!(
+            rows,
+            vec![
+                ("claude-x".to_string(), false),
+                ("claude-x".to_string(), true),
+            ]
+        );
+    }
+
+    /// Categories are kept apart: full-terminal-use spend must not be folded
+    /// into the primary agent's row, or the panel would attribute one
+    /// category's tokens to another.
+    #[test]
+    fn each_category_keeps_its_own_rows() {
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![ModelTokenUsage {
+                    model_id: "model-a".to_string(),
+                    warp_token_usage_by_category: HashMap::from([
+                        (PRIMARY_AGENT_CATEGORY.to_string(), 5),
+                        (FULL_TERMINAL_USE_CATEGORY.to_string(), 7),
+                    ]),
+                    ..Default::default()
+                }],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        let by_category = view.collect_models_by_category();
+        assert_eq!(by_category.len(), 2);
+        assert_eq!(
+            by_category.get(PRIMARY_AGENT_CATEGORY),
+            Some(&vec![("model-a".to_string(), false)])
+        );
+        assert_eq!(
+            by_category.get(FULL_TERMINAL_USE_CATEGORY),
+            Some(&vec![("model-a".to_string(), false)])
+        );
+    }
+
+    /// A category recorded with zero tokens is not a row. Only `> 0` entries
+    /// are collected, so a model that was selected but never billed for a
+    /// category does not appear under it.
+    #[test]
+    fn zero_token_categories_do_not_produce_rows() {
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![ModelTokenUsage {
+                    model_id: "unused".to_string(),
+                    warp_token_usage_by_category: HashMap::from([(
+                        PRIMARY_AGENT_CATEGORY.to_string(),
+                        0,
+                    )]),
+                    ..Default::default()
+                }],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        assert!(view.collect_models_by_category().is_empty());
+    }
+
+    /// **Documents a limitation of the legacy fallback, it does not endorse
+    /// it.** The pre-per-category `*_tokens` counters are only consulted when
+    /// the per-category map came out completely empty. So a conversation whose
+    /// usage rows straddle the schema change — one model recorded with
+    /// categories, another with only the flat legacy counter — silently drops
+    /// the legacy model from the panel entirely.
+    ///
+    /// The fork's `collect_models_by_category` is byte-identical to the pin's
+    /// (`42effe840:app/src/ai/blocklist/usage/conversation_usage_view.rs`), so
+    /// this is pinned rather than changed here; making the fallback per-model
+    /// instead of whole-view is a behaviour change that wants its own issue.
+    #[test]
+    fn a_legacy_only_model_is_dropped_when_any_other_model_has_category_data() {
+        let view = ConversationUsageView::new(
+            ConversationUsageInfo {
+                models: vec![
+                    ModelTokenUsage {
+                        model_id: "new-schema".to_string(),
+                        warp_token_usage_by_category: HashMap::from([(
+                            PRIMARY_AGENT_CATEGORY.to_string(),
+                            4,
+                        )]),
+                        ..Default::default()
+                    },
+                    ModelTokenUsage {
+                        model_id: "legacy-only".to_string(),
+                        byok_tokens: 99,
+                        ..Default::default()
+                    },
+                ],
+                ..placeholder_usage_info()
+            },
+            DisplayMode::Footer,
+            None,
+            MouseStateHandle::default(),
+        );
+
+        assert_eq!(
+            view.collect_models_by_category()
+                .get(PRIMARY_AGENT_CATEGORY),
+            Some(&vec![("new-schema".to_string(), false)]),
+            "the legacy-only model is currently invisible in this panel"
+        );
+    }
 }

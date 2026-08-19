@@ -32,6 +32,7 @@ mod settings_private;
 mod ssh;
 mod subshell;
 mod sync_inputs;
+mod tab_groups;
 mod typeahead;
 // Chunk B: GUI usage / acceptance smoke scenarios (`usage_*`).
 pub mod usage;
@@ -70,6 +71,7 @@ pub use settings_private::*;
 pub use ssh::*;
 pub use subshell::*;
 pub use sync_inputs::*;
+pub use tab_groups::*;
 pub use typeahead::*;
 pub use usage::*;
 pub use video_recording::*;

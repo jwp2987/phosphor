@@ -37,6 +37,7 @@ pub mod settings;
 pub mod step;
 pub mod subshell;
 pub mod tab;
+pub mod tab_group;
 pub mod terminal;
 pub mod themes;
 pub mod type_getters;

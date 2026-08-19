@@ -25363,6 +25363,42 @@ impl Workspace {
         };
 
         if new_index != current_index {
+            // Do not allow a tab to swap places with a neighbouring tab if the
+            // pinned states do not match. This prevents an unpinned tab from
+            // entering the pinned area (and vice versa). Dragging into a pinned tab
+            // group is already handled by the grouping logic above.
+            if self.is_tab_effectively_pinned(&self.tabs[current_index])
+                != self.is_tab_effectively_pinned(&self.tabs[new_index])
+            {
+                return;
+            }
+
+            // Prevent dropping into a collapsed group: if the swap target is a
+            // collapsed-group member the dragged tab doesn't belong to, hop
+            // past the whole block instead of swapping into it.
+            //
+            // Without this a drag over a collapsed group lands the tab INSIDE that
+            // group's contiguous run without joining it, splitting the run. Since
+            // `tab_bar_slots` only collapses contiguous runs, the group then renders
+            // as two headers sharing one id -- the duplicate-group symptom, in its
+            // collapsed-group form. Ported from `42effe840:view.rs:28734`.
+            let dragged_group = self.tabs[current_index].group_id;
+            let neighbor_collapsed_group = self
+                .tabs
+                .get(new_index)
+                .and_then(|t| t.group_id)
+                .filter(|gid| {
+                    Some(*gid) != dragged_group
+                        && self.tab_groups.get(gid).is_some_and(|g| g.collapsed)
+                });
+            if let Some(group_id) = neighbor_collapsed_group
+                && let Some((first, last)) = group_member_index_range(&self.tabs, group_id)
+            {
+                let insert_at = if current_index < first { last } else { first };
+                self.hop_tab_to_index(current_index, insert_at, ctx);
+                return;
+            }
+
             self.tabs.swap(new_index, current_index);
 
             if current_index == self.active_tab_index {

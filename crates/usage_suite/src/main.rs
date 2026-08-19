@@ -1093,3 +1093,249 @@ mod parse_tests {
         assert!(clamped.contains("bytes elided from the middle"));
     }
 }
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use crate::manifest::Surface;
+
+    fn args(argv: &[&str]) -> Args {
+        let mut full = vec!["usage-suite"];
+        full.extend_from_slice(argv);
+        Args::parse_from(full)
+    }
+
+    fn scenario(name: &'static str, tags: &'static [Tag]) -> Scenario {
+        Scenario {
+            surface: Surface::Gui,
+            name,
+            tags,
+        }
+    }
+
+    #[test]
+    fn without_only_every_scenario_is_selected() {
+        let scenario = scenario("usage_launch_bootstrap", &[Tag::ReliableHere]);
+        assert!(is_selected(&scenario, &None));
+    }
+
+    /// `--only` matches whole names, not prefixes or substrings — otherwise
+    /// `--only usage_run_command_exit_code` would also drag in
+    /// `usage_run_command_output_block`.
+    #[test]
+    fn only_matches_whole_names_and_nothing_else() {
+        let only = Some(vec![
+            "usage_run_command_exit_code".to_string(),
+            "usage_tui_transcript_render".to_string(),
+        ]);
+        assert!(is_selected(
+            &scenario("usage_run_command_exit_code", &[Tag::NeedsRealShell]),
+            &only
+        ));
+        assert!(is_selected(
+            &scenario("usage_tui_transcript_render", &[Tag::ReliableHere]),
+            &only
+        ));
+        assert!(!is_selected(
+            &scenario("usage_run_command", &[Tag::NeedsRealShell]),
+            &only
+        ));
+        assert!(!is_selected(
+            &scenario("usage_run_command_exit_code_extra", &[Tag::NeedsRealShell]),
+            &only
+        ));
+    }
+
+    /// An `--only` naming nothing real selects nothing — a typo produces an
+    /// empty (exit 0) run, which is worth knowing when a "green" suite ran no
+    /// scenarios at all.
+    #[test]
+    fn an_only_list_that_matches_nothing_selects_nothing() {
+        let only = Some(vec!["usage_typo".to_string()]);
+        assert!(
+            all_scenarios()
+                .iter()
+                .all(|scenario| !is_selected(scenario, &only))
+        );
+    }
+
+    #[test]
+    fn only_splits_on_commas() {
+        let parsed = args(&["--only", "usage_find_in_block,usage_tui_transcript_render"]);
+        assert_eq!(
+            parsed.only,
+            Some(vec![
+                "usage_find_in_block".to_string(),
+                "usage_tui_transcript_render".to_string(),
+            ])
+        );
+    }
+
+    /// A `reliable-here` scenario is never gated by anything; if it ever
+    /// starts skipping, the default suite has quietly stopped running.
+    #[test]
+    fn a_reliable_here_scenario_is_never_skipped() {
+        let scenario = scenario("usage_launch_bootstrap", &[Tag::ReliableHere]);
+        assert!(skip_reason(&scenario, &args(&[])).is_none());
+        assert!(skip_reason(&scenario, &args(&["--exclude-real-shell"])).is_none());
+        assert!(skip_reason(&scenario, &args(&["--include-byop"])).is_none());
+    }
+
+    /// Real-shell scenarios have run by default since 2026-08-12; the opt-out
+    /// is `--exclude-real-shell`, and its reason names the flag so a reader of
+    /// the report knows how the skip was requested.
+    #[test]
+    fn real_shell_scenarios_run_by_default_and_skip_only_on_the_opt_out() {
+        let scenario = scenario("usage_run_command_output_block", &[Tag::NeedsRealShell]);
+        assert!(skip_reason(&scenario, &args(&[])).is_none());
+
+        let reason = skip_reason(&scenario, &args(&["--exclude-real-shell"]))
+            .expect("--exclude-real-shell skips real-shell scenarios");
+        assert!(reason.contains("needs-real-shell"));
+        assert!(reason.contains("--exclude-real-shell"));
+    }
+
+    /// `--include-flaky` is a retained no-op. It must not resurrect the old
+    /// gate, and it must not accidentally *become* the opt-out either.
+    #[test]
+    fn include_flaky_is_still_accepted_and_still_does_nothing() {
+        let scenario = scenario("usage_run_command_output_block", &[Tag::NeedsRealShell]);
+        assert!(skip_reason(&scenario, &args(&["--include-flaky"])).is_none());
+        assert!(args(&["--include-flaky"]).include_flaky);
+    }
+
+    /// BYOP scenarios need a real provider key and network, so they are the
+    /// one category gated *off* by default; running them unasked would spend
+    /// the user's own money.
+    #[test]
+    fn byop_scenarios_are_gated_off_until_asked_for() {
+        let scenario = scenario("usage_agent_roundtrip", &[Tag::NeedsByopProvider]);
+        let reason = skip_reason(&scenario, &args(&[]))
+            .expect("byop scenarios do not run without --include-byop");
+        assert!(reason.contains("needs-byop-provider"));
+        assert!(skip_reason(&scenario, &args(&["--include-byop"])).is_none());
+    }
+
+    /// Desktop-gated scenarios follow the host, not a flag: the skip decision
+    /// must agree with `has_desktop_session()` on whatever host this runs on,
+    /// so the test states the relationship rather than a fixed answer.
+    #[test]
+    fn desktop_scenarios_are_gated_on_the_host_having_a_desktop() {
+        let scenario = scenario("usage_font_size_window_resize", &[Tag::NeedsDesktop]);
+        let skipped = skip_reason(&scenario, &args(&[]));
+        assert_eq!(
+            skipped.is_none(),
+            has_desktop_session(),
+            "the needs-desktop gate must track has_desktop_session()"
+        );
+        if let Some(reason) = skipped {
+            assert!(reason.contains("needs-desktop"));
+        }
+    }
+
+    /// A skip report is a report that never ran: no duration, and a reason
+    /// the human table can print under the row.
+    #[test]
+    fn a_skip_report_has_no_duration_and_keeps_the_scenarios_tags() {
+        let scenario = scenario("usage_agent_roundtrip", &[Tag::NeedsByopProvider]);
+        let report = skip_report(&scenario, "because".to_string());
+        assert_eq!(report.status, Status::Skip);
+        assert_eq!(report.scenario, "usage_agent_roundtrip");
+        assert!(report.duration_ms.is_none());
+        assert!(report.failure_detail.is_none());
+        assert!(report.retries.is_none());
+        assert_eq!(report.reason.as_deref(), Some("because"));
+        assert_eq!(report.tags, vec!["needs-byop-provider"]);
+    }
+
+    #[test]
+    fn surface_defaults_to_both_and_parses_either_side() {
+        assert_eq!(args(&[]).surface, SurfaceArg::Both);
+        assert_eq!(args(&["--surface", "gui"]).surface, SurfaceArg::Gui);
+        assert_eq!(args(&["--surface", "tui"]).surface, SurfaceArg::Tui);
+    }
+
+    /// `DISPLAY=` (exported empty) is the case `var_os(..).is_some()` gets
+    /// wrong — it would report a desktop on a host that has none, and the
+    /// desktop-gated scenario would then fail instead of skipping. Linux-only
+    /// because macOS/Windows short-circuit to `true` without consulting the
+    /// environment at all.
+    ///
+    /// This is the only test in the crate that touches process environment.
+    /// It restores both variables before returning, and nextest runs each
+    /// test in its own process regardless.
+    #[test]
+    #[cfg(all(unix, not(target_os = "macos")))]
+    fn an_empty_display_is_not_a_desktop_session() {
+        let saved_display = std::env::var_os("DISPLAY");
+        let saved_wayland = std::env::var_os("WAYLAND_DISPLAY");
+
+        // SAFETY: single-threaded test body; both variables are restored
+        // below and no other test in this crate reads the environment.
+        unsafe {
+            std::env::remove_var("WAYLAND_DISPLAY");
+
+            std::env::set_var("DISPLAY", "");
+            assert!(
+                !has_desktop_session(),
+                "an exported-but-empty DISPLAY is not a desktop session"
+            );
+
+            std::env::remove_var("DISPLAY");
+            assert!(!has_desktop_session(), "no display variables at all");
+
+            std::env::set_var("DISPLAY", ":0");
+            assert!(has_desktop_session(), "a configured X display counts");
+
+            std::env::remove_var("DISPLAY");
+            std::env::set_var("WAYLAND_DISPLAY", "wayland-0");
+            assert!(has_desktop_session(), "a Wayland display counts too");
+
+            std::env::remove_var("WAYLAND_DISPLAY");
+            match saved_display {
+                Some(value) => std::env::set_var("DISPLAY", value),
+                None => std::env::remove_var("DISPLAY"),
+            }
+            match saved_wayland {
+                Some(value) => std::env::set_var("WAYLAND_DISPLAY", value),
+                None => std::env::remove_var("WAYLAND_DISPLAY"),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tail_tests {
+    use super::*;
+
+    /// A GUI scenario's failure detail is the *tail* of the integration
+    /// binary's stderr — the last thing it printed before dying is the useful
+    /// part, unlike a TUI assertion where both ends matter (see
+    /// `clamp_preserving_ends`).
+    #[test]
+    fn tail_keeps_the_end_and_marks_the_truncation() {
+        let long = format!("{}THE-LAST-WORDS", "x".repeat(10_000));
+        let cut = tail(&long, 100);
+        assert!(cut.ends_with("THE-LAST-WORDS"));
+        assert!(cut.starts_with("..."), "a truncated tail must say so");
+        assert!(cut.len() <= 103, "got {} bytes", cut.len());
+    }
+
+    #[test]
+    fn a_short_detail_is_returned_whole_and_unmarked() {
+        assert_eq!(
+            tail("exit code 1\nboom", FAILURE_DETAIL_MAX_BYTES),
+            "exit code 1\nboom"
+        );
+    }
+
+    /// Byte-based truncation must land on a char boundary; a panic here would
+    /// take out the runner while it was reporting someone else's failure.
+    #[test]
+    fn tail_never_splits_a_multibyte_char() {
+        let wide = "\u{2500}".repeat(1000);
+        let cut = tail(&wide, 101);
+        assert!(cut.starts_with("..."));
+        assert!(cut[3..].chars().all(|c| c == '\u{2500}'));
+    }
+}

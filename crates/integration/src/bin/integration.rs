@@ -2,11 +2,12 @@ use std::{collections::HashMap, env};
 
 use anyhow::Result;
 use clap::Parser;
-use integration::test::*;
 use integration::Builder;
+use integration::test::*;
+use warp::features::FeatureFlag;
 use warp_cli::WorkerCommand;
-use warp_core::channel::{Channel, ChannelConfig, ChannelState};
 use warp_core::AppId;
+use warp_core::channel::{Channel, ChannelConfig, ChannelState};
 
 /// The Zap integration test runner.
 #[derive(Debug, Default, Parser, Clone)]
@@ -60,6 +61,19 @@ pub fn main() -> Result<()> {
             other => panic!("Worker not supported in integration tests: {other:?}"),
         }
     }
+
+    // The welcome tab is default-on as a product decision (`welcome_tab` in
+    // `app/Cargo.toml`, 2026-08-17), so a fresh profile opens Warp Home instead of a
+    // terminal. Every terminal-driving integration test predates that and asks for a
+    // terminal view in pane 0, which is a `Welcome` pane at startup -- 179 previously
+    // passing tests fail on it.
+    //
+    // The welcome tab stays; the tests opt out of it. `set_user_preference` is the
+    // process-global tier that `FeatureFlag::is_enabled` consults ahead of the
+    // compiled-in flag state, and unlike `override_enabled` it is not thread-local,
+    // so it holds for the app's UI thread too. Tests that want to exercise the
+    // welcome tab should re-enable it for themselves.
+    FeatureFlag::WelcomeTab.set_user_preference(false);
 
     let tests = register_tests();
     let test_name = args
@@ -356,6 +370,13 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_attach_tab_to_other_window_and_continue_drag);
     register_test!(test_single_tab_handoff_continues_drag);
     register_test!(test_multi_tab_drag_back_to_source_and_out_again);
+
+    register_test!(test_drag_tab_out_of_group);
+    register_test!(test_drag_tab_into_group);
+    register_test!(test_drag_through_group_keeps_it_contiguous);
+    register_test!(test_create_collapse_expand_and_rename_tab_group);
+    register_test!(test_close_tab_group_closes_its_tabs);
+    register_test!(test_open_file_in_new_tab_from_group_joins_group);
 
     register_test!(test_restore_single_closed_pane);
     register_test!(test_restore_multiple_closed_panes);
