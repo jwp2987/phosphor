@@ -3160,9 +3160,19 @@ moving the pin:
       **The only verification the drag fixes have is the maintainer exercising them by hand in
       a real macOS build.** That is genuine, but there is no automated guard, and a future
       change to `on_tab_drag` would not be caught.
-      Next: find why `begin_tab_drag` / `drag_to` do not reach `Draggable::dispatch_event`
-      (wrong window id? no mouse-down on the tab? drag threshold never crossed?), fix the
-      helper, then re-verify every one of the six by breaking the code they claim to cover.
+      **Narrowed by instrumentation, 2026-08-19.** `WorkspaceAction::DragTab` is never
+      dispatched either, so the break is upstream of the workspace entirely: the tab's
+      `Draggable::on_drag` (`app/src/tab.rs:2149`) never fires. Chain is
+      `Draggable.on_drag` → `DragTab` → `handle_action` → `on_tab_drag`, and it dies at step 1.
+      Ruled out along the way: events DO reach the window (`dispatch_mouse_event` goes through
+      the platform window's `event_callback`), and tabs ARE laid out (`tab_bounds` panics if
+      `tab_position_{i}` is missing, and it does not).
+      Remaining suspects, in order: (a) no frame is painted between the mouse-down and the
+      dragged event, so `Draggable` has no `origin`/`size`/`child_max_z_index` yet — its
+      `LeftMouseDown` arm calls `self.origin().expect("origin should exist")`; (b) the armed
+      drag never crosses whatever threshold `Draggable` requires; (c) the tab took the
+      `sole_grouped_member` branch, which deliberately renders NO per-tab `Draggable`.
+      (a) is the strongest: the harness dispatches two events back to back with no repaint.
 
 - [ ] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
       failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
