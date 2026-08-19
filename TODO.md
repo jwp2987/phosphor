@@ -3177,12 +3177,15 @@ moving the pin:
       test, and an attempt to write one proved vacuous.** 2026-08-19: added
       `test_drag_over_collapsed_group_keeps_it_contiguous`, then disabled the collapsed-group
       hop in `on_tab_drag` and re-ran it — **it still passed**, so it does not pin the hop.
-      Cause: a collapsed group renders no member tabs, so `drag_over_tab` cannot target one and
-      the drag never yields a `new_index` inside the collapsed run. So either the hop is
-      unreachable by ordinary dragging (i.e. defensive code, and the real duplicate-header route
-      for collapsed groups is elsewhere), or the test needs drag geometry the current helpers
-      cannot express. **Answer that question before writing another test** — a second vacuous
-      test is worse than none, because it reads as coverage.
+      **Root cause identified, and the fix is a missing helper.** `drag_over_tab` aims the cursor
+      at a TAB's saved rect (`tab_position_id`); a collapsed group renders no member tabs, so
+      there is nothing to aim at and the drag does not move — tried both leftward and rightward,
+      both still passed with the hop disabled.
+      The hop IS reachable in principle: `calculate_updated_tab_index` moves one slot per event
+      via `neighbor_drag_rect`, which for a collapsed member deliberately falls back to the
+      **group container rect**. So the test needs a drag helper that targets
+      `htab_group_position_id(group)` rather than a member tab. **Writing that helper is the
+      actual task** — then re-verify by disabling the hop and confirming the test fails.
       The test is kept: it asserts real invariants over the collapsed path that had no coverage
       at all, and its doc comment says plainly that it is not the guard. ✅ **2026-08-19: the maintainer exercised tab groups in a real macOS
       build and reports them working.** That covers the three reported symptoms (drag out,

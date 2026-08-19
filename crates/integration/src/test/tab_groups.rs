@@ -335,31 +335,33 @@ pub fn test_drag_through_group_keeps_it_contiguous() -> Builder {
         )
 }
 
-/// Dragging a tab over a COLLAPSED group must not split it.
+/// Dragging a tab into a COLLAPSED group must not split it.
 ///
-/// The expanded case is covered by `test_drag_through_group_keeps_it_contiguous`.
-/// The collapsed case reaches different code: `on_tab_drag`'s reorder tail has a
+/// The expanded case is `test_drag_through_group_keeps_it_contiguous`. The
+/// collapsed case reaches a different branch: `on_tab_drag`'s reorder tail has a
 /// dedicated collapsed-group hop that jumps the dragged tab past the whole block
-/// instead of `swap`ping into its interior. Without that hop the tab lands INSIDE
-/// the collapsed run without joining it, and since `tab_bar_slots` only collapses
-/// *contiguous* runs the group then renders as two headers sharing one id -- the
-/// duplicate-header bug, in its collapsed form.
+/// instead of `swap`ping into its interior. Without it the tab lands INSIDE the
+/// collapsed run without joining it, and since `tab_bar_slots` only collapses
+/// *contiguous* runs the group then renders as two headers sharing one id.
 ///
-/// ⚠️ **This test does NOT currently pin the hop.** Verified 2026-08-19 by
-/// disabling the collapsed-group hop in `on_tab_drag` and re-running: it still
-/// passed. A collapsed group renders no member tabs, so `drag_over_tab` cannot
-/// target one and the drag never produces a `new_index` inside the collapsed
-/// run -- the branch is never reached from these steps. Either the hop is
-/// unreachable through ordinary dragging (defensive code), or exercising it
-/// needs geometry these helpers do not express.
+/// ⚠️ **This test does NOT pin the hop.** Verified twice on 2026-08-19 by
+/// disabling the collapsed-group hop and re-running -- it passed both times,
+/// dragging leftward and rightward.
 ///
-/// It is kept because it does assert real invariants over the collapsed path
-/// (collapse, drag across, drop, group still whole and still collapsed) and
-/// those had no coverage at all. It is NOT the regression guard for the hop.
-/// See the corresponding TODO.md entry, which stays open.
+/// Cause, now specific: `drag_over_tab` positions the cursor from a TAB's saved
+/// rect (`tab_position_id`), and a collapsed group renders no member tabs, so
+/// there is no rect to aim at and the drag does not move. Reaching the hop needs
+/// a helper that targets the group's CONTAINER rect (`htab_group_position_id`),
+/// which is what `neighbor_drag_rect` itself falls back to. No such helper
+/// exists yet; writing one is the actual work.
+///
+/// Kept because it does assert real invariants over the collapsed path (collapse,
+/// drag, drop, group still whole and still collapsed) which had no coverage at
+/// all -- but it is NOT the regression guard. See TODO.md, which stays open.
 pub fn test_drag_over_collapsed_group_keeps_it_contiguous() -> Builder {
     four_tabs_with_two_tab_group()
-        // Collapse first: this is the whole point of the test.
+        // Collapse the group (tabs 2 and 3). This is the whole point: the
+        // collapsed path is a different branch from the expanded one.
         .with_step(toggle_tab_group_collapsed_of_tab(2))
         .with_step(
             TestStep::new("The group starts collapsed and whole")
@@ -367,23 +369,29 @@ pub fn test_drag_over_collapsed_group_keeps_it_contiguous() -> Builder {
                 .add_named_assertion("one header", assert_group_header_count(1))
                 .add_named_assertion("no group is split", assert_groups_contiguous()),
         )
-        .with_step(begin_tab_drag(0))
-        .with_step(drag_over_tab("Drag over the collapsed group", 2))
+        // Drag the LAST UNGROUPED tab RIGHTWARD into the collapsed run.
+        // `calculate_updated_tab_index` moves exactly one slot per event and uses
+        // `neighbor_drag_rect`, which makes a collapsed member fall back to the
+        // group's container rect -- so tab 1's right neighbour resolves to a
+        // collapsed member and `new_index` lands inside the run. That is the
+        // branch `on_tab_drag`'s collapsed-group hop exists to intercept: without
+        // it the tab `swap`s into the interior and splits the group.
+        .with_step(begin_tab_drag(1))
+        .with_step(drag_over_tab("Drag right, onto the collapsed group", 3))
+        .with_step(drag_over_tab("Keep dragging into the collapsed run", 3))
+        .with_step(drag_over_tab("And again, past its far edge", 3))
         .with_step(
-            TestStep::new("Dragging over a collapsed group does not split it")
+            TestStep::new("Dragging into a collapsed group does not split it")
                 .add_named_assertion("no group is split", assert_groups_contiguous())
                 .add_named_assertion(
                     "still exactly one group header",
                     assert_group_header_count(1),
                 )
-                .add_named_assertion("the group is still collapsed", assert_group_collapsed(2, true)),
+                .add_named_assertion(
+                    "the group is still collapsed",
+                    assert_group_collapsed(2, true),
+                ),
         )
-        // Continue past it and drop, then re-check: the hop must leave the block whole.
-        .with_step(drag_to_leading_edge_and_settle(
-            "Drag on past the collapsed group",
-            0,
-            5,
-        ))
         .with_step(drop_on_leading_edge(0))
         .with_step(
             TestStep::new("The collapsed group survived the pass as one run")
