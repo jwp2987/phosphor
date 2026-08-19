@@ -3154,8 +3154,15 @@ moving the pin:
       symbol verified in the binary), `WorkspaceAction::DragTab` is never dispatched, and the
       assertions still pass because they read MODEL state while the bar on screen is stale.
       The drag helpers can only ever aim at tab 0, the one position the early paints saved.
-      **Fix the harness, not the tests:** make the driver force a repaint after steps that
-      mutate the tab list (or make `open_extra_tabs` await one). Then re-verify ALL SIX by
+      **Mechanism found:** `maybe_render_frame`
+      (`crates/warpui_core/src/integration/step.rs:994`) only waits for a frame when
+      `app.has_window_invalidations(window_id)` is true; otherwise it logs *"not checking for a
+      frame to pass"* and moves on. So if the tab-adding steps leave no pending invalidation at
+      that moment, no frame is ever rendered and the bar stays stale for the rest of the test.
+      Note the real app is unaffected — the maintainer confirmed tab groups render and drag
+      correctly — so this is a harness-only defect, not a product one.
+      **Fix the harness, not the tests:** either force a render after steps that mutate the tab
+      list, or have `open_extra_tabs` await a frame. Then re-verify ALL SIX by
       breaking the code each claims to cover — none of them has ever been shown to fail.
       Superseded framing:
       **ALL SIX tab-group integration tests pass WITHOUT ever calling `on_tab_drag`.**
