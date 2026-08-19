@@ -3144,7 +3144,21 @@ moving the pin:
 
 ### Defects — user-visible
 
-- [ ] 🔴 **ALL SIX tab-group integration tests pass WITHOUT ever calling `on_tab_drag`.**
+- [ ] 🔴 **DIAGNOSED: the tab bar renders ONE tab for the whole test, so the six tab-group
+      integration tests never drag anything.** Measured 2026-08-19 by logging inside
+      `render_tab_bar_contents`: **`tabs=1 slots=1 active=0`, on all four paints**, during
+      `test_drag_tab_out_of_group` — a test whose fixture creates FOUR tabs and whose model
+      assertions pass. `TabComponent::build` likewise runs only for `idx=0`.
+      **So every paint happens before the extra tabs exist, and nothing repaints afterwards.**
+      That explains the whole cluster at once: `on_tab_drag` is never called (zero calls,
+      symbol verified in the binary), `WorkspaceAction::DragTab` is never dispatched, and the
+      assertions still pass because they read MODEL state while the bar on screen is stale.
+      The drag helpers can only ever aim at tab 0, the one position the early paints saved.
+      **Fix the harness, not the tests:** make the driver force a repaint after steps that
+      mutate the tab list (or make `open_extra_tabs` await one). Then re-verify ALL SIX by
+      breaking the code each claims to cover — none of them has ever been shown to fail.
+      Superseded framing:
+      **ALL SIX tab-group integration tests pass WITHOUT ever calling `on_tab_drag`.**
       Found 2026-08-19 by instrumenting: a `log::error!` at the top of
       `Workspace::on_tab_drag` produced **zero** output across
       `test_drag_tab_out_of_group`, `test_drag_tab_into_group`,
