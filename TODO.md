@@ -3144,6 +3144,31 @@ moving the pin:
 
 ### Defects — user-visible
 
+> **HOW TO RUN THE TESTS (2026-08-18) — two mistakes that cost real time today.**
+>
+> **1. Use the CI configuration, or you will measure phantom failures.**
+> `cargo nextest run --workspace --exclude warp` with **default features** reported
+> **247 failures**, 194 of them the identical `terminal_view should exist ...` panic.
+> None were real. CI runs these as
+> `./script/check_test_failures -p warp -p warp_tui --lib --features warp/gui` — without
+> `warp/gui` most of those tests have no terminal view at all. Under the CI command the
+> same tree was **6885/6885**. The other jobs are `-p warpui_core --features tui` (the
+> `tui` feature is **not** optional — CI says so at `pr-check.yml`), a 40-package sweep,
+> and `-p integration` under `xvfb-run`.
+>
+> **2. `script/check_test_failures` is the right entry point, not bare `cargo nextest`.**
+> It diffs against `script/known_test_failures.txt` and fails on **change**: a new failure
+> is a regression, and a listed test that starts passing is a stale entry that must be
+> deleted in the same change. That list is currently **empty**, so `main` is expected
+> fully green. It also routes through `script/agent-cargo`, which pins `CARGO_TARGET_DIR`
+> and `TMPDIR` onto real storage.
+>
+> **3. `/tmp` here is a 12G tmpfs — i.e. RAM.** A worktree or `TMPDIR` under it fills the
+> tmpfs mid-build and every crate dies with a disk error while the real disk sits ~60%
+> free. `check_test_failures`'s own header documents this from 2026-08-08; I hit it again
+> anyway on 2026-08-18 by putting a comparison worktree in `/tmp`. Put worktrees under
+> `/home` and export `TMPDIR=/home/winters/.cache/phosphor-tmp`.
+
 > **BUILD LOG 2026-08-18 — first compilation of the day's work.** `cargo check --workspace
 > --all-targets` went **21 errors → 0**. Only **three** were real; the rest cascaded.
 > 1. **`pin_project_lite` was never declared** — 18 of the 21. `app/src/ai/mcp/sse_transport/`
