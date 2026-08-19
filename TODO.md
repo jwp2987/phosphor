@@ -3176,7 +3176,21 @@ moving the pin:
       two separate `TestStep`s (the driver advances a frame per step, and `begin_tab_drag` does
       both in one step via two `.with_action` calls). `on_tab_drag` was STILL never called.
       So a missing repaint between the two events is not the cause.
-      Remaining: (b) the drag never crosses `Draggable`'s threshold, or (c) the tab is not
+      **(c) MEASURED 2026-08-19, and it is the lead.** Logging every `TabComponent::build`
+      during `test_drag_tab_out_of_group` yields **only `idx=0`** (4 calls, all
+      `ghost=false sole=false`). Tabs 1-3 are never built, so the tab bar renders a single
+      tab even though the fixture creates four. Tab 0 does get a `Draggable`, so the missing
+      piece is not the sole-member branch.
+      **So the likely story is that the tab bar under test is not rendering the tabs the test
+      thinks it is** — which would explain every symptom at once: no drag, and assertions that
+      pass because they read model state rather than what is on screen.
+      Next: log `self.tabs.len()` and the slot count inside `render_tab_bar_contents` to see
+      what the bar believes it is drawing.
+      ⚠️ Two methodological traps hit while getting here, both worth avoiding: an instrumented
+      build that **failed to compile** left a stale binary and produced a confident false
+      negative (always check the symbol is in the binary), and nextest **captures output on
+      passing tests** so `--no-capture` is required to see any of it.
+      Superseded: (b) the drag never crosses `Draggable`'s threshold, or (c) the tab is not
       wrapped in a `Draggable` at all in this configuration — note
       `TabComponent::build` deliberately renders NO per-tab `Draggable` for a
       `sole_grouped_member`, and also skips it `for_drag_ghost`. **Check (c) first**: log
