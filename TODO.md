@@ -3173,7 +3173,15 @@ moving the pin:
       Reproduce without hardware: `gh run view <id> --log-failed` on the nightly, or dispatch
       `usage-test.yml` manually.
 
-- [ ] **Collapsed-group drag: FIXED but UNTESTED.** `on_tab_drag`'s collapsed-group hop was
+- [ ] **Collapsed-group drag: fixed, maintainer-confirmed working in the app, still no
+      regression test.** ✅ **2026-08-19: the maintainer exercised tab groups in a real macOS
+      build and reports them working.** That covers the three reported symptoms (drag out,
+      drag in, duplicate headers) and is stronger evidence than any test here — the unit suite
+      passed 151 tab-group tests while the feature was badly broken, because `on_tab_drag`
+      resolves groups from laid-out element rects the unit harness cannot supply.
+      What remains is only the missing **automated** guard for the collapsed-group path, so a
+      future change can silently reintroduce it. Original entry:
+      **Collapsed-group drag: FIXED but UNTESTED.** `on_tab_drag`'s collapsed-group hop was
       ported 2026-08-19 (`view.rs`, matching `42effe840:view.rs:28734`), and it is the third and
       last piece of the duplicate-header bug. But the six new tab-group integration tests cover
       only **expanded** groups — `test_drag_through_group_keeps_it_contiguous` does not collapse
