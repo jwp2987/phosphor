@@ -3173,8 +3173,18 @@ moving the pin:
       Reproduce without hardware: `gh run view <id> --log-failed` on the nightly, or dispatch
       `usage-test.yml` manually.
 
-- [ ] **Collapsed-group drag: fixed, maintainer-confirmed working in the app, still no
-      regression test.** ✅ **2026-08-19: the maintainer exercised tab groups in a real macOS
+- [ ] **Collapsed-group drag: fixed and confirmed by hand; the hop STILL has no regression
+      test, and an attempt to write one proved vacuous.** 2026-08-19: added
+      `test_drag_over_collapsed_group_keeps_it_contiguous`, then disabled the collapsed-group
+      hop in `on_tab_drag` and re-ran it — **it still passed**, so it does not pin the hop.
+      Cause: a collapsed group renders no member tabs, so `drag_over_tab` cannot target one and
+      the drag never yields a `new_index` inside the collapsed run. So either the hop is
+      unreachable by ordinary dragging (i.e. defensive code, and the real duplicate-header route
+      for collapsed groups is elsewhere), or the test needs drag geometry the current helpers
+      cannot express. **Answer that question before writing another test** — a second vacuous
+      test is worse than none, because it reads as coverage.
+      The test is kept: it asserts real invariants over the collapsed path that had no coverage
+      at all, and its doc comment says plainly that it is not the guard. ✅ **2026-08-19: the maintainer exercised tab groups in a real macOS
       build and reports them working.** That covers the three reported symptoms (drag out,
       drag in, duplicate headers) and is stronger evidence than any test here — the unit suite
       passed 151 tab-group tests while the feature was badly broken, because `on_tab_drag`

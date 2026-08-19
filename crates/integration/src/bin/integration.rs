@@ -374,6 +374,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_drag_tab_out_of_group);
     register_test!(test_drag_tab_into_group);
     register_test!(test_drag_through_group_keeps_it_contiguous);
+    register_test!(test_drag_over_collapsed_group_keeps_it_contiguous);
     register_test!(test_create_collapse_expand_and_rename_tab_group);
     register_test!(test_close_tab_group_closes_its_tabs);
     register_test!(test_open_file_in_new_tab_from_group_joins_group);

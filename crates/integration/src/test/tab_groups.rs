@@ -335,6 +335,65 @@ pub fn test_drag_through_group_keeps_it_contiguous() -> Builder {
         )
 }
 
+/// Dragging a tab over a COLLAPSED group must not split it.
+///
+/// The expanded case is covered by `test_drag_through_group_keeps_it_contiguous`.
+/// The collapsed case reaches different code: `on_tab_drag`'s reorder tail has a
+/// dedicated collapsed-group hop that jumps the dragged tab past the whole block
+/// instead of `swap`ping into its interior. Without that hop the tab lands INSIDE
+/// the collapsed run without joining it, and since `tab_bar_slots` only collapses
+/// *contiguous* runs the group then renders as two headers sharing one id -- the
+/// duplicate-header bug, in its collapsed form.
+///
+/// ⚠️ **This test does NOT currently pin the hop.** Verified 2026-08-19 by
+/// disabling the collapsed-group hop in `on_tab_drag` and re-running: it still
+/// passed. A collapsed group renders no member tabs, so `drag_over_tab` cannot
+/// target one and the drag never produces a `new_index` inside the collapsed
+/// run -- the branch is never reached from these steps. Either the hop is
+/// unreachable through ordinary dragging (defensive code), or exercising it
+/// needs geometry these helpers do not express.
+///
+/// It is kept because it does assert real invariants over the collapsed path
+/// (collapse, drag across, drop, group still whole and still collapsed) and
+/// those had no coverage at all. It is NOT the regression guard for the hop.
+/// See the corresponding TODO.md entry, which stays open.
+pub fn test_drag_over_collapsed_group_keeps_it_contiguous() -> Builder {
+    four_tabs_with_two_tab_group()
+        // Collapse first: this is the whole point of the test.
+        .with_step(toggle_tab_group_collapsed_of_tab(2))
+        .with_step(
+            TestStep::new("The group starts collapsed and whole")
+                .add_named_assertion("the group is collapsed", assert_group_collapsed(2, true))
+                .add_named_assertion("one header", assert_group_header_count(1))
+                .add_named_assertion("no group is split", assert_groups_contiguous()),
+        )
+        .with_step(begin_tab_drag(0))
+        .with_step(drag_over_tab("Drag over the collapsed group", 2))
+        .with_step(
+            TestStep::new("Dragging over a collapsed group does not split it")
+                .add_named_assertion("no group is split", assert_groups_contiguous())
+                .add_named_assertion(
+                    "still exactly one group header",
+                    assert_group_header_count(1),
+                )
+                .add_named_assertion("the group is still collapsed", assert_group_collapsed(2, true)),
+        )
+        // Continue past it and drop, then re-check: the hop must leave the block whole.
+        .with_step(drag_to_leading_edge_and_settle(
+            "Drag on past the collapsed group",
+            0,
+            5,
+        ))
+        .with_step(drop_on_leading_edge(0))
+        .with_step(
+            TestStep::new("The collapsed group survived the pass as one run")
+                .add_named_assertion("tab count unchanged", assert_tab_count(4))
+                .add_named_assertion("no group is split", assert_groups_contiguous())
+                .add_named_assertion("exactly one header", assert_group_header_count(1))
+                .add_named_assertion("only one group exists", assert_tab_group_count(1)),
+        )
+}
+
 /// Creating a group from a tab, collapsing and expanding it, and renaming it.
 ///
 /// Collapse/expand and rename both run through the group header, and a

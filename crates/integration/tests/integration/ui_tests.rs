@@ -242,6 +242,7 @@ integration_tests! {
     test_drag_tab_out_of_group,
     test_drag_tab_into_group,
     test_drag_through_group_keeps_it_contiguous,
+    test_drag_over_collapsed_group_keeps_it_contiguous,
     test_create_collapse_expand_and_rename_tab_group,
     test_close_tab_group_closes_its_tabs,
     test_open_file_in_new_tab_from_group_joins_group,
