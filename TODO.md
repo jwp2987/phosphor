@@ -3181,12 +3181,18 @@ moving the pin:
       A `drag_over_group` helper targeting the container rect was written (it is in
       `crates/integration/src/test/tab_groups.rs` and works), and the test still passed with the
       hop disabled — as did dragging leftward and dragging at a member tab.
-      `neighbor_collapsed_group` only becomes `Some` when `calculate_updated_tab_index` returns
-      an index that is a collapsed member of a group the dragged tab is not in, and no gesture
-      these helpers can express produces that. **So decide from the code whether the branch is
-      reachable at all.** If dead, the real collapsed-group duplicate route is elsewhere and
-      should be found; if reachable, identify the gesture first. **Do not write a fourth test
-      before answering that.** Superseded detail:
+      **The code says the branch IS reachable, so the gap is the test geometry, not dead code.**
+      Traced 2026-08-19: drag tab 1 (ungrouped) whose right neighbour is index 2 (a collapsed
+      member) → `neighbor_drag_rect` returns the GROUP CONTAINER rect (`view.rs:25674`, it
+      deliberately substitutes the container for a collapsed member) → if the drag midpoint
+      passes `container.min_x()`, `calculate_updated_tab_index` returns `current_index + 1` = 2
+      → index 2 is a collapsed member of a group the dragged tab is not in → the hop fires.
+      Note the threshold is the container's **left edge**, not its centre.
+      Empirically the drag still does not produce that state — so the next step is to instrument
+      `calculate_updated_tab_index` / `neighbor_collapsed_group` during the test and see what
+      the values actually are, rather than inferring. One diagnostic build answered the
+      Welcome-pane mystery today after hours of theorising; the same applies here.
+      **Do not write a fourth test before instrumenting.** Superseded detail:
       **Root cause identified, and the fix is a missing helper.** `drag_over_tab` aims the cursor
       at a TAB's saved rect (`tab_position_id`); a collapsed group renders no member tabs, so
       there is nothing to aim at and the drag does not move — tried both leftward and rightward,
