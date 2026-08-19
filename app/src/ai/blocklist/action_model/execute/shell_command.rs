@@ -226,14 +226,21 @@ impl ShellCommandExecutor {
                 let terminal_model = self.terminal_model.lock();
                 let block = terminal_model.block_list().block_with_id(block_id);
 
-                if write_skips_pty_permission_check(block.map(|block| block.finished())) {
+                let block_finished = block.map(|block| block.finished());
+                if write_skips_pty_permission_check(block_finished) {
+                    // Buffered output of a finished block; nothing new executes.
+                    log::info!(
+                        "Agent write to long-running shell auto-executed: block finished, \
+                         no pty permission check needed"
+                    );
                     true
                 } else {
-                    let should_autoexecute = match blocklist_permissions.can_write_to_pty(
+                    let pty_permission = blocklist_permissions.can_write_to_pty(
                         &input.conversation_id,
                         Some(self.terminal_view_id),
                         ctx,
-                    ) {
+                    );
+                    let should_autoexecute = match pty_permission {
                         WriteToPtyPermission::AlwaysAllow => true,
                         WriteToPtyPermission::AskOnFirstWrite => terminal_model
                             .block_list()
@@ -241,6 +248,20 @@ impl ShellCommandExecutor {
                             .has_agent_written_to_block(),
                         _ => false,
                     };
+
+                    // The sibling telemetry call below is a no-op in this fork, so without
+                    // this the decision left no local trace at all -- and this is the branch
+                    // #615 was about. `block_finished: None` in the log is the tmux case:
+                    // the block id did not resolve, which used to skip this check entirely.
+                    log::info!(
+                        "Agent write to long-running shell {}: write_to_pty={pty_permission:?}, \
+                         block_finished={block_finished:?}",
+                        if should_autoexecute {
+                            "auto-executed"
+                        } else {
+                            "held for confirmation"
+                        }
+                    );
 
                     if should_autoexecute {
                         send_telemetry_from_ctx!(

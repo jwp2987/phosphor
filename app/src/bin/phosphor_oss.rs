@@ -29,7 +29,13 @@ fn main() -> Result<()> {
             // Keep in sync with `ChannelState::init`'s default app id.
             app_id: AppId::new("dev", "phosphor", "Phosphor"),
             display_name: "Phosphor".into(),
-            logfile_name: "zap.log".into(),
+            // Rebranded from "zap.log" 2026-08-19. A log filename is not one of the
+            // load-bearing "zap" compatibility surfaces (persistence keys, X-Zap-*
+            // headers, the DCS reply, Software\Zap, the paths.rs legacy arm) -- nothing
+            // reads it but this app's own rotation, which derives every path from this
+            // string. Old zap.log* files are simply no longer collected, matching the
+            // no-migration decision recorded in README.md's storage-identity note.
+            logfile_name: "phosphor.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,
         },

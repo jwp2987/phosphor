@@ -38,7 +38,9 @@ fn main() -> Result<()> {
             // longer read. See README.md's storage-identity note.
             app_id: AppId::new("dev", "phosphor", "Phosphor"),
             display_name: "Phosphor".into(),
-            logfile_name: "zap-tui.log".into(),
+            // Rebranded from "zap-tui.log" 2026-08-19; same no-migration rationale as
+            // the app id above.
+            logfile_name: "phosphor-tui.log".into(),
             autoupdate_config: None,
             mcp_static_config: None,
         },
