@@ -181,9 +181,16 @@ impl ansi::Handler for GridHandler {
     }
 
     fn input(&mut self, c: char) {
-        // We disable Reset Grid checks in unit tests, as they are not designed to test
-        // PTY integration. `#[cfg(test)]` only applies to unit tests, not integration tests.
-        #[cfg(all(windows, not(test)))]
+        // We disable Reset Grid checks in tests, as they are not designed to test
+        // PTY integration. `not(test)` covers this crate's own unit tests, and
+        // `not(feature = "test-util")` covers other crates (e.g. `warp_tui`) that
+        // build real terminal models against `warp`'s test helpers.
+        //
+        // The `test-util` arm was missing here, so `warp_tui`'s
+        // `usage_tui_transcript_render` tripped this debug_assert on Windows --
+        // red on the nightly usage suite every night from 2026-08-12. Matches
+        // `42effe840:app/src/terminal/model/grid/ansi_handler.rs:189`.
+        #[cfg(all(windows, not(test), not(feature = "test-util")))]
         if let ResetGridChecks::Enabled { received_osc } = self.ansi_handler_state.reset_grid_checks
         {
             debug_assert!(

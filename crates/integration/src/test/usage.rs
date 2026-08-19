@@ -50,6 +50,7 @@ use warp::{
 use warpui::{async_assert, async_assert_eq, integration::TestStep, ViewHandle};
 
 use super::{new_builder, Builder};
+use crate::util::skip_if_powershell_core_2303;
 
 /// The synthetic user query used by the injected dummy AI blocks.
 const DUMMY_AI_QUERY: &str = "Produce some dummy output for the usage suite";
@@ -402,6 +403,16 @@ pub fn usage_secret_redaction() -> Builder {
     let test_output = "Phone: 123-456-7890 API: sk-1234567890abcdef.";
 
     new_builder()
+        // Same guard the scenario this reuses carries
+        // (`secrets::test_secrets_are_always_redacted_in_ai_inputs`): the assertions
+        // do not hold under PowerShell, tracked as CORE-2303. The copy dropped it,
+        // so on Windows -- where PowerShell is the default shell -- this ran anyway
+        // and failed on `echo 'x'.` emitting a newline before the trailing period:
+        //   expected "…abcdef."   got "…abcdef\n."
+        // That is what made the nightly usage suite red on Windows every night from
+        // 2026-08-12. Restoring the guard rather than relaxing the assertion: the
+        // assertion is correct, the shell is the known-unsupported one.
+        .set_should_run_test(skip_if_powershell_core_2303)
         .with_step(initialize_secret_regexes())
         .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
         .with_step(toggle_safe_mode_setting())
