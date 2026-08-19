@@ -3144,6 +3144,26 @@ moving the pin:
 
 ### Defects — user-visible
 
+- [ ] 🔴 **ALL SIX tab-group integration tests pass WITHOUT ever calling `on_tab_drag`.**
+      Found 2026-08-19 by instrumenting: a `log::error!` at the top of
+      `Workspace::on_tab_drag` produced **zero** output across
+      `test_drag_tab_out_of_group`, `test_drag_tab_into_group`,
+      `test_drag_through_group_keeps_it_contiguous` and
+      `test_drag_over_collapsed_group_keeps_it_contiguous`, while four other ERROR-level lines
+      from the same run appeared normally and the symbol was confirmed present in the built
+      binary. The drag code path is never entered.
+      **So these tests do not verify the drag fixes.** They were reported as pinning the
+      dragged-out-of-group / contiguity behaviour; they do not. They assert real end-state
+      invariants (membership, header count, contiguity) but reach that state by some other
+      route — most likely the mouse events never reach the tab `Draggable`, so nothing about
+      the reorder logic is exercised.
+      **The only verification the drag fixes have is the maintainer exercising them by hand in
+      a real macOS build.** That is genuine, but there is no automated guard, and a future
+      change to `on_tab_drag` would not be caught.
+      Next: find why `begin_tab_drag` / `drag_to` do not reach `Draggable::dispatch_event`
+      (wrong window id? no mouse-down on the tab? drag threshold never crossed?), fix the
+      helper, then re-verify every one of the six by breaking the code they claim to cover.
+
 - [ ] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
       failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
       run to run with a different set each time:
