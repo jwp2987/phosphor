@@ -3158,7 +3158,10 @@ moving the pin:
       (`42effe840:view.rs:12486`), so it would be dead code. Porting requires bringing the caller
       too. Reproduce with: close a tab inside a group, then undo-close it.
 
-- [ ] **Credits round to 1dp PER AGENT before the rollup sums them.** `AIConversation::credits_spent()`
+- [x] **DECIDED 2026-08-19 (maintainer): keep pin parity, do not change it.** Recorded in
+      `DECLINED.md`. The behaviour stays and is now documented by characterization tests
+      rather than being silent. Original entry:
+      **Credits round to 1dp PER AGENT before the rollup sums them.** `AIConversation::credits_spent()`
       rounds before `compute_orchestration_rollup` sees the value, so three agents at 0.04 each
       (0.12 real) report as nothing spent and the usage footer never appears. **Same at the pin**
       (`42effe840:app/src/ai/agent/conversation.rs:769-773`), so it was pinned as a

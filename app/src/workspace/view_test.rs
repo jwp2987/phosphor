@@ -3780,6 +3780,110 @@ fn test_toggle_tab_group_collapsed_flips_state() {
 }
 
 #[test]
+fn test_restoring_a_closed_tab_does_not_split_a_group() {
+    // Regression: `restore_closed_tab` used to insert blindly at the tab's
+    // original index. If that index fell inside another group's contiguous run,
+    // the group was split -- and because `tab_bar_slots` only collapses
+    // *contiguous* runs, a split group renders as TWO headers sharing one id,
+    // where only the one whose member range matches will close. Same
+    // duplicate-header symptom as the drag path, reached by closing a tab inside
+    // a group and undoing the close.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            // Build a group of two contiguous members.
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[workspace.active_tab_index()]
+                .group_id
+                .expect("active tab should be in a group");
+            workspace.add_terminal_tab(false, ctx);
+
+            let (first, last) = group_member_index_range(&workspace.tabs, group_id)
+                .expect("the group should have a member range");
+            assert!(last > first, "test needs a multi-member group");
+
+            // An ungrouped tab whose "original index" lands inside that run.
+            let restored = workspace.tabs[workspace.tabs.len() - 1].clone();
+            let split_index = first + 1;
+            assert!(
+                split_index <= last,
+                "the chosen index must fall inside the group's run"
+            );
+
+            workspace.restore_closed_tab(split_index, restored, ctx);
+
+            // The group's members must still form one unbroken run.
+            let members: Vec<usize> = workspace
+                .tabs
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| t.group_id == Some(group_id))
+                .map(|(i, _)| i)
+                .collect();
+            assert!(!members.is_empty(), "group should still exist");
+            let contiguous = members.windows(2).all(|w| w[1] == w[0] + 1);
+            assert!(
+                contiguous,
+                "restoring a tab split the group: member indices {members:?}"
+            );
+        });
+    });
+}
+
+#[test]
+fn test_index_avoiding_group_split_pushes_past_the_group() {
+    // Pins the helper directly: a slot with the same group on both sides is
+    // inside a run and must be pushed past it; every other slot is unchanged.
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            let group_id = workspace.tabs[workspace.active_tab_index()]
+                .group_id
+                .expect("active tab should be in a group");
+            workspace.add_terminal_tab(false, ctx);
+
+            let (first, last) = group_member_index_range(&workspace.tabs, group_id)
+                .expect("the group should have a member range");
+            assert!(last > first, "test needs a multi-member group");
+
+            // Inside the run -> pushed past the group's last member.
+            let inside = first + 1;
+            assert!(
+                workspace.index_avoiding_group_split(inside) > last,
+                "an index inside the run must be pushed past the group"
+            );
+
+            // The run's own leading edge is not a split.
+            assert_eq!(
+                workspace.index_avoiding_group_split(first),
+                first,
+                "the group's first slot is not a split"
+            );
+
+            // Slot 0 and out-of-range are returned unchanged.
+            assert_eq!(workspace.index_avoiding_group_split(0), 0);
+            let end = workspace.tabs.len();
+            assert_eq!(workspace.index_avoiding_group_split(end), end);
+        });
+    });
+}
+
+#[test]
 fn test_close_tab_group_removes_group_and_members() {
     let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
 
