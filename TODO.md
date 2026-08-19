@@ -3172,7 +3172,17 @@ moving the pin:
       `LeftMouseDown` arm calls `self.origin().expect("origin should exist")`; (b) the armed
       drag never crosses whatever threshold `Draggable` requires; (c) the tab took the
       `sole_grouped_member` branch, which deliberately renders NO per-tab `Draggable`.
-      (a) is the strongest: the harness dispatches two events back to back with no repaint.
+      **(a) TESTED AND DISPROVED 2026-08-19.** Split the mouse-down and the arming drag into
+      two separate `TestStep`s (the driver advances a frame per step, and `begin_tab_drag` does
+      both in one step via two `.with_action` calls). `on_tab_drag` was STILL never called.
+      So a missing repaint between the two events is not the cause.
+      Remaining: (b) the drag never crosses `Draggable`'s threshold, or (c) the tab is not
+      wrapped in a `Draggable` at all in this configuration — note
+      `TabComponent::build` deliberately renders NO per-tab `Draggable` for a
+      `sole_grouped_member`, and also skips it `for_drag_ghost`. **Check (c) first**: log
+      which branch of `build()` each tab takes during the test. That is a cheap, direct
+      question and the previous three suspects were all resolved by looking rather than
+      reasoning.
 
 - [ ] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
       failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
