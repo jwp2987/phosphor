@@ -3144,7 +3144,18 @@ moving the pin:
 
 ### Defects — user-visible
 
-- [ ] **The nightly `Usage Test Suite` has failed EIGHT NIGHTS RUNNING (2026-08-12 → 08-19),
+- [ ] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
+      failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
+      run to run with a different set each time:
+      **13 failures (08-18) → 2 (08-19 nightly) → 6 (on `9c6eb1621`)**, drawn from a shared
+      pool including tests tagged `reliable-here` (`usage_tabs_add_switch_close`,
+      `usage_agent_block_render`) which by definition should not be flaky.
+      So the suite has never been a trustworthy signal on Windows, and chasing individual
+      scenarios will not fix it. Needs its own investigation: all failures report a bare
+      `exit code 1` alongside `warp::completer` path-conversion warnings, which is the thread
+      to pull. **Do not treat a green Windows usage run as meaningful until this is understood.**
+      Original entry:
+      **The nightly `Usage Test Suite` has failed EIGHT NIGHTS RUNNING (2026-08-12 → 08-19),
       Windows only.** Linux and macOS pass every night. Nobody is watching it.
       **This corrects a framing error in this file:** `usage_tui_transcript_render` was recorded
       as needing "a Windows machine" to verify. It does not — **CI is a Windows machine and has
@@ -3170,7 +3181,10 @@ moving the pin:
       fix and no regression test. Add one: collapse a group, drag a non-member over it, assert
       one header and one contiguous run.
 
-- [ ] **`index_avoiding_group_split` is still unported** — restoring a CLOSED tab can land inside
+- [x] **DONE 2026-08-19 (`fb5f325fe`, CI-verified in run 32247666723).** Ported together with
+      its caller `index_for_restored_tab`, plus the group-rejoin / pinned-clamp / expand steps
+      `restore_closed_tab` was missing. Two regression tests added. Original entry:
+      **`index_avoiding_group_split` is still unported** — restoring a CLOSED tab can land inside
       a group and split it, which renders as a duplicate header exactly like the drag bug did.
       Not ported because its only pin caller, `index_for_restored_tab`, does not exist here
       (`42effe840:view.rs:12486`), so it would be dead code. Porting requires bringing the caller
