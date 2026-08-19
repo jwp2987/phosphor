@@ -3313,11 +3313,13 @@ moving the pin:
       paying the provider directly, and silently erasing sub-5c spend is a real accounting
       question. **Needs a maintainer decision:** keep pin parity, or sum before rounding.
 
-- [ ] **The release build has never been run.** Everything to date is `cargo check` plus debug
-      test binaries. A `--release` build exercises ThinLTO and codegen paths `check` never
-      touches, and ~35k lines landed since the last one. `script/bundle` (the real release path,
-      producing a macOS DMG / Windows installer) is additionally unexercised and cannot be run
-      from the Linux build host.
+- [x] **The release build has been run.** Closed 2026-08-19 by the `v0.1.0` release: the
+      tagged build completed `--release` (ThinLTO and codegen paths exercised) and `script/bundle`
+      produced 13 artifacts, including both macOS DMGs (`Phosphor-arm64.dmg`, `Phosphor-intel.dmg`)
+      and the Windows installer (`PhosphorSetup.exe`) — the two paths this entry called
+      unexercised — plus AppImage, deb and rpm. Verified against the published release, not
+      against a local run; the Linux build host still cannot produce the DMG/installer, which is
+      why this ran in CI.
 
 > **HOW TO RUN THE TESTS (2026-08-18) — two mistakes that cost real time today.**
 >

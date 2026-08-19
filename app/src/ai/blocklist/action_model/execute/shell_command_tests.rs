@@ -349,3 +349,33 @@ fn block_working_directory_updated_does_not_drain_finish_senders() {
         );
     });
 }
+
+/// #615: a write to a long-running shell command must only skip the pty permission check when
+/// the block is present AND finished. The bug was `is_none_or`, which also returned true when
+/// the block id did not resolve -- reachable under tmux, where Warp's block model does not
+/// track the pane and the lookup misses, so the profile's "Interact with running commands"
+/// setting was bypassed entirely.
+///
+/// The `None` case is the whole point of this test. `is_none_or(|b| b.finished())` differs from
+/// the correct predicate on that arm and only that arm, so reverting the fix must turn this
+/// test red -- if it stays green, the test is vacuous and is not pinning the fix.
+#[test]
+fn unresolved_block_does_not_skip_the_pty_permission_check() {
+    // Block id did not resolve: writes to a live pty, so it must fall through and ask.
+    assert!(
+        !write_skips_pty_permission_check(None),
+        "a missing block must not bypass the write_to_pty permission check (#615)"
+    );
+
+    // Still running: also a live pty, also must ask.
+    assert!(
+        !write_skips_pty_permission_check(Some(false)),
+        "a still-running block must not bypass the write_to_pty permission check"
+    );
+
+    // Present and finished: nothing new is executed, the buffered output is returned.
+    assert!(
+        write_skips_pty_permission_check(Some(true)),
+        "a finished block returns buffered output and needs no permission check"
+    );
+}

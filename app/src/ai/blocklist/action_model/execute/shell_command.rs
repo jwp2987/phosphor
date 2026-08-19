@@ -45,6 +45,26 @@ use crate::{
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 
+/// Whether a write to a long-running shell command may skip the pty permission check.
+///
+/// `block_finished` is `None` when the block id did not resolve, `Some(finished)` otherwise.
+///
+/// Only a block that is present AND finished qualifies, because that case executes nothing
+/// new -- the buffered output is simply returned. Everything else writes to a LIVE pty and
+/// must fall through to the profile's `write_to_pty` permission.
+///
+/// This was `block.is_none_or(|b| b.finished())`, which fused "finished" with "block not
+/// found" and returned true for both, so a write to a live pty skipped the permission check
+/// entirely whenever the id failed to resolve (#615). That is the normal case under tmux:
+/// tmux repaints its own screen, Warp's block model does not track the pane, and the lookup
+/// misses -- which is why the profile was honoured in a local session and bypassed in a tmux
+/// one. `command_id` comes from the model, so this was not limited to any one command.
+///
+/// Extracted as a free function so the `None` arm is testable without a gpui harness.
+fn write_skips_pty_permission_check(block_finished: Option<bool>) -> bool {
+    block_finished == Some(true)
+}
+
 /// Text returned to the agent for `run_shell_command` / related tools.
 ///
 /// Prefer unobfuscated grid text; some shells / timing paths leave the primary serialization empty
@@ -182,6 +202,12 @@ impl ShellCommandExecutor {
                     ctx,
                 );
                 if let CommandExecutionPermission::Allowed(reason) = autoexecution_permission {
+                    // `send_telemetry_from_ctx!` is a no-op in this fork (the cloud sink is
+                    // gone), so the reason a command was permitted left no trace anywhere --
+                    // answering "why did that run without asking?" meant reading the source.
+                    // Log it locally instead. Deliberately not the command text: that reaches
+                    // the log file, and commands carry secrets.
+                    log::info!("Agent command auto-executed, reason: {reason:?}");
                     send_telemetry_from_ctx!(
                         TelemetryEvent::AutoexecutedAgentModeRequestedCommand { reason },
                         ctx
@@ -200,9 +226,7 @@ impl ShellCommandExecutor {
                 let terminal_model = self.terminal_model.lock();
                 let block = terminal_model.block_list().block_with_id(block_id);
 
-                if block.is_none_or(|block| block.finished()) {
-                    // If the block is already finished, allow auto-execution - the finished output
-                    // will be returned.
+                if write_skips_pty_permission_check(block.map(|block| block.finished())) {
                     true
                 } else {
                     let should_autoexecute = match blocklist_permissions.can_write_to_pty(
