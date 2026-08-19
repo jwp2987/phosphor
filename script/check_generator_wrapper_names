@@ -80,6 +80,10 @@
 #     rename cannot leave them stranded.
 #
 # Usage:  script/check_generator_wrapper_names
+# LC_ALL=C on sorts is deliberate: under a UTF-8 locale `sort` ignores
+# punctuation when collating, so tokens differing only by a leading '#'
+# (or similar) compare EQUAL and `sort -u` silently drops one. That made
+# check_sweep_ledger pass locally and fail in CI on 2026-08-19.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -188,7 +192,7 @@ check_spellings() { # <label> <sanctioned name> <regex> <include glob or "-"> <f
   local found spelling
   local -a opts=(-rhoIE)
   [[ "$include" == "-" ]] || opts+=("--include=$include")
-  found="$(grep "${opts[@]}" "$pattern" "$@" | sort -u)"
+  found="$(grep "${opts[@]}" "$pattern" "$@" | LC_ALL=C sort -u)"
   if [[ -z "$found" ]]; then
     fail "found no $label tokens in: $* -- the extraction pattern has rotted, and this check is asserting nothing"
     return

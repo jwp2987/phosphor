@@ -46,6 +46,10 @@
 #     script/check_sweep_ledger
 #
 # Exit non-zero on any failure.
+# LC_ALL=C on sorts is deliberate: under a UTF-8 locale `sort` ignores
+# punctuation when collating, so tokens differing only by a leading '#'
+# (or similar) compare EQUAL and `sort -u` silently drops one. That made
+# check_sweep_ledger pass locally and fail in CI on 2026-08-19.
 
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -133,10 +137,15 @@ row_issues="$(awk -F'\\|' '
     }
 ' "$DECLINED_FILE")"
 
-all_declined_issues="$(awk -F'\t' '{print $2}' <<<"$row_issues" | sort -u)"
+all_declined_issues="$(awk -F'\t' '{print $2}' <<<"$row_issues" | LC_ALL=C sort -u)"
 
 # ------------------------------------------------- declined_ref existence
-refs_used="$(awk -F'\t' 'NR>1 && $6!="" {print $6}' "$LEDGER" | sort -u)"
+# LC_ALL=C is load-bearing, not cosmetic. Under a UTF-8 locale `sort` ignores
+# punctuation when collating, so "11" and "#11" compare EQUAL and `LC_ALL=C sort -u`
+# silently drops one of them -- which hides exactly the malformed rows this
+# check exists to catch. On 2026-08-19 that made the guard pass on a developer
+# machine (en_US.UTF-8) and fail in CI (C) on the same commit.
+refs_used="$(awk -F'\t' 'NR>1 && $6!="" {print $6}' "$LEDGER" | LC_ALL=C sort -u)"
 n_missing_issue=0
 missing_issue_list=""
 while IFS= read -r ref; do
@@ -156,8 +165,8 @@ fi
 # citing it is struck -- see the #325 explanation in this file's header
 # comment for why (#325 is both a struck row's issue and a still-active
 # row's issue; only a number with ZERO active rows counts).
-struck_issues="$(awk -F'\t' '$1=="STRUCK"{print $2}' <<<"$row_issues" | sort -u)"
-active_issues="$(awk -F'\t' '$1=="ACTIVE"{print $2}' <<<"$row_issues" | sort -u)"
+struck_issues="$(awk -F'\t' '$1=="STRUCK"{print $2}' <<<"$row_issues" | LC_ALL=C sort -u)"
+active_issues="$(awk -F'\t' '$1=="ACTIVE"{print $2}' <<<"$row_issues" | LC_ALL=C sort -u)"
 
 fully_struck_issues=""
 while IFS= read -r issue; do

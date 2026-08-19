@@ -49,6 +49,10 @@
 # suite runs (`test_with_24_bit_color`, `test_video_recording`,
 # `make_1000_blocks_memory_benchmark`, the `usage_*` scenarios driven by
 # `script/usage-test`). Those are reported as a note, not an error.
+# LC_ALL=C on sorts is deliberate: under a UTF-8 locale `sort` ignores
+# punctuation when collating, so tokens differing only by a leading '#'
+# (or similar) compare EQUAL and `sort -u` silently drops one. That made
+# check_sweep_ledger pass locally and fail in CI on 2026-08-19.
 
 set -euo pipefail
 
@@ -87,11 +91,11 @@ awk '
             print line
         }
     }
-' "$LIST_DIR"/*.rs | sort -u > "$listed"
+' "$LIST_DIR"/*.rs | LC_ALL=C sort -u > "$listed"
 
 grep -oE 'register_test!\([A-Za-z_][A-Za-z0-9_]*\)' "$REGISTRY_FILE" \
     | sed -E 's/register_test!\((.*)\)/\1/' \
-    | sort -u > "$registered"
+    | LC_ALL=C sort -u > "$registered"
 
 if [[ ! -s "$listed" ]]; then
     echo "check_integration_test_registry: parsed 0 names out of $LIST_DIR -- the" >&2
