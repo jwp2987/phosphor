@@ -26,8 +26,9 @@ use warp::integration_testing::tab_group::{
     assert_tab_ungrouped, assert_tabs_in_same_group, close_tab_group_of_tab,
     create_tab_group_from_tab, ensure_grouped_tabs_enabled, move_tab_to_group_of_tab,
     new_tab_in_group_of_tab, open_settings_file_in_new_tab, rename_tab_group_of_tab,
-    toggle_tab_group_collapsed_of_tab,
+    group_id_for_tab, toggle_tab_group_collapsed_of_tab,
 };
+use warp::workspace::tab_group::TabGroupId;
 use warp::integration_testing::terminal::wait_until_bootstrapped_single_pane_for_tab;
 use warp::integration_testing::workspace::{assert_focused_tab_index, assert_tab_count};
 use warpui::{
@@ -101,6 +102,59 @@ fn drag_to(app: &mut warpui::App, window_id: WindowId, position: Vector2F) {
             modifiers: ModifiersState::default(),
         },
     );
+}
+
+/// The saved-position id of a horizontal tab group's container.
+///
+/// Mirrors `warp`'s `htab_group_position_id` (`app/src/workspace/view/vertical_tabs.rs`),
+/// which is `pub(crate)` and so not reachable from this crate -- the same reason
+/// `tab_position_id` is rebuilt locally above. **If that format changes, this
+/// must change with it**; `tab_group_save_position_ids_are_distinct_per_axis_and_role`
+/// pins the real one.
+fn group_container_position_id(group_id: TabGroupId) -> String {
+    format!("horizontal_tabs:group:{group_id:?}")
+}
+
+/// Centre of a group's rendered container, or `None` if it has not been laid out.
+///
+/// Unlike `tab_center`, this works for a COLLAPSED group: the container is still
+/// rendered as one slot even though its member tabs are not, which is exactly the
+/// case `drag_over_tab` cannot express.
+fn group_container_center(
+    app: &mut warpui::App,
+    window_id: WindowId,
+    group_id: TabGroupId,
+) -> Option<Vector2F> {
+    let presenter = app.presenter(window_id)?;
+    let bounds = presenter
+        .borrow()
+        .position_cache()
+        .get_position(group_container_position_id(group_id))?;
+    Some(bounds.center())
+}
+
+/// Drags onto the centre of the group containing `group_source_tab`, repeating
+/// the event `settle_events` times.
+///
+/// `calculate_updated_tab_index` moves at most one slot per event, so crossing a
+/// group needs one event per slot. Aims at the group CONTAINER rather than a
+/// member tab so it works while the group is collapsed.
+fn drag_over_group(
+    step_name: &'static str,
+    group_source_tab: usize,
+    settle_events: usize,
+) -> TestStep {
+    TestStep::new(step_name).with_action(move |app, window_id, _| {
+        for _ in 0..settle_events {
+            let Some(group_id) = group_id_for_tab(app, window_id, group_source_tab) else {
+                panic!("tab {group_source_tab} should be in a group");
+            };
+            let Some(target) = group_container_center(app, window_id, group_id) else {
+                panic!("group {group_id:?} should have a rendered container rect");
+            };
+            drag_to(app, window_id, target);
+        }
+    })
 }
 
 /// Drags to the centre of the tab currently occupying `target_tab_index`.
@@ -344,20 +398,28 @@ pub fn test_drag_through_group_keeps_it_contiguous() -> Builder {
 /// collapsed run without joining it, and since `tab_bar_slots` only collapses
 /// *contiguous* runs the group then renders as two headers sharing one id.
 ///
-/// ⚠️ **This test does NOT pin the hop.** Verified twice on 2026-08-19 by
-/// disabling the collapsed-group hop and re-running -- it passed both times,
-/// dragging leftward and rightward.
+/// ⚠️ **This test does NOT pin the collapsed-group hop, and three attempts to
+/// make it failed.** On 2026-08-19 the hop in `on_tab_drag` was disabled and this
+/// re-run three times, once per strategy -- dragging leftward, dragging rightward
+/// at a member tab, and dragging rightward at the group CONTAINER rect via
+/// `drag_over_group`. **It passed every time.**
 ///
-/// Cause, now specific: `drag_over_tab` positions the cursor from a TAB's saved
-/// rect (`tab_position_id`), and a collapsed group renders no member tabs, so
-/// there is no rect to aim at and the drag does not move. Reaching the hop needs
-/// a helper that targets the group's CONTAINER rect (`htab_group_position_id`),
-/// which is what `neighbor_drag_rect` itself falls back to. No such helper
-/// exists yet; writing one is the actual work.
+/// That is now evidence about the code rather than the test: the branch may be
+/// unreachable through ordinary dragging. `neighbor_collapsed_group` only becomes
+/// `Some` when `calculate_updated_tab_index` returns an index that is a collapsed
+/// member of a group the dragged tab does not belong to, and nothing these
+/// helpers can express produces that. **The next step is to decide from the code
+/// whether the branch is reachable at all** -- if it is dead, the real
+/// collapsed-group duplicate route is elsewhere and worth finding; if it is
+/// reachable, the reproducing gesture has to be identified first.
 ///
-/// Kept because it does assert real invariants over the collapsed path (collapse,
-/// drag, drop, group still whole and still collapsed) which had no coverage at
-/// all -- but it is NOT the regression guard. See TODO.md, which stays open.
+/// Do not write a fourth test before answering that. Three passing-but-vacuous
+/// tests have already been written here; a fourth reads as coverage and is worse
+/// than none.
+///
+/// The test is kept because it asserts real invariants over the collapsed path
+/// (collapse, drag across, drop, group still whole and still collapsed) that had
+/// no coverage at all. It is NOT the regression guard.
 pub fn test_drag_over_collapsed_group_keeps_it_contiguous() -> Builder {
     four_tabs_with_two_tab_group()
         // Collapse the group (tabs 2 and 3). This is the whole point: the
@@ -377,9 +439,14 @@ pub fn test_drag_over_collapsed_group_keeps_it_contiguous() -> Builder {
         // branch `on_tab_drag`'s collapsed-group hop exists to intercept: without
         // it the tab `swap`s into the interior and splits the group.
         .with_step(begin_tab_drag(1))
-        .with_step(drag_over_tab("Drag right, onto the collapsed group", 3))
-        .with_step(drag_over_tab("Keep dragging into the collapsed run", 3))
-        .with_step(drag_over_tab("And again, past its far edge", 3))
+        // Aim at the group CONTAINER, not a member tab: a collapsed group renders
+        // no member tabs, so `drag_over_tab` has no rect to aim at and the drag
+        // does not move. Three events, one per slot crossed.
+        .with_step(drag_over_group(
+            "Drag right, into the collapsed group",
+            2,
+            3,
+        ))
         .with_step(
             TestStep::new("Dragging into a collapsed group does not split it")
                 .add_named_assertion("no group is split", assert_groups_contiguous())

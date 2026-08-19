@@ -3177,6 +3177,16 @@ moving the pin:
       test, and an attempt to write one proved vacuous.** 2026-08-19: added
       `test_drag_over_collapsed_group_keeps_it_contiguous`, then disabled the collapsed-group
       hop in `on_tab_drag` and re-ran it — **it still passed**, so it does not pin the hop.
+      **THREE attempts, three vacuous tests — the question is now about the CODE, not the test.**
+      A `drag_over_group` helper targeting the container rect was written (it is in
+      `crates/integration/src/test/tab_groups.rs` and works), and the test still passed with the
+      hop disabled — as did dragging leftward and dragging at a member tab.
+      `neighbor_collapsed_group` only becomes `Some` when `calculate_updated_tab_index` returns
+      an index that is a collapsed member of a group the dragged tab is not in, and no gesture
+      these helpers can express produces that. **So decide from the code whether the branch is
+      reachable at all.** If dead, the real collapsed-group duplicate route is elsewhere and
+      should be found; if reachable, identify the gesture first. **Do not write a fourth test
+      before answering that.** Superseded detail:
       **Root cause identified, and the fix is a missing helper.** `drag_over_tab` aims the cursor
       at a TAB's saved rect (`tab_position_id`); a collapsed group renders no member tabs, so
       there is nothing to aim at and the drag does not move — tried both leftward and rightward,
