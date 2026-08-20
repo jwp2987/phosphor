@@ -1352,24 +1352,7 @@ fn add_tab_context_metadata_setup_steps(builder: Builder) -> Builder {
         ))
         .with_step(
             new_step_with_default_assertions("Git branch metadata should be populated")
-                // 45s, not 15s: the only source for this value is the ShellGitBranch
-                // context chip, and that chip is `RefreshConfig::Periodically { 30s }`
-                // (app/src/context_chips/mod.rs) -- one fetch at startup, then a fetch
-                // every 30 seconds, with no on-demand path. The app starts here before
-                // `git init` runs, so the startup fetch stores an empty value and the
-                // branch is invisible until the next tick, up to 30s later. A 15s budget
-                // is therefore shorter than the worst-case wait by design: the test could
-                // only pass when the tick happened to land inside its window, which made
-                // it a race decided by startup timing rather than by the code under test.
-                // The `git_status_metadata` fallback cannot cover the gap either -- it is
-                // `#[cfg(feature = "local_fs")]`, and `local_fs` is not enabled for this
-                // build. See #616.
-                //
-                // DIVERGES FROM THE PIN, which has 15s here and 30s there
-                // (42effe840 workspace.rs:274, mod.rs:135) and so carries the same race.
-                // The assertion is unchanged; only the wait budget is. Recorded in
-                // DECLINED.md.
-                .set_timeout(Duration::from_secs(45))
+                .set_timeout(Duration::from_secs(15))
                 .add_assertion(assert_current_git_branch(0, METADATA_BRANCH)),
         )
 }
@@ -1394,8 +1377,7 @@ fn add_active_pane_context_metadata_setup_steps(builder: Builder) -> Builder {
         ))
         .with_step(
             new_step_with_default_assertions("Active pane git branch metadata should be populated")
-                // Same 30s chip refresh as above; see that comment and #616.
-                .set_timeout(Duration::from_secs(45))
+                .set_timeout(Duration::from_secs(15))
                 .add_assertion(assert_current_git_branch(1, METADATA_PANE_BRANCH)),
         )
 }
