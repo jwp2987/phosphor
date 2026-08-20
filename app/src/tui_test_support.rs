@@ -114,6 +114,12 @@ pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
     // TUI's CLI subagent surface, which runs under `DefaultProfileState::Cli`
     // in production. `new_for_unit_test` would install the GUI default profile
     // (`write_to_pty: AlwaysAsk`) and model a configuration this view never has.
+    //
+    // `UserWorkspaces` is on the same path: `workspace_autonomy_settings` reads
+    // it before any profile fallback. The other two singletons that path
+    // touches -- `AppExecutionMode` and `BlocklistAIHistoryModel` -- are already
+    // registered (guarded) by `add_test_action_model`, so this completes it.
+    app.add_singleton_model(UserWorkspaces::default_mock);
     app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
     app.add_singleton_model(|_| {
         crate::ai::mcp::templatable_manager::TemplatableMCPServerManager::default()
