@@ -100,6 +100,30 @@ pub fn queue_tui_permission_action(
 pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
     app.update(init_and_register_user_preferences);
     app.add_singleton_model(BlocklistAIPermissions::new);
+    // `AIExecutionProfilesModel` is reached by every permission lookup
+    // (`get_write_to_pty_setting` and friends resolve the active profile), and
+    // `as_ref` PANICS on an unregistered singleton rather than defaulting.
+    //
+    // This fixture used to omit it and still pass, because the pty-permission
+    // check was short-circuited before the lookup whenever a block id did not
+    // resolve -- which is always here, since these tests synthesise a fresh
+    // `BlockId::new()` that was never registered. #615 closed that
+    // short-circuit, so the lookup now actually happens and the gap surfaced.
+    //
+    // Built from a CLI launch mode on purpose: `tui_cli_subagent_view` is the
+    // TUI's CLI subagent surface, which runs under `DefaultProfileState::Cli`
+    // in production. `new_for_unit_test` would install the GUI default profile
+    // (`write_to_pty: AlwaysAsk`) and model a configuration this view never has.
+    app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
+    app.add_singleton_model(|_| {
+        crate::ai::mcp::templatable_manager::TemplatableMCPServerManager::default()
+    });
+    app.add_singleton_model(|ctx| {
+        crate::ai::execution_profiles::profiles::AIExecutionProfilesModel::new(
+            &crate::LaunchMode::new_for_cli_unit_test(),
+            ctx,
+        )
+    });
 }
 
 /// Registers the app models required to construct full TUI session views in tests.

@@ -614,6 +614,26 @@ impl LaunchMode {
             is_integration_test: false,
         }
     }
+
+    /// A CLI launch mode for fixtures that must model the CLI's permission
+    /// defaults rather than the GUI's.
+    ///
+    /// `new_for_unit_test` yields `LaunchMode::Test`, which routes
+    /// `AIExecutionProfilesModel::new` to the GUI default profile
+    /// (`execute_commands`/`write_to_pty`: `AlwaysAsk`). A TUI CLI subagent runs
+    /// under `DefaultProfileState::Cli` instead -- deliberately more permissive,
+    /// see the comment on that arm -- so a fixture built on the Test mode does
+    /// not model what it claims to.
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn new_for_cli_unit_test() -> Self {
+        LaunchMode::CommandLine {
+            command: warp_cli::CliCommand::Whoami,
+            global_options: Default::default(),
+            debug: false,
+            is_sandboxed: false,
+            computer_use_override: None,
+        }
+    }
 }
 
 /// Extracts the raw `--api-key` / `WARP_API_KEY` value carried by a launch mode, if any.
