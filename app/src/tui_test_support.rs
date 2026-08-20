@@ -119,7 +119,9 @@ pub fn register_tui_action_execution_test_singletons(app: &mut warpui::App) {
     // it before any profile fallback. The other two singletons that path
     // touches -- `AppExecutionMode` and `BlocklistAIHistoryModel` -- are already
     // registered (guarded) by `add_test_action_model`, so this completes it.
-    app.add_singleton_model(UserWorkspaces::default_mock);
+    // `mock`, not `default_mock`: the latter is `#[cfg(test)]` only, and this
+    // file compiles under `feature = "test-util"` for the warp_tui crate.
+    app.add_singleton_model(|ctx| UserWorkspaces::mock(vec![], ctx));
     app.add_singleton_model(crate::cloud_object::model::persistence::ObjectStoreModel::mock);
     app.add_singleton_model(|_| {
         crate::ai::mcp::templatable_manager::TemplatableMCPServerManager::default()
