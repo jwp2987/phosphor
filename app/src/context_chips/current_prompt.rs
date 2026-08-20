@@ -1029,6 +1029,17 @@ impl CurrentPrompt {
             }
 
             if self.is_updated_externally(chip_kind) {
+                // #616 diagnostic. Attaching a repo watcher SUPPRESSES the shell
+                // generator below, so from here on the chip has exactly one source.
+                // If the watcher then never publishes, the value is stuck -- and the
+                // fallback that was working a moment ago has just been switched off by
+                // the attach itself. Log the transition so that is visible rather than
+                // deduced.
+                log::info!(
+                    "[chips] {chip_kind:?}: externally updated, shell generator suppressed \
+                     (current value present={})",
+                    self.latest_chip_value(chip_kind).is_some()
+                );
                 // For chips updated externally (e.g. by the per-repo git status
                 // filesystem watcher), avoid running the shell-based fallback
                 // generator. Doing so can briefly overwrite the structured
@@ -1482,6 +1493,7 @@ impl CurrentPrompt {
 
         // Repo detached, clear GitDiffStats.
         if handle.is_none() {
+            log::info!("[chips] set_git_repo_status: repo detached");
             if let Some(state) = self.states.get_mut(&ContextChipKind::GitDiffStats) {
                 state.clear_abort_handlers();
                 state.clear_cache();
@@ -1492,6 +1504,10 @@ impl CurrentPrompt {
 
         if let Some(weak) = handle {
             if let Some(strong) = weak.upgrade(ctx) {
+                log::info!(
+                    "[chips] set_git_repo_status: repo attached, metadata_ready={}",
+                    strong.as_ref(ctx).metadata(ctx).is_some()
+                );
                 self.git_repo_status = Some(weak);
                 ctx.subscribe_to_model(&strong, |me, event, ctx| match event {
                     GitRepoStatusEvent::MetadataChanged => {
@@ -1605,8 +1621,17 @@ impl CurrentPrompt {
             .and_then(|h| h.as_ref(ctx).metadata(ctx).cloned());
 
         let Some(metadata) = metadata else {
+            // #616: watcher attached but has published nothing yet. The shell
+            // generator is already suppressed at this point, so the chip has no
+            // source at all until a MetadataChanged arrives.
+            log::info!("[chips] apply_git_repo_metadata: no metadata available yet");
             return;
         };
+
+        log::info!(
+            "[chips] apply_git_repo_metadata: current_branch_name={:?}",
+            metadata.current_branch_name
+        );
 
         // Update ShellGitBranch.
         let new_branch = ChipValue::Text(metadata.current_branch_name.clone());
