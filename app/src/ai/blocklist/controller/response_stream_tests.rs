@@ -1,4 +1,4 @@
-use super::{recovery_action, RecoveryAction};
+use super::{lrc_tag_in_lacks_confirmation_ui, recovery_action, RecoveryAction};
 
 // Argument order: has_received_client_actions, is_recoverable, has_retry_budget,
 // can_attempt_resume_on_error, is_online.
@@ -80,5 +80,45 @@ fn non_recoverable_post_action_failure_is_terminal() {
     assert_eq!(
         recovery_action(true, false, true, true, true),
         RecoveryAction::Fail
+    );
+}
+
+/// #617: the tag-in auto-accept path forges `is_user_initiated=true`, which discards
+/// the execution profile's verdict -- an `Always ask` profile has its
+/// `can_auto_execute=false` computed and then ignored. That override exists solely for
+/// the deadlock where the tagged-in command holds the alt screen and the Accept button
+/// is therefore never rendered, so there is no way for the user to answer.
+///
+/// The bug was gating it on the tag-in alone, which applied the override to ordinary
+/// sessions whose Accept button was perfectly visible. Observed against a live PROD ssh
+/// session with `is_alt_screen=false` in the logs.
+///
+/// The `(true, Some(false))` case is the whole point of this test: the old predicate was
+/// `lrc_should_spawn_subagent` on its own, which differs from the correct one on that arm
+/// and only that arm. Reverting the fix must turn this red -- if it stays green, the test
+/// is vacuous and pins nothing.
+#[test]
+fn tag_in_without_alt_screen_keeps_the_confirmation_prompt() {
+    // Tag-in, but the user can see and click Accept: the profile must be honoured.
+    assert!(
+        !lrc_tag_in_lacks_confirmation_ui(true, Some(false)),
+        "a non-alt-screen tag-in has a visible Accept button and must not auto-accept (#617)"
+    );
+
+    // Tag-in with no running command at all: nothing is holding the screen.
+    assert!(
+        !lrc_tag_in_lacks_confirmation_ui(true, None),
+        "no running command means no deadlock, so no override is warranted"
+    );
+
+    // Not a tag-in round: the auto-accept path must never apply.
+    assert!(!lrc_tag_in_lacks_confirmation_ui(false, Some(true)));
+    assert!(!lrc_tag_in_lacks_confirmation_ui(false, Some(false)));
+
+    // The one case the override is for: tag-in whose command owns the alt screen, so
+    // the Accept button is not rendered and a prompt would deadlock the turn.
+    assert!(
+        lrc_tag_in_lacks_confirmation_ui(true, Some(true)),
+        "an alt-screen tag-in has no Accept button to answer; this is the deadlock case"
     );
 }

@@ -928,6 +928,22 @@ impl BlocklistAIActionModel {
     /// hands control to the agent via SetInputModeAgent, but in full alt-screen mode
     /// the RequestedCommand Accept button isn't visible. Once the controller detects
     /// the LRC state, this method sidesteps the manual-confirmation deadlock.
+    ///
+    /// **`auto_accept=true` overrides the execution profile.** Forging
+    /// `is_user_initiated=true` short-circuits `needs_confirmation`, so a profile set
+    /// to `Always ask` has its `can_auto_execute=false` computed and then discarded.
+    /// That is only defensible in the deadlock case above — where there is no Accept
+    /// button to answer — and the caller is responsible for establishing it. The sole
+    /// caller gates on `ResponseStream::is_lrc_tag_in_without_confirmation_ui`, which
+    /// requires the alt screen to actually be held.
+    ///
+    /// It previously gated on the tag-in alone. The deadlock only exists in alt
+    /// screen, but the override applied to every tag-in, so ordinary sessions with a
+    /// visible Accept button auto-ran whatever the model chose first — #617.
+    ///
+    /// Note this is a no-op EXCEPT when it overrides a denial: when
+    /// `can_auto_execute` is true the default path executes the action anyway. So any
+    /// widening of the gate buys nothing and costs exactly the profile's authority.
     pub(super) fn queue_actions_with_options(
         &mut self,
         actions: Vec<AIAgentAction>,

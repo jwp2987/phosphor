@@ -3896,7 +3896,8 @@ impl BlocklistAIController {
                         conversation_id,
                     );
                     // Zap: auto-authorizes agent tool execution on the first round
-                    // of an LRC tag-in.
+                    // of an LRC tag-in, but ONLY when the tagged-in command owns the
+                    // alt screen.
                     //
                     // Trigger condition: when this round's request was dispatched,
                     // active_block was in
@@ -3905,11 +3906,23 @@ impl BlocklistAIController {
                     // otherwise subsequent ordinary requests within the same CLI
                     // subagent session would also get auto-confirmed, making the
                     // confirmation UI never show up.
-                    let auto_accept_for_lrc_tag_in =
-                        response_stream.as_ref(ctx).is_lrc_tag_in_request();
+                    //
+                    // The alt-screen condition is #617. Auto-accept works by calling
+                    // `execute_action`, which forges `is_user_initiated=true` and so
+                    // discards the profile's verdict -- `can_auto_execute=false` from
+                    // an `Always ask` profile is computed and then ignored. That
+                    // override is only defensible where the user genuinely cannot
+                    // answer a prompt, i.e. where the Accept button is not rendered
+                    // because the command holds the alt screen. Keying it on the
+                    // tag-in alone extended it to ordinary sessions with a perfectly
+                    // visible button, which is how an agent ran `free -h` against a
+                    // PROD host with the profile set to Always ask.
+                    let auto_accept_for_lrc_tag_in = response_stream
+                        .as_ref(ctx)
+                        .is_lrc_tag_in_without_confirmation_ui();
                     if auto_accept_for_lrc_tag_in {
                         log::info!(
-                            "[byop] LRC tag-in: queue with auto-accept ({} action(s))",
+                            "[byop] LRC tag-in: alt screen holds the confirmation UI,                              queue with auto-accept ({} action(s))",
                             actions_to_queue.len()
                         );
                     }

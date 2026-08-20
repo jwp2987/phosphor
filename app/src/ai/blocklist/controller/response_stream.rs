@@ -450,6 +450,28 @@ impl ResponseStream {
         self.params.lrc_should_spawn_subagent
     }
 
+    /// Whether this tag-in round is one where the user physically CANNOT answer a
+    /// confirmation prompt, because the tagged-in command owns the alt screen and
+    /// the RequestedCommand Accept button therefore is not rendered.
+    ///
+    /// This is the only situation the tag-in auto-accept path exists for: without
+    /// it the agent blocks on a confirmation that has no UI to accept it, and the
+    /// turn deadlocks. See `BlocklistAIActionModel::queue_actions_with_options`.
+    ///
+    /// It is deliberately NARROWER than `is_lrc_tag_in_request`. Auto-accept forges
+    /// a user Accept and so overrides the profile's `Always ask`; gating it on the
+    /// tag-in alone applied that override to ordinary, non-alt-screen sessions where
+    /// the button is perfectly visible and the user never agreed to anything (#617).
+    pub fn is_lrc_tag_in_without_confirmation_ui(&self) -> bool {
+        lrc_tag_in_lacks_confirmation_ui(
+            self.params.lrc_should_spawn_subagent,
+            self.params
+                .lrc_running_command
+                .as_ref()
+                .map(|running_command| running_command.is_alt_screen_active),
+        )
+    }
+
     /// Zap BYOP local session compaction: returns whether this stream is running
     /// SummarizeConversation, along with the overflow marker. In the Done branch of
     /// handle_response_stream_finished, the controller uses this to call
@@ -807,6 +829,21 @@ async fn byop_required_response_stream(
     })
     .take_until(cancellation_rx);
     Ok(Box::pin(error_stream))
+}
+
+/// Whether a tag-in round has no confirmation UI the user could answer.
+///
+/// `is_alt_screen_active` is `None` when there is no running command on the request
+/// at all, which is not a deadlock -- there is nothing holding the screen -- so it
+/// resolves to `false` alongside a plain non-alt-screen tag-in.
+///
+/// Extracted as a free function so the non-alt-screen arm is testable without
+/// standing up a `ResponseStream`, matching `recovery_action` above.
+fn lrc_tag_in_lacks_confirmation_ui(
+    lrc_should_spawn_subagent: bool,
+    is_alt_screen_active: Option<bool>,
+) -> bool {
+    lrc_should_spawn_subagent && is_alt_screen_active == Some(true)
 }
 
 #[cfg(test)]
