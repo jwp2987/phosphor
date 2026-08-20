@@ -377,6 +377,16 @@ impl CurrentPrompt {
 
     fn update_chip_value(&mut self, chip_kind: &ContextChipKind, value: Option<ChipValue>) {
         log::debug!("Updating prompt value of {chip_kind:?} to {value:?}");
+        // #616: EVERY write to a chip's value passes through here, from the shell
+        // generator and from the watcher alike. The debug line above is invisible at
+        // the default Info level, which is why "the value never arrives" could not be
+        // told apart from "the value arrives empty". Info for the git chips only.
+        if matches!(
+            chip_kind,
+            ContextChipKind::ShellGitBranch | ContextChipKind::GitBranchStatus
+        ) {
+            log::info!("[chips] update_chip_value {chip_kind:?} -> {value:?}");
+        }
         if let Some(state) = self.states.get_mut(chip_kind) {
             if state.last_computed_value != value {
                 state.last_computed_value = value;
@@ -1014,6 +1024,13 @@ impl CurrentPrompt {
     fn run_chips(&mut self, chips: Vec<ContextChipKind>, ctx: &mut ModelContext<Self>) {
         if !self.active(ctx) {
             log::debug!("Context chips are not in use, won't run");
+            // #616: this is the other route to a permanent None -- no chip runs at
+            // all, so none of the logs below fire and the absence looks identical to
+            // a chip that ran and returned nothing.
+            log::info!(
+                "[chips] run_chips: chips inactive, not running {} chip(s)",
+                chips.len()
+            );
             return;
         }
 
