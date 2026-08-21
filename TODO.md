@@ -6976,6 +6976,7 @@ Ordered by severity, not by area.
       `conversation_usage_view.rs:240` computes `rollup`, `:266-275` passes
       `usage_info.credits_spent` instead. "Credits spent (total)" omits every child
       agent's spend while the drill-down beneath lists children summing to more.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `rollup.total_credits` (`usage/rollup.rs:55`) has **zero non-test readers repo-wide**; `conversation_usage_view.rs:266,273` pass `usage_info.credits_spent`, and `render_total_credits_value_row:551-576` uses the rollup only to decide whether to add the "View details" toggle. `terminal/view.rs:6441-6446` feeds the footer that same single conversation's usage while `append_per_agent_rows:604` lists orchestrator plus descendants.
 
 ### Reliability
 
@@ -7311,12 +7312,16 @@ Ordered by severity, not by area.
       instantly" on a 32K-context local model; that failure is entirely unmitigated. The
       UI additionally renders `"limit": g.max_matches`, showing the user a limit that was
       never enforced.
+      **VERDICT PARTIAL — not unmitigated (independent verifier, 2026-08-21):** The enum drop is confirmed (`crates/ai/src/agent/action/mod.rs:94-97`, `convert.rs:161-172`) and the executor applies no cap. **But "entirely unmitigated" is wrong:** `chat_stream.rs:805-822` truncates every tool response at 40,000 chars with an explicit notice. The UI claim is also wrong — `:3514` is `serialize_outgoing_tool_call`, model-facing history, not the UI.
+
 - [ ] **`grep.md` documents an `include` parameter that does not exist and is
       schema-forbidden.** `prompts/tool_descriptions/grep.md:4` tells the model to
       "restrict file types via the `include` glob"; `grep_parameters()` declares only
       `queries`/`path` with `"additionalProperties": false`. Strict providers reject the
       call; lax ones drop it silently and the model believes it searched only `*.ts` when
       it searched everything. Fork-original, not pin drift.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `prompts/tool_descriptions/grep.md:4` advertises `include`; `tools/search.rs:21-37` declares only `queries`/`path` with `"additionalProperties": false`, and `GrepArgs:14-19` has no `deny_unknown_fields`, so a passed `include` is silently discarded. The file is absent at the pin, so fork-original. Verifier added the decisive detail: **no `strict: true` is set anywhere** in `tools/mod.rs`, so the silent-drop branch is the one that actually runs.
+
 - [ ] **Both search tools promise mtime ordering that no code produces.** `grep.md:5` and
       `file_glob.md:3` claim results are "sorted by modification time (most recent
       first)". `run_ripgrep` collects into a `HashMap` and iterates it
@@ -7324,12 +7329,15 @@ Ordered by severity, not by area.
       call exists in either executor. With the cap unenforced the model gets neither the
       promised ordering nor a truncation flag — `glob_result_to_json` emits
       `status: "ok"` unconditionally.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `execute/grep.rs:437-455` builds a `HashMap` and consumes it with `into_iter()`; neither `grep.rs` nor `file_glob.rs` contains any `sort` or `mtime` call, and the git-grep/git-ls-files fallbacks yield path order. Contradicts `grep.md:5` and `file_glob.md:3`. **The trailing "no truncation flag" rider is wrong** — `chat_stream.rs:816-821` appends an explicit notice.
+
 - [ ] **Clearing the global-search query leaves the ripgrep subprocess running.**
       `workspace/view/global_search/view.rs:872-878,913-919` reset the id and the
       in-progress flag but never call `abort_search()`; the pin routes both sites through
       `cancel_search`, which does. The handle is never aborted so `kill_on_drop` never
       fires: a full-tree scan runs to completion after the user clears the box, spawning
       batch callbacks onto the UI thread that the stale-id guard then discards.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `global_search/view.rs:872-875` and `:913-916` null the id and flag without touching `find_model`; only `abort_search` (`:844-851`) drains handles, and the pin routes both sites through `cancel_search` (`42effe840:...:852-853,892-893`). Verifier traced the consequence: `model.rs:437` streams from `warp_ripgrep::search::search_streaming`, which spawns a child with `kill_on_drop(true)` — so an un-dropped handle keeps the scan alive.
 
 ### Refutation round — fourth wave (de-clouding fallout)
 
@@ -7588,10 +7596,14 @@ Ordered by severity, not by area.
 - [ ] **Index tables grow forever.** No DELETE or TTL for
       `codebase_index_{nodes,embeddings,node_summaries}` anywhere; snapshots get 30 days
       and `ai_queries` gets trimming, these get nothing.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/sqlite.rs:1910-2008` only upserts the three tables, and every `diesel::delete` in the file targets others; `delete_codebase_index_metadata:1891-1897` removes only the `workspace_metadata` row, leaving that repo's nodes/embeddings/summaries behind. Verifier checked the comparators too: snapshots DO expire at 30 days (`index/full_source_code_embedding/snapshot.rs:26-31`) and `ai_queries` IS capped (`block_list.rs:169-202`).
+
 - [ ] **File outlines fail instead of degrading.** `file_outline/native.rs:57` uses
       `FailFast` where the pin uses `StopAndLazyLoad`, so over-budget repos now get NO
       outline. The enum's own doc says `FailFast` is for embedding only. Undocumented
       divergence.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `index/file_outline/native.rs:57` passes `BudgetExceededBehavior::FailFast` where `42effe840:...:58` passes `StopAndLazyLoad`, with no comment explaining the change. Chain traced: `entry.rs:279-281,386-388` returns `ExceededMaxFileLimit` under `FailFast`, `build_outline:51-59` propagates with `?`, and the sole caller `ai/outline/native.rs:220` passes `Some(5000)` — so repos over 5,000 files get NO outline instead of a partial one.
+
 - [ ] **The pin's index consent banner was dropped with no DECLINED.md row**, and
       `codebase_context_enabled`'s default was flipped `true`→`false`
       (`settings/code.rs:67`) under a comment claiming a faithful restore.
@@ -7641,6 +7653,8 @@ Ordered by severity, not by area.
       `user_workspaces.rs:922-928` asserts `is_ai_allowed_in_remote_sessions()`, whose
       body at `:734` is a bare `true` that never touches `self`. The pin ships four test
       files in that directory. `check_stub_coverage` did not catch it.
+      **VERDICT PARTIAL — 'only one' false (independent verifier, 2026-08-21):** The tautology is confirmed: `user_workspaces.rs:734-737` is a bare `true` ignoring `self`, where the pin's version at `:1753-1762` reads `current_workspace()`. Verifier also explained why the guard misses it: `check_stub_coverage`'s `TRIVIAL` regex requires the body on the `fn` line and this one spans a comment. **But "the only test in that directory" is false** — `user_profiles.rs:116,132` holds two.
+
 - [ ] **`zap://settings` (bare) is dead.** `uri/mod.rs:261,279,335` dropped the pin's
       `.filter(|s| !s.is_empty())` and the `OpenSettingsArgs::Default` / `?q=` routes,
       both non-cloud. The comment at `:1370-1379` claims parity "minus the two cloud
@@ -7649,6 +7663,7 @@ Ordered by severity, not by area.
       `shell_words::split`** where the pin uses a purpose-built `tokenize_exec`.
       shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
       `Exec` containing an unpaired `'` errors and silently disables that editor.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `external_editor/linux.rs:89-90` uses `shell_words::split` where the pin hand-rolls `tokenize_exec` (`42effe840:...:27-79`) treating `'` as an ordinary character. shell-words 1.1.1 has `SingleQuoted` and `Comment` states and errs "missing closing quote". Consequence traced: error → `MalformedFieldCode` → `linux.rs:554-559` logs and returns `None`, so the open silently does nothing while the editor still lists.
 
 ### Refutation round — guards and CI
 
@@ -7749,10 +7764,14 @@ Ordered by severity, not by area.
       `secure_storage/registry_backed.rs:28` is `Software\Zap\`, joined to
       `application_name()` = `Phosphor`, so Windows prefs live under a pre-rename
       identity.
+      **VERDICT PARTIAL — miscited, and it is deliberate (independent verifier, 2026-08-21):** The literal exists but **not where cited** — it is `warpui_extras/src/user_preferences/registry_backed.rs:28`, not under `secure_storage/` (no `Software\` string exists there at all), joined at `settings/init.rs:474`. And the "missed site" framing breaks: `bin/phosphor_oss.rs:32-35` names `Software\Zap` explicitly as one of the DELIBERATE load-bearing zap compatibility surfaces.
+
 - [ ] **`register_unavailable` + `unavailable.rs` + 3 tests are dead** — the pin's only
       caller (RemoteServerDaemon, `42effe840:app/src/lib.rs:1468`) was not ported, and
       `run_daemon_app` registers no secure storage at all, so `ctx.secure_storage()` there
       panics rather than degrades.
+      **VERDICT PARTIAL — panic half refuted (independent verifier, 2026-08-21):** Dead-code half confirmed: `register_unavailable` (`secure_storage/mod.rs:67`) has no reference anywhere in `app/`, `crates/` or `lib/`, and the pin's caller is `42effe840:app/src/lib.rs:1468`. **The panic half is refuted:** reverse-tracing all five `ctx.secure_storage()` sites (`agent_providers/secrets.rs`, `mcp/.../oauth.rs`, `settings/local_control.rs`, `settings/network_secrets.rs`, `crates/ai/src/api_keys.rs`), none is reachable from the singletons `run_daemon_app` registers (`remote_server/mod.rs:118-295`).
+
 - [ ] **Correction to an earlier brief premise:** `add_singleton_model` is a
       `debug_assert!` (`core/app.rs:2309`), so in RELEASE a duplicate silently *replaces*
       the singleton rather than panicking.
