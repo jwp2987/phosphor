@@ -1,10 +1,12 @@
 use ai::agent::action_result::AIAgentActionResultType;
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use warpui::{Entity, ModelContext};
+// `SingletonEntity` is what provides `BlocklistAIHistoryModel::as_ref(ctx)`.
+use warpui::{Entity, ModelContext, SingletonEntity};
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 use crate::ai::agent::{AIAgentActionType, UseComputerResult};
+use crate::ai::blocklist::history_model::BlocklistAIHistoryModel;
 use crate::features::FeatureFlag;
 
 pub struct UseComputerExecutor;
@@ -17,18 +19,50 @@ impl UseComputerExecutor {
     pub(super) fn should_autoexecute(
         &self,
         input: ExecuteActionInput,
-        _ctx: &mut ModelContext<Self>,
+        ctx: &mut ModelContext<Self>,
     ) -> bool {
-        let ExecuteActionInput { action, .. } = input;
+        let ExecuteActionInput {
+            action,
+            conversation_id,
+        } = input;
         let AIAgentActionType::UseComputer(_) = &action.action else {
             return false;
         };
 
-        // We unconditionally return true here because this action is only executed by
-        // the computer use subagent, which cannot begin without the user approving it via
-        // a `RequestComputerUse` action, and the approval extends to all computer use
-        // actions within that computer use subagent.
-        true
+        // The pin (`42effe840`) returned `true` unconditionally here, because "this action
+        // is only executed by the computer use subagent, which cannot begin without the user
+        // approving it via a `RequestComputerUse` action". That premise held there because
+        // the SERVER chose the tool set. It does not hold in this fork: BYOP builds the
+        // tools array client-side and advertises `use_computer` alongside
+        // `request_computer_use` whenever `params.computer_use_enabled` is set
+        // (`agent_providers/tools/mod.rs`), and that is already true for
+        // `ComputerUsePermission::AlwaysAsk` (`ai/agent/api.rs`, `execution_profiles`'
+        // `is_enabled()` = "not Never/Unknown"). So the ordering the pin relied on is
+        // enforced by nothing but prose in the tool description, and a model that calls
+        // `use_computer` first would drive the user's real mouse and keyboard, irreversibly,
+        // with no prompt, on a profile whose description promises explicit approval.
+        //
+        // So: keep the pin's rule but verify its premise instead of assuming it. Approval is
+        // read off the conversation, where an approved `request_computer_use` leaves a
+        // `RequestComputerUseResult::Approved` input (see
+        // `AIConversation::has_approved_computer_use`) -- the "approval extends to the whole
+        // subagent" semantics the pin describes, now actually checked.
+        //
+        // Returning false is not a denial: the action falls through to the normal
+        // confirmation path in `try_to_execute_action`, so the unapproved case costs the user
+        // one prompt -- the prompt they were promised -- rather than silent control of the
+        // machine. An unknown conversation (not in memory) is treated the same way.
+        //
+        // Deliberately NOT re-checked here: the profile's own always-allow setting. This
+        // executor is constructed without a `terminal_view_id` (`execute.rs`:
+        // `UseComputerExecutor::new()`), so it cannot resolve the right view's active
+        // profile, and guessing the globally-active one could widen the gate rather than
+        // narrow it. Always-allow profiles are unaffected in practice: their
+        // `request_computer_use` auto-executes (`request_computer_use.rs::should_autoexecute`)
+        // and records the approval this reads.
+        BlocklistAIHistoryModel::as_ref(ctx)
+            .conversation(&conversation_id)
+            .is_some_and(|conversation| conversation.has_approved_computer_use())
     }
 
     pub(super) fn execute(

@@ -84,6 +84,17 @@ pub struct ClientPreferences {
     /// The user's own embedding endpoint. This is the BYOP replacement for the
     /// pin's Warp bearer token — see the `EmbeddingProviderConfig` message in
     /// `proto/remote_server.proto`.
+    ///
+    /// **This field carries a credential off this machine.** `api_key` is the
+    /// user's provider API key, read from the keychain, and everything set here
+    /// is transmitted to the remote host on `Initialize` and again on every
+    /// `UpdatePreferences`. Populate it only when remote codebase indexing is
+    /// actually in use — the sole reason the daemon needs a key. The client-side
+    /// producer (`app/src/ai/codebase_embeddings.rs::remote_client_preferences`)
+    /// gates it on `FeatureFlag::RemoteCodebaseIndexing`, which is the same flag
+    /// the daemon requires before it will index anything, so a daemon that could
+    /// not use the key is never sent one. Do not populate this field from any
+    /// path that does not make that check.
     pub embedding_provider: Option<crate::proto::EmbeddingProviderConfig>,
 }
 

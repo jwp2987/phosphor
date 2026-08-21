@@ -40,10 +40,10 @@ pub(super) enum UpsertConversationError {
 }
 
 /// Maximum number of `agent_conversations` rows we retain on disk before
-/// `select_conversations_to_evict` starts dropping trees. Trees are kept
-/// atomically, so an active orchestration session is never split even if it
-/// pushes past the cap.
-pub(super) const MAX_PERSISTED_CONVERSATION_COUNT: usize = 100;
+/// `select_conversations_to_evict` starts dropping trees. 200 gives roughly
+/// 10–40 orchestration sessions of headroom; trees are kept atomically, so an
+/// active orchestration session is never split even if it pushes past the cap.
+pub(super) const MAX_PERSISTED_CONVERSATION_COUNT: usize = 200;
 
 pub(super) fn upsert_agent_conversation<'a>(
     conn: &mut SqliteConnection,
@@ -58,9 +58,17 @@ pub(super) fn upsert_agent_conversation<'a>(
 
     let serialized_conversation_data = serde_json::to_string(&conversation_data_param)?;
 
-    // Collect the task snapshot so we can both derive the summary and iterate
-    // it for per-task persistence below.
+    // `tasks` is always a full snapshot of the conversation's current task set,
+    // so persistence is replace/delete-missing: any `agent_tasks` row for this
+    // conversation that is not in the snapshot is deleted below. This keeps
+    // pruned subtasks (e.g. those dropped by a conversation rewind) from
+    // lingering as orphan rows and being resurrected on restore — reads load
+    // every row for the conversation, unfiltered.
     let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+    // Every id in the snapshot is kept, including one whose blob is skipped as
+    // oversized below: we could not write its new version, so deleting the row
+    // we already have would throw away the last copy of that task.
+    let kept_task_ids: Vec<String> = tasks.iter().map(|task| task.id.clone()).collect();
 
     // Derive the task-based summary here (on the writer thread) so every
     // write path keeps the `summary` column in sync with the task snapshot,
@@ -84,7 +92,7 @@ pub(super) fn upsert_agent_conversation<'a>(
             .execute(conn)?;
 
         // Upsert each task
-        for task in tasks {
+        for task in &tasks {
             // Check encoded size before allocating the full BLOB to avoid a
             // large heap allocation that is immediately discarded.
             let encoded_len = task.encoded_len();
@@ -115,6 +123,17 @@ pub(super) fn upsert_agent_conversation<'a>(
                 return Err(e);
             }
         }
+
+        // Delete any tasks for this conversation that are no longer part of the
+        // snapshot (replace semantics). `ne_all` with an empty set matches every
+        // row, so a fully-rewound conversation (no persisted tasks) has all of
+        // its task rows cleared.
+        diesel::delete(
+            agent_tasks::table
+                .filter(tasks_dsl::conversation_id.eq(conversation_id_param))
+                .filter(tasks_dsl::task_id.ne_all(kept_task_ids)),
+        )
+        .execute(conn)?;
 
         // Prune old conversations if we exceed MAX_PERSISTED_CONVERSATION_COUNT.
         //

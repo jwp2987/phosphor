@@ -425,11 +425,14 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
 /// Returns `embedding_provider: None` when nothing is configured — deliberately
 /// not a default, because a daemon that embedded a whole repository against a
 /// model the user never chose would produce vectors under a storage key nothing
-/// queries.
+/// queries — and also whenever `FeatureFlag::RemoteCodebaseIndexing` is off, so
+/// the user's provider API key never leaves this machine for a daemon that
+/// could not use it.
 #[cfg(not(target_family = "wasm"))]
 pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
-    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
     use crate::ai::AIRequestUsageModel;
+    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
+    use warp_core::features::FeatureFlag;
 
     let limits = AIRequestUsageModel::as_ref(app).codebase_context_limits();
     let codebase_index_limits = Some(remote_server::proto::CodebaseIndexLimits {
@@ -438,15 +441,36 @@ pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::Cli
         embedding_generation_batch_size: limits.embedding_generation_batch_size as u64,
     });
 
-    let embedding_provider = resolve_configured_embedding_model(app).and_then(|config| {
-        resolve_embedding_endpoint(app, config).map(|endpoint| {
-            remote_server::proto::EmbeddingProviderConfig {
-                base_url: endpoint.base_url,
-                api_key: endpoint.api_key,
-                embedding_storage_key: config.storage_key().to_string(),
-            }
+    // The endpoint carries the user's own provider API key, read out of the
+    // keychain, and `Initialize` ships it to whichever host the user chose to
+    // install a daemon on. Only send it when remote indexing is actually in
+    // use.
+    //
+    // `FeatureFlag::RemoteCodebaseIndexing` is the same condition the daemon
+    // itself requires before it will index anything
+    // (`server_model.rs::codebase_indexing_ready`, and the daemon's own check
+    // in `remote_server/mod.rs`), so with the flag off the credential is
+    // provably unusable on the far side — transmitting it would be pure
+    // exposure with no function. With the flag on, the key is exactly what
+    // makes remote indexing work, which is the disclosed purpose.
+    //
+    // Sending `None` is not a silent failure: the daemon clears its endpoint
+    // and reports the index as `Unavailable`, and
+    // `codebase_indexing_ready` returns the "no embedding provider has been
+    // configured for this host" error, so the user sees why.
+    let embedding_provider = if FeatureFlag::RemoteCodebaseIndexing.is_enabled() {
+        resolve_configured_embedding_model(app).and_then(|config| {
+            resolve_embedding_endpoint(app, config).map(|endpoint| {
+                remote_server::proto::EmbeddingProviderConfig {
+                    base_url: endpoint.base_url,
+                    api_key: endpoint.api_key,
+                    embedding_storage_key: config.storage_key().to_string(),
+                }
+            })
         })
-    });
+    } else {
+        None
+    };
 
     remote_server::client::ClientPreferences {
         codebase_index_limits,

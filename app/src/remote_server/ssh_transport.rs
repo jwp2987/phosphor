@@ -192,8 +192,42 @@ async fn run_install_script(
     }
 }
 
+/// Install-script exit codes that must NOT fall through to
+/// [`scp_install_fallback`].
+///
+/// `install_remote_server.sh` exits:
+///   * 2 — unsupported arch/OS. No asset exists for this host; retrying the
+///     same download locally cannot help.
+///   * 3 — neither curl nor wget on the remote host. This is the one case the
+///     SCP fallback exists for: the *host* cannot download, but the client
+///     can, so downloading locally and pushing over the authenticated SSH
+///     channel is exactly the intended recovery. Deliberately absent here.
+///   * 4 — the client was built with no pinned SHA-256 for this platform.
+///   * 5 — no SHA-256 tool on the remote host, so the digest cannot be checked.
+///   * 6 — digest MISMATCH: the downloaded tarball is not the pinned release.
+///
+/// 4, 5 and 6 are integrity failures and must fail closed. The SCP fallback
+/// fetches the *same* GitHub release tarball locally and installs it through
+/// the staging branch of the script, which skips verification on the
+/// documented assumption that a staged tarball is a locally cross-compiled dev
+/// binary that never crossed an untrusted network. For a fallback-fetched
+/// release tarball that assumption is false, so letting 4/5/6 through would
+/// turn every integrity failure — including detected tampering — into an
+/// unverified install.
+///
+/// This is what makes the maintainer decision at `TODO.md:2866-2881` actually
+/// hold: that decision closed the supply-chain objection on the grounds that
+/// "an empty digest is fail-closed". It is fail-closed in the script, but the
+/// caller used to undo it. Now it does not.
+const INTEGRITY_FAILURE_EXIT_CODES: &[i32] = &[4, 5, 6];
+
 fn should_skip_scp_fallback(error: &InstallError) -> bool {
-    matches!(error, InstallError::ScriptFailed { exit_code: 2, .. })
+    match error {
+        InstallError::ScriptFailed { exit_code, .. } => {
+            *exit_code == 2 || INTEGRITY_FAILURE_EXIT_CODES.contains(exit_code)
+        }
+        InstallError::Other(_) => false,
+    }
 }
 
 // ===========================================================================
@@ -535,8 +569,16 @@ async fn dev_install_local_binary(socket_path: &Path) -> Result<()> {
 
 async fn download_remote_server_tarball(download_url: &str, tarball_path: &Path) -> Result<()> {
     let output = async {
+        // `--proto`/`--proto-redir` match what the remote path in
+        // `install_remote_server.sh` sets: release downloads legitimately
+        // redirect to a CDN so `-L` has to stay, but a redirect must not be
+        // allowed to downgrade the transport to plain HTTP.
         command::r#async::Command::new("curl")
             .arg("-fSL")
+            .arg("--proto")
+            .arg("=https")
+            .arg("--proto-redir")
+            .arg("=https")
             .arg("--connect-timeout")
             .arg("15")
             .arg(download_url)
@@ -899,5 +941,56 @@ mod tests {
         assert!(
             !SshTransport::new(socket_path, static_auth_context(), false).owns_control_master()
         );
+    }
+
+    fn script_failure(exit_code: i32) -> InstallError {
+        InstallError::ScriptFailed {
+            exit_code,
+            stderr: String::new(),
+        }
+    }
+
+    // The SCP fallback re-fetches the same GitHub release tarball locally and
+    // installs it through the script's *unverified* staging branch. So every
+    // integrity failure the script reports must stop there rather than fall
+    // through: exit 4 (client built with no pinned digest), 5 (no SHA-256 tool
+    // on the host) and 6 (digest mismatch — i.e. detected tampering).
+    #[test]
+    fn integrity_failures_do_not_fall_through_to_unverified_scp_fallback() {
+        for exit_code in [4, 5, 6] {
+            assert!(
+                should_skip_scp_fallback(&script_failure(exit_code)),
+                "exit {exit_code} is an integrity failure and must fail closed, \
+                 not fall through to the unverified SCP fallback",
+            );
+        }
+    }
+
+    // Unsupported arch/OS: no asset exists, so retrying the same download
+    // locally cannot help either.
+    #[test]
+    fn unsupported_platform_does_not_fall_through() {
+        assert!(should_skip_scp_fallback(&script_failure(2)));
+    }
+
+    // Exit 3 is the case the fallback exists for: the remote host has neither
+    // curl nor wget, but the client does. Nothing was downloaded remotely, so
+    // no integrity claim was violated.
+    #[test]
+    fn missing_remote_fetcher_still_uses_scp_fallback() {
+        assert!(
+            !should_skip_scp_fallback(&script_failure(3)),
+            "exit 3 (no curl/wget on the host) is what the SCP fallback is for",
+        );
+    }
+
+    // Transport-level failures (SSH died, timeout) carry no exit code and keep
+    // the pre-existing fallback behaviour.
+    #[test]
+    fn non_script_failures_still_use_scp_fallback() {
+        assert!(!should_skip_scp_fallback(&InstallError::Other(anyhow!(
+            "ssh connection dropped"
+        ))));
+        assert!(!should_skip_scp_fallback(&script_failure(1)));
     }
 }

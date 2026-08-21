@@ -5900,7 +5900,24 @@ impl CodeReviewView {
             .iter()
             .find(|hunk| {
                 let hunk_start = hunk.new_start_line;
-                let hunk_end = hunk_start + hunk.lines.len();
+                // `lines` also holds `Delete` lines, which occupy no new-file
+                // line (see the parser in `diff_state.rs`), so `lines.len()`
+                // overstates the hunk's extent in the new file by the deletion
+                // count. Counting only the lines git's `@@` header counts on
+                // the `+` side is what keeps a click on hunk N+1 from
+                // resolving to hunk N and silently staging it.
+                let new_file_lines = hunk
+                    .lines
+                    .iter()
+                    .filter(|line| {
+                        matches!(line.line_type, DiffLineType::Add | DiffLineType::Context)
+                    })
+                    .count()
+                    // A hunk that deletes with no surrounding context (whole-file
+                    // deletion, or `diff.context=0`) has no new-file line at all;
+                    // give it a one-line extent so it stays clickable.
+                    .max(1);
+                let hunk_end = hunk_start + new_file_lines;
                 requested_start <= hunk_end && requested_end >= hunk_start
             })
             .cloned()

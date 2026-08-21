@@ -3710,9 +3710,18 @@ fn is_plan_mode_turn(input: &[AIAgentInput]) -> bool {
 
 /// Names of write/execution-class built-in tools hard-filtered out under Plan Mode.
 ///
-/// A logical fallback: even if the model ignores `partials/plan_mode.j2`'s guidance, it
-/// can't trigger any side effects — a tool that's not in the tool list simply can't be
-/// called (the provider protocol layer flatly rejects an unknown function).
+/// Withdrawing them from the tools array is the first half of the guardrail: even if the
+/// model ignores `partials/plan_mode.j2`'s guidance, it is not told these tools exist.
+///
+/// It is NOT the whole guardrail, and this comment used to claim it was — "a tool that's not
+/// in the tool list simply can't be called (the provider protocol layer flatly rejects an
+/// unknown function)". That is false here. `parse_incoming_tool_call` resolves a name out of
+/// the full `tools::REGISTRY` and never consults the advertised list, so a model that emits
+/// one of these names anyway (stale/cached tool definitions, ignoring its tool list, or
+/// replaying a tool_call from an earlier turn of the same conversation) would have executed
+/// it normally. The enforcing half is the dispatch-site re-check in `generate_byop_output`,
+/// immediately before `parse_incoming_tool_call` — the same shape as the computer-use gate
+/// beside it and `dispatch_byop_web_tool`. Keep both in step.
 ///
 /// **Write-class tools NOT blocked**: `create_documents` / `edit_documents`. They only
 /// touch Zap Drive's local document storage (AIDocumentModel), never the filesystem, and
@@ -3940,11 +3949,12 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             if t.name == "suggest_new_conversation" {
                 return false;
             }
-            // Plan Mode: the hard guardrail for the read-only mode triggered by `/plan`,
-            // removing write/execution-class tools. Double insurance alongside the system
-            // prompt's plan_mode.j2 guidance — even if the model ignores the prompt, a tool
-            // not in the list can't trigger side effects (the provider protocol layer
-            // flatly rejects an unknown function).
+            // Plan Mode: the read-only mode triggered by `/plan`, removing
+            // write/execution-class tools. Double insurance alongside the system prompt's
+            // plan_mode.j2 guidance — but withdrawal alone is not the hard guardrail: a name
+            // the model emits anyway still resolves out of the full REGISTRY in
+            // `parse_incoming_tool_call`. The block is enforced at the dispatch site; see
+            // `PLAN_MODE_BLOCKED_TOOLS`.
             if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&t.name) {
                 return false;
             }
@@ -5013,6 +5023,9 @@ pub async fn generate_byop_output(
     let request_id = Uuid::new_v4().to_string();
     let mcp_context = params.mcp_context.clone();
     let tool_names_for_extract = available_tool_names(&params);
+    // Needed at the dispatch site below, not just when building the tools array: see the
+    // Plan Mode gate before `parse_incoming_tool_call`.
+    let plan_mode = is_plan_mode_turn(&params.input);
 
     // WARNING: critical to BYOP persistence: under warp's own path, the following
     // ClientActions are all server-side emits that make the client write "non-model-
@@ -6300,6 +6313,63 @@ pub async fn generate_byop_output(
                     "message": "Computer use is not available in this session — it is off by \
                                 feature flag, profile permission, or platform support. Do not \
                                 retry; solve the task another way.",
+                });
+                let error_content = serde_json::to_string(&error_payload)
+                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    error_content,
+                ));
+                continue;
+            }
+
+            // Zap BYOP Plan Mode gate, re-checked at the dispatch site.
+            //
+            // Same reasoning as the computer-use gate above and `dispatch_byop_web_tool`:
+            // filtering `PLAN_MODE_BLOCKED_TOOLS` out of the advertised tools array only
+            // controls what the model is *told* it can call. `parse_incoming_tool_call`
+            // resolves a name straight out of the full `tools::REGISTRY` with no
+            // `advertised` check, so a model that emits `run_shell_command` or
+            // `apply_file_diffs` by name anyway — from stale/cached tool definitions, by
+            // ignoring its tool list, or by replaying a tool_call from earlier turns of this
+            // same conversation, which is where those names are most likely to come from —
+            // would execute normally, and `/plan` would be advisory rather than enforced.
+            // These names DO map to protobuf executor variants, so there is nothing further
+            // downstream to stop them.
+            if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&call.fn_name.as_str()) {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] Plan Mode: tool call rejected at dispatch: tool={} call_id={}",
+                    call.fn_name,
+                    call.call_id
+                );
+                // `executed: false` for the same reason as the parse-failure payloads below:
+                // without it a model reads a structured reply as having run the tool.
+                let error_payload = serde_json::json!({
+                    "status": "error",
+                    "error": "plan_mode_blocked",
+                    "tool": call.fn_name,
+                    "received_args": &args_str,
+                    "executed": false,
+                    "message": "Plan Mode is active (the user prefixed this turn with \
+                                `/plan`), so this write/execution-class tool is unavailable \
+                                and NOTHING RAN — do not treat this as an empty or negative \
+                                result. Finish investigating with the read-only tools and \
+                                present a plan; the user runs it by re-sending without \
+                                `/plan`.",
                 });
                 let error_content = serde_json::to_string(&error_payload)
                     .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());

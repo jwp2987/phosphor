@@ -1665,6 +1665,39 @@ impl AIConversation {
         })
     }
 
+    /// Whether a `request_computer_use` has actually been approved in this conversation.
+    ///
+    /// Derived from the conversation's own inputs rather than stored as a separate flag: the
+    /// only way a `RequestComputerUseResult::Approved` reaches an exchange is
+    /// `RequestComputerUseExecutor::execute` having run, and that only runs once the action
+    /// cleared confirmation (or the profile's always-allow). Deriving it means there is no
+    /// second copy of the approval to keep in sync, and it survives conversation restore.
+    /// The input is appended by `update_for_new_request_input` when the follow-up request is
+    /// sent, so it is in place before the model can answer with a `use_computer` call.
+    ///
+    /// Zap BYOP: the pin (`42effe840`) let the server pick the tool set, so `use_computer`
+    /// was only ever offered to a computer-use subagent the user had already approved, and
+    /// `UseComputerExecutor::should_autoexecute` could assume that. This fork builds the
+    /// tools array client-side and advertises `use_computer` alongside
+    /// `request_computer_use` (`agent_providers/tools/mod.rs`), so the ordering is enforced
+    /// by nothing but prose in the tool description. This is the check that replaces the
+    /// assumption.
+    pub fn has_approved_computer_use(&self) -> bool {
+        self.all_exchanges().into_iter().any(|exchange| {
+            exchange.input.iter().any(|input| {
+                let AIAgentInput::ActionResult { result, .. } = input else {
+                    return false;
+                };
+                matches!(
+                    result.result,
+                    super::AIAgentActionResultType::RequestComputerUse(
+                        super::RequestComputerUseResult::Approved { .. }
+                    )
+                )
+            })
+        })
+    }
+
     pub fn contains_action(&self, action_id: &AIAgentActionId) -> bool {
         self.task_store.tasks().any(|task| {
             task.exchanges()
