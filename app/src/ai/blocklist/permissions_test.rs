@@ -1605,6 +1605,10 @@ fn test_can_autoexecute_command_denylist_matches_quoted_command_names() {
             "X=1 \"rm\" -rf ~",
             "echo ok && 'rm' -rf ~",
             "echo $(\"rm\" -rf ~)",
+            "echo `\"rm\" -rf ~`",
+            // env-var prefix with a quoted *name*, and with a quoted value
+            "\"X\"=1 rm file.txt",
+            "X=\"1\" rm file.txt",
         ] {
             permissions.read(&app, |model, ctx| {
                 let result = model.can_autoexecute_command(
@@ -1710,6 +1714,200 @@ fn test_can_autoexecute_command_denylist_normalisation_never_falls_open() {
                     ),
                     "{command:?} matches a denylist rule as typed and must stay denied \
                      regardless of what normalisation can or cannot resolve, got {result:?}"
+                );
+            });
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_denylist_matches_line_continuations() {
+    // Regression test for a one-newline denylist bypass that survived the quoting fix, because
+    // it was created three lines *above* the fix rather than by it.
+    //
+    // `can_autoexecute_command` normalises line continuations before parsing. It used to
+    // replace `\<newline>` with a *space*, which is not what any shell does -- a continuation
+    // is removed, so `r\<newline>m -rf ~` runs `rm`, exactly as `r\m` does. Substituting a
+    // space produced `r m -rf ~`, whose first word is `r`, so the whole candidate set was
+    // built from a command that does not exist and no `rm` rule could match. Confirmed against
+    // bash with an `rm()` shim: every command below calls `rm`.
+    //
+    // Note this defeated the fix's own `r\m` case: the rewrite runs first, so the parser (which
+    // drops `\`+newline correctly, `simple/parser.rs`) never saw the continuation at all.
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        for (command, escape_char) in [
+            // continuation splitting the command *name* -- the bypass
+            ("r\\\nm -rf ~", EscapeChar::Backslash),
+            // the same, inside double quotes
+            ("\"r\\\nm\" -rf ~", EscapeChar::Backslash),
+            // continuation after the name, which worked before only by accident (the inserted
+            // space happened to land where a separator already was)
+            ("rm\\\n -rf ~", EscapeChar::Backslash),
+            // PowerShell spells the continuation with a backtick
+            ("r`\nm -rf ~", EscapeChar::Backtick),
+            ("\"r`\nm\" -rf ~", EscapeChar::Backtick),
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    escape_char,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{command:?} runs `rm` once the line continuation is removed and should be \
+                     denied by the `rm .*` rule, got {result:?}"
+                );
+            });
+        }
+
+        // Removing the continuation must not fabricate a command name that was not there:
+        // `g\<newline>it status` is `git status`, and joining across a continuation that had a
+        // real word boundary either side stays two words.
+        for (command, escape_char) in [
+            ("g\\\nit status", EscapeChar::Backslash),
+            ("git \\\nstatus", EscapeChar::Backslash),
+            ("g`\nit status", EscapeChar::Backtick),
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    escape_char,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Allowed(
+                            CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                        )
+                    ),
+                    "{command:?} does not run `rm` and should not be denied, got {result:?}"
+                );
+            });
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_denylist_matches_embedded_newlines() {
+    // Regression test for a universal one-newline bypass of *every* rule ending in `.*`.
+    //
+    // Denylist rules are compiled as `^{rule}$` (`settings/ai.rs`) and matched with the `regex`
+    // crate, where `.` does not match `\n` and `$` anchors the end of the *haystack*, not the
+    // end of a line. So appending one harmless argument containing a newline -- which the
+    // shell keeps inside a single command because it is quoted or escaped -- made `rm .*` stop
+    // matching a command that still runs `rm -rf ~`. That was true of every rule and every
+    // command, not just `rm`. Confirmed against bash with an `rm()` shim.
+    //
+    // `denylist_match_candidates` now adds a line-break-flattened spelling of each candidate.
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        for command in [
+            // one extra argument that is nothing but a newline and a letter
+            "rm -rf ~ \"\nx\"",
+            "rm -rf ~ '\nx'",
+            // newline inside an argument rather than at its start
+            "rm \"-rf\nx\" ~",
+            // and combined with the quoting bypass this function already covers
+            "\"rm\" -rf ~ \"\nx\"",
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{command:?} runs `rm` and must not escape the `rm .*` rule by carrying a \
+                     newline, got {result:?}"
+                );
+            });
+        }
+
+        // Flattening line breaks must not make unrelated commands match: a newline inside an
+        // argument of a command that is not `rm` stays not-`rm`, and a rule anchored at `^`
+        // cannot be satisfied by text that merely mentions `rm` after the flattening.
+        for command in [
+            "echo \"a\nrm -rf ~\"",
+            "git commit -m \"line one\nline two\"",
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Allowed(
+                            CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                        )
+                    ),
+                    "{command:?} does not run `rm` and should not be denied, got {result:?}"
                 );
             });
         }

@@ -123,6 +123,16 @@ pub fn command_without_leading_env_vars<S: AsRef<str>>(
 /// whose *name* comes from a subshell (`$(echo rm) -rf ~`) cannot be resolved here. Callers
 /// must treat that as "unknown" and fail closed, never as "no match".
 ///
+/// Two further limits are inherited from the parser and are **not** repaired by unquoting, so
+/// a security caller must not read a resolved-looking name as trustworthy:
+///
+/// - redirection is consumed rather than delimited. `parse_part` swallows `<`/`>` *inside* a
+///   word, so `rm>/dev/null -rf ~` resolves its name to `rm/dev/null`; `parse_command_list`
+///   consumes a leading redirect, so in `>/dev/null rm -rf ~` the redirect *target* becomes
+///   the name. Both run `rm`.
+/// - leading env-var assignments are only stripped when the value contains no `=` (see
+///   `Command::remove_leading_env_vars` below), so `FOO=a=b rm file` keeps the prefix.
+///
 /// Returns `None` if `source` contains no command at all.
 pub fn unquoted_command_parts<S: AsRef<str>>(
     source: S,
@@ -285,6 +295,14 @@ impl Command {
     }
 
     /// Removes the leading env-var assignments (i.e. 'KEY=VALUE' literals) from the command.
+    ///
+    /// Note the exact-one-`=` test below: a part is only recognised as an assignment when
+    /// `split('=').count() == 2`. `FOO=a=b cmd` is a valid assignment that the shell strips
+    /// and this does not, so `cmd` is left behind an unrecognised prefix. That matters to the
+    /// Agent Mode denylist, which relies on this to see the real command name — see the
+    /// residue list on `denylist_match_candidates` in `app/src/ai/blocklist/permissions.rs`
+    /// and the open `TODO.md` entry. Pin-identical (`42effe840`), so widening it is a
+    /// divergence and needs its own decision rather than a drive-by change here.
     pub fn remove_leading_env_vars(&mut self) {
         while !self.parts.is_empty() {
             let Some(first_command_part) = self.parts.first() else {

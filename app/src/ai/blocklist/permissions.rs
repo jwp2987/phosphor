@@ -894,9 +894,17 @@ impl BlocklistAIPermissions {
     ) -> CommandExecutionPermission {
         // Normalize line continuations based on shell type.
         // POSIX shells (bash/zsh/fish) use backslash, PowerShell uses backtick.
+        //
+        // A line continuation is *removed*, not turned into a separator: `r\<newline>m` runs
+        // `rm`, exactly as `r\m` does. Substituting a space here instead produced `r m`, whose
+        // first word is `r`, so every `rm` rule stopped matching and a bare newline became a
+        // one-character denylist bypass — including for the `r\m` form the doc comment on
+        // `denylist_match_candidates` claims as handled, because this rewrite runs first and
+        // the parser never sees the continuation. Pinned by
+        // `test_can_autoexecute_command_denylist_matches_line_continuations`.
         let normalized_command = match escape_char {
-            EscapeChar::Backslash => command.replace("\\\n", " "),
-            EscapeChar::Backtick => command.replace("`\n", " "),
+            EscapeChar::Backslash => command.replace("\\\n", ""),
+            EscapeChar::Backtick => command.replace("`\n", ""),
         };
 
         // The command string might be composed of multiple commands so let's
@@ -1306,16 +1314,44 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///
 /// # Handled
 ///
-/// - `"rm" -rf ~`, `'rm' -rf ~` — fully quoted command name
-/// - `"r"m -rf ~`, `r"m" -rf ~`, `'r'"m" -rf ~` — adjacent concatenation of quoted segments
-/// - `r\m -rf ~`, mid-word backslash escapes (the completer's parser already drops these)
+/// Every entry below has a test; the test is named on the entry. An entry without a named
+/// test does not belong in this list. The first revision of this comment listed one thing it
+/// did not do (`X=1`, unqualified — see `FOO=a=b` in the residue) and omitted five more from
+/// the residue, two of which were one- or two-character bypasses, so the list read as a
+/// coverage claim that the code did not honour.
+///
+/// - `"rm" -rf ~`, `'rm' -rf ~` — fully quoted command name.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - `"r"m -rf ~`, `r"m" -rf ~`, `'r'"m" -rf ~` — adjacent concatenation of quoted segments.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - `r\m -rf ~` — mid-word backslash escape of an *ordinary* character; the completer's
+///   parser already drops the backslash.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - `r\<newline>m -rf ~` and the PowerShell `` r`<newline>m `` — a line continuation *inside*
+///   a word. `can_autoexecute_command` deletes the continuation before parsing, and the parser
+///   drops it again for the unquoted view.
+///   (`test_can_autoexecute_command_denylist_matches_line_continuations`)
 /// - `\rm -rf ~` — leading escape char, which the parser deliberately *keeps* so `\ls` can
-///   defeat an alias; stripped again here for matching only
-/// - `$'rm' -rf ~`, `$"rm" -rf ~` — leading `$` before a quoted segment
-/// - `X=1 rm file` — leading env-var assignments, including quoted ones (`"X"=1 rm file`)
-/// - quoting anywhere in the *arguments*, e.g. `rm "-rf" ~`, since all parts are unquoted
+///   defeat an alias; stripped again here for matching only.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - `$'rm' -rf ~`, `$"rm" -rf ~` — leading `$` before a quoted segment.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - `X=1 rm file` — leading env-var assignments, including quoted ones (`"X"=1 rm file`,
+///   `X="1" rm file`), **but only when the value itself contains no `=`**; see the residue
+///   list for `FOO=a=b`.
+///   (`test_can_autoexecute_command_denylist_matches_env_prefixed_commands`,
+///   `test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - quoting anywhere in the *arguments*, e.g. `rm "-rf" ~`, since all parts are unquoted.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
+/// - a line break carried *inside* one command, by quoting or by escaping — `rm -rf ~ "\nx"`,
+///   `rm -rf ~ 'x\ny'`. Rule regexes are anchored as `^{rule}$` and matched by the `regex`
+///   crate, where `.` does **not** match `\n` and `$` is end-of-*haystack*, not end-of-line,
+///   so one newline in a trailing argument used to defeat every rule ending in `.*` for every
+///   command. A line-break-flattened spelling of each candidate is therefore added.
+///   (`test_can_autoexecute_command_denylist_matches_embedded_newlines`)
 /// - any combination of the above, and the same forms inside `$(...)`/backtick subshells,
-///   because `decompose_command` already hands each subcommand here separately
+///   because `decompose_command` already hands each subcommand here separately.
+///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
 ///
 /// # Not handled (explicit residue, not an oversight)
 ///
@@ -1323,11 +1359,38 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   recognised. The completer's lexer keeps single-quoted content verbatim; decoding it would
 ///   mean teaching the lexer a bash-only escape dialect, which changes tokenisation for every
 ///   consumer — the blast radius this function exists to avoid.
+/// - Redirection glued to, or preceding, the command name. `parse_part` consumes `<`/`>`
+///   *inside* a word, so `rm>/dev/null -rf ~` yields the candidates `rm>/dev/null -rf ~` and
+///   `rm/dev/null -rf ~` and no `rm` rule matches; `parse_command_list` consumes a leading
+///   redirect, so `>/dev/null rm -rf ~` decomposes to `/dev/null rm -rf ~` and the redirect
+///   *target* becomes the command name. Both run `rm`. `rm 2>/dev/null -rf ~` is caught, which
+///   is why this reads as accidental rather than chosen — but it cannot be repaired from here:
+///   by the time this function receives text, the operator has already been consumed and the
+///   target is indistinguishable from an argument. Fixing it means changing `parse_part` /
+///   `parse_command_list`, which changes tokenisation for command x-ray, error underlining and
+///   the allowlist. Note that the `contains_redirection` guard does **not** compensate: it is
+///   consulted only in the `AgentDecides` arm of `can_autoexecute_command`, i.e. *after* the
+///   denylist, and never under `AlwaysAllow` or auto-approve-with-org-denylist — the exact
+///   modes in which the denylist is the only gate.
+/// - Brace expansion: `{rm,-rf,~}` decomposes to the single command `rm,-rf,~`, and
+///   `{r,}m -rf ~` to `r,` plus `m -rf ~`; both run `rm`. This is purely textual and would be
+///   statically decidable, and the *grouping* form `{ rm -rf ~; }` is caught, so the parser is
+///   inconsistent here rather than deliberate — but expanding braces is a parser change, not a
+///   candidate-set change, so it is out of scope for this function.
+/// - Shell control-flow keywords: in `if true; then rm -rf ~; fi`,
+///   `while …; do rm …; done` and `for … do rm …; done`, the parser treats `then`/`do` as the
+///   command name and `rm` as an argument. Carrying denylist entries for the prefix (the
+///   advice given for `sudo` below) does not help — nobody writes a rule for `then`, and a
+///   model can wrap anything in a one-iteration loop.
 /// - Command prefixes: `command rm`, `env rm`, `exec rm`, `sudo rm`, `nohup`, `nice`,
 ///   `timeout`, `stdbuf`, `setsid`, `xargs rm`. This set is open-ended and each member has its
 ///   own option grammar (`env -i`, `env X=1`, `timeout 5s`), so a partial list would create
 ///   false confidence. Deliberately out of scope; a denylist that wants to stop these should
 ///   also carry entries for the prefixes themselves (as the default denylist does for shells).
+/// - An env-var assignment whose *value* contains `=`: `FOO=a=b rm file.txt` runs `rm`, but
+///   `Command::remove_leading_env_vars` stops at the first part whose `split('=').count()` is
+///   not exactly 2, so the prefix survives and no `rm` rule matches. Tracked in `TODO.md`;
+///   the repair belongs in the completer, next to the split, not in the candidate set.
 /// - Any indirection that needs the shell to be *evaluated*: `R=rm; $R -rf ~`, `${R} -rf ~`,
 ///   `$(echo rm) -rf ~`, shell aliases and functions, `eval`.
 /// - Path equivalence: `/bin/rm`, `./rm`, `busybox rm` are different text and stay different.
@@ -1335,7 +1398,10 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   is on the default denylist; the general class is not solvable here.
 ///
 /// The residue is real, and it is bounded by what can be decided without executing the
-/// command. What it is *not* is a one-character bypass.
+/// command. It is not a *complete* account of every spelling a shell accepts, and it should
+/// not be read as one: three of the entries above (redirection, brace expansion, control-flow
+/// keywords) are short, purely textual bypasses that this layer cannot close, because they
+/// have to be fixed in the parser. Treat the denylist as defence in depth, not as a boundary.
 fn denylist_match_candidates(command: &str, escape_char: EscapeChar) -> Vec<String> {
     fn push(candidates: &mut Vec<String>, candidate: String) {
         if !candidate.is_empty() && !candidates.contains(&candidate) {
@@ -1373,6 +1439,22 @@ fn denylist_match_candidates(command: &str, escape_char: EscapeChar) -> Vec<Stri
                 push(&mut candidates, unprefixed_parts.join(" "));
             }
         }
+    }
+
+    // A line break that survives into a single command's text defeats every rule ending in
+    // `.*`. Rules are compiled as `^{rule}$` by `AgentModeCommandExecutionPredicate`, and in
+    // the `regex` crate `.` does not match `\n` while `$` anchors to the end of the *haystack*,
+    // not the end of a line. So `rm -rf ~ "<newline>x"` — one harmless extra argument — was
+    // matched by no `rm .*` rule, for every command, not just `rm`. Flattening line breaks to
+    // spaces gives those rules something to match. Additive like everything else here, so it
+    // can only deny more.
+    let flattened = candidates
+        .iter()
+        .filter(|candidate| candidate.contains('\n'))
+        .map(|candidate| candidate.replace('\n', " "))
+        .collect::<Vec<_>>();
+    for candidate in flattened {
+        push(&mut candidates, candidate);
     }
 
     candidates
