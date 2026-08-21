@@ -6944,6 +6944,8 @@ Ordered by severity, not by area.
       callers. `mod.rs:2090-2124` snapshots the replacement verbatim, so quitting during
       a swap loses the terminal pane. `visible_pane_count` (`tree.rs:219`) undercounts,
       so closing one of two panes during a swap kills the whole tab.
+      **VERDICT CONFIRMED — one limb false (independent verifier, 2026-08-21):** `mod.rs:3951` calls `replace_pane` on a target that IS an in-tree hidden leaf (`add_pane_with_options` splits then hides, `:5921`), and `PaneNode::replace_pane` (`tree.rs:886-889`) overwrites only the anchor leaf, duplicating the target. The pin proves both other limbs: `42effe840:mod.rs:2129-2133` substitutes the original on snapshot (the fork's `:2090` does not), and `42effe840:tree.rs:216-218` warns against exactly the subtraction at `tree.rs:219-222`. **One limb false:** `show_pane_for_child_agent` has three production callers (`terminal_pane.rs:1002,1030,1046`), not zero.
+
 - [ ] **PR info refreshes on EVERY prompt, not only after `gh`/`gt`.**
       `view.rs:10300-10307` calls `refresh_pr_info` unconditionally in
       `refresh_warp_prompt`, which runs on every `BlockCompleted` and every OSC 7. The
@@ -7056,6 +7058,8 @@ Ordered by severity, not by area.
       `queue_confirmation_action` force-installs the blocked state, so tests that claim
       to exercise "the real preprocess pipeline" wait on conditions already true. 38
       call sites across 9 files.
+      **VERDICT PARTIAL — not vacuous (independent verifier, 2026-08-21):** `queue_confirmation_action` (`action_model.rs:997-1012`) does force the blocked state, and the "real preprocess pipeline" comments are stale. **But it is a faithful port** — `42effe840:tui_test_support.rs:299` calls the identical helper — and the tests are not vacuous: events reach the view only through the effect loop and the assertions check real rendering (`:60-79`).
+
 - [ ] **`completions.rs:51-59` is factually false** — it claims
       `load_all_function_names` / `additional_function_names` "do not exist in this
       fork's Session". All exist; DECLINED.md:158 says so. The pin calls both loaders
@@ -7163,9 +7167,13 @@ Ordered by severity, not by area.
       `zap-tui-oss`. `#[command(name = "warp")]` also puts "warp" in `--help`, which the
       branding rule forbids. README:230 and README:141 contradict each other about
       whether that binary is user-facing.
+      **VERDICT PARTIAL — the println is dead (independent verifier, 2026-08-21):** `session.rs:261` and `#[command(name = "warp")]` (`:46`) are real, and the clap name IS live (`:135` `try_parse`), inherited verbatim from `42effe840:session.rs:51`. **But the println is unreachable:** it needs `exit_summary.token()`, set only from `server_conversation_token()` (`terminal_session_view.rs:2836-2841`), which BYOP never produces — DECLINED.md:216 documents this. README:141 and :230 both name `zap-tui-oss`; no contradiction.
+
 - [ ] **`LaunchMode::Tui` folds into the App arm, so the TUI inherits the GUI's default
       profile object.** `execution_profiles/profiles.rs:175`. The pin makes that arm
       `unreachable!("TUI profiles use settings")`.
+      **VERDICT PARTIAL — no new defect (independent verifier, 2026-08-21):** `profiles.rs:175` does fold `Tui` into the App arm and `42effe840:profiles.rs:380` is `unreachable!`. But that arm is unreachable AT THE PIN only because `42effe840:profiles.rs:71-73,262-277` routes the TUI through file-backed settings — a subsystem this fork never ported and already tracks (`TODO.md:3781-3784`). Sharing the GUI object store is the fork's stated design (`bin/oss.rs:18-24`).
+
 - [ ] **Unreachable branch from a mis-desugared let-chain.**
       `current_prompt.rs:822-832`: `if suppress_on_failure { … } else if
       suppress_on_failure { … }`. The pin has one arm.
@@ -7709,6 +7717,8 @@ Ordered by severity, not by area.
       keyring-less Linux host any local user can read and decrypt them.
       `linux_test.rs:59` tests owner-only permissions only on the path these callers do
       not use. Verified directly: both write paths, the single caller, and the constant.
+      **VERDICT PARTIAL — upstream design, NOT a fork defect (independent verifier, 2026-08-21):** **This corrects my own earlier verification, which checked the mechanism but never checked the pin.** Every limb of the mechanism holds (`linux.rs:246` → 0644 under umask 022; `:252-284` is the only 0600 path; its sole caller is `local_control.rs:132`, a mode enum; `api_keys.rs:235`, `secrets.rs:106`, `oauth.rs:644`, `network_secrets.rs:73` all use `write_value`; `linux_test.rs:59` covers only the unused path). **But it is upstream Warp's design:** `42effe840:linux.rs` is structurally identical, its owner-only path has the same single caller (`42effe840:local_control.rs:91`), its API-key writer uses `write_value` (`42effe840:api_keys.rs:383`), and **the pin hardcodes an AES key too** — disguised as `"https://releases.warp.dev/channel_versions.json"` (`42effe840:linux.rs:108`). Only `secrets.rs` and `network_secrets.rs` are fork-original, so only those two are this fork's own missed opportunity. Reachability is also narrower than "any keyring-less Linux host": GNOME and KDE ship a Secret Service provider, so the fallback needs no D-Bus session bus / no keyring daemon (minimal WMs, containers, WSL, SSH) or a locked keyring with no prompter — and world-readability additionally needs a traversable `~/.local/state` chain (Debian/Ubuntu 0755 homes; not Fedora/RHEL 0700).
+
 - [ ] **`check_stub_coverage` disarmed — CORROBORATED independently by a second agent**,
       which additionally found that `generate_repin_queue:178` was repaired for this exact
       literal and cites `check_stub_coverage` as the convention it copied. The script the
@@ -7721,14 +7731,20 @@ Ordered by severity, not by area.
       (`42effe840:…:1301-1311`); `key_events.rs:162` re-checks only
       synthetic/state/modifiers, so every key `convert_keyboard_input_event`
       deliberately rejects now types characters.
+      **VERDICT PARTIAL — miscited and overstated (independent verifier, 2026-08-21):** **Path is wrong:** the file is `crates/warpui/src/windowing/winit/event_loop/mod.rs:1333`, not `warpui_core`. The gate gap is real, but "dropped the pin's" is false — fork commit `7e1e53a08` (2026-05-20) added this independently, BEFORE the pin's version. Consequence overstated: the fallback re-checks synthetic and state, adds a modifier gate the pin lacks, and requires non-empty text, so textless `NamedKey`s never leak.
+
 - [ ] **GUI ancestors get no keystrokes under a focused TUI leaf.**
       `warpui_core/src/core/app.rs:2081` routes on presenter presence while its sibling at
       `:1487` routes on `tui_views.contains_key`, and the comment at `:1481` states
       exactly why the presenter branch is wrong. `tui_view_tests.rs:479` cannot catch it —
       it builds the chain with `view_ancestors()` and passes it in, never calling
       `get_responder_chain`.
+      **VERDICT PARTIAL — latent (independent verifier, 2026-08-21):** Asymmetry confirmed (`core/app.rs:2081-2085` routes on presenter presence, `:1488-1491` on `tui_views.contains_key`, and `:1477-1484` states why the presenter branch is wrong; `:1463` is a third presenter-only site), and the test blindness is real. **But latent:** no production site calls `add_tui_view` on a GUI window — all callers are in `crates/warp_tui`, whose windows come from `add_tui_window` and have no presenter.
+
 - [ ] **Panic on TUI-only windows.** `core/app.rs:1911` and `:1963` `.expect("Invalid
       window id")` on a presenter that `add_tui_window` never inserts.
+      **VERDICT PARTIAL — latent (independent verifier, 2026-08-21):** Both `.expect("Invalid window id")` sites are real (`core/app.rs:1913`, `:1963`) and `add_tui_window` (`core/app/tui.rs:150`) inserts a `Window::default()` with no presenter; the pin cannot panic here because `42effe840:app.rs:1945,1992` use `view_ancestors`. **But no TUI caller reaches them** — the only callers are GUI-only (`app_menus.rs:1115`, `command_palette/new_session/data_source.rs:118`, `search/action/data_source.rs:87`).
+
 - [ ] **#585's "inventory corrected" is still one site short.**
       `secure_storage/registry_backed.rs:28` is `Software\Zap\`, joined to
       `application_name()` = `Phosphor`, so Windows prefs live under a pre-rename
