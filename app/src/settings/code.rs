@@ -56,12 +56,32 @@ define_settings_group!(CodeSettings, settings: [
     },
     // Whether the AI agent may use the codebase embedding index as context.
     //
-    // Restored from the pin (`02b53fcd8:app/src/settings/code.rs`) along with the
-    // index itself, minus one thing: the pin also consulted an organization-level
-    // `AdminEnablementSetting` that could force this on or off for a whole team.
-    // That override arrived from Warp's server and has no local equivalent, so
-    // `UserWorkspaces::is_codebase_context_enabled` reduces to this setting plus
-    // the global AI toggle.
+    // Ported from the pin (`42effe840:app/src/settings/code.rs:15`), but NOT
+    // faithfully — three deliberate divergences, listed because an earlier
+    // version of this comment claimed only the first and read as a verbatim
+    // restore:
+    //
+    // 1. The pin also consulted an organization-level `AdminEnablementSetting`
+    //    that could force this on or off for a whole team. That override
+    //    arrived from Warp's server and has no local equivalent, so
+    //    `UserWorkspaces::is_codebase_context_enabled` reduces to this setting
+    //    AND the global AI toggle.
+    // 2. **The default is `false` here; the pin's is `true`.** Deliberate, and
+    //    load-bearing rather than cosmetic. At the pin, indexing ran against
+    //    Warp's servers on a Warp account, so defaulting it on cost the user
+    //    nothing they had not already agreed to. Here it spends the user's own
+    //    embedding-provider quota, and — on the remote surface — sends their
+    //    provider API key to whichever host they installed a daemon on
+    //    (`crate::ai::codebase_embeddings::remote_client_preferences`, gated on
+    //    `should_use_codebase_indexing`, which reads this setting). A default
+    //    that transmits a credential is not a default. Turning this on is now
+    //    the act of consent, which is also why the pin's "Index Codebase?"
+    //    speedbump banner was not ported -- see `DECLINED.md`.
+    // 3. `sync_to_cloud` is `Never` and the pin's `storage_key`/`surface` keys
+    //    are gone: there is no cloud settings store to sync to, and this fork
+    //    dropped `SettingSurfaces`.
+    //
+    // Do not flip 2 back without moving the consent somewhere else first.
     codebase_context_enabled: CodebaseContextEnabled {
         type: bool,
         default: false,

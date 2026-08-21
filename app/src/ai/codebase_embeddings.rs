@@ -41,17 +41,22 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 
 use ai::index::full_source_code_embedding::local_store_client::{
-    LocalCodebaseContextConfig, LocalStoreClient, RerankProvider, VectorStore,
+    EmbeddingProvider, LocalCodebaseContextConfig, LocalStoreClient, RerankProvider, VectorStore,
 };
 use ai::index::full_source_code_embedding::store_client::{IntermediateNode, StoreClient};
 use ai::index::full_source_code_embedding::vector_index::NodeSummary;
-use ai::index::full_source_code_embedding::{ContentHash, EmbeddingConfig, NodeHash};
+use ai::index::full_source_code_embedding::{
+    CodebaseContextConfig, ContentHash, EmbeddingConfig, Error as IndexError, Fragment, NodeHash,
+    RepoMetadata,
+};
 use anyhow::{Context, anyhow};
+use async_trait::async_trait;
 use diesel::SqliteConnection;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::ai::agent_providers::embeddings::{
-    HttpEmbeddingProvider, HttpRerankProvider, resolve_configured_embedding_model,
+    EmbeddingEndpoint, HttpEmbeddingProvider, HttpRerankProvider,
+    resolve_configured_embedding_model, resolve_embedding_endpoint,
 };
 use crate::persistence::{
     ModelEvent, codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
@@ -347,6 +352,243 @@ impl VectorStore for SqliteVectorStore {
     }
 }
 
+/// The [`StoreClient`] the app hands to `CodebaseIndexManager`.
+///
+/// # Why this exists at all
+///
+/// The manager holds one `Arc<dyn StoreClient>` for the life of the process, so
+/// whatever this returns is what indexing uses until the app is restarted. The
+/// user's embedding configuration, by contrast, is editable at any moment:
+/// providers are added under Settings > AI and API keys are rotated in the
+/// keychain. Resolving the endpoint once, at startup, made a provider
+/// configured after launch invisible to indexing — the settings page reported
+/// the model as live while every index attempt failed with
+/// `Error::NoEmbeddingProvider` — and made a rotated key go unnoticed until the
+/// next restart.
+///
+/// So the resolved configuration lives behind a `Mutex` and every call
+/// assembles a fresh [`LocalStoreClient`] over it — three `Arc` clones and a
+/// `Copy` config. This is the same shape as `DaemonStoreClient`
+/// (`app/src/remote_server/codebase_index_store.rs`), which reconfigures itself
+/// when a client sends new preferences; here the trigger is a settings change
+/// instead of a wire message. `lib.rs` subscribes to `AISettings`,
+/// `AgentProviderSecrets` and `CodeSettings` and calls
+/// [`refresh_from_settings`][Self::refresh_from_settings] — a predicate ported
+/// without its invalidation events is not ported.
+///
+/// Rebuilding the client per call also means a *model* change is picked up:
+/// `CodebaseIndexSyncOperation::full_sync` asks
+/// [`codebase_context_config`][StoreClient::codebase_context_config] which
+/// model to use at the start of every sync, and that answer now comes from the
+/// current settings rather than from whatever was configured at launch.
+pub struct RefreshingStoreClient {
+    provider: Arc<HttpEmbeddingProvider>,
+    store: Arc<SqliteVectorStore>,
+    configuration: Mutex<StoreClientConfiguration>,
+}
+
+/// What the last refresh resolved.
+#[derive(Default)]
+struct StoreClientConfiguration {
+    /// The embedding model, if the user has a usable provider for one.
+    ///
+    /// The outer `Option` is "has a refresh happened yet", kept apart from the
+    /// inner "did that refresh find anything" so the first refresh always logs
+    /// what it found — including the common case of finding nothing, which is
+    /// the state a fresh install is in and the one users need told about.
+    resolved_model: Option<Option<EmbeddingConfig>>,
+    /// The same, for the optional reranking model, held as its id so a change
+    /// can be reported without keeping a second copy of the provider.
+    resolved_reranker: Option<Option<&'static str>>,
+    reranker: Option<Arc<dyn RerankProvider>>,
+}
+
+impl StoreClientConfiguration {
+    /// The model to index with: whatever the user configured, falling back to
+    /// the pin's default so the index has a well-defined storage space even
+    /// before setup.
+    fn embedding_config(&self) -> EmbeddingConfig {
+        self.resolved_model.flatten().unwrap_or_default()
+    }
+}
+
+impl RefreshingStoreClient {
+    fn new(provider: Arc<HttpEmbeddingProvider>, store: Arc<SqliteVectorStore>) -> Self {
+        Self {
+            provider,
+            store,
+            configuration: Mutex::new(StoreClientConfiguration::default()),
+        }
+    }
+
+    /// Re-resolves the embedding endpoint, model and reranker from the app's
+    /// current settings.
+    ///
+    /// Call this from every event that can change the answer. The endpoint is
+    /// replaced unconditionally rather than only when the *model* changes,
+    /// because a rotated API key leaves the model identical and the credential
+    /// different.
+    pub fn refresh_from_settings(&self, app: &AppContext) {
+        let resolved_model = resolve_configured_embedding_model(app);
+        let endpoint = resolved_model.and_then(|config| resolve_embedding_endpoint(app, config));
+        let reranker = HttpRerankProvider::from_app(app);
+        let resolved_reranker = reranker.as_ref().map(HttpRerankProvider::model_id);
+
+        self.reconfigure(
+            resolved_model,
+            endpoint,
+            resolved_reranker,
+            reranker.map(|reranker| Arc::new(reranker) as Arc<dyn RerankProvider>),
+        );
+    }
+
+    /// The settings-free half of [`refresh_from_settings`][Self::refresh_from_settings],
+    /// so the refresh can be tested without an `AppContext`.
+    fn reconfigure(
+        &self,
+        resolved_model: Option<EmbeddingConfig>,
+        endpoint: Option<EmbeddingEndpoint>,
+        resolved_reranker: Option<&'static str>,
+        reranker: Option<Arc<dyn RerankProvider>>,
+    ) {
+        self.provider.set_endpoint(endpoint);
+
+        let mut configuration = self
+            .configuration
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if configuration.resolved_model != Some(resolved_model) {
+            match resolved_model {
+                Some(config) => {
+                    log::info!("Codebase indexing will embed with {}", config.model_id())
+                }
+                None => log::info!(
+                    "No embedding provider is configured; codebase indexing will report \
+                     NoEmbeddingProvider until one is added under Settings > AI"
+                ),
+            }
+            configuration.resolved_model = Some(resolved_model);
+        }
+
+        if configuration.resolved_reranker != Some(resolved_reranker) {
+            match resolved_reranker {
+                Some(model_id) => {
+                    log::info!("Codebase index reranking will use {model_id}")
+                }
+                // The pin reranked with a server-side cross-encoder. Where the
+                // user's own provider sells one, use it; where it does not,
+                // `LocalStoreClient` falls back to hybrid vector + lexical
+                // scoring rather than requiring a model nobody configured.
+                None => log::info!(
+                    "No reranking model is configured; codebase search will rerank with \
+                     hybrid vector + lexical scoring. Adding a rerank model (e.g. \
+                     rerank-2.5) to a provider under Settings > AI enables cross-encoder \
+                     reranking instead."
+                ),
+            }
+            configuration.resolved_reranker = Some(resolved_reranker);
+        }
+
+        configuration.reranker = reranker;
+    }
+
+    /// Assembles a client over the configuration as it stands right now.
+    fn client(&self) -> LocalStoreClient {
+        let (embedding_config, reranker) = {
+            let configuration = self
+                .configuration
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                configuration.embedding_config(),
+                configuration.reranker.clone(),
+            )
+        };
+
+        LocalStoreClient::new(
+            Arc::clone(&self.provider) as Arc<dyn EmbeddingProvider>,
+            Arc::clone(&self.store) as Arc<dyn VectorStore>,
+            LocalCodebaseContextConfig {
+                embedding_config,
+                ..LocalCodebaseContextConfig::default()
+            },
+        )
+        .with_rerank_provider(reranker)
+    }
+}
+
+#[cfg_attr(not(target_family = "wasm"), async_trait)]
+#[cfg_attr(target_family = "wasm", async_trait(?Send))]
+impl StoreClient for RefreshingStoreClient {
+    async fn update_intermediate_nodes(
+        &self,
+        embedding_config: EmbeddingConfig,
+        nodes: Vec<IntermediateNode>,
+    ) -> Result<HashMap<NodeHash, bool>, IndexError> {
+        self.client()
+            .update_intermediate_nodes(embedding_config, nodes)
+            .await
+    }
+
+    async fn generate_embeddings(
+        &self,
+        embedding_config: EmbeddingConfig,
+        fragments: Vec<Fragment>,
+        root_hash: NodeHash,
+        repo_metadata: RepoMetadata,
+    ) -> Result<HashMap<ContentHash, bool>, IndexError> {
+        self.client()
+            .generate_embeddings(embedding_config, fragments, root_hash, repo_metadata)
+            .await
+    }
+
+    async fn populate_merkle_tree_cache(
+        &self,
+        embedding_config: EmbeddingConfig,
+        root_hash: NodeHash,
+        repo_metadata: RepoMetadata,
+    ) -> Result<bool, IndexError> {
+        self.client()
+            .populate_merkle_tree_cache(embedding_config, root_hash, repo_metadata)
+            .await
+    }
+
+    async fn sync_merkle_tree(
+        &self,
+        nodes: Vec<NodeHash>,
+        embedding_config: EmbeddingConfig,
+    ) -> Result<HashSet<NodeHash>, IndexError> {
+        self.client()
+            .sync_merkle_tree(nodes, embedding_config)
+            .await
+    }
+
+    async fn rerank_fragments(
+        &self,
+        query: String,
+        fragments: Vec<Fragment>,
+    ) -> Result<Vec<Fragment>, IndexError> {
+        self.client().rerank_fragments(query, fragments).await
+    }
+
+    async fn get_relevant_fragments(
+        &self,
+        embedding_config: EmbeddingConfig,
+        query: String,
+        root_hash: NodeHash,
+        repo_metadata: RepoMetadata,
+    ) -> Result<Vec<ContentHash>, IndexError> {
+        self.client()
+            .get_relevant_fragments(embedding_config, query, root_hash, repo_metadata)
+            .await
+    }
+
+    async fn codebase_context_config(&self) -> Result<CodebaseContextConfig, IndexError> {
+        self.client().codebase_context_config().await
+    }
+}
+
 /// Builds the codebase index's `StoreClient` from the user's configuration.
 ///
 /// Returns a client whichever way the configuration falls: when no provider is
@@ -356,55 +598,31 @@ impl VectorStore for SqliteVectorStore {
 /// `None` here would have to be handled by every caller, and the natural
 /// handling would be to skip indexing silently.
 ///
+/// The concrete type is returned, not `Arc<dyn StoreClient>`, because the
+/// caller has to keep a handle it can call
+/// [`RefreshingStoreClient::refresh_from_settings`] on. Coerce it for the
+/// manager's config.
+///
 /// `persistence_writer` is threaded in from the caller because the app's
 /// `PersistenceWriter` singleton is not registered yet at the point the
 /// codebase index is built. See [`SqliteVectorStore::with_writer`].
 pub fn build_store_client(
     app: &AppContext,
     persistence_writer: Option<SyncSender<ModelEvent>>,
-) -> Arc<dyn StoreClient> {
-    // Whatever the user actually configured, falling back to the pin's default
-    // so the index has a well-defined storage space even before setup.
-    let embedding_config = resolve_configured_embedding_model(app).unwrap_or_default();
-
-    if resolve_configured_embedding_model(app).is_none() {
-        log::info!(
-            "No embedding provider is configured; codebase indexing will report \
-             NoEmbeddingProvider until one is added under Settings > AI"
-        );
-    }
-
-    let provider = Arc::new(HttpEmbeddingProvider::from_app(app, embedding_config));
-    let store = Arc::new(SqliteVectorStore::with_writer(persistence_writer));
-
-    // The pin reranked with a server-side cross-encoder. Where the user's own
-    // provider sells one, use it; where it does not, `LocalStoreClient` falls
-    // back to hybrid vector + lexical scoring rather than requiring a model
-    // nobody configured.
-    let reranker = HttpRerankProvider::from_app(app).map(|reranker| {
-        log::info!("Codebase index reranking will use {}", reranker.model_id());
-        Arc::new(reranker) as Arc<dyn RerankProvider>
-    });
-    if reranker.is_none() {
-        log::info!(
-            "No reranking model is configured; codebase search will rerank with \
-             hybrid vector + lexical scoring. Adding a rerank model (e.g. \
-             rerank-2.5) to a provider under Settings > AI enables cross-encoder \
-             reranking instead."
-        );
-    }
-
-    Arc::new(
-        LocalStoreClient::new(
-            provider,
-            store,
-            LocalCodebaseContextConfig {
-                embedding_config,
-                ..LocalCodebaseContextConfig::default()
-            },
-        )
-        .with_rerank_provider(reranker),
-    )
+) -> Arc<RefreshingStoreClient> {
+    let client = Arc::new(RefreshingStoreClient::new(
+        Arc::new(HttpEmbeddingProvider::from_app(
+            app,
+            active_embedding_config(app),
+        )),
+        Arc::new(SqliteVectorStore::with_writer(persistence_writer)),
+    ));
+    // The provider above already has the endpoint; this second pass records the
+    // model and the reranker in the client's own configuration and logs what it
+    // found, so startup and every later settings change take exactly one code
+    // path.
+    client.refresh_from_settings(app);
+    client
 }
 
 /// The embedding model the index will use, for callers that need to know before
@@ -431,7 +649,6 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
 #[cfg(not(target_family = "wasm"))]
 pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
     use crate::ai::AIRequestUsageModel;
-    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
     use crate::ai::codebase_auto_indexing::{
         CodebaseAutoIndexingSurface, should_use_codebase_indexing,
     };
@@ -514,6 +731,176 @@ fn remote_embedding_provider(
         return None;
     }
     resolve()
+}
+
+/// The endpoint and model must follow configuration changes, not freeze at
+/// startup.
+///
+/// The defect these cover: `build_store_client` used to resolve the endpoint
+/// once, inside `add_singleton_model`, and `CodebaseIndexManager` holds the
+/// resulting `Arc<dyn StoreClient>` for the life of the process. Configuring a
+/// provider after launch therefore left indexing answering
+/// `NoEmbeddingProvider` until restart, while the settings page reported the
+/// model as live. A rotated API key was ignored the same way.
+///
+/// They deliberately go through the `StoreClient` trait rather than poking
+/// `HttpEmbeddingProvider::set_endpoint` directly — the latter is already
+/// covered in `agent_providers/embeddings_tests.rs`, and it passed while the
+/// defect was live. What was missing is that the refresh reaches *the client the
+/// manager holds*, so that is what is asserted.
+///
+/// No request leaves the machine: an `http://` non-loopback endpoint carrying a
+/// key is refused by the plaintext-bearer guard before the socket is opened, so
+/// "the endpoint took effect" is observable offline and deterministically.
+#[cfg(test)]
+mod endpoint_refresh_tests {
+    use std::path::PathBuf;
+
+    use futures::executor::block_on;
+    use http_client::Client;
+    use string_offset::ByteOffset;
+
+    use super::*;
+
+    fn an_unconfigured_client() -> RefreshingStoreClient {
+        RefreshingStoreClient::new(
+            Arc::new(HttpEmbeddingProvider::new(Client::new(), None)),
+            // No writer and no reader: every store call degrades to "store
+            // nothing, know nothing", which is enough because the provider is
+            // consulted before the store on the path under test.
+            Arc::new(SqliteVectorStore::new(None, None)),
+        )
+    }
+
+    fn a_fragment() -> Fragment {
+        let content = "fn main() {}".to_owned();
+        let content_hash = ContentHash::from_content(&content);
+        let length = content.len();
+        Fragment::from_byte_range(
+            content,
+            content_hash,
+            PathBuf::from("/repo/src/main.rs"),
+            ByteOffset::from(0)..ByteOffset::from(length),
+        )
+    }
+
+    /// Asks the client to embed one fragment and reports how it failed. It
+    /// always fails: with no endpoint because there is nothing to call, and with
+    /// one because that endpoint is refused before any request is made.
+    fn embed_error(client: &RefreshingStoreClient) -> IndexError {
+        let fragment = a_fragment();
+        let root_hash = NodeHash::from(fragment.content_hash().clone());
+        block_on(client.generate_embeddings(
+            EmbeddingConfig::default(),
+            vec![fragment],
+            root_hash,
+            RepoMetadata { path: None },
+        ))
+        .expect_err("no reachable provider is configured in this test")
+    }
+
+    #[test]
+    fn a_provider_configured_after_startup_reaches_the_client_the_manager_holds() {
+        let client = an_unconfigured_client();
+
+        assert!(
+            matches!(embed_error(&client), IndexError::NoEmbeddingProvider { .. }),
+            "with nothing configured the client must report a missing provider"
+        );
+
+        client.reconfigure(
+            Some(EmbeddingConfig::default()),
+            Some(EmbeddingEndpoint {
+                base_url: "http://embeddings.example.invalid/v1".to_owned(),
+                api_key: "sk-configured-after-launch".to_owned(),
+            }),
+            None,
+            None,
+        );
+
+        let error = embed_error(&client);
+        assert!(
+            !matches!(error, IndexError::NoEmbeddingProvider { .. }),
+            "after the refresh the client must use the new endpoint, not keep \
+             reporting the startup state; got {error}"
+        );
+        assert!(
+            error.to_string().contains("embeddings.example.invalid"),
+            "the error must name the endpoint the refresh installed; got {error}"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_edit_replaces_the_one_resolved_at_startup() {
+        // The model is unchanged across this refresh, so a client that reacted
+        // only to *model* changes would keep the stale endpoint. That is the
+        // shape of the original defect, and it is why `reconfigure` sets the
+        // endpoint unconditionally.
+        //
+        // An API-key rotation travels this same `set_endpoint` call. It is not
+        // asserted separately because a key never appears in an error message,
+        // so distinguishing two keys would need a real request; the base URL is
+        // observable offline and exercises the identical code path.
+        let client = an_unconfigured_client();
+        let endpoint = |host: &str| EmbeddingEndpoint {
+            base_url: format!("http://{host}/v1"),
+            api_key: "sk-secret".to_owned(),
+        };
+
+        client.reconfigure(
+            Some(EmbeddingConfig::default()),
+            Some(endpoint("first.example.invalid")),
+            None,
+            None,
+        );
+        client.reconfigure(
+            Some(EmbeddingConfig::default()),
+            Some(endpoint("second.example.invalid")),
+            None,
+            None,
+        );
+
+        let error = embed_error(&client).to_string();
+        assert!(
+            error.contains("second.example.invalid"),
+            "the second refresh must replace the first endpoint; got {error}"
+        );
+        assert!(
+            !error.contains("first.example.invalid"),
+            "the endpoint resolved earlier must not survive the refresh; got {error}"
+        );
+    }
+
+    #[test]
+    fn the_model_a_sync_asks_for_follows_the_configuration() {
+        // `CodebaseIndexSyncOperation::full_sync` calls `codebase_context_config`
+        // at the start of every sync and indexes with whatever it answers, so
+        // this is how a model change reaches an already-running manager.
+        let client = an_unconfigured_client();
+
+        assert_eq!(
+            block_on(client.codebase_context_config())
+                .expect("the local config never fails")
+                .embedding_config,
+            EmbeddingConfig::default(),
+            "an unconfigured client falls back to the pin's default model"
+        );
+
+        client.reconfigure(
+            Some(EmbeddingConfig::OpenAiTextSmall3_256),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(
+            block_on(client.codebase_context_config())
+                .expect("the local config never fails")
+                .embedding_config,
+            EmbeddingConfig::OpenAiTextSmall3_256,
+            "the next sync must use the model the user has now configured"
+        );
+    }
 }
 
 #[cfg(all(test, not(target_family = "wasm")))]

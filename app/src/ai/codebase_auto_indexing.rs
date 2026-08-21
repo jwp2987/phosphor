@@ -4,6 +4,21 @@
 //! The only fork difference is behind
 //! `UserWorkspaces::is_codebase_context_enabled`, which no longer consults an
 //! organization-level override — see that method.
+//!
+//! # These predicates are also the fork's consent mechanism
+//!
+//! The pin carried a separate "Index Codebase?" speedbump banner
+//! (`42effe840:app/src/ai/blocklist/codebase_index_speedbump_banner.rs`). It
+//! was not ported, and that is a decision, not an omission — `DECLINED.md`
+//! records it. The short version: at the pin the banner's consent half was
+//! unreachable (its only insertion site, `/index`, indexed first and then
+//! showed the banner already switched to its "Indexing codebase" progress
+//! state), so it asked nothing. Here consent is expressed by
+//! `CodeSettings::codebase_context_enabled`, which defaults to `false` and is
+//! read by `codebase_indexing_enabled` below.
+//!
+//! That makes this file the load-bearing gate rather than a convenience check,
+//! which is why `consent_gate_tests` exists at the bottom.
 
 use std::collections::HashSet;
 use std::hash::Hash;
