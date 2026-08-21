@@ -4,22 +4,22 @@ use std::rc::Rc;
 use crate::ai::blocklist::inline_action::code_diff_view::DiffSessionType;
 use ai::diff_validation::DiffType;
 #[cfg(not(target_family = "wasm"))]
-use warp_files::{FileModel, FileModelEvent};
+use warp_files::{ExpectedDiskState, FileModel, FileModelEvent};
 use warp_util::file::FileId;
 #[cfg(not(target_family = "wasm"))]
 use warp_util::file::FileSaveError;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::elements::ChildView;
 #[cfg(not(target_family = "wasm"))]
 use warpui::SingletonEntity;
+use warpui::elements::ChildView;
 use warpui::{AppContext, Element, Entity, TypedActionView, View, ViewContext, ViewHandle};
 
+use super::DiffResult;
 use super::diff_viewer::DiffViewer;
 use super::diff_viewer::DisplayMode;
+use super::editor::NavBarBehavior;
 use super::editor::scroll::{ScrollPosition, ScrollTrigger};
 use super::editor::view::{CodeEditorEvent, CodeEditorView};
-use super::editor::NavBarBehavior;
-use super::DiffResult;
 use crate::editor::InteractionState;
 
 pub enum InlineDiffViewEvent {
@@ -134,6 +134,20 @@ impl InlineDiffView {
                     );
                     return;
                 };
+                // `subscribe_to_updates` stays `false`, matching the pin. Turning it
+                // on would register a watcher (a whole repository subscription, per
+                // diff view) and start emitting `FileModelEvent::FileUpdated`, which
+                // the subscription in `finish_file_registration` does not handle and
+                // which nothing in this read-only-until-accepted view could usefully
+                // act on — it would change the editor's live behaviour to no benefit.
+                //
+                // It is also not what makes the accept path safe. A watcher is
+                // advisory and debounced (200ms in `BulkFilesystemWatcher`), so a
+                // change landing between the last event and the write would still be
+                // missed. `save_content` instead checks the file's actual contents
+                // against the pre-image the diff was computed from, at write time, in
+                // the same task as the write. That check is authoritative and does
+                // not depend on any subscription being live.
                 file_model.update(ctx, |file_model, ctx| {
                     file_model.register_file_path(&local_path, false, ctx)
                 })
@@ -211,6 +225,50 @@ impl InlineDiffView {
         });
     }
 
+    /// The state this view requires the file to still be in before it will
+    /// overwrite it — the pre-image the proposed diff was computed against.
+    ///
+    /// `Err` means the pre-image could not be established. That is *not* the
+    /// same as "nothing to compare, go ahead": a buffer with no diff base is a
+    /// buffer whose relationship to the file on disk is unknown, and writing it
+    /// would be the very overwrite this guard exists to prevent. The caller
+    /// surfaces the message instead of writing.
+    #[cfg(not(target_family = "wasm"))]
+    fn expected_disk_state(&self, ctx: &AppContext) -> Result<ExpectedDiskState, String> {
+        if self.is_new_file {
+            // A creation diff is only offered after the file was found absent
+            // (`apply_create_file` rejects the edit outright if it already
+            // exists), so "still absent" is the pre-image being asserted.
+            return Ok(ExpectedDiskState::Absent);
+        }
+
+        // The diff base is the file's text as it was read when the edit was
+        // proposed — LF-normalised by `CodeEditorModel::set_base`, which is why
+        // `FileModel` compares normalised on both sides.
+        let base = self
+            .editor
+            .as_ref(ctx)
+            .model
+            .as_ref(ctx)
+            .diff()
+            .as_ref(ctx)
+            .base()
+            .ok_or_else(|| {
+                let path = self
+                    .file_path
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "file".to_owned());
+                format!(
+                    "{path} was not written: the original contents this edit was based on \
+                     are no longer available, so there is no way to tell whether the file \
+                     changed in the meantime. Nothing was changed."
+                )
+            })?;
+
+        Ok(ExpectedDiskState::Content(base.to_string()))
+    }
+
     #[cfg(not(target_family = "wasm"))]
     fn save_content(&self, ctx: &mut ViewContext<Self>) {
         let Some(file_id) = self.backing_file_id else {
@@ -219,8 +277,34 @@ impl InlineDiffView {
         let content = self.editor.as_ref(ctx).text(ctx).into_string();
         let version = self.editor.as_ref(ctx).version(ctx);
 
+        // The buffer being written is a snapshot the agent produced, possibly
+        // minutes ago, plus whatever the user typed into this view. Anything
+        // that touched the file in between — another editor, a formatter, a
+        // rebase — is not in it. Write only if the file still holds the text the
+        // diff was computed from; otherwise report and write nothing.
+        //
+        // # Divergence from the pinned oracle
+        //
+        // This is **not** a parity port. Pinned Warp `42effe840` writes here
+        // unconditionally (`42effe840:app/src/code/inline_diff.rs:220-228` calls
+        // `FileModel::save` with the whole buffer, and that `save` has no mtime
+        // or version check either), so accepting an edit silently discards every
+        // concurrent external change. The oracle shares the defect and we are
+        // fixing it ahead of the oracle deliberately, because the loss is
+        // unrecoverable and the user is never told. A re-pin must not "restore
+        // parity" by reverting this to `FileModel::save`.
+        let expected = match self.expected_disk_state(ctx) {
+            Ok(expected) => expected,
+            Err(message) => {
+                ctx.emit(InlineDiffViewEvent::FailedToSave {
+                    error: Rc::new(FileSaveError::Other(message)),
+                });
+                return;
+            }
+        };
+
         if let Err(err) = FileModel::handle(ctx).update(ctx, |file_model, ctx| {
-            file_model.save(file_id, content, version, ctx)
+            file_model.save_if_unchanged(file_id, content, expected, version, ctx)
         }) {
             ctx.emit(InlineDiffViewEvent::FailedToSave {
                 error: Rc::new(err),
@@ -314,6 +398,15 @@ impl DiffViewer for InlineDiffView {
             }
 
             // For existing files, restore the base content from the editor's DiffModel.
+            //
+            // This write is deliberately left unguarded, unlike `save_content`.
+            // Revert is only reachable from `CodeDiffState::Accepted(None)`, so
+            // its pre-image is not the diff base but whatever the accept just
+            // wrote — bytes this view does not durably record. Guarding it
+            // against the base instead would refuse every revert that follows a
+            // format-on-save, which is the common case rather than the
+            // dangerous one. Closing this properly needs the accepted content
+            // retained at accept time; filed rather than guessed at here.
             let base_content = self
                 .editor
                 .as_ref(_ctx)
