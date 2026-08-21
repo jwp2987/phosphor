@@ -731,8 +731,24 @@ impl UserWorkspaces {
             .unwrap_or_default()
     }
 
+    /// Whether the Agent may be used from a warpified remote (SSH) session.
+    ///
+    /// Unconditionally `true`, and unlike this module's other constants that is *not*
+    /// simply a consequence of `current_team()` being stubbed: the pin reads
+    /// `current_workspace().settings.ai_permissions_settings.allow_ai_in_remote_sessions`
+    /// (`42effe840:user_workspaces.rs:1753`), and `current_workspace()` is fully live
+    /// here. The pin's body would compile and run.
+    ///
+    /// **Do not restore it.** `AiPermissionsSettings::allow_ai_in_remote_sessions`
+    /// derives `Default`, so it is `false`, and it arrives from Warp's server inside
+    /// `workspace.settings` — nothing in this fork writes it and no UI exposes it. The
+    /// pin's body would therefore return `false` for every user who has any cached
+    /// workspace at all, silently switching the Agent off in remote sessions with no way
+    /// to switch it back on. This is the same re-pin hazard recorded in `DECLINED.md`
+    /// for the workspace/team AI-autonomy overrides, in the direction that actually
+    /// bites. `is_ai_allowed_in_remote_sessions_ignores_workspace_settings` is the test
+    /// that fails if this is ever undone.
     pub fn is_ai_allowed_in_remote_sessions(&self) -> bool {
-        // Zap has no managed organization policy; remote SSH sessions are always allowed to use local Agent capabilities.
         true
     }
 
@@ -920,10 +936,99 @@ impl SingletonEntity for UserWorkspaces {}
 mod tests {
     use super::*;
 
+    /// The previous test here asserted `is_ai_allowed_in_remote_sessions()` on an empty
+    /// `UserWorkspaces`. Since the body is a bare `true` that never reads `self`, that
+    /// assertion held for every possible receiver and could not fail — it would have
+    /// passed just as well with the function deleted and replaced by a constant, which is
+    /// what it was.
+    ///
+    /// This is the version with a counterfactual: a workspace that *is* selected and that
+    /// *does* say remote-session AI is off. The fork answers `true` anyway. Restore the
+    /// pin's workspace-reading body (see the doc comment on the function) and this test
+    /// goes red, which is exactly what should happen — that restoration would disable the
+    /// Agent in every remote session for anyone holding a cached workspace.
     #[test]
-    fn no_team_allows_ai_in_remote_sessions() {
-        let workspaces = UserWorkspaces::new(vec![], None);
+    fn is_ai_allowed_in_remote_sessions_ignores_workspace_settings() {
+        let mut workspace = Workspace::from_local_cache(
+            WorkspaceUid::from(ServerId::from(1)),
+            "Test Workspace".to_owned(),
+            None,
+        );
+        workspace
+            .settings
+            .ai_permissions_settings
+            .allow_ai_in_remote_sessions = false;
 
+        let workspaces = UserWorkspaces::new(
+            vec![workspace],
+            Some(WorkspaceUid::from(ServerId::from(1))),
+        );
+
+        assert!(
+            workspaces.current_workspace().is_some(),
+            "the fixture must really have a current workspace, or the assertion below \
+             proves nothing about ignoring its settings"
+        );
         assert!(workspaces.is_ai_allowed_in_remote_sessions());
+    }
+
+    /// `current_workspace()` is the one selector in this module that survived
+    /// de-clouding with real logic in it (`current_team()` and friends are hard-`None`),
+    /// and several live call sites resolve through it, so it is worth pinning.
+    #[test]
+    fn current_workspace_resolves_only_the_selected_uid() {
+        let workspaces = UserWorkspaces::new(
+            vec![
+                Workspace::from_local_cache(
+                    WorkspaceUid::from(ServerId::from(1)),
+                    "First".to_owned(),
+                    None,
+                ),
+                Workspace::from_local_cache(
+                    WorkspaceUid::from(ServerId::from(2)),
+                    "Second".to_owned(),
+                    None,
+                ),
+            ],
+            Some(WorkspaceUid::from(ServerId::from(2))),
+        );
+
+        assert!(workspaces.has_workspaces());
+        assert_eq!(
+            workspaces
+                .current_workspace()
+                .map(|workspace| workspace.name.as_str()),
+            Some("Second"),
+            "the selected uid, not merely the first workspace"
+        );
+        assert_eq!(
+            workspaces
+                .workspace_from_uid(WorkspaceUid::from(ServerId::from(1)))
+                .map(|workspace| workspace.name.as_str()),
+            Some("First")
+        );
+        assert!(
+            workspaces
+                .workspace_from_uid(WorkspaceUid::from(ServerId::from(3)))
+                .is_none(),
+            "an unknown uid must not resolve to a workspace"
+        );
+    }
+
+    /// Workspaces can exist without one being selected; that must not silently resolve
+    /// to any of them.
+    #[test]
+    fn current_workspace_is_none_when_nothing_is_selected() {
+        let workspaces = UserWorkspaces::new(
+            vec![Workspace::from_local_cache(
+                WorkspaceUid::from(ServerId::from(1)),
+                "First".to_owned(),
+                None,
+            )],
+            None,
+        );
+
+        assert!(workspaces.has_workspaces());
+        assert!(workspaces.current_workspace().is_none());
     }
 }

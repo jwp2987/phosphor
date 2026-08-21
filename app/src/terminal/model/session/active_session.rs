@@ -127,6 +127,16 @@ impl ActiveSession {
         self.current_working_directory.as_ref()
     }
 
+    /// Test-only seam for the working directory that production sets from
+    /// `BlockMetadataReceived` / `BlockWorkingDirectoryUpdated` events (see the
+    /// subscription in `new`). The field is private, so tests in other modules — e.g.
+    /// `read_skill_tests.rs`, which needs a session scope for the cache-miss skill
+    /// read — cannot reach it the way this file's own tests do.
+    #[cfg(test)]
+    pub(crate) fn set_current_working_directory_for_test(&mut self, cwd: impl Into<String>) {
+        self.current_working_directory = Some(cwd.into());
+    }
+
     /// Returns the current working directory as a [`LocalOrRemotePath`]: `Remote` when the
     /// active session is a connected `WarpifiedRemote` (SSH) session, `Local` otherwise.
     ///

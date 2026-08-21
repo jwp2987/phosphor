@@ -225,11 +225,19 @@ fn test_read_skill_executor_file_not_found() {
 fn test_read_skill_executor_fallback_reads_disk_on_cache_miss() {
     let temp_dir = TempDir::new().unwrap();
     let skill_path = create_test_skill_file(&temp_dir, "fallback-skill", "Read from disk");
+    // The fallback is confined to what a warm cache could have surfaced, so the session
+    // has to actually be working in the directory that owns the skill. This is the
+    // realistic shape of issue #99 anyway: a skill sitting in the repo you are in, which
+    // the watcher has not indexed yet.
+    let working_directory = temp_dir.path().to_string_lossy().to_string();
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         // Note: intentionally not calling add_skill_for_testing, to simulate a cache miss.
         let active_session = build_local_active_session(&mut app);
+        active_session.update(&mut app, |session, _ctx| {
+            session.set_current_working_directory_for_test(working_directory);
+        });
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
@@ -289,10 +297,14 @@ fn test_read_skill_executor_fallback_returns_error_when_file_missing() {
     let skill_path = temp_dir
         .path()
         .join(".agents/skills/missing-skill/SKILL.md");
+    let working_directory = temp_dir.path().to_string_lossy().to_string();
 
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let active_session = build_local_active_session(&mut app);
+        active_session.update(&mut app, |session, _ctx| {
+            session.set_current_working_directory_for_test(working_directory);
+        });
         let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
 
         let action = AIAgentAction {
@@ -472,6 +484,131 @@ fn test_read_skill_executor_rejects_non_skill_path_on_cache_miss() {
                 ),
             }
         });
+    });
+}
+
+/// Scope gate on the issue-#99 fallback: a path with a perfectly valid skill *shape*
+/// that belongs to no directory this session works in is refused outright, without a
+/// disk read. Shape is not permission — `extract_skill_parent_directory` accepts any
+/// prefix, so before this gate a model could name
+/// `/home/someone-else/.agents/skills/x/SKILL.md` and have it read back, with
+/// `should_autoexecute` unconditionally true and no permission prompt anywhere on the
+/// path.
+#[test]
+fn test_read_skill_executor_refuses_well_shaped_path_outside_session_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    // Real file, valid shape — the only thing wrong with it is that it is nowhere this
+    // session could have indexed it from.
+    let skill_path = create_test_skill_file(&temp_dir, "out-of-scope", "Not ours to read");
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        // No working directory set: nothing outside the home skill directories is in
+        // scope, and the guard fails closed rather than reading from wherever the path
+        // happens to land.
+        let active_session = build_local_active_session(&mut app);
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
+
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("out-of-scope-action".to_string()),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path)),
+            }),
+            task_id: TaskId::new("out-of-scope-task".to_string()),
+            requires_result: false,
+        };
+
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+            match result {
+                AnyActionExecution::Sync(AIAgentActionResultType::ReadSkill(
+                    ReadSkillResult::Error(msg),
+                )) => {
+                    assert!(msg.starts_with("Skill not found"));
+                }
+                _ => panic!(
+                    "A skill-shaped path outside the session's scope must be refused \
+                     synchronously, with no disk read"
+                ),
+            }
+        });
+    });
+}
+
+/// The scope gate is lexical, so it constrains the *name*. A symlink planted at a
+/// legitimate in-scope skill path still resolves elsewhere when the file is opened —
+/// which is what turns "reads a SKILL.md in this session's tree" into an arbitrary-file
+/// read. The read path re-checks the symlink-resolved path and refuses.
+#[cfg(unix)]
+#[test]
+fn test_read_skill_executor_refuses_symlink_escaping_session_scope() {
+    let temp_dir = TempDir::new().unwrap();
+    let elsewhere = TempDir::new().unwrap();
+    let secret = elsewhere.path().join("private-key");
+    fs::write(&secret, "not a skill, and none of the agent's business").unwrap();
+
+    let skill_dir = temp_dir.path().join(".agents/skills/exfil");
+    fs::create_dir_all(&skill_dir).unwrap();
+    let skill_path = skill_dir.join("SKILL.md");
+    std::os::unix::fs::symlink(&secret, &skill_path).unwrap();
+
+    let working_directory = temp_dir.path().to_string_lossy().to_string();
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let active_session = build_local_active_session(&mut app);
+        active_session.update(&mut app, |session, _ctx| {
+            session.set_current_working_directory_for_test(working_directory);
+        });
+        let executor_handle = app.add_model(|_| ReadSkillExecutor::new(active_session));
+
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("symlink-action".to_string()),
+            action: AIAgentActionType::ReadSkill(ReadSkillRequest {
+                skill: SkillReference::Path(LocalOrRemotePath::Local(skill_path)),
+            }),
+            task_id: TaskId::new("symlink-task".to_string()),
+            requires_result: false,
+        };
+
+        let input = ExecuteActionInput {
+            action: &action,
+            conversation_id: AIConversationId::new(),
+        };
+
+        let execution = executor_handle.update(&mut app, |executor, ctx| {
+            let result: AnyActionExecution = executor.execute(input, ctx).into();
+            result
+        });
+
+        // The lexical gate passes — the *name* is a legitimate in-scope skill path — so
+        // this reaches the async read, where the resolved target is checked.
+        let AnyActionExecution::Async {
+            execute_future,
+            on_complete,
+        } = execution
+        else {
+            panic!("An in-scope skill path should reach the async read");
+        };
+
+        let async_result = execute_future.await;
+        let result = app.update(|ctx| on_complete(async_result, ctx));
+
+        match result {
+            AIAgentActionResultType::ReadSkill(ReadSkillResult::Error(msg)) => {
+                assert!(msg.starts_with("Skill not found"));
+                assert!(
+                    !msg.contains("none of the agent's business"),
+                    "the symlink target's contents must never reach the result: {msg}"
+                );
+            }
+            other => panic!("A symlink out of scope must be refused, got: {other:?}"),
+        }
     });
 }
 

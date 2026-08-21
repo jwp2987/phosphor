@@ -41,6 +41,35 @@ impl float_cmp::ApproxEq for BlockSection {
     }
 }
 
+/// `should_hide_command_grid` is a layout fact, not only a painting one. A painter that
+/// skips the command grid while `height()` still reserves its space leaves a blank gap
+/// exactly as tall as the command it declined to draw, and `is_visible()` stays true for
+/// a block with nothing in it. Both layout sites must zero the same term the painter
+/// skips.
+#[test]
+pub fn test_hidden_command_grid_reserves_no_height() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+
+    let height_before = block.height(&TranscriptScope::Terminal).as_f64();
+    let command_term =
+        (block.padding_top() + block.prompt_and_command_height() + block.padding_middle()).as_f64();
+    assert!(
+        command_term > 0.,
+        "fixture must actually reserve space for a command, or this proves nothing"
+    );
+
+    block.set_should_hide_command_grid(true);
+
+    assert_lines_approx_eq!(block.prompt_and_command_height(), 0.);
+    assert_approx_eq!(
+        f64,
+        block.height(&TranscriptScope::Terminal).as_f64(),
+        height_before - command_term
+    );
+}
+
 #[test]
 pub fn test_find() {
     let mut block = TestBlockBuilder::new().build();

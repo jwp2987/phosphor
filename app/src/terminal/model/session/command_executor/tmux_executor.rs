@@ -18,10 +18,22 @@ use crate::terminal::shell::Shell;
 use super::CommandExecutor;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use warp_core::command::ExitCode;
+use warp_util::on_cancel::OnCancelFutureExt;
 
 /// A `Session`-scoped executor for commands via tmux.
 pub struct TmuxCommandExecutor {
     executor_command_tx: Sender<ExecutorCommandEvent>,
+    /// Command id -> the sender half of the channel the awaiting `execute_command`
+    /// future is parked on.
+    ///
+    /// Every entry must be removed on exactly one of the three ways a command can end:
+    /// output arrives ([`Self::handle_executed_command_event`]), dispatch to tmux fails
+    /// ([`Self::execute_command_internal`]), or the awaiting future is dropped (the
+    /// `on_cancel` hook in [`CommandExecutor::execute_command`]). Holding the sender is
+    /// not free bookkeeping: it is the *only* sender, so while it is in this map the
+    /// channel cannot close, and the future parked on `recv()` cannot be woken by
+    /// anything except a real result. A forgotten entry is therefore both a leak and a
+    /// future that can never resolve.
     in_flight_commands: Arc<Mutex<HashMap<String, Sender<CommandOutput>>>>,
 }
 
@@ -65,14 +77,32 @@ impl TmuxCommandExecutor {
             .executor_command_tx
             .try_send(ExecutorCommandEvent::ExecuteTmuxCommand(tmux_command))
         {
+            // The command never reached tmux, so no `ExecutedExecutorCommandEvent` will
+            // ever carry this id. Returning the receiver anyway parked the caller on a
+            // channel whose only sender sits in `in_flight_commands` forever: a future
+            // that hangs for the life of the session, behind a log line. Drop the
+            // registration and report the failure.
+            self.forget_command(command_id);
             log::warn!("Failed to send TmuxCommand to pty_controller: {e}");
+            return Err(anyhow::anyhow!(
+                "Failed to send TmuxCommand to pty_controller: {e}"
+            ));
         }
 
         Ok(output_channel_rx)
     }
 
+    /// Removes `command_id` from [`Self::in_flight_commands`], dropping the sender so
+    /// the channel closes and any future still parked on it is released.
+    fn forget_command(&self, command_id: &str) {
+        self.in_flight_commands.lock().remove(command_id);
+    }
+
     pub fn handle_executed_command_event(&self, event: ExecutedExecutorCommandEvent) {
-        if let Some(output_tx) = self.in_flight_commands.lock().get(&event.command_id) {
+        // `remove`, not `get`: a command reports exactly once, and this is the terminal
+        // event for it. Mirrors `InBandCommandExecutor`'s `take()` on the same
+        // transition.
+        if let Some(output_tx) = self.in_flight_commands.lock().remove(&event.command_id) {
             if !output_tx.is_closed() {
                 // We shouldn't be receiving exit codes that aren't 32 bit signed integers.
                 let exit_code = Some(ExitCode::from(event.exit_code as i32));
@@ -113,6 +143,11 @@ impl CommandExecutor for TmuxCommandExecutor {
     ) -> Result<CommandOutput> {
         let command_id = DateTime::now().timestamp_micros().to_string();
 
+        // Generator commands (completions, autosuggestions, decorations) are aborted on
+        // the next keystroke, so the awaiting future being dropped is the *common* way a
+        // command ends here, not an edge case. Without this hook the registration
+        // outlives every one of them and `in_flight_commands` grows for the life of the
+        // session. Same shape as `InBandCommandExecutor::execute_command`'s `on_cancel`.
         let future = async {
             let output_channel_rx = self.execute_command_internal(
                 command_id.as_str(),
@@ -122,10 +157,29 @@ impl CommandExecutor for TmuxCommandExecutor {
                 environment_variables,
             )?;
             output_channel_rx.recv().await.map_err(anyhow::Error::from)
-        };
+        }
+        .on_cancel(|| self.forget_command(command_id.as_str()));
 
         future.await
     }
+
+    // `cancel_active_commands` is deliberately NOT overridden; the trait's no-op default
+    // is the honest answer here, and an override would be worse than nothing.
+    //
+    // Nothing this executor can do cancels the work. A command runs in a detached tmux
+    // background window and `TmuxCommand` has no variant that kills one, so an override
+    // could only clear the local map. That buys no correctness: each command owns a
+    // private channel, so a late result cannot be delivered to the wrong consumer the way
+    // it can for `InBandCommandExecutor` (whose override exists precisely to make a stale
+    // `handle_executed_command_event` a no-op against a shared queue).
+    //
+    // It would also cost something real. `cancel_active_commands` is session-global and
+    // fires when the user presses Enter (`terminal/view.rs`, `InputEvent::ExecuteCommand`),
+    // so clearing the map there would close the channel under every in-flight generator
+    // command and turn each one into a failed probe — the failure mode already recorded
+    // against the local executor in `session.rs`'s issue #616 comment. The three abort
+    // paths that actually want a command forgotten (autosuggestions, completions,
+    // decorations) drop their futures, which the `on_cancel` hook above already handles.
 
     fn supports_parallel_command_execution(&self) -> bool {
         true

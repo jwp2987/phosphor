@@ -432,7 +432,22 @@ pub struct Block {
     /// If `true`, the output grid should not be rendered.
     should_hide_output_grid: bool,
 
-    /// If `true`, the command grid should not be rendered (TUI char-cell path).
+    /// If `true`, the command grid should not be rendered.
+    ///
+    /// This is a *layout* fact, not only a painting one: [`Self::height`] and
+    /// [`Self::prompt_and_command_height`] both zero their command term when it is set,
+    /// so a hidden command grid reserves no space and does not on its own make
+    /// [`Self::is_visible`] true. Painters that skip drawing the grid without this — the
+    /// state the fork was in — leave a blank gap exactly the height of the command they
+    /// declined to draw.
+    ///
+    /// PARTIALLY HONOURED: the TUI painter respects it (`warp_tui::terminal_block`'s
+    /// `block_content_rows`, `render_block_rows` and `terminal_block_cursor`), but the
+    /// desktop element painter does not — `block_list_element.rs`'s `command_origin`
+    /// branch was rewired around `snackbar_header` and now draws the command grid
+    /// unconditionally. Nothing in this fork sets this flag in production (the pin's only
+    /// setter lives in the unported `HarnessSessionHeader` path), so the two cannot
+    /// disagree today; port the desktop guard together with whatever first sets it.
     should_hide_command_grid: bool,
 
     /// [`Self::linefeed`] may discard some linefeeds at the beginning of the prompt. Doing so will
@@ -1551,9 +1566,11 @@ impl Block {
             Lines::zero()
         } else {
             self.block_banner_height()
-                + self.padding_top()
-                + self.prompt_and_command_height()
-                + self.padding_middle()
+                + if self.should_hide_command_grid {
+                    Lines::zero()
+                } else {
+                    self.padding_top() + self.prompt_and_command_height() + self.padding_middle()
+                }
                 + if self.should_hide_output_grid {
                     Lines::zero()
                 } else {
@@ -1975,7 +1992,7 @@ impl Block {
     /// In the case of combined grid: for Zap prompt, this includes the height of both the Zap prompt
     /// AND combined grid; for PS1, this is just the combined grid (PS1 is included there).
     pub fn prompt_and_command_height(&self) -> Lines {
-        if !self.ready_to_render() {
+        if !self.ready_to_render() || self.should_hide_command_grid {
             Lines::zero()
         } else if self.header_grid.honor_ps1 {
             // No padding between prompt and command in the case of PS1 (combined grid).
