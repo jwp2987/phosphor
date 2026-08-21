@@ -6860,7 +6860,7 @@ Ordered by severity, not by area.
 
 ### Security / permission
 
-- [x] 🔴 **`use_computer` executes with NO approval check — found independently by
+- [ ] 🔴 **`use_computer` executes with NO approval check — found independently by
       TWO agents.** `app/src/ai/blocklist/action_model/execute/use_computer.rs:17-31`
       returns `true` unconditionally, justified by a pin-inherited comment claiming
       the action "is only executed by the computer use subagent, which cannot begin
@@ -6876,7 +6876,9 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Chain traced end to end: `execution_profiles/mod.rs:122` `is_enabled()` is true for `AlwaysAsk`, so `agent/api.rs:484` sets `computer_use_enabled`; the only dispatch re-check (`chat_stream.rs:6285`) tests that same flag; `execute.rs:531,541` turns `can_auto_execute=true` into `needs_confirmation=false`. No approval state exists anywhere — grep finds only `TelemetryEvent::ComputerUseApproved`. DECLINED.md:212 explicitly excludes this path, so it is not a recorded decision.
       **FIXED 2026-08-21:** `AIConversation::has_approved_computer_use()` (`conversation.rs:1667`) derives approval by scanning exchanges for an `AIAgentInput::ActionResult` carrying `RequestComputerUseResult::Approved` — a derived fact, not a stored flag, so it cannot be set without the approval actually having happened. `use_computer.rs:19-65` now returns that instead of `true`; no approval means the normal confirmation path. **Not done:** the profile's own always-allow is not re-checked, because this executor is built without a `terminal_view_id` and cannot resolve the right view's profile.
 
-- [x] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
+      **REFUTATION 2026-08-21 — FIX DEFEATED, REOPENED.** The gate is computed and then discarded: `action_model.rs:1062-1078` → `execute_action` → `start_pending_action_by_id(..., true, ...)` (`:739`) forges `is_user_initiated=true`, and `execute.rs:543-548` makes `needs_confirmation` false regardless of the approval check. Second, independent hole: approval is rebuilt from disk (`convert_conversation.rs:1306-1330` via `into_exchanges` `:224,373`), so an approval granted in a previous session unlocks the conversation permanently. Repair dispatched.
+
+- [ ] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
       only the advertised array (`chat_stream.rs:3831,3948`); `parse_incoming_tool_call`
       resolves names straight from the full REGISTRY with no `advertised` check
       (`chat_stream.rs:7171`). The comment at `:3711-3714` claims an unlisted tool
@@ -6885,6 +6887,8 @@ Ordered by severity, not by area.
       `run_shell_command` by name during `/plan` executes normally.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `chat_stream.rs:7171` `tools::lookup(&call.fn_name)` searches all of REGISTRY; `advertised` is consulted only inside `recover_tool_by_arg_shape` (`:7120-7124`). Verifier additionally checked for any downstream plan gate: `UserQueryMode::Plan` appears only at `chat_stream.rs:3704` and `blocklist/controller.rs:763` (prefix stripping), nothing in the executor path.
       **FIXED 2026-08-21:** enforced at DISPATCH (`chat_stream.rs:6335-6389`), immediately before `parse_incoming_tool_call`, matching the shape the web and computer-use re-checks already use in the same file. The two false comments claiming an unlisted tool "simply can't be called" are corrected at `:3713` and `:3949`.
+
+      **REFUTATION 2026-08-21 — FIX DEFEATED, REOPENED.** `plan_mode` is derived from a `UserQuery{Plan}` in `params.input` (`chat_stream.rs:5028`, `:3699`), but the post-tool follow-up is built by `RequestInput::for_actions_results` (`controller.rs:306-328,1646`), which carries only `ActionResult`s and is copied verbatim at `api.rs:530`. **From round-trip 2 onward `plan_mode` is false**: the gate is off, `build_tools_array` (`:3949`) re-advertises `run_shell_command`, and `prompt_renderer.rs:718` drops the plan block. Trigger: `/plan` followed by any `read_files`. Repair dispatched.
 
 - [x] 🔴 **`mcp_read_resource` fails open on an unknown server** (#615's shape).
       `mcp.rs:238-248` — an unmatched `server` falls to `unwrap_or_default()`, giving an
@@ -7254,7 +7258,7 @@ Ordered by severity, not by area.
 
 ### Refutation round — third wave (security-weighted)
 
-- [x] 🔴 **The remote-server SHA-256 integrity check is bypassed by the SCP fallback,
+- [ ] 🔴 **The remote-server SHA-256 integrity check is bypassed by the SCP fallback,
       and the tamper signal itself triggers the bypass.**
       `remote_server/ssh_transport.rs:195` — `should_skip_scp_fallback` returns true only
       for exit code 2, but `install_remote_server.sh` exits **4** (no pinned digest),
@@ -7274,7 +7278,9 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Exit codes enumerated: 2 (arch/OS), 3 (no fetcher), 4 (no digest, `:101`), 5 (no sha tool, `:117`), 6 (MISMATCH, `:124`). `should_skip_scp_fallback` filters only 2 (`ssh_transport.rs:195-197`), so 4/5/6 all reach `scp_install_fallback` (`:750-753`). Verifier also confirmed the local curl omits `--proto` (`:536-544`) and the staged branch skips verification by design. **TODO.md:2866-2881 rests on exit 4 being fail-closed — genuinely contradicted.**
       **FIXED 2026-08-21:** `should_skip_scp_fallback` now skips the fallback for exit 2 AND 4/5/6 (missing digest, missing sha tool, digest MISMATCH). Exit 3 — no curl/wget on the host — still falls through, since that is the case the fallback exists for. The local curl gained `--proto '=https' --proto-redir '=https'`. Four tests added to the existing module. **This makes TODO.md:2866-2881's closed decision true** — it was closed on "an empty digest is fail-closed", which was true in the script and undone by the caller. **Still open:** exit 3's fallback remains unverified; `expected_sha256()` is private in `setup.rs`.
 
-- [x] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
+      **REFUTATION 2026-08-21 — FIX DEFEATED AND PARTLY A REGRESSION, REOPENED.** `install_remote_server.sh:24` `set -e` plus curl as an `if` body (`:106`) means the script exits with *curl's* status, which is then read as a digest verdict. curl 6 (DNS failure) now reads as "digest mismatch" → **hard fail where the SCP fallback used to work (new regression)**; curl 7 (connection refused / attacker RST) and 22 (HTTP 5xx) are unfiltered → **unverified staging install proceeds**. The `exit 1` at `:140` falls through the same way, and `non_script_failures_still_use_scp_fallback` enshrines it. Tests pin only the predicate, never the call site (`:792`). (`--proto` syntax was fine.) Repair dispatched.
+
+- [ ] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
       `ai/codebase_embeddings.rs:441-448` puts the keychain key into
       `EmbeddingProviderConfig`; `client/mod.rs:332` ships it in every `Initialize`, and
       `:356` re-ships to every connected daemon on a settings change. Neither side has a
@@ -7284,6 +7290,8 @@ Ordered by severity, not by area.
       host harvests both.
       **VERDICT PARTIAL — not every host (independent verifier, 2026-08-21):** The chain holds: keychain → `secrets.rs:22-37` → `embeddings.rs:112-117` → `codebase_embeddings.rs:441-448` → every `Initialize` (`client/mod.rs:330-333`) and every settings change (`manager.rs:818-827`), with no flag check at `lib.rs:2229-2245`. **But "every SSH host" is wrong** — transmission requires the per-host install choice (`ssh_remote_server_choice_view.rs:78-91`). The undisclosed limb stands (`warp.ftl:260`).
       **FIXED 2026-08-21:** the `embedding_provider` carrying the keychain key is populated only when `FeatureFlag::RemoteCodebaseIndexing.is_enabled()` — the same flag the daemon requires (`server_model.rs:1663`), so a daemon that could not use the key never receives one. Failure is loud rather than silent: the daemon reports `Unavailable` with a user-visible reason.
+
+      **REFUTATION 2026-08-21 — FIX DEFEATED, REOPENED.** The gate is a constant. `remote_codebase_indexing` is in `app/Cargo.toml:660`'s **default** feature set (independently confirmed by the coordinator) and is force-enabled at `lib.rs:2821,3234`, so `is_enabled()` is always true and the key still ships. A compile-time feature that is on by default cannot express user consent; the real runtime predicate is `should_use_codebase_indexing` (`codebase_auto_indexing.rs:32,56-59`). The user-facing disclosure at `i18n/en/warp.ftl:260` was never updated despite this being ticked. Repair dispatched.
 
 - [ ] 🔴 **The command denylist is bypassable with one quote character.**
       `warp_completer/src/parsers/simple/mod.rs:242-247` returns the literal typed text,
@@ -7301,7 +7309,7 @@ Ordered by severity, not by area.
       `permissions.rs:903-904` claims cannot happen.
       **VERDICT PARTIAL — attribution wrong (independent verifier, 2026-08-21):** The gap is real: `mod.rs:255` requires `split('=').count() == 2`, so `FOO=a=b rm file.txt` is never stripped and `source()` returns it whole, missing `^rm .*$`. **But the attribution breaks** — `42effe840:.../simple/mod.rs:255` is byte-identical and the pin has the same call site, so only the COMMENT is the fork's, and the comment's own stated example (`X=1 rm file.txt`) genuinely is stripped.
 
-- [x] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
+- [ ] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
       `code_review_view.rs:5902-5903` computes `hunk_end` from `hunk.lines.len()`, which
       includes `Delete` lines that occupy no new-file line, so the extent is overstated
       and `.find()` returns the first overlapping hunk. `hunk_to_patch` then rebuilds the
@@ -7310,6 +7318,8 @@ Ordered by severity, not by area.
       untested.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Verifier walked a concrete case as instructed: editor ranges cover only changed lines, no context (`diff.rs:294-303`); with hunk1 `@@ -1,10 +1,6 @@` (4 deletes) and hunk2 at new line 11, `hunk_end = 1 + lines.len() = 11 >= 11`, so `.find()` (`code_review_view.rs:5897-5904`) returns **hunk1**. Trigger threshold is deletes ≥ gap+3, gap min 1. The pin has the same arithmetic (`:6209`) but FILTERS the lines; the fork returns the whole earlier hunk and stages it (`:5874-5880`).
       **FIXED 2026-08-21:** the extent now counts only lines occupying a new-file line (`Add | Context`), not `lines.len()` which included `Delete`. Re-walked the worked example: hunk1 `@@ -1,10 +1,6 @@` now yields `hunk_end = 7`, so a click at new line 11 skips it and resolves to hunk2. A `.max(1)` guard beyond the pin keeps a zero-new-line hunk (whole-file deletion, `diff.context=0`) clickable — it cannot reintroduce the bug since it fires only when a hunk contributes no `+` lines at all.
+
+      **REFUTATION 2026-08-21 — FIX DEFEATED AND STRICTLY WORSE IN ONE CASE, REOPENED.** (a) The re-derivation is redundant and divergent: `hunk.new_line_count` (`diff_state.rs:252`, set at `:3090` from the `@@` header) already is the authoritative count and `hunk_to_patch` uses it (`:279-282`) — coordinator confirmed. (b) With `diff.suppressBlankEmpty=true` the parser drops blank lines (`:3020-3023`), so the Add|Context recount undercounts and the button **silently does nothing — worse than the code it replaced**. (c) The twin predicate at `code_review_view.rs:6575` was left unfixed (coordinator confirmed), so paperclip and plus can now resolve to *different* hunks — a divergence created by fixing one of two identical predicates. (d) With `diff.context=0`, `.max(1)` plus the exclusive-end comparison `requested_start <= hunk_end` makes a click on hunk 2 stage hunk 1. (e) **The TODO claim that the pin filters these lines was wrong:** `42effe840` has no `hunk_covering_line_range` at all and its `extract_diff_hunk_data` predicate is character-identical to the original buggy one — so any fix here is a deliberate divergence ahead of the pin, not a parity port. Repair dispatched.
 
 - [x] **`no_trailing_newline` is never set, so the marker `hunk_to_patch` promises is
       never emitted.** `diff_state.rs:3034` tests for `"\\No newline at end of file"`;
@@ -7636,6 +7646,8 @@ Ordered by severity, not by area.
       docs/STATE.md tracks it.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin genuinely deletes missing rows (`42effe840:persistence/agent.rs:63,107-116`, `kept_task_ids` + `ne_all`); the fork's `:85-116` has no such step, and the read path reloads all rows by conversation id unfiltered (`:376-379`). Rewind prunes only in memory (`conversation.rs:4295` → `task_store.rs:265`). The artifact line is verified: `triage_out.txt:254-255`.
       **FIXED 2026-08-21:** ported the pin's replace/delete-missing step — `kept_task_ids` from the snapshot plus a delete scoped by `conversation_id` and `task_id.ne_all(...)`, inside the existing transaction. `kept_task_ids` deliberately includes ids whose blob is skipped as oversized, since deleting those rows would discard the last stored copy.
+
+      **REFUTATION 2026-08-21 — SOUND.** The only wave-3 fix to survive. diesel 2.3.10 `array_comparison.rs:98-101` emits `1=1` for an empty `NotIn` and SQLite selects that dialect (`sqlite/backend.rs:68`), so the comment holds; `ux_agent_tasks_task_id` makes `task_id` globally unique, so the `conversation_id` filter can only narrow. Byte-identical to the pin, retention 200 included, no dependants on 100. Only gap: no test coverage.
 
 - [x] **Agent-history retention was silently halved.** `persistence/agent.rs:46` is
       `100`; both `42effe840` and the older pin are `200`, and the fork also deleted the
