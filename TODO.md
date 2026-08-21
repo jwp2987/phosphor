@@ -6850,6 +6850,8 @@ Ordered by severity, not by area.
       real mouse and keyboard, irreversibly, with no prompt, on a profile whose
       description says "require explicit approval". Reachable by prompt injection via
       `webfetch`. Not in DECLINED.md.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Chain traced end to end: `execution_profiles/mod.rs:122` `is_enabled()` is true for `AlwaysAsk`, so `agent/api.rs:484` sets `computer_use_enabled`; the only dispatch re-check (`chat_stream.rs:6285`) tests that same flag; `execute.rs:531,541` turns `can_auto_execute=true` into `needs_confirmation=false`. No approval state exists anywhere — grep finds only `TelemetryEvent::ComputerUseApproved`. DECLINED.md:212 explicitly excludes this path, so it is not a recorded decision.
+
 - [ ] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
       only the advertised array (`chat_stream.rs:3831,3948`); `parse_incoming_tool_call`
       resolves names straight from the full REGISTRY with no `advertised` check
@@ -6857,10 +6859,14 @@ Ordered by severity, not by area.
       "simply can't be called" — contradicted by this same file's dispatch-time
       re-checks for web (`:6929`) and computer use (`:6285`). A model emitting
       `run_shell_command` by name during `/plan` executes normally.
-- [ ] 🔴 **`mcp_read_resource` fails open on an unknown server** (#615's shape).
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `chat_stream.rs:7171` `tools::lookup(&call.fn_name)` searches all of REGISTRY; `advertised` is consulted only inside `recover_tool_by_arg_shape` (`:7120-7124`). Verifier additionally checked for any downstream plan gate: `UserQueryMode::Plan` appears only at `chat_stream.rs:3704` and `blocklist/controller.rs:763` (prefix stripping), nothing in the executor path.
+
+- [x] 🔴 **`mcp_read_resource` fails open on an unknown server** (#615's shape).
       `mcp.rs:238-248` — an unmatched `server` falls to `unwrap_or_default()`, giving an
       empty `server_id`; `permissions.rs:848-858` then treats it as not-denylisted, so
       under AlwaysAllow it executes against a server the user may have denylisted.
+      **VERDICT REFUTED (independent verifier, 2026-08-21):** The chain breaks before `permissions.rs:848`. At `:819-826`, when `uuid_of_mcp_server.is_none()` — which an empty or unparseable `server_id` always yields — it falls back to `server_from_resource(name, uri)`, resolving by URI (`templatable_manager.rs:330-343`) and denylisting THAT server. `read_mcp_resource.rs:92` ignores `server_id` and resolves the same URI, so the two agree. Not a fail-open.
+
 - [ ] 🔴 **Whole conversation JSON written to the log on every turn.**
       `chat_stream.rs:5085` `log::info!("[byop-diag] full_request_json={...}")`,
       unconditional, at the default level, containing system prompt, full history, file
@@ -6870,6 +6876,7 @@ Ordered by severity, not by area.
 - [ ] **`read_skill`'s disk fallback reads outside the skill index with no permission
       check.** `read_skill.rs:140-170`, `should_autoexecute` unconditionally true; the
       path shape test requires no home or workspace prefix.
+      **VERDICT PARTIAL (independent verifier, 2026-08-21):** The unindexed disk read is real (`read_skill.rs:140-171`), but "outside the skill index" overstates the reach: `extract_local_skill_parent_directory` (`skills/file_watchers/utils.rs:232-257`) requires the path to end `<known-provider>/skills/<name>/SKILL.md` with the provider in `SKILL_PROVIDER_PATHS:187` — not an arbitrary-file read. `should_autoexecute` is pin-identical, so this is inherited, not a fork regression, and the no-prefix choice is documented at `:129-132`.
 
 ### My own changes today — regressions and false claims
 
@@ -6968,9 +6975,12 @@ Ordered by severity, not by area.
       `mcp.rs:42-53` maps non-alnum to `_`; `parse_mcp_tool_call` splits at the FIRST
       `__` (`:168`). Every tool of such a server is advertised and permanently
       uncallable.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `mcp.rs:44-53` collapses each non-alnum char to `_`, so any two adjacent characters (e.g. `"GitHub (remote)"` → `GitHub__remote_`) produce `__`. `function_name:57-63` embeds it; `parse_mcp_tool_call:172-177` splits at the FIRST `__` and then requires an exact `sanitize_server_name` match the truncated prefix cannot satisfy. Verifier also checked recovery: `is_mcp_function` (`:7157`) returns before `recover_tool_by_arg_shape`, so there is no fallback.
+
 - [ ] **Partial agent-message delivery is reported as total failure.**
       `send_message.rs:115-137` breaks on the first failing address and discards
       `delivered_ids`, so a retry duplicates to earlier recipients.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `send_message.rs:117-131` breaks on the first `Err`; `:133-161` returns `Error(err)` and drops `delivered_ids` entirely, so the model gets no partial-delivery signal. Verifier established it is fork-introduced: the pin (`42effe840:send_message.rs:186`) makes ONE call for all addresses and reads back `response.message_ids`, so it has no per-address loop that could abort mid-way.
 
 ### Ledger and test-integrity defects
 
