@@ -269,6 +269,36 @@ fn test_deserialization_cannot_bypass_the_trailing_zero_invariant() {
     assert_eq!(deserialized.cmp(&parsed), std::cmp::Ordering::Equal);
 }
 
+/// The all-zero case, which the previous `len() > 1` trim guard left alone:
+/// `[]` and `[0]` are `Equal` under the zero-padding `Ord`, so `PartialEq` has
+/// to agree, and the only way it can is if both canonicalise to the same list.
+/// The old test above only exercised `[0, 1, 0, 0]`, where the guard never
+/// bites.
+#[test]
+fn test_deserialization_canonicalises_an_all_zero_version() {
+    let empty: ParsedVersion = serde_json::from_str(r#"{"components": []}"#)
+        .expect("a ParsedVersion should deserialize");
+    let zero: ParsedVersion = serde_json::from_str(r#"{"components": [0]}"#)
+        .expect("a ParsedVersion should deserialize");
+    let many_zeros: ParsedVersion = serde_json::from_str(r#"{"components": [0, 0, 0, 0]}"#)
+        .expect("a ParsedVersion should deserialize");
+
+    assert!(empty.components.is_empty());
+    assert_eq!(empty.components, zero.components);
+    assert_eq!(empty.components, many_zeros.components);
+
+    for (a, b) in [(&empty, &zero), (&empty, &many_zeros), (&zero, &many_zeros)] {
+        assert_eq!(a, b, "PartialEq must agree with Ord");
+        assert_eq!(a.cmp(b), std::cmp::Ordering::Equal);
+    }
+
+    // And the canonical empty list still orders correctly against real
+    // versions rather than falling out of the total order.
+    let real: ParsedVersion = "v0.1".try_into().unwrap();
+    assert!(empty < real);
+    assert!(real > zero);
+}
+
 #[test]
 fn test_trailing_zero_components_do_not_break_equality() {
     // `Ord` zero-pads the shorter component list, so `PartialEq` has to agree.

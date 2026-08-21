@@ -72,14 +72,31 @@ lazy_static! {
     static ref LATEST_RELEASE: Mutex<Option<GithubRelease>> = Mutex::new(None);
 }
 
+/// The cached release, or `None` if nothing has been fetched yet.
+///
+/// A poisoned mutex is recovered rather than discarded. `Option<GithubRelease>`
+/// has no invariant a panicking writer could have broken -- it is either
+/// replaced wholesale or not touched -- and `.ok()` here would fuse "the lock
+/// was poisoned once" with "we have no release metadata". That fusion is not
+/// recoverable: poisoning is permanent for the life of the process, so a single
+/// panic anywhere while this lock was held would make this return `None`
+/// forever. Every caller of `verify_oss_asset_sha256` reads the expected digest
+/// through here, and a `None` there is an `UpdateBlocked` refusal, so the whole
+/// update channel would stay dark until the user restarted the app -- a
+/// one-shot failure recorded permanently.
 pub fn cached_release() -> Option<GithubRelease> {
-    LATEST_RELEASE.lock().ok().and_then(|g| g.clone())
+    LATEST_RELEASE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
 }
 
+/// Same reasoning on the write side: dropping the store on a poisoned lock
+/// would leave `cached_release()` empty for the rest of the process.
 fn store_cached(release: GithubRelease) {
-    if let Ok(mut guard) = LATEST_RELEASE.lock() {
-        *guard = Some(release);
-    }
+    *LATEST_RELEASE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(release);
 }
 
 pub async fn fetch_latest_release(client: &http_client::Client) -> Result<GithubRelease> {

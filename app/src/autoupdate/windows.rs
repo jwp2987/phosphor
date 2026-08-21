@@ -32,12 +32,34 @@ struct DownloadedInstaller {
     /// Lowercase-hex SHA-256 recorded by `verify_oss_asset_sha256` at download
     /// time, on the channels that have one.
     ///
-    /// `None` on the official channels: those installers are Authenticode
-    /// signed and there is no digest in hand to compare against, so Windows'
-    /// own signature check at process creation is what stands there. It is not
-    /// a "verification was skipped" value -- the OSS path always records
-    /// `Some`, because a failed verification returns before `INSTALLER_PATH` is
-    /// populated at all.
+    /// `None` on the official channels, and it means exactly what it looks
+    /// like: nothing re-checks those bytes before `relaunch` executes them.
+    /// There is no digest in hand to compare against -- the official download
+    /// path publishes none -- and nothing else in this process fills the gap.
+    /// The tree's only signature verification is `mac::verify_code_signature`,
+    /// which is macOS-only; there is no Windows-side equivalent.
+    ///
+    /// An earlier version of this comment claimed Authenticode covered it. It
+    /// does not, and the claim was worth removing rather than softening,
+    /// because each half of it is false in a different way:
+    /// * `CreateProcess` does not validate Authenticode. Signature checking on
+    ///   Windows is opt-in (`WinVerifyTrust`) or policy-driven (WDAC / AppLocker
+    ///   in a mode nobody enables by default); a plain `Command::new(path)`
+    ///   performs none of it.
+    /// * SmartScreen and the "publisher unknown" UAC prompt key off the
+    ///   mark-of-the-web, which is attached by the *downloader*. This installer
+    ///   is written to `%TEMP%` by this process, so it carries no MOTW, and UAC
+    ///   only displays a publisher string it reads from the file -- it does not
+    ///   gate on it.
+    ///
+    /// What actually protects the official channels is the TLS fetch from the
+    /// releases host plus Inno Setup's own integrity check of its payload, and
+    /// neither of those covers the file sitting in `%TEMP%` between download
+    /// and launch. Closing that properly means a `WinVerifyTrust` call with a
+    /// pinned publisher, which this fork has not written. The OSS path does
+    /// record `Some` -- a failed verification returns before `INSTALLER_PATH`
+    /// is populated at all -- so the re-check in `relaunch` covers that channel
+    /// and only that channel.
     verified_sha256: Option<String>,
 }
 
@@ -371,6 +393,10 @@ pub(super) fn relaunch() -> Result<()> {
     // The gap that remains here is only between this hash and `cmd.spawn()`
     // below, with no process teardown in between, which is as close as a
     // path-based `CreateProcess` allows.
+    //
+    // `None` means no re-check happens -- see `DownloadedInstaller`. That is
+    // the official channels, where nothing in this process verifies the file
+    // before running it; it is a stated gap, not a check that passed.
     if let Some(expected) = verified_sha256 {
         let actual = super::sha256_file(&installer_path)?;
         if actual != expected {
@@ -380,6 +406,11 @@ pub(super) fn relaunch() -> Result<()> {
             );
         }
         log::info!("Phosphor: re-verified installer SHA-256 immediately before launching it");
+    } else {
+        log::warn!(
+            "Phosphor: launching {} without re-verifying it; no digest was recorded for this channel",
+            installer_path.display()
+        );
     }
 
     let log_arg = match autoupdate_log_file() {

@@ -957,7 +957,19 @@ jobs:
           body_path: ./release-body.md
           draft: false
           prerelease: ${{ needs.prepare_metadata.outputs.is_prerelease == 'true' }}
-          make_latest: ${{ needs.prepare_metadata.outputs.is_prerelease == 'true' && 'false' || 'true' }}
+          # `make_latest` is NOT the same question as "is this a prerelease". A
+          # workflow_dispatch run defaults to the oss channel, which is not a
+          # prerelease, and its generated tag is `v0.$(date +%Y.%m.%d.%H%M)` -- an
+          # ad-hoc build that channel_versions::parse_release_tag deliberately ranks
+          # BELOW the same day's numbered release. Letting it claim /releases/latest,
+          # the only endpoint the OSS updater reads, serves every installed client a
+          # build it ranks as older than what it is already running, so the channel
+          # reports "up to date" until the next tag push. (Under the older fused
+          # ordering the same setting failed the mirror-image way, walking users
+          # forward onto an ad-hoc build -- no comparator direction is safe while
+          # dispatch runs can take Latest.) Only a tag-triggered, non-prerelease run
+          # may take it.
+          make_latest: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') && needs.prepare_metadata.outputs.is_prerelease != 'true' && 'true' || 'false' }}
           files: dist/*
           token: ${{ secrets.GITHUB_TOKEN }}
 

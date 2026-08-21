@@ -19941,7 +19941,7 @@ impl Workspace {
                 }
                 AutoupdateStage::UpdateReady { new_version, .. }
                 | AutoupdateStage::UpdatedPendingRestart { new_version } => {
-                    if is_incoming_version_past_current(new_version.soft_cutoff.as_deref()) {
+                    if is_incoming_version_past_current_strict(new_version.soft_cutoff.as_deref()) {
                         Some(WorkspaceBannerFields {
                             banner_type: WorkspaceBanner::VersionDeprecated,
                             severity: BannerSeverity::Error,

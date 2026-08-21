@@ -136,7 +136,19 @@ impl ParsedVersion {
         // them keeps the derived `PartialEq` consistent with the zero-padding
         // `Ord` below -- without it `[0, 1]` and `[0, 1, 0]` would compare
         // `Equal` yet be unequal.
-        while components.len() > 1 && components.last() == Some(&0) {
+        //
+        // The loop runs down to the empty vector on purpose. A `len() > 1`
+        // guard reads like harmless defensiveness and is not: it stops at
+        // `[0]`, so `[]` and `[0]` -- both of which `Deserialize` will accept,
+        // and which `Ord` zero-pads into `Equal` -- stay unequal under
+        // `PartialEq`. That is precisely the disagreement this canonicalisation
+        // exists to prevent, left standing in the one case the hand-written
+        // `Deserialize` was written to close. Nothing downstream needs a
+        // non-empty list: `Ord` reads components with `get(i).unwrap_or(0)`,
+        // and every parser calls `new()` with at least two segments anyway, so
+        // an empty list can only arise from a deserialised all-zero version,
+        // which is exactly the value that should canonicalise to it.
+        while components.last() == Some(&0) {
             components.pop();
         }
         Self {

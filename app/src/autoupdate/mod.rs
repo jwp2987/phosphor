@@ -1268,8 +1268,53 @@ where
     // via `open <dmg>`. apply_update_async is skipped here, otherwise
     // mac::apply_update_async would attempt codesign verify (which would fail
     // without an Apple Team ID).
+    //
+    // What is *not* skipped is the digest check. `mac::oss_open_installer`
+    // compares the dmg's SHA-256 inside the detached script it spawns, which is
+    // the only place the comparison sits adjacent to `open`; but that script
+    // runs after `terminate_app`, with no exit status anybody collects and no
+    // stderr anybody reads, so on its own a mismatch quits the app for an
+    // update and then does nothing at all. Running the same comparison here
+    // gives the refusal somewhere to go: this is called *before* the
+    // `terminate_app` in `initiate_relaunch_for_update`, and the `Err` arm
+    // below lands on `relaunch_failed`, so the app stays up and the workspace
+    // renders the error banner with the "Update Phosphor manually" button.
+    // The in-script check stays where it is -- it is what covers the teardown
+    // window this one cannot -- and records its own refusal for
+    // `check_and_report_update_errors` to report on the next launch.
     if matches!(ChannelState::channel(), Channel::Oss) {
-        callback(Ok(()), app);
+        cfg_if::cfg_if! {
+            if #[cfg(target_os = "macos")] {
+                // Only the relaunch path ever opens the dmg: `spawn_child_if_necessary`
+                // calls `mac::relaunch()` when a relaunch was requested, and
+                // `initiate_relaunch_for_update` requests one just above this call.
+                // `apply_pending_update` -- the "user quit without updating" path --
+                // does not, so there is nothing there to pre-verify, and hashing a few
+                // hundred megabytes at quit for a file nobody will open is pure cost.
+                let relaunch_handle = RelaunchModel::handle(app);
+                let relaunching =
+                    relaunch_handle.as_ref(app).relaunch_status == RelaunchStatus::Requested;
+                if relaunching {
+                    mac::oss_verify_installer_async(app, |autoupdate_state, result, ctx| {
+                        match result {
+                            Ok(()) => callback(Ok(()), ctx),
+                            Err(err) => {
+                                autoupdate_state.relaunch_failed(ctx);
+
+                                let err = anyhow!(err)
+                                    .context("Refusing to open the downloaded installer");
+                                crate::report_error!(&err);
+                                callback(Err(err), ctx);
+                            }
+                        }
+                    });
+                } else {
+                    callback(Ok(()), app);
+                }
+            } else {
+                callback(Ok(()), app);
+            }
+        }
         return;
     }
 
@@ -1370,9 +1415,17 @@ fn manually_download_version(channel: &Channel, version: &VersionInfo, ctx: &mut
     mac::manually_download_version(channel, version, ctx);
 }
 
+/// Reports anything a previous update attempt left behind that the process
+/// which produced it could not report itself.
+///
+/// On Windows that is the Inno Setup log; on macOS it is the refusal file the
+/// detached OSS install script writes, which is the only channel a process
+/// spawned to outlive us has.
 pub(crate) fn check_and_report_update_errors(_ctx: &mut AppContext) {
     #[cfg(windows)]
     windows::check_and_report_update_errors(_ctx);
+    #[cfg(target_os = "macos")]
+    mac::check_and_report_update_errors(_ctx);
 }
 
 pub fn remove_old_executable() -> Result<()> {
@@ -1508,17 +1561,30 @@ pub fn compare_incoming_version_to_current(version: Option<&str>) -> CutoffCompa
     }
 }
 
-/// "Is this build behind the cutoff?", answered for the consumers where a
-/// `true` *raises* the alarm -- the version-deprecation banner
-/// (`VersionInfo::soft_cutoff` in `workspace/view.rs`).
+/// "Is this build behind the cutoff?", answered for the consumers that are
+/// *already* rendering an error banner and are only choosing its wording --
+/// the `UnableToUpdateToNewVersion` and `UnableToLaunchNewVersion` arms of
+/// `render_autoupdate_banner_element` in `workspace/view.rs`, which read
+/// `VersionInfo::soft_cutoff`.
 ///
-/// An unknown ordering answers `true`. Those call sites are already rendering
-/// an error banner; the only thing this decides is whether its text says "your
-/// version is no longer supported" or "we could not install the update", and
-/// both carry the same "Update Phosphor manually" button. Showing the stronger
-/// wording to a user who turns out to be inside the support window costs them a
-/// needless update; withholding it from a user who is outside it costs them a
-/// build that stops working with no warning. The first is recoverable.
+/// An unknown ordering answers `true`, and the justification is specific to
+/// those two sites: the banner renders either way, so the only thing this
+/// decides is whether its text says "your version is no longer supported" or
+/// "we could not install the update", and both carry the same "Update Phosphor
+/// manually" button. Showing the stronger wording to a user who turns out to be
+/// inside the support window costs them a needless update; withholding it from
+/// a user who is outside it costs them a build that stops working with no
+/// warning. The first is recoverable.
+///
+/// That argument does **not** carry to a site where a `true` is what puts
+/// something on screen. The `UpdateReady | UpdatedPendingRestart` arm of the
+/// same function is one: those are healthy states with no banner of their own,
+/// and the answer here decides whether a `BannerSeverity::Error` "your version
+/// is no longer supported" banner appears at all. An unknown ordering there
+/// would manufacture an error out of a parse failure, so that site belongs to
+/// [`is_incoming_version_past_current_strict`]. It is latent today only because
+/// `soft_cutoff` is always `None` on `Channel::Oss`; that is a coincidence of
+/// the current server payload, not a property to rely on.
 ///
 /// Note the direction is the *opposite* of the update check in
 /// [`AutoupdateState::should_update`], where an unknown ordering must mean "do
@@ -1531,19 +1597,27 @@ pub fn is_incoming_version_past_current(version: Option<&str>) -> bool {
     )
 }
 
-/// "Is this build behind the cutoff?", answered for the consumers where a
-/// `true` *removes* an affordance -- `VersionInfo::last_prominent_update`
-/// gates the prominent update pill and, by its negation, the ordinary "Update
-/// and relaunch" menu items and the red notification dot.
+/// "Is this build behind the cutoff?", answered for every consumer where a
+/// `true` is the thing that *changes what the user sees* -- so an unknown
+/// ordering must answer `false` rather than change it on a guess.
 ///
-/// An unknown ordering answers `false`: keep the update controls the user can
-/// already act on rather than trading them for a louder presentation chosen on
-/// a guess.
+/// Two shapes qualify:
 ///
-/// The `last_prominent_update` call sites in `app/src/workspace/view.rs` should
-/// use this rather than [`is_incoming_version_past_current`]; until they are
-/// switched over, nothing outside the tests below calls it.
-#[allow(dead_code)]
+/// * a `true` *removes* an affordance. `VersionInfo::last_prominent_update`
+///   gates the prominent update pill and, by its negation, the ordinary "Update
+///   and relaunch" menu items and the red notification dot; keep the controls
+///   the user can already act on rather than trading them for a louder
+///   presentation chosen on a guess. All five such sites in
+///   `app/src/workspace/view.rs` call this.
+/// * a `true` *introduces* an error banner into an otherwise healthy state.
+///   The `UpdateReady | UpdatedPendingRestart` arm of
+///   `render_autoupdate_banner_element` is the one such site; it currently
+///   calls [`is_incoming_version_past_current`], which is wrong for the reason
+///   given there and should be switched to this function.
+///
+/// The contrast with [`is_incoming_version_past_current`] is not "strict versus
+/// lenient" but "does a `true` alter the UI, or only reword a banner that is
+/// rendering regardless".
 pub fn is_incoming_version_past_current_strict(version: Option<&str>) -> bool {
     matches!(
         compare_incoming_version_to_current(version),

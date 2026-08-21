@@ -209,6 +209,180 @@ pub(super) fn relaunch() -> Result<()> {
     Ok(())
 }
 
+/// File the detached install script writes its refusal into, so a failure that
+/// happens after this process is gone still has somewhere to land.
+///
+/// The parent's stderr is not that place. For a bundled `.app` it is not the
+/// Phosphor log and usually not anything at all, and by the time the script
+/// runs the process that owned it has exited. A file under the cache directory
+/// outlives us, and [`check_and_report_update_errors`] picks it up on the next
+/// launch.
+const OSS_INSTALL_FAILURE_LOG: &str = "install-failure.log";
+
+fn oss_autoupdate_dir() -> PathBuf {
+    let mut dir = warp_core::paths::cache_dir();
+    dir.push("autoupdate");
+    dir
+}
+
+fn oss_install_failure_log() -> PathBuf {
+    oss_autoupdate_dir().join(OSS_INSTALL_FAILURE_LOG)
+}
+
+/// Resolves the dmg [`oss_open_installer`] will hand to Finder, together with
+/// the digest it must hash to.
+///
+/// Prefer the exact path this process verified. Only if that record is missing
+/// -- it should not be, the download and the install happen in one process --
+/// do we fall back to scanning cache_dir/autoupdate/ for the newest dmg, and
+/// then the file has to earn its way through verification before it is opened.
+/// The fallback writes its result back into [`VERIFIED_OSS_DMG`] so that the
+/// scan and the `verify_oss_asset_sha256` call it just paid for happen once per
+/// install rather than once per caller -- both
+/// [`oss_verify_installer_before_relaunch`] and [`oss_open_installer`] resolve
+/// through here, and they must in any case agree on which file they are talking
+/// about.
+///
+/// A poisoned mutex is recovered rather than discarded: `Option<(PathBuf,
+/// String)>` has no invariant a panicking writer could have broken, and `.ok()`
+/// here would silently downgrade "we have a verified dmg" into "go scan the
+/// cache directory".
+///
+/// Note there is deliberately no `path.exists()` filter on the record. That was
+/// a second check-then-use, and it silently converted "the file we verified is
+/// gone" -- which should never happen inside one process -- into the directory
+/// scan below. If we hold a record we use it, and the digest checks report any
+/// problem with it.
+fn resolve_oss_dmg() -> Result<(PathBuf, String)> {
+    let verified = VERIFIED_OSS_DMG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+
+    let (dmg, expected) = match verified {
+        Some((path, expected)) => (path, expected),
+        None => {
+            let autoupdate_dir = oss_autoupdate_dir();
+            let found = find_latest_dmg(&autoupdate_dir).ok_or_else(|| {
+                anyhow!("Phosphor: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
+            })?;
+            log::warn!(
+                "Phosphor: no verified dmg on record, re-verifying the newest one found on disk ({found:?})"
+            );
+            let expected =
+                super::verify_oss_asset_sha256(&found, &dmg_name(ChannelState::channel()))?;
+            *VERIFIED_OSS_DMG
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                Some((found.clone(), expected.clone()));
+            (found, expected)
+        }
+    };
+
+    ensure!(
+        expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Phosphor: refusing to open {dmg:?}: recorded digest {expected:?} is not a SHA-256 hex string"
+    );
+
+    Ok((dmg, expected))
+}
+
+/// Re-hashes the installer dmg in *this* process, while the app is still
+/// running and still has a UI.
+///
+/// # Why this exists as well as the in-script check
+///
+/// The digest comparison in [`oss_open_installer`] is emitted into the detached
+/// script because that is the only place it can sit adjacent to the use (see
+/// that function). Adjacency is worth having, but it cost every reporting
+/// channel: the script runs after `terminate_app`, so its verdict has no
+/// process to return an exit status to, no `AutoupdateState` to move, and no
+/// stderr anybody reads. A mismatch would have quit the app for an update and
+/// then done nothing, visibly or in the log.
+///
+/// So the verdict is computed twice, for two different jobs:
+///
+/// * here, *before* `terminate_app` is called at all, where a failure returns
+///   `Err` through `finalize_update` into `relaunch_failed` -- the app does not
+///   quit, and the workspace shows the error banner with the "Update Phosphor
+///   manually" button. This catches every mismatch that already exists when the
+///   user clicks install, which is all of them except a live swap;
+/// * in the script, microseconds before `exec open`, which is the only check
+///   that covers the teardown window. Its refusal is recorded in
+///   [`oss_install_failure_log`] and reported on the next launch.
+///
+/// Neither replaces the other: this one can report but is not adjacent, that
+/// one is adjacent but can only report to a file.
+fn oss_verify_installer_before_relaunch() -> Result<()> {
+    let (dmg, expected) = resolve_oss_dmg()?;
+    let actual = super::sha256_file(&dmg)
+        .with_context(|| format!("Phosphor: could not hash the installer dmg {dmg:?}"))?;
+    ensure!(
+        actual == expected,
+        "Phosphor: refusing to open {dmg:?}: sha256 is {actual}, expected {expected}"
+    );
+    log::info!("Phosphor: re-verified installer dmg {dmg:?} before requesting termination");
+    Ok(())
+}
+
+/// Runs [`oss_verify_installer_before_relaunch`] off the main thread and hands
+/// the verdict back to `callback` on it.
+///
+/// Hashing a few hundred megabytes is not something to do on the UI thread, and
+/// `finalize_update`'s contract already allows the deferred steps to be async.
+pub(super) fn oss_verify_installer_async<F>(app: &mut AppContext, callback: F)
+where
+    F: FnOnce(&mut AutoupdateState, Result<()>, &mut ModelContext<AutoupdateState>)
+        + Send
+        + 'static,
+{
+    AutoupdateState::handle(app).update(app, |_autoupdate_state, ctx| {
+        ctx.spawn(
+            async move { oss_verify_installer_before_relaunch() },
+            move |autoupdate_state, result, ctx| {
+                callback(autoupdate_state, result, ctx);
+            },
+        );
+    });
+}
+
+/// Reports a refusal recorded by the detached install script on a previous run.
+///
+/// The script cannot reach `AutoupdateState` -- it outlives the process that
+/// owned it -- so it appends its reason to [`oss_install_failure_log`] instead.
+/// `oss_open_installer` removes that file immediately before spawning, so
+/// anything found here belongs to the most recent install attempt and cannot be
+/// a stale report from an earlier one. The file is consumed once read, for the
+/// same reason.
+///
+/// This is a weaker channel than the banner the pre-flight check raises: it
+/// arrives one launch late and lands in the log and the error reporter rather
+/// than on screen. It is what is reachable from a process that no longer
+/// exists, and it is strictly better than the previous behaviour, which was to
+/// write to a closed stderr.
+pub(super) fn check_and_report_update_errors(_ctx: &mut AppContext) {
+    let path = oss_install_failure_log();
+    let reason = match fs::read_to_string(&path) {
+        Ok(reason) => reason,
+        // The overwhelmingly common case: the last install did not refuse.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => {
+            log::warn!("Phosphor: could not read {path:?}: {e:#}");
+            return;
+        }
+    };
+    if let Err(e) = fs::remove_file(&path) {
+        log::warn!("Phosphor: could not remove {path:?} after reporting it: {e:#}");
+    }
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return;
+    }
+    crate::report_error!(&anyhow!(
+        "Phosphor: the previous update was refused after shutdown and no installer was opened: {reason}"
+    ));
+}
+
 /// OSS macOS install entry point: triggers Finder's standard mount of the dmg
 /// via `/usr/bin/open <dmg>` once the current process exits.
 ///
@@ -230,9 +404,17 @@ pub(super) fn relaunch() -> Result<()> {
 /// to close it completely -- but it is no longer a window an attacker can
 /// arrive during.
 ///
-/// Two supporting properties:
+/// Three supporting properties:
 /// * A missing `shasum`, an unreadable file or any mismatch makes the script
 ///   exit non-zero *before* `open`, so every failure mode is fail-closed.
+/// * The script's verdict is not thrown away. Nothing waits on this child --
+///   the app is already terminating, which is the whole reason the script
+///   exists -- so its exit status and its stderr both die with the parent. It
+///   therefore writes its reason to [`oss_install_failure_log`], which
+///   [`check_and_report_update_errors`] reports on the next launch, and the
+///   same comparison is run in-process by
+///   [`oss_verify_installer_before_relaunch`] *before* `terminate_app`, where a
+///   failure can still raise a banner. See that function for the split.
 /// * The alternatives considered were: holding an fd across the gap (useless,
 ///   `open(1)` takes a path); staging into a directory only this process can
 ///   write (does not help against a same-uid attacker, which is the realistic
@@ -241,73 +423,77 @@ pub(super) fn relaunch() -> Result<()> {
 ///   across the same teardown). Re-checking adjacent to the use is the only one
 ///   that removes the window rather than moving it.
 fn oss_open_installer() -> Result<()> {
-    // Prefer the exact path this process verified. Only if that record is
-    // missing -- it should not be, the download and the install happen in one
-    // process -- do we fall back to scanning cache_dir/autoupdate/ for the
-    // newest dmg, and then the file has to earn its way through verification
-    // before it is opened.
-    //
-    // A poisoned mutex is recovered rather than discarded: `Option<(PathBuf,
-    // String)>` has no invariant a panicking writer could have broken, and
-    // `.ok()` here would silently downgrade "we have a verified dmg" into "go
-    // scan the cache directory".
-    let verified = VERIFIED_OSS_DMG
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-
-    // Note there is deliberately no `path.exists()` filter on the record. That
-    // was a second check-then-use, and it silently converted "the file we
-    // verified is gone" -- which should never happen inside one process -- into
-    // the directory scan below. If we hold a record we use it, and the script's
-    // digest check reports any problem with it.
-    let (dmg, expected) = match verified {
-        Some((path, expected)) => (path, expected),
-        None => {
-            let mut autoupdate_dir = warp_core::paths::cache_dir();
-            autoupdate_dir.push("autoupdate");
-            let found = find_latest_dmg(&autoupdate_dir).ok_or_else(|| {
-                anyhow!("Phosphor: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
-            })?;
-            log::warn!(
-                "Phosphor: no verified dmg on record, re-verifying the newest one found on disk ({found:?})"
-            );
-            let expected =
-                super::verify_oss_asset_sha256(&found, &dmg_name(ChannelState::channel()))?;
-            (found, expected)
-        }
-    };
-
-    ensure!(
-        expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
-        "Phosphor: refusing to open {dmg:?}: recorded digest {expected:?} is not a SHA-256 hex string"
-    );
+    let (dmg, expected) = resolve_oss_dmg()?;
 
     log::info!("Phosphor: preparing to open installer dmg {dmg:?}");
 
+    // Clear any refusal left by a previous attempt, so that whatever is in the
+    // file at the next launch describes *this* one. The directory is created if
+    // missing: the script's `>>"$log"` is deliberately silent about its own
+    // failures (it has nowhere to complain to), so an absent directory would
+    // turn the whole reporting channel into a no-op without saying so.
+    let failure_log = oss_install_failure_log();
+    if let Some(parent) = failure_log.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            log::warn!("Phosphor: could not create {parent:?} for the install failure log: {e:#}");
+        }
+    }
+    match fs::remove_file(&failure_log) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => log::warn!("Phosphor: could not clear {failure_log:?}: {e:#}"),
+    }
+
     let pid = std::process::id();
-    let quoted_dmg = shell_escape::escape(dmg.to_string_lossy());
-    let quoted_expected = shell_escape::escape(expected.clone().into());
-    // Open the dmg only after the current process exits. `open` is
-    // non-blocking by default; once Finder has the dmg it automatically mounts
-    // it and shows the mount window; the user drags it into Applications in
-    // Finder to finish the upgrade.
-    //
-    // `shasum` is part of the macOS base install (/usr/bin/shasum); if it is
-    // absent the `command -v` test fails and we never reach `open`.
     let script = format!(
-        "while ps -p {pid} >/dev/null 2>&1; do sleep 0.2; done; \
-         command -v /usr/bin/shasum >/dev/null 2>&1 || {{ echo 'Phosphor: /usr/bin/shasum missing, refusing to open the installer' >&2; exit 1; }}; \
-         actual=$(/usr/bin/shasum -a 256 {quoted_dmg} 2>/dev/null | /usr/bin/cut -d' ' -f1); \
-         if [ \"$actual\" != {quoted_expected} ]; then \
-           echo \"Phosphor: refusing to open {quoted_dmg}: sha256 is $actual, expected {quoted_expected}\" >&2; \
-           exit 1; \
-         fi; \
-         exec /usr/bin/open {quoted_dmg}"
+        "while ps -p {pid} >/dev/null 2>&1; do sleep 0.2; done; {}",
+        oss_install_script_body(&dmg, &expected, &failure_log)
     );
     log::info!("Executing OSS install command {script:?}");
     blocking::Command::new("sh").arg("-c").arg(script).spawn()?;
     Ok(())
+}
+
+/// Everything the install script does once this process is gone: check the
+/// digest, and `exec open` only if it matches.
+///
+/// # Quoting
+///
+/// Every value that comes from outside the program is bound to a shell variable
+/// once, at the top, and referenced as `"$dmg"` / `"$expected"` / `"$log"`
+/// thereafter. That is not stylistic. `shell_escape::escape` produces a
+/// *single*-quoted word, which is a correct assignment right-hand side and a
+/// correct standalone argument, but is not safe to paste inside a
+/// double-quoted string: there the single quotes are ordinary characters and
+/// `$(...)`, backticks and `\` all still expand. The refusal message used to
+/// interpolate the escaped path exactly that way, so a dmg named
+/// `$(...)something.dmg` executed its own name -- in the branch whose entire
+/// job is to report that the file is not trusted. The name is
+/// attacker-influenceable: `find_latest_dmg` takes the newest `*.dmg` under
+/// `cache_dir()/autoupdate/` verbatim.
+///
+/// Expanding a variable's *value* does not re-expand it, in any POSIX shell, so
+/// the variable form has no such reading. `sh`, `dash`, `bash` and `zsh` were
+/// all checked.
+///
+/// `shasum` is part of the macOS base install (/usr/bin/shasum); if it is
+/// absent the `command -v` test fails and we never reach `open`. `open` is
+/// non-blocking by default; once Finder has the dmg it mounts it and shows the
+/// mount window, and the user drags it into Applications to finish the upgrade.
+fn oss_install_script_body(dmg: &Path, expected: &str, failure_log: &Path) -> String {
+    let quoted_dmg = shell_escape::escape(dmg.to_string_lossy());
+    let quoted_expected = shell_escape::escape(expected.to_owned().into());
+    let quoted_log = shell_escape::escape(failure_log.to_string_lossy());
+    format!(
+        "log={quoted_log}; dmg={quoted_dmg}; expected={quoted_expected}; \
+         command -v /usr/bin/shasum >/dev/null 2>&1 || {{ echo 'Phosphor: /usr/bin/shasum missing, refusing to open the installer' >>\"$log\" 2>/dev/null; exit 1; }}; \
+         actual=$(/usr/bin/shasum -a 256 \"$dmg\" 2>/dev/null | /usr/bin/cut -d' ' -f1); \
+         if [ \"$actual\" != \"$expected\" ]; then \
+           echo \"refusing to open $dmg: sha256 is $actual, expected $expected\" >>\"$log\" 2>/dev/null; \
+           exit 1; \
+         fi; \
+         exec /usr/bin/open \"$dmg\""
+    )
 }
 
 /// Finds the most recently downloaded dmg under the `autoupdate/` directory.
@@ -579,9 +765,14 @@ async fn oss_download_dmg(
 
     // Hand the install path the file we actually checked, instead of letting it
     // re-discover a dmg by mtime.
-    if let Ok(mut guard) = VERIFIED_OSS_DMG.lock() {
-        *guard = Some((dmg_path_buf, digest));
-    }
+    //
+    // A poisoned mutex is recovered rather than skipped, for the same reason
+    // `resolve_oss_dmg` recovers on the read side: `if let Ok(..)` here would
+    // drop the record on the floor and send the install path back to
+    // `find_latest_dmg`, permanently, because poisoning never clears.
+    *VERIFIED_OSS_DMG
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some((dmg_path_buf, digest));
     Ok(DownloadReady::Yes)
 }
 
@@ -1071,5 +1262,79 @@ fn executable_path(channel: Channel) -> String {
         format!("Contents/MacOS/{}", executable_name(channel))
     } else {
         executable_name(channel).to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The refusal branch of the install script must not execute the dmg's own
+    /// file name.
+    ///
+    /// `shell_escape::escape` single-quotes, and the refusal message used to
+    /// interpolate that single-quoted word inside a *double*-quoted `echo`,
+    /// where the quotes are literal and `$(...)`, backticks and `\` all still
+    /// expand. The file name reaches us from `find_latest_dmg`, which takes the
+    /// newest `*.dmg` under `cache_dir()/autoupdate/` verbatim, so this ran
+    /// attacker-chosen text in the one branch whose job is to say that the file
+    /// is not to be trusted.
+    #[test]
+    fn refusal_branch_does_not_execute_the_dmg_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "phosphor-oss-install-script-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+
+        // A name a same-uid attacker can create in the cache directory. Both
+        // substitution forms, and no `/` so it stays a single file name.
+        let dmg = dir.join("$(touch executed)`touch backtick`evil.dmg");
+        fs::write(&dmg, b"not the expected bytes").expect("write dmg");
+        let log = dir.join(OSS_INSTALL_FAILURE_LOG);
+
+        // A digest the file cannot hash to, so the refusal branch is the one
+        // that runs.
+        let body = oss_install_script_body(&dmg, &"a".repeat(64), &log);
+        let status = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&body)
+            // The payloads write relative names, so they would land here.
+            .current_dir(&dir)
+            .status()
+            .expect("run install script body");
+
+        assert!(!status.success(), "a digest mismatch must not reach `open`");
+        assert!(
+            !dir.join("executed").exists() && !dir.join("backtick").exists(),
+            "the dmg's file name was executed by the branch reporting it: {body}"
+        );
+
+        // ... and the refusal is recorded somewhere that outlives the parent,
+        // naming the path literally rather than having expanded it.
+        let recorded = fs::read_to_string(&log).expect("the refusal must be written to the log");
+        assert!(
+            recorded.contains(&*dmg.to_string_lossy()),
+            "the refusal should name the file it refused, got {recorded:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The success path still `exec`s `open` on the same variable the digest
+    /// was checked against -- the adjacency the script exists for.
+    #[test]
+    fn script_execs_open_on_the_verified_variable() {
+        let body = oss_install_script_body(
+            Path::new("/tmp/Phosphor.dmg"),
+            &"b".repeat(64),
+            Path::new("/tmp/install-failure.log"),
+        );
+        assert!(body.trim_end().ends_with("exec /usr/bin/open \"$dmg\""));
+        assert!(body.contains("actual=$(/usr/bin/shasum -a 256 \"$dmg\""));
+        // No escaped word may appear inside a double-quoted string; that is the
+        // shape the injection had.
+        assert!(!body.contains("'/tmp/Phosphor.dmg':"));
     }
 }
