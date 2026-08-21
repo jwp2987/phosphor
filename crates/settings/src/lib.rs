@@ -504,6 +504,19 @@ pub trait Setting {
     /// Note that this re-reads through [`Self::read_from_preferences`], so a
     /// stored value that cannot be parsed counts as "not stored", which is
     /// exactly the situation per-key inhibition exists for.
+    /// Whether the backend's current view holds `expected`.
+    ///
+    /// **This detects a write the backend silently skipped, not a write whose
+    /// flush failed.** The TOML backend reads back through its in-memory
+    /// document, which already contains an unflushed write, so a whole-file
+    /// inhibition is invisible here — that case surfaces as an `Err` from
+    /// [`Self::write_to_preferences`] instead. The two are complementary and a
+    /// caller that wants "did this land" needs both: the `Err` for a failed
+    /// flush, this for a per-key inhibition that returned `Ok(())` without
+    /// storing anything.
+    ///
+    /// It also cannot distinguish a stored value from an absent one when
+    /// `expected` equals the default, since both read back as the default.
     fn is_value_durably_stored(expected: &Self::Value, preferences: &dyn UserPreferences) -> bool {
         Self::read_from_preferences(preferences).is_some_and(|stored| &stored == expected)
     }

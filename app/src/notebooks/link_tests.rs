@@ -256,11 +256,22 @@ fn test_resolve_file_url() {
             local_file(&test_file)
         );
 
-        // file:// URLs can have non-local hosts on Windows. If we encounter one, it should be kept a
-        // URL for the system to handle.
-        assert_eq!(
-            resolve(&app, &links, "file://remote/some/path.txt").await,
-            url("file://remote/some/path.txt")
+        // A `file://` URL with a non-local host is a UNC path on Windows. Handing one to the
+        // system handler opens an SMB connection to a host named by the link, which for
+        // LLM-authored notebook content means an attacker picks the host -- the classic NTLM
+        // credential-leak shape. It is refused before any filesystem call, so resolving it does
+        // not even stat the path.
+        //
+        // This assertion used to require the opposite ("it should be kept a URL for the system
+        // to handle"), i.e. it pinned the defect. Inverted 2026-08-21 alongside the fix; do not
+        // restore it, and note the pin has the same hole (this is ahead of the oracle).
+        assert!(
+            links
+                .read(&app, |links, ctx| links
+                    .resolve("file://remote/some/path.txt", ctx))
+                .await
+                .is_err(),
+            "a non-local file:// authority must be refused, not handed to the system handler"
         );
     });
 }

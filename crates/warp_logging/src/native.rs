@@ -844,13 +844,68 @@ fn init_log_directory() -> Result<std::path::PathBuf> {
 /// can interfere with test harnesses collecting the set of tests to run.  (This
 /// is why we're not simply calling the init() function above.)
 pub fn init_logging_for_unit_tests() {
-    env_logger::builder()
+    let inner = env_logger::builder()
         .is_test(true)
         .filter_level(LevelFilter::Info)
         .write_style(env_logger::WriteStyle::Always)
         .parse_default_env()
         .format(format_for_terminal_output)
-        .init();
+        .build();
+    let max_level = inner.filter();
+    // Installed as a tee rather than directly, so a test that needs to assert on
+    // what a production call site actually emitted can tap it. Before this, the
+    // `#[ctor]` in `app/src/lib.rs` claimed the global logger slot before `main`,
+    // so `log::set_logger` in a test could only ever fail -- and a test that
+    // reacted by skipping would pass while observing nothing.
+    if log::set_boxed_logger(Box::new(TeeLogger { inner })).is_ok() {
+        log::set_max_level(max_level);
+        TEE_INSTALLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Receives every record the unit-test logger handles. Set once, for the life of
+/// the test binary; see [`set_unit_test_log_tap`].
+pub type UnitTestLogTap = fn(&log::Record<'_>);
+
+static UNIT_TEST_LOG_TAP: OnceLock<UnitTestLogTap> = OnceLock::new();
+
+/// Routes every record the unit-test logger handles to `tap` as well as to the
+/// terminal.
+///
+/// Returns `false` if a tap was already set, which a caller asserting on log
+/// output should treat as a hard error rather than a reason to skip: two taps
+/// would each see a partial stream.
+pub fn set_unit_test_log_tap(tap: UnitTestLogTap) -> bool {
+    UNIT_TEST_LOG_TAP.set(tap).is_ok()
+}
+
+/// Whether the unit-test tee is the installed logger, i.e. whether
+/// [`set_unit_test_log_tap`] can observe anything.
+pub fn unit_test_log_tap_is_available() -> bool {
+    TEE_INSTALLED.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+static TEE_INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct TeeLogger {
+    inner: env_logger::Logger,
+}
+
+impl log::Log for TeeLogger {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        self.inner.enabled(metadata) || UNIT_TEST_LOG_TAP.get().is_some()
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if let Some(tap) = UNIT_TEST_LOG_TAP.get() {
+            tap(record);
+        }
+        self.inner.log(record);
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
 }
 
 #[cfg(test)]

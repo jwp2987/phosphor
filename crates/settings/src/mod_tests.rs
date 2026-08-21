@@ -682,9 +682,15 @@ mod write_to_preferences_tests {
             StructSetting::write_to_preferences(&value, &prefs).is_err(),
             "a write against a wholly inhibited backend must not report success"
         );
-        assert!(
-            !StructSetting::is_value_durably_stored(&value, &prefs),
-            "nothing was stored, so nothing is durably stored"
+        // NOT asserted here: `!is_value_durably_stored`. The TOML backend reads back
+        // through its in-memory document, which already holds the unflushed write, so
+        // the read-back structurally cannot see a failed flush -- that is precisely
+        // what the `Err` above is for. Asserting it would pin a property the mechanism
+        // does not have. What *is* true is that nothing reached the disk:
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            on_disk, "[test\nstruct_setting = broken\n",
+            "a wholly inhibited backend must leave the user's file untouched"
         );
     }
 

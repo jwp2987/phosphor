@@ -12373,19 +12373,10 @@ mod byop_diag_privacy_tests {
     /// Serializes the capture tests against each other; `CAPTURED` is process-global.
     static CAPTURE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-    struct CapturingLogger;
-    static CAPTURING_LOGGER: CapturingLogger = CapturingLogger;
-
-    impl log::Log for CapturingLogger {
-        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
-            true
+    fn capture_tap(record: &log::Record<'_>) {
+        if let Ok(mut captured) = CAPTURED.lock() {
+            captured.push(record.args().to_string());
         }
-        fn log(&self, record: &log::Record<'_>) {
-            if let Ok(mut captured) = CAPTURED.lock() {
-                captured.push(record.args().to_string());
-            }
-        }
-        fn flush(&self) {}
     }
 
     /// Installs the capture logger once per test binary.
@@ -12398,17 +12389,22 @@ mod byop_diag_privacy_tests {
         static ONCE: std::sync::Once = std::sync::Once::new();
         static INSTALLED: AtomicBool = AtomicBool::new(false);
         ONCE.call_once(|| {
-            let installed = log::set_logger(&CAPTURING_LOGGER).is_ok();
-            if installed {
-                log::set_max_level(log::LevelFilter::Trace);
-            }
-            INSTALLED.store(installed, Ordering::SeqCst);
+            INSTALLED.store(warp_logging::set_unit_test_log_tap(capture_tap), Ordering::SeqCst);
         });
+        // The `#[ctor]` in `app/src/lib.rs` installs the unit-test logger before `main`,
+        // so `log::set_logger` here could only ever fail. Rather than skip -- which would
+        // make every assertion below pass while observing nothing -- these tests tap that
+        // logger. Still an assert, for the same reason: if the tap is unavailable the
+        // tests are blind, and a blind test that reports success is worse than no test.
+        assert!(
+            warp_logging::unit_test_log_tap_is_available(),
+            "the unit-test tee logger is not installed, so these assertions would observe \
+             nothing and pass vacuously — do not delete this assertion"
+        );
         assert!(
             INSTALLED.load(Ordering::SeqCst),
-            "another logger is already installed in this test binary, so these assertions \
-             would observe nothing and pass vacuously. Route that logger into CAPTURED or move \
-             this module to its own binary — do not delete this assertion."
+            "another tap is already registered on the unit-test logger; two taps would each \
+             see a partial stream — do not delete this assertion"
         );
     }
 

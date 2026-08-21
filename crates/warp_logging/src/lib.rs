@@ -57,3 +57,8 @@ pub use imp::{
     init_for_crash_recovery_process, init_logging_for_unit_tests, on_crash_recovery_process_killed,
     on_parent_process_crash,
 };
+
+/// Tap on the unit-test logger, for tests that must assert on what a production
+/// call site actually emitted. See [`set_unit_test_log_tap`].
+#[cfg(not(target_family = "wasm"))]
+pub use imp::{UnitTestLogTap, set_unit_test_log_tap, unit_test_log_tap_is_available};
