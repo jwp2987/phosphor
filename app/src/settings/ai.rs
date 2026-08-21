@@ -2849,6 +2849,13 @@ impl AISettings {
             }
             // DockerSandbox is gated on its feature flag; fall back to Terminal
             // when disabled so a stale stored value doesn't wedge the user.
+            //
+            // Deliberately NOT also gated on `is_any_ai_enabled`, and this matches
+            // the pin verbatim (`42effe840:app/src/settings/ai.rs:2223-2230`). A
+            // Docker sandbox session is a containerized *shell*, not an AI surface --
+            // `agent_input_footer` explicitly returns early for
+            // `ShellLaunchData::DockerSandbox`. Turning AI off should not take the
+            // user's sandbox shell away.
             DefaultSessionMode::DockerSandbox => {
                 if FeatureFlag::LocalDockerSandbox.is_enabled() {
                     mode
@@ -3294,6 +3301,21 @@ impl AISettings {
             .get(agent.to_serialized_name().as_str())
             .map(|s| s.tabmenu)
             .unwrap_or_else(|| PerAgentSettings::default_for(agent).tabmenu)
+    }
+
+    /// Whether a CLI coding agent should be *offered* in the new-session menu.
+    ///
+    /// [`Self::is_cli_agent_tab_menu_enabled`] answers only the per-agent `tabmenu`
+    /// setting. That is the right answer on the settings page, where the per-agent
+    /// toggle has to stay visible and editable regardless of the master switch, and
+    /// the wrong one in the menu: a user who set
+    /// `agents.warp_agent.is_any_ai_enabled = false` was still offered Claude Code /
+    /// Codex entries, even though the separator that introduces them is already gated
+    /// on AI (`workspace/view.rs`, "3. Separator -- only shown when an Agent or Coding
+    /// Agent follows") and the neighbouring Agent entry is too. Menu call sites want
+    /// this getter; settings call sites want the raw one.
+    pub fn should_offer_cli_agent_in_tab_menu(&self, agent: CLIAgent, app: &AppContext) -> bool {
+        self.is_any_ai_enabled(app) && self.is_cli_agent_tab_menu_enabled(agent)
     }
 
     /// Queries whether the titlebar button is enabled for a given CLI agent. Falls back to the

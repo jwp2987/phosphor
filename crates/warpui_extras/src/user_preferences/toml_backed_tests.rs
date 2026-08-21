@@ -309,15 +309,30 @@ fn test_writes_inhibited_when_file_initially_broken() {
     let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path.clone());
     assert!(parse_error.is_some());
 
-    // Writing a setting should succeed in-memory but NOT overwrite the file.
-    prefs
-        .write_value_with_hierarchy("font_name", "\"Hack\"".to_string(), Some("font"), None)
-        .unwrap();
+    // Writing a setting must NOT overwrite the file, and must report that the
+    // value did not reach durable storage. Returning `Ok(())` here was a
+    // failure cached as success: callers persisted one-shot "already done"
+    // markers into the still-writable native store on the strength of it.
+    let write_result =
+        prefs.write_value_with_hierarchy("font_name", "\"Hack\"".to_string(), Some("font"), None);
+    assert!(
+        write_result.is_err(),
+        "an inhibited write must be reported to the caller, not silently swallowed"
+    );
 
     let on_disk = std::fs::read_to_string(&file_path).unwrap();
     assert_eq!(
         on_disk, original_content,
         "broken file should not be overwritten by writes during inhibited state"
+    );
+
+    // The in-memory document is still updated, so a subsequent read in the same
+    // process is consistent with what the caller asked for.
+    assert_eq!(
+        prefs
+            .read_value_with_hierarchy("font_name", Some("font"))
+            .unwrap(),
+        Some("\"Hack\"".to_string()),
     );
 
     // Fix the file and reload.

@@ -6339,7 +6339,7 @@ impl Workspace {
                     continue;
                 }
                 // Check the per-agent tab_menu setting
-                if !ai_settings.is_cli_agent_tab_menu_enabled(agent) {
+                if !ai_settings.should_offer_cli_agent_in_tab_menu(agent, ctx) {
                     continue;
                 }
                 let icon = agent.icon().unwrap_or(icons::Icon::LayoutAlt01);
@@ -16895,10 +16895,13 @@ impl Workspace {
         let prev_mouse_reporting_enabled =
             AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
                 let prev_mouse_reporting_enabled = *reporting.mouse_reporting_enabled.value();
-                reporting
+                // Not `.expect(...)`: persistence can legitimately fail (a
+                // `settings.toml` that failed to parse inhibits writes, and I/O
+                // errors are now propagated rather than discarded), and a
+                // failed write must not crash the app.
+                report_if_error!(reporting
                     .mouse_reporting_enabled
-                    .set_value(!prev_mouse_reporting_enabled, ctx)
-                    .expect("MouseReportingEnabled failed to serialize");
+                    .set_value(!prev_mouse_reporting_enabled, ctx));
                 prev_mouse_reporting_enabled
             });
 

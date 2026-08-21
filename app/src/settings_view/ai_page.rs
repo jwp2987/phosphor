@@ -153,11 +153,97 @@ const CONTEXT_WINDOW_SLIDER_WIDTH: f32 = 220.;
 const CONTEXT_WINDOW_INPUT_BOX_WIDTH: f32 = 120.;
 const WISPR_FLOW_URL: &str = "https://wisprflow.ai/";
 
+/// i18n key for the banner shown under the header when the master AI switch is off,
+/// with the English text to use until the key exists in `app/i18n/en/warp.ftl`.
+/// `t_or` prefers the bundle whenever the key is present, so wiring the key up is a
+/// one-line `.ftl` addition with no change here.
+const AI_DISABLED_BANNER_KEY: &str = "settings-ai-master-switch-off";
+const AI_DISABLED_BANNER_FALLBACK: &str = "AI is turned off.";
+const AI_DISABLED_BANNER_SUBTEXT_KEY: &str = "settings-ai-master-switch-off-subtext";
+const AI_DISABLED_BANNER_SUBTEXT_FALLBACK: &str = concat!(
+    "Every AI feature below is disabled because ",
+    "agents.warp_agent.is_any_ai_enabled is false. ",
+    "Use the switch above to turn AI back on.",
+);
+
+/// Whether a given AI settings subpage carries the master AI switch.
+///
+/// Extracted from `build_page` so it can be asserted directly: the switch is the only
+/// in-app control that writes `agents.warp_agent.is_any_ai_enabled`, so a subpage that
+/// a user with AI already off can reach and that omits it is a dead end. `None` (the
+/// full legacy page) and [`AISubpage::WarpAgent`] are the two entry points reached by
+/// "open AI settings"; the rest are drilled into from there.
+fn subpage_shows_master_ai_switch(subpage: Option<AISubpage>) -> bool {
+    matches!(subpage, None | Some(AISubpage::WarpAgent))
+}
+
+/// What the master-switch header renders for a given value of the setting.
+///
+/// Split out of [`WarpAgentHeaderWidget::render`] because the failure this guards
+/// against is not a layout bug: it is the switch quietly greying *itself* out on the
+/// strength of its own value (the way every other AI control on this page correctly
+/// does), which is what leaves the user with an all-grey page and no way back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MasterAISwitchState {
+    /// Whether the switch draws in the "on" position.
+    checked: bool,
+    /// Whether the switch accepts clicks. Always `true` -- see the type docs.
+    toggleable: bool,
+    /// Whether to render the "AI is turned off" explainer beneath the header.
+    show_disabled_banner: bool,
+}
+
+impl MasterAISwitchState {
+    fn for_setting(is_any_ai_enabled: bool) -> Self {
+        Self {
+            checked: is_any_ai_enabled,
+            toggleable: true,
+            show_disabled_banner: !is_any_ai_enabled,
+        }
+    }
+}
+
+/// Flips `agents.warp_agent.is_any_ai_enabled` and persists it, returning the new value.
+///
+/// The single writer of the setting outside tests. Both the settings-page switch and the
+/// `Enable AI` / `Disable AI` keybindings land here; taking `&mut AppContext` (rather
+/// than inlining the body in the action handler, as 14ed5014f's ancestor did) is what
+/// lets a test drive the same code path the user's click drives.
+fn toggle_global_ai(ctx: &mut AppContext) -> anyhow::Result<bool> {
+    AISettings::handle(ctx).update(ctx, |settings, ctx| {
+        settings.is_any_ai_enabled.toggle_and_save_value(ctx)
+    })
+}
+
 pub fn init_actions_from_parent_view<T: Action + Clone>(
     app: &mut AppContext,
     context: &ContextPredicate,
     builder: fn(SettingsAction) -> T,
 ) {
+    // The master AI switch. Unlike every pair below it, its `context_prefix` is the
+    // bare parent context and is deliberately NOT `& id!(flags::IS_ANY_AI_ENABLED)`:
+    // this is the one action that has to stay reachable while AI is off, otherwise a
+    // user whose `agents.warp_agent.is_any_ai_enabled` is `false` has no way back
+    // short of hand-editing settings.toml. `ToggleSettingActionPair::new` derives the
+    // "Enable AI" half from `context & !flag` and the "Disable AI" half from
+    // `context & flag`, so exactly one of the two is offered at any time.
+    //
+    // i18n: `toggle-suffix-ai` was deleted from `app/i18n/en/warp.ftl` by 14ed5014f
+    // along with the toggle itself. `t_or` resolves it when the key is restored and
+    // returns the English fallback until then, so this compiles either way.
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![
+            ToggleSettingActionPair::new(
+                &crate::i18n::t_or("toggle-suffix-ai", "AI"),
+                builder(SettingsAction::AI(AISettingsPageAction::ToggleGlobalAI)),
+                context,
+                flags::IS_ANY_AI_ENABLED,
+            )
+            .with_group(bindings::BindingGroup::WarpAi),
+        ],
+        app,
+    );
+
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
         vec![ToggleSettingActionPair::new(
             &crate::t!("toggle-suffix-active-ai"),
@@ -1551,12 +1637,19 @@ impl AISettingsPageView {
 
         let mut widgets: Vec<Box<dyn SettingsWidget<View = AISettingsPageView>>> = Vec::new();
 
+        // The master AI switch goes first, and is pushed *before* the match so no
+        // branch below can drop it: it is the only in-app control that can turn AI
+        // back on, so it must be on every AI page a user with AI already off can
+        // land on. See `subpage_shows_master_ai_switch`.
+        if subpage_shows_master_ai_switch(subpage) {
+            widgets.push(Box::new(WarpAgentHeaderWidget::default()));
+        }
+
         // When viewing a specific subpage, only include its widgets.
         // When subpage is None (legacy/backward-compat), show all widgets.
         match subpage {
             None => {
                 // Full page: all widgets (legacy behavior)
-                widgets.push(Box::new(WarpAgentHeaderWidget));
                 if should_show_usage_widget {
                     widgets.push(Box::new(UsageWidget::default()));
                 }
@@ -1598,8 +1691,7 @@ impl AISettingsPageView {
                 widgets.push(Box::new(OtherAIWidget::default()));
             }
             Some(AISubpage::WarpAgent) => {
-                // Oz page: header + Active AI + Input + Other
-                widgets.push(Box::new(WarpAgentHeaderWidget));
+                // Oz page: master switch (pushed above) + Active AI + Input + Other
                 if ai_settings
                     .intelligent_autosuggestions_enabled_internal
                     .is_supported_on_current_platform()
@@ -2486,6 +2578,8 @@ pub struct ModelEditFields {
 pub enum AISettingsPageAction {
     OpenUrl(String),
     SetVoiceInputToggleKey(VoiceInputToggleKey),
+    /// Flips the master AI switch, `agents.warp_agent.is_any_ai_enabled`.
+    ToggleGlobalAI,
     ToggleActiveAI,
     ToggleIntelligentAutosuggestions,
     TogglePromptSuggestions,
@@ -2752,6 +2846,16 @@ impl TypedActionView for AISettingsPageView {
                         .explicitly_interacted_with_voice
                         .set_value(true, ctx));
                 });
+                ctx.notify();
+            }
+            AISettingsPageAction::ToggleGlobalAI => {
+                // No telemetry event here: `TelemetryEvent::ToggleGlobalAI` was deleted
+                // alongside the toggle in 14ed5014f and `app/src/server/telemetry.rs`
+                // is outside this change's scope. The setting write is the part that
+                // matters; a missing counter is not a usability trap.
+                if let Err(e) = toggle_global_ai(ctx) {
+                    log::warn!("Failed to set value for Global AI setting: {e:?}");
+                }
                 ctx.notify();
             }
             AISettingsPageAction::ToggleActiveAI => {
@@ -4407,13 +4511,26 @@ fn render_ai_list(
         .finish()
 }
 
-struct WarpAgentHeaderWidget;
+/// The page header plus the master AI switch.
+///
+/// The switch half was deleted by 14ed5014f ("Keep Warp Agent enabled"), which
+/// hardcoded `is_any_ai_enabled()` to `true` and, consistently with that, removed
+/// every writer of the setting: this switch, `AISettingsPageAction::ToggleGlobalAI`
+/// and the `flags::IS_ANY_AI_ENABLED` toggle binding. f0b71fe3e restored the *reader*
+/// (the getter now returns the stored value again) but not the writers, which left a
+/// user whose stored value is `false` looking at a fully greyed AI page with no
+/// control, no keybinding and no explanation. Both halves have to exist together.
+#[derive(Default)]
+struct WarpAgentHeaderWidget {
+    switch_state: SwitchStateHandle,
+}
 
 impl SettingsWidget for WarpAgentHeaderWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "oz warp agent ai a.i. active next command prompt code diffs suggestion suggested suggestions \
+        "oz warp agent global master switch ai a.i. enable disable turn off turned off disabled \
+                active next command prompt code diffs suggestion suggested suggestions \
                 agent mode natural language detection input hint api keys bring your own byo google anthropic openai"
     }
 
@@ -4421,8 +4538,11 @@ impl SettingsWidget for WarpAgentHeaderWidget {
         &self,
         _view: &Self::View,
         appearance: &Appearance,
-        _app: &AppContext,
+        app: &AppContext,
     ) -> Box<dyn Element> {
+        let state =
+            MasterAISwitchState::for_setting(AISettings::as_ref(app).is_any_ai_enabled(app));
+
         let row = Flex::row()
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
@@ -4433,12 +4553,45 @@ impl SettingsWidget for WarpAgentHeaderWidget {
                     appearance.ui_font_family(),
                     appearance.ui_font_display(),
                 )
+                // Deliberately the *active* text colour in both states, unlike the
+                // sub-headers below, which grey out via `styles::header_font_color`.
+                // The header labels the only live control on an otherwise dead page.
                 .with_style(Properties::default().weight(Weight::Bold))
                 .with_color(appearance.theme().active_ui_text_color().into())
                 .finish(),
+            )
+            .with_child(
+                Container::new(render_ai_feature_switch(
+                    self.switch_state.clone(),
+                    state.checked,
+                    state.toggleable,
+                    AISettingsPageAction::ToggleGlobalAI,
+                    app,
+                ))
+                .with_padding_right(TOGGLE_BUTTON_RIGHT_PADDING)
+                .finish(),
             );
 
-        Container::new(row.finish())
+        let mut column = Flex::column().with_child(row.finish());
+
+        if state.show_disabled_banner {
+            let banner = crate::i18n::t_or(AI_DISABLED_BANNER_KEY, AI_DISABLED_BANNER_FALLBACK);
+            let banner_subtext = crate::i18n::t_or(
+                AI_DISABLED_BANNER_SUBTEXT_KEY,
+                AI_DISABLED_BANNER_SUBTEXT_FALLBACK,
+            );
+            column.add_child(
+                Container::new(render_settings_info_banner(
+                    banner.as_str(),
+                    Some(banner_subtext.as_str()),
+                    appearance,
+                ))
+                .with_margin_top(8.)
+                .finish(),
+            );
+        }
+
+        Container::new(column.finish())
             .with_padding_bottom(15.)
             .finish()
     }
@@ -8133,5 +8286,97 @@ mod ollama_fetch_enrichment_tests {
         apply_ollama_context_info(&mut model, &info);
         assert_eq!(model.context_window, 0);
         assert_eq!(model.max_output_tokens, 0);
+    }
+}
+
+#[cfg(test)]
+mod master_ai_switch_tests {
+    //! Guards for the master AI switch, `agents.warp_agent.is_any_ai_enabled`.
+    //!
+    //! The defect these exist for is not "the page renders wrong". It is the pairing
+    //! failure: 14ed5014f removed the getter's honesty *and* every writer of the
+    //! setting together, and f0b71fe3e restored only the getter. A predicate that is
+    //! read everywhere and written nowhere reads exactly like a working feature until
+    //! a user's stored `false` locks them out of their own AI settings page.
+    //!
+    //! So the assertions are (a) the switch stays live and explains itself in the
+    //! state that traps the user, (b) it is installed on the pages that state can be
+    //! reached from, and (c) clicking it actually writes the setting back.
+
+    use super::*;
+    use warpui::App;
+
+    /// The trap state. Every other AI control on this page correctly greys out when
+    /// the master switch is off; this one must not, because it is the way back.
+    #[test]
+    fn the_master_switch_stays_live_and_explains_itself_when_the_setting_is_false() {
+        let off = MasterAISwitchState::for_setting(false);
+        assert!(!off.checked, "the switch must read as off");
+        assert!(
+            off.toggleable,
+            "the master switch must stay clickable while AI is off -- greying it out on \
+             the strength of its own value is what leaves settings.toml as the only cure"
+        );
+        assert!(
+            off.show_disabled_banner,
+            "an all-grey AI page with no stated cause is the usability trap; the off \
+             state has to name itself and point at the switch"
+        );
+
+        let on = MasterAISwitchState::for_setting(true);
+        assert!(on.checked);
+        assert!(on.toggleable);
+        assert!(
+            !on.show_disabled_banner,
+            "the explainer is for the off state only"
+        );
+    }
+
+    /// A page a user with AI already off can land on, that omits the switch, is a dead
+    /// end. `None` is the full legacy page and `WarpAgent` is the subpage the AI nav
+    /// entry opens; the rest are drilled into from those two.
+    #[test]
+    fn every_ai_entry_point_page_carries_the_master_switch() {
+        assert!(
+            subpage_shows_master_ai_switch(None),
+            "the full AI page must carry the master switch"
+        );
+        assert!(
+            subpage_shows_master_ai_switch(Some(AISubpage::WarpAgent)),
+            "the Warp Agent subpage must carry the master switch"
+        );
+    }
+
+    /// The writer half. `toggle_global_ai` is what both the switch's `on_click` and the
+    /// `Enable AI` / `Disable AI` bindings dispatch into, so driving it here drives the
+    /// user's click. Starting from `false` is the point: the regression was that
+    /// nothing outside `slash_command_model_tests` could move the setting off `false`.
+    #[test]
+    fn the_master_switch_writes_a_stored_false_back_to_true() {
+        App::test((), |mut app| async move {
+            crate::test_util::settings::initialize_settings_for_tests(&mut app);
+
+            AISettings::handle(&app).update(&mut app, |settings, ctx| {
+                settings
+                    .is_any_ai_enabled
+                    .set_value(false, ctx)
+                    .expect("writing the master AI switch in a test must succeed");
+            });
+            assert!(
+                !app.read(|ctx| AISettings::as_ref(ctx).is_any_ai_enabled(ctx)),
+                "test setup did not take -- the getter is not reading the stored value"
+            );
+
+            let new_value = app
+                .update(|ctx| toggle_global_ai(ctx))
+                .expect("toggling the master AI switch must not fail");
+
+            assert!(new_value, "toggling from false must yield true");
+            assert!(
+                app.read(|ctx| AISettings::as_ref(ctx).is_any_ai_enabled(ctx)),
+                "the settings page's master switch must be able to turn AI back on \
+                 without hand-editing settings.toml"
+            );
+        });
     }
 }

@@ -542,7 +542,13 @@ impl PrivacySettings {
     /// Initializes the custom secret regex list with the default regexes, provided
     /// non matches can be found.
     /// This can be called when a user first enables secret redaction.
-    pub fn add_all_recommended_regex(&mut self, ctx: &mut ModelContext<Self>) {
+    ///
+    /// Returns whether the recommended regexes are now durably stored — `true`
+    /// both when the write succeeded and when there was nothing to add. A
+    /// `false` return means the list on disk does *not* contain them, and the
+    /// caller must not record that seeding has happened; see
+    /// [`Self::initialize_default_regexes_once`].
+    pub fn add_all_recommended_regex(&mut self, ctx: &mut ModelContext<Self>) -> bool {
         let mut new_user_secret_regex_list = self.user_secret_regex_list.to_vec();
         let num_existing_regexes = new_user_secret_regex_list.len();
 
@@ -562,18 +568,26 @@ impl PrivacySettings {
         }
 
         if num_existing_regexes == new_user_secret_regex_list.len() {
-            return;
+            // Nothing to add: every recommended regex is already present, so the
+            // stored list is already in the desired state.
+            return true;
         }
 
-        if self
+        if let Err(err) = self
             .user_secret_regex_list
             .set_value(new_user_secret_regex_list, ctx)
-            .is_err()
         {
-            log::error!("Failed to serialize default regexes to custom secret regex list")
+            // The write did not reach durable storage (a broken `settings.toml`
+            // inhibits writes, and I/O errors are now propagated rather than
+            // discarded by `Setting::write_to_preferences`). Report `false` so
+            // the caller does not persist a "seeded" marker for a list that was
+            // never seeded.
+            log::error!("Failed to persist the recommended secret regexes: {err:?}");
+            return false;
         }
 
         ctx.notify();
+        true
     }
 
     /// Disables the default regex trigger, so that it will not be executed.
@@ -597,10 +611,30 @@ impl PrivacySettings {
     /// set the first time seeding runs. So an empty list means "seeded, then emptied
     /// on purpose" once the flag is set, and only a user who has never been seeded
     /// gets the defaults.
+    ///
+    /// The guard is set **only** on a confirmed durable write of the regex list.
+    /// The two settings live in different stores — `CustomSecretRegexList` is
+    /// public, so it goes to `settings.toml`, while
+    /// `HasInitializedDefaultSecretRegexes` is private, so it goes to the
+    /// platform-native store — and only the first can be inhibited by a syntax
+    /// error in `settings.toml`. Setting the guard unconditionally therefore
+    /// cached a failure as a permanent success: a single launch with a broken
+    /// settings file left the redaction list empty and the guard `true`, so
+    /// seeding never ran again and the user had no secret redaction at all, with
+    /// no signal, recoverable only by finding Settings > Privacy > "Add all
+    /// recommended".
     pub fn initialize_default_regexes_once(&mut self, ctx: &mut ModelContext<Self>) {
         // Only initialize if we haven't done so before
         if !*self.has_initialized_default_secret_regexes.value() {
-            self.add_all_recommended_regex(ctx);
+            if !self.add_all_recommended_regex(ctx) {
+                // Leave the guard clear so the next launch retries once the
+                // user has fixed their settings file.
+                log::error!(
+                    "Not marking the recommended secret regexes as initialized: the list \
+                     could not be persisted. Seeding will be retried on the next launch."
+                );
+                return;
+            }
 
             // Mark as initialized
             if self
@@ -716,3 +750,141 @@ impl Entity for PrivacySettings {
 }
 
 impl SingletonEntity for PrivacySettings {}
+
+#[cfg(test)]
+mod default_regex_seeding_tests {
+    //! Inline because there is no `privacy_tests.rs` sibling. These cover the
+    //! one-shot guard around the recommended secret-redaction regexes, which
+    //! used to record a failed write as a permanent success.
+
+    use settings::{
+        is_settings_file_enabled, set_settings_file_enabled, PrivatePreferences, PublicPreferences,
+        Setting, SettingsManager,
+    };
+    use warpui::{App, SingletonEntity};
+    use warpui_extras::user_preferences::{
+        in_memory::InMemoryPreferences, toml_backed::TomlBackedUserPreferences,
+    };
+
+    use super::PrivacySettings;
+
+    /// `set_settings_file_enabled` is process-global; restore it even on panic.
+    struct SettingsFileEnabledGuard(bool);
+
+    impl SettingsFileEnabledGuard {
+        fn new(enabled: bool) -> Self {
+            let previous = is_settings_file_enabled();
+            set_settings_file_enabled(enabled);
+            Self(previous)
+        }
+    }
+
+    impl Drop for SettingsFileEnabledGuard {
+        fn drop(&mut self) {
+            set_settings_file_enabled(self.0);
+        }
+    }
+
+    /// `CustomSecretRegexList` is public, so it is written to `settings.toml`;
+    /// `HasInitializedDefaultSecretRegexes` is private, so it is written to the
+    /// platform-native store. Only the first can be inhibited by a syntax error
+    /// in `settings.toml`.
+    ///
+    /// The two stores are deliberately given different backends here: the public
+    /// one is a real TOML store over an unparseable file (so its writes fail),
+    /// and the private one is in-memory (so the guard write *would* succeed).
+    /// That is what makes this test non-vacuous — if the guard stays clear it is
+    /// because we declined to set it, not because setting it was impossible.
+    #[test]
+    #[serial_test::serial]
+    fn guard_is_not_set_when_the_regex_list_write_fails() {
+        let _settings_file = SettingsFileEnabledGuard::new(true);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("settings.toml");
+        std::fs::write(&file_path, "this is [not valid toml =").unwrap();
+
+        App::test((), |mut app| async move {
+            app.add_singleton_model(move |_| {
+                let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path);
+                assert!(
+                    parse_error.is_some(),
+                    "precondition: the settings file must fail to parse"
+                );
+                PublicPreferences::new(Box::new(prefs))
+            });
+            app.add_singleton_model(|_| {
+                PrivatePreferences::new(Box::<InMemoryPreferences>::default())
+            });
+            app.add_singleton_model(|_| SettingsManager::default());
+            app.add_singleton_model(PrivacySettings::mock);
+
+            app.update(|ctx| {
+                PrivacySettings::handle(ctx).update(ctx, |privacy_settings, ctx| {
+                    privacy_settings.initialize_default_regexes_once(ctx);
+                });
+            });
+
+            app.read(|ctx| {
+                let privacy_settings = PrivacySettings::as_ref(ctx);
+                assert!(
+                    privacy_settings.user_secret_regex_list.value().is_empty(),
+                    "precondition: the seeding write could not reach the broken settings file"
+                );
+                assert!(
+                    !*privacy_settings
+                        .has_initialized_default_secret_regexes
+                        .value(),
+                    "the one-shot guard must not be set when the regex list was never \
+                     persisted -- setting it strands the user with an empty redaction list \
+                     forever, because seeding never runs again"
+                );
+            });
+        });
+    }
+
+    /// The complement: with a writable settings file the seeding does happen and
+    /// the guard *is* set, so the fix above cannot be satisfied by simply never
+    /// setting the guard.
+    #[test]
+    #[serial_test::serial]
+    fn guard_is_set_when_the_regex_list_write_succeeds() {
+        let _settings_file = SettingsFileEnabledGuard::new(true);
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("settings.toml");
+
+        App::test((), |mut app| async move {
+            app.add_singleton_model(move |_| {
+                let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path);
+                assert!(parse_error.is_none());
+                PublicPreferences::new(Box::new(prefs))
+            });
+            app.add_singleton_model(|_| {
+                PrivatePreferences::new(Box::<InMemoryPreferences>::default())
+            });
+            app.add_singleton_model(|_| SettingsManager::default());
+            app.add_singleton_model(PrivacySettings::mock);
+
+            app.update(|ctx| {
+                PrivacySettings::handle(ctx).update(ctx, |privacy_settings, ctx| {
+                    privacy_settings.initialize_default_regexes_once(ctx);
+                });
+            });
+
+            app.read(|ctx| {
+                let privacy_settings = PrivacySettings::as_ref(ctx);
+                assert!(
+                    !privacy_settings.user_secret_regex_list.value().is_empty(),
+                    "the recommended regexes should have been seeded"
+                );
+                assert!(
+                    *privacy_settings
+                        .has_initialized_default_secret_regexes
+                        .value(),
+                    "the guard should be set once seeding actually persisted"
+                );
+            });
+        });
+    }
+}

@@ -49,6 +49,28 @@ impl SettingsInitializer {
     /// than deleted so it works again if a real onboarding state is ever introduced.
     /// The migrations below the block are the part that this fork actually needs,
     /// and they now run.
+    ///
+    /// Audit of every migration in here for "pin predicate reading a fork-diverged
+    /// default", so it is not re-derived (the NLD one below was an instance and is
+    /// fixed; the rest are recorded as checked):
+    ///
+    /// * NLD-in-terminal — **was** an instance; see the long comment at its call
+    ///   site. `nld_in_terminal_enabled_internal` defaults `true` here vs `false` at
+    ///   the pin.
+    /// * Adeberry theme — compares against the literal `ThemeKind::Phenomenon`, not
+    ///   against the default, so a diverged default cannot make it write the wrong
+    ///   value. It does diverge in the harmless direction: `ThemeKind::default()` is
+    ///   `PhosphorAmber` here and `Dark` at the pin, so a fresh fork user never
+    ///   matches `Phenomenon` and the override simply never fires. That is fine —
+    ///   `PhosphorAmber` is the fork's intended branding default. Moot in practice
+    ///   while the enclosing `is_onboarded() == Some(false)` block is unreachable.
+    /// * Universal input box / `honor_ps1` — `input_box_type` defaults to
+    ///   `InputBoxType::Classic` in both trees, so the comparison means the same
+    ///   thing. Also inside the unreachable block.
+    /// * Windows monospace font size — a constant, reads no setting.
+    /// * `KeepThinkingExpanded` -> `ThinkingDisplayMode` — reads the two raw
+    ///   preference keys directly rather than any typed default, and only writes
+    ///   when the old key was explicitly `true`. Immune to default divergence.
     pub fn apply_startup_settings_migrations(
         &self,
         auth_state: Arc<AuthState>,
@@ -107,18 +129,60 @@ impl SettingsInitializer {
             }
         }
 
-        // Migrate NLD settings when AgentView is enabled.
+        // Migrate the old, previously-global autodetection setting
+        // (`ai_autodetection_enabled_internal`) to the new per-surface
+        // `nld_in_terminal_enabled_internal`, when AgentView is enabled.
         //
-        // Explicitly set `nld_in_terminal_enabled_internal` for all users if
-        // it has not previously been set.
+        // ---------------------------------------------------------------------
+        // DO NOT "restore parity" here on the next re-pin. This deliberately does
+        // not match `42effe840:app/src/settings/initializer.rs:110-125`, and the
+        // pin's version is a user-facing regression in this tree.
+        // ---------------------------------------------------------------------
         //
-        // For existing users, when the old, previously-global autodetection setting
-        // (`ai_autodetection_enabled_internal`) true, set `nld_in_terminal_enabled_internal` to
-        // true. Otherwise, explicitly set to `false`.
+        // The pin computes
         //
-        // Any further user modification of the setting will be via explicit update, so it'll
-        // be exempt from this logic, which is effectively one-time upon first startup of a binary
-        // containing this logic.
+        //     let is_existing_user = auth_state.is_onboarded() == Some(true);
+        //     let was_global_autodetection_enabled_for_existing_user =
+        //         *ai_settings.ai_autodetection_enabled_internal && is_existing_user;
+        //
+        // and writes that boolean unconditionally, guarded only by "the target has
+        // not been explicitly set". Both of its inputs mean something different
+        // here, so the predicate cannot be ported as-is:
+        //
+        // 1. `is_onboarded()` is a constant `Some(true)` in this fork. The local
+        //    placeholder user hardcodes `is_onboarded: true` (`app/src/auth/mod.rs:213`)
+        //    and nothing outside tests clears it, so `is_existing_user` cannot tell
+        //    an upgrading user from a fresh install. It is dead weight, not a guard.
+        // 2. `nld_in_terminal_enabled_internal` defaults to `true` here, where the
+        //    pin defaults it to `false` (`app/src/settings/ai.rs:1888-1896` vs
+        //    `42effe840:app/src/settings/ai.rs:1198-1207`). That divergence is
+        //    deliberate and documented: it is what lets Chinese-speaking users type
+        //    Chinese straight into the terminal and have the heuristic classifier
+        //    route it to the agent. The fork has no cloud AgentView fullscreen entry
+        //    point, so the terminal is the primary input surface.
+        // 3. `ai_autodetection_enabled_internal` defaults to `false`, matching the
+        //    pin (`app/src/settings/ai.rs:1872-1876`).
+        //
+        // Combine (1)-(3) and the pin's expression evaluates to `false && true ==
+        // false` for every user who has never touched either setting -- so on the
+        // first launch after this migration ships it would *explicitly* write
+        // `nld_in_terminal_enabled = false` for all of them, silently killing the
+        // fork's default. Worse, the value would then be explicitly set, so deleting
+        // this migration later would not bring the default back.
+        //
+        // The fix keys off whether the *source* setting was explicitly set rather
+        // than whether it happens to be truthy. "Explicitly set" is what the pin's
+        // `is_existing_user` term was standing in for -- "this user configured the
+        // old global flag before it was split per-surface" -- and unlike
+        // `is_onboarded()` it is a question this tree can actually answer:
+        //
+        //   * never touched `ai_autodetection_enabled_internal`  -> no write at all,
+        //     so the fork's `true` default keeps applying and stays non-explicit.
+        //   * explicitly set it                                   -> carry that intent
+        //     across to the new setting in both directions, which is what the pin
+        //     intended for the users it could identify. Note that a user who
+        //     explicitly turned the old flag off asked for exactly this: "do not
+        //     auto-detect natural language in my input".
         //
         // TODO(zachbai): Remove this approximately 6 weeks from 2/5/26.
         if FeatureFlag::AgentView.is_enabled() {
@@ -130,12 +194,21 @@ impl SettingsInitializer {
                     return;
                 }
 
-                let is_existing_user = auth_state.is_onboarded() == Some(true);
-                let was_global_autodetection_enabled_for_existing_user =
-                    *ai_settings.ai_autodetection_enabled_internal && is_existing_user;
+                // No explicit choice on the old global flag means there is no user
+                // intent to carry over. Leave the new setting alone so its
+                // (fork-diverged) default keeps applying.
+                if !ai_settings
+                    .ai_autodetection_enabled_internal
+                    .is_value_explicitly_set()
+                {
+                    return;
+                }
+
+                let was_global_autodetection_enabled =
+                    *ai_settings.ai_autodetection_enabled_internal;
                 report_if_error!(ai_settings
                     .nld_in_terminal_enabled_internal
-                    .set_value(was_global_autodetection_enabled_for_existing_user, ctx));
+                    .set_value(was_global_autodetection_enabled, ctx));
             });
         }
 
@@ -199,3 +272,167 @@ impl Entity for SettingsInitializer {
 
 /// Mark PreferencesSyncer as global application state.
 impl SingletonEntity for SettingsInitializer {}
+
+#[cfg(test)]
+mod tests {
+    //! Inline because there is no `initializer_tests.rs` sibling and the
+    //! behaviour under test — "the NLD migration must not clobber this fork's
+    //! `nld_in_terminal_enabled` default" — belongs next to the migration it
+    //! guards.
+
+    use std::sync::Arc;
+
+    use warp_core::features::FeatureFlag;
+    use warp_core::settings::Setting;
+    use warpui::{App, SingletonEntity};
+
+    use super::SettingsInitializer;
+    use crate::auth::AuthState;
+    use crate::settings::AISettings;
+    use crate::test_util::settings::initialize_settings_for_tests;
+
+    fn run_startup_migrations(app: &mut App) {
+        app.add_singleton_model(|_| SettingsInitializer::new());
+        app.update(|ctx| {
+            // Mirrors `settings::run_startup_settings_initialization`: the local
+            // placeholder `AuthState` is what production hands the migrations,
+            // and it always reports `is_onboarded() == Some(true)`.
+            let auth_state = Arc::new(AuthState::new_for_test());
+            SettingsInitializer::handle(ctx).update(ctx, |initializer, ctx| {
+                initializer.apply_startup_settings_migrations(auth_state, ctx);
+            });
+        });
+    }
+
+    /// The regression this file's long comment describes. Ported verbatim from
+    /// the pin, the NLD migration computes
+    /// `*ai_autodetection_enabled_internal (false here) && is_onboarded() (always
+    /// Some(true) here)` and *explicitly* writes `false`, permanently destroying
+    /// the fork's `true` default for every user who never touched the setting.
+    #[test]
+    fn untouched_user_keeps_the_fork_nld_default_and_gets_no_explicit_write() {
+        App::test((), |mut app| async move {
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+            initialize_settings_for_tests(&mut app);
+
+            // Precondition: this fork diverges from the pin here on purpose.
+            app.read(|ctx| {
+                let ai_settings = AISettings::as_ref(ctx);
+                assert!(
+                    *ai_settings.nld_in_terminal_enabled_internal,
+                    "precondition: this fork defaults nld_in_terminal_enabled to true"
+                );
+                assert!(
+                    !*ai_settings.ai_autodetection_enabled_internal,
+                    "precondition: ai_autodetection_enabled defaults to false (pin-aligned)"
+                );
+                assert!(
+                    !ai_settings
+                        .ai_autodetection_enabled_internal
+                        .is_value_explicitly_set(),
+                    "precondition: an untouched user has no explicit autodetection value"
+                );
+            });
+
+            run_startup_migrations(&mut app);
+
+            app.read(|ctx| {
+                let ai_settings = AISettings::as_ref(ctx);
+                assert!(
+                    *ai_settings.nld_in_terminal_enabled_internal,
+                    "the startup migration must not turn off NLD-in-terminal for a user \
+                     who never touched it -- that is the fork default that lets CJK input \
+                     in the terminal be routed to the agent"
+                );
+                assert!(
+                    !ai_settings
+                        .nld_in_terminal_enabled_internal
+                        .is_value_explicitly_set(),
+                    "the migration must not write an explicit value for an untouched user; \
+                     an explicit write would pin the setting forever, so that even deleting \
+                     this migration could not restore the default"
+                );
+            });
+        });
+    }
+
+    /// The migration still does its job for the only users this tree can
+    /// identify: those who explicitly configured the old global autodetection
+    /// flag before it was split per-surface. Without this, the fix above would
+    /// be indistinguishable from deleting the migration.
+    #[test]
+    fn explicit_autodetection_choice_is_carried_over_to_nld_in_terminal() {
+        App::test((), |mut app| async move {
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+            initialize_settings_for_tests(&mut app);
+
+            // The user explicitly turned the old global flag off.
+            app.update(|ctx| {
+                AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                    ai_settings
+                        .ai_autodetection_enabled_internal
+                        .set_value(false, ctx)
+                        .expect("in-memory preferences accept the write");
+                });
+            });
+            app.read(|ctx| {
+                assert!(
+                    AISettings::as_ref(ctx)
+                        .ai_autodetection_enabled_internal
+                        .is_value_explicitly_set(),
+                    "precondition: the explicit set must be recorded as explicit"
+                );
+            });
+
+            run_startup_migrations(&mut app);
+
+            app.read(|ctx| {
+                let ai_settings = AISettings::as_ref(ctx);
+                assert!(
+                    !*ai_settings.nld_in_terminal_enabled_internal,
+                    "an explicit 'do not auto-detect natural language' choice must carry \
+                     over to the new per-surface setting"
+                );
+                assert!(
+                    ai_settings
+                        .nld_in_terminal_enabled_internal
+                        .is_value_explicitly_set(),
+                    "carrying the choice over means writing it explicitly"
+                );
+            });
+        });
+    }
+
+    /// Turning the old flag on explicitly carries over too, in the other
+    /// direction. Keeps the test above from passing merely because the
+    /// migration writes `false` unconditionally.
+    #[test]
+    fn explicit_autodetection_enabled_carries_over_as_enabled() {
+        App::test((), |mut app| async move {
+            let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+            initialize_settings_for_tests(&mut app);
+
+            app.update(|ctx| {
+                AISettings::handle(ctx).update(ctx, |ai_settings, ctx| {
+                    ai_settings
+                        .ai_autodetection_enabled_internal
+                        .set_value(true, ctx)
+                        .expect("in-memory preferences accept the write");
+                });
+            });
+
+            run_startup_migrations(&mut app);
+
+            app.read(|ctx| {
+                let ai_settings = AISettings::as_ref(ctx);
+                assert!(*ai_settings.nld_in_terminal_enabled_internal);
+                assert!(ai_settings
+                    .nld_in_terminal_enabled_internal
+                    .is_value_explicitly_set());
+            });
+        });
+    }
+}

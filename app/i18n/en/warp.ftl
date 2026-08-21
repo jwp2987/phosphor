@@ -933,6 +933,8 @@ settings-privacy-policy-link = Read Phosphor's privacy policy
 # --- ANCHOR-SUB-AI-PAGE (agent-settings-ai-page) ---
 # Section / sub-headers
 settings-ai-warp-agent-header = Phosphor Agent
+settings-ai-master-switch-off = AI is turned off.
+settings-ai-master-switch-off-subtext = Every AI feature below is disabled because agents.warp_agent.is_any_ai_enabled is false. Use the switch above to turn AI back on.
 settings-ai-active-ai-section = Active AI
 settings-ai-input-section = Input
 settings-ai-mcp-servers-section = MCP Servers
@@ -2413,6 +2415,7 @@ toggle-setting-enable = Enable { $suffix }
 toggle-setting-disable = Disable { $suffix }
 
 toggle-suffix-active-ai = Active AI
+toggle-suffix-ai = AI
 toggle-suffix-ai-input-autodetect-agent = terminal command autodetection in agent input
 toggle-suffix-ai-input-autodetect-nld = natural language detection
 toggle-suffix-nld-in-terminal = agent prompt autodetection in terminal input

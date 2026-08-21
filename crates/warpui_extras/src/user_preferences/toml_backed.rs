@@ -188,12 +188,43 @@ impl TomlBackedUserPreferences {
 
     /// Flushes the in-memory TOML document to disk.
     ///
-    /// When writes are inhibited (because the initial parse failed), this
-    /// is a silent no-op to avoid overwriting the user's broken-but-fixable
-    /// file with empty defaults.
+    /// When writes are inhibited (because the initial parse failed), the
+    /// document is still *not* written — overwriting the user's
+    /// broken-but-fixable file with empty defaults would destroy their
+    /// settings — but this now reports that as an error instead of a silent
+    /// `Ok(())`.
+    ///
+    /// The silent `Ok(())` was a "failure cached as success": callers such as
+    /// `PrivacySettings::initialize_default_regexes_once` do work, observe a
+    /// successful write, and then persist a one-shot "already done" marker into
+    /// a *different* (native, still-writable) store. One launch with a syntax
+    /// error in `settings.toml` was enough to leave the recommended
+    /// secret-redaction regexes unwritten while the guard flag said they had
+    /// been seeded, and seeding never ran again. Reporting the error lets those
+    /// callers decline to record success.
+    ///
+    /// Callers of this are `write_value_with_hierarchy` and
+    /// `remove_value_with_hierarchy`, both in this file and both already
+    /// `Result`-returning, so the visible consequence is that public setting
+    /// writes fail loudly while the settings file cannot be parsed. They were
+    /// being discarded anyway, and the app already surfaces that state to the
+    /// user as `SettingsFileError::FileParseFailed`.
+    ///
+    /// Note this deliberately covers only the whole-file inhibition. The
+    /// per-key inhibition in `write_value_with_hierarchy` /
+    /// `remove_value_with_hierarchy` still returns `Ok(())`: that one is set by
+    /// the settings layer itself in this same process
+    /// (`crates/settings/src/lib.rs` `inhibit_writes_for_key`), so a caller that
+    /// cares can already know about it, and turning it into an error would make
+    /// "reset this setting to its default" fail for exactly the settings whose
+    /// stored value is broken.
     fn flush(&self) -> Result<(), Error> {
         if self.write_inhibited.get() {
-            return Ok(());
+            return Err(Error::Unknown(anyhow::anyhow!(
+                "settings file at {} could not be parsed, so writes are inhibited; \
+                 the value was updated in memory but not persisted",
+                self.file_path.display()
+            )));
         }
         let parent_dir = self
             .file_path

@@ -149,6 +149,31 @@ const ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER: &str = ".zap-app-group-sqlite-migra
 #[cfg(target_os = "macos")]
 const WARP_APP_GROUP_ID: &str = "2BBY89MBSN.dev.warp";
 
+/// The app ids this fork shipped under *before* the current one, newest first.
+///
+/// The App Group container at [`WARP_APP_GROUP_ID`] namespaces its state by
+/// bundle id (`warp_core::paths::secure_state_dir` joins
+/// `ProjectDirs::project_path()`, which is the bundle id on macOS), so the
+/// only directories that can hold rescuable data are the ones named after the
+/// app ids that were live while OSS builds still used the App Group.
+///
+/// The ids are historical facts, not derived values — deriving them from
+/// `ChannelState::app_id()` is exactly the bug this list replaces, because the
+/// live id is `dev.phosphor.Phosphor` and no data was ever written under it:
+/// `secure_state_dir()` has returned `None` for `Channel::Oss` since the same
+/// commit that added this migration.
+///
+/// * `dev.zap.Zap` — the id between the Zap rename (`a00ae6cfd`, 2026-05-21)
+///   and the Phosphor rename (`874c2f43d`, 2026-08-13).
+/// * `dev.openwarp.OpenWarp` — the id in force when this migration was written
+///   (`03ce9dcbb`, 2026-05-12), and therefore the one the stranded data is
+///   actually filed under.
+///
+/// Warp's own ids (`dev.warp.*`) are deliberately absent: that container
+/// belongs to a different application and is not ours to import.
+#[cfg(target_os = "macos")]
+const LEGACY_APP_GROUP_APP_IDS: &[&str] = &["dev.zap.Zap", "dev.openwarp.OpenWarp"];
+
 /// Callback used when deleting a local stored object. The parameter is the id
 /// of the object to delete. The `conn` passed in has already started a transaction.
 type DeleteCloudObjectFn =
@@ -546,8 +571,9 @@ pub(super) fn init_db() -> Result<SqliteConnection> {
 
     #[cfg(target_os = "macos")]
     if warp_core::channel::ChannelState::channel() == warp_core::channel::Channel::Oss {
-        if let Some(legacy_dir) = zap_legacy_app_group_sqlite_dir() {
-            if let Err(err) = migrate_zap_app_group_sqlite_if_needed(&db_path, &legacy_dir)
+        let legacy_dirs = zap_legacy_app_group_sqlite_dirs();
+        if !legacy_dirs.is_empty() {
+            if let Err(err) = migrate_zap_app_group_sqlite_if_needed(&db_path, &legacy_dirs)
                 .context("Failed to migrate Phosphor SQLite database out of legacy App Group")
             {
                 report_error!(err);
@@ -600,19 +626,48 @@ pub(super) fn init_db() -> Result<SqliteConnection> {
     setup_database(&database_file_path())
 }
 
+/// Builds the legacy App Group SQLite directories to search, newest id first.
+///
+/// Split out from [`zap_legacy_app_group_sqlite_dirs`] so the path computation
+/// itself is testable: it is a pure function of the home directory and
+/// [`LEGACY_APP_GROUP_APP_IDS`], with no filesystem or process-global input.
 #[cfg(target_os = "macos")]
-fn zap_legacy_app_group_sqlite_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|home_dir| {
-        home_dir
-            .join("Library/Group Containers")
-            .join(WARP_APP_GROUP_ID)
-            .join("Library/Application Support")
-            .join(warp_core::channel::ChannelState::app_id().to_string())
-    })
+fn legacy_app_group_sqlite_dirs_for_home(home_dir: &Path) -> Vec<PathBuf> {
+    LEGACY_APP_GROUP_APP_IDS
+        .iter()
+        .map(|legacy_app_id| {
+            home_dir
+                .join("Library/Group Containers")
+                .join(WARP_APP_GROUP_ID)
+                .join("Library/Application Support")
+                .join(legacy_app_id)
+        })
+        .collect()
 }
 
 #[cfg(target_os = "macos")]
-fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dir: &Path) -> Result<()> {
+fn zap_legacy_app_group_sqlite_dirs() -> Vec<PathBuf> {
+    dirs::home_dir()
+        .map(|home_dir| legacy_app_group_sqlite_dirs_for_home(&home_dir))
+        .unwrap_or_default()
+}
+
+/// Copies a legacy App Group database into the current state directory.
+///
+/// `legacy_dirs` is searched in order and the first directory that actually
+/// holds a `warp.sqlite` wins, so the newest historical app id takes priority
+/// over older ones.
+///
+/// The marker is written only once the migration has *decided* something:
+/// either a copy happened, or a legacy database was found and deliberately
+/// rejected because the current database is newer. Finding no legacy database
+/// at all is not a decision — the source may simply not be restored yet (a new
+/// Mac, a Time Machine restore still in flight) — so that case leaves the
+/// marker absent and re-checks on the next launch. The re-check costs one
+/// `exists()` per candidate; caching it would strand the user's data forever,
+/// which is what this function exists to prevent.
+#[cfg(target_os = "macos")]
+fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dirs: &[PathBuf]) -> Result<()> {
     let Some(target_dir) = target_db.parent() else {
         return Ok(());
     };
@@ -622,11 +677,14 @@ fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dir: &Path) -
         return Ok(());
     }
 
-    let legacy_db = legacy_dir.join(WARP_SQLITE_FILE_NAME);
-    if !legacy_db.exists() {
-        write_zap_app_group_sqlite_migration_marker(&marker)?;
+    let Some(legacy_db) = legacy_dirs
+        .iter()
+        .map(|legacy_dir| legacy_dir.join(WARP_SQLITE_FILE_NAME))
+        .find(|legacy_db| legacy_db.exists())
+    else {
+        // Nothing to migrate *yet*. Deliberately no marker: see the doc comment.
         return Ok(());
-    }
+    };
 
     if !should_copy_legacy_zap_sqlite(&legacy_db, target_db)? {
         write_zap_app_group_sqlite_migration_marker(&marker)?;

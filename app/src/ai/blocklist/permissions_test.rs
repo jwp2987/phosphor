@@ -1251,6 +1251,7 @@ fn test_can_use_mcp_server_agent_decides_denylist_overrides_allowlist() {
 }
 
 #[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_sandboxed_mode_allows_read_write_files() {
     App::test((), |mut app| async move {
         let PermissionsTestState {

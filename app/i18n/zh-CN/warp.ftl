@@ -857,6 +857,8 @@ settings-network-test-failed-http = ❌ 连接失败:{$error}
 # --- ANCHOR-SUB-AI-PAGE (agent-settings-ai-page) ---
 # 章节 / 副标题
 settings-ai-warp-agent-header = Phosphor 智能体
+settings-ai-master-switch-off = AI 已关闭。
+settings-ai-master-switch-off-subtext = 由于 agents.warp_agent.is_any_ai_enabled 为 false，下方所有 AI 功能均已停用。使用上方的开关可重新开启 AI。
 settings-ai-active-ai-section = 主动 AI
 settings-ai-input-section = 输入
 settings-ai-mcp-servers-section = MCP 服务器
@@ -2182,6 +2184,7 @@ toggle-setting-enable = 启用{ $suffix }
 toggle-setting-disable = 禁用{ $suffix }
 
 toggle-suffix-active-ai = 主动式 AI
+toggle-suffix-ai = AI
 toggle-suffix-ai-input-autodetect-agent = Agent 输入中的终端命令检测
 toggle-suffix-ai-input-autodetect-nld = 自然语言检测
 toggle-suffix-nld-in-terminal = 终端输入中的 Agent 提示词检测

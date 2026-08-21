@@ -278,9 +278,13 @@ define_settings_group!(AppEditorSettings, settings: [
 
 impl AppEditorSettings {
     pub fn toggle_cursor_blink(&mut self, ctx: &mut ModelContext<Self>) {
-        self.cursor_blink
-            .set_value(self.cursor_blink.other_value(), ctx)
-            .expect("failed to serialize CursorBlinkEnabled");
+        // Not `.expect(...)`: persistence can legitimately fail (a `settings.toml`
+        // that failed to parse inhibits writes, and I/O errors are now propagated
+        // rather than discarded by `Setting::write_to_preferences`), and a failed
+        // write must not crash the app.
+        warp_core::report_if_error!(self
+            .cursor_blink
+            .set_value(self.cursor_blink.other_value(), ctx));
         ctx.notify();
     }
 

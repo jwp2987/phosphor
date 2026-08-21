@@ -810,6 +810,8 @@ settings-network-test-failed-http = ❌ 接続失敗: {$error}
 # --- ANCHOR-SUB-AI-PAGE (agent-settings-ai-page) ---
 # Section / sub-headers
 settings-ai-warp-agent-header = Phosphor エージェント
+settings-ai-master-switch-off = AI はオフになっています。
+settings-ai-master-switch-off-subtext = agents.warp_agent.is_any_ai_enabled が false のため、以下のすべての AI 機能が無効です。上のスイッチで AI を再度オンにできます。
 settings-ai-active-ai-section = アクティブな AI
 settings-ai-input-section = 入力
 settings-ai-mcp-servers-section = MCP サーバー
@@ -2159,6 +2161,7 @@ toggle-setting-enable = { $suffix }を有効化
 toggle-setting-disable = { $suffix }を無効化
 
 toggle-suffix-active-ai = アクティブ AI
+toggle-suffix-ai = AI
 toggle-suffix-ai-input-autodetect-agent = エージェント入力でのターミナルコマンド自動検出
 toggle-suffix-ai-input-autodetect-nld = 自然言語検出
 toggle-suffix-nld-in-terminal = ターミナル入力でのエージェントプロンプト自動検出

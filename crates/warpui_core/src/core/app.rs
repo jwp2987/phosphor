@@ -2297,6 +2297,25 @@ impl AppContext {
         ModelHandle::new(model_id, &self.ref_counts)
     }
 
+    /// Registers `T`'s singleton model on this `App`.
+    ///
+    /// **Duplicate registration is not prevented here, only reported, and only
+    /// in debug.** The insert is unconditional, so registering `T` a second
+    /// time *replaces* the first handle before the `debug_assert!` below is
+    /// even evaluated. A debug build then panics; a release build (the shipped
+    /// profiles leave `debug-assertions` off) keeps the replacement silently,
+    /// and any `ModelHandle` handed out by an earlier
+    /// `get_singleton_model_handle` goes on pointing at the superseded model.
+    ///
+    /// That is latent, not live: production registers each singleton exactly
+    /// once, from `initialize_app` (`app/src/lib.rs`) or `run_daemon_app`
+    /// (`app/src/remote_server/mod.rs`), each of which runs once per `App` --
+    /// additional windows share the `App` and re-register nothing. The
+    /// duplicates that do happen are in test harnesses, which always build with
+    /// debug assertions on and so do get the panic; see the
+    /// `has_singleton_model` guards in `app/src/tui_test_support.rs`. Kept as a
+    /// `debug_assert!` to match the pinned oracle and to avoid introducing a
+    /// release-mode panic on a path that has never fired in production.
     pub fn add_singleton_model<T, F>(&mut self, build_model: F) -> ModelHandle<T>
     where
         T: SingletonEntity,
@@ -2306,8 +2325,8 @@ impl AppContext {
         let prev_value = self
             .singleton_models
             .insert(std::any::TypeId::of::<T>(), model_handle.clone().into());
-        // Panic in debug mode if this is the second time a singleton model was
-        // registered for type T.
+        // Debug-only report of a second registration for type T -- by the time
+        // this runs, the insert above has already replaced the previous handle.
         debug_assert!(
             prev_value.is_none(),
             "add_singleton_model() was called twice for {:?}",

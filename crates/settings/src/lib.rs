@@ -540,12 +540,24 @@ pub trait Setting {
                 key,
                 value
             );
-            let _ = preferences.write_value_with_hierarchy(
-                key,
-                value,
-                Self::hierarchy(),
-                Self::max_table_depth(),
-            );
+            // Propagate the write result rather than discarding it. This
+            // function's contract is "returns whether the value was changed in
+            // durable storage", and `let _ = ...` made it answer `Ok(true)`
+            // even when the backend had refused the write — a verdict computed
+            // and thrown away. Callers that record a one-shot "already
+            // initialized" marker on the strength of that answer (see
+            // `PrivacySettings::initialize_default_regexes_once`) then cache a
+            // failure as a permanent success.
+            preferences
+                .write_value_with_hierarchy(
+                    key,
+                    value,
+                    Self::hierarchy(),
+                    Self::max_table_depth(),
+                )
+                .with_context(|| {
+                    format!("Failed to persist setting {}", Self::storage_key())
+                })?;
             Ok(true)
         } else {
             Ok(false)
