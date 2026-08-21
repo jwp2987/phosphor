@@ -56,7 +56,7 @@ pub struct PaneData {
     hidden_panes: Vec<HiddenPane>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct HiddenPane {
     pub pane_id: PaneId,
     reason: HiddenPaneReason,
@@ -76,13 +76,52 @@ pub struct HiddenPane {
 /// never already a leaf. This fork splits them in and hides them instead, so
 /// the swap has to move the target out of its own slot first -- see
 /// [`PaneData::replace_pane`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DisplacedReplacement {
     /// The replacement was hidden as a child agent pane before it took the
     /// anchor's slot, so it must be re-hidden for the same reason on revert.
     /// Without this the pill that reveals the child would find it unhidden but
     /// invisible, and `show_pane_for_child_agent` would log "couldn't find it".
     was_hidden_for_child_agent: bool,
+    /// Exactly where the replacement's leaf sat before it was vacated:
+    /// position among its siblings, its parent branch's axis, and the flex
+    /// ratios a collapse would otherwise discard.
+    ///
+    /// Restoring with `split(original, replacement, Direction::Right)` -- what
+    /// this used to do -- is only ever right by accident: it re-inserts the
+    /// pane next to the *anchor* rather than where it came from, with a
+    /// default flex, on a horizontal axis. A swap-then-revert therefore
+    /// reordered and re-axised the layout, and because
+    /// `PaneGroup::snapshot_for_node` walks this same tree, the scrambled
+    /// layout was persisted and survived a restart.
+    slot: RemovedLeaf,
+}
+
+/// Where a leaf sat before it was taken out of the tree, in enough detail to
+/// put it back exactly. Produced by [`PaneNode::remove_leaf_recording_position`]
+/// and consumed by [`PaneNode::restore_leaf`].
+#[derive(Debug, Clone, PartialEq)]
+struct RemovedLeaf {
+    /// Child indices from the root down to the node the removal affected:
+    /// the leaf's parent branch, or -- when the removal collapsed that branch
+    /// -- the sibling node that took the branch's place.
+    path: Vec<usize>,
+    /// The index the leaf occupied among its parent branch's children.
+    index: usize,
+    /// The flex the leaf carried.
+    flex: f32,
+    /// The parent branch's axis, which a collapse discards along with it.
+    axis: SplitDirection,
+    /// `Some(flex)` when removing the leaf left the parent branch with a
+    /// single child and collapsed it into that sibling, carrying the flex the
+    /// sibling had. The collapse drops it, so rebuilding the branch has to
+    /// supply it from here.
+    collapsed_sibling_flex: Option<f32>,
+    /// A pane that sat inside the node at `path` immediately after the
+    /// removal. Restoration checks it is still there, so a tree restructured
+    /// while the leaf was out of it is detected rather than having the leaf
+    /// spliced into whatever now happens to live at those indices.
+    witness: Option<PaneId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -180,6 +219,19 @@ enum BranchRemoveResult {
     /// The pane was found and removed, leaving only a single node in the branch, so it needs to
     /// be collapsed into the parent
     Collapse(PaneNode),
+}
+
+/// The result of attempting to remove a pane from a branch while recording
+/// enough about where it sat to undo the removal exactly. The recording twin
+/// of [`BranchRemoveResult`].
+enum BranchRemoveRecord {
+    /// The pane was not found in this sub-tree
+    NotFound,
+    /// The pane was found and removed, no further action is needed
+    Removed(RemovedLeaf),
+    /// The pane was found and removed, leaving only a single node in the branch, so it needs to
+    /// be collapsed into the parent
+    Collapse(PaneNode, RemovedLeaf),
 }
 
 /// The result of attempting to find a pane with direction
@@ -480,25 +532,56 @@ impl PaneData {
             // Only record the displacement if the slot was actually vacated;
             // recording it otherwise would have revert re-insert a pane that
             // is still in the tree, recreating the duplicate from the other
-            // direction.
-            if self.remove(replacement_pane_id) {
-                if was_hidden_for_child_agent {
-                    self.show_pane_for_child_agent(replacement_pane_id);
+            // direction. The record is what makes the revert *exact* rather
+            // than approximate -- see [`DisplacedReplacement::slot`].
+            match self.take_pane_out_of_tree(replacement_pane_id) {
+                Some(slot) => {
+                    if was_hidden_for_child_agent {
+                        self.show_pane_for_child_agent(replacement_pane_id);
+                    }
+                    Some(DisplacedReplacement {
+                        was_hidden_for_child_agent,
+                        slot,
+                    })
                 }
-                Some(DisplacedReplacement {
-                    was_hidden_for_child_agent,
-                })
-            } else {
-                log::error!(
-                    "replace_pane: {replacement_pane_id:?} is a leaf but could not be vacated to take {original_pane_id:?}'s slot"
-                );
-                None
+                None => {
+                    log::error!(
+                        "replace_pane: {replacement_pane_id:?} is a leaf but could not be vacated to take {original_pane_id:?}'s slot"
+                    );
+                    None
+                }
             }
         } else {
             None
         };
 
-        // Hide the original pane for temporary replacement
+        // Replace the original pane with the replacement pane in the tree.
+        //
+        // This cannot fail. The guard at the top of this function proved the
+        // tree holds `original_pane_id`, and vacating the replacement's slot
+        // above only ever removes `replacement_pane_id`, so the same walk
+        // `contains_pane` just made still reaches the anchor's leaf. There is
+        // deliberately no rollback here: an earlier version of this function
+        // carried one and advertised it as a safety net, but nothing could
+        // reach it. Dead error handling is worse than none, because the next
+        // reader trusts it. The invariant is asserted instead.
+        let replaced = self
+            .root
+            .replace_pane(original_pane_id, replacement_pane_id);
+        debug_assert!(
+            replaced,
+            "replace_pane: {original_pane_id:?} was in the tree a moment ago but replace_pane could not find it"
+        );
+        if !replaced {
+            log::error!(
+                "replace_pane: {original_pane_id:?} was in the tree a moment ago but replace_pane could not find it"
+            );
+            return false;
+        }
+
+        // Hide the original pane for temporary replacement. Recorded only once
+        // the tree change is real, so the bookkeeping cannot outlive a
+        // replacement that did not happen.
         if is_temporary {
             self.hidden_panes
                 .push(HiddenPane::from_temporary_replacement(
@@ -508,36 +591,16 @@ impl PaneData {
                 ));
         }
 
-        // Replace the original pane with the replacement pane in the tree
-        let success = self
-            .root
-            .replace_pane(original_pane_id, replacement_pane_id);
-
-        if success {
-            if self.is_pane_hidden(&replacement_pane_id) {
-                // The replacement now owns a visible slot but is still flagged
-                // hidden, so that slot will render empty. Nothing in-tree can
-                // recover from this, so surface it rather than shipping a
-                // silently blank pane.
-                log::error!(
-                    "replace_pane: replacement {replacement_pane_id:?} took {original_pane_id:?}'s slot while still hidden"
-                );
-            }
-            return true;
+        if self.is_pane_hidden(&replacement_pane_id) {
+            // The replacement now owns a visible slot but is still flagged
+            // hidden, so that slot will render empty. Nothing in-tree can
+            // recover from this, so surface it rather than shipping a
+            // silently blank pane.
+            log::error!(
+                "replace_pane: replacement {replacement_pane_id:?} took {original_pane_id:?}'s slot while still hidden"
+            );
         }
-
-        // Roll the whole operation back so a failed replace is a no-op.
-        if is_temporary {
-            // If our pane replacement failed, remove the newly added pane from the hidden panes list
-            self.hidden_panes.pop();
-        }
-        if let Some(displaced) = displaced_replacement {
-            self.split(original_pane_id, replacement_pane_id, Direction::Right);
-            if displaced.was_hidden_for_child_agent {
-                self.hide_pane_for_child_agent(replacement_pane_id);
-            }
-        }
-        false
+        true
     }
 
     pub fn revert_temporary_replacement(&mut self, replacement_pane_id: PaneId) -> Option<PaneId> {
@@ -551,19 +614,33 @@ impl PaneData {
             // Replace the replacement pane with the original pane in the tree
             if self.root.replace_pane(replacement_pane_id, original_pane_id) {
                 // `replace_pane` vacated the replacement's own slot when it
-                // took the anchor's. Put it back, hidden exactly as it was, or
-                // the pill that reveals this child agent becomes a dead click:
-                // the pane would be in `pane_contents` but in no tree slot, and
-                // `show_pane_for_child_agent` would log "couldn't find it".
-                if let Some(displaced) = hidden_pane.displaced_replacement {
-                    if self.split(original_pane_id, replacement_pane_id, Direction::Right) {
-                        if displaced.was_hidden_for_child_agent {
-                            self.hide_pane_for_child_agent(replacement_pane_id);
-                        }
-                    } else {
+                // took the anchor's. Put it back -- in the slot it actually
+                // came from, at the same position among its siblings, on the
+                // same axis, with the same flex, and hidden exactly as it was.
+                // Anything less is a layout edit the user never made, and one
+                // `PaneGroup::snapshot_for_node` will persist; anything left
+                // off-tree makes the pill that reveals this child agent a dead
+                // click, because the pane would be in `pane_contents` but in no
+                // tree slot and `show_pane_for_child_agent` would log
+                // "couldn't find it".
+                if let Some(displaced) = hidden_pane.displaced_replacement.as_ref() {
+                    if !self.restore_displaced_pane(replacement_pane_id, &displaced.slot) {
+                        // The recorded slot no longer resolves: the tree was
+                        // restructured while the swap was live (a sibling
+                        // closed, say). Put the pane beside the anchor
+                        // instead -- that loses its position, but stranding it
+                        // off-tree loses the pane.
                         log::error!(
-                            "revert_temporary_replacement: failed to restore displaced replacement {replacement_pane_id:?} next to {original_pane_id:?}"
+                            "revert_temporary_replacement: {replacement_pane_id:?}'s original slot no longer exists; restoring it beside {original_pane_id:?} instead"
                         );
+                        if !self.split(original_pane_id, replacement_pane_id, Direction::Right) {
+                            log::error!(
+                                "revert_temporary_replacement: failed to restore displaced replacement {replacement_pane_id:?} next to {original_pane_id:?}"
+                            );
+                        }
+                    }
+                    if displaced.was_hidden_for_child_agent {
+                        self.hide_pane_for_child_agent(replacement_pane_id);
                     }
                 }
                 Some(original_pane_id)
@@ -601,6 +678,43 @@ impl PaneData {
         }
 
         successful_remove
+    }
+
+    /// Vacate `pane_id`'s slot, recording exactly where it sat so that
+    /// [`Self::restore_displaced_pane`] can put it back: same position among
+    /// its siblings, same split axis, same flex ratios -- including the flex
+    /// of a sibling that a collapsing removal would otherwise discard.
+    ///
+    /// Returns `None`, leaving the tree untouched, when `pane_id` holds no
+    /// leaf or holds the root leaf; the root cannot be vacated, exactly as
+    /// [`Self::remove`] cannot remove it.
+    fn take_pane_out_of_tree(&mut self, pane_id: PaneId) -> Option<RemovedLeaf> {
+        let mut removed = self.root.remove_leaf_recording_position(pane_id)?;
+        self.len = self.len.saturating_sub(1);
+        // Captured *after* the removal, so it names a pane the node at
+        // `removed.path` still holds -- which is what restoration re-checks.
+        let witness = self
+            .root
+            .node_at_path_mut(&removed.path)
+            .and_then(|node| node.pane_ids().first().copied());
+        removed.witness = witness;
+        Some(removed)
+    }
+
+    /// Put a leaf vacated by [`Self::take_pane_out_of_tree`] back exactly where
+    /// it was.
+    ///
+    /// Returns false, leaving the tree untouched, if the recorded slot no
+    /// longer resolves -- which means the tree was restructured while the pane
+    /// was out of it, and the caller has to fall back to an approximate
+    /// placement.
+    fn restore_displaced_pane(&mut self, pane_id: PaneId, slot: &RemovedLeaf) -> bool {
+        if self.root.restore_leaf(pane_id, slot) {
+            self.len += 1;
+            true
+        } else {
+            false
+        }
     }
 
     /// Get the child panes in an array sorted from left to right, up to down.
@@ -831,6 +945,94 @@ impl PaneNode {
                     true
                 }
             },
+        }
+    }
+
+    /// [`Self::remove`], but recording where the leaf sat so that
+    /// [`Self::restore_leaf`] can undo the removal exactly.
+    fn remove_leaf_recording_position(&mut self, pane_id: PaneId) -> Option<RemovedLeaf> {
+        match self {
+            // Leaves can only be removed from the containing branch
+            PaneNode::Leaf(_) => None,
+            PaneNode::Branch(branch) => match branch.remove_recording_position(pane_id) {
+                BranchRemoveRecord::NotFound => None,
+                BranchRemoveRecord::Removed(removed) => Some(removed),
+                BranchRemoveRecord::Collapse(last_node, removed) => {
+                    *self = last_node;
+                    Some(removed)
+                }
+            },
+        }
+    }
+
+    /// Walk `path` -- child indices, from this node down -- and return the node
+    /// it addresses, or `None` if it no longer resolves.
+    fn node_at_path_mut(&mut self, path: &[usize]) -> Option<&mut PaneNode> {
+        let mut node = self;
+        for index in path {
+            let PaneNode::Branch(branch) = node else {
+                return None;
+            };
+            let (_, child) = branch.nodes.get_mut(*index)?;
+            node = child;
+        }
+        Some(node)
+    }
+
+    /// Undo a [`Self::remove_leaf_recording_position`], restoring the leaf's
+    /// position among its siblings, its parent branch's axis, and both its own
+    /// flex and -- when the removal collapsed the branch -- its sibling's.
+    ///
+    /// Returns false without touching the tree if the recorded slot no longer
+    /// describes the tree.
+    fn restore_leaf(&mut self, pane_id: PaneId, removed: &RemovedLeaf) -> bool {
+        let Some(node) = self.node_at_path_mut(&removed.path) else {
+            return false;
+        };
+        if let Some(witness) = removed.witness
+            && !node.contains_pane(witness)
+        {
+            // The indices still resolve, but to something else: the tree was
+            // restructured while the leaf was out of it.
+            return false;
+        }
+
+        match removed.collapsed_sibling_flex {
+            // The removal collapsed the parent branch into this node. Rebuild
+            // the branch around it, both children back at their old index and
+            // flex, on the axis the collapse threw away.
+            Some(sibling_flex) => {
+                let sibling = mem::replace(node, PaneNode::Leaf(pane_id));
+                let restored = (PaneFlex(removed.flex), PaneNode::Leaf(pane_id));
+                let sibling = (PaneFlex(sibling_flex), sibling);
+                let nodes = if removed.index == 0 {
+                    vec![restored, sibling]
+                } else {
+                    vec![sibling, restored]
+                };
+                *node = PaneNode::Branch(PaneBranch {
+                    axis: removed.axis,
+                    nodes,
+                    dividers: vec![Divider::new()],
+                });
+                true
+            }
+            // The parent branch survived the removal, so insert back into it.
+            None => {
+                let PaneNode::Branch(branch) = node else {
+                    return false;
+                };
+                if branch.axis != removed.axis || removed.index > branch.nodes.len() {
+                    return false;
+                }
+                branch.nodes.insert(
+                    removed.index,
+                    (PaneFlex(removed.flex), PaneNode::Leaf(pane_id)),
+                );
+                let divider_index = removed.index.min(branch.dividers.len());
+                branch.dividers.insert(divider_index, Divider::new());
+                true
+            }
         }
     }
 
@@ -1155,6 +1357,63 @@ impl PaneBranch {
         }
 
         BranchRemoveResult::NotFound
+    }
+
+    /// [`Self::remove`], but recording the removed leaf's index, flex and
+    /// parent axis -- and, on a collapse, the surviving sibling's flex -- so
+    /// the removal can be undone exactly.
+    fn remove_recording_position(&mut self, pane_id_to_remove: PaneId) -> BranchRemoveRecord {
+        // Walks children in the same order as `Self::remove`, so the two agree
+        // on which leaf they find when a pane id somehow appears twice.
+        let mut leaf_index = None;
+        for (idx, (_, node)) in self.nodes.iter_mut().enumerate() {
+            match node {
+                PaneNode::Branch(_) => {
+                    if let Some(mut removed) =
+                        node.remove_leaf_recording_position(pane_id_to_remove)
+                    {
+                        removed.path.insert(0, idx);
+                        return BranchRemoveRecord::Removed(removed);
+                    }
+                }
+                PaneNode::Leaf(pane) => {
+                    if *pane == pane_id_to_remove {
+                        leaf_index = Some(idx);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let Some(idx) = leaf_index else {
+            return BranchRemoveRecord::NotFound;
+        };
+
+        let (flex, _) = self.nodes.remove(idx);
+        if self.dividers.is_empty() {
+            log::error!("Attempted to remove a pane when there are no dividers!");
+        } else {
+            self.dividers.remove(idx.min(self.dividers.len() - 1));
+        }
+
+        let mut removed = RemovedLeaf {
+            path: Vec::new(),
+            index: idx,
+            flex: flex.0,
+            axis: self.axis,
+            collapsed_sibling_flex: None,
+            witness: None,
+        };
+
+        if self.nodes.len() == 1 {
+            // Safety: We know that there is an element in `self.nodes`
+            let (sibling_flex, sibling) = self.nodes.pop().unwrap();
+            // The collapse drops this flex, so carry it out for restoration.
+            removed.collapsed_sibling_flex = Some(sibling_flex.0);
+            BranchRemoveRecord::Collapse(sibling, removed)
+        } else {
+            BranchRemoveRecord::Removed(removed)
+        }
     }
 
     fn get_children(&self) -> Vec<PaneId> {
@@ -1741,6 +2000,45 @@ impl From<crate::launch_configs::launch_config::SplitDirection> for SplitDirecti
 mod swap_layout_tests {
     use super::*;
 
+    /// The full structure of a pane tree: every leaf, in order, under the
+    /// branch axes and flex ratios that place it.
+    ///
+    /// Assertions on `pane_ids().len()`, or on `visible_pane_ids()` while the
+    /// pane in question is hidden, cannot see a reordering or a re-axising --
+    /// which is precisely how an approximate revert shipped. Comparing a
+    /// `Shape` taken before the swap with one taken after the revert can.
+    #[derive(Debug, PartialEq)]
+    enum Shape {
+        Leaf(PaneId),
+        Branch(SplitDirection, Vec<(f32, Shape)>),
+    }
+
+    fn shape(node: &PaneNode) -> Shape {
+        match node {
+            PaneNode::Leaf(pane_id) => Shape::Leaf(*pane_id),
+            PaneNode::Branch(branch) => Shape::Branch(
+                branch.axis,
+                branch
+                    .nodes
+                    .iter()
+                    .map(|(flex, child)| (flex.0, shape(child)))
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Give the root branch's children distinct, non-default flex values, as a
+    /// user dragging the dividers would.
+    fn set_root_flexes(tree: &mut PaneData, flexes: &[f32]) {
+        let PaneNode::Branch(branch) = &mut tree.root else {
+            panic!("expected the root to be a branch");
+        };
+        assert_eq!(branch.nodes.len(), flexes.len());
+        for ((flex, _), value) in branch.nodes.iter_mut().zip(flexes) {
+            *flex = PaneFlex(*value);
+        }
+    }
+
     /// Anchor + visible sibling + a child agent pane hidden in the tree --
     /// the shape a swap operates on. Returns `(tree, anchor, sibling, child)`.
     fn tree_with_hidden_child() -> (PaneData, PaneId, PaneId, PaneId) {
@@ -1830,19 +2128,26 @@ mod swap_layout_tests {
     }
 
     /// Restoring after a swap must put the child back the way it was found:
-    /// in the tree and hidden. Leaving it unhidden-but-off-tree would make the
-    /// pill that reveals it a dead click.
+    /// in the tree, in its own slot, and hidden. Leaving it
+    /// unhidden-but-off-tree would make the pill that reveals it a dead click;
+    /// putting it back in the wrong slot is a layout edit the user never made,
+    /// and one `PaneGroup::snapshot_for_node` persists across a restart.
     #[test]
     fn test_revert_restores_the_anchor_and_re_hides_the_displaced_child() {
         let (mut tree, anchor, sibling, child) = tree_with_hidden_child();
-        assert!(tree.replace_pane(anchor, child, true));
+        set_root_flexes(&mut tree, &[2.0, 3.0, 4.0]);
+        let before = shape(&tree.root);
 
+        assert!(tree.replace_pane(anchor, child, true));
         assert_eq!(tree.revert_temporary_replacement(child), Some(anchor));
 
-        // The anchor is back in its slot and the child is back in the tree.
-        assert!(tree.is_pane_in_tree(anchor));
-        assert!(tree.is_pane_in_tree(child));
-        assert_eq!(tree.pane_ids().len(), 3);
+        // Every leaf is back at its own index, under the same axis, with the
+        // same flex -- not merely "three panes are present somewhere".
+        assert_eq!(shape(&tree.root), before);
+        // Spelled out, because the count-only version of this assertion is
+        // what let a reordering ship: the child was last before the swap and
+        // must be last after the revert, not spliced in beside the anchor.
+        assert_eq!(tree.pane_ids(), vec![anchor, sibling, child]);
 
         // The child is hidden again, for the same reason as before the swap.
         assert!(tree.is_pane_hidden_for_child_agent(child));
@@ -1853,6 +2158,127 @@ mod swap_layout_tests {
         assert_eq!(tree.visible_pane_ids(), vec![anchor, sibling]);
         assert_eq!(tree.visible_pane_count(), 2);
         assert_eq!(tree.len(), 3);
+    }
+
+    /// The child does not have to sit to the right of the anchor, and the
+    /// branch holding it does not have to be horizontal. The revert used to
+    /// re-insert with `split(original, replacement, Direction::Right)`, which
+    /// hard-codes both: here that would move the child from before the anchor
+    /// to after it *and* wrap the anchor in a nested horizontal branch.
+    #[test]
+    fn test_revert_restores_a_child_that_sat_before_the_anchor_on_a_vertical_axis() {
+        let anchor = PaneId::dummy_pane_id();
+        let sibling = PaneId::dummy_pane_id();
+        let child = PaneId::dummy_pane_id();
+
+        let mut tree = PaneData::new(anchor);
+        tree.split(anchor, sibling, Direction::Down);
+        tree.split(anchor, child, Direction::Up);
+        tree.hide_pane_for_child_agent(child);
+        set_root_flexes(&mut tree, &[0.5, 1.5, 2.5]);
+
+        assert_eq!(tree.pane_ids(), vec![child, anchor, sibling]);
+        let before = shape(&tree.root);
+
+        assert!(tree.replace_pane(anchor, child, true));
+        assert_eq!(tree.pane_ids(), vec![child, sibling]);
+
+        assert_eq!(tree.revert_temporary_replacement(child), Some(anchor));
+
+        assert_eq!(shape(&tree.root), before);
+        assert_eq!(tree.pane_ids(), vec![child, anchor, sibling]);
+        assert!(tree.is_pane_hidden_for_child_agent(child));
+        assert_eq!(tree.visible_pane_ids(), vec![anchor, sibling]);
+        assert_eq!(tree.len(), 3);
+    }
+
+    /// Vacating the child from a two-pane branch collapses that branch into
+    /// the anchor, discarding the axis *and* both flex values. The revert has
+    /// to rebuild it, so the recorded slot carries the surviving sibling's
+    /// flex too -- the collapse is the one case where restoring the removed
+    /// leaf alone is not enough.
+    #[test]
+    fn test_revert_rebuilds_the_branch_a_collapsing_swap_destroyed() {
+        let anchor = PaneId::dummy_pane_id();
+        let child = PaneId::dummy_pane_id();
+
+        let mut tree = PaneData::new(anchor);
+        tree.split(anchor, child, Direction::Down);
+        tree.hide_pane_for_child_agent(child);
+        set_root_flexes(&mut tree, &[1.5, 2.5]);
+
+        let before = shape(&tree.root);
+        assert_eq!(
+            before,
+            Shape::Branch(
+                SplitDirection::Vertical,
+                vec![(1.5, Shape::Leaf(anchor)), (2.5, Shape::Leaf(child))],
+            )
+        );
+
+        assert!(tree.replace_pane(anchor, child, true));
+        // The branch really did collapse: the child now *is* the root.
+        assert_eq!(shape(&tree.root), Shape::Leaf(child));
+        assert_eq!(tree.len(), 1);
+
+        assert_eq!(tree.revert_temporary_replacement(child), Some(anchor));
+
+        assert_eq!(shape(&tree.root), before);
+        assert!(tree.is_pane_hidden_for_child_agent(child));
+        assert_eq!(tree.visible_pane_ids(), vec![anchor]);
+        assert_eq!(tree.len(), 2);
+    }
+
+    /// Closing a child agent pane that is the *original* side of an active
+    /// swap. This is the tree half of `PaneGroup::close_pane`'s child agent
+    /// branch: the child owns no tree slot and its only hidden entry is the
+    /// swap record, so the "already hidden?" test reads it as nothing to do
+    /// and the close is a no-op -- the pane stays off-tree forever and a later
+    /// revert of the pane that displaced it resurrects it. Reverting the swap
+    /// first and then hiding normally returns it to the fork's ordinary closed
+    /// state, in the tree and hidden, with no swap record left behind.
+    #[test]
+    fn test_closing_a_swapped_out_child_returns_it_to_its_own_hidden_slot() {
+        let anchor = PaneId::dummy_pane_id();
+        let revealed_child = PaneId::dummy_pane_id();
+        let other_child = PaneId::dummy_pane_id();
+
+        let mut tree = PaneData::new(anchor);
+        tree.split(anchor, revealed_child, Direction::Right);
+        tree.split(revealed_child, other_child, Direction::Right);
+        tree.hide_pane_for_child_agent(other_child);
+        set_root_flexes(&mut tree, &[1.0, 2.0, 3.0]);
+        let before = shape(&tree.root);
+
+        // The pill bar swaps the other child into the revealed child's slot.
+        assert!(tree.replace_pane(revealed_child, other_child, true));
+        assert!(!tree.is_pane_in_tree(revealed_child));
+        // Hidden, but as a swap original -- not as a child agent, which is
+        // why `is_pane_hidden` alone cannot tell close what to do.
+        assert!(tree.is_pane_hidden(&revealed_child));
+        assert!(!tree.is_pane_hidden_for_child_agent(revealed_child));
+
+        // What `PaneGroup::close_pane` now does for this shape.
+        let replacement = tree
+            .replacement_pane_for_original(revealed_child)
+            .expect("the child is the original side of an active swap");
+        assert_eq!(replacement, other_child);
+        assert_eq!(
+            tree.revert_temporary_replacement(replacement),
+            Some(revealed_child)
+        );
+        tree.hide_pane_for_child_agent(revealed_child);
+
+        // Both children are hidden in their own slots, the layout is
+        // untouched, and no swap record survives to resurrect anything.
+        assert_eq!(shape(&tree.root), before);
+        assert!(tree.is_pane_hidden_for_child_agent(revealed_child));
+        assert!(tree.is_pane_hidden_for_child_agent(other_child));
+        assert_eq!(tree.num_hidden_panes(), 2);
+        assert_eq!(tree.num_child_agent_hidden_panes(), 2);
+        assert_eq!(tree.replacement_pane_for_original(revealed_child), None);
+        assert_eq!(tree.visible_pane_ids(), vec![anchor]);
+        assert_eq!(tree.visible_pane_count(), 1);
     }
 
     /// A swap whose target was never in the tree (the pin's shape: a pane

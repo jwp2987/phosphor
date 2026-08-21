@@ -4416,6 +4416,30 @@ impl PaneGroup {
                 // pane it displaced off-tree, so revert the swap instead --
                 // that restores the anchor and puts the child back hidden.
                 self.panes.revert_temporary_replacement(pane_id);
+            } else if let Some(replacement_pane_id) =
+                self.panes.replacement_pane_for_original(pane_id)
+            {
+                // The mirror case: this child is the *original* side of an
+                // active swap (it was revealed, then another conversation was
+                // swapped into its slot). It owns no tree slot, and its only
+                // hidden entry is the swap record -- so the `is_pane_hidden`
+                // test below reads "already hidden, nothing to do" and the
+                // close becomes a no-op: the user closes a pane and nothing
+                // happens, the pane stays off-tree, and a later revert of
+                // `replacement_pane_id` resurrects it.
+                //
+                // `42effe840` handles this with a bare `remove_hidden_pane`,
+                // which works there because closing a child means detaching it
+                // from the tree anyway. Here closing means re-hiding it *in*
+                // the tree, and `remove_hidden_pane` would drop the child
+                // agent entry too and leave the pane visible. Reverting the
+                // swap serves the same purpose the pin's line served -- no
+                // stale swap record survives the close -- while landing in
+                // this fork's closed state: the child back in its own slot,
+                // hidden, and the pane that displaced it back where it came
+                // from.
+                self.panes.revert_temporary_replacement(replacement_pane_id);
+                self.panes.hide_pane_for_child_agent(pane_id);
             } else if !self.panes.is_pane_hidden(&pane_id) {
                 self.panes.hide_pane_for_child_agent(pane_id);
             }
