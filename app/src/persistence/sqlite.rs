@@ -164,15 +164,148 @@ const WARP_APP_GROUP_ID: &str = "2BBY89MBSN.dev.warp";
 /// commit that added this migration.
 ///
 /// * `dev.zap.Zap` — the id between the Zap rename (`a00ae6cfd`, 2026-05-21)
-///   and the Phosphor rename (`874c2f43d`, 2026-08-13).
-/// * `dev.openwarp.OpenWarp` — the id in force when this migration was written
-///   (`03ce9dcbb`, 2026-05-12), and therefore the one the stranded data is
-///   actually filed under.
+///   and the Phosphor rename (`874c2f43d`, 2026-08-13). Kept defensively only:
+///   the OSS App Group gate (`03ce9dcbb`, 2026-05-12) predates the Zap rename
+///   by nine days, so a stock build cannot have written here.
+/// * `dev.openwarp.OpenWarp` — the id from the OpenWarp rename (`f41f4bfac`,
+///   2026-04-30) until the gate landed in `03ce9dcbb`, and therefore the one
+///   most of the stranded data is filed under.
+/// * `dev.warp.WarpOss` — the id the OSS channel shipped under from the
+///   initial public release (`0dbd3d567`, 2026-04-28) until `f41f4bfac`
+///   renamed it. At `0dbd3d567`, `app/src/bin/oss.rs` set
+///   `AppId::new("dev", "warp", "WarpOss")` and `app/Cargo.toml` set
+///   `identifier = "dev.warp.WarpOss"`, both under `Channel::Oss`.
 ///
-/// Warp's own ids (`dev.warp.*`) are deliberately absent: that container
-/// belongs to a different application and is not ours to import.
+/// The exclusion is *upstream Warp's commercial channels* — `dev.warp.Warp`,
+/// `dev.warp.WarpPreview`, `dev.warp.WarpDev` — whose containers belong to a
+/// different application and are not ours to import. The `dev.warp.` prefix is
+/// not the test and never was: `dev.warp.WarpOss` carries it and is this
+/// lineage's own former identity, so an earlier version of this comment that
+/// excluded `dev.warp.*` wholesale excluded the fork's own first bundle id.
 #[cfg(target_os = "macos")]
-const LEGACY_APP_GROUP_APP_IDS: &[&str] = &["dev.zap.Zap", "dev.openwarp.OpenWarp"];
+const LEGACY_APP_GROUP_APP_IDS: &[&str] =
+    &["dev.zap.Zap", "dev.openwarp.OpenWarp", "dev.warp.WarpOss"];
+
+/// Format version of the migration marker's payload.
+///
+/// The marker is the migration's only memory, so a build that cannot re-read
+/// an existing marker is a build that cannot repair the decision recorded in
+/// it. Bumping this version makes every older marker unparseable, which is
+/// deliberate: an unparseable marker is treated as absent, so a fixed build
+/// re-evaluates the migration exactly once and then writes a marker of its own
+/// format. Without that, every user whose marker was written by a broken build
+/// would keep the broken build's verdict forever.
+///
+/// * v1 (implicit) — the payload was the literal `migrated\n`: no version
+///   line, and no distinction between "a legacy database was handled" and
+///   "nothing was found". Parses as `None`.
+/// * v2 — the format below.
+#[cfg(target_os = "macos")]
+const LEGACY_MIGRATION_MARKER_VERSION: u32 = 2;
+
+/// How many launches may come up empty before the search is abandoned.
+///
+/// The search is not free: reading inside another application's App Group
+/// container is what macOS prompts about, and `crates/warp_core/src/paths.rs`
+/// stopped probing that container for OSS builds (`03ce9dcbb`) precisely to
+/// stop the per-launch prompt. Scanning forever would reinstate it for every
+/// OSS user, essentially none of whom has legacy data. Three launches is the
+/// compromise: enough to catch a source that arrives while a Migration
+/// Assistant or Time Machine restore is still finishing, bounded enough that
+/// the steady state is one `read_to_string` of a file in our own directory.
+#[cfg(target_os = "macos")]
+const MAX_LEGACY_SCAN_ATTEMPTS: u32 = 3;
+
+/// Suffix appended to a live database this migration moves out of the way.
+#[cfg(target_os = "macos")]
+const DISPLACED_BY_MIGRATION_SUFFIX: &str = ".replaced-by-app-group-migration";
+
+/// What this migration has already recorded about a state directory.
+///
+/// Every launch either reaches a terminal state or records progress towards
+/// one. Recording nothing — which is what an earlier fix did on a miss — is
+/// not a third option: `init_db` creates the live database moments later, so
+/// the next launch sees a database that this code caused to exist and can no
+/// longer tell it apart from the user's own data.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyMigrationMarker {
+    /// A legacy database was found and dealt with — copied in, or deliberately
+    /// passed over in favour of the live one. Terminal.
+    Decided,
+    /// No legacy database has been found yet. `attempts` counts the launches
+    /// that came up empty; `target_was_absent` records whether the live
+    /// database was still missing on the first of them, which is the fact a
+    /// later launch cannot recover for itself.
+    NoLegacyDb {
+        attempts: u32,
+        target_was_absent: bool,
+    },
+}
+
+#[cfg(target_os = "macos")]
+impl LegacyMigrationMarker {
+    /// Parses a marker payload, or `None` if it is not a payload this build
+    /// understands. `None` means "re-evaluate once", which is what makes a
+    /// version bump a repair rather than a no-op.
+    fn parse(contents: &str) -> Option<Self> {
+        let mut fields = contents.split_whitespace();
+        let version = fields.next()?.strip_prefix('v')?.parse::<u32>().ok()?;
+        if version != LEGACY_MIGRATION_MARKER_VERSION {
+            return None;
+        }
+
+        match fields.next()? {
+            "decided" => Some(Self::Decided),
+            "no-legacy-db" => {
+                let mut attempts = 0;
+                let mut target_was_absent = false;
+                for field in fields {
+                    let (key, value) = field.split_once('=')?;
+                    match key {
+                        "attempts" => attempts = value.parse().ok()?,
+                        "target-was-absent" => target_was_absent = value.parse().ok()?,
+                        _ => return None,
+                    }
+                }
+                Some(Self::NoLegacyDb {
+                    attempts,
+                    target_was_absent,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    fn render(self) -> String {
+        match self {
+            Self::Decided => format!("v{LEGACY_MIGRATION_MARKER_VERSION} decided\n"),
+            Self::NoLegacyDb {
+                attempts,
+                target_was_absent,
+            } => format!(
+                "v{LEGACY_MIGRATION_MARKER_VERSION} no-legacy-db attempts={attempts} target-was-absent={target_was_absent}\n"
+            ),
+        }
+    }
+
+    /// Whether this state ends the search for good.
+    fn is_terminal(self) -> bool {
+        match self {
+            Self::Decided => true,
+            // A live database that already existed the first time the search
+            // came up empty can only ever win the comparison in
+            // [`should_copy_legacy_zap_sqlite`], so looking again has a
+            // foreordained answer and costs a container read for nothing. Only
+            // a fresh install — the one population a late-arriving source can
+            // actually be rescued into — keeps looking, and only briefly.
+            Self::NoLegacyDb {
+                attempts,
+                target_was_absent,
+            } => !target_was_absent || attempts >= MAX_LEGACY_SCAN_ATTEMPTS,
+        }
+    }
+}
 
 /// Callback used when deleting a local stored object. The parameter is the id
 /// of the object to delete. The `conn` passed in has already started a transaction.
@@ -658,22 +791,25 @@ fn zap_legacy_app_group_sqlite_dirs() -> Vec<PathBuf> {
 /// holds a `warp.sqlite` wins, so the newest historical app id takes priority
 /// over older ones.
 ///
-/// The marker is written only once the migration has *decided* something:
-/// either a copy happened, or a legacy database was found and deliberately
-/// rejected because the current database is newer. Finding no legacy database
-/// at all is not a decision — the source may simply not be restored yet (a new
-/// Mac, a Time Machine restore still in flight) — so that case leaves the
-/// marker absent and re-checks on the next launch. The re-check costs one
-/// `exists()` per candidate; caching it would strand the user's data forever,
-/// which is what this function exists to prevent.
+/// Every launch that gets this far writes a marker, because there is no such
+/// thing as "no decision" here. An earlier fix wrote nothing when the search
+/// came up empty, reasoning that the source might still be restored later —
+/// but [`init_db`] creates the live database immediately afterwards, so on the
+/// next launch the rescue would be judged against a database *this code* had
+/// just caused to exist, and the timestamp comparison below would reject the
+/// legacy data on every launch from then on. That is a permanent wrong answer
+/// wearing the appearance of an open question. The marker instead records what
+/// was seen, so a later launch can tell a self-created database from the
+/// user's own; see [`LegacyMigrationMarker`] and [`record_empty_legacy_scan`].
 #[cfg(target_os = "macos")]
 fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dirs: &[PathBuf]) -> Result<()> {
     let Some(target_dir) = target_db.parent() else {
         return Ok(());
     };
 
-    let marker = target_dir.join(ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER);
-    if marker.exists() {
+    let marker_path = target_dir.join(ZAP_APP_GROUP_SQLITE_MIGRATION_MARKER);
+    let marker = read_legacy_migration_marker(&marker_path);
+    if marker.is_some_and(LegacyMigrationMarker::is_terminal) {
         return Ok(());
     }
 
@@ -682,12 +818,11 @@ fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dirs: &[PathB
         .map(|legacy_dir| legacy_dir.join(WARP_SQLITE_FILE_NAME))
         .find(|legacy_db| legacy_db.exists())
     else {
-        // Nothing to migrate *yet*. Deliberately no marker: see the doc comment.
-        return Ok(());
+        return record_empty_legacy_scan(&marker_path, marker, target_db);
     };
 
-    if !should_copy_legacy_zap_sqlite(&legacy_db, target_db)? {
-        write_zap_app_group_sqlite_migration_marker(&marker)?;
+    if !should_copy_legacy_zap_sqlite(&legacy_db, target_db, marker)? {
+        write_legacy_migration_marker(&marker_path, LegacyMigrationMarker::Decided)?;
         return Ok(());
     }
 
@@ -697,10 +832,11 @@ fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dirs: &[PathB
             target_dir.display()
         )
     })?;
+    displace_existing_target_db(target_db)?;
     copy_sqlite_file(&legacy_db, target_db)?;
     copy_sqlite_sidecar(&legacy_db, target_db, "sqlite-wal")?;
     copy_sqlite_sidecar(&legacy_db, target_db, "sqlite-shm")?;
-    write_zap_app_group_sqlite_migration_marker(&marker)?;
+    write_legacy_migration_marker(&marker_path, LegacyMigrationMarker::Decided)?;
 
     safe_info!(
         safe: ("Migrated Phosphor SQLite database out of legacy App Group"),
@@ -710,9 +846,71 @@ fn migrate_zap_app_group_sqlite_if_needed(target_db: &Path, legacy_dirs: &[PathB
     Ok(())
 }
 
+/// Records a launch on which no legacy database was found.
+///
+/// The one fact worth carrying forward is whether the live database existed
+/// *before* the search first came up empty. By the next launch it exists
+/// either way — [`init_db`] will have created it — so the answer has to be
+/// captured now or not at all, and it is captured only once: later empty scans
+/// keep the first observation rather than re-reading the filesystem and
+/// overwriting `true` with `false`.
 #[cfg(target_os = "macos")]
-fn should_copy_legacy_zap_sqlite(legacy_db: &Path, target_db: &Path) -> Result<bool> {
+fn record_empty_legacy_scan(
+    marker_path: &Path,
+    marker: Option<LegacyMigrationMarker>,
+    target_db: &Path,
+) -> Result<()> {
+    let (attempts, target_was_absent) = match marker {
+        Some(LegacyMigrationMarker::NoLegacyDb {
+            attempts,
+            target_was_absent,
+        }) => (attempts.saturating_add(1), target_was_absent),
+        _ => (1, !target_db.exists()),
+    };
+
+    write_legacy_migration_marker(
+        marker_path,
+        LegacyMigrationMarker::NoLegacyDb {
+            attempts,
+            target_was_absent,
+        },
+    )
+}
+
+/// Decides whether a legacy database that has been found should replace the
+/// live one.
+///
+/// The discriminator is *provenance*, not modification time. [`init_db`]
+/// creates the live database on first launch, so from the second launch
+/// onwards a timestamp comparison answers "the live one is newer" for every
+/// user — including the user whose live database is an empty file this code
+/// caused to exist and whose legacy database is their entire history. mtime
+/// cannot see the difference; the marker can, because it was written before
+/// the live database existed.
+///
+/// mtime survives as the fallback for the case it can still answer honestly:
+/// no usable marker, so the live database was not created inside a window this
+/// migration was watching and its timestamp is a real signal about a real
+/// database.
+#[cfg(target_os = "macos")]
+fn should_copy_legacy_zap_sqlite(
+    legacy_db: &Path,
+    target_db: &Path,
+    marker: Option<LegacyMigrationMarker>,
+) -> Result<bool> {
     if !target_db.exists() {
+        return Ok(true);
+    }
+
+    if let Some(LegacyMigrationMarker::NoLegacyDb {
+        target_was_absent: true,
+        ..
+    }) = marker
+    {
+        // Everything in the live database was written after this migration had
+        // already established there was nothing to rescue, so the legacy
+        // database wins. Nothing is lost either way: the live file is moved
+        // aside rather than overwritten.
         return Ok(true);
     }
 
@@ -720,6 +918,36 @@ fn should_copy_legacy_zap_sqlite(legacy_db: &Path, target_db: &Path) -> Result<b
     let target_modified = latest_sqlite_modified_time(target_db)?;
 
     Ok(legacy_modified > target_modified)
+}
+
+/// Moves an existing live database, and its sidecars, out of the way.
+///
+/// Copying over the main file alone would leave a `-wal` belonging to the
+/// *old* database beside the new one, which is a corrupt pair rather than a
+/// migration. Renaming instead of deleting also means the displaced database
+/// is still on disk if the rescue turns out to have been the wrong call.
+#[cfg(target_os = "macos")]
+fn displace_existing_target_db(target_db: &Path) -> Result<()> {
+    for extension in [None, Some("sqlite-wal"), Some("sqlite-shm")] {
+        let path = match extension {
+            None => target_db.to_path_buf(),
+            Some(extension) => target_db.with_extension(extension),
+        };
+        if !path.exists() {
+            continue;
+        }
+
+        let mut displaced = path.clone().into_os_string();
+        displaced.push(DISPLACED_BY_MIGRATION_SUFFIX);
+        std::fs::rename(&path, PathBuf::from(displaced)).with_context(|| {
+            format!(
+                "Failed to move `{}` aside before restoring the legacy database",
+                path.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -769,9 +997,19 @@ fn copy_sqlite_file(source: &Path, target: &Path) -> Result<()> {
     })
 }
 
+/// Reads the marker, or `None` if it is missing, unreadable, or written in a
+/// format this build does not understand.
+///
+/// All three collapse to "no record", which is what re-opens the migration for
+/// one evaluation after a version bump.
 #[cfg(target_os = "macos")]
-fn write_zap_app_group_sqlite_migration_marker(marker: &Path) -> Result<()> {
-    std::fs::write(marker, b"migrated\n")
+fn read_legacy_migration_marker(marker: &Path) -> Option<LegacyMigrationMarker> {
+    LegacyMigrationMarker::parse(&std::fs::read_to_string(marker).ok()?)
+}
+
+#[cfg(target_os = "macos")]
+fn write_legacy_migration_marker(marker: &Path, state: LegacyMigrationMarker) -> Result<()> {
+    std::fs::write(marker, state.render())
         .with_context(|| format!("Failed to write migration marker `{}`", marker.display()))
 }
 

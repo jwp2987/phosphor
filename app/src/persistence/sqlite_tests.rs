@@ -1053,6 +1053,16 @@ fn test_path_encode_decode() {
 }
 
 #[cfg(target_os = "macos")]
+const LEGACY_MIGRATION_MARKER_FILE: &str = ".zap-app-group-sqlite-migrated";
+
+/// Reads the migration marker's payload, failing the test if it is absent.
+#[cfg(target_os = "macos")]
+fn read_migration_marker(state_dir: &std::path::Path) -> String {
+    fs::read_to_string(state_dir.join(LEGACY_MIGRATION_MARKER_FILE))
+        .expect("a migration marker should have been written")
+}
+
+#[cfg(target_os = "macos")]
 #[test]
 fn test_migrate_zap_app_group_sqlite_copies_newer_legacy_files() {
     use super::migrate_zap_app_group_sqlite_if_needed;
@@ -1086,9 +1096,12 @@ fn test_migrate_zap_app_group_sqlite_copies_newer_legacy_files() {
         fs::read_to_string(target_db.with_extension("sqlite-shm")).unwrap(),
         "legacy-shm"
     );
-    assert!(state_dir
-        .join(".zap-app-group-sqlite-migrated")
-        .exists());
+    // The displaced database is moved aside, not destroyed.
+    assert_eq!(
+        fs::read_to_string(state_dir.join("warp.sqlite.replaced-by-app-group-migration")).unwrap(),
+        "old-target"
+    );
+    assert_eq!(read_migration_marker(&state_dir), "v2 decided\n");
 }
 
 #[cfg(target_os = "macos")]
@@ -1123,6 +1136,43 @@ fn test_migrate_zap_app_group_sqlite_copies_when_legacy_wal_is_newer() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn test_migrate_zap_app_group_sqlite_stale_target_wal_does_not_survive_the_copy() {
+    use super::migrate_zap_app_group_sqlite_if_needed;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let legacy_dir = tempdir.path().join("legacy");
+    let state_dir = tempdir.path().join("state");
+    let legacy_db = legacy_dir.join("warp.sqlite");
+    let target_db = state_dir.join("warp.sqlite");
+    fs::create_dir_all(&legacy_dir).expect("legacy dir should be created");
+    fs::create_dir_all(&state_dir).expect("state dir should be created");
+
+    // The live database has a WAL; the legacy one does not. Copying only the
+    // main file would leave the *old* WAL beside the *new* database, which is
+    // a corrupt pair rather than a migration.
+    fs::write(&target_db, "target-db").expect("target db should be written");
+    fs::write(target_db.with_extension("sqlite-wal"), "target-wal")
+        .expect("target wal should be written");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    fs::write(&legacy_db, "legacy-db").expect("legacy db should be written");
+
+    migrate_zap_app_group_sqlite_if_needed(&target_db, &[legacy_dir])
+        .expect("migration should succeed");
+
+    assert_eq!(fs::read_to_string(&target_db).unwrap(), "legacy-db");
+    assert!(
+        !target_db.with_extension("sqlite-wal").exists(),
+        "the replaced database's WAL must not be left beside the new database"
+    );
+    assert_eq!(
+        fs::read_to_string(state_dir.join("warp.sqlite-wal.replaced-by-app-group-migration"))
+            .unwrap(),
+        "target-wal"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn test_migrate_zap_app_group_sqlite_marker_skips_copy() {
     use super::migrate_zap_app_group_sqlite_if_needed;
 
@@ -1133,18 +1183,77 @@ fn test_migrate_zap_app_group_sqlite_marker_skips_copy() {
     fs::create_dir_all(&legacy_dir).expect("legacy dir should be created");
     fs::create_dir_all(&state_dir).expect("state dir should be created");
 
+    // A legacy database that would otherwise win: newer than the live one, and
+    // the live one is missing entirely. The settled marker still stops it.
     fs::write(legacy_dir.join("warp.sqlite"), "legacy-db").expect("legacy db should be written");
-    fs::write(&target_db, "target-db").expect("target db should be written");
-    fs::write(
-        state_dir.join(".zap-app-group-sqlite-migrated"),
-        "migrated\n",
-    )
-    .expect("marker should be written");
+    fs::write(state_dir.join(LEGACY_MIGRATION_MARKER_FILE), "v2 decided\n")
+        .expect("marker should be written");
 
     migrate_zap_app_group_sqlite_if_needed(&target_db, &[legacy_dir])
         .expect("migration should succeed");
 
-    assert_eq!(fs::read_to_string(&target_db).unwrap(), "target-db");
+    assert!(
+        !target_db.exists(),
+        "a settled marker must stop the search before the container is read"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_migrate_zap_app_group_sqlite_re_evaluates_a_marker_from_an_older_format() {
+    use super::migrate_zap_app_group_sqlite_if_needed;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let legacy_dir = tempdir.path().join("legacy");
+    let state_dir = tempdir.path().join("state");
+    let target_db = state_dir.join("warp.sqlite");
+    fs::create_dir_all(&legacy_dir).expect("legacy dir should be created");
+    fs::create_dir_all(&state_dir).expect("state dir should be created");
+
+    fs::write(legacy_dir.join("warp.sqlite"), "legacy-db").expect("legacy db should be written");
+    // The v1 payload, written by the build whose verdict this fix exists to
+    // overturn. It carries no version and no verdict, so it must not be
+    // honoured: a user already hit by the old behaviour gets one re-evaluation.
+    fs::write(state_dir.join(LEGACY_MIGRATION_MARKER_FILE), "migrated\n")
+        .expect("marker should be written");
+
+    migrate_zap_app_group_sqlite_if_needed(&target_db, &[legacy_dir])
+        .expect("migration should succeed");
+
+    assert_eq!(fs::read_to_string(&target_db).unwrap(), "legacy-db");
+    assert_eq!(read_migration_marker(&state_dir), "v2 decided\n");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn test_legacy_migration_marker_round_trips_every_state() {
+    use super::LegacyMigrationMarker;
+
+    for state in [
+        LegacyMigrationMarker::Decided,
+        LegacyMigrationMarker::NoLegacyDb {
+            attempts: 2,
+            target_was_absent: true,
+        },
+        LegacyMigrationMarker::NoLegacyDb {
+            attempts: 0,
+            target_was_absent: false,
+        },
+    ] {
+        assert_eq!(
+            LegacyMigrationMarker::parse(&state.render()),
+            Some(state),
+            "marker payload `{}` should parse back to itself",
+            state.render().trim_end()
+        );
+    }
+
+    // Anything this build cannot read means "no record", which is what makes a
+    // version bump re-open the migration instead of silently honouring a
+    // verdict written by a build with a different idea of what the fields mean.
+    for unreadable in ["", "migrated\n", "v1 decided\n", "v3 decided\n", "v2 wat\n"] {
+        assert_eq!(LegacyMigrationMarker::parse(unreadable), None);
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1160,12 +1269,15 @@ fn test_legacy_app_group_sqlite_dirs_target_historical_app_ids() {
 
     // The App Group container is keyed by the bundle id that wrote the data, so
     // the candidates must be the ids this fork shipped under before the current
-    // one — newest first.
+    // one — newest first. `dev.warp.WarpOss` is the oldest of them and is *not*
+    // upstream's: it is what `Channel::Oss` shipped under at the initial public
+    // release (`0dbd3d567`), before `f41f4bfac` renamed it to OpenWarp.
     assert_eq!(
         rendered,
         vec![
             "/Users/example/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.zap.Zap".to_string(),
             "/Users/example/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.openwarp.OpenWarp".to_string(),
+            "/Users/example/Library/Group Containers/2BBY89MBSN.dev.warp/Library/Application Support/dev.warp.WarpOss".to_string(),
         ]
     );
 
@@ -1178,13 +1290,20 @@ fn test_legacy_app_group_sqlite_dirs_target_historical_app_ids() {
         "the live app id `{current_app_id}` must not be a legacy candidate: {rendered:?}"
     );
 
-    // Warp's own container contents belong to a different application.
-    assert!(
-        !rendered
-            .iter()
-            .any(|dir| dir.ends_with("dev.warp.Warp") || dir.ends_with("dev.warp.Warp-Stable")),
-        "Warp's own app data must not be imported: {rendered:?}"
-    );
+    // Upstream Warp's *commercial* channels belong to a different application.
+    // The `dev.warp.` prefix alone is not the test — `dev.warp.WarpOss` above
+    // carries it and is ours — so the exclusion is named channel by channel.
+    for foreign in [
+        "dev.warp.Warp",
+        "dev.warp.WarpPreview",
+        "dev.warp.WarpDev",
+        "dev.warp.Warp-Stable",
+    ] {
+        assert!(
+            !rendered.iter().any(|dir| dir.ends_with(foreign)),
+            "Warp's own app data (`{foreign}`) must not be imported: {rendered:?}"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -1199,8 +1318,9 @@ fn test_migrate_zap_app_group_sqlite_prefers_the_newest_app_id_directory() {
     let target_db = state_dir.join("warp.sqlite");
     fs::create_dir_all(&state_dir).expect("state dir should be created");
 
-    // Both historical containers hold data; the newer app id must win.
-    for (dir, contents) in dirs.iter().zip(["zap-db", "openwarp-db"]) {
+    // Every historical container holds data; the newest app id must win.
+    assert_eq!(dirs.len(), 3, "each historical app id needs a fixture");
+    for (dir, contents) in dirs.iter().zip(["zap-db", "openwarp-db", "warposs-db"]) {
         fs::create_dir_all(dir).expect("legacy dir should be created");
         fs::write(dir.join("warp.sqlite"), contents).expect("legacy db should be written");
     }
@@ -1208,7 +1328,7 @@ fn test_migrate_zap_app_group_sqlite_prefers_the_newest_app_id_directory() {
     migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
 
     assert_eq!(fs::read_to_string(&target_db).unwrap(), "zap-db");
-    assert!(state_dir.join(".zap-app-group-sqlite-migrated").exists());
+    assert_eq!(read_migration_marker(&state_dir), "v2 decided\n");
 }
 
 #[cfg(target_os = "macos")]
@@ -1223,20 +1343,36 @@ fn test_migrate_zap_app_group_sqlite_falls_back_to_the_older_app_id_directory() 
     let target_db = state_dir.join("warp.sqlite");
     fs::create_dir_all(&state_dir).expect("state dir should be created");
 
-    // Only the oldest container has data — the common case, since the App Group
-    // stopped being written the same day this migration was introduced.
+    // Only the oldest container has data. That is `dev.warp.WarpOss`, the id
+    // the OSS channel shipped under before the OpenWarp rename — the case the
+    // previous list could not reach at all.
     let oldest = dirs.last().expect("there should be a legacy candidate");
+    assert!(oldest.ends_with("dev.warp.WarpOss"));
     fs::create_dir_all(oldest).expect("legacy dir should be created");
-    fs::write(oldest.join("warp.sqlite"), "openwarp-db").expect("legacy db should be written");
+    fs::write(oldest.join("warp.sqlite"), "warposs-db").expect("legacy db should be written");
 
     migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
 
-    assert_eq!(fs::read_to_string(&target_db).unwrap(), "openwarp-db");
+    assert_eq!(fs::read_to_string(&target_db).unwrap(), "warposs-db");
 }
 
+/// The defect this test exists for: launch 1 finds nothing, `init_db` then
+/// creates the live database, and launch 2 finds the legacy database only
+/// *after* the live one exists and is newer than it.
+///
+/// The version that wrote no marker on a miss fails here: with no record of
+/// what launch 1 saw, launch 2 falls through to the timestamp comparison,
+/// which the just-created live database always wins. The version before that
+/// fails too, for the opposite reason — it marked the miss as settled and
+/// never looked again.
+///
+/// Note the ordering: the legacy database is created *before* launch 1 and
+/// only moved into place afterwards, so its mtime is genuinely older than the
+/// live database's. A test that created it after launch 1 would leave mtime
+/// pointing the right way by accident and pass against the broken code.
 #[cfg(target_os = "macos")]
 #[test]
-fn test_migrate_zap_app_group_sqlite_does_not_mark_a_missing_source_as_migrated() {
+fn test_migrate_zap_app_group_sqlite_rescues_a_source_that_arrives_after_the_first_launch() {
     use super::migrate_zap_app_group_sqlite_if_needed;
 
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -1246,22 +1382,108 @@ fn test_migrate_zap_app_group_sqlite_does_not_mark_a_missing_source_as_migrated(
     let target_db = state_dir.join("warp.sqlite");
     fs::create_dir_all(&state_dir).expect("state dir should be created");
 
-    // No legacy container at all. Nothing was migrated, so nothing may be
-    // recorded as migrated — otherwise a source that shows up later (a restore
-    // still in progress, a new machine) would never be looked at again.
+    // The user's real history, sitting on the backup volume with an old mtime.
+    let staged = home.join("staged-warp.sqlite");
+    fs::write(&staged, "rescued-db").expect("staged db should be written");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+
+    // Launch 1: the restore has not delivered anything yet.
     migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
-    assert!(!state_dir.join(".zap-app-group-sqlite-migrated").exists());
     assert!(!target_db.exists());
+    assert_eq!(
+        read_migration_marker(&state_dir),
+        "v2 no-legacy-db attempts=1 target-was-absent=true\n"
+    );
 
-    // The next launch, with the source present, still rescues it.
-    let oldest = dirs.last().expect("there should be a legacy candidate");
-    fs::create_dir_all(oldest).expect("legacy dir should be created");
-    fs::write(oldest.join("warp.sqlite"), "openwarp-db").expect("legacy db should be written");
+    // ...and then `init_db` creates the live database, which is now newer than
+    // anything the restore can deliver.
+    fs::write(&target_db, "freshly-created-db").expect("target db should be written");
+
+    // The restore completes. `rename` preserves the source's mtime.
+    let legacy_dir = dirs.last().expect("there should be a legacy candidate");
+    fs::create_dir_all(legacy_dir).expect("legacy dir should be created");
+    fs::rename(&staged, legacy_dir.join("warp.sqlite")).expect("legacy db should be restored");
+
+    // Launch 2: the rescue this whole migration exists for.
+    migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
+
+    assert_eq!(fs::read_to_string(&target_db).unwrap(), "rescued-db");
+    assert_eq!(
+        fs::read_to_string(state_dir.join("warp.sqlite.replaced-by-app-group-migration")).unwrap(),
+        "freshly-created-db",
+        "the database created between the two launches must be kept, not destroyed"
+    );
+    assert_eq!(read_migration_marker(&state_dir), "v2 decided\n");
+}
+
+/// The other half of the reconciliation: the search is not free, so it does not
+/// run forever. Reading inside another app's App Group container is what macOS
+/// prompts about, and almost no OSS user has legacy data at all.
+#[cfg(target_os = "macos")]
+#[test]
+fn test_migrate_zap_app_group_sqlite_stops_searching_after_a_bounded_number_of_misses() {
+    use super::migrate_zap_app_group_sqlite_if_needed;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let home = tempdir.path();
+    let dirs = super::legacy_app_group_sqlite_dirs_for_home(home);
+    let state_dir = home.join("state");
+    let target_db = state_dir.join("warp.sqlite");
+    fs::create_dir_all(&state_dir).expect("state dir should be created");
+
+    for attempt in 1..=super::MAX_LEGACY_SCAN_ATTEMPTS {
+        migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs)
+            .expect("migration should succeed");
+        assert_eq!(
+            read_migration_marker(&state_dir),
+            format!("v2 no-legacy-db attempts={attempt} target-was-absent=true\n")
+        );
+        fs::write(&target_db, "freshly-created-db").expect("target db should be written");
+    }
+
+    // A source that turns up after the window has closed is not taken.
+    let legacy_dir = dirs.last().expect("there should be a legacy candidate");
+    fs::create_dir_all(legacy_dir).expect("legacy dir should be created");
+    fs::write(legacy_dir.join("warp.sqlite"), "too-late-db").expect("legacy db should be written");
 
     migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
 
-    assert_eq!(fs::read_to_string(&target_db).unwrap(), "openwarp-db");
-    assert!(state_dir.join(".zap-app-group-sqlite-migrated").exists());
+    assert_eq!(
+        fs::read_to_string(&target_db).unwrap(),
+        "freshly-created-db"
+    );
+}
+
+/// An install that already had a database the first time the search came up
+/// empty can never be rescued into — a legacy database arriving later loses the
+/// comparison by construction — so it settles immediately rather than paying
+/// for a container read whose answer is already known.
+#[cfg(target_os = "macos")]
+#[test]
+fn test_migrate_zap_app_group_sqlite_settles_at_once_when_the_live_db_predates_the_search() {
+    use super::migrate_zap_app_group_sqlite_if_needed;
+
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let home = tempdir.path();
+    let dirs = super::legacy_app_group_sqlite_dirs_for_home(home);
+    let state_dir = home.join("state");
+    let target_db = state_dir.join("warp.sqlite");
+    fs::create_dir_all(&state_dir).expect("state dir should be created");
+    fs::write(&target_db, "target-db").expect("target db should be written");
+
+    migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
+    assert_eq!(
+        read_migration_marker(&state_dir),
+        "v2 no-legacy-db attempts=1 target-was-absent=false\n"
+    );
+
+    let legacy_dir = dirs.last().expect("there should be a legacy candidate");
+    fs::create_dir_all(legacy_dir).expect("legacy dir should be created");
+    fs::write(legacy_dir.join("warp.sqlite"), "legacy-db").expect("legacy db should be written");
+
+    migrate_zap_app_group_sqlite_if_needed(&target_db, &dirs).expect("migration should succeed");
+
+    assert_eq!(fs::read_to_string(&target_db).unwrap(), "target-db");
 }
 
 #[cfg(target_os = "macos")]
@@ -1276,8 +1498,9 @@ fn test_migrate_zap_app_group_sqlite_marks_a_rejected_legacy_db_as_settled() {
     fs::create_dir_all(&legacy_dir).expect("legacy dir should be created");
     fs::create_dir_all(&state_dir).expect("state dir should be created");
 
-    // The legacy database exists but the live one is newer: a real decision was
-    // made, so it is recorded and never revisited.
+    // The legacy database exists but the live one is newer and was never
+    // created by this migration's own doing: a real decision was made, so it is
+    // recorded and never revisited.
     fs::write(legacy_dir.join("warp.sqlite"), "legacy-db").expect("legacy db should be written");
     std::thread::sleep(std::time::Duration::from_secs(1));
     fs::write(&target_db, "target-db").expect("target db should be written");
@@ -1286,7 +1509,7 @@ fn test_migrate_zap_app_group_sqlite_marks_a_rejected_legacy_db_as_settled() {
         .expect("migration should succeed");
 
     assert_eq!(fs::read_to_string(&target_db).unwrap(), "target-db");
-    assert!(state_dir.join(".zap-app-group-sqlite-migrated").exists());
+    assert_eq!(read_migration_marker(&state_dir), "v2 decided\n");
 }
 
 #[test]
