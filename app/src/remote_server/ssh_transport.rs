@@ -192,41 +192,110 @@ async fn run_install_script(
     }
 }
 
-/// Install-script exit codes that must NOT fall through to
-/// [`scp_install_fallback`].
+/// What an `install_remote_server.sh` failure means for the SCP fallback.
 ///
-/// `install_remote_server.sh` exits:
-///   * 2 — unsupported arch/OS. No asset exists for this host; retrying the
-///     same download locally cannot help.
-///   * 3 — neither curl nor wget on the remote host. This is the one case the
-///     SCP fallback exists for: the *host* cannot download, but the client
-///     can, so downloading locally and pushing over the authenticated SSH
-///     channel is exactly the intended recovery. Deliberately absent here.
-///   * 4 — the client was built with no pinned SHA-256 for this platform.
-///   * 5 — no SHA-256 tool on the remote host, so the digest cannot be checked.
-///   * 6 — digest MISMATCH: the downloaded tarball is not the pinned release.
+/// The fallback re-downloads the *same* GitHub release tarball on the client
+/// and installs it through the script's staging branch, which skips digest
+/// verification on the documented assumption that a staged tarball is a
+/// locally cross-compiled dev binary that never crossed an untrusted network.
+/// For a fallback-fetched *release* tarball that assumption is false, so the
+/// fallback is only ever a legitimate recovery when nothing was verified in
+/// the first place — never as a second chance after verification failed.
 ///
-/// 4, 5 and 6 are integrity failures and must fail closed. The SCP fallback
-/// fetches the *same* GitHub release tarball locally and installs it through
-/// the staging branch of the script, which skips verification on the
-/// documented assumption that a staged tarball is a locally cross-compiled dev
-/// binary that never crossed an untrusted network. For a fallback-fetched
-/// release tarball that assumption is false, so letting 4/5/6 through would
-/// turn every integrity failure — including detected tampering — into an
-/// unverified install.
-///
-/// This is what makes the maintainer decision at `TODO.md:2866-2881` actually
-/// hold: that decision closed the supply-chain objection on the grounds that
-/// "an empty digest is fail-closed". It is fail-closed in the script, but the
-/// caller used to undo it. Now it does not.
-const INTEGRITY_FAILURE_EXIT_CODES: &[i32] = &[4, 5, 6];
+/// The three outcomes therefore have to be told apart, which is what the
+/// script's exit-code contract exists for. Fusing any two of them is the whole
+/// bug: "the host could not fetch" and "the bytes are not the release we
+/// pinned" are opposite verdicts, and reading one as the other is wrong in
+/// both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallFailureKind {
+    /// The remote host never obtained the bytes: no fetcher installed
+    /// (exit 3), or the fetch failed at the transport layer — DNS, connection
+    /// refused, TLS, timeout, HTTP 4xx/5xx (exit 7). Also covers an SSH-level
+    /// failure where the script did not run to completion at all.
+    ///
+    /// No integrity claim was made and none was violated, and nothing was
+    /// installed. The client downloading and pushing over the already
+    /// authenticated SSH channel is precisely the recovery the SCP fallback
+    /// was built for.
+    TransportFailed,
+    /// Integrity could not be established, or was established and FAILED:
+    /// exit 4 (this client was built with no pinned digest), 5 (no SHA-256
+    /// tool on the host, so the digest cannot be checked) and 6 (digest
+    /// MISMATCH — the download succeeded and the content is not the pinned
+    /// release, i.e. detected tampering).
+    ///
+    /// Fails closed. This is the security property; the fallback must not run.
+    IntegrityFailed,
+    /// Fatal for a reason the fallback cannot fix: exit 2 (unsupported
+    /// arch/OS — no asset exists for this host), 8 (the pinned tarball will
+    /// not open or holds no recognised binary, so re-fetching the identical
+    /// bytes is pointless), 9 (the script failed somewhere unclassified).
+    ///
+    /// Also the default for any code this client does not recognise. That
+    /// default is deliberately fail-closed: an unknown code means we cannot
+    /// tell whether verification happened, and "could not check" must never
+    /// collapse into "check passed". It is also what stops a future script
+    /// revision from silently re-opening this hole.
+    Fatal,
+}
 
-fn should_skip_scp_fallback(error: &InstallError) -> bool {
+/// Classifies an install failure against the exit-code contract documented at
+/// the top of `crates/remote_server/src/install_remote_server.sh`.
+///
+/// Both files carry the same table and `exit_codes_in_install_script_are_all_classified`
+/// pins them together by parsing the script's own `EXIT_*=` assignments.
+///
+/// A note on what this replaced, because the shape recurs: the previous
+/// version was a `should_skip_scp_fallback` boolean over the codes 2/4/5/6.
+/// It was correct about those codes and still ineffective, because
+/// `install_remote_server.sh` did not actually emit them under failure — it
+/// ran `curl` under `set -e`, and `set -e` aborts with the *failing command's*
+/// status. curl's status space overlaps this one, so a DNS failure (curl 6)
+/// arrived here as `6` and was hard-failed as a digest mismatch, while a
+/// connection refused (curl 7) or an HTTP 500 (curl 22) arrived as codes this
+/// list did not know and fell through to the unverified fallback. Classifying
+/// the codes correctly is only half the fix; the script has to emit them.
+fn classify_install_failure(error: &InstallError) -> InstallFailureKind {
     match error {
-        InstallError::ScriptFailed { exit_code, .. } => {
-            *exit_code == 2 || INTEGRITY_FAILURE_EXIT_CODES.contains(exit_code)
-        }
-        InstallError::Other(_) => false,
+        // The SSH run itself failed — the socket died, the script timed out,
+        // the process was killed. The script never reported a verdict, so
+        // there is no verdict to override; nothing unverified was installed.
+        InstallError::Other(_) => InstallFailureKind::TransportFailed,
+        InstallError::ScriptFailed { exit_code, .. } => match *exit_code {
+            3 | 7 => InstallFailureKind::TransportFailed,
+            4 | 5 | 6 => InstallFailureKind::IntegrityFailed,
+            _ => InstallFailureKind::Fatal,
+        },
+    }
+}
+
+/// The decision [`SshTransport::install_binary`] makes about a failed install.
+///
+/// This is the call site's routing, not a predicate the call site is free to
+/// consult and then ignore: `Fail` carries the exact message `install_binary`
+/// returns, so the two cannot diverge without the tests noticing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum InstallFallbackRoute {
+    /// Retry through [`scp_install_fallback`].
+    ScpFallback,
+    /// Give up with this message. No fallback.
+    Fail(String),
+}
+
+/// Routes a failed install script run. See [`InstallFailureKind`].
+fn route_install_failure(error: &InstallError) -> InstallFallbackRoute {
+    match classify_install_failure(error) {
+        InstallFailureKind::TransportFailed => InstallFallbackRoute::ScpFallback,
+        // Deliberately louder than a plain error: exit 6 means bytes served
+        // for this release did not match the digest compiled into this client,
+        // which is what tampering looks like from here. Operators need to see
+        // that it was refused rather than quietly retried.
+        InstallFailureKind::IntegrityFailed => InstallFallbackRoute::Fail(format!(
+            "remote-server install refused: integrity check failed, \
+             so the SCP fallback (which installs unverified) was NOT attempted: {error}"
+        )),
+        InstallFailureKind::Fatal => InstallFallbackRoute::Fail(error.to_string()),
     }
 }
 
@@ -789,16 +858,26 @@ impl RemoteTransport for SshTransport {
                 Ok(()) => verify_installed_binary(&socket_path)
                     .await
                     .map_err(|error| format!("{error:#}")),
-                Err(error) if should_skip_scp_fallback(&error) => Err(error.to_string()),
-                Err(error) => {
-                    log::warn!("remote-server install failed, trying SCP fallback: {error}");
-                    match scp_install_fallback(&socket_path).await {
-                        Ok(()) => Ok(()),
-                        Err(fallback_error) => {
-                            Err(format!("{error}; SCP fallback failed: {fallback_error:#}"))
+                // All of the policy lives in `route_install_failure`, which is
+                // what the tests exercise. This arm must stay a two-way
+                // dispatch with no judgement of its own: the previous version
+                // consulted a boolean predicate here, and the predicate was
+                // well tested while this call site was not tested at all.
+                Err(error) => match route_install_failure(&error) {
+                    InstallFallbackRoute::Fail(message) => {
+                        log::error!("remote-server install failed, no fallback: {message}");
+                        Err(message)
+                    }
+                    InstallFallbackRoute::ScpFallback => {
+                        log::warn!("remote-server install failed, trying SCP fallback: {error}");
+                        match scp_install_fallback(&socket_path).await {
+                            Ok(()) => Ok(()),
+                            Err(fallback_error) => {
+                                Err(format!("{error}; SCP fallback failed: {fallback_error:#}"))
+                            }
                         }
                     }
-                }
+                },
             }
         })
     }
@@ -950,6 +1029,22 @@ mod tests {
         }
     }
 
+    fn falls_back(error: &InstallError) -> bool {
+        route_install_failure(error) == InstallFallbackRoute::ScpFallback
+    }
+
+    // ---------------------------------------------------------------------
+    // The routing these tests pin is `route_install_failure`, which is the
+    // value `install_binary` matches on directly — including the exact string
+    // it returns on the fail-closed arms. An earlier round tested a
+    // `should_skip_scp_fallback` predicate instead; the predicate was right
+    // and the shipped behaviour was still wrong, partly because the call site
+    // had no test of its own and partly because the script never emitted the
+    // codes the predicate classified (see `classify_install_failure`). Hence
+    // both `route_install_failure` coverage and
+    // `exit_codes_in_install_script_are_all_classified` below.
+    // ---------------------------------------------------------------------
+
     // The SCP fallback re-fetches the same GitHub release tarball locally and
     // installs it through the script's *unverified* staging branch. So every
     // integrity failure the script reports must stop there rather than fall
@@ -958,19 +1053,60 @@ mod tests {
     #[test]
     fn integrity_failures_do_not_fall_through_to_unverified_scp_fallback() {
         for exit_code in [4, 5, 6] {
+            assert_eq!(
+                classify_install_failure(&script_failure(exit_code)),
+                InstallFailureKind::IntegrityFailed,
+            );
             assert!(
-                should_skip_scp_fallback(&script_failure(exit_code)),
+                !falls_back(&script_failure(exit_code)),
                 "exit {exit_code} is an integrity failure and must fail closed, \
                  not fall through to the unverified SCP fallback",
             );
         }
     }
 
+    // The security property, stated on its own so it cannot be lost inside a
+    // loop over three codes: exit 6 means the download SUCCEEDED and the bytes
+    // are not the release this client pinned. That is what tampering looks
+    // like from here, and it must be reported as a refusal — not retried, and
+    // not reported as a generic install error an operator would skim past.
+    #[test]
+    fn digest_mismatch_is_refused_loudly_and_never_retried() {
+        let route = route_install_failure(&script_failure(6));
+        let InstallFallbackRoute::Fail(message) = route else {
+            panic!("exit 6 (digest mismatch) must not route to the SCP fallback");
+        };
+        assert!(
+            message.contains("integrity check failed"),
+            "the refusal must say an integrity check failed, got: {message}",
+        );
+        assert!(
+            message.contains("NOT attempted"),
+            "the refusal must say the unverified fallback was not attempted, got: {message}",
+        );
+    }
+
     // Unsupported arch/OS: no asset exists, so retrying the same download
     // locally cannot help either.
     #[test]
     fn unsupported_platform_does_not_fall_through() {
-        assert!(should_skip_scp_fallback(&script_failure(2)));
+        assert_eq!(
+            classify_install_failure(&script_failure(2)),
+            InstallFailureKind::Fatal,
+        );
+        assert!(!falls_back(&script_failure(2)));
+    }
+
+    // A tarball that matched the pinned digest and then would not open, or
+    // held no recognised binary. The bytes are exactly what this client asked
+    // for, so the fallback would fetch them again and fail identically.
+    #[test]
+    fn unusable_verified_tarball_does_not_fall_through() {
+        assert_eq!(
+            classify_install_failure(&script_failure(8)),
+            InstallFailureKind::Fatal,
+        );
+        assert!(!falls_back(&script_failure(8)));
     }
 
     // Exit 3 is the case the fallback exists for: the remote host has neither
@@ -978,19 +1114,153 @@ mod tests {
     // no integrity claim was violated.
     #[test]
     fn missing_remote_fetcher_still_uses_scp_fallback() {
+        assert_eq!(
+            classify_install_failure(&script_failure(3)),
+            InstallFailureKind::TransportFailed,
+        );
         assert!(
-            !should_skip_scp_fallback(&script_failure(3)),
+            falls_back(&script_failure(3)),
             "exit 3 (no curl/wget on the host) is what the SCP fallback is for",
         );
     }
 
-    // Transport-level failures (SSH died, timeout) carry no exit code and keep
-    // the pre-existing fallback behaviour.
+    // Exit 7 is the other half of the same requirement and the one this round
+    // added: the host HAS a fetcher and the fetch failed — DNS, connection
+    // refused, TLS, timeout, HTTP 4xx/5xx. Nothing arrived, so nothing was
+    // verified and nothing was violated; the client fetching instead is the
+    // designed recovery, exactly as for exit 3.
+    //
+    // This case used to be unreachable. The script ran curl under `set -e`, so
+    // a DNS failure exited with curl's own 6 and was hard-failed as a digest
+    // mismatch — a regression against the fallback that used to work — while
+    // curl 7 and 22 fell through unrecognised into an unverified install.
     #[test]
-    fn non_script_failures_still_use_scp_fallback() {
-        assert!(!should_skip_scp_fallback(&InstallError::Other(anyhow!(
-            "ssh connection dropped"
-        ))));
-        assert!(!should_skip_scp_fallback(&script_failure(1)));
+    fn remote_download_failure_still_uses_scp_fallback() {
+        assert_eq!(
+            classify_install_failure(&script_failure(7)),
+            InstallFailureKind::TransportFailed,
+        );
+        assert!(
+            falls_back(&script_failure(7)),
+            "exit 7 (the host could not download) is a transport failure, not an \
+             integrity failure: nothing arrived, so nothing failed verification",
+        );
+    }
+
+    // Split out of the former `non_script_failures_still_use_scp_fallback`,
+    // which asserted two unrelated things under one name.
+    //
+    // The half that encodes a real requirement: an `InstallError::Other` is an
+    // SSH-level failure — the socket died, the run timed out, the process was
+    // killed. The script never returned a verdict, so there is no verdict to
+    // override and nothing unverified was installed. Falling back is correct.
+    #[test]
+    fn ssh_level_failures_still_use_scp_fallback() {
+        let error = InstallError::Other(anyhow!("ssh connection dropped"));
+        assert_eq!(
+            classify_install_failure(&error),
+            InstallFailureKind::TransportFailed,
+        );
+        assert!(falls_back(&error));
+    }
+
+    // The half that encoded the defect. The old test asserted that script exit
+    // 1 falls back, on the reasoning "any non-zero we don't recognise is
+    // harmless". That is the bug in miniature: an unrecognised code means we
+    // cannot tell whether verification ran, and "could not check" must not
+    // collapse into "check passed". Unknown codes now fail closed.
+    //
+    // Exit 1 in particular is what a bare `set -e` abort used to surface as,
+    // which is precisely the status that carries no information about whether
+    // the digest was checked.
+    #[test]
+    fn unrecognised_script_exit_codes_fail_closed() {
+        for exit_code in [1, 22, 42, 127, -1] {
+            assert_eq!(
+                classify_install_failure(&script_failure(exit_code)),
+                InstallFailureKind::Fatal,
+                "exit {exit_code} is not in the script's contract",
+            );
+            assert!(
+                !falls_back(&script_failure(exit_code)),
+                "exit {exit_code} carries no evidence that verification ran, so it must \
+                 not authorise the unverified SCP fallback",
+            );
+        }
+    }
+
+    // Exit 9 is the script's own backstop: `set -e` aborted somewhere the
+    // script did not anticipate, and it remaps that onto a reserved code
+    // rather than letting the failing command's status leak out. It is
+    // declared, but it still says "we do not know what happened" — so it fails
+    // closed for the same reason the unrecognised codes above do.
+    #[test]
+    fn unclassified_script_abort_fails_closed() {
+        assert_eq!(
+            classify_install_failure(&script_failure(9)),
+            InstallFailureKind::Fatal,
+        );
+        assert!(!falls_back(&script_failure(9)));
+    }
+
+    // Ties the Rust contract to the shell one. `install_remote_server.sh`
+    // declares its codes as `EXIT_<NAME>=<n>` assignments and uses only those
+    // names in its `exit` statements; this parses them back out of the
+    // rendered script and asserts each is deliberately classified rather than
+    // landing in the `Fatal` catch-all by accident.
+    //
+    // Without this, the two halves drift: the previous round classified codes
+    // 4/5/6 correctly in Rust while the script emitted curl's status instead,
+    // and nothing failed.
+    #[test]
+    fn exit_codes_in_install_script_are_all_classified() {
+        let script = remote_server::setup::install_script(None);
+
+        let declared: Vec<(String, i32)> = script
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("EXIT_")?.split_once('='))
+            .filter_map(|(name, value)| Some((format!("EXIT_{name}"), value.trim().parse().ok()?)))
+            .collect();
+
+        assert!(
+            declared.len() >= 8,
+            "expected the script to declare its exit-code contract as EXIT_*= assignments, \
+             found {declared:?}",
+        );
+
+        // Every declared code must be classified the way the contract says.
+        let expected = |name: &str| match name {
+            "EXIT_NO_FETCHER" | "EXIT_DOWNLOAD_FAILED" => InstallFailureKind::TransportFailed,
+            "EXIT_NO_PINNED_DIGEST" | "EXIT_NO_DIGEST_TOOL" | "EXIT_DIGEST_MISMATCH" => {
+                InstallFailureKind::IntegrityFailed
+            }
+            _ => InstallFailureKind::Fatal,
+        };
+
+        for (name, code) in &declared {
+            assert_eq!(
+                classify_install_failure(&script_failure(*code)),
+                expected(name.as_str()),
+                "{name} (exit {code}) is classified against the contract in \
+                 install_remote_server.sh; update both files together",
+            );
+        }
+
+        // And the codes the script actually exits with must all be declared
+        // ones, so no literal `exit 6` can sneak past the table above.
+        for line in script.lines() {
+            for token in line.split("exit ").skip(1) {
+                let literal = token.trim_start().trim_start_matches('"');
+                if literal.starts_with('$') {
+                    continue;
+                }
+                let digits: String = literal.chars().take_while(char::is_ascii_digit).collect();
+                assert!(
+                    digits.is_empty(),
+                    "install_remote_server.sh exits with the literal {digits} in {line:?}; \
+                     use one of the EXIT_* names so the contract stays in one place",
+                );
+            }
+        }
     }
 }

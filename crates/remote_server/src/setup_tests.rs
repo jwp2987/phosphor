@@ -848,6 +848,109 @@ fn install_script_rejects_download_failing_pinned_digest() {
     drop(home);
 }
 
+/// The regression this pins is the one a previous round shipped: `set -e` plus an unguarded
+/// `curl` made the script exit with **curl's** status, and curl's status space overlaps this
+/// script's own contract. A DNS failure (curl 6) surfaced as exit 6 — the code that means
+/// "digest MISMATCH" — so the client hard-failed a network outage as if it were tampering,
+/// losing the SCP fallback that used to handle it. In the other direction a connection
+/// refused (curl 7) or an HTTP 500 (curl 22) surfaced as codes the client did not recognise
+/// and fell through to the fallback, which installs *unverified*.
+///
+/// So the requirement is not "curl failures are handled" but "curl failures are
+/// DISTINGUISHABLE from a digest verdict": every transport failure, whatever curl's own
+/// status, must arrive as the single documented download-failure code and never as 6.
+#[cfg(unix)]
+#[test]
+fn download_failures_report_transport_failure_never_a_digest_verdict() {
+    // 6 = DNS resolution failed (the collision that caused the regression), 7 = connection
+    // refused, 22 = HTTP error such as 500, 28 = timeout, 35 = TLS handshake failure.
+    for curl_status in [6, 7, 22, 28, 35] {
+        let (home, install_dir, output) = run_download_install_with_failing_curl(curl_status);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_ne!(
+            output.status.code(),
+            Some(6),
+            "curl exit {curl_status} was reported as exit 6, which the client reads as a \
+             DIGEST MISMATCH -- a network failure must never be reported as tampering; \
+             stderr={stderr}",
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(7),
+            "curl exit {curl_status} must be reported as the documented download-failure \
+             code so the client can allow the SCP fallback; stderr={stderr}",
+        );
+        assert!(
+            stderr.contains("could not download"),
+            "the failure must name the cause; stderr={stderr}",
+        );
+
+        let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+        assert!(
+            !binary.exists(),
+            "nothing was downloaded, so nothing may be installed at {binary:?}",
+        );
+
+        drop(home);
+    }
+}
+
+/// Drives the production install script down its download branch with a `curl` shim that
+/// fails with `curl_status` and writes no output file. A digest is pinned, so reaching the
+/// digest comparison at all would be a bug: there is nothing to compare.
+#[cfg(unix)]
+fn run_download_install_with_failing_curl(
+    curl_status: i32,
+) -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    std::process::Output,
+) {
+    let home = tempfile::tempdir().expect("failed to create temp HOME");
+    let home_path = home.path().to_path_buf();
+
+    let shim_dir = home_path.join("shim");
+    std::fs::create_dir_all(&shim_dir).unwrap();
+    let curl_shim = shim_dir.join("curl");
+    std::fs::write(&curl_shim, format!("#!/bin/sh\nexit {curl_status}\n")).unwrap();
+    let mut perms = std::fs::metadata(&curl_shim).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&curl_shim, perms).unwrap();
+
+    // Pin a digest so the script takes the download branch rather than the fail-closed
+    // "no pinned digest" branch. Its value is irrelevant: no bytes ever arrive.
+    let pinned = "0".repeat(64);
+    let script = install_script(None).replace(
+        "expected_sha256=\"\"",
+        &format!("expected_sha256=\"{pinned}\""),
+    );
+    assert!(
+        script.contains(&format!("expected_sha256=\"{pinned}\"")),
+        "the test failed to pin a digest -- the script's case arms changed shape",
+    );
+
+    let path = format!(
+        "{}:{}",
+        shim_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let output = Command::new(bash_path())
+        .arg("-c")
+        .arg(&script)
+        .env("HOME", &home_path)
+        .env("PATH", path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to spawn bash");
+
+    let install_dir = std::path::PathBuf::from(
+        remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
+    );
+    (home, install_dir, output)
+}
+
 #[cfg(unix)]
 enum DigestUnderTest {
     Matching,

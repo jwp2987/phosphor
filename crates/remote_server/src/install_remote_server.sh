@@ -23,18 +23,70 @@
 #                             GitHub -- see the fail-closed check on the download path below.
 set -e
 
+# ---------------------------------------------------------------------------
+# EXIT-CODE CONTRACT
+#
+# This script's exit status is the client's ONLY signal about what went wrong,
+# and the client routes on it: some failures are grounds for the SCP fallback
+# (client downloads the tarball itself and pushes it over the authenticated
+# SSH channel) and some must fail closed. The mirror of this block lives in
+# `app/src/remote_server/ssh_transport.rs::classify_install_failure`; a test
+# there parses the `EXIT_*=` assignments below out of the rendered script and
+# asserts every one of them is classified, so the two cannot drift apart.
+#
+# Three outcomes have to stay DISTINGUISHABLE:
+#
+#   * transport failure -- the host could not fetch the bytes at all. Nothing
+#     was verified because there was nothing to verify. The SCP fallback is the
+#     designed recovery.
+#   * integrity failure -- the bytes arrived and are NOT the pinned release, or
+#     could not be checked. Fail closed. The SCP fallback installs through the
+#     unverified staging branch below, so treating this as retryable would turn
+#     detected tampering into an unverified install. This is the security
+#     property; do not weaken it.
+#   * success.
+#
+# Every fallible command is therefore either guarded (`|| code=$?`) or covered
+# by the ERR trap below. `set -e` on its own exits with the FAILING COMMAND'S
+# status, and curl's status space overlaps this one -- curl 6 (DNS failure) is
+# this script's "digest mismatch", curl 7 (connection refused) and 22 (HTTP
+# error) are unassigned here. Letting those leak meant a DNS failure was read
+# as tampering and hard-failed, while an attacker-injected RST or a 500 was
+# read as an unrecognised code and fell through to the unverified fallback.
+# Both directions were wrong, which is why nothing is left to `set -e` now.
+# ---------------------------------------------------------------------------
+EXIT_UNSUPPORTED_PLATFORM=2
+EXIT_NO_FETCHER=3
+EXIT_NO_PINNED_DIGEST=4
+EXIT_NO_DIGEST_TOOL=5
+EXIT_DIGEST_MISMATCH=6
+EXIT_DOWNLOAD_FAILED=7
+EXIT_BAD_TARBALL=8
+EXIT_INSTALL_FAILED=9
+
+# Backstop for anything not explicitly guarded: remap an unclassified `set -e`
+# abort onto EXIT_INSTALL_FAILED so a stray tool's exit status can never be
+# mistaken for one of the codes above. An explicit `exit N` does NOT go through
+# this trap, so the assignments above still reach the client verbatim.
+on_unexpected_error() {
+  status=$?
+  echo "error: install script failed unexpectedly at line $1 (status $status)" >&2
+  exit "$EXIT_INSTALL_FAILED"
+}
+trap 'on_unexpected_error $LINENO' ERR
+
 arch=$(uname -m)
 case "$arch" in
   x86_64|amd64)  arch_name=x86_64 ;;
   aarch64|arm64) arch_name=aarch64 ;;
-  *) echo "unsupported arch: $arch" >&2; exit 2 ;;
+  *) echo "unsupported arch: $arch" >&2; exit "$EXIT_UNSUPPORTED_PLATFORM" ;;
 esac
 
 os_kernel=$(uname -s)
 case "$os_kernel" in
   Darwin) os_name=macos ;;
   Linux)  os_name=linux ;;
-  *) echo "unsupported OS: $os_kernel" >&2; exit 2 ;;
+  *) echo "unsupported OS: $os_kernel" >&2; exit "$EXIT_UNSUPPORTED_PLATFORM" ;;
 esac
 
 install_dir="{install_dir}"
@@ -98,34 +150,57 @@ else
   if [ -z "$expected_sha256" ]; then
     echo "error: this client was built without a pinned SHA-256 for $os_name-$arch_name;" >&2
     echo "       refusing to install an unverified remote server from $url" >&2
-    exit 4
+    exit "$EXIT_NO_PINNED_DIGEST"
   fi
   # --proto/--proto-redir keep a redirect from downgrading the transport to plain HTTP;
   # release downloads legitimately redirect to a CDN, so -L has to stay.
+  #
+  # `|| fetch_status=$?` is load-bearing: it captures the fetcher's status instead of letting
+  # `set -e` abort with it. See the EXIT-CODE CONTRACT above -- an uncaptured curl status is
+  # indistinguishable from this script's own verdict.
+  fetch_status=0
   if command -v curl >/dev/null 2>&1; then
-    curl -fSL --proto '=https' --proto-redir '=https' --connect-timeout 15 "$url" -o "$tmpdir/zap.tar.gz"
+    curl -fSL --proto '=https' --proto-redir '=https' --connect-timeout 15 \
+      "$url" -o "$tmpdir/zap.tar.gz" || fetch_status=$?
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --https-only -O "$tmpdir/zap.tar.gz" "$url"
+    wget -q --https-only -O "$tmpdir/zap.tar.gz" "$url" || fetch_status=$?
   else
     echo "error: neither curl nor wget is available" >&2
-    exit 3
+    exit "$EXIT_NO_FETCHER"
+  fi
+  if [ "$fetch_status" -ne 0 ]; then
+    # DNS failure, connection refused, TLS failure, timeout, HTTP 4xx/5xx: the host never got
+    # the bytes, so no integrity claim was made and none was violated. This is a genuine
+    # transport failure and the SCP fallback is legitimate -- unlike the digest failures below.
+    echo "error: could not download the remote server tarball" >&2
+    echo "       url:          $url" >&2
+    echo "       fetcher exit: $fetch_status" >&2
+    exit "$EXIT_DOWNLOAD_FAILED"
   fi
 
   actual_sha256=$(compute_sha256 "$tmpdir/zap.tar.gz") || {
     echo "error: no SHA-256 tool available (need sha256sum, shasum or openssl);" >&2
     echo "       refusing to install an unverified remote server" >&2
-    exit 5
+    exit "$EXIT_NO_DIGEST_TOOL"
   }
   if [ "$actual_sha256" != "$expected_sha256" ]; then
+    # The download SUCCEEDED and the bytes are not the pinned release. Fail closed: the client
+    # must not retry this through the unverified staging path.
     echo "error: remote server tarball failed integrity check" >&2
     echo "       url:      $url" >&2
     echo "       expected: $expected_sha256" >&2
     echo "       actual:   $actual_sha256" >&2
-    exit 6
+    exit "$EXIT_DIGEST_MISMATCH"
   fi
 fi
 
-tar -xzf "$tmpdir/zap.tar.gz" -C "$tmpdir"
+# On the download path the digest already matched, so a tarball that will not open or holds no
+# recognised binary is a broken *pinned* artifact. Re-fetching it via the SCP fallback would
+# pull the identical bytes, so these are fatal rather than retryable.
+tar -xzf "$tmpdir/zap.tar.gz" -C "$tmpdir" || {
+  echo "error: could not extract the remote server tarball" >&2
+  exit "$EXIT_BAD_TARBALL"
+}
 
 bin="$tmpdir/{binary_name}"
 if [ ! -f "$bin" ]; then
@@ -137,7 +212,7 @@ if [ ! -f "$bin" ]; then
   # the one this client expects, so a broad name match costs nothing.
   bin=$(find "$tmpdir" -type f \( -name 'phosphor-oss' -o -name 'zap-oss' -o -name 'warp-oss' -o -name 'oz*' \) ! -path "$tmpdir/resources/*" ! -name '*.tar.gz' | head -n1)
 fi
-if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit 1; fi
+if [ -z "$bin" ]; then echo "no binary found in tarball" >&2; exit "$EXIT_BAD_TARBALL"; fi
 chmod +x "$bin"
 mv "$bin" "$install_dir/{binary_name}{version_suffix}"
 
