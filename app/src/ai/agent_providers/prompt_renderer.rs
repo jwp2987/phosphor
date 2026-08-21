@@ -713,8 +713,15 @@ struct PromptContext {
     /// The template renders the whitelist dynamically from this, no longer hardcoded.
     available_tools: Vec<String>,
     /// Whether this turn is in the `/plan`-triggered Plan Mode (read-only research mode).
-    /// Computed by `chat_stream::is_plan_mode_turn`; the template uses it to include
+    /// Computed by `chat_stream::request_plan_mode`; the template uses it to include
     /// `partials/plan_mode.j2`, injecting the read-only constraints + plan-output guidance.
+    ///
+    /// It must be that resolver and not `is_plan_mode_turn` (the payload-only half it
+    /// wraps): Plan Mode belongs to the turn, and a turn's follow-up round-trips carry only
+    /// tool results, so a payload-derived flag goes false the moment the model calls a
+    /// single tool. That took this block out of the system prompt from round-trip 2 onward
+    /// — while `build_tools_array` withdrew the write tools on the same wrong answer, i.e.
+    /// the model was silently left without the tools *and* without the explanation.
     plan_mode: bool,
 }
 

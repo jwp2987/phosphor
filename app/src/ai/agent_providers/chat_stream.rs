@@ -1853,7 +1853,7 @@ fn build_chat_request(
             .iter()
             .any(|c| matches!(c, AIAgentContext::ExecutionEnvironment(_))),
     );
-    let plan_mode = is_plan_mode_turn(&params.input);
+    let plan_mode = request_plan_mode(params);
     let tool_names = available_tool_names(params);
     // The `# Available Tools` text list (tool_aliases.j2, driven by this slice) is
     // redundant with the structured `tools` array we send via `with_tools`:
@@ -3711,18 +3711,35 @@ fn serialize_outgoing_tool_call(
 // Tools array
 // ---------------------------------------------------------------------------
 
-/// Whether this turn's input contains `UserQueryMode::Plan` triggered by `/plan`.
+/// Whether this request runs under Plan Mode (`/plan`). **The single source of truth for
+/// all three halves of the guardrail** — the tools-array withdrawal (`build_tools_array` /
+/// `available_tool_names`), the `partials/plan_mode.j2` system-prompt block, and the
+/// dispatch-site rejection in `generate_byop_output`. They have to agree: a request that
+/// withdraws the tools but drops the prompt block leaves the model guessing why they
+/// vanished, and one that keeps the block but re-advertises the tools states a rule it does
+/// not enforce.
 ///
-/// Per-turn semantics: only looks at whether this turn's `params.input` carries the Plan
-/// marker. The current persistence path for historical task messages
-/// (`make_user_query_message`) writes to the upstream proto with `..Default::default()`,
-/// **without a mode field**; so plan state isn't automatically sticky across turns — the
-/// user has to re-add the `/plan ` prefix on every query they want to keep read-only. This
-/// is an intentional MVP shape:
-/// - lowest implementation cost (no need to change the proto schema or add a new
-///   conversation-level state machine)
-/// - consistent with Claude Code's `EnterPlanMode` "explicit enter/exit" semantics — except
-///   here the exit action is implied by "the next message doesn't have /plan"
+/// The answer is resolved upstream, into `RequestParams::plan_mode` (see
+/// `agent::api::resolve_plan_mode`), because it cannot be derived from a single request
+/// payload: Plan Mode is a property of the **turn**, and only a turn's first round-trip
+/// carries the `UserQuery` that holds the mode. Every follow-up round-trip is built by
+/// `RequestInput::for_actions_results` — `ActionResult`s and nothing else.
+///
+/// `is_plan_mode_turn(&params.input)` is kept as an OR, not as the answer: it is a
+/// belt-and-braces read of the payload itself, still correct for a turn's first round-trip
+/// and for any `RequestParams` built without the controller. It can only ever turn Plan
+/// Mode *on*, so it cannot defeat the exit path — a payload carrying a plain (non-`/plan`)
+/// `UserQuery` makes it `false`, and `resolve_plan_mode` returns `false` for that same
+/// payload.
+fn request_plan_mode(params: &RequestParams) -> bool {
+    params.plan_mode || is_plan_mode_turn(&params.input)
+}
+
+/// Whether this request's *payload* carries the `UserQueryMode::Plan` marker from `/plan`.
+///
+/// Narrow by construction — it sees one request's inputs, so it is blind to a turn that has
+/// already round-tripped through a tool call. Call [`request_plan_mode`]; this is only its
+/// payload-level half.
 fn is_plan_mode_turn(input: &[AIAgentInput]) -> bool {
     input.iter().any(|i| {
         matches!(
@@ -3772,6 +3789,18 @@ const PLAN_MODE_BLOCKED_TOOLS: &[&str] = &[
     tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME,
     tools::computer::USE_COMPUTER_TOOL_NAME,
 ];
+
+/// Whether Plan Mode forbids `tool_name` on this request.
+///
+/// One predicate behind all three halves of the guardrail — the two tool-array filters
+/// (`build_tools_array`, `available_tool_names`) and the dispatch-site rejection in
+/// `generate_byop_output`. They used to be three copies of `plan_mode &&
+/// PLAN_MODE_BLOCKED_TOOLS.contains(..)`, which is how withdrawal and enforcement can drift
+/// apart, and it left the dispatch gate with no condition a unit test could reach without
+/// driving a live stream.
+fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
+    plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&tool_name)
+}
 
 /// Tools that cannot function **at all** on a legacy SSH session, and are therefore withdrawn
 /// from the advertised tool list rather than left to fail.
@@ -3836,7 +3865,7 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
         params.codebase_retrieval.is_some(),
     );
     let computer_use_enabled = params.computer_use_enabled;
-    let plan_mode = is_plan_mode_turn(&params.input);
+    let plan_mode = request_plan_mode(params);
     // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
     // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
     // already on `RequestParams` because `render_ssh_session_block` uses it.
@@ -3864,7 +3893,7 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             if t.name == "suggest_new_conversation" {
                 return false;
             }
-            if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&t.name) {
+            if plan_mode_blocks_tool(plan_mode, t.name) {
                 return false;
             }
             // Must mirror `build_tools_array`'s legacy-SSH filter. This list is the allowlist
@@ -3923,7 +3952,7 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
         params.codebase_retrieval.is_some(),
     );
     let computer_use_enabled = params.computer_use_enabled;
-    let plan_mode = is_plan_mode_turn(&params.input);
+    let plan_mode = request_plan_mode(params);
     // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
     // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
     // already on `RequestParams` because `render_ssh_session_block` uses it.
@@ -3982,7 +4011,7 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             // the model emits anyway still resolves out of the full REGISTRY in
             // `parse_incoming_tool_call`. The block is enforced at the dispatch site; see
             // `PLAN_MODE_BLOCKED_TOOLS`.
-            if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&t.name) {
+            if plan_mode_blocks_tool(plan_mode, t.name) {
                 return false;
             }
             // Legacy SSH: withdraw the tools that physically cannot reach this host. See
@@ -5089,7 +5118,7 @@ pub async fn generate_byop_output(
     let tool_names_for_extract = available_tool_names(&params);
     // Needed at the dispatch site below, not just when building the tools array: see the
     // Plan Mode gate before `parse_incoming_tool_call`.
-    let plan_mode = is_plan_mode_turn(&params.input);
+    let plan_mode = request_plan_mode(&params);
 
     // WARNING: critical to BYOP persistence: under warp's own path, the following
     // ClientActions are all server-side emits that make the client write "non-model-
@@ -6438,7 +6467,7 @@ pub async fn generate_byop_output(
             // would execute normally, and `/plan` would be advisory rather than enforced.
             // These names DO map to protobuf executor variants, so there is nothing further
             // downstream to stop them.
-            if plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&call.fn_name.as_str()) {
+            if plan_mode_blocks_tool(plan_mode, &call.fn_name) {
                 let args_str = if call.fn_arguments.is_string() {
                     call.fn_arguments.as_str().unwrap_or("").to_owned()
                 } else {
@@ -11425,6 +11454,255 @@ mod dispatch_byop_web_tool_tests {
             result.get("status").and_then(|v| v.as_str()),
             Some("error"),
             "expected a rejected tool_result, got: {result}"
+        );
+    }
+}
+
+/// Plan Mode (`/plan`) must survive a tool round-trip.
+///
+/// The guardrail's first version derived Plan Mode from `params.input` alone. Only the
+/// first round-trip of a turn carries a `UserQuery`; the follow-up request carrying a
+/// tool's result is built by `RequestInput::for_actions_results` and holds nothing but
+/// `ActionResult`s. So `/plan` followed by any tool call — one `read_files` is enough —
+/// silently dropped back to full access on the very next request: `run_shell_command`
+/// re-advertised, `partials/plan_mode.j2` gone from the system prompt, and the dispatch
+/// gate open. These tests pin all three to the round-trip, not just to the first request.
+#[cfg(test)]
+mod plan_mode_round_trip_tests {
+    use super::*;
+    use crate::ai::agent::task::TaskId;
+    use crate::ai::agent::{
+        AIAgentActionId, AIAgentActionResult, AIAgentActionResultType, RequestCommandOutputResult,
+    };
+
+    const SHELL: &str = "run_shell_command";
+    const PLAN_BLOCK_MARKER: &str = "Plan Mode (Read-Only)";
+
+    fn task_with_messages(messages: Vec<api::Message>) -> api::Task {
+        api::Task {
+            id: "task-1".to_owned(),
+            messages,
+            dependencies: None,
+            description: String::new(),
+            summary: String::new(),
+            server_data: String::new(),
+        }
+    }
+
+    fn read_files_tool() -> api::message::tool_call::Tool {
+        api::message::tool_call::Tool::ReadFiles(api::message::tool_call::ReadFiles {
+            files: vec![],
+        })
+    }
+
+    fn user_query_input(query: &str, mode: UserQueryMode) -> AIAgentInput {
+        AIAgentInput::UserQuery {
+            query: query.to_owned(),
+            context: Arc::<[AIAgentContext]>::from([]),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: mode,
+            running_command: None,
+            intended_agent: None,
+        }
+    }
+
+    fn action_result_input(call_id: &str) -> AIAgentInput {
+        AIAgentInput::ActionResult {
+            result: AIAgentActionResult {
+                id: AIAgentActionId::from(call_id.to_owned()),
+                task_id: TaskId::new("task-1".to_owned()),
+                result: AIAgentActionResultType::RequestCommandOutput(
+                    RequestCommandOutputResult::CancelledBeforeExecution,
+                ),
+            },
+            context: Arc::<[AIAgentContext]>::from([]),
+        }
+    }
+
+    /// Round-trip 2 of a `/plan` turn: the model called `read_files`, the result came back,
+    /// and the controller built the follow-up out of `ActionResult`s alone. `plan_mode` is
+    /// the flag `agent::api::resolve_plan_mode` resolved from the conversation — the half
+    /// the payload cannot supply, and the half the original fix was missing.
+    fn tool_result_round_trip(plan_mode: bool) -> RequestParams {
+        let mut params = RequestParams::new_for_test(
+            vec![action_result_input("call-1")],
+            vec![task_with_messages(vec![
+                make_user_query_message(
+                    "task-1",
+                    "req-1",
+                    "how would you fix this?".to_owned(),
+                    &[],
+                ),
+                make_tool_call_message("task-1", "req-1", "call-1", read_files_tool()),
+            ])],
+        );
+        params.plan_mode = plan_mode;
+        params
+    }
+
+    fn openai_request(params: &RequestParams) -> ChatRequest {
+        build_chat_request(
+            params,
+            false,
+            AgentProviderApiType::OpenAi,
+            attachment_caps::AttachmentCaps::default(),
+        )
+        .expect("the follow-up request should serialize")
+    }
+
+    /// The defect, stated as a test: the follow-up payload alone cannot answer the
+    /// question, so anything reading only `params.input` reports "not in plan mode".
+    #[test]
+    fn the_payload_alone_cannot_see_plan_mode_after_a_tool_call() {
+        let follow_up = tool_result_round_trip(true);
+        assert!(
+            !is_plan_mode_turn(&follow_up.input),
+            "a for_actions_results payload has no UserQuery to carry the mode -- if this \
+             ever becomes true, inheritance is no longer what keeps Plan Mode alive and \
+             these tests are measuring the wrong thing"
+        );
+        assert!(
+            request_plan_mode(&follow_up),
+            "Plan Mode must survive the round-trip via the resolved params flag"
+        );
+    }
+
+    /// Consequence 1: the tools array must not re-advertise the blocked tools.
+    #[test]
+    fn the_follow_up_still_withdraws_the_blocked_tools() {
+        let follow_up = tool_result_round_trip(true);
+
+        let names = available_tool_names(&follow_up);
+        assert!(
+            !names.iter().any(|name| name == SHELL),
+            "available_tool_names re-advertised {SHELL} on the follow-up: {names:?}"
+        );
+
+        let advertised: Vec<String> = build_tools_array(&follow_up, false)
+            .iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect();
+        for &blocked in PLAN_MODE_BLOCKED_TOOLS {
+            assert!(
+                !advertised.iter().any(|name| name == blocked),
+                "build_tools_array re-advertised {blocked} on the follow-up: {advertised:?}"
+            );
+        }
+    }
+
+    /// Consequence 2: the dispatch gate — the half that actually enforces, since
+    /// `parse_incoming_tool_call` resolves names out of the full registry no matter what
+    /// was advertised. This calls the same predicate the dispatch site calls.
+    #[test]
+    fn the_follow_up_still_refuses_a_blocked_tool_call() {
+        let follow_up = tool_result_round_trip(true);
+        let plan_mode = request_plan_mode(&follow_up);
+        for &blocked in PLAN_MODE_BLOCKED_TOOLS {
+            assert!(
+                plan_mode_blocks_tool(plan_mode, blocked),
+                "the dispatch gate would have executed {blocked} on the follow-up"
+            );
+        }
+        assert!(
+            !plan_mode_blocks_tool(plan_mode, "read_files"),
+            "read-only tools must stay callable under Plan Mode"
+        );
+    }
+
+    /// Consequence 3: the system prompt keeps its Plan Mode block, so the model is told why
+    /// the write tools are gone. Withdrawing the tools without the block leaves the model
+    /// guessing; keeping the block while re-advertising the tools states a rule that is not
+    /// enforced. Goes through `build_chat_request`, so it covers the wiring rather than the
+    /// renderer alone.
+    #[test]
+    fn the_follow_up_still_carries_the_plan_block_and_no_shell_tool() {
+        let request = openai_request(&tool_result_round_trip(true));
+
+        let system = request.system.clone().expect("system prompt is set");
+        assert!(
+            system.contains(PLAN_BLOCK_MARKER),
+            "the system prompt lost the Plan Mode block on the follow-up: {system}"
+        );
+        assert!(
+            !request
+                .tools
+                .unwrap_or_default()
+                .iter()
+                .any(|tool| tool.name.as_str() == SHELL),
+            "the outbound request re-advertised {SHELL} on the follow-up"
+        );
+    }
+
+    /// The control: the same follow-up outside Plan Mode is an ordinary full-access
+    /// request. Without this, the assertions above would pass just as well against a build
+    /// that withdrew `run_shell_command` from everything.
+    #[test]
+    fn a_normal_follow_up_is_unaffected() {
+        let follow_up = tool_result_round_trip(false);
+        assert!(!request_plan_mode(&follow_up));
+        assert!(
+            available_tool_names(&follow_up)
+                .iter()
+                .any(|name| name == SHELL),
+            "a non-plan follow-up must still advertise {SHELL}"
+        );
+        assert!(
+            !plan_mode_blocks_tool(request_plan_mode(&follow_up), SHELL),
+            "a non-plan follow-up must not be gated"
+        );
+        let request = openai_request(&follow_up);
+        assert!(
+            !request
+                .system
+                .unwrap_or_default()
+                .contains(PLAN_BLOCK_MARKER),
+            "a non-plan follow-up must not carry the Plan Mode block"
+        );
+        assert!(
+            request
+                .tools
+                .unwrap_or_default()
+                .iter()
+                .any(|tool| tool.name.as_str() == SHELL),
+            "a non-plan follow-up must still be sent {SHELL}"
+        );
+    }
+
+    /// A turn's first round-trip stays guarded by its payload alone, so a `RequestParams`
+    /// built without the controller (a test, a future caller) is not silently unguarded.
+    #[test]
+    fn the_first_round_trip_is_guarded_by_the_payload_alone() {
+        let mut first = RequestParams::new_for_test(
+            vec![user_query_input("how would you fix this?", UserQueryMode::Plan)],
+            vec![task_with_messages(vec![])],
+        );
+        first.plan_mode = false;
+        assert!(
+            request_plan_mode(&first),
+            "the payload's own /plan UserQuery must still be honoured"
+        );
+        assert!(
+            !available_tool_names(&first).iter().any(|name| name == SHELL),
+            "the first round-trip must withdraw {SHELL}"
+        );
+    }
+
+    /// Leaving Plan Mode: the user's next query has no `/plan`, so the resolver answers
+    /// false for it, and the payload-level OR must not resurrect the old state.
+    #[test]
+    fn a_plain_query_leaves_plan_mode() {
+        let mut next_turn = RequestParams::new_for_test(
+            vec![user_query_input("now do it", UserQueryMode::Normal)],
+            vec![task_with_messages(vec![])],
+        );
+        next_turn.plan_mode = false;
+        assert!(!request_plan_mode(&next_turn));
+        assert!(
+            available_tool_names(&next_turn)
+                .iter()
+                .any(|name| name == SHELL),
+            "leaving Plan Mode must restore {SHELL}"
         );
     }
 }

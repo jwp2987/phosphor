@@ -303,6 +303,16 @@ impl RequestInput {
         me
     }
 
+    /// The follow-up request that carries finished tool results back to the model.
+    ///
+    /// **Its payload is `ActionResult`s and nothing else** — no `UserQuery`, so nothing in
+    /// it carries `UserQueryMode`, `StaticQueryType`, or any other per-query property. It
+    /// is still the *same turn* as the user query that started it, so anything that is a
+    /// property of the turn has to be resolved from the conversation rather than read off
+    /// this payload. `/plan` was read off the payload once (`chat_stream::is_plan_mode_turn`
+    /// over `params.input`) and the result was that Plan Mode switched itself off as soon
+    /// as the model called a single tool: see `agent::api::resolve_plan_mode`, which is
+    /// where that resolution now happens for every request this controller sends.
     fn for_actions_results(
         action_results: Vec<AIAgentActionResult>,
         context: Arc<[AIAgentContext]>,

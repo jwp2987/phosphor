@@ -27,9 +27,9 @@ use crate::{
 
 use super::{
     AIAgentInput, MCPContext, MCPServer, RequestMetadata, RunningCommand, ServerOutputId,
-    Suggestions,
+    Suggestions, UserQueryMode,
 };
-use crate::ai::blocklist::{BlocklistAIPermissions, RequestInput};
+use crate::ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions, RequestInput};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::facts::{AIFact, AIFactObjectModel};
 use crate::ai::mcp::templatable_manager::TemplatableMCPServerInfo;
@@ -141,6 +141,20 @@ pub struct RequestParams {
     pub context_window_limit: Option<u32>,
     pub mcp_context: Option<MCPContext>,
     pub planning_enabled: bool,
+    /// Zap BYOP: whether this request runs under `/plan` (read-only Plan Mode).
+    ///
+    /// Resolved once per request by [`resolve_plan_mode`] and carried here, because the
+    /// request payload alone cannot answer the question. Plan Mode is a property of the
+    /// **turn**, and only the *first* round-trip of a turn carries the
+    /// `AIAgentInput::UserQuery` that holds `UserQueryMode::Plan`: every follow-up
+    /// round-trip is built by `RequestInput::for_actions_results`, whose payload is
+    /// nothing but `ActionResult`s. Deriving Plan Mode from `input` alone — which is what
+    /// the first version of this guardrail did — therefore turned it *off* from
+    /// round-trip 2 onward, which silently re-advertised `run_shell_command`, dropped
+    /// `partials/plan_mode.j2` from the system prompt, and opened the dispatch gate. A
+    /// `/plan` turn that made one `read_files` call had full shell access on its next
+    /// round-trip.
+    pub plan_mode: bool,
     should_redact_secrets: bool,
 
     /// User-provided API keys for AI providers (BYO API Key).
@@ -275,6 +289,77 @@ pub struct ConversationData {
     pub existing_suggestions: Option<Suggestions>,
 }
 
+/// Resolves Plan Mode for one request. See [`RequestParams::plan_mode`].
+///
+/// Plan Mode is a property of the **turn**, not of a single request payload: the user
+/// enters it by prefixing a query with `/plan` and leaves it by sending a query without
+/// the prefix, and every tool round-trip in between belongs to the same turn. So:
+///
+///  1. if this request carries the user's own query, that query decides. This is also
+///     what *ends* Plan Mode — a query with no `/plan` prefix resolves to `false` — so
+///     the flag has its invalidation event and cannot latch on for the rest of the
+///     conversation;
+///  2. otherwise this request is a continuation of a turn already in flight (tool
+///     results, an auto-resume, a passive follow-up), and Plan Mode is inherited from
+///     the conversation's most recent user query.
+///
+/// Case 2 is the whole point: `RequestInput::for_actions_results` builds a payload of
+/// `ActionResult`s only, so nothing in it can carry `UserQueryMode`.
+fn resolve_plan_mode(
+    request_input: &RequestInput,
+    conversation_id: AIConversationId,
+    app: &AppContext,
+) -> bool {
+    match plan_mode_from_request_inputs(request_input.all_inputs()) {
+        Some(explicit) => explicit,
+        None => inherited_plan_mode(conversation_id, app),
+    }
+}
+
+/// The Plan Mode verdict carried by a request payload's own user query, or `None` when
+/// the payload contains no user query at all (a tool-result follow-up, a resume, a
+/// passive-suggestion trigger, ...) and the answer must be inherited instead.
+///
+/// `None` deliberately does **not** collapse into `false`: "this payload says nothing
+/// about Plan Mode" and "this payload says Plan Mode is off" are different facts, and
+/// merging them is exactly the bug this function exists to prevent.
+///
+/// When several user queries are present, any one of them being `Plan` wins:
+/// `RequestInput::input_messages` is a `HashMap` keyed by task, so a multi-task payload
+/// has no stable "last" query, and the only direction in which resolving that ambiguity
+/// cannot hand the model a shell is towards the read-only mode.
+fn plan_mode_from_request_inputs<'a>(
+    inputs: impl Iterator<Item = &'a AIAgentInput>,
+) -> Option<bool> {
+    let mut saw_user_query = false;
+    let mut is_plan = false;
+    for mode in inputs.filter_map(|input| input.user_query_mode()) {
+        saw_user_query = true;
+        is_plan |= matches!(mode, UserQueryMode::Plan);
+    }
+    saw_user_query.then_some(is_plan)
+}
+
+/// Plan Mode inherited from the conversation's most recent user query.
+///
+/// Exchanges are walked newest-first and the first input that carries a
+/// `UserQueryMode` decides; `ActionResult` inputs (which is all a follow-up exchange
+/// holds) carry none and are skipped. A conversation with no user query at all — or one
+/// this controller has never seen — is not in Plan Mode, so the absent case is `false`.
+fn inherited_plan_mode(conversation_id: AIConversationId, app: &AppContext) -> bool {
+    let history_model = BlocklistAIHistoryModel::as_ref(app);
+    let Some(conversation) = history_model.conversation(&conversation_id) else {
+        return false;
+    };
+    conversation
+        .all_exchanges()
+        .iter()
+        .rev()
+        .flat_map(|exchange| exchange.input.iter().rev())
+        .find_map(|input| input.user_query_mode())
+        .is_some_and(|mode| matches!(mode, UserQueryMode::Plan))
+}
+
 impl RequestParams {
     #[cfg(test)]
     pub(crate) fn new_for_test(
@@ -302,6 +387,7 @@ impl RequestParams {
             context_window_limit: None,
             mcp_context: None,
             planning_enabled: true,
+            plan_mode: false,
             should_redact_secrets: false,
             api_keys: None,
             allow_use_of_warp_credits_with_byok: false,
@@ -526,6 +612,10 @@ impl RequestParams {
             .agent_prompt_override_for_model(&request_input.model_id)
             .cloned();
 
+        // Must be resolved here, from the conversation, and not later from `input`: see
+        // `RequestParams::plan_mode`.
+        let plan_mode = resolve_plan_mode(request_input, conversation.id, app);
+
         Self {
             input: request_input.all_inputs().cloned().collect(),
             conversation_token: conversation.server_conversation_token,
@@ -546,6 +636,7 @@ impl RequestParams {
             warp_drive_context_enabled,
             mcp_context,
             planning_enabled: true,
+            plan_mode,
             should_redact_secrets,
             api_keys,
             allow_use_of_warp_credits_with_byok,
@@ -579,3 +670,97 @@ impl RequestParams {
 #[cfg(test)]
 #[path = "api_tests.rs"]
 mod tests;
+
+/// Unit tests for the Plan Mode resolver's pure half.
+///
+/// Inline rather than in `api_tests.rs` because the repair that introduced
+/// `resolve_plan_mode` was scoped to this file; `inherited_plan_mode` needs an
+/// `AppContext` and a populated `BlocklistAIHistoryModel`, so only the payload half is
+/// covered here. The end-to-end "a follow-up round-trip still withdraws, still refuses,
+/// and still prompts" assertions live in `chat_stream::plan_mode_round_trip_tests`.
+#[cfg(test)]
+mod plan_mode_resolution_tests {
+    use super::*;
+    use crate::ai::agent::task::TaskId;
+    use crate::ai::agent::{
+        AIAgentActionId, AIAgentActionResult, AIAgentActionResultType, AIAgentContext,
+        RequestCommandOutputResult,
+    };
+    use std::collections::HashMap;
+
+    fn user_query(mode: UserQueryMode) -> AIAgentInput {
+        AIAgentInput::UserQuery {
+            query: "investigate the failure".to_owned(),
+            context: Arc::<[AIAgentContext]>::from([]),
+            static_query_type: None,
+            referenced_attachments: HashMap::new(),
+            user_query_mode: mode,
+            running_command: None,
+            intended_agent: None,
+        }
+    }
+
+    /// The shape `RequestInput::for_actions_results` produces: a tool round-trip's
+    /// payload, with no user query anywhere in it.
+    fn action_result() -> AIAgentInput {
+        AIAgentInput::ActionResult {
+            result: AIAgentActionResult {
+                id: AIAgentActionId::from("call-1".to_owned()),
+                task_id: TaskId::new("task-1".to_owned()),
+                result: AIAgentActionResultType::RequestCommandOutput(
+                    RequestCommandOutputResult::CancelledBeforeExecution,
+                ),
+            },
+            context: Arc::<[AIAgentContext]>::from([]),
+        }
+    }
+
+    #[test]
+    fn a_plan_query_in_the_payload_decides_plan_mode() {
+        let inputs = vec![user_query(UserQueryMode::Plan)];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), Some(true));
+    }
+
+    /// The invalidation event. Without this, Plan Mode would latch on for the rest of
+    /// the conversation once inheritance is in play.
+    #[test]
+    fn a_normal_query_in_the_payload_ends_plan_mode() {
+        let inputs = vec![user_query(UserQueryMode::Normal)];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), Some(false));
+    }
+
+    /// The defect this repair exists for: the follow-up payload after a tool call says
+    /// *nothing* about Plan Mode, and must not be read as saying "off".
+    #[test]
+    fn an_action_result_payload_is_undecided_not_off() {
+        let inputs = vec![action_result()];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), None);
+    }
+
+    /// A payload that carries both — the user typed a follow-up query while a tool
+    /// result was still pending, so the controller prepends the finished results.
+    #[test]
+    fn a_query_alongside_action_results_still_decides() {
+        let inputs = vec![action_result(), user_query(UserQueryMode::Plan)];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), Some(true));
+
+        let inputs = vec![action_result(), user_query(UserQueryMode::Normal)];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), Some(false));
+    }
+
+    /// Multi-task payloads have no stable ordering, so any `Plan` wins.
+    #[test]
+    fn mixed_modes_resolve_towards_read_only() {
+        let inputs = vec![
+            user_query(UserQueryMode::Normal),
+            user_query(UserQueryMode::Plan),
+        ];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), Some(true));
+    }
+
+    #[test]
+    fn an_empty_payload_is_undecided() {
+        let inputs: Vec<AIAgentInput> = vec![];
+        assert_eq!(plan_mode_from_request_inputs(inputs.iter()), None);
+    }
+}
