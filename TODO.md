@@ -7397,3 +7397,46 @@ Ordered by severity, not by area.
       `.zap-app-group-sqlite-migrated` so the miss is permanent. The three tests inject
       `legacy_dir` by hand, so they pass with the broken path computation.
 
+### Refutation round — codebase indexing / LSP
+
+- [ ] 🔴 **Source code can be sent in cleartext.** `agent_providers/embeddings.rs:243-254`
+      and `:439-450` check `is_plaintext_bearer_risk` **inside** `if !api_key.is_empty()`.
+      A keyless provider on an `http://` non-loopback endpoint therefore POSTs every
+      code fragment unencrypted with no guard at all.
+- [ ] 🔴 **`script/check_cloud_boundary` under-enforces — 10+ live violations it cannot
+      see.** Its regex misses `use crate::{server::…}` brace form (live at
+      `ai/blocklist/controller.rs:75` and several `code/editor/find/view.rs` variants) and
+      inline references (`root_view.rs:488`), contradicting its own header. This is one
+      of the two guards CLAUDE.md names as enforcing what the compiler cannot.
+- [ ] **LSP servers are never shut down, and `TODO.md:672` claims the hook is wired.**
+      `lib.rs:2360-2392` (`on_will_terminate`) goes straight from `writer.terminate()` to
+      `PtySpawner`; the pin calls `lsp::LspManagerModel::terminate(ctx)` there
+      (`42effe840:app/src/lib.rs:2691`), and `crates/lsp/src/manager.rs:306` has zero
+      callers. No shutdown/exit handshake, so on autoupdate the new app spawns while old
+      rust-analyzer/gopls children are still resident — exactly what the surrounding
+      comment claims to prevent. **Fifth TODO entry found stating the opposite of the
+      code.**
+- [ ] **The embedding endpoint is frozen at startup.** `build_store_client` resolves once
+      at `lib.rs:2209`; `set_endpoint` is called only by the daemon. Its own doc claims
+      refreshability. The sibling LLM path subscribes to both `AISettings` and
+      `AgentProviderSecrets`; indexing subscribes to neither, so configuring a provider
+      after launch leaves the settings page reporting the model live while indexing
+      returns `NoEmbeddingProvider` until restart. Key rotation is ignored the same way.
+- [ ] **Index tables grow forever.** No DELETE or TTL for
+      `codebase_index_{nodes,embeddings,node_summaries}` anywhere; snapshots get 30 days
+      and `ai_queries` gets trimming, these get nothing.
+- [ ] **File outlines fail instead of degrading.** `file_outline/native.rs:57` uses
+      `FailFast` where the pin uses `StopAndLazyLoad`, so over-budget repos now get NO
+      outline. The enum's own doc says `FailFast` is for embedding only. Undocumented
+      divergence.
+- [ ] **The pin's index consent banner was dropped with no DECLINED.md row**, and
+      `codebase_context_enabled`'s default was flipped `true`→`false`
+      (`settings/code.rs:67`) under a comment claiming a faithful restore.
+- [ ] **Indexing UI is untested and its test doc is false.** `code_page_tests.rs:68`
+      says the flag "is on by default in this fork" — it is not — and both tests force it
+      false, so no test ever renders the three widgets.
+
+> **Coverage gap in this round:** three areas were briefed but never ran, rejected at
+> the 20-agent concurrency cap — **warpui / warpui_core**, **guards + CI**, and
+> **util / uri / themes / workspaces / lib.rs**. Nothing below is known about them.
+
