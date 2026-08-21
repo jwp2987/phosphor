@@ -7145,6 +7145,22 @@ claim, which was wrong by four.
       rather than a gate.
 - [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
       already-recorded `endpoint_url`.
+
+- [ ] **`InlineDiffView::restore_diff_base` writes the diff base over the file with no**
+      **conflict check.** Unlike accept (fixed 2026-08-21 via `FileModel::save_if_unchanged`),
+      its correct pre-image is the content the *accept* wrote, which the view does not retain,
+      so guarding it against the diff *base* would refuse every revert following a
+      format-on-save. Fix: retain the accepted bytes at accept time and guard with those.
+
+- [ ] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
+      **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
+      unguarded `save`. `FileModel::save_if_unchanged` is now available for it.
+
+- [ ] **The save-conflict toast drops the reason.** `code_diff_view.rs:655` hardcodes
+      "Failed to save file {path}" and ignores the error's message, so *why* the write was
+      refused reaches the log and the agent but not the user. One-line fix: use the error's
+      `Display` for `FileSaveError::Other`. Un-localised today; key would be
+      `code-diff-save-conflict` with a `$file` variable.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
@@ -7781,12 +7797,14 @@ claim, which was wrong by four.
 
       **CORRECTION + FIXED 2026-08-21 — the reported mechanism was wrong.** There is no wait and no hang: `into_server()` returning `None` was already handled by an `else` arm, and `fetch_single_cloud_object` (`cloud_object/update_manager.rs:255-266`) is a gutted stub that fires its oneshot immediately, so even the `ServerId` branch cannot hang. **The real defect was that `else` arm**, in a fork where `SyncId::ClientId` is the only id kind objects ever get (`set_server_id` has zero call sites; `update_manager.rs:1229` already documents this and already collapsed two other `ServerId` guards for the same reason). Two failures behind it: (1) a notebook absent from the store with a `ClientId` — reachable with no link involved via `notebooks/manager.rs:189-199` on session restore — produced an empty pane with **no toast at all**, where every other terminal branch toasts; (2) a notebook already fetched from the store one line earlier was **discarded** because `fetch_needed` is also true when `focused_folder_id` fails to resolve, which it never can here. Fixed at `notebook.rs:1555-1581` via a new `NotebookLoadRoute::resolve` (`:2429-2465`); absent → `StoredObjectNotFound` toast, present → load. **`focused_folder_id` itself was left alone: `DECLINED.md:200` (#267) deliberately keeps that Drive-URL path dead** — no cloud behaviour was restored, the fix only stops it discarding a purely local object. The fork's port is byte-faithful to the pin (`42effe840:notebooks/notebook.rs:1502-1538`), and the pin's toast arm is unreachable even at the pin, so this is de-clouding breaking an already-vestigial shape, not a botched port. `cloud_object/mod.rs:171-183,686-688` now record that `set_server_id` has zero callers and that `#![allow(dead_code)]` is why nothing flagged it.
 
-- [ ] **Lost update on every AI edit (pin-parity).** `code/inline_diff.rs:137`
+- [x] **Lost update on every AI edit (pin-parity).** `code/inline_diff.rs:137`
       registers with `subscribe_to_updates=false` and `:213-228` writes the whole stale
       snapshot buffer; `warp_files/src/lib.rs:797-830` writes unconditionally with no
       mtime or version compare. Accepting a diff minutes later clobbers concurrent
       external edits.
       **VERDICT CONFIRMED — inherited (independent verifier, 2026-08-21):** `code/inline_diff.rs:138` passes `subscribe_to_updates=false` and `:214-228` saves the whole editor buffer; `warp_files/src/lib.rs:797-830` does a bare `async_fs::write`. Verifier confirmed the pin is byte-equivalent (`42effe840:code/inline_diff.rs` same call, `42effe840:warp_files/src/lib.rs:725-758` also unconditional). A real lost-update, inherited.
+
+      **FIXED 2026-08-21 — divergence AHEAD of the pin (all three limbs are pin-identical).** New `FileModel::save_if_unchanged(.., ExpectedDiskState, ..)`; read, compare and write happen inside one spawned task. **The `version: ContentVersion` parameter was never a concurrency check** — it is a process-global `AtomicUsize` that `report_save_outcome` records only *after* a successful write. **Content compare, not mtime, and the decisive reason is that mtime was never available:** the diff view uses `register_file_path`, which does not load, so there is no earlier `stat` to compare against; mtime is also preserved by `cp -p`/`rsync --times`. A digest was rejected because the full read is unavoidable either way. **Compared LF-normalised on both sides** — the editor stores the base normalised while the accept write emits the buffer's own inferred line endings, so a byte compare would have failed **every** accept on a CRLF file while protecting nothing. `ExpectedDiskState::Absent` covers `DiffType::Create`, and **local `NotFound` is the only failure that clears it**; every other read error refuses, so "could not read" never becomes "safe to overwrite". On conflict nothing is written, the version is **not** recorded, and the refusal flows through the existing `FailedToSave` → error-toast path. **`subscribe_to_updates=false` deliberately left as-is,** with reasons at the call site: flipping it buys nothing alone (the subscription ignores `FileUpdated`), would change live editor behaviour under the user, and is not a substitute since the watcher is 200 ms-debounced and advisory. **A guarded variant rather than changing `save`,** after auditing all 11 callers — most are legitimately unguarded, since a live buffer the user is typing into is not snapshot-derived.
 
 - [ ] **The protected-path guard operates on unresolved paths and ignores rename
       targets (pin-parity).** `permissions.rs:1239` matches absolute MCP config paths,
