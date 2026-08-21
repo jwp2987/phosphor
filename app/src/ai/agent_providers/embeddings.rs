@@ -74,6 +74,18 @@ pub struct EmbeddingEndpoint {
     pub api_key: String,
 }
 
+/// Whether `provider` is usable and offers `model_id`.
+///
+/// One definition, so the single-model lookup and the whole-table resolve can
+/// never disagree about what "configured for this model" means.
+fn serves_model(provider: &AgentProvider, model_id: &str) -> bool {
+    provider.is_usable()
+        && provider
+            .models
+            .iter()
+            .any(|model| model.id == model_id && !model.disabled)
+}
+
 /// The provider that serves `embedding_config`, if the user has configured one.
 ///
 /// This is the single definition of "a usable provider that lists this model
@@ -86,15 +98,13 @@ pub fn resolve_embedding_provider(
     embedding_config: EmbeddingConfig,
 ) -> Option<AgentProvider> {
     let model_id = embedding_config.model_id();
-    let providers = AISettings::as_ref(app).agent_providers.value().clone();
 
-    providers.into_iter().find(|provider| {
-        provider.is_usable()
-            && provider
-                .models
-                .iter()
-                .any(|model| model.id == model_id && !model.disabled)
-    })
+    AISettings::as_ref(app)
+        .agent_providers
+        .value()
+        .iter()
+        .find(|provider| serves_model(provider, model_id))
+        .cloned()
 }
 
 /// Finds the provider the user has configured for `embedding_config`.
@@ -117,56 +127,190 @@ pub fn resolve_embedding_endpoint(
     Some(EmbeddingEndpoint { base_url, api_key })
 }
 
+/// Every embedding model the user has a usable provider for, and where each
+/// one's requests go.
+///
+/// # Why a table and not a single endpoint
+///
+/// A running `CodebaseIndex` caches the model it was built with and only
+/// re-reads it on a *full* sync, which is scheduled twenty minutes apart
+/// (`REINDEX_INTERVAL`, `crates/ai/.../codebase_index.rs`). Incremental syncs
+/// and queries in between pass that cached model down to
+/// `HttpEmbeddingProvider::embed`.
+///
+/// With one shared endpoint slot those two caches can disagree. Adding a Voyage
+/// provider to a repo already indexed with OpenAI moves the slot to Voyage
+/// immediately — [`resolve_configured_embedding_model`] prefers the first entry
+/// of [`SUPPORTED_EMBEDDING_MODELS`] — while every incremental sync for the next
+/// twenty minutes still asks for `text-embedding-3-small`. Those requests would
+/// go to Voyage, which does not serve that model, and fail with nothing but
+/// telemetry to show for it.
+///
+/// Routing per model removes the window rather than merely reporting it: the
+/// previous model still resolves to the provider that actually serves it, so
+/// those syncs keep working until the next full sync re-keys the index. A model
+/// whose provider the user has genuinely *removed* resolves to nothing, which
+/// surfaces as [`IndexError::NoEmbeddingProvider`] naming that model — one loud,
+/// accurate error instead of a silent stream of HTTP 400s.
+///
+/// Entries are in [`SUPPORTED_EMBEDDING_MODELS`] order, so
+/// [`preferred_model`][Self::preferred_model] is simply the first one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EmbeddingEndpoints {
+    entries: Vec<(EmbeddingConfig, EmbeddingEndpoint)>,
+}
+
+impl EmbeddingEndpoints {
+    /// A table with one entry, for callers and tests that have already resolved
+    /// a single model.
+    pub fn single(embedding_config: EmbeddingConfig, endpoint: EmbeddingEndpoint) -> Self {
+        Self {
+            entries: vec![(embedding_config, endpoint)],
+        }
+    }
+
+    /// Where requests for `embedding_config` go, if anywhere.
+    pub fn get(&self, embedding_config: EmbeddingConfig) -> Option<&EmbeddingEndpoint> {
+        self.entries
+            .iter()
+            .find(|(config, _)| *config == embedding_config)
+            .map(|(_, endpoint)| endpoint)
+    }
+
+    /// The model a new index should be built with: the first configured entry
+    /// in [`SUPPORTED_EMBEDDING_MODELS`] order.
+    pub fn preferred_model(&self) -> Option<EmbeddingConfig> {
+        self.entries.first().map(|(config, _)| *config)
+    }
+}
+
+/// Order is meaning here — the first entry is
+/// [`preferred_model`](EmbeddingEndpoints::preferred_model) — so this preserves
+/// the iterator's order rather than sorting or deduplicating.
+impl FromIterator<(EmbeddingConfig, EmbeddingEndpoint)> for EmbeddingEndpoints {
+    fn from_iter<I: IntoIterator<Item = (EmbeddingConfig, EmbeddingEndpoint)>>(iter: I) -> Self {
+        Self {
+            entries: iter.into_iter().collect(),
+        }
+    }
+}
+
+/// Resolves every supported model against the user's current providers.
+///
+/// One borrow of the provider list and one of the key store, reused across all
+/// of [`SUPPORTED_EMBEDDING_MODELS`] — this runs on every settings change, and
+/// resolving each model separately would walk and clone the provider list once
+/// per model.
+pub fn resolve_embedding_endpoints(app: &AppContext) -> EmbeddingEndpoints {
+    let providers = AISettings::as_ref(app).agent_providers.value();
+    let secrets = AgentProviderSecrets::as_ref(app);
+
+    let entries = SUPPORTED_EMBEDDING_MODELS
+        .iter()
+        .copied()
+        .filter_map(|embedding_config| {
+            let provider = providers
+                .iter()
+                .find(|provider| serves_model(provider, embedding_config.model_id()))?;
+            let base_url = normalize_base_url(&provider.resolved_base_url()).ok()?;
+            let api_key = secrets
+                .get(&provider.id)
+                .map(str::to_owned)
+                .unwrap_or_default();
+
+            Some((embedding_config, EmbeddingEndpoint { base_url, api_key }))
+        })
+        .collect();
+
+    EmbeddingEndpoints { entries }
+}
+
 /// The embedding model the user has actually configured, if any.
 ///
 /// At the pin this came back from the server's `codebaseContextConfig` query.
 /// Here it is derived from what the user has set up: the first entry of
 /// [`SUPPORTED_EMBEDDING_MODELS`] that resolves to a provider.
 pub fn resolve_configured_embedding_model(app: &AppContext) -> Option<EmbeddingConfig> {
-    SUPPORTED_EMBEDDING_MODELS
-        .iter()
-        .copied()
-        .find(|config| resolve_embedding_endpoint(app, *config).is_some())
+    resolve_embedding_endpoints(app).preferred_model()
+}
+
+/// Where an embedding request goes, and for which models.
+enum EndpointResolution {
+    /// One endpoint that answers for whatever model it is asked for.
+    ///
+    /// Two callers have this shape: a provider that has not been configured yet
+    /// (`None`), and the remote daemon's store client
+    /// (`app/src/remote_server/codebase_index_store.rs`), which is told one
+    /// endpoint and one model by its client and enforces the model itself.
+    AnyModel(Option<EmbeddingEndpoint>),
+    /// One endpoint per model, resolved from the user's provider list. See
+    /// [`EmbeddingEndpoints`] for why the app side routes rather than sharing a
+    /// single slot.
+    PerModel(EmbeddingEndpoints),
+}
+
+impl EndpointResolution {
+    fn endpoint(&self, embedding_config: EmbeddingConfig) -> Option<&EmbeddingEndpoint> {
+        match self {
+            Self::AnyModel(endpoint) => endpoint.as_ref(),
+            Self::PerModel(endpoints) => endpoints.get(embedding_config),
+        }
+    }
 }
 
 /// Calls a user-configured `/embeddings` endpoint over HTTP.
 ///
-/// The endpoint lives behind a `Mutex` so it can be refreshed when the user
+/// The resolution lives behind a `Mutex` so it can be refreshed when the user
 /// edits their providers, without rebuilding the index manager: the manager
 /// holds one `Arc<dyn StoreClient>` for the life of the process.
 pub struct HttpEmbeddingProvider {
     client: Client,
-    endpoint: Mutex<Option<EmbeddingEndpoint>>,
+    resolution: Mutex<EndpointResolution>,
 }
 
 impl HttpEmbeddingProvider {
     pub fn new(client: Client, endpoint: Option<EmbeddingEndpoint>) -> Self {
         Self {
             client,
-            endpoint: Mutex::new(endpoint),
+            resolution: Mutex::new(EndpointResolution::AnyModel(endpoint)),
         }
     }
 
-    /// Builds one from the app's current settings, for `embedding_config`.
-    pub fn from_app(app: &AppContext, embedding_config: EmbeddingConfig) -> Self {
-        Self::new(
-            Client::new(),
-            resolve_embedding_endpoint(app, embedding_config),
-        )
+    /// Replaces the resolution wholesale.
+    ///
+    /// Poison is recovered from, not skipped. A refresh that silently no-ops
+    /// leaves the endpoint frozen for the life of the process — which is
+    /// precisely the defect `RefreshingStoreClient` exists to fix, and an
+    /// earlier version of this function reintroduced it as a permanent state by
+    /// dropping the write on a poisoned lock. Nothing here can be observed
+    /// half-written: the slot is replaced whole, so a panicking thread can only
+    /// leave a *stale* resolution behind, never a torn one. This matches
+    /// `RefreshingStoreClient::reconfigure` and `::client`, which recover the
+    /// same way.
+    fn set(&self, resolution: EndpointResolution) {
+        *self
+            .resolution
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = resolution;
     }
 
-    /// Replaces the endpoint, e.g. after the user edits their providers.
+    /// Points every model at one endpoint, e.g. the one a remote client sent.
     pub fn set_endpoint(&self, endpoint: Option<EmbeddingEndpoint>) {
-        if let Ok(mut slot) = self.endpoint.lock() {
-            *slot = endpoint;
-        }
+        self.set(EndpointResolution::AnyModel(endpoint));
+    }
+
+    /// Routes each model to the provider the user configured for it, e.g. after
+    /// they edit their providers.
+    pub fn set_endpoints(&self, endpoints: EmbeddingEndpoints) {
+        self.set(EndpointResolution::PerModel(endpoints));
     }
 
     fn endpoint(&self, embedding_config: EmbeddingConfig) -> Result<EmbeddingEndpoint, IndexError> {
-        self.endpoint
+        self.resolution
             .lock()
-            .ok()
-            .and_then(|slot| slot.clone())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .endpoint(embedding_config)
+            .cloned()
             .ok_or(IndexError::NoEmbeddingProvider {
                 model: embedding_config.model_id(),
             })

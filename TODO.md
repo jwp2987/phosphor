@@ -7203,6 +7203,26 @@ claim, which was wrong by four.
       the allowlist `.all()` is true, and `AlwaysAsk` returns `Allowed(ExplicitlyAllowlisted)`.
       No zero-command spelling was found that also executes anything, so this is a latent hazard
       rather than a bypass — recorded so it is not rediscovered as one.
+
+- [ ] **The codebase-index embedding model switches on provider-list ORDER, spending the**
+      **user's quota.** `resolve_configured_embedding_model` returns the first entry of
+      `SUPPORTED_EMBEDDING_MODELS` that resolves, so merely *adding* a provider can re-key an
+      index that was working: `storage_key()` changes (`full_source_code_embedding/mod.rs:208-216`),
+      `known_hashes` returns nothing, and the next full sync re-embeds **every repo** against the
+      user's own paid provider. The user never chose a model.
+      **Fix:** prefer the model the vector store already holds rows for whenever it is still
+      configured, falling back to preference order only otherwise — a `SqliteVectorStore` query
+      plus a change to what `preferred_model` means. That changes indexing behaviour, not just
+      reporting, which is why 2026-08-21 shipped only a `log::warn!` naming both models and the
+      cost. **A log line is not consent** — the honest fix is to stop making the choice on the
+      user's behalf, not to add a prompt. Related: the index-consent-banner row in `DECLINED.md`.
+      i18n keys drafted but not added: `settings-code-embedding-model-switched{,-desc}`.
+
+- [ ] **`DaemonStoreClient` has the same two-cache desync the app path just fixed.**
+      `remote_server/codebase_index_store.rs:354-386` holds one model in a `Mutex` while its own
+      `CodebaseIndex` caches another, and `remote_client_preferences` only ever ships the
+      *preferred* model's endpoint. The per-model endpoint table (`set_endpoints`) is available
+      to it; wiring it needs that file.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

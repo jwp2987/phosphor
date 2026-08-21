@@ -2280,95 +2280,24 @@ fn initialize_app(
     ctx.add_singleton_model(crate::ai::codebase_retrieval::CodebaseRetrievalController::new);
 
     // Keep everything that indexes a codebase pointed at the user's *current*
-    // configuration.
+    // configuration: the local store client's endpoints and the endpoint the
+    // remote-server manager ships to daemons.
     //
-    // Two consumers, one trigger. The local index's store client
-    // (`RefreshingStoreClient`, built above) holds the embedding endpoint the
-    // app posts to; the remote-server manager holds the endpoint it ships to
-    // daemons. Both are resolved from the same settings, so both are refreshed
-    // from the same place — a second mechanism for the second consumer would
-    // drift.
-    //
-    // Registered here, after `AISettings`, `AgentProviderSecrets` and
+    // Called here, after `AISettings`, `AgentProviderSecrets` and
     // `AIRequestUsageModel`, because the refresh reads all three;
     // `RemoteServerManager` itself was registered much earlier, with no
     // sessions yet, so nothing has connected in between.
     //
-    // # Why these three subscriptions and not fewer
-    //
-    // * `AISettings` — `agent_providers` is where an embedding model's base URL
-    //   comes from, and the global AI toggle is half of
-    //   `UserWorkspaces::is_codebase_context_enabled`.
-    // * `AgentProviderSecrets` — the API key. A rotation leaves the provider
-    //   list and the model identical, so nothing else fires. Without this,
-    //   indexing keeps using a revoked key until restart, and a daemon keeps
-    //   the one it was handed. This is the same pair the LLM path subscribes to
-    //   (`app/src/ai/llms.rs`, `LLMPreferences::new`), for the same reason.
-    // * `CodeSettings` — `codebase_context_enabled` is the other half of the
-    //   consent predicate, and the credential gate inside
-    //   `remote_client_preferences` is `should_use_codebase_indexing`, which
-    //   reads it. Subscribing to only one of the two settings groups would
-    //   leave the other half of that predicate without its invalidation event:
-    //   turning codebase indexing off would not retract the API key already
-    //   sent to connected daemons, and turning it on would not deliver one
-    //   until the next restart — so the disclosure in
-    //   `settings-code-remote-indexed-folders-desc` ("sent when you turn this
-    //   on") would be false in both directions.
-    //
-    // Firing more often than strictly necessary is cheap and deliberate:
-    // `update_client_preferences` pushes to every connected client and no-ops
-    // when nothing changed, and `refresh_from_settings` re-resolves two
-    // settings lookups and a keychain read.
-    //
-    // Sending `None` to a daemon is not a silent failure: it clears its
-    // endpoint and reports the index as `Unavailable`, and
-    // `codebase_indexing_ready` explains why.
+    // The refresh and its three subscriptions live in `codebase_embeddings`
+    // rather than inline here, so that a test can install them on a test app and
+    // assert that a settings change actually reaches the client the manager
+    // holds. Inline, the only thing a test could reach was the helper one layer
+    // below — which passed while the defect this fixes was live.
     #[cfg(feature = "local_fs")]
-    {
-        use crate::ai::codebase_embeddings::RefreshingStoreClient;
-
-        fn refresh_codebase_indexing_configuration(
-            store_client: &RefreshingStoreClient,
-            ctx: &mut AppContext,
-        ) {
-            store_client.refresh_from_settings(&*ctx);
-
-            #[cfg(not(target_family = "wasm"))]
-            {
-                use crate::ai::codebase_embeddings::remote_client_preferences;
-                use remote_server::manager::RemoteServerManager;
-
-                let preferences = remote_client_preferences(ctx);
-                RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
-                    manager.update_client_preferences(preferences);
-                });
-            }
-        }
-
-        refresh_codebase_indexing_configuration(&codebase_store_client, ctx);
-
-        let store_client = Arc::clone(&codebase_store_client);
-        ctx.subscribe_to_model(
-            &crate::settings::AISettings::handle(ctx),
-            move |_, _, ctx| {
-                refresh_codebase_indexing_configuration(&store_client, ctx);
-            },
-        );
-        let store_client = Arc::clone(&codebase_store_client);
-        ctx.subscribe_to_model(
-            &crate::ai::agent_providers::AgentProviderSecrets::handle(ctx),
-            move |_, _, ctx| {
-                refresh_codebase_indexing_configuration(&store_client, ctx);
-            },
-        );
-        let store_client = Arc::clone(&codebase_store_client);
-        ctx.subscribe_to_model(
-            &crate::settings::CodeSettings::handle(ctx),
-            move |_, _, ctx| {
-                refresh_codebase_indexing_configuration(&store_client, ctx);
-            },
-        );
-    }
+    crate::ai::codebase_embeddings::subscribe_to_codebase_indexing_configuration(
+        codebase_store_client,
+        ctx,
+    );
 
     ctx.add_singleton_model(|ctx| {
         ProjectContextModel::new_from_persisted(persisted_project_rules, ctx)

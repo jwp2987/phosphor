@@ -55,8 +55,8 @@ use diesel::SqliteConnection;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::ai::agent_providers::embeddings::{
-    EmbeddingEndpoint, HttpEmbeddingProvider, HttpRerankProvider,
-    resolve_configured_embedding_model, resolve_embedding_endpoint,
+    EmbeddingEndpoints, HttpEmbeddingProvider, HttpRerankProvider,
+    resolve_configured_embedding_model, resolve_embedding_endpoints,
 };
 use crate::persistence::{
     ModelEvent, codebase_index_children, codebase_index_node_summaries, codebase_index_vectors,
@@ -371,7 +371,8 @@ impl VectorStore for SqliteVectorStore {
 /// `Copy` config. This is the same shape as `DaemonStoreClient`
 /// (`app/src/remote_server/codebase_index_store.rs`), which reconfigures itself
 /// when a client sends new preferences; here the trigger is a settings change
-/// instead of a wire message. `lib.rs` subscribes to `AISettings`,
+/// instead of a wire message.
+/// [`subscribe_to_codebase_indexing_configuration`] subscribes to `AISettings`,
 /// `AgentProviderSecrets` and `CodeSettings` and calls
 /// [`refresh_from_settings`][Self::refresh_from_settings] — a predicate ported
 /// without its invalidation events is not ported.
@@ -429,14 +430,12 @@ impl RefreshingStoreClient {
     /// because a rotated API key leaves the model identical and the credential
     /// different.
     pub fn refresh_from_settings(&self, app: &AppContext) {
-        let resolved_model = resolve_configured_embedding_model(app);
-        let endpoint = resolved_model.and_then(|config| resolve_embedding_endpoint(app, config));
+        let endpoints = resolve_embedding_endpoints(app);
         let reranker = HttpRerankProvider::from_app(app);
         let resolved_reranker = reranker.as_ref().map(HttpRerankProvider::model_id);
 
         self.reconfigure(
-            resolved_model,
-            endpoint,
+            endpoints,
             resolved_reranker,
             reranker.map(|reranker| Arc::new(reranker) as Arc<dyn RerankProvider>),
         );
@@ -444,14 +443,20 @@ impl RefreshingStoreClient {
 
     /// The settings-free half of [`refresh_from_settings`][Self::refresh_from_settings],
     /// so the refresh can be tested without an `AppContext`.
+    ///
+    /// `endpoints` carries both halves of the answer: which model a *new* index
+    /// should use ([`EmbeddingEndpoints::preferred_model`]) and where a request
+    /// for any configured model goes. They travel together because a shared
+    /// endpoint with a separately-cached model is exactly the pair that can
+    /// disagree — see [`EmbeddingEndpoints`].
     fn reconfigure(
         &self,
-        resolved_model: Option<EmbeddingConfig>,
-        endpoint: Option<EmbeddingEndpoint>,
+        endpoints: EmbeddingEndpoints,
         resolved_reranker: Option<&'static str>,
         reranker: Option<Arc<dyn RerankProvider>>,
     ) {
-        self.provider.set_endpoint(endpoint);
+        let resolved_model = endpoints.preferred_model();
+        self.provider.set_endpoints(endpoints);
 
         let mut configuration = self
             .configuration
@@ -459,11 +464,58 @@ impl RefreshingStoreClient {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if configuration.resolved_model != Some(resolved_model) {
-            match resolved_model {
-                Some(config) => {
+            // `previous` is the model a refresh has already resolved in this
+            // process, as distinct from "no refresh has happened yet"; only the
+            // former means work has been paid for under the old storage key.
+            let previous = configuration.resolved_model.flatten();
+            match (previous, resolved_model) {
+                // A model *switch*, with an index already keyed to the old one.
+                //
+                // `EmbeddingConfig::storage_key` is what every vector row and
+                // every `known_hashes` lookup is keyed by, so the next full sync
+                // finds nothing under the new key and re-embeds every indexed
+                // repository from scratch — on the user's own provider quota,
+                // which they are billed for.
+                //
+                // # Why this is only a warning, and what is still owed
+                //
+                // The switch is not something the user asked for: the model is
+                // whichever entry of `SUPPORTED_EMBEDDING_MODELS` resolves
+                // first, so *adding* a second provider can re-key an index that
+                // was working. That sits badly against the argument used to
+                // decline the pin's index consent banner (see `DECLINED.md`),
+                // which rests on `codebase_context_enabled` being opt-in
+                // precisely because indexing spends the user's money.
+                //
+                // A log line is not consent, and this is deliberately recorded
+                // as a warning rather than left at `info`: it is the loudest
+                // signal available from here without reaching into UI files.
+                // The complete fix is *not* a prompt — it is to stop making the
+                // choice on the user's behalf, by preferring the model the
+                // vector store already holds rows for whenever that model is
+                // still configured, and only then falling back to preference
+                // order. That is a `SqliteVectorStore` query and a change to
+                // what `preferred_model` means; it is filed rather than done
+                // here because it changes indexing behaviour, not just its
+                // reporting. Until it lands, the message must say what it will
+                // cost and how to avoid it.
+                (Some(previous), Some(config)) => log::warn!(
+                    "Codebase indexing is switching from {} to {}. These are different vector \
+                     spaces, so the next full sync will re-embed every indexed repository from \
+                     scratch against your own provider, at your own cost. To keep indexing with \
+                     {}, disable or remove {} under Settings > AI.",
+                    previous.model_id(),
+                    config.model_id(),
+                    previous.model_id(),
+                    config.model_id()
+                ),
+                // First model resolved in this process. Nothing has been
+                // embedded under another key by this client, so there is no
+                // re-embed to warn about.
+                (None, Some(config)) => {
                     log::info!("Codebase indexing will embed with {}", config.model_id())
                 }
-                None => log::info!(
+                (_, None) => log::info!(
                     "No embedding provider is configured; codebase indexing will report \
                      NoEmbeddingProvider until one is added under Settings > AI"
                 ),
@@ -611,18 +663,111 @@ pub fn build_store_client(
     persistence_writer: Option<SyncSender<ModelEvent>>,
 ) -> Arc<RefreshingStoreClient> {
     let client = Arc::new(RefreshingStoreClient::new(
-        Arc::new(HttpEmbeddingProvider::from_app(
-            app,
-            active_embedding_config(app),
-        )),
+        // Deliberately unconfigured. `refresh_from_settings` below resolves the
+        // endpoints and overwrites whatever this holds, so seeding it from the
+        // app here would be a verdict computed and discarded — and, worse, a
+        // second place where "what the endpoint is" gets decided. Startup and
+        // every later settings change now take exactly one code path.
+        Arc::new(HttpEmbeddingProvider::new(http_client::Client::new(), None)),
         Arc::new(SqliteVectorStore::with_writer(persistence_writer)),
     ));
-    // The provider above already has the endpoint; this second pass records the
-    // model and the reranker in the client's own configuration and logs what it
-    // found, so startup and every later settings change take exactly one code
-    // path.
     client.refresh_from_settings(app);
     client
+}
+
+/// Re-resolves everything that indexes a codebase from the app's current
+/// settings.
+///
+/// Two consumers, one trigger. The local index's store client holds the
+/// embedding endpoints the app posts to; the remote-server manager holds the
+/// endpoint it ships to daemons. Both are resolved from the same settings, so
+/// both are refreshed from the same place — a second mechanism for the second
+/// consumer would drift.
+///
+/// Sending `None` to a daemon is not a silent failure: it clears its endpoint
+/// and reports the index as `Unavailable`, and `codebase_indexing_ready`
+/// explains why.
+pub fn refresh_codebase_indexing_configuration(
+    store_client: &RefreshingStoreClient,
+    ctx: &mut AppContext,
+) {
+    store_client.refresh_from_settings(&*ctx);
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        use remote_server::manager::RemoteServerManager;
+
+        let preferences = remote_client_preferences(ctx);
+        RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
+            manager.update_client_preferences(preferences);
+        });
+    }
+}
+
+/// Refreshes now, and on every event that can change the answer.
+///
+/// # Why these three subscriptions and not fewer
+///
+/// * `AISettings` — `agent_providers` is where an embedding model's base URL
+///   comes from, and the global AI toggle is half of
+///   `UserWorkspaces::is_codebase_context_enabled`.
+/// * `AgentProviderSecrets` — the API key. A rotation leaves the provider list
+///   and the model identical, so nothing else fires. Without this, indexing
+///   keeps using a revoked key until restart, and a daemon keeps the one it was
+///   handed. This is the same pair the LLM path subscribes to
+///   (`app/src/ai/llms.rs`, `LLMPreferences::new`), for the same reason. It also
+///   emits on `reload_from_secure_storage`, so a key written by another process
+///   — the TUI, or a second window — is picked up too.
+/// * `CodeSettings` — `codebase_context_enabled` is the other half of the
+///   consent predicate, and the credential gate inside
+///   `remote_client_preferences` is `should_use_codebase_indexing`, which
+///   reads it. Subscribing to only one of the two settings groups would leave
+///   the other half of that predicate without its invalidation event: turning
+///   codebase indexing off would not retract the API key already sent to
+///   connected daemons, and turning it on would not deliver one until the next
+///   restart — so the disclosure in
+///   `settings-code-remote-indexed-folders-desc` ("sent when you turn this on")
+///   would be false in both directions.
+///
+/// Firing more often than strictly necessary is cheap and deliberate:
+/// `update_client_preferences` pushes to every connected client and no-ops when
+/// nothing changed, and the refresh is two settings reads and one borrow of the
+/// in-memory key map.
+///
+/// This lives here, and not inline in `initialize_app`, so that the wiring is
+/// reachable from a test. A predicate ported without its invalidation events is
+/// not ported, and a fix that is only tested one layer below the wiring is not
+/// tested — deleting the subscriptions must fail something. See
+/// `wiring_tests` below.
+pub fn subscribe_to_codebase_indexing_configuration(
+    store_client: Arc<RefreshingStoreClient>,
+    ctx: &mut AppContext,
+) {
+    refresh_codebase_indexing_configuration(&store_client, ctx);
+
+    let client = Arc::clone(&store_client);
+    ctx.subscribe_to_model(
+        &crate::settings::AISettings::handle(ctx),
+        move |_, _, ctx| {
+            refresh_codebase_indexing_configuration(&client, ctx);
+        },
+    );
+
+    let client = Arc::clone(&store_client);
+    ctx.subscribe_to_model(
+        &crate::ai::agent_providers::AgentProviderSecrets::handle(ctx),
+        move |_, _, ctx| {
+            refresh_codebase_indexing_configuration(&client, ctx);
+        },
+    );
+
+    let client = store_client;
+    ctx.subscribe_to_model(
+        &crate::settings::CodeSettings::handle(ctx),
+        move |_, _, ctx| {
+            refresh_codebase_indexing_configuration(&client, ctx);
+        },
+    );
 }
 
 /// The embedding model the index will use, for callers that need to know before
@@ -649,6 +794,7 @@ pub fn active_embedding_config(app: &AppContext) -> EmbeddingConfig {
 #[cfg(not(target_family = "wasm"))]
 pub fn remote_client_preferences(app: &AppContext) -> remote_server::client::ClientPreferences {
     use crate::ai::AIRequestUsageModel;
+    use crate::ai::agent_providers::embeddings::resolve_embedding_endpoint;
     use crate::ai::codebase_auto_indexing::{
         CodebaseAutoIndexingSurface, should_use_codebase_indexing,
     };
@@ -744,10 +890,16 @@ fn remote_embedding_provider(
 /// model as live. A rotated API key was ignored the same way.
 ///
 /// They deliberately go through the `StoreClient` trait rather than poking
-/// `HttpEmbeddingProvider::set_endpoint` directly — the latter is already
-/// covered in `agent_providers/embeddings_tests.rs`, and it passed while the
-/// defect was live. What was missing is that the refresh reaches *the client the
-/// manager holds*, so that is what is asserted.
+/// `HttpEmbeddingProvider::set_endpoints` directly — the single-endpoint setter
+/// is already covered in `agent_providers/embeddings_tests.rs`, and it passed
+/// while the defect was live. What was missing is that a refresh reaches *the
+/// client the manager holds*, so that is what is asserted.
+///
+/// These stop at `reconfigure`, which is where the resolution is applied. What
+/// makes `reconfigure` get *called* — the subscriptions in `initialize_app` —
+/// is a separate layer with a separate failure mode, and is covered by
+/// `wiring_tests` below. Neither set substitutes for the other: this one would
+/// still pass with every subscription deleted.
 ///
 /// No request leaves the machine: an `http://` non-loopback endpoint carrying a
 /// key is refused by the plaintext-bearer guard before the socket is opened, so
@@ -761,6 +913,7 @@ mod endpoint_refresh_tests {
     use string_offset::ByteOffset;
 
     use super::*;
+    use crate::ai::agent_providers::embeddings::EmbeddingEndpoint;
 
     fn an_unconfigured_client() -> RefreshingStoreClient {
         RefreshingStoreClient::new(
@@ -784,19 +937,37 @@ mod endpoint_refresh_tests {
         )
     }
 
-    /// Asks the client to embed one fragment and reports how it failed. It
-    /// always fails: with no endpoint because there is nothing to call, and with
-    /// one because that endpoint is refused before any request is made.
-    fn embed_error(client: &RefreshingStoreClient) -> IndexError {
+    /// Asks the client to embed one fragment *as a sync that cached
+    /// `embedding_config` would*, and reports how it failed. It always fails:
+    /// with no endpoint because there is nothing to call, and with one because
+    /// that endpoint is refused before any request is made.
+    fn embed_error_for(
+        client: &RefreshingStoreClient,
+        embedding_config: EmbeddingConfig,
+    ) -> IndexError {
         let fragment = a_fragment();
         let root_hash = NodeHash::from(fragment.content_hash().clone());
         block_on(client.generate_embeddings(
-            EmbeddingConfig::default(),
+            embedding_config,
             vec![fragment],
             root_hash,
             RepoMetadata { path: None },
         ))
         .expect_err("no reachable provider is configured in this test")
+    }
+
+    fn embed_error(client: &RefreshingStoreClient) -> IndexError {
+        embed_error_for(client, EmbeddingConfig::default())
+    }
+
+    /// A non-loopback `http://` endpoint with a key: the plaintext-bearer guard
+    /// refuses it before a socket is opened, so "which endpoint would this
+    /// request have gone to" is observable offline and deterministically.
+    fn an_endpoint(host: &str) -> EmbeddingEndpoint {
+        EmbeddingEndpoint {
+            base_url: format!("http://{host}/v1"),
+            api_key: "sk-secret".to_owned(),
+        }
     }
 
     #[test]
@@ -809,11 +980,13 @@ mod endpoint_refresh_tests {
         );
 
         client.reconfigure(
-            Some(EmbeddingConfig::default()),
-            Some(EmbeddingEndpoint {
-                base_url: "http://embeddings.example.invalid/v1".to_owned(),
-                api_key: "sk-configured-after-launch".to_owned(),
-            }),
+            EmbeddingEndpoints::single(
+                EmbeddingConfig::default(),
+                EmbeddingEndpoint {
+                    base_url: "http://embeddings.example.invalid/v1".to_owned(),
+                    api_key: "sk-configured-after-launch".to_owned(),
+                },
+            ),
             None,
             None,
         );
@@ -837,25 +1010,27 @@ mod endpoint_refresh_tests {
         // shape of the original defect, and it is why `reconfigure` sets the
         // endpoint unconditionally.
         //
-        // An API-key rotation travels this same `set_endpoint` call. It is not
-        // asserted separately because a key never appears in an error message,
-        // so distinguishing two keys would need a real request; the base URL is
-        // observable offline and exercises the identical code path.
+        // An API-key rotation travels this same `set_endpoints` call. It is not
+        // asserted separately here because a key never appears in an error
+        // message, so distinguishing two keys would need a real request; the
+        // base URL is observable offline and exercises the identical code path.
+        // `wiring_tests` does assert a key change end to end, using the
+        // plaintext-bearer guard as the observable.
         let client = an_unconfigured_client();
-        let endpoint = |host: &str| EmbeddingEndpoint {
-            base_url: format!("http://{host}/v1"),
-            api_key: "sk-secret".to_owned(),
-        };
 
         client.reconfigure(
-            Some(EmbeddingConfig::default()),
-            Some(endpoint("first.example.invalid")),
+            EmbeddingEndpoints::single(
+                EmbeddingConfig::default(),
+                an_endpoint("first.example.invalid"),
+            ),
             None,
             None,
         );
         client.reconfigure(
-            Some(EmbeddingConfig::default()),
-            Some(endpoint("second.example.invalid")),
+            EmbeddingEndpoints::single(
+                EmbeddingConfig::default(),
+                an_endpoint("second.example.invalid"),
+            ),
             None,
             None,
         );
@@ -887,8 +1062,13 @@ mod endpoint_refresh_tests {
         );
 
         client.reconfigure(
-            Some(EmbeddingConfig::OpenAiTextSmall3_256),
-            None,
+            EmbeddingEndpoints::single(
+                EmbeddingConfig::OpenAiTextSmall3_256,
+                EmbeddingEndpoint {
+                    base_url: "http://openai.example.invalid/v1".to_owned(),
+                    api_key: String::new(),
+                },
+            ),
             None,
             None,
         );
@@ -899,6 +1079,86 @@ mod endpoint_refresh_tests {
                 .embedding_config,
             EmbeddingConfig::OpenAiTextSmall3_256,
             "the next sync must use the model the user has now configured"
+        );
+    }
+
+    #[test]
+    fn a_newly_preferred_model_does_not_hijack_the_one_an_index_is_already_using() {
+        // `CodebaseIndex` caches the model it was built with and only re-reads
+        // it on a *full* sync, which is twenty minutes apart. Every incremental
+        // sync and every query in that window passes the *old* model down to
+        // the provider, while the refresh has already moved the preferred model
+        // to whatever `SUPPORTED_EMBEDDING_MODELS` ranks first.
+        //
+        // With one shared endpoint slot those requests would be posted to a
+        // provider that does not serve that model, and every incremental update
+        // would fail for up to twenty minutes with only telemetry to show for
+        // it. Per-model routing is what closes that window.
+        let client = an_unconfigured_client();
+
+        client.reconfigure(
+            [
+                (
+                    EmbeddingConfig::Voyage3_5_512,
+                    an_endpoint("voyage.example.invalid"),
+                ),
+                (
+                    EmbeddingConfig::OpenAiTextSmall3_256,
+                    an_endpoint("openai.example.invalid"),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            None,
+            None,
+        );
+
+        assert_eq!(
+            block_on(client.codebase_context_config())
+                .expect("the local config never fails")
+                .embedding_config,
+            EmbeddingConfig::Voyage3_5_512,
+            "a new index is built with the preferred model"
+        );
+
+        let error = embed_error_for(&client, EmbeddingConfig::OpenAiTextSmall3_256).to_string();
+        assert!(
+            error.contains("openai.example.invalid"),
+            "a sync still asking for the previous model must reach the provider that \
+             serves it, not the newly-preferred one; got {error}"
+        );
+        assert!(
+            !error.contains("voyage.example.invalid"),
+            "the newly-preferred provider must not receive a model it does not serve; \
+             got {error}"
+        );
+    }
+
+    #[test]
+    fn a_model_whose_provider_was_removed_reports_that_model_by_name() {
+        // The other half of routing: when the old model genuinely stops being
+        // served, the failure must be one loud, self-describing error rather
+        // than a stream of HTTP 400s from a provider that was never asked about
+        // it.
+        let client = an_unconfigured_client();
+
+        client.reconfigure(
+            EmbeddingEndpoints::single(
+                EmbeddingConfig::Voyage3_5_512,
+                an_endpoint("voyage.example.invalid"),
+            ),
+            None,
+            None,
+        );
+
+        assert!(
+            matches!(
+                embed_error_for(&client, EmbeddingConfig::OpenAiTextSmall3_256),
+                IndexError::NoEmbeddingProvider {
+                    model: "text-embedding-3-small"
+                }
+            ),
+            "the error must name the model that is no longer configured"
         );
     }
 }
@@ -951,6 +1211,195 @@ mod byop_key_gate_tests {
     #[test]
     fn an_unconfigured_provider_still_yields_none_when_indexing_is_in_use() {
         assert!(remote_embedding_provider(true, || None).is_none());
+    }
+}
+
+/// The subscriptions themselves, not the helper below them.
+///
+/// The defect this file exists to fix was in `initialize_app`: the endpoint was
+/// resolved once and never again. Tests that call
+/// [`RefreshingStoreClient::reconfigure`] directly cannot catch that — the
+/// equivalent tests passed while the defect was live, because `reconfigure` was
+/// never the broken part. Deleting the `ctx.subscribe_to_model` calls in
+/// [`subscribe_to_codebase_indexing_configuration`] has to fail something, and
+/// this is that something.
+///
+/// Both tests install the wiring *before* the thing they change, so the initial
+/// refresh inside cannot be what satisfies the assertion. Each changes exactly
+/// one of the two singletons, so each subscription is pinned individually
+/// rather than by whichever of them happens to fire first.
+///
+/// No request leaves the machine on either path. See `A_HOST` and
+/// `A_KEYLESS_HOST`.
+#[cfg(all(test, not(target_family = "wasm")))]
+mod wiring_tests {
+    use std::path::PathBuf;
+
+    use settings::Setting as _;
+    use string_offset::ByteOffset;
+    use warpui::App;
+
+    use super::*;
+    use crate::ai::AIRequestUsageModel;
+    use crate::ai::agent_providers::AgentProviderSecrets;
+    use crate::settings::{AISettings, AgentProvider, AgentProviderModel};
+    use crate::test_util::settings::initialize_settings_for_tests;
+    use crate::workspaces::user_workspaces::UserWorkspaces;
+
+    /// Non-loopback `http://`, so the plaintext-bearer guard refuses the request
+    /// before a socket is opened once a key is present. Nothing is ever sent.
+    const A_HOST: &str = "embeddings.example.invalid";
+
+    /// The same, for the test whose *failing* path would still have a keyless
+    /// endpoint and therefore would not be stopped by the guard. `0.0.0.0` is
+    /// non-loopback by the guard's definition (`is_loopback_host`), so a key
+    /// still triggers the refusal, but a connection to it can only ever be
+    /// refused by this machine — a regression cannot turn into real traffic.
+    const A_KEYLESS_HOST: &str = "0.0.0.0:1";
+
+    fn init_indexing_test_app(app: &mut App) {
+        // Everything `refresh_codebase_indexing_configuration` reads:
+        // `AISettings` and `CodeSettings` from the settings bundle, the key
+        // store, and — for the remote half — the usage limits, the consent
+        // predicate's workspace half, and the manager the preferences are
+        // pushed into.
+        initialize_settings_for_tests(app);
+        app.add_singleton_model(AgentProviderSecrets::new);
+        app.add_singleton_model(UserWorkspaces::default_mock);
+        app.add_singleton_model(AIRequestUsageModel::new);
+        app.add_singleton_model(remote_server::manager::RemoteServerManager::new);
+    }
+
+    fn an_unconfigured_client() -> Arc<RefreshingStoreClient> {
+        Arc::new(RefreshingStoreClient::new(
+            Arc::new(HttpEmbeddingProvider::new(
+                http_client::Client::new_for_test(),
+                None,
+            )),
+            Arc::new(SqliteVectorStore::new(None, None)),
+        ))
+    }
+
+    /// A provider that lists the default embedding model at `host`, and the id
+    /// its API key is stored under.
+    fn a_provider_serving_the_default_model(host: &str) -> (AgentProvider, String) {
+        let mut provider = AgentProvider::new_empty();
+        let id = provider.id.clone();
+        provider.name = "Test Embeddings".to_owned();
+        provider.base_url = format!("http://{host}/v1");
+        provider.models = vec![AgentProviderModel::from_id(
+            EmbeddingConfig::default().model_id().to_owned(),
+        )];
+        (provider, id)
+    }
+
+    async fn embed_error(client: &RefreshingStoreClient) -> IndexError {
+        let content = "fn main() {}".to_owned();
+        let content_hash = ContentHash::from_content(&content);
+        let length = content.len();
+        let fragment = Fragment::from_byte_range(
+            content,
+            content_hash,
+            PathBuf::from("/repo/src/main.rs"),
+            ByteOffset::from(0)..ByteOffset::from(length),
+        );
+        let root_hash = NodeHash::from(fragment.content_hash().clone());
+
+        client
+            .generate_embeddings(
+                EmbeddingConfig::default(),
+                vec![fragment],
+                root_hash,
+                RepoMetadata { path: None },
+            )
+            .await
+            .expect_err("no reachable provider is configured in this test")
+    }
+
+    #[test]
+    fn a_provider_added_after_startup_reaches_the_client_the_manager_holds() {
+        App::test((), |mut app| async move {
+            init_indexing_test_app(&mut app);
+
+            let (provider, provider_id) = a_provider_serving_the_default_model(A_HOST);
+            // Stored before the wiring is installed, so that the moment the
+            // provider appears the endpoint already carries a key and the
+            // plaintext-bearer guard stops the request. The refresh under test
+            // is the one driven by `AISettings`.
+            app.update(|ctx| {
+                AgentProviderSecrets::handle(ctx).update(ctx, |secrets, ctx| {
+                    secrets.set(&provider_id, "sk-added-after-launch".to_owned(), ctx);
+                });
+            });
+
+            let store_client = an_unconfigured_client();
+            app.update(|ctx| {
+                subscribe_to_codebase_indexing_configuration(Arc::clone(&store_client), ctx);
+            });
+
+            assert!(
+                matches!(
+                    embed_error(&store_client).await,
+                    IndexError::NoEmbeddingProvider { .. }
+                ),
+                "the initial refresh must find nothing, or this test proves nothing"
+            );
+
+            app.update(|ctx| {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings.agent_providers.set_value(vec![provider], ctx);
+                });
+            });
+
+            let error = embed_error(&store_client).await.to_string();
+            assert!(
+                error.contains(A_HOST),
+                "adding a provider must reach the client through the `AISettings` \
+                 subscription, not wait for a restart; got {error}"
+            );
+        });
+    }
+
+    #[test]
+    fn a_key_rotated_after_startup_reaches_the_client_the_manager_holds() {
+        App::test((), |mut app| async move {
+            init_indexing_test_app(&mut app);
+
+            let (provider, provider_id) = a_provider_serving_the_default_model(A_KEYLESS_HOST);
+            // The provider exists before the wiring, so the initial refresh
+            // resolves its endpoint with an empty key. The only thing that
+            // changes afterwards is the key, so `AgentProviderSecrets` is the
+            // only subscription that can carry it.
+            app.update(|ctx| {
+                AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings.agent_providers.set_value(vec![provider], ctx);
+                });
+            });
+
+            let store_client = an_unconfigured_client();
+            app.update(|ctx| {
+                subscribe_to_codebase_indexing_configuration(Arc::clone(&store_client), ctx);
+            });
+
+            app.update(|ctx| {
+                AgentProviderSecrets::handle(ctx).update(ctx, |secrets, ctx| {
+                    secrets.set(&provider_id, "sk-rotated".to_owned(), ctx);
+                });
+            });
+
+            // A key never appears in an error message, so the observable is the
+            // guard it trips: refusing to put a bearer token on a plaintext
+            // non-loopback connection. Without the `AgentProviderSecrets`
+            // subscription the endpoint still has the empty key it was resolved
+            // with, the guard does not apply, and the error is a transport
+            // failure instead.
+            let error = embed_error(&store_client).await.to_string();
+            assert!(
+                error.contains("refusing to send the API key"),
+                "a rotated key must reach the client through the `AgentProviderSecrets` \
+                 subscription; got {error}"
+            );
+        });
     }
 }
 
