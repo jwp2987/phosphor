@@ -259,11 +259,19 @@ impl UriHost {
                 // - zap://settings/warp_agent - opens the Zap Agent settings page
                 // - any other simple sub-page recognized by
                 //   `settings_section_for_simple_subpage` (see #414)
+                // - zap://settings - opens the settings pane on its default page
+                // - zap://settings?q=<text> - opens it with the search box pre-filled
+                // A bare `zap://settings` (or a trailing slash) yields a single EMPTY
+                // path segment, not an absent one. Without this `.filter` it arrives as
+                // `Some("")`, matches no arm, and dead-ends in the `log::warn!` below --
+                // the pin filters it here (`42effe840:app/src/uri/mod.rs:390`) precisely
+                // so the "no sub-page" routing at the end of this block can see it.
                 let settings_sub_page: Option<String> = url
                     .path_segments()
                     .into_iter()
                     .flatten()
                     .last()
+                    .filter(|s| !s.is_empty())
                     .map(|s| s.to_string());
                 let query_string: HashMap<_, _> = url.query_pairs().collect();
 
@@ -333,7 +341,18 @@ impl UriHost {
                         }
                     }
                 } else {
-                    log::warn!("Failed to open settings pane with uri={url}");
+                    // No sub-page: bare `zap://settings`, optionally with `?q=` to
+                    // pre-fill the settings search box. Restores the pin's
+                    // `OpenSettingsArgs::Default` / `::Search` routes
+                    // (`42effe840:app/src/uri/mod.rs:448,486`), which are not cloud.
+                    // `?q=` on a *sub-page* URL is deliberately still not handled -- at
+                    // the pin a query there discards the section, and reproducing that
+                    // is a behaviour change to a route that already works.
+                    let search_query = query_string
+                        .get("q")
+                        .map(|query| query.to_string())
+                        .filter(|query| !query.is_empty());
+                    open_settings_from_uri(primary_window_id, search_query, ctx);
                 }
             }
             UriHost::Home => {
@@ -1335,6 +1354,51 @@ fn open_settings_scrolled_to_widget(
             &WorkspaceAction::ScrollToSettingsWidget { page, widget_id },
             ctx,
         );
+    });
+}
+
+/// Opens the settings pane for a bare `zap://settings` deeplink, optionally
+/// pre-filling the settings search box from `?q=`.
+///
+/// SECURITY: this is a URI entry point, so what it can reach matters more than
+/// what it does. It reaches exactly two `WorkspaceAction`s, both confined to the
+/// settings pane: `ShowSettings` takes no parameters at all, and
+/// `ShowSettingsPageWithSearch` takes one `String` that is only ever used as the
+/// text of the settings search filter. Neither starts a session, runs a command,
+/// or reads a path -- deliberately unlike `UriHost::Launch`, which a URI can also
+/// reach and which starts every tab and command a launch configuration names.
+/// Both actions are already reachable without a URI, from the Settings menu item
+/// and from `local_control`'s `surface_settings_open`
+/// (`app/src/local_control/handlers/app_state.rs`), which builds the same pair
+/// from the same two inputs; this adds no capability, only a route to it.
+///
+/// Window handling mirrors [`open_settings_scrolled_to_widget`]: reuse the
+/// primary window when it still has a workspace, otherwise open a new one.
+fn open_settings_from_uri(
+    primary_window_id: Option<WindowId>,
+    search_query: Option<String>,
+    ctx: &mut AppContext,
+) {
+    let window_id = primary_window_id
+        .filter(|id| WorkspaceRegistry::as_ref(ctx).get(*id, ctx).is_some())
+        .unwrap_or_else(|| open_new_window_get_handles(None, ctx).0);
+
+    let Some(workspace) = WorkspaceRegistry::as_ref(ctx).get(window_id, ctx) else {
+        log::warn!("no workspace available for settings deeplink");
+        return;
+    };
+
+    let action = match search_query {
+        Some(search_query) => WorkspaceAction::ShowSettingsPageWithSearch {
+            search_query,
+            section: None,
+        },
+        None => WorkspaceAction::ShowSettings,
+    };
+
+    ctx.windows().show_window_and_focus_app(window_id);
+    workspace.update(ctx, |workspace, ctx| {
+        workspace.handle_action(&action, ctx);
     });
 }
 

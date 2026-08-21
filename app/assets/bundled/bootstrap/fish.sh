@@ -24,7 +24,12 @@ set -g DCS_START \u1b\u50\u24
 # _warp_run_generator_command_internal, which instead end in 'e' (0x65).
 set -g DCS_JSON_MARKER 'd'
 
-set -g DCS_END \u9c
+# Byte sequence used to signal the end of a DCS: the single byte 0x9c (ST).
+# Must be \x9c, not \u9c: fish encodes \u9c as the UTF-8 form of U+009C (c2 9c),
+# which prepends a stray 0xc2 to every hook. Every other emitter in this fork
+# (`fish_init_shell.sh`, `fish_init_subshell.sh`, `bash_body.sh`, `zsh_body.sh`)
+# writes the bare byte.
+set -g DCS_END \x9c
 
 set -g OSC_START (printf '\e]9278;')
 

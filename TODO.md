@@ -7265,6 +7265,21 @@ claim, which was wrong by four.
       "action preprocessing through `ctx.spawn`"; it emits synchronously, so `settle()` is
       still needed but for the effect flush, not preprocessing — the code is right and its
       justification is wrong.
+
+- [ ] 🟠 **Daemon sockets are not version-partitioned in practice, despite the docs and**
+      **three tests saying they are.** `daemon_socket_name()` / `daemon_pid_name()` — and so
+      `version_hash` — are **production-dead**: their only non-test callers are
+      `ssh_transport.rs::remote_daemon_{socket,pid}_path`, which have **zero callers**
+      repo-wide. The live path is `remote_server/unix/proxy.rs:23-33`, which hardcodes
+      `"server.sock"` / `"server.pid"`. Either wire the versioned names or delete them with
+      their tests and correct the doc comments.
+
+- [ ] **`setup_tests.rs:554-575` `version_hash_is_deterministic` is vacuous.** It never calls
+      `version_hash`; it re-implements `DefaultHasher` inline and asserts the copy against
+      itself, so it stayed green through the 2026-08-21 switch to a stable hash and now
+      actively misinforms. Replace with a **pinned literal** through
+      `remote_server_identity_dir_name` — that is the only assertion that can catch a silent
+      algorithm change.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
@@ -7443,11 +7458,13 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin probes `remotecommand` and falls back to plain ssh (`42effe840:bash_body.sh:1013-1022`, `zsh_body.sh:967-976`, `fish.sh:641-650`); the fork has ZERO `remotecommand` matches repo-wide and still passes a command-line remote command. Verifier confirmed the consequence empirically on OpenSSH 10.2: it prints "Cannot execute command-line and remote command." Not in DECLINED.md.
       **FIXED 2026-08-21:** The pin's `ssh -G … remotecommand` probe and plain-ssh fallback ported into all three scripts (`bash_body.sh:1035-1045`, `zsh_body.sh:932-942`, `fish.sh:660-670`), at the pin's placement. `bash -n` / `zsh -n` / `fish --no-execute` all pass.
 
-- [ ] **Fish's DCS terminator is the wrong bytes.** `fish.sh:27` sets `\u9c`, which
+- [x] **Fish's DCS terminator is the wrong bytes.** `fish.sh:27` sets `\u9c`, which
       emits **c2 9c**; every other emitter and the Rust constant use the single byte
       `9c`. A stray `0xC2` makes `hex::decode` fail and the hook is dropped. The pin
       avoided this by using `ESC \` in all four shells.
       **VERDICT PARTIAL — consequence refuted (independent verifier, 2026-08-21):** Byte claim confirmed BY OBSERVATION (fish 4.2.1: `\u9c` → `c2 9c`; `\x9c` → `9c`), against `printf '\x9c'` elsewhere. **But the consequence is refuted:** in vte's `DcsPassthrough` table (`table.rs:146-153`) 0xc2 has no entry and neither does `Anywhere`, so it resolves to `Action::None` — the byte is DISCARDED, never `put`, and `hex::decode` at `ansi/mod.rs:907` sees a clean payload. Cosmetic inconsistency, not a dropped hook.
+
+      **FIXED 2026-08-21 as latent fragility — but the CONSEQUENCE claim is refuted, by execution.** fish 4.2.1 is installed here: `\u9c` emits `c2 9c`, `\x9c` emits `9c` — byte claim confirmed. **"A stray `0xC2` makes `hex::decode` fail and the hook is dropped" is FALSE:** the pinned vte revision gives `DcsPassthrough` no entry for `0xc2` and `Anywhere` none either, so `advance()` unpacks `(Anywhere, Action::None)` and the byte is discarded **before** `put` — `hex::decode` sees a clean payload. Two more stale claims: there is **no non-test Rust constant** using `0x9c` (only three test files), and "the pin avoided this by using `ESC \` in all four shells" is true of the pin but is **not the fork's convention** — the fork deliberately uses bare `0x9c` in `bash_body.sh:16`, `zsh_body.sh:25`, all six `*_init_*.sh` and twice more inside `fish.sh`. Fixed for consistency and because it survives only by vte happening to drop an out-of-table byte. **`app/src/terminal/table.rs` does not exist** — the state table is in the vendored `vte` git dep.
 
 - [x] **Bash sessions permanently keep the giant HISTSIZE sentinel.**
       `local_tty/unix.rs:431-436,922-926` exports `HISTSIZE=57265949261`;
@@ -7507,17 +7524,21 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21 — and it is NOT a harmless leak.** The orphaned future completes **and applies a stale result**: `parsed_result_is_applicable` compares the pre-Tab buffer against the current one, but **Tab does not change the buffer** and the popup is not open yet, so the guard passes. It then classifies on the *previous* keystroke, which emits, which calls `handle_completion_editor_changed`, which finds no open menu and **aborts the newer Tab request**. So the stale classifier both flips shell/agent input mode on stale input *and* cancels the request the user just made, so the popup never appears. One line, at the pin's exact position. Ledger path stale: the file is `crates/warp_tui/src/terminal_session_view/completions.rs`.
 
-- [ ] **The TUI prints a command for a binary that does not exist.**
+- [x] **The TUI prints a command for a binary that does not exist.**
       `warp_tui/src/session.rs:261` prints `warp --resume {token}`; the bin is
       `zap-tui-oss`. `#[command(name = "warp")]` also puts "warp" in `--help`, which the
       branding rule forbids. README:230 and README:141 contradict each other about
       whether that binary is user-facing.
       **VERDICT PARTIAL — the println is dead (independent verifier, 2026-08-21):** `session.rs:261` and `#[command(name = "warp")]` (`:46`) are real, and the clap name IS live (`:135` `try_parse`), inherited verbatim from `42effe840:session.rs:51`. **But the println is unreachable:** it needs `exit_summary.token()`, set only from `server_conversation_token()` (`terminal_session_view.rs:2836-2841`), which BYOP never produces — DECLINED.md:216 documents this. README:141 and :230 both name `zap-tui-oss`; no contradiction.
 
-- [ ] **`LaunchMode::Tui` folds into the App arm, so the TUI inherits the GUI's default
+      **FIXED 2026-08-21 — and BOTH the ledger and its verifier named the wrong binary.** Both say `zap-tui-oss`; that is the **cargo bin name only**. Every release job builds `--bin zap-tui-oss` and then **copies it to `phosphor-tui`** before packaging (`phosphor_release.yml:426,824,904`), and `README.md:202` calls it "the `phosphor-tui` binary". So the correct instruction is `phosphor-tui --resume <token>` — neither `warp` nor `zap-tui-oss`. The clap name is genuinely live (it feeds `--help` usage and every parse error), so this was user-visible beyond the unreachable `println!`. Now a single `CLI_NAME` const feeds both, so they cannot drift. The verifier's "println is unreachable" holds — the token's only production setters are cloud multi-agent paths — and the block is kept with a comment saying so, since `--resume` is a live flag.
+
+- [x] **`LaunchMode::Tui` folds into the App arm, so the TUI inherits the GUI's default
       profile object.** `execution_profiles/profiles.rs:175`. The pin makes that arm
       `unreachable!("TUI profiles use settings")`.
       **VERDICT PARTIAL — no new defect (independent verifier, 2026-08-21):** `profiles.rs:175` does fold `Tui` into the App arm and `42effe840:profiles.rs:380` is `unreachable!`. But that arm is unreachable AT THE PIN only because `42effe840:profiles.rs:71-73,262-277` routes the TUI through file-backed settings — a subsystem this fork never ported and already tracks (`TODO.md:3781-3784`). Sharing the GUI object store is the fork's stated design (`bin/oss.rs:18-24`).
+
+      **REFUTED 2026-08-21 — not a defect; porting the pin's arm would PANIC on every TUI launch.** The pin does have `LaunchMode::Tui` (`42effe840:profiles.rs:380`) but it is `unreachable!("TUI profiles use settings")`, reachable-as-unreachable only because the pin diverts the TUI into file-backed `[agents.execution_profiles.*]` settings **before** the match — and **that subsystem is DECLINED in this fork** (`TODO.md:3789-3791`, "redesign not port; ~700 lines of cloud-migration machinery"). So copying the arm would crash. The inherited App-arm default is *correct* for the TUI, which deliberately runs under the GUI's app identity and config (`DECLINED.md:173`), and it must **not** fall into the `CommandLine` arm, which is intentionally more permissive. The ledger presents "the pin makes that arm `unreachable!`" as the fix; it is not one. Comment-only change recording this so it stops being re-filed.
 
 - [x] **Unreachable branch from a mis-desugared let-chain.**
       `current_prompt.rs:822-832`: `if suppress_on_failure { … } else if
@@ -7672,11 +7693,13 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin returns early at `42effe840:terminal/input.rs:11762-11765` before the follow-up/icon logic; the fork's `maybe_backspace_ai_icon` (`input.rs:10262-10311`) has no such guard, and `is_fullscreen()` at `:10271` sits in the OTHER branch. Verifier checked the callers too: `:9697` and `:9703` dispatch both backspace events ungated, so `set_pending_query_state_for_new_conversation` fires with an inline agent view active.
       **FIXED 2026-08-21:** `input.rs:10286-10294` — the pin's `AgentView.is_enabled() && controller.is_active()` early return added before the follow-up/icon logic, and the `:10302` comment corrected (it is now true).
 
-- [ ] **Daemon sockets are partitioned by a 32-bit unkeyed `DefaultHasher`**
+- [x] **Daemon sockets are partitioned by a 32-bit unkeyed `DefaultHasher`**
       (`remote_server/setup.rs:298-308`) while its sibling at `:317` states collisions
       are unacceptable and avoids hashing. Colliding identities share a daemon holding
       the other's token.
       **VERDICT PARTIAL — consequence fails (independent verifier, 2026-08-21):** `setup.rs:298-308` does truncate to 32 bits and the sibling comment does call collisions unacceptable for the data dir. But the consequence fails: the directory sits under ONE remote UNIX account's `$HOME` (`:270-282`) — already a shared trust boundary — and no protocol message discloses a stored token; `server_model.rs:1631-1632` merely overwrites it. The hashing is a documented `sun_path` length tradeoff with tests (`setup_tests.rs:440-478`).
+
+      **FIXED 2026-08-21 — of the two concerns, only instability bites.** **Collision is not the problem** and the trust boundary is weaker than the verifier said: `remote_server_identity_key` resolves to `user_id()` or `anonymous_id()` and the fork no longer distinguishes them, so there is effectively **one identity key per install**. Widening is impossible anyway — `socket_path_fits_within_sun_path_worst_case` leaves ~6 bytes under macOS's 103 and 16 hex chars would add 8. **Instability is the real defect:** `DefaultHasher`'s algorithm is explicitly unspecified across Rust releases and its output is baked into a path **on a remote host that outlives the process**, so a toolchain bump silently re-points the daemon dir, the client finds no PID file, starts a second daemon, and the first keeps its socket, auth token and memory until reboot — nothing sweeps it, because sweeping means reading the PID file at the path we no longer compute. Replaced with FNV-1a 64 plus the MurmurHash3 `fmix64` finaliser, constants written out in-file. **The finaliser is not decoration:** raw FNV-1a on the real UUID-shaped inputs collapses `"key-a"`/`"key-b"` to `71132af2`/`711329f2` — one nibble apart, **in exactly the truncated half** — because identity keys differ in their last bytes; with `fmix64` they are `b2009287`/`a6ec4b66`. The changeover orphans one daemon per remote host, documented in-source: the same event a toolchain bump used to cause silently at an unpredictable time, happening once, on purpose.
 
 ### Refutation round — search and AI tool output
 
@@ -8125,11 +8148,13 @@ claim, which was wrong by four.
       files in that directory. `check_stub_coverage` did not catch it.
       **VERDICT PARTIAL — 'only one' false (independent verifier, 2026-08-21):** The tautology is confirmed: `user_workspaces.rs:734-737` is a bare `true` ignoring `self`, where the pin's version at `:1753-1762` reads `current_workspace()`. Verifier also explained why the guard misses it: `check_stub_coverage`'s `TRIVIAL` regex requires the body on the `fn` line and this one spans a comment. **But "the only test in that directory" is false** — `user_profiles.rs:116,132` holds two.
 
-- [ ] **`zap://settings` (bare) is dead.** `uri/mod.rs:261,279,335` dropped the pin's
+- [x] **`zap://settings` (bare) is dead.** `uri/mod.rs:261,279,335` dropped the pin's
       `.filter(|s| !s.is_empty())` and the `OpenSettingsArgs::Default` / `?q=` routes,
       both non-cloud. The comment at `:1370-1379` claims parity "minus the two cloud
       branches" — false.
       **VERDICT PARTIAL — comment claim wrong (independent verifier, 2026-08-21):** Route breakage confirmed: `uri/mod.rs:261-266` drops the pin's `.filter(|s| !s.is_empty())` (`42effe840:app/src/uri/mod.rs:390`), and the fork has no `OpenSettingsArgs` at all — the pin's bare-URL `Default` (`:486`) and `?q=` search (`:448,468`) branches are gone, leaving a `log::warn!` at `:335`. **But the comment at `:1367-1376` is accurate**: it describes `settings_section_for_simple_subpage`, whose pin version really does have four arms, two cloud. The dropped routes are in the caller, not that function.
+
+      **FIXED 2026-08-21 — reachability is honestly "only theoretically".** Verified dead: the bare form yields one *empty* path segment, so without the pin's `.filter(|s| !s.is_empty())` it arrives as `Some("")`, matches no arm and hits a `log::warn!`. **No documented link, menu item or support instruction produces it** — nothing outside code comments references it, and `web_intent_parser.rs:79-93` structurally cannot emit it (it requires two segments and a non-empty query). Fixed anyway because it is the most guessable form of a scheme the fork does register, the change is ~10 lines, and **it adds no capability**. **Why the landing is safe**, stated in-source given the `UriHost::Launch` precedent: it reaches exactly two `WorkspaceAction`s, both confined to the settings pane — `ShowSettings` takes **no parameters at all**, and `ShowSettingsPageWithSearch` takes one `String` used only as search-filter text. Neither starts a session, runs a command or touches a path, and both are already reachable without a URI from the Settings menu and from `local_control`'s `surface_settings_open`, which builds the identical pair from the identical inputs. The ledger's claim about the comment at `:1370-1379` is wrong (the verifier caught it) — that doc describes a different function and was left alone. **Deliberately not done:** `?q=` on a *sub-page* URL, since at the pin a query there silently discards the section and reproducing that would change a route that currently works.
 
 - [x] **`external_editor/linux.rs:88` parses a Desktop-Entry `Exec` with
       `shell_words::split`** where the pin uses a purpose-built `tokenize_exec`.

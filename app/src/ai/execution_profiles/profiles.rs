@@ -172,6 +172,22 @@ impl AIExecutionProfilesModel {
                 }
 
                 let default_profile_state = match launch_mode {
+                    // `Tui` shares the `App` arm ON PURPOSE; do NOT "restore parity"
+                    // by copying the pin's `LaunchMode::Tui { .. } =>
+                    // unreachable!("TUI profiles use settings")`
+                    // (`42effe840:app/src/ai/execution_profiles/profiles.rs:380`). That arm
+                    // is unreachable at the pin only because the pin diverts the TUI into
+                    // file-backed `[agents.execution_profiles.*]` settings *before* this
+                    // match. This fork DECLINED that subsystem (see TODO.md, "File-backed
+                    // execution profiles DECLINED", 2026-08-18), so here the TUI does reach
+                    // this match and the pin's arm would panic on every TUI launch.
+                    // Inheriting the GUI's default profile is the intended behaviour: the
+                    // TUI deliberately runs under the GUI's app identity and therefore its
+                    // config and object store (`crates/warp_tui/src/bin/oss.rs`,
+                    // DECLINED.md "TUI/GUI shared app id"). Note it must NOT fall into the
+                    // `CommandLine` arm either -- that one is deliberately *more
+                    // permissive* (`create_default_cli_profile`), and the TUI is an
+                    // interactive surface, not a non-interactive one.
                     LaunchMode::App { .. } | LaunchMode::Test { .. } | LaunchMode::Tui { .. } => match default_profile_object {
                         Some(p) => {
                             let execution_profile_id = ClientProfileId::new();

@@ -285,8 +285,9 @@ pub fn remote_server_dir() -> String {
 /// Returns a short, deterministic directory name for a remote-server
 /// identity key, used for the daemon socket and PID file paths.
 ///
-/// Hashes the key to 8 hex chars so the socket path stays within the
-/// `sun_path` limit across all channels.
+/// Hashes the key to 8 hex chars via [`stable_short_hash`] so the socket path
+/// stays within the `sun_path` limit across all channels. See that function
+/// for why the hash must not be `DefaultHasher`.
 ///
 /// Regression fix (ported alongside `identity_dir_name_is_short_hash` /
 /// `socket_path_fits_within_sun_path_worst_case` in setup_tests.rs): this
@@ -296,15 +297,69 @@ pub fn remote_server_dir() -> String {
 /// key with no shortening at all, defeating the `sun_path` safety margin this
 /// function exists for. See crates/remote_server/src/setup_tests.rs.
 pub fn remote_server_identity_dir_name(identity_key: &str) -> String {
-    use std::hash::{Hash, Hasher};
-
     if identity_key.is_empty() {
         return "empty".to_string();
     }
 
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    identity_key.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())[..8].to_string()
+    stable_short_hash(identity_key)
+}
+
+/// Returns the first 8 hex chars of a **build-stable** 64-bit hash of `input`.
+///
+/// Must not be `std::collections::hash_map::DefaultHasher`. `DefaultHasher`'s
+/// algorithm is explicitly unspecified — "the internal algorithm is not
+/// specified, and so it and its hashes should not be relied upon over
+/// releases" — so the value it returns for a fixed input is free to change
+/// when the Rust toolchain changes. Both callers bake that value into a
+/// **path on a remote host that outlives this process**: the daemon socket
+/// directory and the socket/PID filenames. If the value moves, the client
+/// starts looking in a directory the running daemon never created, so it
+/// spawns a second daemon while the first keeps its socket, its auth token
+/// and its memory until the remote host reboots or the user kills it by
+/// hand. Nothing sweeps the old path, because sweeping means reading the PID
+/// file at the path we no longer compute. That failure is silent, it happens
+/// on a toolchain bump rather than on any change to this crate, and no test
+/// can see it because the tests only compare this function against itself.
+///
+/// FNV-1a (64-bit, offset basis `0xcbf2_9ce4_8422_2325`, prime
+/// `0x0000_0100_0000_01b3`) with the MurmurHash3 `fmix64` finalizer. Both are
+/// fully specified by constants written out here, so the output is pinned by
+/// this source file and by nothing else. FNV-1a alone avalanches its high
+/// bits poorly when inputs differ only in their last byte — the common case
+/// here, since identity keys are UUID-shaped — and it is the high 32 bits
+/// that get truncated into the directory name, hence the finalizer.
+///
+/// **Not** a collision-resistant hash, and deliberately still truncated to 32
+/// bits: the `sun_path` budget has ~6 bytes of headroom in the worst case
+/// (`socket_path_fits_within_sun_path_worst_case`), so widening to 16 chars
+/// would push the worst-case path past macOS's 103-byte limit. Collisions are
+/// tolerable here in a way they are not for
+/// [`remote_server_daemon_data_dir`]: every identity that shares this
+/// directory tree already shares one remote UNIX account and its `$HOME`.
+///
+/// NOTE ON THE CHANGEOVER: switching off `DefaultHasher` moves every path
+/// once, so a daemon started by the previous build is orphaned exactly as
+/// described above — one leaked process per remote host, reaped by the next
+/// reboot. That is the same event a toolchain bump used to cause silently and
+/// at an unpredictable time; this is the last one.
+fn stable_short_hash(input: &str) -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in input.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    // MurmurHash3 fmix64.
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^= hash >> 33;
+
+    format!("{hash:016x}")[..8].to_string()
 }
 
 /// Percent-encodes an identity key for use in filesystem paths.
@@ -365,12 +420,8 @@ pub fn remote_server_daemon_data_dir(identity_key: &str) -> String {
 /// 103 on macOS) for users with moderately long identity keys or home
 /// directory paths.
 pub fn version_hash() -> Option<String> {
-    use std::hash::{Hash, Hasher};
-
     let version = ChannelState::app_version()?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    version.hash(&mut hasher);
-    Some(format!("{:016x}", hasher.finish())[..8].to_string())
+    Some(stable_short_hash(version))
 }
 
 /// Returns the daemon socket filename, versioned with a short hash when a

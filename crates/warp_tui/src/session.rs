@@ -39,11 +39,21 @@ const CLI_VERSION: &str = match option_env!("GIT_RELEASE_TAG") {
     None => "v0.0.0.0.0.0",
 };
 
+/// Name this binary is invoked by, used for clap's usage/help output and for
+/// any instruction we print for the user to run. The cargo bin is
+/// `zap-tui-oss` (a lineage internal, see README "Deliberately *not* renamed"),
+/// but every release job copies it to `phosphor-tui` before packaging
+/// (`.github/workflows/phosphor_release.yml`), so `phosphor-tui` is the name a
+/// user actually types. The pin hardcodes `"warp"` here
+/// (`42effe840:crates/warp_tui/src/session.rs:51`); that name ships no binary
+/// in this fork, so it is deliberately not carried over.
+const CLI_NAME: &str = "phosphor-tui";
+
 // Crossterm 0.29 drops associated text in all-key mode, which breaks AltGr and dead-key input.
 const REPORT_MODIFIER_KEY_LIFECYCLE: bool = false;
 
 #[derive(Debug, Parser)]
-#[command(name = "warp", version = CLI_VERSION)]
+#[command(name = CLI_NAME, version = CLI_VERSION)]
 struct TuiArgs {
     /// Resume an Oz/Warp conversation by server token.
     #[arg(long)]
@@ -253,12 +263,17 @@ pub fn run() -> Result<()> {
             )
         }),
     );
+    // Currently unreachable: the token comes from
+    // `AIConversation::server_conversation_token`, which BYOP never populates
+    // (see DECLINED.md, "tui_cli_shell_command / tui_resume_shell_command").
+    // Kept because `--resume` is a live flag, so the hint is correct the moment
+    // a token exists; the name it prints must stay the name users invoke.
     if result.is_ok()
         && let Some(token) = exit_summary.token()
     {
         let token = token.as_str();
         println!("To continue this conversation, run:");
-        println!("warp --resume {token}");
+        println!("{CLI_NAME} --resume {token}");
     }
     result
 }
