@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
 };
 
 use crate::{
@@ -19,7 +19,8 @@ use warp_core::execution_mode::AppExecutionMode;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
-use crate::ai::mcp::mcp_provider_from_file_path;
+use crate::ai::mcp::{MCPProvider, mcp_provider_from_file_path};
+use strum::IntoEnumIterator as _;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -1013,6 +1014,34 @@ impl BlocklistAIPermissions {
         }
     }
 
+    // The four command allow/denylist mutators below write the **default execution profile**,
+    // which is where `get_execute_commands_{allow,deny}list_for_profile` reads from a few
+    // hundred lines above. They used to write `AISettings.agent_mode_command_execution_*`
+    // instead — a store no permission decision consults.
+    //
+    // That was not a de-clouding regression: it is inherited verbatim from this fork's base
+    // (`0dbd3d567`, the initial public release), which predates upstream's move of these
+    // lists into execution profiles. The pin has already made the move
+    // (`42effe840:app/src/ai/blocklist/permissions.rs:997-1050`), so this is a **port catch-up
+    // to the pin, not a divergence** — the bodies below are the pin's.
+    //
+    // The bug was latent, which is the only reason it never shipped as a user-visible
+    // failure: all four call sites hang off settings-page widgets that are constructed but
+    // never rendered (`settings_view/ai_page.rs:787-848` build the two editors and
+    // `:3222-3230` handle `RemoveFromCommandExecution{Allow,Deny}list`, which nothing
+    // dispatches). The list editors the user actually sees write the profile directly
+    // (`ai_page.rs:1430,1469,3438,3447`, `ai/execution_profiles/editor/mod.rs:1590-1608`).
+    // Latent is not the same as harmless: had either editor been rendered, a user adding an
+    // entry to the *denylist* would have been shown a rule that was never enforced.
+    //
+    // `AISettings.agent_mode_command_execution_*` is now read-only from this module's point
+    // of view. It is still read once, by `create_default_from_legacy_settings`
+    // (`ai/execution_profiles/mod.rs:473-479`), which seeds the default profile from the
+    // legacy settings keys on first run — so those keys keep working as the TOML-level
+    // migration source they are, and stop being a second, unenforced store.
+    //
+    // Covered by `test_command_autoexecution_mutators_reach_enforcement`.
+
     /// Allows Agent Mode to auto-execute commands that match `command`.
     ///
     /// The denylist (see [`Self::add_command_to_autoexecution_denylist`])
@@ -1022,15 +1051,11 @@ impl BlocklistAIPermissions {
         command: AgentModeCommandExecutionPredicate,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        let mut allowlist = AISettings::as_ref(ctx)
-            .agent_mode_command_execution_allowlist
-            .clone();
-        allowlist.push(command);
-        AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            settings
-                .agent_mode_command_execution_allowlist
-                .set_value(allowlist, ctx)
-        })
+        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles, ctx| {
+            let profile_id = profiles.default_profile_id();
+            profiles.add_to_command_allowlist(profile_id, &command, ctx);
+        });
+        Ok(())
     }
 
     /// Removes `command` from the auto-execution allowlist.
@@ -1041,15 +1066,11 @@ impl BlocklistAIPermissions {
         command: &AgentModeCommandExecutionPredicate,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        let mut allowlist = AISettings::as_ref(ctx)
-            .agent_mode_command_execution_allowlist
-            .clone();
-        allowlist.retain(|c| c != command);
-        AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            settings
-                .agent_mode_command_execution_allowlist
-                .set_value(allowlist, ctx)
-        })
+        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles, ctx| {
+            let profile_id = profiles.default_profile_id();
+            profiles.remove_from_command_allowlist(profile_id, command, ctx);
+        });
+        Ok(())
     }
 
     /// Forces Agent Mode to ask for user consent before executing commands that match `command`.
@@ -1058,15 +1079,11 @@ impl BlocklistAIPermissions {
         command: AgentModeCommandExecutionPredicate,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        let mut denylist = AISettings::as_ref(ctx)
-            .agent_mode_command_execution_denylist
-            .clone();
-        denylist.push(command);
-        AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            settings
-                .agent_mode_command_execution_denylist
-                .set_value(denylist, ctx)
-        })
+        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles, ctx| {
+            let profile_id = profiles.default_profile_id();
+            profiles.add_to_command_denylist(profile_id, &command, ctx);
+        });
+        Ok(())
     }
 
     /// Removes `command` from the auto-execution denylist.
@@ -1077,15 +1094,11 @@ impl BlocklistAIPermissions {
         command: &AgentModeCommandExecutionPredicate,
         ctx: &mut ModelContext<Self>,
     ) -> Result<()> {
-        let mut denylist = AISettings::as_ref(ctx)
-            .agent_mode_command_execution_denylist
-            .clone();
-        denylist.retain(|c| c != command);
-        AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            settings
-                .agent_mode_command_execution_denylist
-                .set_value(denylist, ctx)
-        })
+        AIExecutionProfilesModel::handle(ctx).update(ctx, |profiles, ctx| {
+            let profile_id = profiles.default_profile_id();
+            profiles.remove_from_command_denylist(profile_id, command, ctx);
+        });
+        Ok(())
     }
 
     /// Sets whether or not readonly commands can be auto-executed by Agent Mode.
@@ -1250,15 +1263,113 @@ impl BlocklistAIPermissions {
 fn check_protected_write_paths(paths: &[PathBuf]) -> Option<FileWritePermission> {
     // MCP config files are always protected from auto-write to prevent security risks
     // from injecting arbitrary context into the agent.
-    if paths
-        .iter()
-        .any(|p| mcp_provider_from_file_path(p).is_some())
-    {
+    if paths.iter().any(|path| is_protected_write_path(path)) {
         Some(FileWritePermission::Denied(
             FileWritePermissionDeniedReason::ProtectedPath,
         ))
     } else {
         None
+    }
+}
+
+/// Whether `path` names a system-protected config file.
+///
+/// # Why this is not just `mcp_provider_from_file_path(path)`
+///
+/// The only production caller of [`BlocklistAIPermissions::can_write_files`] hands it the
+/// **raw path strings the model emitted** (`ai/blocklist/action_model/execute/
+/// request_file_edits.rs`, `should_autoexecute`), while the code that actually performs the
+/// write resolves them first, through `warp_ai::paths::host_native_absolute_path` — tilde
+/// expansion, join against the session cwd, then lexical normalisation. Guard and writer
+/// therefore disagreed about which file a path names.
+///
+/// That gap was exploitable for exactly one provider, and only because of an asymmetry in
+/// `mcp_provider_from_file_path`: it matches *project* configs by path **suffix** (so
+/// `~/.mcp.json`, `~/.codex/config.toml` and `~/.warp/.mcp.json` are caught however they are
+/// spelled) but matches *home* configs by **equality** against an absolute path. Claude is
+/// the one provider whose home config file name (`.claude.json`) differs from its project
+/// config file name (`.mcp.json`), so it had only the equality match — and `~/.claude.json`,
+/// `.claude.json` and `some/dir/../.claude.json` are all unequal to
+/// `/home/<user>/.claude.json`. Each of the three resolves to it at write time.
+///
+/// Two defences, both cheap and neither requiring the caller to change:
+///
+/// 1. expand a leading `~` and fold away `.` / `..` before consulting the provider table, so
+///    a non-canonical spelling of an absolute path can no longer miss the equality match;
+/// 2. additionally suffix-match every provider's *home* config path, which is what makes a
+///    bare relative `.claude.json` protected without this function needing a cwd it does not
+///    have. This over-matches by design — a `.claude.json` in a project directory is denied
+///    auto-write too — which is the same conservative treatment `.mcp.json` already gets, and
+///    the failure mode is asking the user rather than silently writing.
+///
+/// # Residue, deliberately not closed here
+///
+/// - **Symlinks.** Normalisation is purely lexical, so a symlink pointing at a protected file
+///   still evades. Resolving them needs `fs::canonicalize` on the *parent* (the target of a
+///   write need not exist yet), i.e. blocking I/O inside an `&AppContext` read, and the agent
+///   would have to create the link first — which is a *command*, gated separately.
+/// - **`$HOME/...` and other variable spellings.** `shellexpand::tilde` handles `~` only;
+///   resolving `$HOME` means an environment the guard is not given.
+/// - **cwd-relative paths in general.** `../../etc/hosts` cannot be resolved without the
+///   session's working directory. The belt-and-braces repair is for the caller to pass the
+///   already-resolved path — `request_file_edits.rs` imports `host_native_absolute_path`
+///   and uses it six lines away — and that stays worth doing; this function is the backstop,
+///   not the whole answer.
+/// - **Rename destinations never reach here at all.** `ParsedDiff::file()`
+///   (`crates/ai/src/diff_validation/mod.rs:39-45`) returns the *source* of a V4A edit and
+///   never `move_to`, so `should_autoexecute` builds its path list without the destination
+///   while `diff_application.rs:396-431` renames onto it. No amount of hardening inside this
+///   function can see a path it is never given.
+///
+/// Covered by `test_can_write_files_mcp_config_always_denied`.
+fn is_protected_write_path(path: &Path) -> bool {
+    let normalized = normalize_for_protected_path_check(path);
+
+    if mcp_provider_from_file_path(&normalized).is_some() {
+        return true;
+    }
+
+    // Home-level configs are matched by equality inside `mcp_provider_from_file_path`, which
+    // a relative spelling can never satisfy. Match them by suffix as well.
+    MCPProvider::iter().any(|provider| normalized.ends_with(provider.home_config_path()))
+}
+
+/// Expands a leading `~` and folds away `.` and `..` components, without touching the
+/// filesystem.
+///
+/// Deliberately lexical: this runs inside a permission check, and `fs::canonicalize` both
+/// blocks and fails outright on a path that does not exist yet — which is the normal case for
+/// a file the agent is about to create.
+fn normalize_for_protected_path_check(path: &Path) -> PathBuf {
+    let expanded = match path.to_str() {
+        Some(path) => PathBuf::from(shellexpand::tilde(path).into_owned()),
+        // Not valid UTF-8, so there is no `~` to expand; normalise it as-is.
+        None => path.to_path_buf(),
+    };
+
+    let mut normalized = PathBuf::new();
+    for component in expanded.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => match normalized.components().next_back() {
+                // Ascend out of a named directory.
+                Some(Component::Normal(_)) => {
+                    normalized.pop();
+                }
+                // `..` cannot ascend past the root; POSIX defines `/..` as `/`.
+                Some(Component::RootDir | Component::Prefix(_)) => {}
+                // Nothing to ascend out of yet (`../x`, or `../..`): keep it, so the path
+                // does not silently become a *different*, shorter one.
+                _ => normalized.push(".."),
+            },
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        expanded
+    } else {
+        normalized
     }
 }
 
@@ -1336,9 +1447,11 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
 /// - `$'rm' -rf ~`, `$"rm" -rf ~` — leading `$` before a quoted segment.
 ///   (`test_can_autoexecute_command_denylist_matches_quoted_command_names`)
-/// - `X=1 rm file` — leading env-var assignments, including quoted ones (`"X"=1 rm file`,
-///   `X="1" rm file`), **but only when the value itself contains no `=`**; see the residue
-///   list for `FOO=a=b`.
+/// - `X=1 rm file` and `FOO=a=b rm file` — leading env-var assignments, values containing
+///   `=` included, and quoted ones (`X="1" rm file`). `"X"=1 rm file` is stripped too, and
+///   that one is an accepted *over*-match rather than a fix: bash, dash and zsh all treat it
+///   as a program literally named `X=1`, not as an assignment. Stripping it can only ever
+///   deny more, so it is left alone.
 ///   (`test_can_autoexecute_command_denylist_matches_env_prefixed_commands`,
 ///   `test_can_autoexecute_command_denylist_matches_quoted_command_names`)
 /// - quoting anywhere in the *arguments*, e.g. `rm "-rf" ~`, since all parts are unquoted.
@@ -1387,10 +1500,16 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
 ///   own option grammar (`env -i`, `env X=1`, `timeout 5s`), so a partial list would create
 ///   false confidence. Deliberately out of scope; a denylist that wants to stop these should
 ///   also carry entries for the prefixes themselves (as the default denylist does for shells).
-/// - An env-var assignment whose *value* contains `=`: `FOO=a=b rm file.txt` runs `rm`, but
-///   `Command::remove_leading_env_vars` stops at the first part whose `split('=').count()` is
-///   not exactly 2, so the prefix survives and no `rm` rule matches. Tracked in `TODO.md`;
-///   the repair belongs in the completer, next to the split, not in the candidate set.
+/// - An env-var assignment whose value opens a word the lexer splits: bash's array form
+///   `FOO=(a b) rm file.txt` runs `rm`, but lexes as `FOO=(a` + `b)` + `rm` + `file.txt`, so
+///   the assignment is dropped and `b)` becomes the resolved command name. The
+///   `FOO=a=b rm file.txt` case that used to sit here is **fixed**:
+///   `Command::remove_leading_env_vars` now applies the shell's own `NAME=value` rule
+///   instead of the pin's `split('=').count() == 2`, so a value containing `=` no longer
+///   hides the command. That rule is also *narrower* than the pin's in the other direction
+///   — `1FOO=b rm x`, `FOO-1=b rm x` and `=b rm x` are no longer stripped — which loses this
+///   function no coverage, because no shell runs `rm` for any of them (each reports
+///   "command not found" for the prefix itself; confirmed with an `rm` shim).
 /// - Any indirection that needs the shell to be *evaluated*: `R=rm; $R -rf ~`, `${R} -rf ~`,
 ///   `$(echo rm) -rf ~`, shell aliases and functions, `eval`.
 /// - Path equivalence: `/bin/rm`, `./rm`, `busybox rm` are different text and stay different.

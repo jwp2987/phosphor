@@ -130,8 +130,11 @@ pub fn command_without_leading_env_vars<S: AsRef<str>>(
 ///   word, so `rm>/dev/null -rf ~` resolves its name to `rm/dev/null`; `parse_command_list`
 ///   consumes a leading redirect, so in `>/dev/null rm -rf ~` the redirect *target* becomes
 ///   the name. Both run `rm`.
-/// - leading env-var assignments are only stripped when the value contains no `=` (see
-///   `Command::remove_leading_env_vars` below), so `FOO=a=b rm file` keeps the prefix.
+/// - a leading env-var assignment whose value opens a word the lexer splits is only
+///   partly stripped. bash's array form `FOO=(a b) rm file` lexes as the parts `FOO=(a`,
+///   `b)`, `rm`, `file`; the first is dropped as an assignment and `b)` becomes the
+///   resolved command name. (`FOO=a=b rm file` *is* stripped — see
+///   `Command::remove_leading_env_vars` below.)
 ///
 /// Returns `None` if `source` contains no command at all.
 pub fn unquoted_command_parts<S: AsRef<str>>(
@@ -296,24 +299,65 @@ impl Command {
 
     /// Removes the leading env-var assignments (i.e. 'KEY=VALUE' literals) from the command.
     ///
-    /// Note the exact-one-`=` test below: a part is only recognised as an assignment when
-    /// `split('=').count() == 2`. `FOO=a=b cmd` is a valid assignment that the shell strips
-    /// and this does not, so `cmd` is left behind an unrecognised prefix. That matters to the
-    /// Agent Mode denylist, which relies on this to see the real command name — see the
-    /// residue list on `denylist_match_candidates` in `app/src/ai/blocklist/permissions.rs`
-    /// and the open `TODO.md` entry. Pin-identical (`42effe840`), so widening it is a
-    /// divergence and needs its own decision rather than a drive-by change here.
+    /// # Deliberate divergence from the pin (`42effe840`)
+    ///
+    /// The pinned test is `first_part.split('=').count() == 2`, which is wrong in *both*
+    /// directions. Both errors were confirmed against real `bash`, `dash` and `zsh` with an
+    /// `rm` shim, not inferred:
+    ///
+    /// - it does **not** strip `FOO=a=b cmd`, which every one of those shells strips — an
+    ///   assignment's *value* may contain any number of `=`. `cmd` was therefore left hidden
+    ///   behind a prefix the caller could not recognise.
+    /// - it **does** strip `1FOO=b cmd`, `FOO-1=b cmd` and `=b cmd`, none of which is an
+    ///   assignment. All three shells try to *execute* a program with that name and report
+    ///   "command not found", so `cmd` never runs at all.
+    ///
+    /// The test below is the shell's own rule instead: a name of `[A-Za-z_][A-Za-z0-9_]*`,
+    /// optionally suffixed with `+` for bash's `FOO+=x` append form, then `=`, then a value
+    /// that may contain anything — `=` included.
+    ///
+    /// This matters most to the Agent Mode command denylist, which relies on this to see the
+    /// real command name (`denylist_match_candidates` in
+    /// `app/src/ai/blocklist/permissions.rs`). The widening closes a bypass there. The
+    /// narrowing costs that caller nothing, because the spellings it stops stripping are
+    /// exactly the ones no shell executes — there is no command behind them to deny.
+    ///
+    /// **Do not "restore parity" here on a re-pin** unless upstream has fixed it too;
+    /// `test_can_autoexecute_command_denylist_matches_env_prefixed_commands` going red is
+    /// the signal to reinstate this, not to delete it.
+    ///
+    /// Residue, and not fixable by a purely textual test: an assignment whose value opens a
+    /// word the lexer splits, e.g. bash's array form `FOO=(a b) cmd`, which lexes as
+    /// `FOO=(a` + `b)` + `cmd` — the assignment goes but `b)` becomes the command name.
     pub fn remove_leading_env_vars(&mut self) {
         while !self.parts.is_empty() {
             let Some(first_command_part) = self.parts.first() else {
                 break;
             };
-            if first_command_part.to_string().split('=').count() != 2 {
+            if !is_env_var_assignment(&first_command_part.to_string()) {
                 break;
             }
             self.parts.remove(0);
         }
     }
+}
+
+/// Whether `part` is a leading environment-variable assignment, by the shell's own rule.
+///
+/// `NAME=value`, where `NAME` is `[A-Za-z_][A-Za-z0-9_]*` — optionally with bash's `+`
+/// append suffix — and `value` is anything at all, `=` included. See
+/// [`Command::remove_leading_env_vars`] for why this is not the pin's
+/// `split('=').count() == 2` test, and for the evidence behind each case.
+fn is_env_var_assignment(part: &str) -> bool {
+    let Some((name, _value)) = part.split_once('=') else {
+        return false;
+    };
+    let name = name.strip_suffix('+').unwrap_or(name);
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// An individual part of a command (argument or command name)

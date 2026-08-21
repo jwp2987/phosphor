@@ -480,6 +480,23 @@ fn test_can_write_files_mcp_config_always_denied() {
             PathBuf::from("/project/.mcp.json"),
             PathBuf::from("/project/.warp/.mcp.json"),
             PathBuf::from("/project/.codex/config.toml"),
+            // The guard is handed the RAW strings the model emitted
+            // (`request_file_edits.rs`, `should_autoexecute`), while the write resolves them
+            // first via `host_native_absolute_path` — tilde expansion, cwd join, lexical
+            // normalisation. Every spelling below resolves to a protected file at write time
+            // and used to slip past the guard, because Claude is the one provider whose home
+            // config name (`.claude.json`) differs from its project config name
+            // (`.mcp.json`), leaving it with only an absolute-path equality match.
+            PathBuf::from("~/.claude.json"),
+            PathBuf::from(".claude.json"),
+            PathBuf::from("/home/someone/projects/../.claude.json"),
+            PathBuf::from("./.claude.json"),
+            // These already resolved by luck, via the project-config suffix match. Kept so a
+            // future change to the suffix logic cannot quietly drop them.
+            PathBuf::from("~/.mcp.json"),
+            PathBuf::from("~/.warp/.mcp.json"),
+            PathBuf::from("~/.codex/config.toml"),
+            PathBuf::from("~/.agents/.mcp.json"),
         ];
 
         for path in mcp_config_paths {
@@ -503,6 +520,184 @@ fn test_can_write_files_mcp_config_always_denied() {
                 );
             });
         }
+
+        // Negative controls: normalising paths must not turn the guard into "deny
+        // everything". With `apply_code_diffs` on AlwaysAllow these have to come back
+        // allowed, which also proves the denials above came from the protected-path guard
+        // and not from the autonomy setting.
+        for path in [
+            PathBuf::from("/project/src/main.rs"),
+            PathBuf::from("~/notes.md"),
+            PathBuf::from("README.md"),
+            PathBuf::from("/project/../other/mcp.json"),
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_write_files(
+                    &convo_id,
+                    std::slice::from_ref(&path),
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    result.is_allowed(),
+                    "expected unprotected path {path:?} to stay writable, got {result:?}"
+                );
+            });
+        }
+    })
+}
+
+/// The four command allow/denylist mutators on `BlocklistAIPermissions` must write the store
+/// that `can_autoexecute_command` actually reads.
+///
+/// They used to write `AISettings.agent_mode_command_execution_*`, which no permission
+/// decision consults — inherited from this fork's base (`0dbd3d567`), which predates
+/// upstream's move of these lists into execution profiles. The pin already writes the default
+/// profile (`42effe840:app/src/ai/blocklist/permissions.rs:997-1050`), so this is a port
+/// catch-up rather than a divergence.
+///
+/// The defect was invisible because all four call sites hang off settings-page editors that
+/// are constructed but never rendered, so this test is the only thing standing between the
+/// mutators and a silent regression: it goes through the public API and asserts on the
+/// permission *decision*, not on where the value was stored.
+#[test]
+fn test_command_autoexecution_mutators_reach_enforcement() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+        });
+
+        let rm_rule = AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap();
+
+        // Baseline: nothing is denied yet.
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "rm file.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                result.is_allowed(),
+                "expected `rm file.txt` to be allowed before the denylist entry, got {result:?}"
+            );
+        });
+
+        permissions.update(&mut app, |model, ctx| {
+            model
+                .add_command_to_autoexecution_denylist(rm_rule.clone(), ctx)
+                .unwrap();
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "rm file.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                    )
+                ),
+                "denylist mutator did not reach the store enforcement reads, got {result:?}"
+            );
+        });
+
+        permissions.update(&mut app, |model, ctx| {
+            model.remove_command_from_denylist(&rm_rule, ctx).unwrap();
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "rm file.txt",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                result.is_allowed(),
+                "removal from the denylist did not reach enforcement, got {result:?}"
+            );
+        });
+
+        // The allowlist half is only consulted when the setting is AlwaysAsk.
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAsk, ctx);
+        });
+
+        let git_rule = AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap();
+
+        permissions.update(&mut app, |model, ctx| {
+            model
+                .add_command_to_autoexecution_allowlist(git_rule.clone(), ctx)
+                .unwrap();
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "git status",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Allowed(
+                        CommandExecutionPermissionAllowedReason::ExplicitlyAllowlisted
+                    )
+                ),
+                "allowlist mutator did not reach the store enforcement reads, got {result:?}"
+            );
+        });
+
+        permissions.update(&mut app, |model, ctx| {
+            model
+                .remove_command_from_autoexecution_allowlist(&git_rule, ctx)
+                .unwrap();
+        });
+
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_autoexecute_command(
+                &convo_id,
+                "git status",
+                EscapeChar::Backslash,
+                false,
+                None,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                !result.is_allowed(),
+                "removal from the allowlist did not reach enforcement, got {result:?}"
+            );
+        });
     })
 }
 
@@ -656,7 +851,18 @@ fn test_can_autoexecute_command_denylist_precedence() {
                 )
             ));
 
-            // rm commands should now not be explicitly denylisted
+            // The org denylist ADDS to the profile's own; it does not replace it, so `rm`
+            // must still be denied. This assertion was inverted when the file was ported
+            // (it asserted `!matches!`, i.e. replace semantics) and is restored here to the
+            // pin's (`42effe840:app/src/ai/blocklist/permissions_tests.rs:651-668`).
+            // `get_execute_commands_denylist_for_profile` (`permissions.rs`) merges, so the
+            // inverted form encoded the defect the merge was written to prevent. It could
+            // not fail today — the `git status` assertion above fails first, because
+            // `current_team()` is stubbed to `None` and the workspace denylist is never
+            // read, which is why this test is `#[ignore]`d — but a test that documents the
+            // wrong expected behaviour is worse than no test: the day `current_team()`
+            // gains a producer, the honest failure is the org list not being consulted, not
+            // the merge working.
             let result = model.can_autoexecute_command(
                 &convo_id,
                 "rm file.txt",
@@ -666,12 +872,15 @@ fn test_can_autoexecute_command_denylist_precedence() {
                 Some(terminal_view_id),
                 ctx,
             );
-            assert!(!matches!(
-                result,
-                CommandExecutionPermission::Denied(
-                    CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
-                )
-            ));
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                    )
+                ),
+                "user denylist entries should be merged with org denylist, not replaced"
+            );
         });
     })
 }
@@ -1511,6 +1720,15 @@ fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
             "X=1 rm file.txt",
             "echo ok && X=1 rm file.txt",
             "echo $(X=1 rm file.txt)",
+            // A value may contain `=`. The pin's strip required the assignment to hold
+            // exactly one `=` (`split('=').count() == 2`), so every spelling below reached
+            // the denylist with the prefix still attached and matched no `rm` rule.
+            // Confirmed against bash, dash and zsh with an `rm` shim: all four spellings
+            // below run `rm`.
+            "FOO=a=b rm file.txt",
+            "A1_b=x=y=z rm file.txt",
+            "X=1 FOO=a=b rm file.txt",
+            "FOO=$(echo a=b) rm file.txt",
         ] {
             permissions.read(&app, |model, ctx| {
                 let result = model.can_autoexecute_command(
@@ -1551,6 +1769,41 @@ fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
                 )
             ));
         });
+
+        // Negative controls: none of these is an assignment, so the strip must NOT fire.
+        // Every one of bash, dash and zsh reports "command not found" for the prefix itself
+        // and never runs `rm` — verified with an `rm` shim — so leaving them unstripped
+        // withholds no protection. The pin's `split('=').count() == 2` test stripped all
+        // three and produced a `rm file.txt` candidate for a command line that cannot run
+        // `rm`; that over-match is what this narrowing removes.
+        for command in [
+            "1FOO=b rm file.txt",
+            "FOO-1=x rm file.txt",
+            "FOO.1=x rm file.txt",
+            "=b rm file.txt",
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Allowed(
+                            CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                        )
+                    ),
+                    "{command:?} does not run `rm` in any shell, so the env-var strip must \
+                     not treat its first word as an assignment; got {result:?}"
+                );
+            });
+        }
     })
 }
 
