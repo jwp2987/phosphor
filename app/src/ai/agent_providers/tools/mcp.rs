@@ -9,7 +9,7 @@
 //!
 //! ## Naming convention
 //!
-//! OpenAI function name: `mcp__<server_name_safe>__<tool_name>`
+//! OpenAI function name: `mcp__<server_name_safe>__<tool_segment>`
 //! - Separated by double underscores, to avoid colliding with built-in tool names
 //!   (which are underscore-separated words)
 //! - server_name_safe = an **injective** encoding of server.name into
@@ -17,14 +17,27 @@
 //!   joiners — see `sanitize_server_name`. Injective is the load-bearing word:
 //!   this string is a *routing key*, so two servers that share one are two
 //!   servers whose tool calls cannot be told apart.
+//! - tool_segment = the tool name verbatim whenever it fits the remaining budget
+//!   and the alphabet, and a fingerprinted short form when it does not — see
+//!   `encode_tool_segment`.
+//!
+//! The **whole** name must satisfy OpenAI's `^[a-zA-Z0-9_-]{1,64}$`, which is a
+//! hard budget shared by all three parts: an endpoint rejects the entire request
+//! with a 400 when any one tool violates it, so one over-long MCP server name
+//! breaks every turn. `MAX_FUNCTION_NAME` and the constants derived from it are
+//! how that budget is divided, and `function_name_for_key` is the single place it
+//! is spent.
 //!
 //! ## Reverse resolution
 //!
 //! When a `mcp__`-prefixed name is seen:
 //! 1. Split out `server_name_safe` and `tool_name`
 //! 2. Match against `params.mcp_context.servers` by routing key (`server_keys`),
-//!    to get server.id — **more than one match is an error, never a pick**
-//! 3. Build `Message::ToolCall::CallMcpTool { name: tool_name, args, server_id }`
+//!    to get server.id — **more than one *distinct* server is an error, never a
+//!    pick**; the same installation listed twice is not more than one server
+//! 3. Recover the real tool name from that server's tool list, since the segment
+//!    may have been shortened to fit the budget
+//! 4. Build `Message::ToolCall::CallMcpTool { name: tool_name, args, server_id }`
 //!
 //! ## Result serialization
 //!
@@ -44,11 +57,49 @@ const SEP: &str = "__";
 /// semantically this is a single tool).
 const READ_RESOURCE_NAME: &str = "mcp_read_resource";
 
-/// Longest stem kept in the hashed branch of `sanitize_server_name`. The fingerprint carries
-/// the identity, so truncating the stem costs readability and nothing else; the cap exists
-/// because the stem plus `_` plus 8 hex digits plus the tool name all share one function-name
-/// length budget.
-const MAX_STEM: usize = 32;
+/// OpenAI — and every OpenAI-compatible endpoint — enforces `^[a-zA-Z0-9_-]{1,64}$` on function
+/// names and rejects the **entire request** with a 400 when any single tool violates it. The 64
+/// bytes are therefore not a soft target: one over-long MCP tool name fails every turn for as
+/// long as that server stays configured.
+///
+/// The previous revision documented this budget on `MAX_STEM` and then never spent from it. The
+/// canonical branch of `sanitize_server_name` returned the name verbatim at any length, the
+/// hashed branch cost 48 bytes before the tool name even started, and no caller ever measured the
+/// assembled name — a verdict computed and discarded. A server named
+/// `Acme Corp Internal Tools (production)` exposing `create_pull_request` came to 61 bytes under
+/// the old sanitizer and 67 under the new one: a working configuration that began 400ing on every
+/// turn. The constants below divide the budget up, and `function_name_for_key` is the one place
+/// it is spent.
+const MAX_FUNCTION_NAME: usize = 64;
+/// `mcp__` plus `__`: the part of the budget no name can avoid paying.
+const NAME_OVERHEAD: usize = PREFIX.len() + SEP.len();
+/// `_` plus 8 hex digits — the tail every hashed form ends in. This is the part that carries
+/// identity, and therefore the part truncation must never touch.
+const HASH_SUFFIX: usize = 9;
+/// Longest key `sanitize_server_name` may return, in **either** branch.
+///
+/// A canonical name longer than this is not truncated. Truncating it would fuse every pair of
+/// names sharing a prefix, which is exactly the lossiness this encoding exists to remove; it is
+/// moved to the hashed branch instead, where the fingerprint of the *full* name keeps the pair
+/// apart. So the cap costs readability and never identity.
+const MAX_SERVER_KEY: usize = 32;
+/// Longest cosmetic stem in the hashed branch. Derived rather than chosen: the stem is whatever
+/// is left of `MAX_SERVER_KEY` once the fingerprint has been paid for.
+const MAX_STEM: usize = MAX_SERVER_KEY - HASH_SUFFIX;
+/// Longest key `server_keys` may return: a base key plus the same-name id tiebreak.
+const MAX_ROUTING_KEY: usize = MAX_SERVER_KEY + HASH_SUFFIX;
+/// What is left for the tool segment against the worst-case routing key. Every tool segment is
+/// sized from this, so it is what actually keeps the 64 bytes honest.
+const MIN_TOOL_BUDGET: usize = MAX_FUNCTION_NAME - NAME_OVERHEAD - MAX_ROUTING_KEY;
+/// Stem used when a tool name contributes no usable characters at all (`"列出文件"`).
+const EMPTY_TOOL_STEM: &str = "tool";
+
+// Checked at compile time rather than trusted: the worst-case tool budget must still hold the
+// longest form `encode_tool_segment` can produce for a name it has to fingerprint, or the
+// function would silently overrun the very budget it exists to enforce.
+const _: () = assert!(MIN_TOOL_BUDGET >= HASH_SUFFIX + EMPTY_TOOL_STEM.len());
+const _: () = assert!(MAX_STEM > 0);
+
 /// Stem used when a name contributes no ASCII alphanumerics at all (`"文件服务器"`, `"!!!"`).
 /// Such names always take the hashed branch, so they read as `srv_<fingerprint>` — which a
 /// server literally named `srv` can never collide with, because that name is canonical and
@@ -104,24 +155,37 @@ fn fingerprint(bytes: &[u8]) -> String {
 ///
 /// # The encoding
 ///
-/// - A name already in `[A-Za-z0-9-]+` is used verbatim ("canonical"). This keeps the common
-///   case (`server-a`, `my-server`) readable and unchanged, and identity is trivially
-///   injective. Note `_` is deliberately *not* canonical, so canonical keys contain no `_`.
+/// - A name already in `[A-Za-z0-9-]+`, and no longer than `MAX_SERVER_KEY`, is used verbatim
+///   ("canonical"). This keeps the common case (`server-a`, `my-server`) readable and unchanged,
+///   and identity is trivially injective. Note `_` is deliberately *not* canonical, so canonical
+///   keys contain no `_`. The length test is part of the branch condition and not a truncation
+///   applied afterwards, because truncating a canonical key would fuse names sharing a prefix.
 /// - Anything else becomes `<stem>_<fingerprint of the full original name>`. The stem is
 ///   cosmetic (for the model's benefit); the fingerprint is what distinguishes. Because the
 ///   two branches are separated by the presence of `_`, they can never collide with each
 ///   other.
 ///
 /// The fingerprint is 32 bits, so the encoding is injective up to a hash collision rather than
-/// absolutely. That residual is closed at the other end, not ignored: `parse_mcp_tool_call`
-/// counts its matches and refuses an ambiguous one instead of picking, so a collision degrades
-/// to a visible error, never to a misroute.
+/// absolutely. That residual is not ignored, but it is worth being exact about what happens to
+/// it, because the comment here previously was not. Two distinct names whose fingerprints
+/// collide produce the same key *from this function*, and `server_keys` counts duplicates over
+/// exactly that output — so the pair takes the same path as two identically named servers and is
+/// separated by the persisted installation id. Both stay advertised, both stay callable, and each
+/// routes to itself. The refusal in `parse_mcp_tool_call` is the layer below that: it fires only
+/// when the id tiebreak *also* fails to separate them, i.e. when a name-fingerprint collision and
+/// an id-fingerprint collision coincide. A collision therefore degrades first to a slightly uglier
+/// key and only then to a visible error — never to a misroute.
 ///
 /// A tool name may still contain `__` freely: only the *first* `__` is the separator, and
 /// everything after it is the tool name verbatim.
 fn sanitize_server_name(name: &str) -> String {
-    // Canonical: already in the safe alphabet, and non-empty. Identity, so injective.
-    if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    // Canonical: already in the safe alphabet, non-empty, and short enough to afford. Identity,
+    // so injective. A name that is in the alphabet but too long falls through to the hashed
+    // branch rather than being cut, so injectivity survives the length cap.
+    if !name.is_empty()
+        && name.len() <= MAX_SERVER_KEY
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
         return name.to_owned();
     }
 
@@ -160,6 +224,25 @@ fn sanitize_server_name(name: &str) -> String {
 /// The tiebreak is applied only to the servers that actually clash, so a unique name keeps its
 /// plain readable key and its prompt-cache entry.
 ///
+/// The count is over the *base keys*, not over the names, and that is deliberate rather than an
+/// oversight — though the comment that used to describe it was wrong about the consequence. Two
+/// distinct names whose 32-bit fingerprints collide share a base key, so they look exactly like
+/// two same-named servers here and get the same id tiebreak, which separates them correctly and
+/// keeps both callable. Counting over names instead would leave that pair sharing one key, which
+/// `build_mcp_tool_defs` would dedupe and `parse_mcp_tool_call` would then refuse: a strictly
+/// worse outcome, two working servers traded for a visible error. So the base-key count is the
+/// behaviour we want; what needed fixing was the claim that a name collision reaches the refusal.
+/// It does not. The refusal is reachable only when a base-key collision and an id-fingerprint
+/// collision coincide.
+///
+/// What is counted is *distinct installation ids* per base key, not rows. `agent/api.rs` builds
+/// `ctx.servers` by concatenating three registries with no dedup by id, so the same installation
+/// can appear twice; counting rows would read that as a clash and tiebreak a server that has
+/// nothing to be told apart from. The cost would not be cosmetic — the key would change from the
+/// plain readable base to `base_<id fingerprint>` and back again as the duplicate entered and left
+/// scope (a file-based server comes into scope with the working directory), silently rewriting the
+/// advertised function names, invalidating the prompt cache, and orphaning the names in history.
+///
 /// Appending `_<fingerprint>` preserves invariant 3 of `sanitize_server_name` (the result still
 /// ends in `_` + 8 hex digits) and cannot create a `__`, since a key never ends in `_`.
 fn server_keys(servers: &[MCPServer]) -> Vec<String> {
@@ -167,14 +250,18 @@ fn server_keys(servers: &[MCPServer]) -> Vec<String> {
         .iter()
         .map(|s| sanitize_server_name(&s.name))
         .collect();
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for b in &base {
-        *counts.entry(b.as_str()).or_insert(0) += 1;
+    let mut ids_per_base: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
+    for (b, s) in base.iter().zip(servers) {
+        ids_per_base
+            .entry(b.as_str())
+            .or_default()
+            .insert(s.id.as_str());
     }
     base.iter()
         .zip(servers)
         .map(|(b, s)| {
-            if counts.get(b.as_str()).copied().unwrap_or(0) > 1 {
+            if ids_per_base.get(b.as_str()).map_or(0, |ids| ids.len()) > 1 {
                 format!("{b}_{}", fingerprint(s.id.as_bytes()))
             } else {
                 b.clone()
@@ -192,17 +279,140 @@ fn unresolved_server_key(server_id: &str) -> String {
     format!("{UNRESOLVED_STEM}_{}_id", fingerprint(server_id.as_bytes()))
 }
 
-/// Generate an OpenAI function name for an MCP tool.
+/// Generate an OpenAI function name for an MCP tool, for a context holding only this server.
 ///
-/// Uses the server's own name-derived key. When several servers in one context share a name,
-/// `build_mcp_tool_defs` uses the context-aware `server_keys` instead, which disambiguates
-/// them; for the overwhelmingly common unique-name case the two agree exactly.
-pub fn function_name(server: &MCPServer, tool_name: &str) -> String {
-    function_name_for_key(&sanitize_server_name(&server.name), tool_name)
+/// **Test-only.** It had no production callers and was a live footgun: it keyed off the server's
+/// own name, so for two servers whose names clash it returned a key `server_keys` never
+/// advertises and `parse_mcp_tool_call` therefore refuses. It now delegates to `server_keys` over
+/// a one-element slice, which makes the two agree by construction — the case it could get wrong
+/// needs a second server, and a one-element slice has none.
+#[cfg(test)]
+fn function_name(server: &MCPServer, tool_name: &str) -> String {
+    let keys = server_keys(std::slice::from_ref(server));
+    function_name_for_key(&keys[0], tool_name)
 }
 
+/// Bytes left for the tool segment once `mcp__`, `__` and this server's routing key are paid for.
+///
+/// Floored at `MIN_TOOL_BUDGET`, which is the worst case over every key `server_keys` can return,
+/// so the floor is only ever reached and never crossed.
+fn tool_budget(server_key: &str) -> usize {
+    MAX_FUNCTION_NAME
+        .saturating_sub(NAME_OVERHEAD + server_key.len())
+        .max(MIN_TOOL_BUDGET)
+}
+
+/// Encode a tool name into the segment after the `__`, within `budget` bytes.
+///
+/// Short names in the safe alphabet — which is nearly all of them — pass through untouched, so
+/// the model reads the tool's real name and the prompt cache sees the same string it always did.
+/// Anything longer, or carrying characters OpenAI's `^[a-zA-Z0-9_-]{1,64}$` rejects, becomes
+/// `<cosmetic stem>_<fingerprint of the full tool name>`.
+///
+/// Shortening the tool segment is the *second* thing given up, after the server stem: both are
+/// cosmetic, but the tool name is what the model reasons about, so it is protected for as long as
+/// the budget allows. Identity is not among the things given up. The fingerprint is over the whole
+/// original name and `resolve_tool_name` reverses the encoding against the server's own tool list,
+/// so a shortened segment still calls the tool it names — it is only unreadable, never wrong.
+fn encode_tool_segment(tool_name: &str, budget: usize) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    // Verbatim. A `__` inside a tool name is harmless: only the *first* `__` of the whole
+    // function name is the separator, and it has already been consumed by then.
+    if !tool_name.is_empty() && tool_name.len() <= budget && tool_name.chars().all(safe) {
+        return tool_name.to_owned();
+    }
+
+    let mut stem = String::with_capacity(tool_name.len());
+    for c in tool_name.chars() {
+        let c = if safe(c) { c } else { '-' };
+        if c == '-' && stem.ends_with('-') {
+            continue;
+        }
+        stem.push(c);
+    }
+    // Every char in `stem` is ASCII by construction, so byte slicing cannot split a code point.
+    let stem = stem.trim_matches('-');
+    // `saturating_sub` rather than `-`: every caller sizes `budget` with `tool_budget`, which
+    // floors it well above `HASH_SUFFIX`, but a future caller that did not should not panic here.
+    let keep = budget.saturating_sub(HASH_SUFFIX);
+    let stem = &stem[..stem.len().min(keep)];
+    let stem = stem.trim_end_matches(['-', '_']);
+    let stem = if stem.is_empty() {
+        EMPTY_TOOL_STEM
+    } else {
+        stem
+    };
+    format!("{stem}_{}", fingerprint(tool_name.as_bytes()))
+}
+
+/// Reverse `encode_tool_segment` against the tools the server actually exposes.
+///
+/// A segment matching no tool is passed through verbatim rather than rejected: that is the
+/// pre-existing behaviour for a tool `mcp_context` does not list (a stale context, a server that
+/// added a tool mid-session), and passing a name through unchanged is not a guess. Two tools
+/// encoding to one segment *is* a guess, so it is refused instead — same rule as the server key.
+fn resolve_tool_name(server: &MCPServer, segment: &str, budget: usize) -> Result<String> {
+    let mut hits = server
+        .tools
+        .iter()
+        .filter(|t| encode_tool_segment(&t.name, budget) == segment);
+    match (hits.next(), hits.next()) {
+        (Some(t), None) => Ok(t.name.to_string()),
+        (Some(a), Some(b)) => Err(anyhow!(
+            "MCP tool segment `{segment}` on server `{}` is ambiguous: it matches both `{}` and \
+             `{}`. Refusing to guess which one the call was for.",
+            server.name,
+            a.name,
+            b.name
+        )),
+        (None, _) => Ok(segment.to_owned()),
+    }
+}
+
+/// Assemble the function name. This is the only place the 64-byte budget is spent, and the only
+/// place it can be overrun, which is why the check lives here rather than at each call site.
 fn function_name_for_key(server_key: &str, tool_name: &str) -> String {
-    format!("{PREFIX}{server_key}{SEP}{tool_name}")
+    let segment = encode_tool_segment(tool_name, tool_budget(server_key));
+    let name = format!("{PREFIX}{server_key}{SEP}{segment}");
+    debug_assert!(
+        name.len() <= MAX_FUNCTION_NAME,
+        "assembled MCP function name `{name}` is {} bytes, over the {MAX_FUNCTION_NAME}-byte \
+         limit OpenAI 400s on",
+        name.len()
+    );
+    name
+}
+
+/// Pick the one server a predicate selects, treating a repeated installation id as one server.
+///
+/// `agent/api.rs` assembles `ctx.servers` by concatenating three registries — installed,
+/// file-based, and CLI-spawned — with no dedup by installation id. Whether those three can
+/// actually overlap today is not something this module can know, and it should not have to: two
+/// entries carrying the same id are the same server, so resolving to it is exact rather than a
+/// guess. Calling that ambiguous would be the worse failure, since both entries produce the same
+/// routing key, `build_mcp_tool_defs` dedupes one away, and every call to the survivor would then
+/// error — that server's whole toolset advertised and uncallable.
+///
+/// Two *distinct* ids behind one key is the real ambiguity, and that is what `Err` reports.
+fn unique_match<'a, F>(
+    servers: &'a [MCPServer],
+    mut pred: F,
+) -> std::result::Result<Option<&'a MCPServer>, (&'a MCPServer, &'a MCPServer)>
+where
+    F: FnMut(usize, &'a MCPServer) -> bool,
+{
+    let mut found: Option<&'a MCPServer> = None;
+    for (i, server) in servers.iter().enumerate() {
+        if !pred(i, server) {
+            continue;
+        }
+        match found {
+            None => found = Some(server),
+            Some(prev) if prev.id == server.id => {}
+            Some(prev) => return Err((prev, server)),
+        }
+    }
+    Ok(found)
 }
 
 /// Determine whether a given OpenAI function name is an MCP call (covers both
@@ -254,9 +464,13 @@ pub fn build_mcp_tool_defs(ctx: &MCPContext) -> Vec<(String, String, Value)> {
     // same static context produces a consistent order across requests.
     //
     // What the function name actually guarantees: `sanitize_server_name` is injective over
-    // names and `server_keys` additionally separates same-named servers by installation id, so
-    // two *different* (server, tool) pairs produce the same name only if two 32-bit
-    // fingerprints collide. The earlier claim here — "function_name is globally unique, so
+    // names and `server_keys` additionally separates same-named servers *and* fingerprint-colliding
+    // names by installation id, so two (server, tool) pairs with distinct ids produce the same name
+    // only if a name-fingerprint collision and an id-fingerprint collision coincide — or if a
+    // shortened tool segment collides, which `resolve_tool_name` refuses at the far end. Two
+    // entries sharing one *id* also produce the same name, and that is not a collision at all: it
+    // is one server listed twice, which is why the dedup below is right and resolution treats it as
+    // exact. The earlier claim here — "function_name is globally unique, so
     // there's no conflict" — was simply false while the sanitizer was lossy, and a duplicate
     // name is not a harmless tie for a sort key: OpenAI-compatible endpoints reject a tools
     // array containing two identically named functions with a 400, which fails the whole turn.
@@ -330,31 +544,30 @@ pub fn parse_mcp_tool_call(
         .ok_or_else(|| anyhow!("malformed MCP function name (missing __): {function_name}"))?;
 
     let ctx = ctx.ok_or_else(|| anyhow!("MCP function called but no mcp_context present"))?;
-    // Count the matches instead of taking the first one. `sanitize_server_name` is injective
-    // and `server_keys` separates same-named servers, so a second match means two 32-bit
-    // fingerprints collided — vanishingly rare, but the alternative to noticing it is running
-    // the user's tool call against a server they did not name. Refusing is recoverable; a
-    // silent misroute is not.
+    // Resolve through `unique_match` instead of taking the first hit. A second *distinct* server
+    // behind one key means the name fingerprint and the id fingerprint both collided — vanishingly
+    // rare, but the alternative to noticing it is running the user's tool call against a server
+    // they did not name. Refusing is recoverable; a silent misroute is not. The same installation
+    // listed twice is not that case, and `unique_match` says why.
     let keys = server_keys(&ctx.servers);
-    let mut matches = keys
-        .iter()
-        .zip(&ctx.servers)
-        .filter(|(k, _)| k.as_str() == server_name_safe)
-        .map(|(_, s)| s);
-    let server = matches
-        .next()
+    let server = unique_match(&ctx.servers, |i, _| keys[i] == server_name_safe)
+        .map_err(|(a, b)| {
+            anyhow!(
+                "MCP server key `{server_name_safe}` is ambiguous: it matches both `{}` (id {}) \
+                 and `{}` (id {}). Refusing to guess which one the call was for; rename one of \
+                 the servers.",
+                a.name,
+                a.id,
+                b.name,
+                b.id
+            )
+        })?
         .ok_or_else(|| anyhow!("MCP server `{server_name_safe}` not in current mcp_context"))?;
-    if let Some(other) = matches.next() {
-        return Err(anyhow!(
-            "MCP server key `{server_name_safe}` is ambiguous: it matches both `{}` (id {}) \
-             and `{}` (id {}). Refusing to guess which one the call was for; rename one of \
-             the servers.",
-            server.name,
-            server.id,
-            other.name,
-            other.id
-        ));
-    }
+
+    // The advertised segment may have been shortened to fit the 64-byte budget, so recover the
+    // real tool name from the server's own tool list rather than trusting the segment verbatim.
+    // For the overwhelmingly common short-name case this is an identity mapping.
+    let tool_name = resolve_tool_name(server, tool_name, tool_budget(server_name_safe))?;
 
     // args: JSON object → prost_types::Struct
     let parsed: Value = if arguments_json.trim().is_empty() {
@@ -369,7 +582,7 @@ pub fn parse_mcp_tool_call(
 
     Ok(api::message::tool_call::Tool::CallMcpTool(
         api::message::tool_call::CallMcpTool {
-            name: tool_name.to_owned(),
+            name: tool_name,
             args: Some(args_struct),
             server_id: server.id.clone(),
         },
@@ -413,36 +626,62 @@ fn parse_read_resource(
 ) -> Result<api::message::tool_call::Tool> {
     let parsed: ReadResourceArgs = serde_json::from_str(arguments_json)?;
     // Resolve server_id:
-    // 1) If a server name is given, match against it after sanitizing
-    // 2) Otherwise, look across all servers for a resource with this uri (take the first hit)
+    // 1) If a server designator is given, resolve it in the *same key space* `parse_mcp_tool_call`
+    //    uses, most precise form first
+    // 2) Otherwise, find the one server exposing this uri — the one, not the first
     // 3) Fall back to an empty server_id (the server side locates it by uri itself)
+    //
+    // Throughout: ambiguity is never resolved by picking. An empty id means "server side, locate
+    // it by uri", which may be imprecise; an arbitrary pick is confidently wrong.
     let server_id = if let Some(ctx) = ctx {
+        let keys = server_keys(&ctx.servers);
         match parsed.server.as_deref() {
-            // Both sides go through the same encoding, so this matches the raw name the model
-            // was shown. If it somehow matches two servers, fall through to the empty id
-            // rather than picking one: an empty id means "server side, locate it by uri",
-            // which may be imprecise, whereas an arbitrary pick is confidently wrong.
-            Some(name) => {
-                let key = sanitize_server_name(name);
-                let mut hits = ctx
-                    .servers
-                    .iter()
-                    .filter(|s| sanitize_server_name(&s.name) == key);
-                match (hits.next(), hits.next()) {
-                    (Some(s), None) => s.id.clone(),
-                    _ => String::new(),
-                }
+            // The two resolvers used to live in different key spaces: this one matched on
+            // `sanitize_server_name` while `parse_mcp_tool_call` matched on `server_keys`. So a
+            // pair of servers `server_keys` had already separated by installation id — two distinct
+            // names whose 32-bit fingerprints collide — still read as ambiguous here and silently
+            // degraded to an empty id, losing a server the other resolver could name exactly. They
+            // now share one key space, tried most-precise-first:
+            //
+            //   1. the exact configured name. This is what `serialize_outgoing_read_resource`
+            //      emits and what the tool description lists, and it is the only form that
+            //      separates two names whose fingerprints collide.
+            //   2. the routing key, for a model that copied it out of an `mcp__<key>__<tool>` name
+            //      it had already been shown.
+            //   3. the sanitized name, so cosmetic differences in punctuation still land.
+            Some(designator) => {
+                let want = sanitize_server_name(designator);
+                unique_match(&ctx.servers, |_, s| s.name == designator)
+                    .ok()
+                    .flatten()
+                    .or_else(|| {
+                        unique_match(&ctx.servers, |i, _| keys[i] == designator)
+                            .ok()
+                            .flatten()
+                    })
+                    .or_else(|| {
+                        unique_match(&ctx.servers, |_, s| sanitize_server_name(&s.name) == want)
+                            .ok()
+                            .flatten()
+                    })
+                    .map(|s| s.id.clone())
+                    .unwrap_or_default()
             }
-            None => ctx
-                .servers
-                .iter()
-                .find(|s| {
-                    s.resources
-                        .iter()
-                        .any(|r| r.uri.as_str() == parsed.uri.as_str())
-                })
-                .map(|s| s.id.clone())
-                .unwrap_or_default(),
+            // Unqualified. This was `find(..)`, a first-match-wins pick across servers, in the
+            // file whose thesis is "refuse rather than guess" — and the pick was made from a `Vec`
+            // whose order this module's own doc says drifts between requests. Two filesystem
+            // servers rooted at different directories both exposing `file:///README.md` is not
+            // exotic; it is the default way that server is deployed. So the uri must select
+            // exactly one server, or none.
+            None => unique_match(&ctx.servers, |_, s| {
+                s.resources
+                    .iter()
+                    .any(|r| r.uri.as_str() == parsed.uri.as_str())
+            })
+            .ok()
+            .flatten()
+            .map(|s| s.id.clone())
+            .unwrap_or_default(),
         }
     } else {
         String::new()
@@ -602,6 +841,19 @@ mod server_key_encoding_tests {
             resources: Vec::new(),
             tools: Vec::new(),
         }
+    }
+
+    fn mk_tool(name: &str) -> rmcp::model::Tool {
+        rmcp::model::Tool::new(
+            name.to_owned(),
+            "t",
+            std::sync::Arc::new(serde_json::Map::new()),
+        )
+    }
+
+    fn mk_resource(uri: &str) -> rmcp::model::Resource {
+        use rmcp::model::AnnotateAble;
+        rmcp::model::RawResource::new(uri, "r").no_annotation()
     }
 
     fn mk_ctx(servers: Vec<MCPServer>) -> MCPContext {
@@ -949,5 +1201,384 @@ mod server_key_encoding_tests {
             };
             assert_eq!(call.server_id, server.id);
         }
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The 64-byte function-name budget
+    // -----------------------------------------------------------------------------------
+
+    /// The live regression this repair exists for.
+    ///
+    /// `MAX_STEM` was documented as sharing one length budget with the tool name, and then
+    /// nothing ever spent from that budget: the canonical branch returned the name at any length,
+    /// the hashed branch cost 48 bytes before the tool name started, and no caller measured the
+    /// assembled name. OpenAI enforces `^[a-zA-Z0-9_-]{1,64}$` and 400s the *whole request*, so
+    /// this configuration — 61 bytes under the previous sanitizer, 67 under the new one — began
+    /// failing every single turn. `create_pull_request` is not an unusual tool name; it is the
+    /// GitHub MCP server's.
+    #[test]
+    fn the_acme_regression_case_fits_the_openai_limit() {
+        let mut server = mk_server("id-acme", "Acme Corp Internal Tools (production)");
+        server.tools = vec![
+            mk_tool("create_pull_request"),
+            mk_tool("get_relevant_files"),
+            mk_tool("search_repositories"),
+        ];
+        let ctx = mk_ctx(vec![server.clone()]);
+
+        for (name, _, _) in build_mcp_tool_defs(&ctx) {
+            assert!(
+                name.len() <= MAX_FUNCTION_NAME,
+                "`{name}` is {} bytes; OpenAI rejects the whole request over {MAX_FUNCTION_NAME}",
+                name.len()
+            );
+        }
+        // Fitting is only half of it: the call must still reach the server it names.
+        assert_eq!(route(&ctx, &server, "create_pull_request"), "id-acme");
+    }
+
+    /// The bound stated over the whole emitted surface rather than one example, because the
+    /// budget can be blown from either end — a long server name, a long tool name, or the
+    /// same-name id tiebreak that adds nine more bytes to the key.
+    ///
+    /// This is what `keys_are_well_formed_and_never_empty` could not catch: it feeds a
+    /// 200-character name and checks five properties, none of which is length.
+    #[test]
+    fn every_emitted_function_name_stays_inside_the_openai_alphabet_and_limit() {
+        let long_canonical = "a".repeat(200);
+        let long_tool = "get_pull_request_review_comments_including_resolved_threads".repeat(3);
+        let names = [
+            "Acme Corp Internal Tools (production)",
+            "GitHub (remote)",
+            "server-a",
+            long_canonical.as_str(),
+            "文件服务器",
+            "!!!",
+            "",
+            "dup",
+        ];
+        let tools = [
+            "t",
+            "create_pull_request",
+            "get_pull_request_review_comments",
+            long_tool.as_str(),
+            "列出文件",
+            "odd__tool",
+            "",
+        ];
+
+        // `dup` twice, so the id tiebreak (the longest key this module can produce) is covered.
+        let mut servers: Vec<MCPServer> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| mk_server(&format!("id-{i}"), n))
+            .collect();
+        servers.push(mk_server("id-dup2", "dup"));
+        for s in &mut servers {
+            s.tools = tools.iter().map(|t| mk_tool(t)).collect();
+        }
+        let ctx = mk_ctx(servers.clone());
+
+        let check = |name: &str, what: &str| {
+            assert!(
+                !name.is_empty() && name.len() <= MAX_FUNCTION_NAME,
+                "{what} produced `{name}` ({} bytes), outside 1..={MAX_FUNCTION_NAME}",
+                name.len()
+            );
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+                "{what} produced `{name}`, which leaves OpenAI's function-name alphabet"
+            );
+        };
+
+        for (name, _, _) in build_mcp_tool_defs(&ctx) {
+            check(&name, "build_mcp_tool_defs");
+        }
+        // History replay must obey the same bound, both for a live server and for one that has
+        // dropped out of `mcp_context` (the `unresolved_server_key` fallback, exercised here with
+        // an id long enough to blow the budget if it were ever spliced in raw).
+        let departed = mk_server(&long_canonical, "departed");
+        for server in servers.iter().chain(std::iter::once(&departed)) {
+            for tool in tools {
+                let tc = api::message::tool_call::CallMcpTool {
+                    name: tool.to_owned(),
+                    args: None,
+                    server_id: server.id.clone(),
+                };
+                check(
+                    &serialize_outgoing_call(&tc, Some(&ctx)).0,
+                    "serialize_outgoing_call",
+                );
+            }
+        }
+        check(READ_RESOURCE_NAME, "the read_resource name");
+    }
+
+    /// Truncation must preserve identity. The fingerprint carries it, so what gets shortened is
+    /// the server stem first and the tool segment only if the budget still does not close; the
+    /// real tool name is then recovered from the server's own tool list, not from the shortened
+    /// segment. A shortened name is unreadable, never wrong.
+    #[test]
+    fn shortened_tool_segments_still_call_the_real_tool() {
+        let long_tool = "get_pull_request_review_comments_including_resolved_threads";
+        let mut server = mk_server("id-long", "Acme Corp Internal Tools (production)");
+        server.tools = vec![mk_tool(long_tool), mk_tool("create_pull_request")];
+        let ctx = mk_ctx(vec![server.clone()]);
+
+        let defs = build_mcp_tool_defs(&ctx);
+        assert_eq!(defs.len(), 2, "both tools must still be advertised");
+        let (advertised, _, _) = defs
+            .iter()
+            .find(|(n, _, _)| !n.ends_with("create_pull_request"))
+            .expect("the long tool must be advertised");
+        assert!(
+            advertised.len() <= MAX_FUNCTION_NAME,
+            "`{advertised}` is over budget"
+        );
+        assert!(
+            !advertised.ends_with(long_tool),
+            "`{advertised}` kept the full tool name, so this test is not exercising truncation"
+        );
+
+        let Ok(api::message::tool_call::Tool::CallMcpTool(call)) =
+            parse_mcp_tool_call(advertised, "{}", Some(&ctx))
+        else {
+            panic!("`{advertised}` must resolve");
+        };
+        assert_eq!(
+            call.name, long_tool,
+            "the shortened segment lost the tool's identity"
+        );
+        assert_eq!(call.server_id, "id-long");
+        // And history replay emits the identical name, so the prompt cache still matches.
+        let tc = api::message::tool_call::CallMcpTool {
+            name: long_tool.to_owned(),
+            args: None,
+            server_id: "id-long".to_owned(),
+        };
+        assert_eq!(&serialize_outgoing_call(&tc, Some(&ctx)).0, advertised);
+    }
+
+    /// A canonical name over the cap must move to the hashed branch rather than be cut. Cutting
+    /// it would fuse every pair sharing a prefix — reintroducing, at a different length, exactly
+    /// the lossy-key misroute the encoding exists to remove.
+    #[test]
+    fn over_long_canonical_names_are_hashed_not_truncated() {
+        let a = mk_server("id-a", &format!("{}-a", "x".repeat(60)));
+        let b = mk_server("id-b", &format!("{}-b", "x".repeat(60)));
+        let ctx = mk_ctx(vec![a.clone(), b.clone()]);
+
+        let (ka, kb) = (key_in(&ctx, &a), key_in(&ctx, &b));
+        assert_ne!(ka, kb, "two long names sharing a 60-char prefix were fused");
+        assert!(ka.len() <= MAX_SERVER_KEY, "`{ka}` exceeds MAX_SERVER_KEY");
+        assert!(kb.len() <= MAX_SERVER_KEY, "`{kb}` exceeds MAX_SERVER_KEY");
+        assert_eq!(route(&ctx, &a, "read_file"), "id-a");
+        assert_eq!(route(&ctx, &b, "read_file"), "id-b");
+    }
+
+    /// Invariant 3 asserted where it is actually relied on.
+    ///
+    /// `key_shape_is_one_of_exactly_two_forms` pins it on `sanitize_server_name`, but
+    /// `unresolved_server_key`'s doc states it about `server_keys` output — and the tiebroken
+    /// `<base>_<8 hex>` form exists only there, so nothing asserted it.
+    #[test]
+    fn routing_keys_keep_the_two_forms_including_the_tiebreak() {
+        let long = "a".repeat(200);
+        let servers = vec![
+            mk_server("id-plain", "server-a"),
+            mk_server("id-hashed", "GitHub (remote)"),
+            mk_server("id-dup-a", "dup name"),
+            mk_server("id-dup-b", "dup name"),
+            mk_server("id-long", long.as_str()),
+        ];
+        let ctx = mk_ctx(servers);
+        let keys = server_keys(&ctx.servers);
+
+        for key in &keys {
+            assert!(
+                key.len() <= MAX_ROUTING_KEY,
+                "`{key}` is {} bytes, over MAX_ROUTING_KEY ({MAX_ROUTING_KEY})",
+                key.len()
+            );
+            let ok = if let Some((stem, tail)) = key.rsplit_once('_') {
+                !stem.is_empty()
+                    && tail.len() == 8
+                    && tail
+                        .chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+            } else {
+                true
+            };
+            assert!(ok, "`{key}` is neither routing-key form");
+        }
+
+        let base = sanitize_server_name("dup name");
+        for k in [&keys[2], &keys[3]] {
+            assert!(
+                k.starts_with(&format!("{base}_")) && k.len() == base.len() + HASH_SUFFIX,
+                "`{k}` is not the tiebroken form of `{base}`"
+            );
+        }
+        assert_ne!(keys[2], keys[3]);
+    }
+
+    // -----------------------------------------------------------------------------------
+    // One key space for both resolvers
+    // -----------------------------------------------------------------------------------
+
+    /// Two *distinct* names whose 32-bit fingerprints collide, found by birthday search.
+    ///
+    /// `server_keys` counts duplicates over base keys, so this pair takes the same path as two
+    /// identically named servers and the installation-id tiebreak separates them: both stay
+    /// advertised and each routes to itself. That is the right outcome — the alternative would
+    /// trade two working servers for a visible error — so the behaviour stands and the comment
+    /// claiming `parse_mcp_tool_call` refuses here has been corrected instead.
+    ///
+    /// The half that *was* a defect: `parse_read_resource` matched on `sanitize_server_name`
+    /// rather than `server_keys`, so for exactly this pair it saw two hits and silently degraded
+    /// to an empty server_id — the two resolvers disagreeing about which key space they live in.
+    #[test]
+    fn fingerprint_colliding_names_stay_separate_in_both_resolvers() {
+        let mut a = mk_server("id-a", "@;##");
+        let mut b = mk_server("id-b", "@;,^");
+        assert_eq!(
+            sanitize_server_name(&a.name),
+            sanitize_server_name(&b.name),
+            "this test is only meaningful while these two names still collide"
+        );
+        a.resources = vec![mk_resource("file:///a.md")];
+        b.resources = vec![mk_resource("file:///b.md")];
+        let ctx = mk_ctx(vec![a.clone(), b.clone()]);
+
+        assert_eq!(route(&ctx, &a, "read_file"), "id-a");
+        assert_eq!(route(&ctx, &b, "read_file"), "id-b");
+
+        for server in [&a, &b] {
+            let args = json!({ "uri": "file:///a.md", "server": server.name }).to_string();
+            let Ok(api::message::tool_call::Tool::ReadMcpResource(r)) =
+                parse_read_resource(&args, Some(&ctx))
+            else {
+                panic!("read_resource must parse");
+            };
+            assert_eq!(
+                r.server_id, server.id,
+                "read_resource could not name {:?}, which tool calls resolve exactly",
+                server.name
+            );
+        }
+    }
+
+    /// The unqualified branch was a first-match-wins pick across servers, in the file whose thesis
+    /// is "refuse rather than guess" — and the pick came from a `Vec` this module's own doc says
+    /// drifts between requests, so the same call could land on a different server next turn. Two
+    /// filesystem servers rooted at different directories both exposing `file:///README.md` is the
+    /// ordinary way that server is deployed, not an exotic case.
+    #[test]
+    fn an_unqualified_uri_exposed_by_two_servers_is_not_guessed() {
+        let mut a = mk_server("id-a", "fs-home");
+        let mut b = mk_server("id-b", "fs-repo");
+        a.resources = vec![mk_resource("file:///README.md")];
+        b.resources = vec![
+            mk_resource("file:///README.md"),
+            mk_resource("file:///only-b.md"),
+        ];
+        let forward = mk_ctx(vec![a.clone(), b.clone()]);
+        let reversed = mk_ctx(vec![b.clone(), a.clone()]);
+
+        let read = |ctx: &MCPContext, args: String| {
+            let Ok(api::message::tool_call::Tool::ReadMcpResource(r)) =
+                parse_read_resource(&args, Some(ctx))
+            else {
+                panic!("read_resource must parse");
+            };
+            r.server_id
+        };
+
+        for ctx in [&forward, &reversed] {
+            let id = read(ctx, json!({ "uri": "file:///README.md" }).to_string());
+            assert!(
+                id.is_empty(),
+                "an ambiguous uri was resolved to {id:?} by position"
+            );
+        }
+        // Refusing to guess must not cost the cases that are not guesses: a uri only one server
+        // exposes still resolves, and naming the server still resolves.
+        assert_eq!(
+            read(&forward, json!({ "uri": "file:///only-b.md" }).to_string()),
+            "id-b"
+        );
+        assert_eq!(
+            read(
+                &forward,
+                json!({ "uri": "file:///README.md", "server": "fs-repo" }).to_string()
+            ),
+            "id-b"
+        );
+    }
+
+    /// `agent/api.rs` builds `ctx.servers` by concatenating three registries with no dedup by
+    /// installation id. Two entries for one installation produce the same routing key, so
+    /// `build_mcp_tool_defs` dedupes one away — and a resolver that counted rows rather than ids
+    /// would then call the surviving name ambiguous on every call, turning that server's whole
+    /// toolset into advertised-and-uncallable. Same id is the same server, not an ambiguity.
+    #[test]
+    fn a_server_listed_twice_under_one_id_is_not_ambiguous() {
+        let mut s = mk_server("id-dup", "GitHub (remote)");
+        s.tools = vec![mk_tool("list_issues")];
+        s.resources = vec![mk_resource("file:///r.md")];
+        let ctx = mk_ctx(vec![s.clone(), s.clone()]);
+        // The duplicate must not even perturb the key: a server whose entry comes and goes with
+        // the working directory would otherwise have its advertised names rewritten under it.
+        assert_eq!(
+            server_keys(&ctx.servers),
+            vec![sanitize_server_name(&s.name); 2],
+            "a repeated id triggered the same-name tiebreak"
+        );
+
+        let defs = build_mcp_tool_defs(&ctx);
+        for (name, _, _) in &defs {
+            if name.as_str() == READ_RESOURCE_NAME {
+                continue;
+            }
+            let Ok(api::message::tool_call::Tool::CallMcpTool(call)) =
+                parse_mcp_tool_call(name, "{}", Some(&ctx))
+            else {
+                panic!("`{name}` must resolve; one server listed twice is not ambiguity");
+            };
+            assert_eq!(call.server_id, "id-dup");
+        }
+        let args = json!({ "uri": "file:///r.md" }).to_string();
+        let Ok(api::message::tool_call::Tool::ReadMcpResource(r)) =
+            parse_read_resource(&args, Some(&ctx))
+        else {
+            panic!("read_resource must parse");
+        };
+        assert_eq!(r.server_id, "id-dup");
+    }
+
+    /// Two servers whose *keys* genuinely collide — distinct ids behind one routing key — is the
+    /// case that must still refuse. Simulated by handing resolution a key both servers answer to,
+    /// since a real double fingerprint collision is not constructible in a test.
+    #[test]
+    fn two_distinct_ids_behind_one_key_still_refuse() {
+        let a = mk_server("id-a", "same");
+        let b = mk_server("id-b", "other");
+        let servers = [a, b];
+        let err = unique_match(&servers, |_, _| true).unwrap_err();
+        assert_ne!(err.0.id, err.1.id);
+    }
+
+    /// `function_name` is test-only now and delegates to `server_keys`, so it can no longer
+    /// disagree with what `build_mcp_tool_defs` advertises.
+    #[test]
+    fn function_name_agrees_with_the_advertised_name() {
+        let mut s = mk_server("id-a", "GitHub (remote)");
+        s.tools = vec![mk_tool("list_issues")];
+        let ctx = mk_ctx(vec![s.clone()]);
+        assert_eq!(
+            build_mcp_tool_defs(&ctx)[0].0,
+            function_name(&s, "list_issues")
+        );
     }
 }
