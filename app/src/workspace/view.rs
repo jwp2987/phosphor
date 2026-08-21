@@ -202,7 +202,8 @@ use crate::settings::cloud_preferences::PreferencesSettings;
 use crate::appearance::{Appearance, AppearanceManager};
 use crate::auth::AuthStateProvider;
 use crate::autoupdate::{
-    is_incoming_version_past_current, AutoupdateState, AutoupdateStateEvent, RelaunchModel,
+    is_incoming_version_past_current, is_incoming_version_past_current_strict,
+    AutoupdateState, AutoupdateStateEvent, RelaunchModel,
 };
 use crate::banner::BannerState;
 use crate::changelog_model::{ChangelogModel, ChangelogRequestType, Event as ChangelogEvent};
@@ -8642,7 +8643,7 @@ impl Workspace {
             match autoupdate::get_update_state(app) {
                 AutoupdateStage::UpdateReady { new_version, .. }
                 | AutoupdateStage::UpdatedPendingRestart { new_version }
-                    if !is_incoming_version_past_current(
+                    if !is_incoming_version_past_current_strict(
                         new_version.last_prominent_update.as_deref(),
                     ) =>
                 {
@@ -8654,7 +8655,7 @@ impl Workspace {
                     )
                 }
                 AutoupdateStage::Updating { new_version, .. }
-                    if !is_incoming_version_past_current(
+                    if !is_incoming_version_past_current_strict(
                         new_version.last_prominent_update.as_deref(),
                     ) =>
                 {
@@ -8668,7 +8669,7 @@ impl Workspace {
                     )
                 }
                 AutoupdateStage::UnableToUpdateToNewVersion { new_version }
-                    if !is_incoming_version_past_current(
+                    if !is_incoming_version_past_current_strict(
                         new_version.last_prominent_update.as_deref(),
                     ) =>
                 {
@@ -19410,7 +19411,7 @@ impl Workspace {
             && autoupdate_stage
                 .available_new_version()
                 .map(|version| {
-                    !is_incoming_version_past_current(version.last_prominent_update.as_deref())
+                    !is_incoming_version_past_current_strict(version.last_prominent_update.as_deref())
                 })
                 .unwrap_or(false)
         {
@@ -19639,7 +19640,7 @@ impl Workspace {
                 || autoupdate_stage
                     .available_new_version()
                     .map(|version| {
-                        is_incoming_version_past_current(version.last_prominent_update.as_deref())
+                        is_incoming_version_past_current_strict(version.last_prominent_update.as_deref())
                     })
                     .unwrap_or(false))
         {

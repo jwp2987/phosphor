@@ -209,36 +209,60 @@ pub(super) fn relaunch() -> Result<()> {
     Ok(())
 }
 
-/// OSS macOS install entry point: triggers Finder's standard mount of the
-/// verified dmg via `/usr/bin/open <dmg>` once the current process exits.
+/// OSS macOS install entry point: triggers Finder's standard mount of the dmg
+/// via `/usr/bin/open <dmg>` once the current process exits.
 ///
-/// The file opened here is the one [`VERIFIED_OSS_DMG`] recorded, re-checked
-/// against its recorded digest, so this no longer verifies one file and
-/// executes another.
+/// # Why the digest check lives in the spawned script
+///
+/// `open` cannot run now. Finder must not mount the image until this process is
+/// gone, so the work is handed to a detached `sh` that polls for our pid to
+/// disappear. Anything this function checks is therefore checked an app
+/// shutdown -- plus up to one 200 ms poll interval -- before the file is used,
+/// on a path under `cache_dir()` that any process running as this user can
+/// replace in the meantime. A previous version of this code hashed the file
+/// here and called that "no longer verifies one file and executes another";
+/// that claim was simply false, because the two events were not adjacent.
+///
+/// So the comparison is emitted into the script instead, between the wait loop
+/// and the `exec`. The residual window is now the microseconds between
+/// `shasum` returning and `exec open`, rather than a whole app teardown. It is
+/// not zero -- macOS has no "open this file descriptor" primitive for `open(1)`
+/// to close it completely -- but it is no longer a window an attacker can
+/// arrive during.
+///
+/// Two supporting properties:
+/// * A missing `shasum`, an unreadable file or any mismatch makes the script
+///   exit non-zero *before* `open`, so every failure mode is fail-closed.
+/// * The alternatives considered were: holding an fd across the gap (useless,
+///   `open(1)` takes a path); staging into a directory only this process can
+///   write (does not help against a same-uid attacker, which is the realistic
+///   one on macOS); and copying to a fresh temp path after hashing (a
+///   several-hundred-MB copy that still leaves the copy sitting user-writable
+///   across the same teardown). Re-checking adjacent to the use is the only one
+///   that removes the window rather than moving it.
 fn oss_open_installer() -> Result<()> {
     // Prefer the exact path this process verified. Only if that record is
     // missing -- it should not be, the download and the install happen in one
     // process -- do we fall back to scanning cache_dir/autoupdate/ for the
     // newest dmg, and then the file has to earn its way through verification
     // before it is opened.
+    //
+    // A poisoned mutex is recovered rather than discarded: `Option<(PathBuf,
+    // String)>` has no invariant a panicking writer could have broken, and
+    // `.ok()` here would silently downgrade "we have a verified dmg" into "go
+    // scan the cache directory".
     let verified = VERIFIED_OSS_DMG
         .lock()
-        .ok()
-        .and_then(|guard| guard.clone())
-        .filter(|(path, _)| path.exists());
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
 
-    let dmg = match verified {
-        Some((path, expected)) => {
-            // Re-hash rather than trusting the earlier pass: between download
-            // and install the file has been sitting in a user-writable cache
-            // directory.
-            let actual = super::sha256_file(&path)?;
-            ensure!(
-                actual == expected,
-                "Phosphor: refusing to open {path:?}: its contents changed since verification (expected={expected} actual={actual})"
-            );
-            path
-        }
+    // Note there is deliberately no `path.exists()` filter on the record. That
+    // was a second check-then-use, and it silently converted "the file we
+    // verified is gone" -- which should never happen inside one process -- into
+    // the directory scan below. If we hold a record we use it, and the script's
+    // digest check reports any problem with it.
+    let (dmg, expected) = match verified {
+        Some((path, expected)) => (path, expected),
         None => {
             let mut autoupdate_dir = warp_core::paths::cache_dir();
             autoupdate_dir.push("autoupdate");
@@ -248,21 +272,38 @@ fn oss_open_installer() -> Result<()> {
             log::warn!(
                 "Phosphor: no verified dmg on record, re-verifying the newest one found on disk ({found:?})"
             );
-            super::verify_oss_asset_sha256(&found, &dmg_name(ChannelState::channel()))?;
-            found
+            let expected =
+                super::verify_oss_asset_sha256(&found, &dmg_name(ChannelState::channel()))?;
+            (found, expected)
         }
     };
+
+    ensure!(
+        expected.len() == 64 && expected.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Phosphor: refusing to open {dmg:?}: recorded digest {expected:?} is not a SHA-256 hex string"
+    );
 
     log::info!("Phosphor: preparing to open installer dmg {dmg:?}");
 
     let pid = std::process::id();
     let quoted_dmg = shell_escape::escape(dmg.to_string_lossy());
+    let quoted_expected = shell_escape::escape(expected.clone().into());
     // Open the dmg only after the current process exits. `open` is
     // non-blocking by default; once Finder has the dmg it automatically mounts
     // it and shows the mount window; the user drags it into Applications in
     // Finder to finish the upgrade.
+    //
+    // `shasum` is part of the macOS base install (/usr/bin/shasum); if it is
+    // absent the `command -v` test fails and we never reach `open`.
     let script = format!(
-        "while ps -p {pid} >/dev/null 2>&1; do sleep 0.2; done; /usr/bin/open {quoted_dmg}"
+        "while ps -p {pid} >/dev/null 2>&1; do sleep 0.2; done; \
+         command -v /usr/bin/shasum >/dev/null 2>&1 || {{ echo 'Phosphor: /usr/bin/shasum missing, refusing to open the installer' >&2; exit 1; }}; \
+         actual=$(/usr/bin/shasum -a 256 {quoted_dmg} 2>/dev/null | /usr/bin/cut -d' ' -f1); \
+         if [ \"$actual\" != {quoted_expected} ]; then \
+           echo \"Phosphor: refusing to open {quoted_dmg}: sha256 is $actual, expected {quoted_expected}\" >&2; \
+           exit 1; \
+         fi; \
+         exec /usr/bin/open {quoted_dmg}"
     );
     log::info!("Executing OSS install command {script:?}");
     blocking::Command::new("sh").arg("-c").arg(script).spawn()?;

@@ -169,6 +169,23 @@ mod appimage {
         // openWarp: verify the temp file's SHA-256 before overwriting the
         // original AppImage, to guard against a CDN man-in-the-middle / network
         // corruption. Other channels skip this (they have their own process).
+        //
+        // Linux deliberately has no second check, unlike macOS
+        // (`mac::oss_open_installer`) and Windows (`windows::relaunch`), and
+        // the reason is the shape of this function rather than an oversight:
+        // the verified bytes are `mv`d over `appimage_path` a few statements
+        // below, within the same `await`-free stretch. The only thing between
+        // the hash and the move is one `set_permissions` call, so there is no
+        // window worth a second several-hundred-MB pass. The other two
+        // platforms hash and then hand a *path* to something that runs later --
+        // after an app shutdown on macOS, after an arbitrary user delay on
+        // Windows -- which is what makes a re-check necessary there.
+        //
+        // What is emphatically not claimed here: that `appimage_path` is still
+        // those bytes when `relaunch` executes it. Once the move lands, the
+        // file is the installed application, and re-hashing it at launch would
+        // be checking the app against a download digest, which is a different
+        // (and unsupported) property.
         if matches!(channel, warp_core::channel::Channel::Oss) {
             let temp_path = new_appimage.path().to_path_buf();
             if let Err(e) =

@@ -39,6 +39,40 @@ use warpui::{Entity, ModelContext, SingletonEntity, ViewContext};
 pub use self::changelog::get_current_changelog;
 use self::channel_versions::fetch_channel_versions;
 
+/// Marks an error as "we looked at these bytes and refused them", as opposed to
+/// the transient network failures the download path expects and deliberately
+/// swallows.
+///
+/// The distinction matters because `on_download_update_complete` treats a
+/// download error as a non-event -- it logs at `warn` and drops the stage back
+/// to `NoUpdateAvailable`, which renders as "you are up to date". That is the
+/// right call for a laptop that slept mid-request. It is the wrong call for
+/// [`verify_oss_asset_sha256`], whose failures are permanent for a given
+/// release: a release published without a `digest` field, or one whose bytes do
+/// not match the digest, will fail identically on every future poll. Without
+/// this marker that is an update channel that has silently stopped working.
+#[derive(Debug)]
+pub(crate) struct UpdateBlocked;
+
+impl std::fmt::Display for UpdateBlocked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("update refused; a manual download is required")
+    }
+}
+
+impl std::error::Error for UpdateBlocked {}
+
+/// Build an error that [`is_update_blocked`] will recognise.
+fn blocked(message: String) -> anyhow::Error {
+    anyhow::Error::new(UpdateBlocked).context(message)
+}
+
+/// Whether `error` came from a refusal to install rather than a failure to
+/// fetch. See [`UpdateBlocked`].
+pub(crate) fn is_update_blocked(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<UpdateBlocked>())
+}
+
 /// SHA-256 verification shared across the three platforms once an OSS download
 /// completes. Returns the verified lowercase-hex digest so a caller can re-check
 /// the same file later without re-consulting the release metadata.
@@ -63,6 +97,14 @@ use self::channel_versions::fetch_channel_versions;
 /// asset (GitHub has populated `digest` for uploads since late 2024), not to
 /// install unverified bytes.
 ///
+/// That refusal is an availability trade, and it is not silent: every error
+/// here carries the [`UpdateBlocked`] marker, so `on_download_update_complete`
+/// escalates it to `AutoupdateStage::UnableToUpdateToNewVersion` -- the error
+/// banner with an "Update Phosphor manually" button -- instead of the `warn`
+/// -and-forget path that transient download failures take. A release that
+/// cannot be verified therefore stops autoupdate *visibly*, which is the point:
+/// the previous behaviour would have been a channel that quietly went dark.
+///
 /// This function should not be called outside the OSS path: other channels use
 /// codesign / Inno's built-in verification.
 pub(crate) fn verify_oss_asset_sha256(
@@ -70,20 +112,20 @@ pub(crate) fn verify_oss_asset_sha256(
     asset_name: &str,
 ) -> anyhow::Result<String> {
     let release = github::cached_release().ok_or_else(|| {
-        anyhow!("Refusing to install {asset_name}: no cached GitHub release metadata to verify its SHA-256 against")
+        blocked(format!("Refusing to install {asset_name}: no cached GitHub release metadata to verify its SHA-256 against"))
     })?;
     let asset = release.find_asset(asset_name).ok_or_else(|| {
-        anyhow!(
+        blocked(format!(
             "Refusing to install {asset_name}: release {} lists no asset by that name, so its expected SHA-256 is unknown",
             release.tag_name
-        )
+        ))
     })?;
     let expected = asset.sha256_hex().ok_or_else(|| {
-        anyhow!(
-            "Refusing to install {asset_name}: release {} publishes no usable sha256 digest for it (digest={:?})",
+        blocked(format!(
+            "Refusing to install {asset_name}: release {} publishes no usable sha256 digest for it (digest={:?}). Autoupdate will keep failing for this release until the asset is republished; download it manually in the meantime.",
             release.tag_name,
             asset.digest
-        )
+        ))
     })?;
 
     let actual = sha256_file(path)?;
@@ -91,10 +133,10 @@ pub(crate) fn verify_oss_asset_sha256(
         log::info!("Phosphor: SHA-256 verification passed ({asset_name})");
         Ok(expected)
     } else {
-        Err(anyhow!(
+        Err(blocked(format!(
             "SHA-256 verification failed: expected={expected} actual={actual} (asset={asset_name}, path={})",
             path.display()
-        ))
+        )))
     }
 }
 
@@ -427,7 +469,11 @@ impl AutoupdateState {
             // unparseable version on either side silently disabled the very
             // guard that stops a user being walked backwards onto an older
             // release. If we cannot establish the ordering we do not update.
-            match self.is_current_version_ahead_of_latest_version(&version, current_version) {
+            // Computed before the `match` so the borrow of `version` ends
+            // here; the failure arm below takes it by value.
+            let ordering =
+                self.is_current_version_ahead_of_latest_version(&version, current_version);
+            match ordering {
                 Ok(true) => {
                     let is_rollback = version.is_rollback.unwrap_or(false);
                     if !is_rollback {
@@ -441,12 +487,24 @@ impl AutoupdateState {
                 }
                 Ok(false) => {}
                 Err(e) => {
-                    log::warn!(
-                        "Cannot compare current version ({}) against offered version ({}): {e:#}; not updating",
+                    // Refusing the update is right; refusing it silently is
+                    // not. `UpdateReady::No` leaves the stage at
+                    // `NoUpdateAvailable`, which is the same state as "you are
+                    // up to date": no banner, no menu item, no manual-download
+                    // affordance. `current_version` comes from
+                    // `option_env!("GIT_RELEASE_TAG")` and the release workflow
+                    // fires on any `v*` tag, so a single `v1`, `v0`,
+                    // `v0.1.1+build.5` or `v0.1.1_hotfix` tag -- none of which
+                    // parse -- would take every installed client's autoupdate
+                    // permanently dark with nothing on screen to say so.
+                    log::error!(
+                        "Phosphor: autoupdate cannot proceed -- current version ({}) cannot be compared against offered version ({}): {e:#}. Not updating; the user is being asked to update manually.",
                         current_version,
                         version.version
                     );
-                    return UpdateReady::No;
+                    return UpdateReady::VersionComparisonFailed {
+                        new_version: version,
+                    };
                 }
             }
 
@@ -553,6 +611,18 @@ impl AutoupdateState {
                         update_id: update_id.clone(),
                     };
                 }
+                ctx.emit(AutoupdateStateEvent::UpdateAvailable);
+            }
+            Ok(UpdateReady::VersionComparisonFailed { new_version }) => {
+                // `UnableToUpdateToNewVersion` is the existing state for "a
+                // newer version exists and we cannot install it for you": it
+                // raises the error banner carrying an "Update Phosphor
+                // manually" button, and the matching menu item. That is the
+                // whole point of not returning plain `No` here.
+                send_telemetry_from_ctx!(TelemetryEvent::UnableToAutoUpdateToNewVersion, ctx);
+                self.stage = AutoupdateStage::UnableToUpdateToNewVersion {
+                    new_version: new_version.clone(),
+                };
                 ctx.emit(AutoupdateStateEvent::UpdateAvailable);
             }
             Ok(UpdateReady::No) => {
@@ -695,6 +765,16 @@ impl AutoupdateState {
                 log::info!("Could not download a newer version");
                 self.stage = AutoupdateStage::NoUpdateAvailable;
                 Ok(UpdateReady::No)
+            }
+            Err(e) if is_update_blocked(&e) => {
+                // The bytes arrived and we refused them (see
+                // `verify_oss_asset_sha256`). Unlike a cancelled request this
+                // will fail identically on every future poll, so the silent
+                // retry below would be an update channel that has gone dark.
+                log::error!("Phosphor: refusing to install the downloaded update: {e:#}");
+                send_telemetry_from_ctx!(TelemetryEvent::UnableToAutoUpdateToNewVersion, ctx);
+                self.stage = AutoupdateStage::UnableToUpdateToNewVersion { new_version };
+                Err(e)
             }
             Err(e) => {
                 log::warn!("Error downloading update {e:#}");
@@ -846,6 +926,17 @@ pub enum UpdateReady {
     },
     /// There is no update available.
     No,
+    /// An update was offered, but we could not establish whether it supersedes
+    /// the installed build, so we refuse to install it.
+    ///
+    /// Distinct from [`UpdateReady::No`] on purpose: `No` is routine and
+    /// renders as "you are up to date", whereas this means autoupdate has
+    /// stopped working for this install until someone intervenes. See
+    /// `AutoupdateState::should_update`.
+    VersionComparisonFailed {
+        /// The version that was offered but could not be compared.
+        new_version: VersionInfo,
+    },
 }
 
 /// Set of results from downloading an update.
@@ -904,6 +995,14 @@ pub fn accessibility_content(
             "Use the command palette to install and relaunch Phosphor",
             WarpA11yRole::HelpRole,
         )),
+        // Checked, found something, and refused to install it.
+        (RequestType::ManualCheck, Ok(UpdateReady::VersionComparisonFailed { .. })) => {
+            Some(AccessibilityContent::new(
+                "Update available, but it cannot be installed automatically.",
+                "Phosphor could not compare this build's version against the offered release; download the update manually",
+                WarpA11yRole::HelpRole,
+            ))
+        }
         // Any non-successful autoupdate check
         (RequestType::ManualCheck, _) => Some(AccessibilityContent::new_without_help(
             "No updates available",
@@ -917,9 +1016,28 @@ pub fn get_update_state(app: &AppContext) -> AutoupdateStage {
     AutoupdateState::as_ref(app).stage.clone()
 }
 
-fn get_curr_parsed_version() -> Option<ParsedVersion> {
-    let curr_version = ChannelState::app_version();
-    curr_version.and_then(|v| ParsedVersion::try_from(v).ok())
+/// The installed version, parsed. Three outcomes, kept apart on purpose:
+///
+/// * `Ok(None)` -- no `GIT_RELEASE_TAG` was baked in. A local or dev build; no
+///   server-side cutoff applies to it.
+/// * `Err(_)`   -- a tag *is* present and does not parse. `option_env!("GIT_RELEASE_TAG")`
+///   takes whatever the `v*`-triggered release workflow tagged, and shapes like
+///   `v1`, `v0`, `v0.1.1+build.5` and `v0.1.1_hotfix` do not parse.
+/// * `Ok(Some)` -- the installed version.
+///
+/// This used to end in `.ok()`, which collapsed the middle case into the first
+/// one: every caller then read an unparseable tag as "this build has no
+/// version" and answered as though the comparison had succeeded. The two cases
+/// deserve opposite handling -- an untagged dev build is genuinely not subject
+/// to a cutoff, whereas a tag we cannot order against is a question we failed
+/// to answer -- so they are no longer the same value.
+fn get_curr_parsed_version() -> Result<Option<ParsedVersion>> {
+    let Some(curr_version) = ChannelState::app_version() else {
+        return Ok(None);
+    };
+    ParsedVersion::try_from(curr_version)
+        .map(Some)
+        .with_context(|| format!("Installed version tag {curr_version:?} does not parse"))
 }
 
 /// Generate a new random update ID.
@@ -1316,17 +1434,121 @@ impl Entity for RelaunchModel {
 
 impl SingletonEntity for RelaunchModel {}
 
-pub fn is_incoming_version_past_current(version: Option<&str>) -> bool {
-    let installed_version = get_curr_parsed_version();
+/// Where the installed build sits relative to a server-supplied cutoff version
+/// (`VersionInfo::soft_cutoff`, `VersionInfo::last_prominent_update`).
+///
+/// This exists because the single `bool` that used to be returned here had to
+/// stand for four different situations, and the callers want different answers
+/// in each. Collapsing them meant "the server named no cutoff", "you are not
+/// past it" and "we could not tell" all rendered as *nothing is wrong*.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CutoffComparison {
+    /// The server named no cutoff. The common case; not an error.
+    NoCutoff,
+    /// This build carries no release tag at all (local/dev build), so release
+    /// cutoffs do not apply to it.
+    NoInstalledVersion,
+    /// The cutoff is newer than the installed build: the user is behind it.
+    Past,
+    /// The installed build is at or beyond the cutoff.
+    NotPast,
+    /// One of the two version strings did not parse, so there is no ordering
+    /// to report. Callers must choose a direction deliberately -- see
+    /// [`is_incoming_version_past_current`] and
+    /// [`is_incoming_version_past_current_strict`].
+    Unknown,
+}
 
-    let Ok(incoming_version): Result<ParsedVersion> = version
-        .ok_or(anyhow!("version is None"))
-        .and_then(|cutoff| cutoff.try_into())
-    else {
-        return false;
+/// Logging guard for [`compare_incoming_version_to_current`].
+///
+/// The comparison runs from render paths (menu construction, banner
+/// rendering), so an unconditional `warn!` on a bad version tag would repeat
+/// every frame. This suppresses the repeats and nothing else: it never gates
+/// the verdict, which is recomputed from scratch on every call.
+static WARNED_ABOUT_UNPARSEABLE_CUTOFF: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn warn_once(args: std::fmt::Arguments<'_>) {
+    if !WARNED_ABOUT_UNPARSEABLE_CUTOFF.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::warn!("Phosphor: {args}");
+    }
+}
+
+/// Compare a server-supplied cutoff version against the installed one.
+pub fn compare_incoming_version_to_current(version: Option<&str>) -> CutoffComparison {
+    let Some(version) = version else {
+        return CutoffComparison::NoCutoff;
     };
 
-    installed_version.is_some_and(|curr_version| incoming_version > curr_version)
+    let incoming_version = match ParsedVersion::try_from(version) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            warn_once(format_args!(
+                "cannot order the cutoff version {version:?} supplied by the server against this build: {e:#}"
+            ));
+            return CutoffComparison::Unknown;
+        }
+    };
+
+    match get_curr_parsed_version() {
+        Ok(Some(curr_version)) => {
+            if incoming_version > curr_version {
+                CutoffComparison::Past
+            } else {
+                CutoffComparison::NotPast
+            }
+        }
+        Ok(None) => CutoffComparison::NoInstalledVersion,
+        Err(e) => {
+            warn_once(format_args!(
+                "cannot order the cutoff version {version:?} against the installed version: {e:#}"
+            ));
+            CutoffComparison::Unknown
+        }
+    }
+}
+
+/// "Is this build behind the cutoff?", answered for the consumers where a
+/// `true` *raises* the alarm -- the version-deprecation banner
+/// (`VersionInfo::soft_cutoff` in `workspace/view.rs`).
+///
+/// An unknown ordering answers `true`. Those call sites are already rendering
+/// an error banner; the only thing this decides is whether its text says "your
+/// version is no longer supported" or "we could not install the update", and
+/// both carry the same "Update Phosphor manually" button. Showing the stronger
+/// wording to a user who turns out to be inside the support window costs them a
+/// needless update; withholding it from a user who is outside it costs them a
+/// build that stops working with no warning. The first is recoverable.
+///
+/// Note the direction is the *opposite* of the update check in
+/// [`AutoupdateState::should_update`], where an unknown ordering must mean "do
+/// not install" -- there the unsafe direction is acting, here it is staying
+/// quiet.
+pub fn is_incoming_version_past_current(version: Option<&str>) -> bool {
+    matches!(
+        compare_incoming_version_to_current(version),
+        CutoffComparison::Past | CutoffComparison::Unknown
+    )
+}
+
+/// "Is this build behind the cutoff?", answered for the consumers where a
+/// `true` *removes* an affordance -- `VersionInfo::last_prominent_update`
+/// gates the prominent update pill and, by its negation, the ordinary "Update
+/// and relaunch" menu items and the red notification dot.
+///
+/// An unknown ordering answers `false`: keep the update controls the user can
+/// already act on rather than trading them for a louder presentation chosen on
+/// a guess.
+///
+/// The `last_prominent_update` call sites in `app/src/workspace/view.rs` should
+/// use this rather than [`is_incoming_version_past_current`]; until they are
+/// switched over, nothing outside the tests below calls it.
+#[allow(dead_code)]
+pub fn is_incoming_version_past_current_strict(version: Option<&str>) -> bool {
+    matches!(
+        compare_incoming_version_to_current(version),
+        CutoffComparison::Past
+    )
 }
 
 /// Returns the base URL that contains release assets for the given version
@@ -1350,3 +1572,174 @@ fn release_assets_directory_url(channel: Channel, version: &str) -> String {
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;
+
+/// Tests for the two guards that must not fail open: the cutoff comparison
+/// (which decides whether the user is warned) and the version-ordering check
+/// in `should_update` (which decides whether we install).
+///
+/// `ChannelState::set_app_version` is process-global, so each test sets it on
+/// every path it exercises rather than relying on a default. Under
+/// `cargo-nextest` each test is its own process; under plain `cargo test` these
+/// share the global with `mod_test.rs`, which is a pre-existing property of
+/// that API rather than something introduced here.
+#[cfg(test)]
+mod fail_closed_tests {
+    use super::*;
+    use std::sync::Arc;
+    use warpui::{App, UpdateModel};
+
+    /// A release tag the `v*`-triggered workflow will happily publish and
+    /// `ParsedVersion` cannot parse. `app/build.rs` names `v1`-shaped tags as an
+    /// example and defaults to one.
+    const UNPARSEABLE_INSTALLED: &str = "v0.1.1_hotfix";
+    const OFFERED: &str = "2026.08.20.1";
+
+    #[test]
+    fn unparseable_installed_version_is_not_reported_as_within_cutoff() {
+        ChannelState::set_app_version(Some(UNPARSEABLE_INSTALLED));
+
+        // The core defect: `NotPast` is a claim ("you are inside the support
+        // window"); an unparseable tag does not support that claim.
+        assert_eq!(
+            compare_incoming_version_to_current(Some(OFFERED)),
+            CutoffComparison::Unknown,
+            "an installed tag that does not parse must report Unknown, not an ordering"
+        );
+        assert_ne!(
+            compare_incoming_version_to_current(Some(OFFERED)),
+            CutoffComparison::NotPast,
+            "Unknown must not be fused with 'not past the cutoff'"
+        );
+
+        // Deprecation consumers (`soft_cutoff`): the user gets told.
+        assert!(
+            is_incoming_version_past_current(Some(OFFERED)),
+            "a version-deprecation banner must not be silently suppressed by a parse failure"
+        );
+        // Affordance-suppressing consumers (`last_prominent_update`): the
+        // ordinary update controls stay put.
+        assert!(
+            !is_incoming_version_past_current_strict(Some(OFFERED)),
+            "a parse failure must not trade the ordinary update UI for the prominent one"
+        );
+    }
+
+    #[test]
+    fn unparseable_incoming_cutoff_is_also_unknown() {
+        ChannelState::set_app_version(Some("2026.08.20.1"));
+
+        assert_eq!(
+            compare_incoming_version_to_current(Some("not a version")),
+            CutoffComparison::Unknown
+        );
+        assert!(is_incoming_version_past_current(Some("not a version")));
+        assert!(!is_incoming_version_past_current_strict(Some(
+            "not a version"
+        )));
+    }
+
+    /// The overwhelmingly common case: no cutoff was published at all. This
+    /// must stay `false` in both projections -- "unknown" is reserved for a
+    /// string we failed to read, never for the absence of one, or every user
+    /// on every release would see the deprecation banner.
+    #[test]
+    fn absent_cutoff_is_not_treated_as_unknown() {
+        ChannelState::set_app_version(Some(UNPARSEABLE_INSTALLED));
+
+        assert_eq!(
+            compare_incoming_version_to_current(None),
+            CutoffComparison::NoCutoff
+        );
+        assert!(!is_incoming_version_past_current(None));
+        assert!(!is_incoming_version_past_current_strict(None));
+    }
+
+    #[test]
+    fn real_orderings_are_unchanged() {
+        ChannelState::set_app_version(Some("v2026.05.10"));
+
+        assert_eq!(
+            compare_incoming_version_to_current(Some("2026.08.20.1")),
+            CutoffComparison::Past
+        );
+        assert!(is_incoming_version_past_current(Some("2026.08.20.1")));
+        assert!(is_incoming_version_past_current_strict(Some(
+            "2026.08.20.1"
+        )));
+
+        assert_eq!(
+            compare_incoming_version_to_current(Some("2026.01.01")),
+            CutoffComparison::NotPast
+        );
+        assert!(!is_incoming_version_past_current(Some("2026.01.01")));
+        assert!(!is_incoming_version_past_current_strict(Some("2026.01.01")));
+    }
+
+    /// The fail-closed branch in `should_update` is correct to refuse the
+    /// update; this pins the other half -- that refusing is not the same as
+    /// saying nothing.
+    #[test]
+    fn fail_closed_comparison_is_distinguishable_from_no_update() {
+        App::test((), |mut app| async move {
+            ChannelState::set_app_version(Some(UNPARSEABLE_INSTALLED));
+            let handle =
+                app.add_model(|_| AutoupdateState::new(Arc::new(http_client::Client::new())));
+
+            app.update_model(&handle, |autoupdate, _| {
+                let outcome = autoupdate.should_update(
+                    VersionInfo::new(OFFERED.to_string()),
+                    "test_update_id".to_string(),
+                );
+
+                assert!(
+                    matches!(
+                        &outcome,
+                        UpdateReady::VersionComparisonFailed { new_version }
+                            if new_version.version == OFFERED
+                    ),
+                    "an unorderable version pair must not collapse into UpdateReady::No, got {outcome:?}"
+                );
+            });
+        });
+    }
+
+    /// ... and that the outcome reaches a stage the UI actually renders:
+    /// `UnableToUpdateToNewVersion` is what raises the error banner with the
+    /// "Update Phosphor manually" button. `NoUpdateAvailable` would render as
+    /// "you are up to date".
+    #[test]
+    fn fail_closed_comparison_produces_a_user_visible_stage() {
+        App::test((), |mut app| async move {
+            ChannelState::set_app_version(Some(UNPARSEABLE_INSTALLED));
+            let handle =
+                app.add_model(|_| AutoupdateState::new(Arc::new(http_client::Client::new())));
+
+            app.update_model(&handle, |autoupdate, ctx| {
+                // RequestType::Poll keeps `accessibility_content` out of the
+                // way; the stage transition is what is under test.
+                autoupdate.on_update_check_complete(
+                    RequestType::Poll,
+                    "test_update_id".to_string(),
+                    Ok(VersionInfo::new(OFFERED.to_string())),
+                    false, /* is_daily */
+                    ctx,
+                );
+
+                assert!(
+                    matches!(
+                        &autoupdate.stage,
+                        AutoupdateStage::UnableToUpdateToNewVersion { new_version }
+                            if new_version.version == OFFERED
+                    ),
+                    "the fail-closed guard must leave a stage the user can see and act on, got {:?}",
+                    autoupdate.stage
+                );
+                assert_ne!(autoupdate.stage, AutoupdateStage::NoUpdateAvailable);
+                assert!(
+                    autoupdate.stage.available_new_version().is_some(),
+                    "the banner needs the offered version to describe the update"
+                );
+            });
+        });
+    }
+}

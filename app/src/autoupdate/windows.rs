@@ -20,8 +20,25 @@ use super::{
 use crate::util::windows::install_dir;
 
 lazy_static! {
-    /// The path to the temporary file that stores the installer for the new update.
-    static ref INSTALLER_PATH: Arc<Mutex<Option<TempPath>>> = Default::default();
+    /// The temporary file that stores the installer for the new update, plus
+    /// the digest it was verified against at download time.
+    static ref INSTALLER_PATH: Arc<Mutex<Option<DownloadedInstaller>>> = Default::default();
+}
+
+/// A downloaded installer, kept together with whatever we know about its
+/// contents so `relaunch` can re-check them immediately before executing it.
+struct DownloadedInstaller {
+    path: TempPath,
+    /// Lowercase-hex SHA-256 recorded by `verify_oss_asset_sha256` at download
+    /// time, on the channels that have one.
+    ///
+    /// `None` on the official channels: those installers are Authenticode
+    /// signed and there is no digest in hand to compare against, so Windows'
+    /// own signature check at process creation is what stands there. It is not
+    /// a "verification was skipped" value -- the OSS path always records
+    /// `Some`, because a failed verification returns before `INSTALLER_PATH` is
+    /// populated at all.
+    verified_sha256: Option<String>,
 }
 
 /// Download the Inno Setup install wizard, the same one users run on the first Zap install, and
@@ -150,14 +167,25 @@ pub(super) async fn download_update_and_cleanup(
     // return Err directly; the installer temp file gets cleaned up afterward
     // when TempPath drops. It's deliberately not placed into INSTALLER_PATH
     // here (otherwise a subsequent relaunch() could mistakenly use it).
-    if matches!(channel, Channel::Oss) {
+    let verified_sha256 = if matches!(channel, Channel::Oss) {
         let temp_path = new_installer.path().to_path_buf();
-        if let Err(e) = super::verify_oss_asset_sha256(&temp_path, &installer_file_name) {
-            return Err(e);
-        }
-    }
+        // Keep the digest: unlike Linux, which moves the verified bytes into
+        // place within microseconds of checking them, this file sits on disk
+        // from the end of the download until the user clicks "Install and
+        // relaunch" -- minutes or hours later, in the user's temp directory.
+        // `relaunch` re-checks it against this value before executing it.
+        Some(super::verify_oss_asset_sha256(
+            &temp_path,
+            &installer_file_name,
+        )?)
+    } else {
+        None
+    };
 
-    *INSTALLER_PATH.lock() = Some(new_installer.into_temp_path());
+    *INSTALLER_PATH.lock() = Some(DownloadedInstaller {
+        path: new_installer.into_temp_path(),
+        verified_sha256,
+    });
 
     Ok(DownloadReady::Yes)
 }
@@ -325,9 +353,34 @@ pub(super) fn relaunch() -> Result<()> {
     let channel = ChannelState::channel();
 
     let install_dir = install_dir()?;
-    let Some(installer_path) = INSTALLER_PATH.lock().take() else {
+    let Some(DownloadedInstaller {
+        path: installer_path,
+        verified_sha256,
+    }) = INSTALLER_PATH.lock().take()
+    else {
         bail!("No installer path");
     };
+
+    // Re-verify adjacent to the use. The download-time check happened when the
+    // bytes landed; between then and now the user has been running the app and
+    // the installer has been sitting in a world-readable, user-writable temp
+    // directory. This is the same reasoning as `mac::oss_open_installer`, and a
+    // wider window than that one -- it spans however long the user took to
+    // click "Install and relaunch", not an app shutdown.
+    //
+    // The gap that remains here is only between this hash and `cmd.spawn()`
+    // below, with no process teardown in between, which is as close as a
+    // path-based `CreateProcess` allows.
+    if let Some(expected) = verified_sha256 {
+        let actual = super::sha256_file(&installer_path)?;
+        if actual != expected {
+            bail!(
+                "Phosphor: refusing to run {}: its contents changed since verification (expected={expected} actual={actual})",
+                installer_path.display()
+            );
+        }
+        log::info!("Phosphor: re-verified installer SHA-256 immediately before launching it");
+    }
 
     let log_arg = match autoupdate_log_file() {
         Ok(dir) => format!("/LOG={}", dir.display()),
