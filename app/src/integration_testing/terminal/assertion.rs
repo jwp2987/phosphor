@@ -403,6 +403,33 @@ pub fn assert_bootstrapping_result(
             // running of the app we don't care about these blocks and it's a slight performance hit
             // to wait for the precmd so we can just check is_bootstrapped.
             && model.block_list().is_bootstrapping_precmd_done()
+
+            // #616: also wait for executable enumeration to finish.
+            //
+            // That probe is a shell command spawned at bootstrap, and submitting a
+            // command calls the session-global `cancel_active_commands()`, which
+            // SIGKILLs it. A test that types as soon as the prompt appears races it --
+            // measured at 170-400 ms between "Shell is bootstrapped" and the first
+            // Enter, with the kill landing ~10 ms later. Losing that race disables
+            // every executable-gated chip for the session, which is how three
+            // `*_context_menu_copies_metadata` tests began failing on a git branch
+            // that was plainly there.
+            //
+            // `session.rs` no longer caches a failed probe, so the chips survive the
+            // race now. This closes it by construction rather than relying on that:
+            // a test that waits here cannot lose it in the first place.
+            //
+            // `has_finished_loading_external_commands`, NOT
+            // `has_loaded_external_commands`. The latter reports success, and since
+            // this fix a killed probe deliberately leaves the cell unset -- so waiting
+            // on it would hang forever on precisely the failure this guards against,
+            // converting a disabled-chip bug into a suite-wide deadlock.
+            && model
+                .block_list()
+                .active_block()
+                .session_id()
+                .and_then(|session_id| view.sessions(ctx).get(session_id))
+                .is_some_and(|session| session.has_finished_loading_external_commands())
     });
 
     async_assert_eq!(

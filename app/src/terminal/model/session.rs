@@ -17,6 +17,7 @@ use std::fmt;
 use std::fmt::{Debug, Display, Formatter};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use typed_path::{TypedPath, TypedPathBuf, WindowsPath};
 use warp_util::path::{
@@ -925,6 +926,12 @@ pub struct Session {
     /// swapped after a remote server reconnect (via `set_command_executor`).
     command_executor: RwLock<Arc<dyn CommandExecutor>>,
     load_external_commands_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
+    /// Whether the external-command probe has FINISHED, irrespective of whether it
+    /// produced anything. Distinct from `has_loaded_external_commands`, which reports
+    /// success: since #616 a failed probe deliberately leaves `external_commands`
+    /// unset, so success alone can never be waited on -- doing that would hang forever
+    /// on exactly the failure it is meant to detect.
+    external_commands_load_finished: Arc<AtomicBool>,
     load_all_function_names_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     load_all_builtins_future: OnceCell<Shared<BoxFuture<'static, ()>>>,
     command_case_sensitivity: TopLevelCommandCaseSensitivity,
@@ -955,6 +962,7 @@ impl Session {
             additional_builtin_names: OnceCell::new(),
             command_executor: RwLock::new(command_executor),
             load_external_commands_future: Default::default(),
+            external_commands_load_finished: Arc::new(AtomicBool::new(false)),
             load_all_function_names_future: Default::default(),
             load_all_builtins_future: Default::default(),
             command_case_sensitivity,
@@ -1138,8 +1146,18 @@ impl Session {
     }
 
     /// Returns `true` if external commands have finished loading for this `Session`.
+    ///
+    /// This reports SUCCESS: a probe that was killed or returned nothing leaves the
+    /// cell unset (#616), so this stays false. Callers that need "the probe is no
+    /// longer in flight" want [`Self::has_finished_loading_external_commands`].
     pub fn has_loaded_external_commands(&self) -> bool {
         self.external_commands.get().is_some()
+    }
+
+    /// Returns `true` once the external-command probe has finished, whether or not it
+    /// produced anything. Safe to wait on; `has_loaded_external_commands` is not.
+    pub fn has_finished_loading_external_commands(&self) -> bool {
+        self.external_commands_load_finished.load(Ordering::Acquire)
     }
 
     /// Asynchronously collects all function names via an in-band shell command.
@@ -1275,6 +1293,7 @@ impl Session {
         let (load_future, receiver) = (async {
             let shell = self.info.shell.clone();
             let external_commands = self.external_commands.clone();
+            let external_commands_load_finished = self.external_commands_load_finished.clone();
             let shell_command_to_get_executables =
                 shell.shell_type().shell_command_to_get_executables();
             let env_vars = self
@@ -1332,7 +1351,33 @@ impl Session {
                     .executables_from_shell_command_output(result, is_msys2)
                     .into_iter(),
             );
-            if external_commands.set(new_commands).is_err() {
+            // #616: do NOT cache an empty result. This probe is a shell command, and
+            // `cancel_active_commands()` is session-global, so submitting a command
+            // while it is still in flight SIGKILLs it -- `Generator for executable
+            // names failed`, empty output, `Vec::new()`. Caching that into this
+            // `OnceCell` made the failure permanent: every executable-gated chip
+            // (git, gh, kubectl, svn) reported its command absent for the rest of the
+            // session, on a machine that plainly has it, and nothing ever re-probed
+            // because `has_attempted_to_load_external_commands` gates the only retry.
+            //
+            // Leaving the cell unset keeps `has_loaded_external_commands()` false, so
+            // capabilities stay `ExternalCommandsAvailability::Unknown`, whose
+            // `contains()` returns `None` rather than `Some(false)` -- and
+            // `ChipRuntimePolicy::availability` only disables on `Some(false)`. So the
+            // chips stay enabled instead of being disabled on bad evidence.
+            //
+            // A genuinely empty PATH is indistinguishable from a killed probe here,
+            // and this deliberately treats both as "unknown". That errs toward showing
+            // a chip that may fail over permanently hiding one that works.
+            // Mark the probe finished before the outcome branch, so a failed probe is
+            // still observably "done" -- see `has_finished_loading_external_commands`.
+            external_commands_load_finished.store(true, Ordering::Release);
+            if new_commands.is_empty() {
+                log::warn!(
+                    "External command enumeration returned nothing; not caching, so the \
+                     session reports Unknown rather than 'no executables' (#616)."
+                );
+            } else if external_commands.set(new_commands).is_err() {
                 log::warn!("External commands should only be loaded once per session.");
             }
         })
@@ -1879,6 +1924,7 @@ pub mod testing {
                 external_commands: Default::default(),
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
+                external_commands_load_finished: Arc::new(AtomicBool::new(false)),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
@@ -1898,6 +1944,7 @@ pub mod testing {
                 external_commands: Default::default(),
                 command_executor: RwLock::new(Arc::new(TestCommandExecutor::default())),
                 load_external_commands_future: Default::default(),
+                external_commands_load_finished: Arc::new(AtomicBool::new(false)),
                 command_case_sensitivity: TopLevelCommandCaseSensitivity::CaseSensitive,
                 session_type: Mutex::new(session_type),
                 additional_function_names: Default::default(),
