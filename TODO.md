@@ -7281,3 +7281,49 @@ Ordered by severity, not by area.
 - [ ] **`step.on_failure_handler.take()`** (`integration/step.rs:846`) discards the
       handler, so a retried step loses its bail-out.
 
+### Refutation round — autoupdate (bears on any release decision)
+
+- [ ] 🔴 **Downgrade protection is dead code, and a beta user is silently
+      auto-downgraded.** `crates/channel_versions/src/lib.rs:43` matches
+      `^v?(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d+))?$` — which matches NONE of this
+      repo's actual tags (`v0.1.0`, `v0.1.1`, `v2026.08.14.1-beta`, nor the
+      dispatch-generated `v0.$(date +%Y.%m.%d.%H%M)`). `try_from` errors, and
+      `autoupdate/mod.rs:403` (`if let Ok(true) = …`) treats Err as "not ahead" and
+      proceeds. Chain: the release workflow marks betas `prerelease/make_latest:false`;
+      `github.rs:84` fetches `/releases/latest`, which skips prereleases (#614's family)
+      and returns `v0.1.1`; the string compare says "new"; the guard that exists to stop
+      exactly this is inert. `get_curr_parsed_version` is `None` for the same reason, so
+      `is_incoming_version_past_current` is permanently false, killing all nine
+      soft-cutoff / prominent-update gates in `workspace/view.rs`.
+- [ ] 🔴 **No authenticity check on the downloaded artifact.** `mac.rs:473` deliberately
+      skips `verify_code_signature` for Oss, and the only remaining check,
+      `verify_oss_asset_sha256` (`mod.rs:53-70`), returns `Ok(())` on THREE separate
+      absent-conditions (no cached release, asset name not found, no `digest`) — pattern
+      #1, fails open. The digest also arrives in the same API response as
+      `browser_download_url`, so it is corruption detection, not supply-chain integrity:
+      no signature, no pinned key. Zero test references to `verify_oss_asset_sha256`.
+- [ ] 🔴 **macOS verifies one file and executes another.** `oss_download_dmg` hashes
+      `download_dir/<update_id>/<asset>` (`mac.rs:479`), but `relaunch` runs
+      `find_latest_dmg` (`mac.rs:646,667`) — the newest `*.dmg` by mtime ANYWHERE under
+      `cache_dir/autoupdate/`. The verified identity is never carried to `open`.
+- [ ] **`DECLINED.md:172` is factually wrong.** It states "This fork does not ship
+      autoupdate… the release workflow publishes no update feed". `script/macos/bundle:351`
+      and `script/windows/bundle.ps1:118` both set `autoupdate` for the OSS channel, and
+      the workflow publishes the GitHub Releases that `github.rs` consumes as its feed.
+      The decision recorded is not the code shipped.
+- [ ] **Linux OSS ships with autoupdate compiled out.** `script/linux/bundle:203` sets
+      `FEATURES="release_bundle"` only, so all 523 lines of `autoupdate/linux.rs` are dead
+      in shipped AppImages. Linux users receive no updates while mac and Windows do, and
+      nothing tells them.
+- [ ] **Windows staged-installer reuse regressed against the pin.** `windows.rs:75` uses
+      `already_exists = path.is_file()` where the pin requires `m.len() > 0`. With
+      `rand_bytes(0)` the path is fully predictable, so a 0-byte or partial leftover is
+      adopted as the installer and later spawned elevated (`windows.rs:346`).
+- [ ] **Version tests are vacuous.** `channel_versions_tests.rs:90-120` asserts only
+      synthetic tags (`v2026.05.26.2`) the pipeline never emits — and its own comment
+      names the above failure mode as the thing it exists to prevent.
+- [ ] **Stale docs in the bundle scripts.** `script/macos/bundle:350` and
+      `bundle.ps1:117` name repo `zerx-lab/warp` (the code uses `jwp2987/phosphor`) and
+      claim Inno Setup is not invoked — `windows.rs:348-357` invokes it.
+      `settings/local_control.rs:8` cites the superseded pin `02b53fcd8`.
+
