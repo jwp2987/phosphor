@@ -10,9 +10,36 @@ use super::model::{AgentConversation, AgentConversationData, AgentConversationSu
 use crate::persistence::model::{AgentConversationRecord, AgentTaskRecord};
 use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 
-/// Maximum size of a single serialized `api::Task` protobuf BLOB stored in
-/// `agent_tasks.task`. Tasks exceeding this limit are skipped on both write
-/// and read to prevent startup OOM when all task records are loaded at once.
+/// Maximum size of a single serialized `api::Task` protobuf BLOB this code will **write** to
+/// `agent_tasks.task`.
+///
+/// This is a write-side cap only, and the previous version of this comment said otherwise —
+/// it claimed tasks over the limit were "skipped on both write and read to prevent startup
+/// OOM when all task records are loaded at once". Neither half held. The constant has exactly
+/// one use, the `continue` in [`upsert_agent_conversation`]; both readers decode every blob
+/// they load unconditionally and never consult it (`:294`, `:402`). And the read that the
+/// sentence describes no longer exists: since #431, startup goes through
+/// [`read_agent_conversation_metadata`], which reads the `summary` column and touches
+/// `agent_tasks` only for rows written before that column existed. So the protection was
+/// claimed for precisely the rows it does not cover — the oversized ones already on disk.
+///
+/// What actually happens when a task exceeds the cap: its blob is not written, and its row is
+/// deliberately *not* deleted either (see `kept_task_ids` below), so the database keeps the
+/// last version of that task that fit. Restore then hydrates a stale copy. If no earlier
+/// version was ever written, the task is simply absent: `AIConversation::new_restored` drops a
+/// task whose parent is missing with a `log::error!`, and a conversation missing its root
+/// fails with `RestoreConversationError::NoRootTask`. The `summary` column is still derived
+/// from the full in-memory snapshot including the skipped task, so such a conversation is
+/// listed in history as restorable and fails when opened.
+///
+/// **Read-side enforcement is deliberately not added here.** A size check before
+/// `api::Task::decode` would skip exactly the blobs written before this constant existed,
+/// turning "a conversation that restores, slowly" into "a conversation that has silently
+/// vanished from history" — `is_restorable` is what startup filters on, and eviction deletes
+/// rows. Making the OOM guarantee real needs a migration first: walk `agent_tasks` once,
+/// report oversized rows, and either re-encode them (pruning tool-output payloads, the only
+/// thing that reaches this size) or drop them with the user told which conversations were
+/// affected. Only after that can a reader refuse an oversized blob without destroying data.
 const MAX_TASK_BLOB_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 
 #[derive(Debug, Insertable, AsChangeset)]
@@ -97,8 +124,17 @@ pub(super) fn upsert_agent_conversation<'a>(
             // large heap allocation that is immediately discarded.
             let encoded_len = task.encoded_len();
             if encoded_len > MAX_TASK_BLOB_BYTES {
-                log::warn!(
-                    "Task {} encoded size is {} bytes (limit {}), skipping persistence to avoid startup OOM",
+                // `error`, not `warn`: this drops a turn's worth of the user's conversation
+                // on the floor, and it is the only notice anyone gets. The row is left
+                // alone rather than deleted, so what survives on disk is whichever earlier
+                // version of this task last fit — or nothing at all, if none ever did, in
+                // which case restoring this conversation will fail with `NoRootTask` (or
+                // quietly lose the subtask) even though its `summary` still advertises it as
+                // restorable. See `MAX_TASK_BLOB_BYTES`.
+                log::error!(
+                    "Task {} encoded size is {} bytes (write limit {}); not persisting it. \
+                     Any existing row for this task keeps its previous, older contents, and \
+                     this conversation may not restore.",
                     task.id,
                     encoded_len,
                     MAX_TASK_BLOB_BYTES,

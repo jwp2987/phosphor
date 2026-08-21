@@ -1528,15 +1528,17 @@ impl BlocklistAIHistoryModel {
     /// Resolves a server-side agent identifier to a local conversation ID.
     /// The identifier may be a server conversation token (v1) or a run_id (v2).
     ///
-    /// Falls back to `server_token_to_conversation_id` when there's no
-    /// `agent_id_to_conversation_id` entry: that index is only populated via
-    /// `assign_run_id_for_conversation` (the run_id/v2 path), so a
-    /// conversation identified purely by a v1 server_conversation_token --
-    /// e.g. `set_server_conversation_token_for_conversation` without a
-    /// run_id -- would otherwise never resolve here even though
-    /// `agent_link_id()` (used to key `agent_id_to_conversation_id` in the
-    /// first place) treats the two as equivalent, falling back to the token
-    /// itself when there's no run_id.
+    /// The two identifier spaces get one index each, and this is the only place they are
+    /// unified. `agent_id_to_conversation_id` is keyed by run id alone (see
+    /// [`agent_id_key`]); `server_token_to_conversation_id` is keyed by token. So the run-id
+    /// lookup is tried first and a v1 conversation — one identified purely by a
+    /// `server_conversation_token`, with no run — resolves through the fallback.
+    ///
+    /// The fallback is not a patch over a gap in the first index; it is where tokens belong.
+    /// Keying tokens into `agent_id_to_conversation_id` as well (which `agent_link_id()` used
+    /// to do) put the same conversation in two maps under two keys with no re-keying when the
+    /// run id arrived, and a stale entry here silently shadows the correctly-maintained token
+    /// index below rather than falling through to it.
     pub fn conversation_id_for_agent_id(&self, agent_id: &str) -> Option<AIConversationId> {
         self.agent_id_to_conversation_id
             .get(agent_id)
@@ -2216,7 +2218,14 @@ impl BlocklistAIHistoryModel {
         // must not clobber an entry already owned by another conversation.
         if let Some(conversation) = self.conversations_by_id.get(&conversation_id) {
             if let Some(key) = agent_id_key(conversation) {
-                self.agent_id_to_conversation_id.remove(&key);
+                // Same equality guard as the token index below, and for the same reason:
+                // remove only an entry this conversation actually owns. `agent_id_key` is
+                // now the run id, which is assigned once, but the guard costs one comparison
+                // and is what keeps a future second writer from turning a re-keying into a
+                // silent unlink of somebody else's row.
+                if self.agent_id_to_conversation_id.get(&key) == Some(&conversation_id) {
+                    self.agent_id_to_conversation_id.remove(&key);
+                }
             }
             if let Some(token) = conversation.server_conversation_token() {
                 if self.server_token_to_conversation_id.get(token) == Some(&conversation_id) {
@@ -2678,9 +2687,34 @@ impl BlocklistAIHistoryModel {
 }
 
 /// Returns the key to use in `agent_id_to_conversation_id` for the given
-/// conversation.
+/// conversation: the local `run_id`, and nothing else.
+///
+/// This used to be `agent_link_id()` — `run_id` *or*, when there is no run yet, the
+/// `server_conversation_token`. That made the key a value that changes underneath the map.
+/// A conversation whose first `StreamInit` brought a token but no run is indexed under the
+/// token; when a run id later arrives (`initialize_output_for_response_stream`,
+/// `assign_run_id_for_conversation`) the key becomes the run id and the entry is *inserted*,
+/// never re-keyed, so the token entry is orphaned. `remove_conversation_from_memory` then
+/// computes the current key — the run id — and removes only that, leaving the token entry
+/// pointing at a conversation that no longer exists. Worse, that orphan wins:
+/// `conversation_id_for_agent_id` consults this map first and only falls back to
+/// `server_token_to_conversation_id` when the lookup misses, so a stale hit here shadows the
+/// token index, which *is* maintained correctly (its writers are equality-guarded).
+///
+/// Dropping the token half loses nothing. Token lookups still resolve, through that same
+/// documented fallback, and the fallback is seeded on both paths — at runtime alongside every
+/// insert here, and at startup from persisted rows
+/// (`conversation_loader.rs:300-306`). It also puts this key back in agreement with
+/// [`agent_id_key_from_persisted_data`], which keys the *startup* index off `run_id` alone —
+/// so before this, the same conversation was keyed differently depending on whether the
+/// session had been restarted — and with the pin, whose `agent_id_key` is this function
+/// verbatim (`42effe840:app/src/ai/blocklist/history_model.rs:2892`, calling an
+/// `orchestration_agent_id` that is likewise just `run_id()`,
+/// `42effe840:app/src/ai/agent/conversation.rs:1093`). `agent_link_id` is the fork's addition;
+/// it is still the right answer for *recording* a parent link (`start_new_child_conversation`,
+/// `terminal_pane.rs`), which is a snapshot, not a map key.
 fn agent_id_key(conversation: &AIConversation) -> Option<String> {
-    conversation.agent_link_id()
+    conversation.orchestration_agent_id()
 }
 
 /// The startup counterpart of [`agent_id_key`]: the key to use in

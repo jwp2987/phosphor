@@ -65,23 +65,57 @@ pub fn commit_summarization(
         })
         .unwrap_or_else(|| format!("compaction-trigger-{}", uuid::Uuid::new_v4()));
 
-    let tool_names = build_tool_name_lookup(all_msgs.iter().copied());
-    let state_snapshot = conversation.compaction_state.clone();
-    let views = project(&all_msgs, &state_snapshot, &tool_names);
-    let select_result = select(&views, cfg, ModelLimit::FALLBACK, |slice| {
-        slice.iter().map(MessageRef::estimate_size).sum()
-    });
-    let head_message_ids = all_msgs[..select_result.head_end]
-        .iter()
-        .map(|m| m.id.clone())
-        .collect::<Vec<_>>();
+    // The head to hide is the head the summarizer was actually shown, recorded by
+    // `build_chat_request` when it built this summarization request. Re-deriving it here does
+    // not reproduce it, and the difference is not cosmetic: anything the re-derived head
+    // covers that the request's head did not is hidden by `hidden_message_ids` from every
+    // later request while being absent from the summary that replaced it — a message the user
+    // sent that neither survives nor is represented. See
+    // `chat_stream::LAST_SUMMARIZATION_HEAD` for the three reasons the two derivations
+    // diverge (the summary output now sits in the final turn and moves the cut; `all_msgs`
+    // here comes from `all_linearized_messages`, not the request's
+    // `collect_linearized_task_messages`; and this list is timestamp-sorted where the request
+    // was DFS-ordered).
+    let recorded =
+        crate::ai::agent_providers::chat_stream::take_last_summarization_head(conversation.id());
+    let (head_message_ids, tail_start_id) = match recorded {
+        Some(head) => (head.head_message_ids, head.tail_start_id),
+        None => {
+            // No recording for this conversation: a summarization interleaved from another
+            // conversation overwrote the single slot, or this stream was not built by
+            // `build_chat_request`. Re-derive, but only over the prefix that existed when the
+            // request went out — everything from the summary output onwards is excluded,
+            // which removes the one divergence that systematically *grows* the head and so
+            // hides messages the summarizer never saw.
+            log::warn!(
+                "[byop-compaction] commit: no recorded summarization head for {:?} — \
+                 re-deriving over the pre-summary prefix",
+                conversation.id()
+            );
+            let prefix: Vec<&api::Message> = all_msgs[..assistant_pos.unwrap_or(all_msgs.len())]
+                .iter()
+                .copied()
+                .collect();
+            let tool_names = build_tool_name_lookup(prefix.iter().copied());
+            let state_snapshot = conversation.compaction_state.clone();
+            let views = project(&prefix, &state_snapshot, &tool_names);
+            let select_result = select(&views, cfg, ModelLimit::FALLBACK, |slice| {
+                slice.iter().map(MessageRef::estimate_size).sum()
+            });
+            let ids = prefix[..select_result.head_end]
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>();
+            (ids, select_result.tail_start_id)
+        }
+    };
     let auto = overflow;
     let summary_len = summary_text.len();
     let completed = CompletedCompaction {
         user_msg_id: user_msg_id.clone(),
         assistant_msg_id: assistant_id.clone(),
         head_message_ids,
-        tail_start_id: select_result.tail_start_id,
+        tail_start_id,
         summary_text: Some(summary_text),
         auto,
         overflow,

@@ -117,6 +117,71 @@ static CONVERSATION_SYSTEM_CTX: std::sync::Mutex<
     Option<(crate::ai::agent::conversation::AIConversationId, Vec<AIAgentContext>)>,
 > = std::sync::Mutex::new(None);
 
+/// The head/tail cut a summarization request was actually built with.
+#[derive(Debug, Clone)]
+pub(crate) struct SummarizationHead {
+    /// Ids of the messages that were sent to the summarizer, in request order.
+    pub head_message_ids: Vec<String>,
+    /// Id of the first message of the kept tail, when the split kept one.
+    pub tail_start_id: Option<String>,
+}
+
+/// The head region of the most recent summarization request, per conversation.
+///
+/// `byop_compaction::commit::commit_summarization` has to hide exactly the messages the
+/// summarizer was shown, and it cannot re-derive them — three things move under it between the
+/// request and the commit:
+///
+/// 1. the conversation has grown by the summary `AgentOutput` itself. `algorithm::turns` cuts
+///    only on user messages, so that output folds into the *final* turn and inflates the size
+///    `select` measures it at; with `preserve_recent_budget` pinned at 8_000 tokens
+///    (`consts::MAX_PRESERVE_RECENT_TOKENS`), a summary of any length can push that turn over
+///    the budget and move the cut later than the request's;
+/// 2. it collects with `AIConversation::all_linearized_messages`, not the request's
+///    `collect_linearized_task_messages` — no UserQuery dedup, no orphan-task fallback — so it
+///    is not even the same *set* of messages; and
+/// 3. it re-sorts by timestamp, where the request was serialized in DFS order.
+///
+/// Every message the re-derived head covers that the request's head did not is then hidden by
+/// `CompactionState::hidden_message_ids` from every later request, without ever having reached
+/// the summarizer: the user's words are gone from the model's view *and* absent from the
+/// summary that replaced them. So the request side records what it actually sent, and the
+/// commit side reads it back.
+///
+/// One slot rather than a map, matching `CONVERSATION_SYSTEM_CTX` above: a summarization
+/// interleaved from another conversation overwrites it, and
+/// [`take_last_summarization_head`] then answers `None` for the loser, which drops its commit
+/// to the narrowed fallback instead of handing it a foreign conversation's message ids. A map
+/// would instead retain a `Vec<String>` per conversation for every summarization that never
+/// committed.
+static LAST_SUMMARIZATION_HEAD: std::sync::Mutex<
+    Option<(
+        crate::ai::agent::conversation::AIConversationId,
+        SummarizationHead,
+    )>,
+> = std::sync::Mutex::new(None);
+
+/// Consumes the head recorded by the last summarization request for `conversation_id`.
+///
+/// `take`, not `get`: a second commit reading the same recording would be applying a cut that
+/// no longer describes the conversation, and the caller's fallback is safer than a stale
+/// answer presented as an exact one.
+pub(crate) fn take_last_summarization_head(
+    conversation_id: crate::ai::agent::conversation::AIConversationId,
+) -> Option<SummarizationHead> {
+    let mut slot = LAST_SUMMARIZATION_HEAD
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    // The ownership test is a separate statement so its shared borrow of `slot` has ended
+    // before `take` needs the mutable one.
+    let is_ours = slot.as_ref().is_some_and(|(id, _)| *id == conversation_id);
+    if is_ours {
+        slot.take().map(|(_, head)| head)
+    } else {
+        None
+    }
+}
+
 /// Returns the most recent input that **has a non-empty context**.
 ///
 /// Previously this only checked whether `context()` was `Some`, but an empty `Vec` is also
@@ -1985,8 +2050,27 @@ fn build_chat_request(
         let state_for_select = params.compaction_state.clone().unwrap_or_default();
         let tool_names =
             byop_compaction::message_view::build_tool_name_lookup(all_msgs.iter().copied());
-        let views =
-            byop_compaction::message_view::project(&all_msgs, &state_for_select, &tool_names);
+        // Built inline rather than through `message_view::project`, which re-sorts by
+        // timestamp and whose doc claims that order matches this function's. It does not.
+        // `head_end` is an *index*, and all three consumers below
+        // (`validate_byop_serializer_readiness`, `plan_screenshot_attachments`, and the
+        // serialization loop) index it into `all_msgs` — DFS order from
+        // `collect_linearized_task_messages`, which exists precisely because timestamp
+        // sorting was wrong (Issue #94: historical-turn user messages sorted to the end).
+        // A cut chosen over one ordering and applied to another lands somewhere other than
+        // where it was chosen, so the projection has to keep the request's own order:
+        // messages with no timestamp sort to the front of a timestamp order but stay in
+        // place here, and a subagent's messages nest after their spawning ToolCall here but
+        // interleave by wall clock there.
+        let views: Vec<byop_compaction::message_view::WarpMessageView<'_>> = all_msgs
+            .iter()
+            .copied()
+            .map(|msg| byop_compaction::message_view::WarpMessageView {
+                msg,
+                state: &state_for_select,
+                tool_names: &tool_names,
+            })
+            .collect();
         let cfg = byop_compaction::CompactionConfig::default();
         let model_limit = byop_compaction::overflow::ModelLimit::FALLBACK;
         let result = byop_compaction::algorithm::select(&views, &cfg, model_limit, |slice| {
@@ -1995,8 +2079,29 @@ fn build_chat_request(
                 .map(byop_compaction::algorithm::MessageRef::estimate_size)
                 .sum()
         });
-        // head_end is the upper bound of the "head range" within views, in the same order
-        // as all_msgs
+        // Record the cut so `commit_summarization` hides exactly the messages this request
+        // is about to send, instead of re-deriving a different one — see
+        // `LAST_SUMMARIZATION_HEAD` for why the two derivations cannot agree.
+        if let Some(conversation_id) = params.byop_conversation_id {
+            let head = SummarizationHead {
+                head_message_ids: all_msgs[..result.head_end]
+                    .iter()
+                    .map(|msg| msg.id.clone())
+                    .collect(),
+                tail_start_id: result.tail_start_id.clone(),
+            };
+            log::info!(
+                "[byop-compaction] summarize request: head_count={} of total={} tail_start={:?}",
+                head.head_message_ids.len(),
+                all_msgs.len(),
+                head.tail_start_id,
+            );
+            *LAST_SUMMARIZATION_HEAD
+                .lock()
+                .unwrap_or_else(|p| p.into_inner()) = Some((conversation_id, head));
+        }
+        // head_end is the upper bound of the head range within `views`, which is built above
+        // in `all_msgs` order, so it indexes `all_msgs` directly.
         Some(result.head_end)
     } else {
         None
@@ -7151,6 +7256,47 @@ pub async fn generate_byop_output(
                 }]
             }
         };
+
+        // A stream that never delivered `ChatStreamEvent::End` did not finish — and until
+        // now that was indistinguishable from one that did.
+        //
+        // `end_count` was counted and only ever printed in the stats line above; every exit
+        // from the loop then fell into the same unconditional `make_finished_done`, so a
+        // truncated response was committed as a complete assistant turn. The conversation
+        // then carries a turn the model never finished, and every later request replays it
+        // as if the model had chosen to stop there.
+        //
+        // The absence is real evidence, not a guess. In `lib/rust-genai`, every adapter's
+        // `poll_next` returns `Poll::Ready(None)` when the underlying byte stream ends
+        // without the provider's terminal event (`openai/streamer.rs:402-404`,
+        // `anthropic/streamer.rs:275`) and only sets `done` after emitting `End`; a
+        // *dropped* connection surfaces separately as `Some(Err(Error::WebStream))`, which
+        // the `Err` arm at the top of this loop already turns into an `AIApiError` and
+        // returns. So `end_count == 0` with no error means exactly one thing: the body ended
+        // early. Gemini synthesizes its `End` from captured state
+        // (`gemini/streamer.rs:38-51`), so it cannot false-positive here either.
+        //
+        // Reported as a stream error rather than `Reason::Other`: the proto's `Other {}`
+        // carries no text, so the controller renders a fixed "finished unexpectedly" string,
+        // whereas an `Err` says which counters were empty. The partial content is not lost —
+        // it was already yielded as `AddMessages` events, and `final_messages` above has
+        // been flushed — so the user keeps the text and is told it is incomplete instead of
+        // being shown a truncated answer as a finished one. Yielding `Err` without a
+        // `Finished` event is the same shape the mid-stream error path uses.
+        if end_count == 0 {
+            log::error!(
+                "[byop] stream ended without a terminal End event — truncated response. \
+                 start={start_count} chunks={chunk_count} ({chunk_bytes}B) \
+                 reasoning={reasoning_count} tool_chunks={tool_chunk_count} \
+                 tools={total_tools} model={model_id}"
+            );
+            yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
+                "BYOP stream ended without a completion event after {chunk_count} content \
+                 chunk(s) and {total_tools} tool call(s) — the provider closed the response \
+                 early, so this turn is incomplete."
+            ))));
+            return;
+        }
 
         yield Ok(make_finished_done(usage_metadata, token_usage));
     };

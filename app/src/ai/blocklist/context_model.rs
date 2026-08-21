@@ -741,7 +741,34 @@ impl BlocklistAIContextModel {
     }
 
     /// Returns `true` if the next AI query has any context that should force the input to be
-    /// locked in AI mode (skipping NLD): a pending image or file attachment, or a pending block.
+    /// locked in AI mode (skipping NLD): a pending block, a pending image or file attachment,
+    /// or an `@`-context attachment.
+    ///
+    /// The first two are owned by this model — nothing but a UI action adds or removes them,
+    /// so the predicate is exact. The third is not: `pending_inline_at_context_attachments` is
+    /// a *cache of a fact about the input buffer*, keyed by the visible `@ref` text that
+    /// `insert_ai_context_menu_attachment_reference` typed into it, and the buffer is the
+    /// authority ([`Self::retain_at_context_attachments_in_query`] exists to reconcile them).
+    /// This model cannot see the buffer, so it cannot tell a live `@ref` from one the user has
+    /// since deleted, and it answers `true` for both.
+    ///
+    /// **The reconciliation is not wired to editing.** `retain_at_context_attachments_in_query`
+    /// runs from exactly two places, both in `terminal/input.rs`:
+    /// `prune_stale_at_context_attachments` on `EditorEvent::AcceptAIContextMenuItem` (`:9779`)
+    /// and again at submit (`:12933`). Nothing runs it on a buffer edit. So between deleting
+    /// the `@ref` text and the next accept-or-submit, this returns `true` for an attachment
+    /// that no longer exists, `is_autodetection_enabled_for_current_context` refuses to run
+    /// the classifier, and the input stays in AI mode over a buffer that no longer contains
+    /// any reference. The next thing typed — a shell command, say — is submitted to the agent.
+    /// The submit-time prune runs *inside* the AI submit path, so it drops the stale
+    /// attachment but does not undo the routing decision that got there.
+    ///
+    /// It is a stale lock, not a stuck one: `Escape` clears the attached context, and a second
+    /// `Escape` reaches `set_input_mode_terminal` (`terminal/input.rs:13111`), which is an
+    /// unconditional manual override; sending anything also resets via
+    /// [`Self::reset_context_to_default`]. The fix is an invalidation event, not a change
+    /// here — while the `@ref` *is* in the buffer this lock is exactly right, and dropping the
+    /// at-context clause would let the classifier flip a genuine `@`-reference query to shell.
     pub fn has_locking_attachment(&self) -> bool {
         !self.pending_context_block_ids.is_empty()
             || !self.pending_attachments.is_empty()
