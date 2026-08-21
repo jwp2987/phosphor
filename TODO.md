@@ -6962,6 +6962,8 @@ Ordered by severity, not by area.
       `tmux_executor.rs:53` inserts into `in_flight_commands` with no removal anywhere,
       no `cancel_active_commands` override, no `on_cancel`. Fork-original. Reachable via
       the user-toggleable SSHTmuxWrapper flag.
+      **VERDICT PARTIAL — not fork-original (independent verifier, 2026-08-21):** Leak and no-cancel confirmed: insert at `tmux_executor.rs:53`, no removal, no `cancel_active_commands` override (trait default no-op), reachable via `command_executor.rs:200-213`. **But "fork-original" is false** — the file is byte-identical to upstream `57062bd92^` apart from an import; the pin simply deleted the whole tmux flow, which this fork keeps deliberately per DECLINED.md:210.
+
 - [ ] **`should_hide_command_grid` is computed then discarded by the layout math.**
       `block.rs:1548-1565` unconditionally adds command height and padding; the pin
       zeroes the term when the flag is set. Painter and layout disagree — a blank gap,
@@ -7058,6 +7060,7 @@ Ordered by severity, not by area.
       `load_all_function_names` / `additional_function_names` "do not exist in this
       fork's Session". All exist; DECLINED.md:158 says so. The pin calls both loaders
       and the fork does not — a real TUI gap hidden behind a false excuse.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** All five named items exist and are public (`session.rs:1181,1206,1232,922,924`). Verifier went further: the pin warms BOTH loaders (`42effe840:.../completions.rs:47-50`) and the fork's GUI does too (`terminal/view.rs:12767`) — so the TUI-only gap is real and not a declined decision.
 
 ### Refutation round — second wave
 
@@ -7111,16 +7114,22 @@ Ordered by severity, not by area.
       (`bash_body.sh:1035`, `zsh_body.sh`, `fish.sh:658`). OpenSSH aborts with "Cannot
       execute command-line and remote command" — the connection fails rather than
       degrades.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin probes `remotecommand` and falls back to plain ssh (`42effe840:bash_body.sh:1013-1022`, `zsh_body.sh:967-976`, `fish.sh:641-650`); the fork has ZERO `remotecommand` matches repo-wide and still passes a command-line remote command. Verifier confirmed the consequence empirically on OpenSSH 10.2: it prints "Cannot execute command-line and remote command." Not in DECLINED.md.
+
 - [ ] **Fish's DCS terminator is the wrong bytes.** `fish.sh:27` sets `\u9c`, which
       emits **c2 9c**; every other emitter and the Rust constant use the single byte
       `9c`. A stray `0xC2` makes `hex::decode` fail and the hook is dropped. The pin
       avoided this by using `ESC \` in all four shells.
+      **VERDICT PARTIAL — consequence refuted (independent verifier, 2026-08-21):** Byte claim confirmed BY OBSERVATION (fish 4.2.1: `\u9c` → `c2 9c`; `\x9c` → `9c`), against `printf '\x9c'` elsewhere. **But the consequence is refuted:** in vte's `DcsPassthrough` table (`table.rs:146-153`) 0xc2 has no entry and neither does `Anywhere`, so it resolves to `Action::None` — the byte is DISCARDED, never `put`, and `hex::decode` at `ansi/mod.rs:907` sees a clean payload. Cosmetic inconsistency, not a dropped hook.
+
 - [ ] **Bash sessions permanently keep the giant HISTSIZE sentinel.**
       `local_tty/unix.rs:431-436,922-926` exports `HISTSIZE=57265949261`;
       `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair, where the pin unsets
       both. Every bash session runs with unbounded in-memory history and leaks
       `HISTSIZE` + `WARP_INITIAL_HISTSIZE` into every child process. `unix_tests.rs:42-99`
       asserts the sentinels are set, never that they are removed.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `local_tty/unix.rs:432,436` and `:924,926` export both sentinels; `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair while the pin also unsets `HISTSIZE`/`WARP_INITIAL_HISTSIZE` (`42effe840:bash_body.sh:1230-1233`). Verifier checked the whole fork tree: `HISTSIZE` is never unset anywhere, and inherited-from-environment variables stay exported in bash, so children do inherit. Not in DECLINED.md.
+
 - [ ] **CDPATH completion is dead code, and #483 plus TODO.md:6498 both say "done".**
       `completer/mod.rs:289` has no `cdpath()`, so the trait default returns `None`
       forever and `engine/path.rs:154` always early-returns. No bootstrap script emits
@@ -7167,6 +7176,8 @@ Ordered by severity, not by area.
       containing a space sources the wrong file or nothing. Also: `bootstrap.rs` lacks
       the pin's `is_container_subshell` guard, so docker/podman subshells get a
       host-side temp RC file the container cannot read.
+      **VERDICT PARTIAL — zsh half and container half both narrower (independent verifier, 2026-08-21):** Bash half confirmed and empirically checked (`bash_body.sh:1220-1226` unquoted vs pin `:1207-1213` quoted; bash splits, `argc=2`, so `source` fails). **Zsh half has no consequence** — zsh does not word-split unquoted expansions (verified, `argc=1`), so those four sites are cosmetic parity. The container guard IS absent (`bootstrap.rs:56-88`), but without it RC-file bootstrap triggers only for fish/pwsh/Windows-zsh subshells, not docker/podman generally.
+
 - [ ] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
       unfiltered, consumed as an index into the filtered list). **Pin-identical** —
       upstream bug, not fork drift. Record before "fixing".
@@ -7461,17 +7472,23 @@ Ordered by severity, not by area.
       `SaveFuture`, so async write failures are invisible and
       `terminal_session_view.rs:4151` reports "Rewound conversation and reverted file
       edits" regardless.
+      **VERDICT PARTIAL — NOT fork-only (independent verifier, 2026-08-21):** Mechanism real: `tui_diff_storage.rs:233-257` writes `diff.base.content` back, Create → `PersistAction::Delete`, no staleness check; `:216-229` drops the `SaveFuture` and only `log::warn`s while `terminal_session_view.rs:4151` always reports success. **But "fork-only" is false** — the pin reverts identically: `42effe840:app/src/terminal/view.rs:25199` → `block.rs:4461` → `code_diff_view.rs:1033` → `local_code_editor.rs:2235-2277`, with base write-back, `std::fs::remove_file`, and no content check. Inherited.
+
 - [ ] **Notebook load dead-ends on a `ServerId` that never exists (#609 sibling).**
       `notebooks/notebook.rs:1541-1560` — `fetch_needed` calls
       `notebook_id.into_server()`, but `set_server_id` (`cloud_object/mod.rs:172,673`)
       has zero callers, so ids stay `ClientId` and the arm is a `log::warn`.
       `fetch_needed` is also true when `focused_folder_id` does not resolve, so an
       in-memory notebook computed one line earlier is discarded with no toast.
+      **VERDICT PARTIAL — impact overstated (independent verifier, 2026-08-21):** Confirmed: `cloud_object/mod.rs:172,673` has zero call sites (the fork's own `update_manager.rs:1229` says so) and `notebooks/notebook.rs:1542-1557` dead-ends in `log::warn` with no toast. But `focused_folder_id` is parsed ONLY from warp.dev Drive URLs (`uri/mod.rs:205`) and never set for local notebooks — territory DECLINED.md:200 (#267) deliberately keeps as dead code.
+
 - [ ] **Lost update on every AI edit (pin-parity).** `code/inline_diff.rs:137`
       registers with `subscribe_to_updates=false` and `:213-228` writes the whole stale
       snapshot buffer; `warp_files/src/lib.rs:797-830` writes unconditionally with no
       mtime or version compare. Accepting a diff minutes later clobbers concurrent
       external edits.
+      **VERDICT CONFIRMED — inherited (independent verifier, 2026-08-21):** `code/inline_diff.rs:138` passes `subscribe_to_updates=false` and `:214-228` saves the whole editor buffer; `warp_files/src/lib.rs:797-830` does a bare `async_fs::write`. Verifier confirmed the pin is byte-equivalent (`42effe840:code/inline_diff.rs` same call, `42effe840:warp_files/src/lib.rs:725-758` also unconditional). A real lost-update, inherited.
+
 - [ ] **The protected-path guard operates on unresolved paths and ignores rename
       targets (pin-parity).** `permissions.rs:1239` matches absolute MCP config paths,
       but `request_file_edits.rs:126-129` feeds it raw LLM strings, and
@@ -7483,6 +7500,7 @@ Ordered by severity, not by area.
       `notebooks/link.rs:147,275` accepts any scheme; `notebooks/editor/view.rs:1993`
       opens without a modifier in `Selectable` (LLM-authored) views; `lib.rs:1647`
       rewrites but never validates.
+      **VERDICT CONFIRMED — inherited (independent verifier, 2026-08-21):** `notebooks/link.rs:154` returns `LinkTarget::Url` for any parsed scheme and `:276` calls `ctx.open_url`, reaching `Window::open_url` unvalidated (`warpui/src/platform/mac/delegate.rs:220`). `notebooks/editor/view.rs:1993` opens without a modifier in `Selectable`, which AI views set (`block/cli.rs:1265`, `ai_document_view.rs:747`). Pin identical.
 
 ### Refutation round — persistence
 
@@ -7498,12 +7516,16 @@ Ordered by severity, not by area.
       (#13072)". The fork's OWN generated ledger already records the miss —
       `docs/sweep/artifacts-2026-08-15/triage_out.txt:255` — and neither TODO.md nor
       docs/STATE.md tracks it.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin genuinely deletes missing rows (`42effe840:persistence/agent.rs:63,107-116`, `kept_task_ids` + `ne_all`); the fork's `:85-116` has no such step, and the read path reloads all rows by conversation id unfiltered (`:376-379`). Rewind prunes only in memory (`conversation.rs:4295` → `task_store.rs:265`). The artifact line is verified: `triage_out.txt:254-255`.
+
 - [ ] **Agent-history retention was silently halved.** `persistence/agent.rs:46` is
       `100`; both `42effe840` and the older pin are `200`, and the fork also deleted the
       sentence justifying the number. Introduced by `9840d7d52`, whose message claims a
       faithful port. Rows are DELETEd, so users lose about half their retained agent
       conversations permanently. All eight eviction tests pass an explicit `limit`, so
       none binds the constant.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/agent.rs:46` is `100`; BOTH pins are `200` (`42effe840:...:45`, `02b53fcd8:...:45`) with the dropped "10–40 orchestration sessions of headroom" sentence. Verifier ran `git log -S`: `100` entered at `9840d7d52` and `200` never existed here. Eviction is a real `diesel::delete`, and all eight tests pass literal limits — never the constant.
+
 - [ ] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
       write-side skip corrupts conversations.** `agent.rs:13-16` says tasks over 10 MB
       are "skipped on both write and read"; the constant appears only at `:91` (write).
@@ -7512,12 +7534,15 @@ Ordered by severity, not by area.
       drops the task while the summary — derived from the full list including
       `is_restorable` — is still written, so restore sees a conversation with a missing
       (possibly root) task and silently promotes a child to root.
+      **VERDICT PARTIAL — consequence wrong (independent verifier, 2026-08-21):** Doc mismatch confirmed (`agent.rs:13-16` claims read-side skipping; both read paths decode unconditionally at `:275`, `:383`), and the constant is fork-invented — absent from the pin. **But the claimed corruption is wrong:** a skipped root leaves no parentless task, so restore returns `RestoreConversationError::NoRootTask` (`conversation.rs:536-543`) and orphans are dropped with `log::error` (`:523-528`). No child is promoted to root.
+
 - [ ] **The macOS legacy-DB migration looks in a directory that can never exist, then
       records success forever.** `persistence/sqlite.rs:610` builds the legacy App Group
       path from the CURRENT app id (`dev.phosphor.Phosphor`); the data it is meant to
       rescue was written under the OpenWarp/Zap ids. It then writes
       `.zap-app-group-sqlite-migrated` so the miss is permanent. The three tests inject
       `legacy_dir` by hand, so they pass with the broken path computation.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/sqlite.rs:604-612` joins `WARP_APP_GROUP_ID` with `ChannelState::app_id()`, now `dev.phosphor.Phosphor`. Verifier traced the origin: introduced at `03ce9dcbb` as `openwarp_legacy_app_group_sqlite_dir` when `app_id()` WAS `dev.openwarp.OpenWarp`, and the renames at `a00ae6cfd` stranded it. The marker is written on miss (`:626-628`), and the tests inject `legacy_dir` so they never exercise the path builder.
 
 ### Refutation round — codebase indexing / LSP
 
