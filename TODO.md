@@ -6880,29 +6880,36 @@ Ordered by severity, not by area.
 
 ### My own changes today — regressions and false claims
 
-- [ ] 🔴 **#616's fix is HALF A FIX and completions now fail closed silently.**
+- [x] 🔴 **#616's fix is HALF A FIX and completions now fail closed silently.**
       `external_commands` is correctly left unset on a failed probe, but
       `load_external_commands_future` is still set, so
       `has_attempted_to_load_external_commands` (`session.rs:1145`) is permanently true
       and both retry gates (`view.rs:11146`, TUI `completions.rs:78`) skip. Chips now
       fail OPEN (intended), but `top_level_commands()` yields zero PATH executables for
       the session's life. Verify and fix — this is a regression introduced 2026-08-21.
-- [ ] 🔴 **`load_deferred_name_set` still caches failure — the sibling #616 never
+      **VERDICT PARTIAL — NOT a regression (independent verifier, 2026-08-21):** The mechanism is real — `load_external_commands_future.try_insert` runs on every path (`session.rs:1386-1389`), so `has_attempted_to_load_external_commands` is permanently true and both retry gates skip. **But it is not a regression, and the 'completions now fail closed' claim is wrong.** Pre-fix (`eaf71e730^`) the cell was set to an EMPTY set, which `top_level_commands` (`:1397-1400`) flattens identically to an unset cell. Completions behaviour is unchanged by my fix. What remains is a pre-existing no-retry limitation, not damage I introduced.
+
+- [x] 🔴 **`load_deferred_name_set` still caches failure — the sibling #616 never
       fixed.** `session.rs:1269` sets `storage` on every arm including the error arms
       that produce an empty set. Unlike `load_external_commands` the failure IS
       distinguishable (it logs a warn two lines above), so the "empty ≡ unknown"
       defence does not apply. `session_test.rs:421` blesses the caching and never tests
       retry.
+      **VERDICT PARTIAL — no consequence follows (independent verifier, 2026-08-21):** `storage.set(new_names)` does run on all four arms including the two `HashSet::new()` error arms (`session.rs:1257,:1262`). But no consequence follows: retry is blocked by `future_cell.try_insert` (`:1274-1278`) regardless of what was stored, and every consumer reads `.get().into_iter().flatten()` (`:1078,:1086,:1403,:1407`), so `Some(empty)` and `None` are indistinguishable. No availability enum reads it, which is what made the #616 case harmful. Cosmetic.
+
 - [ ] 🔴 **The #615 regression test cannot fail, and DECLINED.md:179 states the
       opposite.** `shell_command_tests.rs:362-381` exercises only the extracted helper
       `write_skips_pty_permission_check`, never `should_autoexecute` (`:230`).
       Reverting the fix at the call site leaves it green. Both the test's doc comment
       and the DECLINED row claim "non-vacuous by construction — reverting turns it
       red". Both are wrong. Same error as the #620 test, made twice.
+      **VERDICT PARTIAL — 'cannot fail' overstated (independent verifier, 2026-08-21):** Confirmed that `shell_command_tests.rs:363` calls only `write_skips_pty_permission_check` and never `should_autoexecute` (zero references in the file), and that reverting `shell_command.rs:230` to `is_none_or` leaves it GREEN — `lib.rs:4`'s `#![allow(dead_code)]` silences the then-orphaned helper. **But 'cannot fail' is wrong:** the fix's predicate IS the helper (`:64`), so reverting THAT turns the test red. Only the call-site wiring is unpinned. DECLINED.md:179's claim is therefore overstated rather than false, and the #620 analogy holds.
+
 - [ ] **DECLINED.md:156 contains a false clause.** The credit-rounding claim checks out
       against the pin, but "the usage footer never appears at all" is wrong — the
       footer is opened by user toggle with no credit gate; a `None` rollup only
       suppresses the drill-down.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Rounding matches the pin (`conversation.rs:783-785` vs `42effe840:...:769-773`), and the verifier checked the consumer the original did not: `conversation_usage_view.rs:558-560` returns the bare value text when `rollup.is_none()` and `append_per_agent_rows` (`:590-592`) early-returns, while footer construction (`view.rs:6380-6446`) is driven by `ToggleIsUsageFooterExpanded` with no credit gate. The clause is false.
 
 ### Correctness — user-visible
 
@@ -7484,6 +7491,7 @@ Ordered by severity, not by area.
       agent's framing plus a two-line check that the attribute exists — without checking
       whether it does what was claimed. Recorded here rather than quietly edited, because
       it is the same error this round keeps finding in others.)*
+      **VERDICT CONFIRMED (the correction is right) (independent verifier, 2026-08-21):** The correction holds and the verifier strengthened it: `settings/mod.rs:31` `mod privacy;` is private BUT `:73` `pub use privacy::*;` re-exports it, and `:17` `pub mod initializer;` exposes `SettingsInitializer` — both publicly reachable via `lib.rs:131`, so `dead_code` cannot fire on either. `lib.rs:4` is confirmed absent from the pin. **Two errors in the ORIGINAL finding also surfaced:** `open_window_with_action` is at `uri/mod.rs:1183`, not :1345, and is a PRIVATE `fn`, not a `pub fn` — so even the one example offered was miscited.
 
 - [ ] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
       `permissions_test.rs:1253-1309` injects `AlwaysAsk` via
@@ -7592,4 +7600,4 @@ Ordered by severity, not by area.
 - [ ] **Correction to an earlier brief premise:** `add_singleton_model` is a
       `debug_assert!` (`core/app.rs:2309`), so in RELEASE a duplicate silently *replaces*
       the singleton rather than panicking.
-
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warpui_core/src/core/app.rs:2311` is `debug_assert!(prev_value.is_none(), ...)` and the `singleton_models.insert` at `:2306-2308` PRECEDES it, so in release the entry is already replaced and only a debug build panics. The line cited earlier (`:2309`) is the "Panic in debug mode" comment, not the assert.
