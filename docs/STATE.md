@@ -9,7 +9,7 @@ Pin: `42effe84055f891405b32914af333f14127ec381` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **51 commit(s) since**
+Last fully green `script/precheck`: `456a0ca3af94ecaf4db05a5ec452ef2666bfa457` (2026-08-17 10:53) — **119 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,9 +27,9 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11228 |
-| Fork tests | 10870 |
-| Shared | 8526 |
-| Absent from fork | 2702 |
+| Fork tests | 11055 |
+| Shared | 8527 |
+| Absent from fork | 2701 |
 
 Counted the same way on both sides: `#[test]` items, **plus** the
 `crates/integration` tests wired up by `register_test!` (319 at the pin,
@@ -40,7 +40,7 @@ collapsed the macro-generated tests to a single placeholder name — so every
 percentage published before that date was computed over a short count on both
 sides.
 
-Of the absent, **2118 are adjudicated** in the ledger and 584 are not.
+Of the absent, **2117 are adjudicated** in the ledger and 584 are not.
 
 > **Do not quote that 584 as a work queue.** Of them, **583 are
 > defined in files this fork deleted wholesale** — the dropped cloud layer, whose
@@ -51,16 +51,16 @@ Of the absent, **2118 are adjudicated** in the ledger and 584 are not.
 > open is **0**.
 
 Cloud accounts for 1251 of those; the unadjudicated remainder is
-*projected* at the same ratio (~239 non-cloud), so the figures below
+*projected* at the same ratio (~238 non-cloud), so the figures below
 carry that estimate.
 
-The ledger has 2529 rows in total; the 411 beyond the
-2118 above adjudicate tests that are **not** absent — the fork already has
+The ledger has 2529 rows in total; the 412 beyond the
+2117 above adjudicate tests that are **not** absent — the fork already has
 them (a `PORTED` or `COVERED-ELSEWHERE` row is exactly that), or they are not at
 this pin. Those rows are counted here as what they are rather than subtracted
 from the absent set, which is what #603 fixed.
 
-- **~88.5% of the pin's non-cloud tests exist here** (8526 of ~9632)
+- **~88.5% of the pin's non-cloud tests exist here** (8527 of ~9631)
 - **~97.3% are present or deliberately resolved** (adding 719 declined, 62 divergent, 65 covered-elsewhere)
 
 ## Ledger
@@ -88,6 +88,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **0 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **3 open**, 14 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **98 open**, 13 in flight | secondary; counts formatting, so it under-reports silently |
 
 > Ledger open bucket is represented in `TODO.md`'s tracked items.
