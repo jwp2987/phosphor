@@ -1142,27 +1142,36 @@ esac
   # Do other shell startup first so we can ensure Warp goes last.
 
   # If this is a subshell, the user and system RC files have already been sourced.
+  # Quoted, matching the pin (`42effe840:...:1179-1198`). Unlike bash, zsh does
+  # not word-split or glob unquoted parameter expansions, so on a default zsh
+  # these four sites behave identically quoted or not -- verified directly.
+  # They are quoted anyway because the equivalence is option-dependent, not
+  # structural: with `SH_WORD_SPLIT` set (a global /etc/zshenv can set it, and
+  # /etc/zshenv is sourced before this and cannot be opted out of), the
+  # unquoted form breaks exactly like bash's -- verified: `source` fails with
+  # "no such file or directory" on the first word and exits 127, skipping the
+  # user's rcfile.
   if [[ -z $WARP_IS_SUBSHELL ]]; then
-      if [[ -e ${ZDOTDIR:-$HOME}/.zshenv ]]; then
-          source ${ZDOTDIR:-$HOME}/.zshenv;
+      if [[ -e "${ZDOTDIR:-$HOME}/.zshenv" ]]; then
+          source "${ZDOTDIR:-$HOME}/.zshenv";
       fi
       if [[ -e /etc/zprofile ]]; then
           source /etc/zprofile;
       fi
-      if [[ -e ${ZDOTDIR:-$HOME}/.zprofile ]]; then
-          source ${ZDOTDIR:-$HOME}/.zprofile;
+      if [[ -e "${ZDOTDIR:-$HOME}/.zprofile" ]]; then
+          source "${ZDOTDIR:-$HOME}/.zprofile";
       fi
       if [[ -e /etc/zshrc ]]; then
           source /etc/zshrc;
       fi
-      if [[ -e ${ZDOTDIR:-$HOME}/.zshrc ]]; then
-          source ${ZDOTDIR:-$HOME}/.zshrc;
+      if [[ -e "${ZDOTDIR:-$HOME}/.zshrc" ]]; then
+          source "${ZDOTDIR:-$HOME}/.zshrc";
       fi
       if [[ -e /etc/zlogin ]]; then
           source /etc/zlogin;
       fi
-      if [[ -e ${ZDOTDIR:-$HOME}/.zlogin ]]; then
-          source ${ZDOTDIR:-$HOME}/.zlogin;
+      if [[ -e "${ZDOTDIR:-$HOME}/.zlogin" ]]; then
+          source "${ZDOTDIR:-$HOME}/.zlogin";
       fi
   fi
 

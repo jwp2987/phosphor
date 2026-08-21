@@ -321,6 +321,8 @@ use crate::util::clipboard::clipboard_content_with_escaped_paths;
 use crate::util::openable_file_type::{
     FileTarget, renders_in_warp_notebook_viewer, resolve_file_target,
 };
+#[cfg(feature = "local_fs")]
+use crate::util::repo_detection::RepoDetectionSessionType;
 use crate::view_components::{DismissibleToast, ToastFlavor};
 use crate::workflows::workflow::Workflow;
 use crate::workflows::WorkflowSelectionSource;
@@ -12000,16 +12002,51 @@ impl TerminalView {
                         let directory_for_detection =
                             native_directory.as_deref().unwrap_or(active_directory);
 
-                        let fut =
-                            DetectedRepositories::handle(ctx).update(ctx, |updater, ctx| {
-                                updater.detect_possible_git_repo(
-                                    directory_for_detection,
-                                    RepoDetectionSource::TerminalNavigation,
-                                    ctx,
-                                )
-                            });
+                        // `DetectedRepositories` probes the LOCAL filesystem.
+                        // On an SSH session the precmd/OSC 7 CWD is a path on
+                        // the *remote* host, so probing it here finds either
+                        // nothing or — when a same-named clone happens to exist
+                        // on this machine — the WRONG repository, which then
+                        // lands in `current_repo_path` and flows out to the
+                        // code-review panel, the repo banner and the chips.
+                        // Route through `util::repo_detection`, whose `Remote`
+                        // arm resolves to `None`; the remote root arrives
+                        // separately from the daemon's `NavigatedToDirectory`
+                        // into `current_remote_repo_path`. See
+                        // `current_repo_location`.
+                        let detection_session_type = match block_metadata.session_id() {
+                            Some(session_id)
+                                if self
+                                    .sessions
+                                    .as_ref(ctx)
+                                    .get(session_id)
+                                    .is_some_and(|session| !session.is_local()) =>
+                            {
+                                RepoDetectionSessionType::Remote { session_id }
+                            }
+                            // A session we cannot look up keeps the local path:
+                            // this is a targeted guard for sessions known to be
+                            // remote, not a general filter — same rule as the
+                            // OSC 7 resolvability guard above.
+                            _ => RepoDetectionSessionType::Local,
+                        };
 
-                        ctx.spawn(fut, move |me, repo_path_opt, ctx| {
+                        let fut = crate::util::repo_detection::detect_possible_git_repo(
+                            detection_session_type,
+                            directory_for_detection,
+                            RepoDetectionSource::TerminalNavigation,
+                            ctx,
+                        );
+
+                        ctx.spawn(fut, move |me, detected, ctx| {
+                            // `current_repo_path` is local-only by
+                            // construction (see its doc comment), so a remote
+                            // detection result is deliberately dropped rather
+                            // than downcast to a local `PathBuf`.
+                            let repo_path_opt: Option<PathBuf> = detected
+                                .as_ref()
+                                .and_then(warp_util::local_or_remote_path::LocalOrRemotePath::to_local_path)
+                                .map(ToOwned::to_owned);
                             let old_repo_path = me.current_repo_path.clone();
                             // Update the current repo path
                             me.current_repo_path = repo_path_opt.clone();

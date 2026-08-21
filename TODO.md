@@ -6936,13 +6936,15 @@ Ordered by severity, not by area.
       retry.
       **VERDICT PARTIAL — no consequence follows (independent verifier, 2026-08-21):** `storage.set(new_names)` does run on all four arms including the two `HashSet::new()` error arms (`session.rs:1257,:1262`). But no consequence follows: retry is blocked by `future_cell.try_insert` (`:1274-1278`) regardless of what was stored, and every consumer reads `.get().into_iter().flatten()` (`:1078,:1086,:1403,:1407`), so `Some(empty)` and `None` are indistinguishable. No availability enum reads it, which is what made the #616 case harmful. Cosmetic.
 
-- [ ] 🔴 **The #615 regression test cannot fail, and DECLINED.md:179 states the
+- [x] 🔴 **The #615 regression test cannot fail, and DECLINED.md:179 states the
       opposite.** `shell_command_tests.rs:362-381` exercises only the extracted helper
       `write_skips_pty_permission_check`, never `should_autoexecute` (`:230`).
       Reverting the fix at the call site leaves it green. Both the test's doc comment
       and the DECLINED row claim "non-vacuous by construction — reverting turns it
       red". Both are wrong. Same error as the #620 test, made twice.
       **VERDICT PARTIAL — 'cannot fail' overstated (independent verifier, 2026-08-21):** Confirmed that `shell_command_tests.rs:363` calls only `write_skips_pty_permission_check` and never `should_autoexecute` (zero references in the file), and that reverting `shell_command.rs:230` to `is_none_or` leaves it GREEN — `lib.rs:4`'s `#![allow(dead_code)]` silences the then-orphaned helper. **But 'cannot fail' is wrong:** the fix's predicate IS the helper (`:64`), so reverting THAT turns the test red. Only the call-site wiring is unpinned. DECLINED.md:179's claim is therefore overstated rather than false, and the #620 analogy holds.
+
+      **FIXED 2026-08-21 — both halves.** The verdict's "'cannot fail' is overstated" is right: the *predicate* is pinned, the **call-site wiring** was not — reverting `should_autoexecute` to an inline `is_none_or` merely leaves the helper unreferenced, and the crate-level `#![allow(dead_code)]` keeps the old test green. New `unresolved_block_write_falls_through_to_the_pty_permission_check` drives the real `should_autoexecute` with an unregistered `BlockId`, with a **precondition assert that the fixture profile resolves `write_to_pty == AlwaysAsk`** so it cannot go silently vacuous. **The `DECLINED.md` row is corrected** — it is at line **186**, not 179, and its claim that the single test was "non-vacuous by construction" was false as stated. Ledger path also stale: the file is under `ai/blocklist/action_model/execute/`, not `terminal/`.
 
 - [x] **DECLINED.md:156 contains a false clause.** The credit-rounding claim checks out
       against the pin, but "the usage footer never appears at all" is wrong — the
@@ -6968,13 +6970,15 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/integration/Cargo.toml:69` declares the feature and `:70` `default = ["run_on_linux"]` omits it; `pr-check.yml:603` passes no `--features`; `app/Cargo.toml:653` has it, so only `warp` does. **Verifier closed the chain the original left open:** `driver.rs:242-247` → `winit/event_loop/mod.rs:989` `std::process::exit(0)` → `tests/common/mod.rs:54-57` maps 0 to PASS. One sub-claim wrong: TODO.md:3259 already says the hop is reachable, so that part was not new.
       **FIXED 2026-08-21:** Both `drag_tabs_feature_enabled()` helpers now call `FeatureFlag::DragTabsToWindows.is_enabled()` instead of `cfg!(feature = "drag_tabs_to_windows")`, which asked the `integration` crate for a feature only `warp` enables. Safe because `run_test_and_cleanup` evaluates the predicate AFTER app init (`driver.rs:241`), so the flag registry is live. **These nine tests will now execute for the first time and may fail — that is the intended outcome.**
 
-- [ ] 🔴 **`current_repo_path` is filled by LOCAL filesystem detection on SSH sessions
+- [x] 🔴 **`current_repo_path` is filled by LOCAL filesystem detection on SSH sessions
       and never cleared.** `view.rs:11955-11958` assigns before the
       `active_session_path_if_local` bail at `:11982`. On a remote session the remote
       cwd is probed against the local FS, so a same-named local clone wins. The code
       review panel then auto-opens and diffs the WRONG repository. The pin cannot hit
       this — its detection is `LocalOrRemotePath`-typed.
       **VERDICT PARTIAL — 'never cleared' false (independent verifier, 2026-08-21):** The mechanism holds: `view.rs:11958` assigns before the local bail at `:11982`, and unlike the pin (which routes remote sessions to `RepoDetectionSessionType::Remote`) the fork always probes locally. But "never cleared" is false — each detection reassigns, normally to `None` (`repositories.rs:66` canonicalize fails). Wrong-repo needs an exact remote-path collision, and auto-open is only `view.rs:6809`. Already documented at TODO.md:2432.
+
+      **FIXED 2026-08-21 — and the fix already existed in-tree, bypassed.** `apply_block_metadata_update` called `DetectedRepositories::detect_possible_git_repo` directly; that function is local-only (`from_local_canonicalized` + `find_git_repo` on the local FS), so on an SSH session it **walks the local filesystem with a remote path** — `None` usually, a coincidentally same-named local repo otherwise. It lands in `current_repo_path` and fires `PaneEvent::RepoChanged` **before** the `active_session_path_if_local` bail, reaching code-review auto-open, the repo banner, chips and telemetry, and registering a **local** `DirectoryWatcher` on the wrong directory as a side effect. **`app/src/util/repo_detection.rs` is the fork's own port of the pin's session-type gate** (`Remote` → `None`) — but only the TUI used it; the GUI called the raw model. Now routed through it. Ledger line numbers were stale (`:12015`/`:12039` now). `workspace/view.rs` was not needed.
 
 - [x] 🔴 **Pane-group swap corrupts layout and loses a pane on restart.**
       `pane_group/mod.rs:3951` replaces a pane that this fork keeps IN the tree (the pin
@@ -7247,6 +7251,12 @@ claim, which was wrong by four.
       `revert_file_diffs(&[FileDiff], &mut AppContext)` cannot reach it — closing this needs a
       call-site change, either handing it a way to raise the hint or returning the completions
       for the view to await.
+
+- [ ] **The pin's second consumer of `is_container_subshell` is still absent.**
+      `42effe840:writeable_pty/pty_controller.rs:444` writes the bootstrap in 4KB chunks with
+      50ms gaps under a container subshell, because the double-PTY proxy in
+      `docker/podman exec -it` drops data on large writes. The guard function was ported
+      2026-08-21 but only its first consumer; this one needs `pty_controller.rs`.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
@@ -7454,11 +7464,13 @@ claim, which was wrong by four.
       **Still open** and needs a second reader before #483 is reopened.
       **FIXED 2026-08-21:** TODO/#483 entry corrected. Marked explicitly as single-reader verification rather than independent, since this finding was one of the two the verifier fleet skipped.
 
-- [ ] **Repo detach leaves `GitBranchStatus` stale.** `current_prompt.rs:1511-1517`
+- [x] **Repo detach leaves `GitBranchStatus` stale.** `current_prompt.rs:1511-1517`
       clears only `GitDiffStats`; the pin loops over both. `is_updated_externally` gates
       three chips on the watcher, so on detach the branch-status chip keeps the last
       structured value with no source to correct it.
       **VERDICT PARTIAL — stale window only (independent verifier, 2026-08-21):** The divergence is real (`current_prompt.rs:1511-1519` clears only `GitDiffStats`; the pin loops over both). But the consequence breaks: `self.git_repo_status.take()` at `:1505` runs FIRST, so `is_updated_externally` (`:1697-1703`) returns false and the shell fallback `builtins::shell_git_branch_status` resumes as the source. A stale window, not a permanently stuck chip.
+
+      **FIXED 2026-08-21.** `apply_git_repo_metadata` writes **both** `GitDiffStats` and `GitBranchStatus`, but the detach branch cleared only the first; the pin loops over both (`42effe840:...:1477-1490`). The PARTIAL verdict is right that it is a stale *window* rather than permanent — `git_repo_status.take()` runs first, so the 30s timer eventually corrects it. **Different mechanism from `5dbf396ca`:** that wired invalidation *events* deciding whether to hold a subscription at all; this is cached chip state not invalidated when the subscription is dropped. Same family, different site, no overlap. `ShellGitBranch` deliberately excluded, matching the pin — its source is the shell fallback, which needs no repo model.
 
 - [x] **Chip-change detection compares rendered TEXT, not values.**
       `context_chips/display.rs:174-180` uses `chip.text() != value.to_string()`; the
@@ -7469,13 +7481,15 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `display.rs:174-186` compares `chip.text()` vs `value.to_string()` where the pin compares `chip.value()` and the full on-click slice. Verifier confirmed the value→text collapse: `display_chip.rs:526-530` yields the bare branch name for both `upstream=None` and `upstream=Some, ahead=0, behind=0`, while `tooltip_text` (`:586-606`) differs — and the tooltip is captured only at rebuild, so it stays stale.
       **FIXED 2026-08-21:** The fork's `DisplayChip` keeps only `text` + `first_on_click_value`, so rather than the pin's `chip.value()` the agent added `PromptDisplay::last_chip_results` (`display.rs:60-71`, populated in `reset_chips`); `check_if_chip_values_have_changed` (`:180-190`) now compares `value()`, `kind()` and the FULL `on_click_values()` slice — the pin's semantics via different state. All four `reset_chips` sites feed the cache so it cannot desync.
 
-- [ ] **Tab-completion no longer aborts the in-flight input-detection future.**
+- [x] **Tab-completion no longer aborts the in-flight input-detection future.**
       TUI `completions.rs:110-125` dropped the pin's `abort_input_detection`. A
       classifier from the previous keystroke lands after Tab and flips input mode,
       closing the popup the user just opened. The same hunk also dropped the
       MCP-install guard, so natural-language detection now runs while the user types
       MCP install answers.
       **VERDICT PARTIAL — MCP half refuted (independent verifier, 2026-08-21):** Abort half confirmed with the chain the original omitted: the pin's `abort_input_detection` is gone, so a landing classifier hits `ai_input_model`, whose subscription (`terminal_session_view.rs:2155`) calls `handle_completion_editor_changed` → `abort_shell_completion`, killing the pending Tab request. **MCP half REFUTED:** that drop is in `input_detection.rs:112`, not this hunk, and is subsumed by the `inline_menu_owns_input` return at `:102-113`.
+
+      **FIXED 2026-08-21 — and it is NOT a harmless leak.** The orphaned future completes **and applies a stale result**: `parsed_result_is_applicable` compares the pre-Tab buffer against the current one, but **Tab does not change the buffer** and the popup is not open yet, so the guard passes. It then classifies on the *previous* keystroke, which emits, which calls `handle_completion_editor_changed`, which finds no open menu and **aborts the newer Tab request**. So the stale classifier both flips shell/agent input mode on stale input *and* cancels the request the user just made, so the popup never appears. One line, at the pin's exact position. Ledger path stale: the file is `crates/warp_tui/src/terminal_session_view/completions.rs`.
 
 - [ ] **The TUI prints a command for a binary that does not exist.**
       `warp_tui/src/session.rs:261` prints `warp --resume {token}`; the bin is
@@ -7495,12 +7509,14 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED — dead code only (independent verifier, 2026-08-21):** `current_prompt.rs:822` and `:826` are both `if suppress_on_failure`, so the second arm is unreachable; the pin has one arm as a let-chain (`42effe840:...:791-795`). Verifier went further than the original: behaviour still MATCHES the pin, because `timed_out` implies failure. Dead code, no functional divergence.
       **FIXED 2026-08-21:** `current_prompt.rs:821-825` collapsed to the pin's single let-chain arm.
 
-- [ ] **Unquoted rcfile paths in the bootstrap.** `bash_body.sh:1220-1226` and four
+- [x] **Unquoted rcfile paths in the bootstrap.** `bash_body.sh:1220-1226` and four
       `${ZDOTDIR:-$HOME}` sites in `zsh_body.sh`; the pin quotes all of them. A `$HOME`
       containing a space sources the wrong file or nothing. Also: `bootstrap.rs` lacks
       the pin's `is_container_subshell` guard, so docker/podman subshells get a
       host-side temp RC file the container cannot read.
       **VERDICT PARTIAL — zsh half and container half both narrower (independent verifier, 2026-08-21):** Bash half confirmed and empirically checked (`bash_body.sh:1220-1226` unquoted vs pin `:1207-1213` quoted; bash splits, `argc=2`, so `source` fails). **Zsh half has no consequence** — zsh does not word-split unquoted expansions (verified, `argc=1`), so those four sites are cosmetic parity. The container guard IS absent (`bootstrap.rs:56-88`), but without it RC-file bootstrap triggers only for fish/pwsh/Windows-zsh subshells, not docker/podman generally.
+
+      **FIXED 2026-08-21 — and the ledger's severity claim is WRONG in an instructive direction.** "or worse, executes" is **false**: bash does not re-run command substitution on a parameter-expansion result, so a `$(...)` inside `$HOME` is inert — verified by executing it, `PWNED` was never created. **The real risk is sharper than the one claimed:** with `HOME` containing a glob, the unquoted `source $HOME/.bash_profile` **silently sources a different directory's rcfile and exits 0**, so nothing logs. With a space it exits 1 and skips the user's rcfile. Executed in real `bash 5` and `zsh 5.9`. **The zsh half's "cosmetic" verdict is refined, not accepted:** the equivalence is option-dependent, not structural — under `SH_WORD_SPLIT`, settable from `/etc/zshenv` which is sourced before this and cannot be opted out of, the four zsh sites break exactly like bash's (exit 127, user rcfile skipped). All seven sites quoted (bash line numbers were `:1231-1237`, not `:1220-1226`), plus the container-subshell guard ported with its claim narrowed: it is **not** docker/podman generally — a plain `docker run -it <img> bash` never selected the RC-file method — but is reachable via the Fish/PowerShell disjuncts and the Windows-zsh-subshell disjunct.
 
 - [x] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
       unfiltered, consumed as an index into the filtered list). **Pin-identical** —

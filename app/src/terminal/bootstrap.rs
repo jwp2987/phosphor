@@ -29,6 +29,31 @@ lazy_static! {
 /// errors
 const BYTE_ORDER_MARK: &str = "\u{FEFF}";
 
+/// Whether this session is a subshell running inside a container
+/// (`docker exec`/`docker run`, `podman ...`).
+///
+/// Ported from the pin (`42effe840:app/src/terminal/bootstrap.rs:31-40`).
+/// A container subshell shares the host's PTY but NOT the host's filesystem, so
+/// anything the host writes to its own temp directory is unreadable from inside
+/// the container.
+///
+/// The pin has a second consumer for this predicate that is deliberately not
+/// ported here: `writeable_pty/pty_controller.rs:444` chunks the bootstrap into
+/// 4KB writes with 50ms gaps for container subshells, because the double-PTY
+/// proxy in `docker/podman exec -it` drops data on large writes. That file is
+/// outside this change's scope; the gap is recorded rather than half-fixed.
+#[cfg(feature = "local_fs")]
+pub fn is_container_subshell(session_info: &SessionInfo) -> bool {
+    session_info.subshell_info.as_ref().is_some_and(|info| {
+        let first_token = info
+            .spawning_command
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or("");
+        first_token == "docker" || first_token == "podman"
+    })
+}
+
 /// Returns `true` if Zap should use an RC-file based bootstrap (e.g. dump the bootstrap script to
 /// a temp file and `source` it) for a newly spawned session with the given `shell_type`, and
 /// associated `session_type` and `subshell_initialization_info`.
@@ -58,6 +83,19 @@ pub fn should_use_rc_file_bootstrap_method(
     session_info: &SessionInfo,
 ) -> bool {
     use super::ShellLaunchData;
+
+    // Container subshells cannot access host temp files, so the RC-file
+    // method is never viable for them: the path handed to `source` names a
+    // file on the host, which does not exist inside the container. Matches the
+    // pin (`42effe840:...:72-76`). Reachable through the `shell_type == Fish`
+    // and `shell_type == PowerShell` disjuncts below (e.g.
+    // `docker run -it <image> fish`) and, on Windows, through the
+    // `subshell_initialization_info.is_some() && cfg!(windows)` zsh disjunct --
+    // NOT for a plain `docker run -it <image> bash`, which never selected the
+    // RC-file method anyway.
+    if is_container_subshell(session_info) {
+        return false;
+    }
 
     let session_type = &session_info.session_type;
     match session_type {

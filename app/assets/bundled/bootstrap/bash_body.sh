@@ -1228,12 +1228,21 @@ esac
             source /etc/bash.bashrc
         fi
 
-        if [[ -e $HOME/.bash_profile ]]; then
-            source $HOME/.bash_profile
-        elif [[ -e $HOME/.bash_login ]]; then
-            source $HOME/.bash_login
-        elif [[ -e $HOME/.profile ]]; then
-            source $HOME/.profile
+        # Quoted, matching the pin (`42effe840:...:1207-1212`). Unquoted,
+        # `source $HOME/.bash_profile` is word-split and glob-expanded: a $HOME
+        # with a space sources nothing (verified: bash reports "No such file or
+        # directory" on the first word and the rcfile is skipped), and a $HOME
+        # containing a glob metacharacter silently sources a DIFFERENT
+        # directory's rcfile with exit 0. `[[ -e ... ]]` does not split, so the
+        # existence test passed and the source failed -- which is why this was
+        # invisible. Command substitution is NOT re-run on the expansion result,
+        # so a `$(...)` in $HOME is inert; wrong-file execution is the real risk.
+        if [[ -e "$HOME/.bash_profile" ]]; then
+            source "$HOME/.bash_profile"
+        elif [[ -e "$HOME/.bash_login" ]]; then
+            source "$HOME/.bash_login"
+        elif [[ -e "$HOME/.profile" ]]; then
+            source "$HOME/.profile"
         fi
 
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"

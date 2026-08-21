@@ -1502,12 +1502,30 @@ impl CurrentPrompt {
             }
         }
 
-        // Repo detached, clear GitDiffStats.
+        // Repo detached: clear every chip whose value came from repository
+        // metadata, not just `GitDiffStats`. `apply_git_repo_metadata` writes
+        // BOTH `GitDiffStats` and `GitBranchStatus` (the structured
+        // ahead/behind tracking status), so clearing one of the two left the
+        // branch-status chip displaying the detached repo's last known value.
+        // `self.git_repo_status` was already `take`n above, so
+        // `is_updated_externally` now returns false and the 30s periodic timer
+        // resumes -- the stale value is eventually corrected by the shell
+        // fallback rather than stuck forever, but it survives until the next
+        // tick, which is exactly the window the pin closes here
+        // (`42effe840:app/src/context_chips/current_prompt.rs:1477-1490`).
+        // `ShellGitBranch` is deliberately NOT in this list, matching the pin:
+        // its source is `builtins::shell_git_branch_status`, which does not
+        // need the repo model.
         if handle.is_none() {
             log::info!("[chips] set_git_repo_status: repo detached");
-            if let Some(state) = self.states.get_mut(&ContextChipKind::GitDiffStats) {
-                state.clear_abort_handlers();
-                state.clear_cache();
+            for chip_kind in [
+                ContextChipKind::GitDiffStats,
+                ContextChipKind::GitBranchStatus,
+            ] {
+                if let Some(state) = self.states.get_mut(&chip_kind) {
+                    state.clear_abort_handlers();
+                    state.clear_cache();
+                }
             }
             let _ = self.update_tx.try_send(());
             return;

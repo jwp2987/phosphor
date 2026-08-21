@@ -135,6 +135,19 @@ impl TuiTerminalSessionView {
             return;
         };
         let session_id = completion_context.session.id();
+        // Tab supersedes whatever the previous keystroke scheduled. Without
+        // this the debounced input-detection future survives the Tab press,
+        // and when its classifier lands it calls `detect_and_set_input_type`
+        // on `ai_input_model` for the buffer as it was BEFORE Tab. That is not
+        // a harmless leak: the resulting model event is subscribed at
+        // `terminal_session_view.rs`'s `ai_input_model` handler, which calls
+        // `handle_completion_editor_changed` -> `abort_shell_completion`, so
+        // the completion request started immediately below is cancelled and
+        // the popup the user just opened never appears. It also flips the
+        // shell/agent input mode on stale input. Matches the pin
+        // (`42effe840:crates/warp_tui/src/terminal_session_view/completions.rs:99`).
+        self.abort_input_detection(ctx);
+
         self.abort_shell_completion(ctx);
         self.completion_request.generation = self.completion_request.generation.wrapping_add(1);
         let generation = self.completion_request.generation;

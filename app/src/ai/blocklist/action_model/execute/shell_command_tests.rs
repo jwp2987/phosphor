@@ -4,10 +4,14 @@ use async_channel::unbounded;
 use warpui::App;
 
 use super::*;
+use crate::ai::agent::AIAgentAction;
+use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::task::TaskId;
 use crate::terminal::event::BlockWorkingDirectoryUpdatedEvent;
 use crate::terminal::model::block::BlockMetadata;
 use crate::terminal::model::session::Sessions;
 use crate::terminal::model::terminal_model::BlockIndex;
+use crate::test_util::terminal::initialize_app_for_terminal_view;
 
 #[test]
 fn detects_interactive_session_commands_across_platforms() {
@@ -350,15 +354,20 @@ fn block_working_directory_updated_does_not_drain_finish_senders() {
     });
 }
 
-/// #615: a write to a long-running shell command must only skip the pty permission check when
-/// the block is present AND finished. The bug was `is_none_or`, which also returned true when
-/// the block id did not resolve -- reachable under tmux, where Warp's block model does not
-/// track the pane and the lookup misses, so the profile's "Interact with running commands"
-/// setting was bypassed entirely.
+/// #615, half one: the *predicate* `write_skips_pty_permission_check` must be false when the
+/// block id did not resolve. The bug was `is_none_or`, which fused "not found" with "finished"
+/// and returned true for both -- reachable under tmux, where Warp's block model does not track
+/// the pane and the lookup misses, so the profile's "Interact with running commands" setting
+/// was bypassed entirely.
 ///
-/// The `None` case is the whole point of this test. `is_none_or(|b| b.finished())` differs from
-/// the correct predicate on that arm and only that arm, so reverting the fix must turn this
-/// test red -- if it stays green, the test is vacuous and is not pinning the fix.
+/// **Scope, stated precisely, because the previous version of this comment overclaimed.** This
+/// test pins the predicate at `shell_command.rs`'s `write_skips_pty_permission_check` and
+/// nothing else: reverting that function's body to `block_finished.is_none_or(|f| f)` turns it
+/// red, but reverting the *call site* in `should_autoexecute` back to an inline `is_none_or`
+/// leaves it GREEN -- the helper would merely become unreferenced, and `lib.rs`'s crate-level
+/// `#![allow(dead_code)]` silences that. The call-site wiring is pinned by
+/// `unresolved_block_write_falls_through_to_the_pty_permission_check` below; neither test alone
+/// covers the fix.
 #[test]
 fn unresolved_block_does_not_skip_the_pty_permission_check() {
     // Block id did not resolve: writes to a live pty, so it must fall through and ask.
@@ -378,4 +387,83 @@ fn unresolved_block_does_not_skip_the_pty_permission_check() {
         write_skips_pty_permission_check(Some(true)),
         "a finished block returns buffered output and needs no permission check"
     );
+}
+
+/// #615, half two: the *call site*. `should_autoexecute` must actually route the
+/// `WriteToLongRunningShellCommand` arm through `write_skips_pty_permission_check`, so that an
+/// unresolved block id falls through to the profile's `write_to_pty` permission instead of
+/// short-circuiting to `true`.
+///
+/// This is the test the fix was missing. Reverting `shell_command.rs`'s call site to the
+/// original `block.is_none_or(|b| b.finished())` -- with or without the helper still present --
+/// makes this assertion fail, because the synthesised `BlockId` is never registered in the mock
+/// terminal model, so the lookup misses and `is_none_or` yields `true`.
+///
+/// The precondition assert is deliberate: if the fixture ever resolved `write_to_pty` to
+/// `AlwaysAllow`, `should_autoexecute` would return `true` for a legitimate reason and the
+/// assertion below would fail for the wrong reason. Fail loudly on the fixture instead.
+#[test]
+fn unresolved_block_write_falls_through_to_the_pty_permission_check() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal_view_id = EntityId::new();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let (_model_events_tx, model_events_rx) = unbounded();
+        let model_event_dispatcher =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let active_session = app.add_model(|ctx| {
+            ActiveSession::new(sessions.clone(), model_event_dispatcher.clone(), ctx)
+        });
+        let terminal_model = Arc::new(FairMutex::new(TerminalModel::mock(None, None)));
+        let executor = app.add_model(|ctx| {
+            ShellCommandExecutor::new(
+                active_session,
+                terminal_model.clone(),
+                &model_event_dispatcher,
+                terminal_view_id,
+                ctx,
+            )
+        });
+
+        let pty_permission = app.read(|ctx| {
+            BlocklistAIPermissions::as_ref(ctx).get_write_to_pty_setting(ctx, Some(terminal_view_id))
+        });
+        assert_eq!(
+            pty_permission,
+            WriteToPtyPermission::AlwaysAsk,
+            "fixture precondition: the default test profile must ask before writing to a pty, \
+             otherwise the assertion below would pass for the wrong reason"
+        );
+
+        // A fresh id that was never registered with the terminal model: the
+        // lookup misses, which is the tmux case #615 was about.
+        let action = AIAgentAction {
+            id: AIAgentActionId::from("write-to-lrc".to_owned()),
+            task_id: TaskId::new("terminal-use-task".to_owned()),
+            action: AIAgentActionType::WriteToLongRunningShellCommand {
+                block_id: BlockId::new(),
+                input: b"input".to_vec().into(),
+                mode: AIAgentPtyWriteMode::Raw,
+            },
+            requires_result: true,
+        };
+        let conversation_id = AIConversationId::new();
+
+        let autoexecuted = executor.update(&mut app, |executor, ctx| {
+            executor.should_autoexecute(
+                ExecuteActionInput {
+                    action: &action,
+                    conversation_id,
+                },
+                ctx,
+            )
+        });
+
+        assert!(
+            !autoexecuted,
+            "an unresolved block id must fall through to the write_to_pty permission (#615), \
+             not short-circuit to auto-execution"
+        );
+    });
 }
