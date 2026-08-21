@@ -9333,10 +9333,22 @@ fn back_button_label_resolves_token_only_parent_linkage() {
 /// The pin gates on any of the three via `uses_git_status_chips`
 /// (`42effe840:app/src/terminal/view.rs:5100`); this fork had never ported it.
 ///
-/// The single-chip cases are the point of this test. The old predicate was
-/// `chips.contains(&ContextChipKind::GitDiffStats)`, which differs from the correct
-/// one on exactly those arms, so reverting the fix must turn this red. If it stays
-/// green the test is vacuous and pins nothing.
+/// SCOPE, stated honestly because the first version of this comment overclaimed:
+/// this exercises `uses_git_status_chips` ONLY. It does not drive
+/// `should_subscribe_to_git_status`, `needs_git_status_for_chip_ui` or
+/// `needs_git_status_for_agent_context`, so it does not pin the widening in situ.
+///
+/// The claim it originally carried -- "reverting the fix turns this red" -- was
+/// false. Reverting deletes `uses_git_status_chips`, so this stops COMPILING rather
+/// than failing an assertion; and the regression that actually matters (restoring
+/// the caller to `chips.contains(&ContextChipKind::GitDiffStats)` while leaving the
+/// helper in place) leaves this green.
+///
+/// What it does buy: the arm list is the thing most likely to be edited by hand
+/// later, and this fails loudly if a variant is dropped from it. The other two holes
+/// #620 closed -- the CLI-agent-footer branch and the agent-context disjunct -- need
+/// a `TerminalView` harness and remain uncovered; tracked in #620 rather than papered
+/// over with a test that cannot fail.
 #[cfg(feature = "local_fs")]
 #[test]
 fn git_status_chips_are_not_just_git_diff_stats() {

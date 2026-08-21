@@ -4783,10 +4783,14 @@ impl TerminalView {
     /// the model was never subscribed because of the gate above.
     #[cfg(feature = "local_fs")]
     fn needs_git_status_for_agent_context(&self, ctx: &AppContext) -> bool {
-        // Location, not `current_repo_path` -- deviating from the pin here on
-        // purpose, and matching `needs_pr_info_for_agent_context` next door, which
-        // this fork already fixed the same way: an SSH session is in a repo too, and
-        // `current_repo_path` would starve it.
+        // `current_repo_location()`, matching `needs_pr_info_for_agent_context`
+        // next door. This is NOT a divergence: the pin widens `current_repo_path`
+        // itself to `Option<LocalOrRemotePath>`
+        // (`42effe840:app/src/terminal/view.rs:2837`), and this fork carries the
+        // remote root in a separate field instead -- see the comment on
+        // `current_remote_repo_root` above. `current_repo_location()` is how that
+        // choice is expressed here, so this is the pin's semantics by another
+        // route, not a deliberate deviation from them.
         self.current_repo_location().is_some()
             && self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
     }
@@ -6715,6 +6719,16 @@ impl TerminalView {
 
                 // Force re-render all AIBlocks to ensure that selected text is recolored properly
                 self.rerender_rich_content_blocks(ctx);
+
+                // #620: `needs_git_status_for_agent_context` reads
+                // `is_ai_input_enabled`, so toggling AI input has to re-evaluate
+                // the subscription. Without this, enabling AI input in a pane
+                // already sitting in a repo does not subscribe, and disabling it
+                // leaks the handle until the repo changes -- so the disjunct only
+                // worked by accident, via the repo-change path. The pin does this
+                // too (`42effe840:app/src/terminal/view.rs:7265-7267`).
+                #[cfg(feature = "local_fs")]
+                self.update_git_status_subscription(ctx);
 
                 // Emit AppStateChanged when the AI input mode changes to trigger pane state saving
                 ctx.emit(Event::AppStateChanged);
@@ -12521,6 +12535,14 @@ impl TerminalView {
             )
         {
             self.update_pane_configuration(ctx);
+            // #620: `needs_git_status_for_chip_ui` reads
+            // `has_active_cli_agent_session`, so the subscription has to be
+            // re-evaluated when one starts or ends. Without this the CLI-agent
+            // branch of that predicate is never reached again after the initial
+            // evaluation, i.e. dead. The pin does this too
+            // (`42effe840:app/src/terminal/view.rs:13438-13446`).
+            #[cfg(feature = "local_fs")]
+            self.update_git_status_subscription(ctx);
             ctx.notify();
         }
 
@@ -22040,6 +22062,18 @@ impl TerminalView {
                 if !is_rich_input_chip_in_cli_toolbar(ctx) {
                     self.close_cli_agent_rich_input(CLIAgentRichInputCloseReason::Other, ctx);
                 }
+                // #620: this selection feeds `needs_git_status_for_chip_ui`'s
+                // CLI-agent branch. Pin: `42effe840:app/src/terminal/view.rs:23365`.
+                self.update_git_status_subscription(ctx);
+            }
+            // #620: the agent footer's chip selection feeds
+            // `needs_git_status_for_chip_ui`'s agent-view branch, and the PR-chip
+            // default validation feeds which chips the default prompt carries.
+            // Both fell through `_ => {}` here. Pin:
+            // `42effe840:app/src/terminal/view.rs:23374-23376`.
+            SessionSettingsChangedEvent::AgentToolbarChipSelectionSetting { .. }
+            | SessionSettingsChangedEvent::GithubPrChipDefaultValidation { .. } => {
+                self.update_git_status_subscription(ctx);
             }
             _ => {}
         }
