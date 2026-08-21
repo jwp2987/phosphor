@@ -323,8 +323,25 @@ has_trailer=0
 deleting_commits=""
 while IFS= read -r sha; do
     [[ -z "$sha" ]] && continue
+    # A commit qualifies only if it is NET-DELETING and substantially so.
+    #
+    # An earlier version accepted any commit whose deletion column was non-zero,
+    # which reopened the very defect this scoping exists to close: a MODIFIED
+    # line counts as one addition and one deletion, so rewriting a single README
+    # line to say "see DECLINED.md" qualified the commit and cleared a 1,700-line
+    # deletion elsewhere in the range. Verified by adversarial probe.
+    #
+    # DECLINED.md and TODO.md are excluded from the tally outright -- editing the
+    # ledger must never be what makes a commit count as a deletion.
     if git show --numstat --format='' "$sha" 2>/dev/null \
-        | awk 'NF >= 3 && $2 != "-" && $2 + 0 > 0 { found = 1 } END { exit !found }'; then
+        | awk '
+            NF >= 3 && $2 != "-" && $1 != "-" {
+                path = $3
+                if (path == "DECLINED.md" || path == "TODO.md") next
+                add += $1; del += $2
+            }
+            END { exit !(del > add && del >= 20) }
+        '; then
         deleting_commits+="$sha"$'\n'
     fi
 done <<< "$(git log --format='%H' "${base}..${head_rev:-HEAD}" 2>/dev/null || true)"

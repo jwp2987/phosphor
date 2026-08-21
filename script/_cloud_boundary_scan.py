@@ -31,16 +31,58 @@ import os, re, sys
 TARGETS = ("server", "cloud_object")
 
 def strip_comments(src: str) -> str:
+    """Blank out comments, string literals and char literals, preserving offsets.
+
+    Rust's literal forms all have to be handled, because getting any of them
+    wrong BLANKS REAL CODE and hides imports rather than merely mis-parsing:
+
+      * raw strings `r"..."`, `r#"..."#`, `br#"..."#` -- NO escape processing.
+        An earlier version treated `\\` as an escape inside every quoted region,
+        so `Path::new(&format!(r"{system_drive}\\"))`
+        (app/src/terminal/available_shells.rs:785) swallowed its own terminator
+        and blanked the rest of the file. Eight live files lost real `use`
+        statements that way, and an import placed after such a literal was
+        invisible to this guard -- verified by an adversarial probe.
+      * char literals, including `'"'` (chat_stream.rs:293) and `'\\''`.
+      * lifetimes `'a`, which must NOT be mistaken for a char literal.
+    """
     out, i, n = [], 0, len(src)
+    def ident(c): return c.isalnum() or c == '_'
     while i < n:
         c = src[i]
-        if c == '"':                      # skip string literal
-            out.append(c); i += 1
+        # raw string: r"..." / r#"..."# / br##"..."##
+        if c in 'rb':
+            j = i
+            if src[j] == 'b' and j + 1 < n and src[j+1] == 'r': j += 1
+            if src[j] == 'r':
+                k = j + 1
+                hashes = 0
+                while k < n and src[k] == '#': hashes += 1; k += 1
+                if k < n and src[k] == '"' and (i == 0 or not ident(src[i-1])):
+                    out.append(' ' * (k - i + 1)); i = k + 1
+                    term = '"' + '#' * hashes
+                    end = src.find(term, i)
+                    if end == -1: end = n
+                    for ch in src[i:end]: out.append('\n' if ch == '\n' else ' ')
+                    out.append(' ' * len(term)); i = min(end + len(term), n)
+                    continue
+        if c == '"':                      # normal string: escapes apply
+            out.append(' '); i += 1
             while i < n:
                 if src[i] == '\\': out.append('  '); i += 2; continue
-                if src[i] == '"': out.append('"'); i += 1; break
-                out.append(' ' if src[i] != '\n' else '\n'); i += 1
+                if src[i] == '"': out.append(' '); i += 1; break
+                out.append('\n' if src[i] == '\n' else ' '); i += 1
             continue
+        if c == "'":                      # char literal vs lifetime
+            is_char = (i + 1 < n and src[i+1] == '\\') or (i + 2 < n and src[i+2] == "'")
+            if is_char:
+                out.append(' '); i += 1
+                while i < n:
+                    if src[i] == '\\': out.append('  '); i += 2; continue
+                    if src[i] == "'": out.append(' '); i += 1; break
+                    out.append(' '); i += 1
+                continue
+            out.append(c); i += 1; continue
         if src.startswith("//", i):
             while i < n and src[i] != '\n': out.append(' '); i += 1
             continue
@@ -60,7 +102,15 @@ def use_statements(src: str):
     for m in USE_RE.finditer(src):
         # must start a statement: only whitespace/{/}/; before it on its line
         ls = src.rfind('\n', 0, m.start()) + 1
-        if src[ls:m.start()].strip(' \t') not in ('', '}', '{', ';'):
+        prefix = src[ls:m.start()].lstrip('\ufeff').strip(' \t')
+        # An attribute may precede `use` on the same line -- `#[cfg(test)] use ...`
+        # was smuggled past the previous filter, which accepted only whitespace or
+        # a brace/semicolon. Strip any leading attributes before judging.
+        while prefix.startswith('#'):
+            close = prefix.find(']')
+            if close == -1: break
+            prefix = prefix[close + 1:].strip(' \t')
+        if prefix not in ('', '}', '{', ';'):
             continue
         i, depth = m.end(), 0
         while i < len(src):
@@ -115,13 +165,21 @@ def main():
         for fn in files:
             if not fn.endswith('.rs'): continue
             path = os.path.join(root, fn)
-            try: src = strip_comments(open(path, encoding='utf-8', errors='replace').read())
+            try: src = strip_comments(open(path, encoding='utf-8-sig', errors='replace').read())
             except OSError: continue
             for stmt in use_statements(src):
                 for p in expand('', stmt):
                     p = p.replace('crate::self::', 'crate::')
                     segs = p.split('::')
                     if len(segs) >= 2 and segs[0] == 'crate' and segs[1] in TARGETS:
+                        hits.add(f"{path} {p}")
+                    # `use super::super::server::X;` reaches the same modules
+                    # without naming `crate`. Resolving it exactly needs the
+                    # file's module depth; flagging any super-rooted path with a
+                    # `server`/`cloud_object` segment is the conservative
+                    # direction for a boundary guard -- a false positive is a
+                    # line in the allowlist, a false negative is a silent breach.
+                    elif segs[0] in ('super', 'self') and any(x in TARGETS for x in segs[1:]):
                         hits.add(f"{path} {p}")
     for h in sorted(hits): print(h)
 

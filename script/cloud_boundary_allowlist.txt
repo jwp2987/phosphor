@@ -23,6 +23,14 @@
 #   app/src/drive/folders/mod.rs  pub use crate::server::ids::FolderId
 # app/src/lib.rs:302-303 cites THIS GUARD as the reason its re-export exists.
 #
+# 2026-08-21 (3): +1 entry, and the cause is worth recording.
+#   app/src/terminal/local_tty/recorder.rs starts with a UTF-8 BOM (ef bb bf).
+#   Its very first line is `use crate::{ ... server::telemetry::TelemetryEvent`,
+#   and the BOM sat between the start of the file and the `use`, so the
+#   statement-start check rejected it. That import has been invisible to EVERY
+#   version of this guard, including the regex and awk ones. Reading with
+#   utf-8-sig recovered it. Not a new dependency.
+#
 app/src/ai/agent/api.rs crate::cloud_object::StoredObject
 app/src/ai/agent/api.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
 app/src/ai/agent/api.rs crate::cloud_object::model::persistence::ObjectStoreModel
@@ -839,6 +847,7 @@ app/src/terminal/input_test.rs crate::cloud_object::Owner
 app/src/terminal/input_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
 app/src/terminal/input_test.rs crate::cloud_object::update_manager::UpdateManager
 app/src/terminal/input_test.rs crate::server::ids::ClientId
+app/src/terminal/local_tty/recorder.rs crate::server::telemetry::TelemetryEvent
 app/src/terminal/local_tty/spawner.rs crate::server::telemetry::PtySpawnMode
 app/src/terminal/local_tty/spawner.rs crate::server::telemetry::TelemetryEvent
 app/src/terminal/local_tty/terminal_manager.rs crate::server::telemetry::TelemetryEvent
