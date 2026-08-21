@@ -44,10 +44,10 @@ use crate::{
         comments::AttachedReviewCommentTarget,
         context::convert_file_diffs_to_diffset_hunks,
         diff_state::{
-            hunk_to_patch, DiffHunk, DiffLineType, DiffMode, DiffState, DiffStateModel,
-            DiffStateModelEvent, DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo,
-            GitDiffWithBaseContent, GitFileStatus, GitWriteOperation, InvalidationBehavior,
-            LocalDiffStateModel, StageRequest, StageTarget,
+            hunk_covers_new_lines, hunk_to_patch, DiffHunk, DiffLineType, DiffMode, DiffState,
+            DiffStateModel, DiffStateModelEvent, DiffStats, FileDiff, FileDiffAndContent,
+            FileStatusInfo, GitDiffWithBaseContent, GitFileStatus, GitWriteOperation,
+            InvalidationBehavior, LocalDiffStateModel, StageRequest, StageTarget,
         },
         editor_state::CodeReviewEditorState,
         hidden_lines::calculate_hidden_lines,
@@ -5902,7 +5902,8 @@ impl CodeReviewView {
         let Some(unstage) = hunk_stage_direction(&file_state.file_diff) else {
             return;
         };
-        let Some(hunk) = Self::hunk_covering_line_range(&file_state.file_diff, line_range) else {
+        let Some(hunk) = Self::hunk_covering_line_range(&file_state.file_diff.hunks, line_range)
+        else {
             return;
         };
 
@@ -5922,39 +5923,25 @@ impl CodeReviewView {
     /// selection as agent context and wrong for `git apply`, which needs every
     /// line the `@@` header counts or it rejects the patch.
     fn hunk_covering_line_range(
-        file_diff: &FileDiff,
+        hunks: &[DiffHunk],
         line_range: &Range<LineCount>,
     ) -> Option<DiffHunk> {
-        // Editor lines are 0-indexed; hunk line numbers are git's 1-indexed.
-        let requested_start = line_range.start.as_usize() + 1;
-        let requested_end = line_range.end.as_usize() + 1;
-
-        file_diff
-            .hunks
+        let requested = Self::requested_new_line_range(line_range);
+        hunks
             .iter()
-            .find(|hunk| {
-                let hunk_start = hunk.new_start_line;
-                // `lines` also holds `Delete` lines, which occupy no new-file
-                // line (see the parser in `diff_state.rs`), so `lines.len()`
-                // overstates the hunk's extent in the new file by the deletion
-                // count. Counting only the lines git's `@@` header counts on
-                // the `+` side is what keeps a click on hunk N+1 from
-                // resolving to hunk N and silently staging it.
-                let new_file_lines = hunk
-                    .lines
-                    .iter()
-                    .filter(|line| {
-                        matches!(line.line_type, DiffLineType::Add | DiffLineType::Context)
-                    })
-                    .count()
-                    // A hunk that deletes with no surrounding context (whole-file
-                    // deletion, or `diff.context=0`) has no new-file line at all;
-                    // give it a one-line extent so it stays clickable.
-                    .max(1);
-                let hunk_end = hunk_start + new_file_lines;
-                requested_start <= hunk_end && requested_end >= hunk_start
-            })
+            .find(|hunk| hunk_covers_new_lines(hunk, &requested))
             .cloned()
+    }
+
+    /// Converts an editor line range into the 1-indexed, half-open range of
+    /// new-file lines that [`hunk_covers_new_lines`] expects.
+    ///
+    /// Editor lines are 0-indexed; git's hunk line numbers are 1-indexed. Both
+    /// gutter predicates go through here so the staging button and the
+    /// add-as-context button cannot drift apart in their coordinate
+    /// conversion — the editor hands both of them the *same* `line_range`.
+    fn requested_new_line_range(line_range: &Range<LineCount>) -> Range<usize> {
+        (line_range.start.as_usize() + 1)..(line_range.end.as_usize() + 1)
     }
 
     fn discard_file(&mut self, path: &Path, should_stash: bool, ctx: &mut ViewContext<Self>) {
@@ -6565,16 +6552,25 @@ impl CodeReviewView {
             let file_diff = &file_state.file_diff;
 
             // Convert editor line range to 1-indexed, exclusive line numbers
-            let requested_start = line_range.start.as_usize() + 1;
-            let requested_end = line_range.end.as_usize() + 1;
+            let requested = Self::requested_new_line_range(line_range);
+            let requested_start = requested.start;
+            let requested_end = requested.end;
 
-            // Find the diff hunk that contains this line range
+            // Find the diff hunk that contains this line range. This is the
+            // twin of `hunk_covering_line_range`: the editor hands the plus
+            // button and the stage button the identical `line_range`, so both
+            // must resolve it with the same predicate or they will act on
+            // different hunks. That is why the overlap test lives in
+            // `diff_state::hunk_covers_new_lines` rather than being spelled
+            // out here — this copy previously used `hunk.lines.len()`, which
+            // counts `Delete` lines that occupy no new-file line, and an
+            // inclusive `<=` against a one-past-the-end bound. That earlier
+            // form is character-identical to the pinned oracle `42effe840`, so
+            // this is a deliberate divergence, not a port; see
+            // `diff_state::hunk_new_line_span` for why we fix it ahead of the
+            // oracle rather than waiting for it.
             for hunk in file_diff.hunks.iter() {
-                // Check if this hunk overlaps with the requested line range
-                let hunk_start = hunk.new_start_line;
-                let hunk_end = hunk_start + hunk.lines.len();
-
-                if requested_start <= hunk_end && requested_end >= hunk_start {
+                if hunk_covers_new_lines(hunk, &requested) {
                     // Filter the hunk lines to only include those within the requested range
                     let mut filtered_lines = Vec::new();
                     let mut current_line = hunk.new_start_line;
@@ -8015,3 +8011,110 @@ pub use code_review_view_integration::CodeReviewVisibleAnchorForTest;
 #[cfg(test)]
 #[path = "code_review_view_tests.rs"]
 mod tests;
+
+/// Tests for the gutter hunk-resolution predicate.
+///
+/// Inline rather than in `code_review_view_tests.rs` because the repair that
+/// introduced them was scoped to this file and `diff_state.rs`.
+#[cfg(test)]
+mod hunk_predicate_tests {
+    use super::CodeReviewView;
+    use crate::code_review::diff_state::{hunk_covers_new_lines, DiffHunk, DiffLine, DiffLineType};
+    use warp_editor::render::model::LineCount;
+
+    fn hunk(new_start_line: usize, new_line_count: usize, delete_lines: usize) -> DiffHunk {
+        let lines = (0..delete_lines)
+            .map(|_| DiffLine {
+                line_type: DiffLineType::Delete,
+                old_line_number: None,
+                new_line_number: None,
+                text: String::new(),
+                no_trailing_newline: false,
+            })
+            .collect();
+        DiffHunk {
+            old_start_line: 1,
+            old_line_count: 1,
+            new_start_line,
+            new_line_count,
+            lines,
+            unified_diff_start: 0,
+            unified_diff_end: 0,
+        }
+    }
+
+    fn range(start: usize, end: usize) -> std::ops::Range<LineCount> {
+        LineCount::from(start)..LineCount::from(end)
+    }
+
+    /// The editor hands the stage button and the add-as-context button the
+    /// *same* `line.line_range()`, so their coordinate conversion has to be
+    /// the same too.
+    #[test]
+    fn editor_ranges_convert_to_one_indexed_half_open_new_file_lines() {
+        assert_eq!(CodeReviewView::requested_new_line_range(&range(0, 1)), 1..2);
+        // A pure-deletion gutter hunk is reported as an empty range and stays
+        // empty through the conversion; `hunk_covers_new_lines` reads it as a
+        // point query.
+        assert_eq!(CodeReviewView::requested_new_line_range(&range(2, 2)), 3..3);
+    }
+
+    /// `hunk_covering_line_range` must be nothing more than
+    /// `hunk_covers_new_lines` applied to the converted range. Its twin,
+    /// `extract_diff_hunk_data`, calls the identical pair of helpers, so
+    /// pinning this one pins both: the only way they can diverge again is by
+    /// one of them stopping calling the shared predicate.
+    #[test]
+    fn resolution_is_exactly_the_shared_predicate() {
+        let hunks = [
+            // A deletion-heavy hunk: 1 new line, 49 removed.
+            hunk(10, 1, 49),
+            // Abutting its successor in the new file.
+            hunk(21, 1, 0),
+            // A pure deletion after new line 30.
+            hunk(30, 0, 2),
+        ];
+
+        for start in 0..40 {
+            for end in start..(start + 3) {
+                let line_range = range(start, end);
+                let requested = CodeReviewView::requested_new_line_range(&line_range);
+                let expected = hunks
+                    .iter()
+                    .find(|h| hunk_covers_new_lines(h, &requested))
+                    .cloned();
+                assert_eq!(
+                    CodeReviewView::hunk_covering_line_range(&hunks, &line_range),
+                    expected,
+                    "diverged at editor range {start}..{end}"
+                );
+            }
+        }
+    }
+
+    /// The end-to-end shape of the defect: a click on the hunk starting at new
+    /// line 21 must resolve to that hunk, not to the deletion-heavy one whose
+    /// `lines.len()` reached to line 60.
+    #[test]
+    fn click_on_successor_does_not_resolve_to_a_deletion_heavy_predecessor() {
+        let hunks = [hunk(10, 1, 49), hunk(21, 1, 0)];
+
+        // Editor line 20 (0-indexed) is new-file line 21 (1-indexed).
+        let resolved = CodeReviewView::hunk_covering_line_range(&hunks, &range(20, 21));
+        assert_eq!(resolved.map(|h| h.new_start_line), Some(21));
+    }
+
+    /// A pure-deletion hunk is clickable, and only on its own anchor line.
+    #[test]
+    fn pure_deletion_resolves_from_its_empty_editor_range() {
+        let hunks = [hunk(30, 0, 2)];
+
+        // The editor reports the deletion as the empty 0-indexed range 30..30.
+        let resolved = CodeReviewView::hunk_covering_line_range(&hunks, &range(30, 30));
+        assert_eq!(resolved.map(|h| h.new_start_line), Some(30));
+
+        // New line 30 itself belongs to whatever hunk contains it, not to the
+        // gap that follows it.
+        assert!(CodeReviewView::hunk_covering_line_range(&hunks, &range(29, 30)).is_none());
+    }
+}

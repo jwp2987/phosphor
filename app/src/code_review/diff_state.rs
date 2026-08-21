@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Read, Seek},
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -297,6 +298,84 @@ pub fn hunk_to_patch(file_path: &Path, hunk: &DiffHunk) -> String {
         }
     }
     out
+}
+
+/// The half-open range of **new-file** lines a [`DiffHunk`] occupies, using
+/// git's 1-indexed line numbers.
+///
+/// # End convention
+///
+/// `[start, end)` — `end` is *one past* the last line the hunk covers. Two
+/// hunks that abut in the new file therefore produce `[10, 21)` and `[21, 22)`
+/// and share no line, so callers must test overlap with `<` / `>` and never
+/// `<=` / `>=`. Both predicates in `code_review_view.rs` used to compare
+/// `requested_start <= hunk_end` against a one-past-the-end bound, which let
+/// every hunk claim the first line of its successor; `Iterator::find` then
+/// returned the earlier hunk and the click staged the wrong change.
+///
+/// # Why `new_line_count` and not the materialised lines
+///
+/// `new_line_count` is read straight off the `@@ -a,b +c,d @@` header, where
+/// git computes it from the file rather than from the rendered body. Deriving
+/// the extent from `lines` instead is wrong in both directions:
+///
+/// * `lines` includes `Delete` entries, which occupy no new-file line at all,
+///   so `lines.len()` *overstates* the extent by the deletion count — a hunk
+///   removing fifty lines and adding one claims fifty-one.
+/// * Filtering to `Add | Context` *understates* it, because the parser drops
+///   empty content lines, and an empty content line is exactly what git emits
+///   for a blank context line under `diff.suppressBlankEmpty=true`. The
+///   recount then loses every blank context line in the hunk.
+///
+/// The header count is immune to both.
+///
+/// # Pure deletions
+///
+/// A hunk that only deletes has `new_line_count == 0` and genuinely occupies
+/// no new-file line: `@@ -3,2 +2,0 @@` describes the *gap* after new line 2.
+/// Padding it to one line at `new_start_line` would make it overlap the hunk
+/// that really owns that line, so it is anchored on `new_start_line + 1` — the
+/// line immediately *after* the gap. That is the same line the editor gutter
+/// hangs its deletion marker on (`DiffStatus::deletion_mapping` is keyed by
+/// the 0-indexed new-file line following the removed block), so the button
+/// drawn for a deletion resolves to the deletion.
+///
+/// # Divergence from the pinned oracle
+///
+/// This is **not** a parity port. The pinned oracle `42effe840` has no
+/// equivalent of this function, and its `extract_diff_hunk_data` computes the
+/// extent as `hunk.new_start_line + hunk.lines.len()` with an inclusive `<=`
+/// — character-identical to what this fork carried before. The oracle shares
+/// the defect; we are fixing it ahead of the oracle deliberately, because the
+/// fork put a *staging* button on the same predicate (Zap #329) and resolving
+/// to the wrong hunk there writes the index rather than merely quoting the
+/// wrong text. A re-pin must not "restore parity" by reverting this.
+pub fn hunk_new_line_span(hunk: &DiffHunk) -> Range<usize> {
+    if hunk.new_line_count == 0 {
+        let anchor = hunk.new_start_line + 1;
+        anchor..anchor + 1
+    } else {
+        hunk.new_start_line..hunk.new_start_line + hunk.new_line_count
+    }
+}
+
+/// Whether `hunk` covers any part of `requested`, a 1-indexed, half-open range
+/// of new-file lines.
+///
+/// This is the single predicate behind both gutter buttons — staging a hunk
+/// and quoting one as agent context. They are handed the identical
+/// `line_range` by the editor (see `render_stage_button` / `render_plus_button`
+/// in `code/editor/element.rs`, both passing `line.line_range()`), so if they
+/// disagree the plus and the plus-minus resolve to different hunks. Sharing
+/// one function is what stops that recurring.
+///
+/// An empty `requested` is read as a point query on `requested.start`: the
+/// editor reports a pure-deletion gutter hunk as the empty range `N..N`
+/// (0-indexed), and a click on that marker must still resolve to a hunk.
+pub fn hunk_covers_new_lines(hunk: &DiffHunk, requested: &Range<usize>) -> bool {
+    let span = hunk_new_line_span(hunk);
+    let requested_end = requested.end.max(requested.start + 1);
+    requested.start < span.end && requested_end > span.start
 }
 
 /// Represents the diff for a single file, as rendered by `git diff`.
@@ -4032,3 +4111,191 @@ impl RepositorySubscriber for DiffStateModelRepositorySubscriber {
 #[cfg(test)]
 #[path = "diff_state_tests.rs"]
 mod tests;
+
+/// Unit tests for the new-file span predicate shared by both gutter buttons.
+///
+/// Inline rather than in `diff_state_tests.rs` because the repair that
+/// introduced them was scoped to this file and `code_review_view.rs`.
+#[cfg(test)]
+mod hunk_span_tests {
+    use super::{hunk_covers_new_lines, hunk_new_line_span, DiffHunk, DiffLine, DiffLineType};
+
+    fn line(line_type: DiffLineType) -> DiffLine {
+        DiffLine {
+            line_type,
+            old_line_number: None,
+            new_line_number: None,
+            text: String::new(),
+            no_trailing_newline: false,
+        }
+    }
+
+    /// `new_start_line` / `new_line_count` are the `+c,d` half of the `@@`
+    /// header; `lines` is the materialised body, which the tests below vary
+    /// independently precisely because the two can disagree.
+    fn hunk(new_start_line: usize, new_line_count: usize, lines: Vec<DiffLine>) -> DiffHunk {
+        DiffHunk {
+            old_start_line: 1,
+            old_line_count: 1,
+            new_start_line,
+            new_line_count,
+            lines,
+            unified_diff_start: 0,
+            unified_diff_end: 0,
+        }
+    }
+
+    /// The original predicate measured a hunk with `lines.len()`, which counts
+    /// `Delete` entries that occupy no new-file line. A hunk removing 49 lines
+    /// while keeping 1 then claimed 50 new-file lines instead of 1 and
+    /// swallowed every later hunk within that reach — `Iterator::find` returns
+    /// the first match, so the click staged the wrong hunk.
+    #[test]
+    fn deletion_heavy_hunk_does_not_swallow_its_successor() {
+        let mut body = vec![line(DiffLineType::Context)];
+        body.extend((0..49).map(|_| line(DiffLineType::Delete)));
+        // @@ -10,50 +10,1 @@
+        let first = hunk(10, 1, body);
+        // @@ -70,1 +21,1 @@
+        let second = hunk(21, 1, vec![line(DiffLineType::Add)]);
+
+        // The bound the old code compared against, kept explicit so the
+        // regression this test guards is legible.
+        assert_eq!(first.new_start_line + first.lines.len(), 60);
+
+        assert_eq!(hunk_new_line_span(&first), 10..11);
+        assert!(!hunk_covers_new_lines(&first, &(21..22)));
+        assert!(hunk_covers_new_lines(&second, &(21..22)));
+    }
+
+    /// `diff.suppressBlankEmpty=true` makes git print a blank context line as
+    /// an empty string instead of a single space, and the parser skips empty
+    /// content lines outright. Re-deriving the extent by counting
+    /// `Add | Context` entries therefore *undercuts* the real span and the
+    /// button silently resolves to nothing. `new_line_count` comes from the
+    /// header, which git computes from the file, so it is unaffected.
+    #[test]
+    fn dropped_blank_context_lines_do_not_shrink_the_span() {
+        // @@ -1,5 +1,5 @@ over a hunk whose two blank context lines the parser
+        // never materialised.
+        let body = vec![
+            line(DiffLineType::Context),
+            line(DiffLineType::Add),
+            line(DiffLineType::Context),
+        ];
+        let hunk = hunk(1, 5, body);
+
+        let recount = hunk
+            .lines
+            .iter()
+            .filter(|l| matches!(l.line_type, DiffLineType::Add | DiffLineType::Context))
+            .count();
+        assert_eq!(recount, 3, "the parser dropped two blank context lines");
+
+        assert_eq!(hunk_new_line_span(&hunk), 1..6);
+        // Lines 4 and 5 exist in the new file and the recount would have lost
+        // both of them.
+        assert!(hunk_covers_new_lines(&hunk, &(4..5)));
+        assert!(hunk_covers_new_lines(&hunk, &(5..6)));
+        assert!(!hunk_covers_new_lines(&hunk, &(6..7)));
+    }
+
+    /// A pure deletion occupies no new-file line at all. It is anchored on the
+    /// line *after* the gap, which is where the editor draws its marker, and
+    /// deliberately does not claim `new_start_line` — that line belongs to
+    /// whatever hunk really contains it.
+    #[test]
+    fn pure_deletion_anchors_on_the_line_after_the_gap() {
+        // @@ -3,2 +2,0 @@ -- the gap after new line 2.
+        let deletion = hunk(
+            2,
+            0,
+            vec![line(DiffLineType::Delete), line(DiffLineType::Delete)],
+        );
+
+        assert_eq!(hunk_new_line_span(&deletion), 3..4);
+        // The editor reports a deletion gutter hunk as the empty 0-indexed
+        // range `2..2`, which converts to the empty 1-indexed `3..3`; an empty
+        // request is a point query, not a match against nothing.
+        assert!(hunk_covers_new_lines(&deletion, &(3..3)));
+        assert!(hunk_covers_new_lines(&deletion, &(3..4)));
+        assert!(!hunk_covers_new_lines(&deletion, &(2..3)));
+    }
+
+    /// Under `diff.context=0` two pure deletions land one new-file line apart.
+    /// With `.max(1)` padding and an inclusive `requested_start <= hunk_end`
+    /// against a one-past-the-end bound they overlapped, and the click on the
+    /// second staged the first.
+    #[test]
+    fn context_zero_adjacent_deletions_resolve_to_distinct_hunks() {
+        // @@ -3,2 +2,0 @@
+        let first = hunk(
+            2,
+            0,
+            vec![line(DiffLineType::Delete), line(DiffLineType::Delete)],
+        );
+        // @@ -6,2 +3,0 @@
+        let second = hunk(
+            3,
+            0,
+            vec![line(DiffLineType::Delete), line(DiffLineType::Delete)],
+        );
+
+        let hunks = [first, second];
+
+        let click_on_first = 3..3;
+        assert!(hunk_covers_new_lines(&hunks[0], &click_on_first));
+        assert!(!hunk_covers_new_lines(&hunks[1], &click_on_first));
+
+        let click_on_second = 4..4;
+        assert!(!hunk_covers_new_lines(&hunks[0], &click_on_second));
+        assert!(hunk_covers_new_lines(&hunks[1], &click_on_second));
+
+        // `find` must reach the second hunk, not stop at the first.
+        let resolved = hunks
+            .iter()
+            .position(|h| hunk_covers_new_lines(h, &click_on_second));
+        assert_eq!(resolved, Some(1));
+    }
+
+    /// The end convention is exclusive: hunks that abut in the new file share
+    /// no line. This is the case the old `<=` comparison got wrong for every
+    /// hunk, not just the degenerate ones.
+    #[test]
+    fn abutting_hunks_share_no_line() {
+        let first = hunk(10, 11, vec![line(DiffLineType::Add)]);
+        let second = hunk(21, 1, vec![line(DiffLineType::Add)]);
+
+        assert_eq!(hunk_new_line_span(&first), 10..21);
+        assert_eq!(hunk_new_line_span(&second), 21..22);
+
+        assert!(hunk_covers_new_lines(&first, &(20..21)));
+        assert!(!hunk_covers_new_lines(&first, &(21..22)));
+        assert!(hunk_covers_new_lines(&second, &(21..22)));
+        assert!(!hunk_covers_new_lines(&second, &(20..21)));
+    }
+
+    /// The span and the `@@` header `git apply` is handed must describe the
+    /// same lines. Re-deriving one of them from `lines` is how they diverged.
+    #[test]
+    fn span_length_matches_the_header_count_hunk_to_patch_emits() {
+        let hunk = hunk(
+            7,
+            3,
+            vec![
+                line(DiffLineType::Context),
+                line(DiffLineType::Delete),
+                line(DiffLineType::Add),
+                line(DiffLineType::Context),
+            ],
+        );
+        let span = hunk_new_line_span(&hunk);
+        assert_eq!(span.end - span.start, hunk.new_line_count);
+
+        let patch = super::hunk_to_patch(std::path::Path::new("a.txt"), &hunk);
+        assert!(
+            patch.contains("@@ -1,1 +7,3 @@"),
+            "header disagrees with span: {patch}"
+        );
+    }
+}

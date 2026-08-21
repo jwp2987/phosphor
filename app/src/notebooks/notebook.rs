@@ -1523,6 +1523,9 @@ impl NotebookView {
     ///
     /// Used for code paths such as link opening, where we are often trying to open notebooks before
     /// the initial response from the server has completed.
+    ///
+    /// See [`NotebookLoadRoute`] for how the three outcomes are chosen; the choice is factored out
+    /// so it can be tested without driving a window.
     pub fn wait_for_initial_load_then_load(
         &mut self,
         notebook_id: SyncId,
@@ -1549,23 +1552,33 @@ impl NotebookView {
                             .is_none()
                     })
                     .unwrap_or(false);
-            if fetch_needed {
-                if let Some(server_id) = notebook_id.into_server() {
+            let route = NotebookLoadRoute::resolve(notebook_id, notebook.is_some(), fetch_needed);
+            match (route, notebook) {
+                (NotebookLoadRoute::Fetch(server_id), _) => {
                     me.fetch_and_load_notebook(server_id, &settings, window_id, ctx);
-                } else {
-                    log::warn!("Tried to load notebook without server id {notebook_id:?}");
                 }
-            } else if let Some(notebook) = notebook {
-                me.load(notebook, &settings, ctx);
-            } else {
-                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                    toast_stack.add_ephemeral_toast_by_type(
-                        ToastType::StoredObjectNotFound,
-                        window_id,
-                        ctx,
-                    );
-                });
-                log::warn!("Tried to open unknown notebook {notebook_id:?}");
+                (NotebookLoadRoute::LoadFromMemory, Some(notebook)) => {
+                    if fetch_needed {
+                        log::warn!(
+                            "Loading notebook {notebook_id:?} from the local store: it has no \
+                             server id, so the fetch its settings asked for is impossible"
+                        );
+                    }
+                    me.load(notebook, &settings, ctx);
+                }
+                // `LoadFromMemory` without a notebook cannot be produced by `resolve`, but
+                // routing it here keeps the failure visible rather than silent if that ever
+                // changes.
+                (NotebookLoadRoute::LoadFromMemory, None) | (NotebookLoadRoute::NotFound, _) => {
+                    ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        toast_stack.add_ephemeral_toast_by_type(
+                            ToastType::StoredObjectNotFound,
+                            window_id,
+                            ctx,
+                        );
+                    });
+                    log::warn!("Tried to open unknown notebook {notebook_id:?}");
+                }
             }
         });
     }
@@ -2408,5 +2421,128 @@ impl BackingView for NotebookView {
 
         self.focus_handle = Some(focus_handle.clone());
         self.context_menu.set_focus_handle(focus_handle);
+    }
+}
+
+/// How [`NotebookView::wait_for_initial_load_then_load`] resolves a requested notebook once the
+/// initial object-store load has completed.
+///
+/// Zap: `StoredObject::set_server_id` (`cloud_object/mod.rs`) has no call sites in this fork --
+/// both of the pin's lived in the dropped cloud layer -- so an object created here keeps its
+/// [`SyncId::ClientId`] for life and [`SyncId::into_server`] returns `None` for it. Only an id
+/// that arrived already server-shaped can take the [`Self::Fetch`] route, and in practice that
+/// means a warp.dev Drive link, which `DECLINED.md` keeps as deliberate dead code.
+///
+/// Everything else must therefore resolve against the copy already in memory or fail where the
+/// user can see it. The arm this replaced did neither: it logged a `log::warn` and stopped, so a
+/// notebook that could not be produced dead-ended in an empty pane with no toast, and -- because
+/// `fetch_needed` is also true whenever `settings.focused_folder_id` fails to resolve, which it
+/// always does once no object carries a server id -- a notebook that *was* sitting in the store,
+/// fetched out one line earlier, was thrown away with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotebookLoadRoute {
+    /// Ask the update manager for the object by server id, then load what arrives.
+    Fetch(ServerId),
+    /// Load the copy the object store already holds.
+    LoadFromMemory,
+    /// Nothing local or remote can produce this notebook; tell the user so.
+    NotFound,
+}
+
+impl NotebookLoadRoute {
+    /// `fetch_needed` is the caller's verdict that the store's copy is missing or stale.
+    /// A fetch can only honour that verdict when there is a server id to fetch by; without one
+    /// the verdict is unactionable, and the copy in memory -- if there is one -- is strictly
+    /// better than nothing.
+    fn resolve(notebook_id: SyncId, notebook_in_memory: bool, fetch_needed: bool) -> Self {
+        if fetch_needed && let Some(server_id) = notebook_id.into_server() {
+            Self::Fetch(server_id)
+        } else if notebook_in_memory {
+            Self::LoadFromMemory
+        } else {
+            Self::NotFound
+        }
+    }
+}
+
+#[cfg(test)]
+mod load_route_tests {
+    use super::{ClientId, NotebookLoadRoute, ServerId, SyncId};
+
+    fn client_id() -> SyncId {
+        SyncId::ClientId(ClientId::new())
+    }
+
+    fn server_id() -> (SyncId, ServerId) {
+        let id = ServerId::from(1234);
+        (SyncId::ServerId(id), id)
+    }
+
+    /// The reported defect: a notebook that is not in the store and has no server id used to
+    /// log a warning and stop, leaving an empty pane and no toast. It must now report not-found.
+    #[test]
+    fn missing_id_and_missing_notebook_reports_not_found() {
+        assert_eq!(
+            NotebookLoadRoute::resolve(client_id(), false, true),
+            NotebookLoadRoute::NotFound
+        );
+    }
+
+    /// The other half of the same arm: `fetch_needed` is true only because the settings named a
+    /// folder that cannot resolve, yet the notebook itself is right there. The unactionable
+    /// fetch verdict must not discard it.
+    #[test]
+    fn missing_id_with_notebook_in_memory_loads_it_instead_of_discarding_it() {
+        assert_eq!(
+            NotebookLoadRoute::resolve(client_id(), true, true),
+            NotebookLoadRoute::LoadFromMemory
+        );
+    }
+
+    /// A `ClientId` can never reach the fetch route, whatever the other inputs say. This is the
+    /// invariant that made the old arm unreachable-in-practice, and it is what makes the two
+    /// cases above the normal path rather than an edge case.
+    #[test]
+    fn client_id_never_routes_to_fetch() {
+        for notebook_in_memory in [false, true] {
+            for fetch_needed in [false, true] {
+                assert!(
+                    !matches!(
+                        NotebookLoadRoute::resolve(client_id(), notebook_in_memory, fetch_needed),
+                        NotebookLoadRoute::Fetch(_)
+                    ),
+                    "client id routed to a fetch \
+                     (in_memory={notebook_in_memory}, fetch_needed={fetch_needed})"
+                );
+            }
+        }
+    }
+
+    /// A pre-formed server id still fetches, and still does so in preference to a stale copy.
+    #[test]
+    fn server_id_still_fetches_when_a_fetch_is_needed() {
+        let (sync_id, id) = server_id();
+        assert_eq!(
+            NotebookLoadRoute::resolve(sync_id, false, true),
+            NotebookLoadRoute::Fetch(id)
+        );
+        assert_eq!(
+            NotebookLoadRoute::resolve(sync_id, true, true),
+            NotebookLoadRoute::Fetch(id)
+        );
+    }
+
+    /// When no fetch is needed the store's copy is used, regardless of id kind.
+    #[test]
+    fn no_fetch_needed_loads_from_memory() {
+        let (sync_id, _) = server_id();
+        assert_eq!(
+            NotebookLoadRoute::resolve(sync_id, true, false),
+            NotebookLoadRoute::LoadFromMemory
+        );
+        assert_eq!(
+            NotebookLoadRoute::resolve(client_id(), true, false),
+            NotebookLoadRoute::LoadFromMemory
+        );
     }
 }

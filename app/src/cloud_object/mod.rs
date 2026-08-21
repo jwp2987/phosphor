@@ -169,6 +169,19 @@ pub trait StoredObject: Debug {
     fn object_type_and_id(&self) -> ObjectTypeAndId;
 
     /// Sets the server id on this object.
+    ///
+    /// **Zap: this has no call sites.** Both of the pin's lived in the dropped cloud layer --
+    /// it was how an object learned the id the server had assigned it -- so in this fork every
+    /// object keeps the [`SyncId::ClientId`] it was created with, for life.
+    ///
+    /// The consequence is not local to this trait: any code that branches on
+    /// [`SyncId::into_server`] returning `Some` is, for objects created here, branching on
+    /// something that never happens. Two call sites had already collapsed such a branch
+    /// (`cloud_object::update_manager::grab_notebook_edit_access` and its counterpart); a third
+    /// had not, and dead-ended notebook loading (`notebooks::notebook::NotebookLoadRoute`).
+    /// Check for that shape before adding another `into_server` guard -- and do not assume the
+    /// compiler will warn you that this method is dead, because `lib.rs` carries a blanket
+    /// `#![allow(dead_code)]`.
     fn set_server_id(&mut self, server_id: ServerId);
 
     /// Returns whether this object can be moved to the given space.
@@ -670,6 +683,9 @@ where
         self.conflict_status = ConflictStatus::NoConflicts;
     }
 
+    /// Zap: unreachable in this fork -- see the trait declaration of
+    /// [`StoredObject::set_server_id`] for why, and for what to check before writing code that
+    /// depends on an object's id becoming a [`SyncId::ServerId`].
     fn set_server_id(&mut self, server_id: ServerId) {
         self.id = SyncId::ServerId(server_id);
     }
