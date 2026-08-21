@@ -6822,6 +6822,17 @@ file:line, and never build. **These are agent findings, independently verified
 only where noted.** Verify before acting — that rule applies to this section
 more than any other in this file.
 
+> **VERIFICATION IN PROGRESS (started 2026-08-21).** All 116 findings were
+> numbered and split across 16 independent verifier agents, each briefed to
+> CONFIRM / REFUTE / PARTIAL every claim in its batch, defaulting to REFUTED
+> where the evidence does not compel, and told explicitly that *confirming a
+> cited `file:line` exists is not verification — the claimed consequence must be
+> checked*. That rule exists because one finding here (the `dead_code` entry)
+> cited a real attribute at a real line, compared it correctly against the pin,
+> and drew a conclusion that was false; it is corrected in place below.
+> Verdicts are being written back against each item as they land. **Until an
+> item carries a verdict, treat it as an unverified lead.**
+
 Ordered by severity, not by area.
 
 ### Security / permission
