@@ -41,7 +41,8 @@
 //!   not merely unported** (#595; see `DECLINED.md`, "Oz platform plugins"). The pin
 //!   returns `true` here so `setup_harness_plugins` hard-fails the run unless
 //!   `orchestration@codex-warp` is installed and current — the reason given upstream
-//!   being that the unattended launch command bypasses hook trust globally, so it
+//!   being that the unattended launch command bypasses hook trust for the whole
+//!   invocation (see [`CODEX_BYPASS_HOOK_TRUST_FLAG`]), so it
 //!   would rather fail than run without the orchestration hooks. Those hooks report
 //!   into Oz's server-backed `oz run message *` mailbox, which this fork replaced
 //!   with a local on-disk one (`crates/warp_cli/src/agent_mailbox.rs`), so porting
@@ -87,8 +88,36 @@ pub(crate) struct CodexHarness;
 
 /// Slash command Codex's TUI recognises as a graceful shutdown.
 const CODEX_EXIT_COMMAND: &str = "/exit";
-/// Allow the Zap-installed Codex plugin hooks to run in vetted driver sessions
-/// without requiring an unattended `/hooks` review step.
+/// Suppresses Codex's per-hash hook-trust review for one invocation.
+///
+/// **Its scope is the invocation, not the Zap plugin.** Codex records hook trust
+/// against a hook's current hash, so new or changed hooks are marked for review and
+/// *skipped* until trusted; this flag runs every enabled hook without requiring that
+/// persisted trust, for that invocation. Enabled hooks include project-local
+/// `<repo>/.codex/hooks.json` — which load only when the project `.codex/` layer is
+/// trusted, and [`prepare_codex_config_toml`] has just marked the working dir *and
+/// every child git repo* `trusted`. So a driver run does execute a checkout's own
+/// hooks without review. That is accepted here, not overlooked; see below.
+///
+/// **Why it is load-bearing.** Installing a plugin does not trust its hooks either:
+/// Codex skips plugin-bundled hooks until the definition is reviewed via `/hooks`.
+/// `AgentDriver::setup_harness` installs or updates `warp@codex-warp` immediately
+/// before launch, so on exactly the runs that matter the plugin's hooks are new or
+/// changed. Those hooks emit the `SessionStart` event that
+/// [`CodexHarnessRunner::handle_session_update`] reads to capture the session id, and
+/// an unattended driver session has nobody to answer `/hooks`. Drop the flag and the
+/// hooks are skipped, the session id is never captured, and both `resume` and
+/// `save_conversation`'s rollout lookup lose their input.
+///
+/// **Why the exposure is accepted.** The `--dangerously-bypass-approvals-and-sandbox`
+/// on the same line already lets the agent run that checkout's code unsandboxed and
+/// unapproved, so hook trust is not the boundary keeping a hostile repo out — it is a
+/// second door into a room whose first door this command opens on purpose. Inherited:
+/// the pin passes this flag just as unconditionally (`42effe840:codex.rs:192,197`),
+/// and its `requires_verified_platform_plugin` gate — declined here, see the module
+/// doc and #595 — checked plugin *installation* and never conditioned the flag.
+/// Recorded as a decision in `DECLINED.md`, "Codex hook-trust bypass", which also
+/// states what would have to change for this fork to stop passing it.
 const CODEX_BYPASS_HOOK_TRUST_FLAG: &str = "--dangerously-bypass-hook-trust";
 
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
@@ -196,8 +225,13 @@ impl ThirdPartyHarness for CodexHarness {
 ///
 /// `--dangerously-bypass-approvals-and-sandbox` disables both the sandbox and approval
 /// prompts so the agent can run autonomously.
-/// `--dangerously-bypass-hook-trust` allows the orchestration plugin hooks installed by
-/// Zap to run without a manual hook review in unattended driver sessions.
+/// `--dangerously-bypass-hook-trust` suppresses hook-trust review for the whole
+/// invocation — every enabled hook source, not just a plugin's. See
+/// [`CODEX_BYPASS_HOOK_TRUST_FLAG`] for what that covers, why this fork still passes
+/// it, and where the decision is recorded. The pin's sentence here — "Driver setup
+/// verifies the Codex platform plugin before launching commands with this flag" — is
+/// deliberately not carried over: that verification is declined (#595), and it gated
+/// the *run*, never this flag.
 /// `Some(session_id)` indicates that we want to resume that prior session. Unlike claude,
 /// codex does not support assigning a session_id to a new conversation.
 fn codex_command(cli_name: &str, session_id: Option<&Uuid>, prompt_path: &str) -> String {

@@ -7330,7 +7330,7 @@ claim, which was wrong by four.
 
 ### Refutation round — second wave
 
-- [ ] 🔴 **Codex is launched with `--dangerously-bypass-hook-trust` and the fork
+- [x] 🔴 **Codex is launched with `--dangerously-bypass-hook-trust` and the fork
       deleted the only gate the pin paired with it.**
       `ai/agent_sdk/driver/harness/codex.rs:92,206,211` always passes the flag. The
       pin's identical line is guarded by `requires_verified_platform_plugin()` →
@@ -7343,6 +7343,8 @@ claim, which was wrong by four.
       "bypasses hook trust globally".** Every driver-launched Codex run executes
       repo-declared hooks with trust review disabled.
       **VERDICT PARTIAL — impact misattributed (independent verifier, 2026-08-21):** The fork does pass the flag unconditionally (`codex.rs:92,206,211`) and lacks `requires_verified_platform_plugin`. **But the pin passes it just as unconditionally** (`42effe840:.../codex.rs:192,197`) — its gate required plugin INSTALLATION and never conditioned the flag. So the hook-trust bypass is identical at the pin and "deleted the only gate" misattributes the impact. The dropped doc sentence (pin `:184-185`) is confirmed.
+
+      **RESOLVED 2026-08-21 — DECLINED, and the flag's semantics were established from Codex's docs rather than its name.** Hook trust is **per-hash** and the flag is **invocation-scoped, not plugin-scoped** — both fork comments claimed otherwise. **This entry's supporting quote was circular:** "whose own text says it bypasses hook trust globally" quoted the *fork's* own comment at `codex.rs:44`, not Codex's documentation. **The impact was misattributed AND understated:** the pin passes the flag identically (`42effe840:codex.rs:192,197`) and its declined gate checked plugin *installation*, never the flag — while the real enabler of repo-hook execution is `prepare_codex_config_toml` writing `trust_level = "trusted"` for the working dir *and every child git repo* (`codex.rs:648-655`), which the pin also does. **Not removable:** `setup_harness` installs/updates `warp@codex-warp` right before launch, so its hooks are unreviewed-by-hash on every driver run, and they emit the `SessionStart` that captures the session id; removing the flag skips them and `resume` loses its input. **Marginal exposure ≈ nil** beside `--dangerously-bypass-approvals-and-sandbox` on the same line. Rationale written into `codex.rs:91-121`, and the pin's dropped "driver setup verifies the platform plugin" sentence is now explicitly accounted for at `:228-234` rather than silently absent. New `DECLINED.md` row.
 
 - [x] 🔴 **MCP "Log out" silently keeps OAuth tokens.**
       `ai/mcp/templatable_manager/oauth.rs:600-612` handles only `get_template_uuid`,
