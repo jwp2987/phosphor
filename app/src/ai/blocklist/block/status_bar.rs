@@ -10,6 +10,7 @@ use super::{
     },
 };
 use crate::{ai::agent_tips::AITipModel, terminal::input::buffer_model::InputBufferUpdateEvent};
+use crate::uri::link_policy::openable_app_content_url;
 use crate::{
     ai::blocklist::agent_view::{
         agent_view_bg_fill, child_agent_status_card::ChildAgentStatusCard, AgentMessageBar,
@@ -943,7 +944,21 @@ fn render_agent_tip(tip: &AgentTip, app: &AppContext) -> Box<dyn Element> {
                     },
                     app
                 );
-                app.open_url(url);
+                // An agent tip is app content: `AGENT_TIPS` is a static list and every `link` in
+                // it is a compile-time constant, so the own scheme here is not an escalation --
+                // whoever wrote the URL already runs as the app. What this refuses is a
+                // `file:`/`javascript:`/unregistered-scheme constant, which is a bug we want
+                // reported rather than handed to an OS handler. If tips ever start arriving from
+                // a server, this call must become `openable_untrusted_content_url`.
+                //
+                // Refusal is logged rather than shown: this click handler holds only
+                // `&AppContext`, which cannot update the `ToastStack` model.
+                match openable_app_content_url(url) {
+                    Ok(url) => app.open_url(url.as_str()),
+                    Err(blocked) => {
+                        log::warn!("Refused to open an agent tip link: {}", blocked.log_text())
+                    }
+                }
             }
             HyperlinkLens::Action(action_ref) => {
                 if let Some(action) = action_ref

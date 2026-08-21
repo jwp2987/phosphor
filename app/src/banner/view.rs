@@ -19,7 +19,11 @@ use warpui::{
     ViewContext,
 };
 
-use crate::{appearance::Appearance, ui_components::icons::Icon};
+use crate::{
+    appearance::Appearance,
+    ui_components::icons::Icon,
+    uri::link_policy::{openable_app_content_url, report_blocked_link},
+};
 use pathfinder_geometry::vector::Vector2F;
 
 const CLOSE_BUTTON_DIAMETER: f32 = 20.;
@@ -274,7 +278,28 @@ impl<T: Action + Clone> TypedActionView for Banner<T> {
             }
             BannerAction::HyperlinkClick(hyperlink) => {
                 ctx.notify();
-                ctx.open_url(&hyperlink.url);
+                // Banner text is app content, and deliberately so: every construction site in
+                // the tree (`terminal/view.rs`, `pane_group/mod.rs`,
+                // `terminal/view/shared_session/adapter.rs`) builds it out of `crate::t!`
+                // strings and `const` URLs, and a banner that needs to drive the app in-process
+                // uses `FormattedTextFragment::hyperlink_action` -- a typed action -- rather
+                // than a URL. So the own scheme stays allowed here: refusing it would break a
+                // legitimate in-app deep link without removing any capability an attacker has,
+                // because none of this text is attacker-authored.
+                //
+                // That reasoning is an invariant about the *callers*, not about this widget. A
+                // caller that ever passes model-, server- or repository-derived text must switch
+                // this to `openable_untrusted_content_url`, which is what the AI-block and
+                // context-chip sinks use.
+                //
+                // What is closed regardless is the scheme allow-list: `file:`, `javascript:`,
+                // `data:` and unregistered schemes no longer reach an OS handler. The pinned
+                // oracle opens `hyperlink.url` unchecked (`banner/view.rs:288` at `42effe840`);
+                // do not restore that during a re-pin.
+                match openable_app_content_url(&hyperlink.url) {
+                    Ok(url) => ctx.open_url(url.as_str()),
+                    Err(blocked) => report_blocked_link(&blocked, ctx),
+                }
             }
             BannerAction::Action(action) => {
                 ctx.emit(BannerEvent::Action(action.clone()));

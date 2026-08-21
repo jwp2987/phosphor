@@ -23,6 +23,7 @@ use crate::terminal::model_events::ModelEventDispatcher;
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
+use crate::uri::link_policy::{openable_untrusted_content_url, report_blocked_link};
 use crate::util::bindings::keybinding_name_to_display_string;
 use crate::util::truncation::truncate_from_beginning;
 use crate::view_components::action_button::{ActionButtonTheme, NakedTheme};
@@ -2247,7 +2248,18 @@ impl TypedActionView for DisplayChip {
                 self.handle_action(&DisplayChipAction::ToggleMenu, ctx);
             }
             DisplayChipAction::OpenGithubPullRequest(url) => {
-                ctx.open_url(url);
+                // This chip's text is *not* app-composed, which is what separates it from the
+                // banner sink: it is the pull-request URL `GitHubRepoModel` derived for whatever
+                // repository is checked out, i.e. it follows from that checkout's remote
+                // configuration and from what the GitHub API returned. Cloning a hostile
+                // repository is enough to influence it, so it takes the untrusted-content
+                // policy -- own scheme included, since `UriHost::Launch` would turn a clone into
+                // a process launch. Ahead of the pinned oracle, which opens `url` unchecked
+                // (`display_chip.rs:2243` at `42effe840`); do not restore that on a re-pin.
+                match openable_untrusted_content_url(url) {
+                    Ok(url) => ctx.open_url(url.as_str()),
+                    Err(blocked) => report_blocked_link(&blocked, ctx),
+                }
             }
         }
     }

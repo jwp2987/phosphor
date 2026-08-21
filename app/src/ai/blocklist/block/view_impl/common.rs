@@ -48,6 +48,7 @@ use super::{add_highlights_to_rich_text, add_highlights_to_text, output::LinkAct
 use crate::ai::agent::MessageId;
 use crate::terminal::find::BlockListMatch;
 use crate::terminal::grid_renderer::{FOCUSED_MATCH_COLOR, MATCH_COLOR};
+use crate::uri::link_policy::openable_untrusted_content_url;
 use crate::{
     ai::{
         agent::{conversation::AIConversation, icons, ShellCommandDelay},
@@ -2589,6 +2590,34 @@ fn render_legacy_table_section(
         .finish()
 }
 
+/// Open a hyperlink the user clicked inside AI-block markdown.
+///
+/// This is the default click handler for hyperlinks in **model-authored** content -- the markdown
+/// an AI block renders, tables included -- and it fires on a plain click with no modifier. Before
+/// this guard it was `app.open_url(&hyperlink.url)`: a model could emit
+/// `[click me](file:///etc/passwd)`, `javascript:`, `ms-msdt:` or `phosphor://launch/<config>`
+/// and the OS handler would take it. `set_before_open_url` does not help, because its callback
+/// returns `String` and so cannot veto an open; the guard has to be here.
+///
+/// The verdict comes from [`openable_untrusted_content_url`], the one shared policy, and the
+/// approved `Url` is what gets opened -- not the original string, so there is no second parse
+/// that could disagree with the one that was checked.
+///
+/// **Refusal is logged, not shown.** Unlike `AIBlock::open_link`, this handler is a free function
+/// reached with only `&AppContext` and an `EventContext`; neither can update the `ToastStack`
+/// model, and the element is built by several different views so there is no one typed action to
+/// dispatch. A silent no-op is unfortunate, and the honest fix is a toast affordance reachable
+/// from a render-time click handler rather than an invented one here.
+fn open_ai_content_hyperlink(uri: &str, app: &AppContext) {
+    match openable_untrusted_content_url(uri) {
+        Ok(url) => app.open_url(url.as_str()),
+        Err(blocked) => log::warn!(
+            "Refused to open a link from AI block content: {}",
+            blocked.log_text()
+        ),
+    }
+}
+
 fn render_table_cell(props: TableCellProps, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let mut cell_element = FormattedTextElement::new(
@@ -2614,7 +2643,7 @@ fn render_table_cell(props: TableCellProps, app: &AppContext) -> Box<dyn Element
     )
     .set_selectable(props.selectable)
     .register_default_click_handlers(|hyperlink, _, app| {
-        app.open_url(&hyperlink.url);
+        open_ai_content_hyperlink(&hyperlink.url, app);
     });
     cell_element.add_styles(0, props.highlights);
     cell_element.finish()
@@ -3801,6 +3830,88 @@ pub(crate) fn render_scrollable_collapsible_content(
             })
             .finish(),
     )
+}
+
+/// Coverage for the AI-block hyperlink click policy. These live inline rather than in
+/// `common_tests.rs` so the handler, the reason it is strict and its coverage stay together.
+///
+/// The assertions are on the decision function the handler consults, because the handler itself
+/// is `&AppContext` -> side effect: opening a URL for real is exactly what must not happen in a
+/// test, and there is no seam to observe it through. Keeping the handler a two-line wrapper over
+/// a pure verdict is what makes that acceptable -- if it grows a second decision, it needs a
+/// seam.
+#[cfg(test)]
+mod ai_content_link_policy_tests {
+    use super::openable_untrusted_content_url;
+    use crate::{uri::link_policy::BlockedContentLink, ChannelState};
+
+    /// A model writes `[click me](javascript:...)`; a plain click used to hand it to the OS.
+    #[test]
+    fn script_urls_are_refused() {
+        for uri in [
+            "javascript:alert(1)",
+            "JaVaScRiPt:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+        ] {
+            assert!(
+                matches!(
+                    openable_untrusted_content_url(uri),
+                    Err(BlockedContentLink::DisallowedScheme(_))
+                ),
+                "{uri} must not open from an AI block"
+            );
+        }
+    }
+
+    #[test]
+    fn file_urls_are_refused() {
+        for uri in ["file:///etc/passwd", "file://attacker.example/share/x"] {
+            assert!(
+                matches!(
+                    openable_untrusted_content_url(uri),
+                    Err(BlockedContentLink::DisallowedScheme(_))
+                ),
+                "{uri} must not open from an AI block"
+            );
+        }
+    }
+
+    /// The own scheme is the one that does more than open a document: `UriHost::Launch` runs
+    /// whatever the named launch configuration defines.
+    #[test]
+    fn own_scheme_is_refused() {
+        for path in [
+            "launch/my-config",
+            "action/open_file_editor?path=/etc/passwd",
+        ] {
+            let uri = format!("{}://{path}", ChannelState::url_scheme());
+            assert_eq!(
+                openable_untrusted_content_url(&uri),
+                Err(BlockedContentLink::DisallowedScheme(
+                    ChannelState::url_scheme().to_owned()
+                )),
+                "{uri} must not be one click away from a model"
+            );
+        }
+    }
+
+    /// The guard has to leave ordinary links working, or it is just a broken feature.
+    #[test]
+    fn https_links_still_open() {
+        let url = openable_untrusted_content_url("https://example.com/docs?page=2")
+            .expect("an https link in an AI block must still open");
+        assert_eq!(url.as_str(), "https://example.com/docs?page=2");
+    }
+
+    /// "Not a URL" must stay distinguishable from "refused scheme": collapsing the two is the
+    /// shape of the original bug.
+    #[test]
+    fn non_urls_are_reported_separately() {
+        assert_eq!(
+            openable_untrusted_content_url("see the docs"),
+            Err(BlockedContentLink::NotAUrl)
+        );
+    }
 }
 
 #[cfg(test)]

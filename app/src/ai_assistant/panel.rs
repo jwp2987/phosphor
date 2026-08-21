@@ -33,6 +33,7 @@ use crate::send_telemetry_from_ctx;
 use crate::server::telemetry::{TelemetryEvent, WarpAIActionType};
 use crate::terminal::resizable_data::{ModalType, ResizableData, DEFAULT_WARP_AI_WIDTH};
 use crate::ui_components::blended_colors;
+use crate::uri::link_policy::{openable_untrusted_content_url, report_blocked_link};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 use crate::ui_components::buttons::icon_button;
@@ -1049,7 +1050,14 @@ impl TypedActionView for AIAssistantPanelView {
                 send_telemetry_from_ctx!(TelemetryEvent::UsedWarpAIPreparedPrompt { prompt }, ctx);
             }
             ClickedUrl(url) => {
-                ctx.open_url(&url.url);
+                // Same provenance as the transcript's `ClickedUrl`: a hyperlink out of the
+                // assistant's model-authored markdown, opened on a plain click. Untrusted, so
+                // the own scheme is refused along with `file:`, `javascript:` and friends.
+                // Ahead of the pinned oracle (`panel.rs:1051` at `42effe840` opens it raw).
+                match openable_untrusted_content_url(&url.url) {
+                    Ok(url) => ctx.open_url(url.as_str()),
+                    Err(blocked) => report_blocked_link(&blocked, ctx),
+                }
             }
             CopyAnswerToClipboard(content) => {
                 ctx.clipboard()

@@ -170,6 +170,7 @@ use crate::notebooks::editor::view::{EditorViewEvent, RichTextEditorView};
 use crate::settings_view::SettingsSection;
 use crate::terminal::model::session::active_session::{ActiveSession, ActiveSessionEvent};
 use crate::terminal::{ShellLaunchData, TerminalView};
+use crate::uri::link_policy::{openable_untrusted_content_url, report_blocked_link};
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkAIConversationParams, ForkedConversationDestination, WorkspaceAction};
 use crate::{report_error, report_if_error, ToastStack};
@@ -4612,9 +4613,16 @@ impl AIBlock {
         ctx: &mut ViewContext<Self>,
     ) {
         match self.detected_links_state.link_at(location, link_range) {
-            Some(DetectedLinkType::Url(link)) => {
-                ctx.open_url(link);
-            }
+            // `DetectedLinkType::Url` is a URL *detected in the block's rich content*, i.e. text
+            // the model wrote, and this arm ran on a plain click with no scheme check at all.
+            // The verdict is the shared untrusted-content policy: the own scheme is refused here
+            // because it reaches `UriHost::Launch`, which starts every tab and command a launch
+            // configuration defines. Ahead of the pinned oracle, which opens `link` unchecked
+            // (`block.rs:5284` at `42effe840`); do not restore that during a re-pin.
+            Some(DetectedLinkType::Url(link)) => match openable_untrusted_content_url(link) {
+                Ok(url) => ctx.open_url(url.as_str()),
+                Err(blocked) => report_blocked_link(&blocked, ctx),
+            },
             #[cfg(feature = "local_fs")]
             Some(DetectedLinkType::FilePath {
                 absolute_path,
@@ -6253,7 +6261,13 @@ impl TypedActionView for AIBlock {
                 });
             }
             AIBlockAction::OpenCommentInGitHub { url } => {
-                ctx.open_url(url);
+                // The URL comes off an imported code-review comment, i.e. out of the GitHub API
+                // for whatever repository is checked out -- remote-authored, not composed here,
+                // so it gets the untrusted-content policy rather than a bare `open_url`.
+                match openable_untrusted_content_url(url) {
+                    Ok(url) => ctx.open_url(url.as_str()),
+                    Err(blocked) => report_blocked_link(&blocked, ctx),
+                }
             }
             AIBlockAction::ViewScreenshot { action_id } => {
                 // Collect all UseComputer action IDs across the entire conversation

@@ -99,6 +99,12 @@ common-free = Free
 common-list-prefix = {" - "}
 common-current-directory = the current directory
 
+# Refusing to open a link whose scheme is not in the openable allow-list, and refusing a string
+# that is not a URL at all. Shared across every surface that opens a link out of content:
+# AI blocks, the AI assistant transcript, banners and context chips (app/src/uri/link_policy.rs).
+common-toast-link-invalid = Blocked link: not a valid URL
+common-toast-link-blocked-scheme = Blocked link: { $scheme }: links of this kind aren't opened here
+
 # =============================================================================
 # SECTION: agent-management (Owner: agent-i18n-remaining)
 # Files: app/src/ai/agent_management/**

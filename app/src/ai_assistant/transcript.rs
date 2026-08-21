@@ -29,6 +29,7 @@ use crate::{
     send_telemetry_from_ctx,
     server::telemetry::{SaveAsWorkflowModalSource, TelemetryEvent, WarpAIActionType},
     ui_components::blended_colors,
+    uri::link_policy::{openable_untrusted_content_url, report_blocked_link},
 };
 
 use super::panel::HEADER_HEIGHT;
@@ -165,7 +166,16 @@ impl TypedActionView for Transcript {
             }
             OpenWorkflowModal(code_block_index) => self.open_workflow_modal(*code_block_index, ctx),
             ClickedUrl(url) => {
-                ctx.open_url(&url.url);
+                // The URL comes from a hyperlink in the assistant's own markdown answer -- the
+                // model wrote it -- and `register_default_click_handlers` fires this on a plain
+                // click. So it takes the untrusted-content policy, including the refusal of the
+                // app's own scheme, which reaches `UriHost::Launch` and would let an answer
+                // start whatever a launch configuration defines. Ahead of the pinned oracle,
+                // which opens `url.url` unchecked (`transcript.rs:163` at `42effe840`).
+                match openable_untrusted_content_url(&url.url) {
+                    Ok(url) => ctx.open_url(url.as_str()),
+                    Err(blocked) => report_blocked_link(&blocked, ctx),
+                }
             }
             ClickedCodeBlock { code_block_index } => {
                 self.selected_code_block = Some(*code_block_index);
