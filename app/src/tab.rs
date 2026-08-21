@@ -230,6 +230,12 @@ impl TabMoveGating {
     /// List-bounds-only gating, i.e. what every caller did before
     /// `Workspace::can_move_tab` existed. Test-only on purpose: production
     /// callers have a `Workspace` and must ask it instead.
+    ///
+    /// `#[cfg(test)]` keeps production off this path, but it cannot prove the
+    /// production builders are wired to the right gating -- that is what
+    /// `move_tab_gating_tests::test_tab_context_menu_omits_a_move_entry_the_action_would_refuse`
+    /// checks, by reading the entries `toggle_tab_right_click_menu` actually
+    /// sets rather than by re-asking the predicate.
     #[cfg(test)]
     pub fn from_list_bounds(index: usize, tabs_len: usize) -> Self {
         Self {

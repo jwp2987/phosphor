@@ -11963,7 +11963,11 @@ impl Workspace {
                 let neighbor = &self.tabs[first - 1];
                 // This group can only move up/left if it is pinned or the
                 // item before it is not pinned.
-                group_pinned || !self.is_tab_effectively_pinned(neighbor)
+                Self::pinned_step_allowed(
+                    group_pinned,
+                    self.is_tab_effectively_pinned(neighbor),
+                    direction,
+                )
             }
             TabMovement::Right => {
                 // Group can not move down/right if it is the last item.
@@ -11971,9 +11975,13 @@ impl Workspace {
                     return false;
                 }
                 let neighbor = &self.tabs[last + 1];
-                // This group can only move down.right if it is not pinned
+                // This group can only move down/right if it is not pinned
                 // or the item after it is pinned.
-                !group_pinned || self.is_tab_effectively_pinned(neighbor)
+                Self::pinned_step_allowed(
+                    group_pinned,
+                    self.is_tab_effectively_pinned(neighbor),
+                    direction,
+                )
             }
         }
     }
@@ -13289,20 +13297,55 @@ impl Workspace {
         });
     }
 
+    /// The pinned-boundary rule for a *directional* one-slot move, shared by
+    /// `can_move_tab` and `can_move_tab_group` so the tab-level and group-level
+    /// moves cannot drift apart. This is the one spelling of that policy;
+    /// `42effe840` spells it out twice, identically, at `view.rs:7580` (groups)
+    /// and `view.rs:14168` (tabs).
+    ///
+    /// Deliberately asymmetric rather than `mover_pinned == neighbor_pinned`: a
+    /// pinned item may always step left and an unpinned item may always step
+    /// right, because either is a step *towards* the region that item belongs
+    /// in. On a healthy list -- a contiguous pinned prefix -- the two rules are
+    /// indistinguishable: the only mismatched neighbour is the boundary itself,
+    /// and both refuse there. They differ only once the prefix is already
+    /// broken, and there the asymmetry is what lets the misplaced item walk
+    /// back to its own side. That is a self-healing property, not sloppiness:
+    /// under strict equality a tab left on the wrong side of the boundary by an
+    /// older build (restore preserves saved order and `pinned` verbatim; every
+    /// other mutator clamps) is frozen in place for good, movable by neither
+    /// menu, keybinding, drag, nor the scripting API. A pinned *group* in that
+    /// position could already dig itself out, since `can_move_tab_group` was
+    /// ported with this rule intact -- a single tab could not.
+    ///
+    /// The drag path keeps the stricter equality test
+    /// ([`Self::tabs_share_pinned_region`]) on purpose; see there.
+    fn pinned_step_allowed(
+        mover_pinned: bool,
+        neighbor_pinned: bool,
+        direction: TabMovement,
+    ) -> bool {
+        match direction {
+            // Pinned tabs live at the front, so left is always toward the
+            // pinned region: refused only when it would push an unpinned item
+            // into the prefix.
+            TabMovement::Left => mover_pinned || !neighbor_pinned,
+            // Mirror image: right is always toward the unpinned region.
+            TabMovement::Right => !mover_pinned || neighbor_pinned,
+        }
+    }
+
     /// True when the tabs at `a` and `b` sit on the same side of the
     /// pinned/unpinned boundary, so exchanging them leaves the pinned prefix
     /// contiguous -- the invariant `pinned_boundary_index` and
     /// `clamp_to_unpinned_region` both assume.
     ///
-    /// This is the one spelling of that policy. The drag path enforced it while
-    /// `move_tab` enforced nothing, so the same reorder was refused by mouse and
-    /// allowed by menu or keybinding; `can_move_tab` and
-    /// `update_tab_index_from_drag` now both ask here.
-    ///
-    /// Marginally stricter than `42effe840`'s `can_move_tab`, which also permits
-    /// a pinned tab to step left past an unpinned one (and the mirror case on
-    /// the right). Those only differ once the pinned prefix is already broken,
-    /// and refusing there is what the fork's drag path has always done.
+    /// The drag path's rule, and only the drag path's. A drag names an
+    /// arbitrary destination index rather than stepping one slot, so "towards
+    /// the region I belong in" -- the relaxation [`Self::pinned_step_allowed`]
+    /// grants a menu or keyboard move -- is not defined for it, and equality is
+    /// the containment that is. `42effe840:view.rs:28726` draws the line in the
+    /// same place: strict on drag, asymmetric on the directional moves.
     fn tabs_share_pinned_region(&self, a: usize, b: usize) -> bool {
         let (Some(a), Some(b)) = (self.tabs.get(a), self.tabs.get(b)) else {
             return false;
@@ -13311,13 +13354,15 @@ impl Workspace {
     }
 
     /// True when reordering the tab at `index` one slot in `direction` is legal:
-    /// the slot exists, the move does not cross the pinned/unpinned boundary,
-    /// and it does not tear the tab out of its group.
+    /// the slot exists, the move does not push the tab across the
+    /// pinned/unpinned boundary away from the region it belongs in, and it does
+    /// not tear the tab out of its group.
     ///
     /// Ported from `42effe840:app/src/workspace/view.rs:14150`. Used by
     /// `move_tab` to no-op a blocked move and by the tab context menus to hide
     /// the entry rather than offer one that does nothing -- the same shape as
-    /// `can_move_tab_group`, which was ported with its call sites.
+    /// `can_move_tab_group`, which was ported with its call sites and whose
+    /// pinned rule this now literally shares ([`Self::pinned_step_allowed`]).
     pub(super) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
         let Some(tab) = self.tabs.get(index) else {
             return false;
@@ -13338,14 +13383,23 @@ impl Workspace {
         // this way at all; the group header's own move entries
         // (`can_move_tab_group`) are the affordance for that.
         //
-        // Flag-guarded for the same reason `is_tab_effectively_pinned` is: with
-        // grouping off, groups are not rendered and a stale persisted `group_id`
-        // must not start refusing moves.
-        if FeatureFlag::GroupedTabs.is_enabled() && tab.group_id.is_some() {
+        // Not flag-guarded, matching `42effe840`. The stale-`group_id` state a
+        // guard would defend against cannot exist at rest: `tab_groups` is only
+        // populated when `GroupedTabs` is on, and every restored `group_id` is
+        // filtered through `tab_groups.contains_key`. What the guard does
+        // create is real -- flip the flag off with groups still live in memory
+        // and `move_tab` falls back to plain swaps that land a tab inside a
+        // group's contiguous run, which is exactly the duplicate-header symptom
+        // this gating exists to prevent.
+        if tab.group_id.is_some() {
             return tab.group_id == neighbor.group_id;
         }
 
-        self.tabs_share_pinned_region(index, neighbor_index)
+        Self::pinned_step_allowed(
+            self.is_tab_effectively_pinned(tab),
+            self.is_tab_effectively_pinned(neighbor),
+            direction,
+        )
     }
 
     /// [`TabMoveGating`] for the tab at `index`, so a context menu only offers
@@ -13371,9 +13425,12 @@ impl Workspace {
         if !self.can_move_tab(index, direction) {
             return;
         }
-        let grouped_tabs_enabled = FeatureFlag::GroupedTabs.is_enabled();
         // The group the moved tab belongs to, so we can tell "reorder within my
-        // own group" from "hop over a different group".
+        // own group" from "hop over a different group". Not gated on
+        // `FeatureFlag::GroupedTabs`, for the reason `can_move_tab` documents:
+        // with the flag off mid-session the groups are still in memory, and a
+        // plain swap would split one. With no groups at all every arm below
+        // falls through to the ordinary one-step move anyway.
         let moved_group_id = self.tabs[index].group_id;
         // `can_move_tab` returned true, so `index` is in bounds and the
         // neighbour in `direction` exists: neither arm can underflow or run off
@@ -13385,7 +13442,7 @@ impl Workspace {
                 match self.tabs[neighbor].group_id {
                     // A different group sits to the left: target its first
                     // member so the tab lands just before the whole group.
-                    Some(group_id) if grouped_tabs_enabled && Some(group_id) != moved_group_id => {
+                    Some(group_id) if Some(group_id) != moved_group_id => {
                         group_member_index_range(&self.tabs, group_id)
                             .map_or(neighbor, |(first, _)| first)
                     }
@@ -13398,7 +13455,7 @@ impl Workspace {
                 match self.tabs[neighbor].group_id {
                     // A different group sits to the right: target its last
                     // member; the remove+insert leaves the tab just past it.
-                    Some(group_id) if grouped_tabs_enabled && Some(group_id) != moved_group_id => {
+                    Some(group_id) if Some(group_id) != moved_group_id => {
                         group_member_index_range(&self.tabs, group_id)
                             .map_or(neighbor, |(_, last)| last)
                     }
@@ -13415,9 +13472,14 @@ impl Workspace {
         self.hop_tab_to_index(index, target, ctx);
 
         if moving_active_tab {
-            // Re-run the activation path so the side effects a bare index
-            // rewrite skips still happen (MRU order, vertical-tabs
-            // scroll-to-tab, panel reconciliation).
+            // Same tab, new index. The one activation side effect that is
+            // index-dependent is the vertical-tabs panel's `scroll_to_tab`, and
+            // re-running the activation path is what keeps the moved tab in
+            // view there. The rest is already correct on this branch and the
+            // re-run is a no-op for it: the tab was active before the move, so
+            // it is already at the front of the MRU order and the panels and
+            // active session already point at its pane group. (`42effe840`
+            // omits this call and loses the scroll; the fork keeps it.)
             let new_active_tab_index = self.active_tab_index;
             self.set_active_tab_index(new_active_tab_index, ctx);
             send_telemetry_from_ctx!(TelemetryEvent::MoveActiveTab { direction }, ctx);
@@ -26540,6 +26602,131 @@ mod move_tab_gating_tests {
                 workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
                 workspace.handle_action(&WorkspaceAction::MoveTabRight(1), ctx);
                 assert_eq!(tab_order(workspace), before);
+            });
+        });
+    }
+
+    /// The `WorkspaceAction`s the *rendered* tab context menu carries for
+    /// `tab_index`, read back off the shared menu view after the production
+    /// builder has filled it.
+    fn rendered_tab_menu_actions(
+        workspace: &mut Workspace,
+        tab_index: usize,
+        ctx: &mut ViewContext<Workspace>,
+    ) -> Vec<WorkspaceAction> {
+        // `toggle_` closes an already-open menu; start from closed so each
+        // call opens one.
+        workspace.show_tab_right_click_menu = None;
+        workspace.toggle_tab_right_click_menu(
+            tab_index,
+            TabContextMenuAnchor::Pointer(Vector2F::zero()),
+            ctx,
+        );
+        workspace.tab_right_click_menu.read(ctx, |menu, _| {
+            menu.items()
+                .iter()
+                .filter_map(|item| item.item_on_select_action().cloned())
+                .collect()
+        })
+    }
+
+    #[test]
+    fn test_tab_context_menu_omits_a_move_entry_the_action_would_refuse() {
+        // Asserting on `tab_move_gating` only proves the predicate is right,
+        // not that the menu is built from it: `TabData::menu_items` still
+        // offers a bounds-only gating path (test-only, but it exists), so a
+        // production builder wired to the wrong index or the wrong gating would
+        // leave every predicate test green. This one goes through
+        // `toggle_tab_right_click_menu` and reads the items it actually set.
+        let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.add_terminal_tab(false, ctx);
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 3);
+                // [P0, U1, U2]: the boundary sits between tabs 0 and 1.
+                workspace.tabs[0].pinned = true;
+
+                // Tab 1 is the first unpinned tab. Moving it left would evict
+                // the pinned tab, so that entry must be absent -- while the
+                // move it *can* make is still offered.
+                let actions = rendered_tab_menu_actions(workspace, 1, ctx);
+                assert!(
+                    !actions
+                        .iter()
+                        .any(|action| matches!(action, WorkspaceAction::MoveTabLeft(_))),
+                    "the menu offered a move `move_tab` would refuse: {actions:?}"
+                );
+                assert!(
+                    actions
+                        .iter()
+                        .any(|action| matches!(action, WorkspaceAction::MoveTabRight(1))),
+                    "moving right is legal and must still be offered: {actions:?}"
+                );
+
+                // The pinned tab has no legal one-slot move at all: nothing to
+                // its left, and stepping right would leave the prefix. Under
+                // the bounds-only gating this replaced it was offered one.
+                let actions = rendered_tab_menu_actions(workspace, 0, ctx);
+                assert!(
+                    !actions.iter().any(|action| matches!(
+                        action,
+                        WorkspaceAction::MoveTabLeft(_) | WorkspaceAction::MoveTabRight(_)
+                    )),
+                    "the sole pinned tab has no legal one-slot move: {actions:?}"
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn test_a_pinned_tab_stranded_behind_an_unpinned_one_can_walk_back() {
+        // A workspace saved by a build without this gating can restore as
+        // `[U0, P1]` -- pinned prefix already broken, since restore replays the
+        // saved order and `pinned` verbatim. `pinned_step_allowed` is
+        // asymmetric precisely so the misplaced tab can step back into its own
+        // region and repair the prefix; strict equality would freeze it there
+        // permanently, reachable by neither menu, keybinding, nor drag.
+        let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 2);
+                // The broken state: unpinned first, pinned second.
+                workspace.tabs[1].pinned = true;
+                let unpinned = workspace.tabs[0].pane_group.id();
+                let pinned = workspace.tabs[1].pane_group.id();
+
+                assert!(
+                    workspace.can_move_tab(1, TabMovement::Left),
+                    "a pinned tab must be able to step left into its own region"
+                );
+                assert!(
+                    workspace.tab_move_gating(1).can_move_left,
+                    "and the menu must offer that repair"
+                );
+                // The mirror: the unpinned tab may step right, out of the way.
+                assert!(workspace.can_move_tab(0, TabMovement::Right));
+
+                workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
+                assert_eq!(
+                    tab_order(workspace),
+                    vec![pinned, unpinned],
+                    "the move must actually run, leaving a contiguous pinned prefix"
+                );
+                assert_eq!(workspace.pinned_boundary_index(&workspace.tabs), 1);
+
+                // Repaired: neither tab may now cross the boundary.
+                assert!(!workspace.can_move_tab(0, TabMovement::Right));
+                assert!(!workspace.can_move_tab(1, TabMovement::Left));
             });
         });
     }
