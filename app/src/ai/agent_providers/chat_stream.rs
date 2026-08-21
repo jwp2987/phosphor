@@ -475,7 +475,11 @@ fn build_user_message_with_binaries(
     let mut parts: Vec<ContentPart> = Vec::with_capacity(1 + binaries.len());
     parts.push(ContentPart::Text(text));
 
-    let mut error_replacements: Vec<(String, String)> = Vec::new();
+    // Rendered here rather than collected raw, because the only consumer is a log line and an
+    // attachment's file name is content: "Q3-layoffs-draft.pdf" names a project, a quarter and
+    // a decision. `snippet_or_shape_for_log` is the same tier boundary `binary_summary_for_log`
+    // uses for the same field on the request-dump path.
+    let mut error_replacements: Vec<String> = Vec::new();
     for bin in binaries {
         if !caps.supports_mime(&bin.content_type) {
             // Zap aligns with opencode's `unsupportedParts`
@@ -494,7 +498,11 @@ fn build_user_message_with_binaries(
             let err_text = format!(
                 "ERROR: Cannot read {name} (this model does not support {modality} input). Inform the user."
             );
-            error_replacements.push((bin.name.clone(), bin.content_type.clone()));
+            error_replacements.push(format!(
+                "name={} mime={}",
+                snippet_or_shape_for_log(&bin.name, 80),
+                bin.content_type
+            ));
             parts.push(ContentPart::Text(err_text));
             continue;
         }
@@ -2725,25 +2733,56 @@ fn json_value_for_log(value: &Value) -> (usize, String) {
     )
 }
 
-/// 64-bit FNV-1a rendered as 16 lowercase hex digits.
+/// A **per-process-keyed** 64-bit digest, rendered as 16 lowercase hex digits.
 ///
-/// Explicitly not a cryptographic hash and not standing in for one — nothing here gates a
-/// security decision. It only has to be *stable*, within a run and across runs, so that two
-/// `[byop-diag]` lines can be compared for "same string or not" without either line carrying
-/// the string. `DefaultHasher` happens to be stable today, but std does not promise that, and
-/// a diag digest whose meaning silently changes on a toolchain bump is worse than six lines
-/// of arithmetic here.
+/// # The guarantee, exactly
 ///
-/// Note the residual it does leave: a digest of a *short, low-entropy* string (a one-word
-/// query, a two-character file name) is guessable by anyone who can enumerate candidates. That
-/// is the deliberate trade — it is a large improvement on printing the string, and the field
-/// it replaces is one whose turn-to-turn stability is the actual diagnostic question.
+/// Within one process — which is one `warp.log`, since `warp_logging` truncates the file at
+/// every launch — equal digests mean equal inputs, and different digests mean different inputs.
+/// Nothing else is promised. In particular the input is *not* recoverable by whoever receives
+/// the log bundle: the key is drawn from OS randomness at first use and never leaves the
+/// process, so it is not in the bundle to brute-force against.
+///
+/// # Why it is keyed (this replaced an unkeyed FNV-1a, and that is the point)
+///
+/// An unkeyed 64-bit digest of a *short, low-entropy* string is not a redaction, it is an
+/// encoding. The candidate space for an MCP server segment is the public MCP gallery plus a
+/// company wordlist; for an attachment name it is a filename wordlist; for a PIN it is 10⁴.
+/// A rainbow table over any of those is a few lines of script, and `content_shape_for_log`
+/// helpfully prints `bytes=`/`chars=` on the same line, so the candidate list arrives
+/// pre-filtered by exact length. Seeding the FNV would not have fixed it either: FNV-1a is
+/// invertible, so a single guessed plaintext anywhere in the file recovers the seed and unlocks
+/// every other digest in it. The key therefore goes into a hasher built to resist exactly that
+/// attack — std's SipHash-1-3 `RandomState`, the construction that keeps `HashMap` from being
+/// collision-attacked.
+///
+/// # What was given up, deliberately
+///
+/// **Cross-run comparability.** Two bundles from two launches no longer share digests, so "is
+/// this the same MCP server as in yesterday's report?" stops being answerable, and no digest
+/// value can be pinned as a constant by a test any more. That was never the question the digest
+/// was added for; "are these two lines in *this* log the same string?" is, and it is unchanged.
+/// Also given up: std does not promise SipHash's output is stable across toolchains — which now
+/// costs nothing, because a per-process key had already made cross-run values incomparable.
+/// (The old FNV was hand-rolled specifically to buy that stability; with the key it is dead
+/// weight, so it is gone rather than kept as decoration.)
+///
+/// # Residual
+///
+/// An adversary who can get a *known* string through the *same* process — persuade the user to
+/// attach a file they named, in the session the bundle comes from — can confirm it by comparing
+/// digests. And the byte/char lengths printed beside the digest are exact. Neither is recovery
+/// from the log alone, which is the property that was missing before.
 fn diag_digest(s: &str) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in s.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
+    use std::hash::BuildHasher as _;
+    // One `RandomState` for the process: `RandomState::new()` re-keys per instance, so building
+    // a fresh one per call would make every digest of the same string differ and destroy the
+    // one property this function exists to provide.
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let hash = KEY
+        .get_or_init(std::collections::hash_map::RandomState::new)
+        .hash_one(s);
     format!("{hash:016x}")
 }
 
@@ -2753,6 +2792,11 @@ fn diag_digest(s: &str) -> String {
 /// hunt actually asks about (backslashes, raw control characters, non-ASCII), and a digest for
 /// cross-line identity. Deliberately contains no substring of the input — that property is what
 /// `content_shape_leaks_no_secret_substring` in the test module below pins.
+///
+/// `bytes=`/`chars=` are exact, so this line is an exact length oracle for the field. That is
+/// intentional — length is most of what the escape hunt reads — and it is only tolerable
+/// because `diag_digest` is keyed per process: an exact length narrows a candidate list, but
+/// with no way to test a candidate against the digest, narrowing it leads nowhere.
 fn content_shape_for_log(s: &str) -> String {
     let mut control = 0usize;
     let mut backslash = 0usize;
@@ -2804,6 +2848,107 @@ fn error_number_after(err_text: &str, marker: &str) -> Option<usize> {
     })
 }
 
+/// The *class* of the character a parser stopped at, named without naming the character.
+///
+/// `line`/`column` come out of a serde_json rendering via `error_number_after`; serde_json
+/// counts `column` in bytes from the start of the line, 1-based, so the offset is used as a byte
+/// index. A column that lands mid-codepoint, or past the end, degrades to a label rather than
+/// panicking or silently pointing somewhere else.
+///
+/// The point of returning a class rather than the byte is that "was it a backslash / a raw
+/// control char / a quote" is the entire question the illegal-escape hunt asks, and the answer
+/// carries no character of the payload. Returning the byte itself would have been one character
+/// of user content, which is how this file got into trouble twice already.
+fn error_char_class_at(text: &str, line: Option<usize>, column: Option<usize>) -> &'static str {
+    let (Some(line), Some(column)) = (line, column) else {
+        return "unknown";
+    };
+    if line == 0 || column == 0 {
+        return "unknown";
+    }
+    let Some(line_text) = text.lines().nth(line - 1) else {
+        return "line-out-of-range";
+    };
+    match line_text
+        .get(column - 1..)
+        .and_then(|rest| rest.chars().next())
+    {
+        None => "end-of-input",
+        Some('\\') => "backslash",
+        Some('"') => "quote",
+        Some(c) if c.is_control() => "control",
+        Some(c) if c.is_ascii_digit() => "digit",
+        Some(c) if c.is_ascii_alphabetic() => "alpha",
+        // `\t` never reaches here: it is `is_control`, and for the escape hunt "control" is the
+        // more useful of the two labels anyway.
+        Some(' ') => "space",
+        Some(c) if c.is_ascii_punctuation() => "punctuation",
+        Some(c) if !c.is_ascii() => "non-ascii",
+        Some(_) => "other",
+    }
+}
+
+/// The default-tier rendering of a tool call's **raw arguments** on a parse failure.
+///
+/// # Why this exists rather than just `snippet_or_shape_for_log`
+///
+/// The diagnostic need at the `from_args` failure sites is real and specific, and it is the
+/// exact scenario this whole diag module was built for: the model produced arguments that would
+/// not parse, and the recurring cause is an illegal escape. So the answer has to survive the
+/// redaction — *how long*, *where*, *what kind of character is there*, and *what the parser
+/// said* — while the payload does not. For a write/edit tool that payload is the file body; for
+/// `run_shell_command` it is the command line; for a search tool it is the query. Printing it
+/// at `warn`, ungated, on precisely the malformed-arguments path (i.e. often) was the single
+/// worst leak left in this file.
+///
+/// `content_shape_for_log` already carries length and the character-class counts. This adds the
+/// position the parser failed at and the class of the character sitting there, which is what
+/// turns "there are 3 backslashes somewhere" into "byte 4173 is a backslash".
+fn args_shape_for_log(args: &str, err_text: &str) -> String {
+    if byop_diag_content_enabled() {
+        return snippet_for_log(args, BYOP_DIAG_SNIPPET_CHARS);
+    }
+    let line = error_number_after(err_text, "line ");
+    let column = error_number_after(err_text, "column ");
+    let render = |n: Option<usize>| n.map(|n| n.to_string()).unwrap_or_else(|| "?".to_owned());
+    format!(
+        "{} err_line={} err_column={} err_char_class={}",
+        content_shape_for_log(args),
+        render(line),
+        render(column),
+        error_char_class_at(args, line, column),
+    )
+}
+
+/// Replaces the `user:password@` segment of a URL-ish string with a placeholder.
+///
+/// A proxy URL is a string the user typed into their own settings, and `http://user:pass@host`
+/// is an ordinary way to write one — so the one place this file logs a proxy URL was logging a
+/// password into a file that ships inside `write_log_bundle_zip_to`. The rest of the URL is left
+/// alone deliberately: it is the same class as the already-recorded `endpoint_url` residual (a
+/// host the user configured), and the only time a proxy URL is logged at all is when it failed
+/// to parse, where seeing the typo *is* the diagnosis.
+///
+/// Hand-rolled rather than `url::Url`-parsed for the obvious reason: the only caller has a
+/// string that `url::Url` already rejected. Splits on the authority (up to the first `/`, `?` or
+/// `#`) and takes the last `@` in it, so a `@` in a path or a password cannot move the cut.
+fn redact_url_userinfo(url: &str) -> String {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (scheme, rest),
+        None => ("", url),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let Some(at) = rest[..authority_end].rfind('@') else {
+        return url.to_owned();
+    };
+    let scheme_prefix = if scheme.is_empty() {
+        String::new()
+    } else {
+        format!("{scheme}://")
+    };
+    format!("{scheme_prefix}<redacted-userinfo>@{}", &rest[at + 1..])
+}
+
 /// A tool name safe for the default tier: `mcp__<server>__<tool>` with the user-configured
 /// `<server>` segment replaced by a digest.
 ///
@@ -2812,10 +2957,23 @@ fn error_number_after(err_text: &str, marker: &str) -> Option<usize> {
 /// tool list is read for. The `<server>` segment of an MCP name is a different thing: it is a
 /// string the user typed into their own MCP config, routinely a company, product, customer, or
 /// internal-host name, and `warp.log` ships inside `write_log_bundle_zip_to`. So it is replaced
-/// by a stable digest, which still answers the two questions the list is actually used for —
+/// by a digest, which still answers the two questions the list is actually used for —
 /// how many MCP tools were offered, and whether tool X and tool Y came from the same server.
 /// The `<tool>` segment stays: it names a capability rather than a deployment, and "which tool
 /// misbehaved" is the question being asked. The real names are one env var away.
+///
+/// **The guarantee this actually gives, stated honestly.** The digest is `diag_digest`, keyed
+/// with a per-process random key — read that function. So: the server name cannot be recovered
+/// from the log bundle, and two names are equal iff their digests are equal *within one log
+/// file*. It is not stable across runs; `srv-…` in today's bundle and `srv-…` in yesterday's are
+/// unrelated strings even for the same server. An earlier version digested with unkeyed FNV-1a
+/// and this paragraph claimed redaction anyway: against a candidate space as small as "the MCP
+/// gallery plus a company wordlist" that digest was a rainbow-table lookup, not a redaction. The
+/// key is what closed it, not the digest.
+///
+/// The residual that remains, by design: the tool segment, the number of MCP tools, and which of
+/// them share a server are all still visible. If that is too much for a deployment, the answer
+/// is to stop logging tool lists, not to hash them harder.
 ///
 /// The `mcp__` / `__` encoding belongs to `tools::mcp` (`PREFIX` / `SEP` there). It is spelled
 /// out again here instead of exported because this is a display concern and a wrong guess
@@ -2891,8 +3049,10 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 ///
 /// # Known residuals in the default tier
 ///
-/// Two things still print provider- or content-adjacent text with the var unset, both
-/// deliberately:
+/// These still print provider- or content-adjacent text with the var unset, each deliberately.
+/// The list is exhaustive as of the second privacy pass — it was not before, which is how four
+/// content sinks survived the first one. Anything added to this file that logs text and is not
+/// on this list is a defect, and `no_log_site_interpolates_raw_content` below is the guard.
 ///
 /// * `[byop] stream chunk error: {err_text}` — the provider's own error message. Some providers
 ///   echo a fragment of the offending request back in a 400 body. Suppressing it would leave a
@@ -2900,6 +3060,22 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
 /// * `scan_suspicious_backslash` prints up to 5 × 10 bytes starting *at* a `\\u` / `\\x` pair.
 ///   That decade of bytes is the escape sequence itself — it is the finding, not context around
 ///   it — and it is bounded and only emitted on a hit.
+/// * The `from_args` / `todowrite` failure lines print the parser's own error verbatim
+///   (`err=`, `original_err=`). serde_json errors are normally position-only, but a
+///   `unknown field` / `invalid value` rendering can quote a field name or a short value. Same
+///   trade as the provider error body: the arguments themselves are now a shape
+///   (`args_shape_for_log`), and without the error the shape diagnoses nothing.
+/// * `[byop] build_client: … endpoint_url={endpoint_url}` and the insecure-endpoint refusal
+///   print the provider endpoint, which can be an internal host. Recorded in `TODO.md`. The
+///   proxy-URL line alongside them redacts only its `user:password@` segment
+///   (`redact_url_userinfo`) — a password is a different class from a host name.
+/// * `[byop][webfetch] error: {e:#}` prints the URL the agent tried to fetch (`web_runtime`
+///   builds `HTTP GET {url}` into its context chain). It is the model's chosen target rather
+///   than the user's own text, and a fetch failure with the URL removed is undiagnosable.
+/// * `[byop] tool_call_in_args` prints raw arguments at `Debug`. `warp_logging` filters at Info,
+///   so it is dormant in a normal run — but `RUST_LOG=debug` is a verbosity switch, not a
+///   privacy opt-in, so a bundle collected under it is wider than this tier. See the comment at
+///   that call site.
 const BYOP_DIAG_CONTENT_ENV: &str = "ZAP_BYOP_LOG_FULL_REQUEST";
 
 /// Read once per process: an env var cannot meaningfully change mid-run, and this is consulted
@@ -4681,7 +4857,7 @@ fn build_client_uncached(
                 ) {
                     log::warn!(
                         "[byop] proxy URL '{}' is invalid, skipping proxy configuration: {err}",
-                        proxy_cfg.url
+                        redact_url_userinfo(&proxy_cfg.url)
                     );
                 }
             }
@@ -6172,7 +6348,7 @@ pub async fn generate_byop_output(
                     extracted.len(),
                     extracted
                         .iter()
-                        .map(|call| call.fn_name.as_str())
+                        .map(|call| tool_name_for_log(&call.fn_name))
                         .collect::<Vec<_>>(),
                     text.len()
                 );
@@ -6186,12 +6362,18 @@ pub async fn generate_byop_output(
                 break;
             }
             if tool_bufs.is_empty() && parsed_any_text {
-                let preview: String = streamed_assistant_text.chars().take(240).collect();
+                // This used to be 240 verbatim characters of the model's reply, at Info, with no
+                // gate. Model output restates the user's words, their paths and their code, so
+                // it is content like any other and goes through the same tier boundary. The
+                // question this line is read for — "did the model emit something tool-shaped
+                // that the extractor failed on, or just prose?" — is answered by the character
+                // classes and the length, and the digest ties it to the message summary above.
                 log::info!(
                     "[byop] content_tool_extract: no tools parsed (streamed={}B captured={}B) \
-                     preview={preview:?}",
+                     streamed_shape={}",
                     streamed_assistant_text.len(),
                     captured_assistant_text.as_ref().map(|t| t.len()).unwrap_or(0),
+                    snippet_or_shape_for_log(&streamed_assistant_text, BYOP_DIAG_SNIPPET_CHARS),
                 );
             } else if tool_bufs.is_empty() {
                 log::warn!(
@@ -6295,9 +6477,19 @@ pub async fn generate_byop_output(
             // don't pollute INFO normally.
             // info level keeps a one-line summary without args, for watching streaming
             // timing.
+            //
+            // Tier note. `warp_logging`'s native filter is `LevelFilter::Info`
+            // (`crates/warp_logging/src/native.rs`), so the `debug!` below is dormant in a normal
+            // run and the raw arguments it prints do not reach `warp.log`. That is *not* the
+            // same thing as the content gate: `RUST_LOG=debug` is a verbosity switch, not a
+            // privacy opt-in, and a user who sets it for an unrelated reason and then files a
+            // bug report ships their tool arguments. Recorded as a residual rather than fixed,
+            // because those arguments are the entire content of the line — gating it on
+            // BYOP_DIAG_CONTENT_ENV too would mean two unrelated switches for one line. The name
+            // still goes through `tool_name_for_log`, which costs the line nothing.
             log::info!(
                 "[byop] tool_call_in: name={} call_id={}",
-                call.fn_name,
+                tool_name_for_log(&call.fn_name),
                 call.call_id,
             );
             if log::log_enabled!(log::Level::Debug) {
@@ -6319,7 +6511,7 @@ pub async fn generate_byop_output(
                 };
                 log::debug!(
                     "[byop] tool_call_in_args: name={} call_id={} args={}",
-                    call.fn_name,
+                    tool_name_for_log(&call.fn_name),
                     call.call_id,
                     args_repr,
                 );
@@ -6626,7 +6818,7 @@ pub async fn generate_byop_output(
                 log::warn!(
                     "[byop] computer-use tool call rejected: tool={} call_id={} \
                      computer_use_enabled=false",
-                    call.fn_name,
+                    tool_name_for_log(&call.fn_name),
                     call.call_id
                 );
                 let error_payload = serde_json::json!({
@@ -6675,7 +6867,7 @@ pub async fn generate_byop_output(
                 };
                 log::warn!(
                     "[byop] Plan Mode: tool call rejected at dispatch: tool={} call_id={}",
-                    call.fn_name,
+                    tool_name_for_log(&call.fn_name),
                     call.call_id
                 );
                 // `executed: false` for the same reason as the parse-failure payloads below:
@@ -6765,7 +6957,7 @@ pub async fn generate_byop_output(
                     log::warn!(
                         "[byop] tool_call parse failed → emit synthetic error tool_result: \
                          tool={} call_id={} err={e:#}",
-                        call.fn_name,
+                        tool_name_for_log(&call.fn_name),
                         call.call_id
                     );
                     // Both payloads state `executed: false` outright. Without it a model
@@ -7329,7 +7521,8 @@ async fn dispatch_byop_web_tool(tool_name: &str, args_str: &str, web_search_enab
     use tools::web_runtime;
     if !web_search_enabled {
         log::warn!(
-            "[byop] web tool call rejected: web_search_enabled=false tool={tool_name}"
+            "[byop] web tool call rejected: web_search_enabled=false tool={}",
+            tool_name_for_log(tool_name)
         );
         return web_runtime::error_to_json(
             tool_name,
@@ -7568,8 +7761,8 @@ fn parse_incoming_tool_call(
             Some(recovered) => {
                 log::warn!(
                     "[byop] tool name recovery: {} → {} (unique read-only arg-shape match)",
-                    call.fn_name,
-                    recovered.name
+                    tool_name_for_log(&call.fn_name),
+                    tool_name_for_log(recovered.name)
                 );
                 recovered
             }
@@ -7591,30 +7784,49 @@ fn parse_incoming_tool_call(
                     Ok(t) => {
                         log::info!(
                             "[byop] from_args coerced ok: tool={} original_err={e:#}",
-                            call.fn_name
+                            tool_name_for_log(&call.fn_name)
                         );
                         return Ok(t);
                     }
                     Err(e2) => {
+                        // `coerced_args` and `args_str` are the model's raw arguments: a file
+                        // body for an edit tool, a command line for `run_shell_command`, a query
+                        // for a search tool. They used to print verbatim here, at `warn`, with
+                        // no gate — on exactly the path that fires when arguments are malformed,
+                        // which is the common case this module exists to diagnose. The shape
+                        // keeps what the diagnosis needs (length, character classes, the failure
+                        // position and the class of the character there) and drops the payload.
+                        // Both errors stay verbatim: `err`/`original_err` are the parser's own
+                        // words, and without them a failed turn has no diagnosis at all — the
+                        // same residual the module already accepts for the provider error body.
+                        let e2_text = format!("{e2:#}");
+                        let e_text = format!("{e:#}");
                         log::warn!(
-                            "[byop] from_args failed (after coerce): tool={} err={e2:#} original_err={e:#} coerced_args={coerced} args_str={args_str}",
-                            call.fn_name
+                            "[byop] from_args failed (after coerce): tool={} err={e2_text} \
+                             original_err={e_text} coerced_args={} args_str={}",
+                            tool_name_for_log(&call.fn_name),
+                            args_shape_for_log(&coerced, &e2_text),
+                            args_shape_for_log(&args_str, &e_text),
                         );
                         return Err(e2);
                     }
                 }
             }
-            // Diagnostics: prints the exact string from_args actually got, verbatim, on
-            // parse failure. Combined with the args= line from the [byop] tool_call_in log
-            // above, this can help determine:
-            //   1. Whether the model got an argument type wrong (bool→"true" /
-            //      number→"1" etc.)
-            //   2. Whether there's an escaping problem in genai's Value→string conversion
-            //   3. Whether the entire fn_arguments got stringified (should be an object
-            //      but is a string)
+            // Diagnostics for the string `from_args` actually got — its shape, not its text
+            // (`args_shape_for_log`; it printed verbatim here until the second privacy pass).
+            // Together with the parser's own error this still answers:
+            //   1. Whether the model got an argument type wrong (bool→"true" / number→"1"),
+            //      which the error text names directly.
+            //   2. Whether there's an escaping problem in genai's Value→string conversion —
+            //      `backslashes=`, `control=` and `err_char_class=backslash` are that signal.
+            //   3. Whether the entire fn_arguments got stringified (should be an object but is
+            //      a string) — visible as `err_column=1 err_char_class=quote`.
+            // The verbatim text needs BYOP_DIAG_CONTENT_ENV, like every other content field.
+            let e_text = format!("{e:#}");
             log::warn!(
-                "[byop] from_args failed: tool={} err={e:#} args_str={args_str}",
-                call.fn_name
+                "[byop] from_args failed: tool={} err={e_text} args_str={}",
+                tool_name_for_log(&call.fn_name),
+                args_shape_for_log(&args_str, &e_text),
             );
             Err(e)
         }
@@ -11963,14 +12175,39 @@ mod byop_diag_privacy_tests {
     }
 
     #[test]
-    fn digest_is_stable_and_distinguishes() {
+    fn digest_is_stable_within_the_process_and_distinguishes() {
         assert_eq!(diag_digest(SECRET), diag_digest(SECRET));
         assert_ne!(diag_digest(SECRET), diag_digest("something else"));
-        // Pinned so a refactor of the hash constants is a deliberate act: the digest is the
-        // only cross-line identity the default tier has, and silently changing it invalidates
-        // comparisons against previously collected logs.
-        assert_eq!(diag_digest(""), "cbf29ce484222325");
-        assert_eq!(diag_digest("a"), "af63dc4c8601ec8c");
+        // A fixed width is what makes two `srv-…` names comparable at a glance.
+        assert_eq!(diag_digest("a").len(), 16);
+        assert!(diag_digest("a").chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// The previous version of this module pinned `diag_digest("")` to a constant, because the
+    /// digest was unkeyed FNV-1a and cross-run stability was the property being protected. That
+    /// was the bug: an unkeyed 64-bit digest of a short, low-entropy string is a rainbow-table
+    /// lookup, and the same test that pinned the constant proved the table was buildable. The
+    /// pin is gone on purpose, and this asserts the mechanism that replaced it — the digest is
+    /// no longer the unkeyed value, so it is no longer computable off-box.
+    #[test]
+    fn digest_is_not_the_unkeyed_fnv_it_replaced() {
+        fn unkeyed_fnv1a(s: &str) -> String {
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for byte in s.as_bytes() {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            format!("{hash:016x}")
+        }
+        // The reference implementation is right, so a failure below means `diag_digest` changed
+        // rather than that this test drifted.
+        assert_eq!(unkeyed_fnv1a(""), "cbf29ce484222325");
+        assert_eq!(unkeyed_fnv1a("a"), "af63dc4c8601ec8c");
+        // A keyed digest collides with the unkeyed one with probability 2^-64; treating that as
+        // impossible is the same assumption every hash-map test in the tree makes.
+        assert_ne!(diag_digest(""), unkeyed_fnv1a(""));
+        assert_ne!(diag_digest("github"), unkeyed_fnv1a("github"));
+        assert_ne!(diag_digest("linear"), unkeyed_fnv1a("linear"));
     }
 
     #[test]
@@ -12040,6 +12277,502 @@ mod byop_diag_privacy_tests {
         // A malformed MCP name (no separator after the server segment) has no server segment to
         // strip; printing it verbatim is the documented degradation, not a silent panic.
         assert_eq!(tool_name_for_log("mcp__weird"), "mcp__weird");
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The argument-shape boundary (the fix for the raw `args_str=` sinks).
+    // -----------------------------------------------------------------------------------
+
+    #[test]
+    fn args_shape_leaks_no_secret_and_still_localizes_the_failure() {
+        let args = format!("{{\"command\": \"echo {SECRET}\"");
+        // A real serde_json rendering: the offending position is what the escape hunt reads.
+        let err = format!(
+            "EOF while parsing an object at line 1 column {}",
+            args.len()
+        );
+        let shaped = args_shape_for_log(&args, &err);
+        assert_no_secret_substring(&shaped, "args_shape_for_log");
+        assert!(
+            shaped.contains(&format!("bytes={}", args.len())),
+            "{shaped}"
+        );
+        assert!(shaped.contains("err_line=1"), "{shaped}");
+        assert!(
+            shaped.contains(&format!("err_column={}", args.len())),
+            "{shaped}"
+        );
+    }
+
+    #[test]
+    fn args_shape_names_the_offending_character_class_without_the_character() {
+        // The scenario the whole diag module exists for: a literal `\u` inside an argument.
+        let args = r#"{"path":"C:\users\test"}"#;
+        let backslash_at = args.find('\\').expect("fixture must contain a backslash") + 1;
+        let err = format!("invalid escape at line 1 column {backslash_at}");
+        let shaped = args_shape_for_log(args, &err);
+        assert!(shaped.contains("err_char_class=backslash"), "{shaped}");
+        assert!(shaped.contains("backslashes=2"), "{shaped}");
+        // No position in the error at all degrades to a label, not to a wrong answer.
+        let blind = args_shape_for_log(args, "some error with no position");
+        assert!(
+            blind.contains("err_line=? err_column=? err_char_class=unknown"),
+            "{blind}"
+        );
+    }
+
+    #[test]
+    fn error_char_class_survives_a_position_that_points_nowhere() {
+        assert_eq!(
+            error_char_class_at("{}", Some(9), Some(1)),
+            "line-out-of-range"
+        );
+        assert_eq!(error_char_class_at("{}", Some(1), Some(99)), "end-of-input");
+        assert_eq!(error_char_class_at("{}", Some(0), Some(1)), "unknown");
+        // A column that lands mid-codepoint must not panic and must not point at the wrong
+        // character; `str::get` refuses the slice and the label says so.
+        assert_eq!(error_char_class_at("é", Some(1), Some(2)), "end-of-input");
+        assert_eq!(
+            error_char_class_at("{\"a\": 1}", Some(1), Some(1)),
+            "punctuation"
+        );
+        assert_eq!(error_char_class_at("{\"a\": 1}", Some(1), Some(2)), "quote");
+        assert_eq!(error_char_class_at("{\"a\": 1}", Some(1), Some(7)), "digit");
+    }
+
+    #[test]
+    fn a_proxy_url_password_does_not_reach_the_log() {
+        let redacted = redact_url_userinfo(&format!("http://admin:{SECRET}@proxy.corp:8080"));
+        assert_no_secret_substring(&redacted, "redact_url_userinfo");
+        assert!(
+            redacted.starts_with("http://<redacted-userinfo>@"),
+            "{redacted}"
+        );
+        assert!(redacted.ends_with("proxy.corp:8080"), "{redacted}");
+        // No userinfo → unchanged, because the malformed URL itself is the diagnosis.
+        assert_eq!(
+            redact_url_userinfo("htp:/broken proxy"),
+            "htp:/broken proxy"
+        );
+        // An `@` in the path cannot move the cut.
+        assert_eq!(
+            redact_url_userinfo("http://proxy.corp/a@b"),
+            "http://proxy.corp/a@b"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // End-to-end: drive the real call sites and read what they actually emitted.
+    //
+    // This is the machinery the previous round did not have, and its absence is why four
+    // content sinks survived a test suite that was itself honest: every assertion was made
+    // against `message_summary_for_log`, one of a dozen sites in this file that log content.
+    // -----------------------------------------------------------------------------------
+
+    static CAPTURED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    /// Serializes the capture tests against each other; `CAPTURED` is process-global.
+    static CAPTURE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct CapturingLogger;
+    static CAPTURING_LOGGER: CapturingLogger = CapturingLogger;
+
+    impl log::Log for CapturingLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+        fn log(&self, record: &log::Record<'_>) {
+            if let Ok(mut captured) = CAPTURED.lock() {
+                captured.push(record.args().to_string());
+            }
+        }
+        fn flush(&self) {}
+    }
+
+    /// Installs the capture logger once per test binary.
+    ///
+    /// If another logger got there first this asserts rather than skipping. A skip would make
+    /// every test below pass while observing nothing, which is the exact failure mode that let
+    /// the last round ship — a test that cannot fail is worse than no test.
+    fn install_capture() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        static INSTALLED: AtomicBool = AtomicBool::new(false);
+        ONCE.call_once(|| {
+            let installed = log::set_logger(&CAPTURING_LOGGER).is_ok();
+            if installed {
+                log::set_max_level(log::LevelFilter::Trace);
+            }
+            INSTALLED.store(installed, Ordering::SeqCst);
+        });
+        assert!(
+            INSTALLED.load(Ordering::SeqCst),
+            "another logger is already installed in this test binary, so these assertions \
+             would observe nothing and pass vacuously. Route that logger into CAPTURED or move \
+             this module to its own binary — do not delete this assertion."
+        );
+    }
+
+    fn take_captured() -> Vec<String> {
+        let mut captured = CAPTURED.lock().unwrap_or_else(|e| e.into_inner());
+        std::mem::take(&mut *captured)
+    }
+
+    fn find_captured<'a>(lines: &'a [String], marker: &str) -> &'a str {
+        lines
+            .iter()
+            .find(|line| line.contains(marker))
+            .unwrap_or_else(|| {
+                panic!("no log line matching {marker:?} was emitted at all; captured: {lines:#?}")
+            })
+    }
+
+    /// B1: the real `parse_incoming_tool_call` failure path, not the formatter.
+    ///
+    /// This line fires precisely when arguments are malformed — the illegal-escape scenario the
+    /// module exists for — so it is a common path, and it used to print the model's entire raw
+    /// argument JSON at `warn` with no gate.
+    #[test]
+    fn a_real_from_args_failure_logs_no_argument_payload() {
+        install_capture();
+        let _turn = CAPTURE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_captured();
+
+        let call = ToolCall {
+            call_id: "call_b1".to_owned(),
+            fn_name: "run_shell_command".to_owned(),
+            // Truncated JSON: `from_args` fails and `coerce_args_against_schema` cannot even
+            // parse it, so this lands on the plain `from_args failed` warn.
+            fn_arguments: Value::String(format!("{{\"command\": \"echo {SECRET}\"")),
+            thought_signatures: None,
+        };
+        let parsed = parse_incoming_tool_call(&call, None, &[]);
+        assert!(
+            parsed.is_err(),
+            "the fixture must actually fail to parse, or this test proves nothing"
+        );
+
+        let captured = take_captured();
+        let line = find_captured(&captured, "from_args failed");
+        assert_no_secret_substring(line, "[byop] from_args failed");
+        // Non-vacuous in the other direction: a malformed-arguments failure still has to be
+        // diagnosable from this line alone.
+        assert!(line.contains("tool=run_shell_command"), "line: {line}");
+        assert!(line.contains("bytes="), "line: {line}");
+        assert!(line.contains("backslashes="), "line: {line}");
+        assert!(line.contains("err_column="), "line: {line}");
+    }
+
+    /// B3: the real attachment-rejection path.
+    ///
+    /// The leak here was not in a formatter at all — the file name was cloned into a local
+    /// `Vec` and the `Vec` was logged, so no amount of testing `binary_summary_for_log` could
+    /// have caught it. Only driving the call site does.
+    #[test]
+    fn a_real_unsupported_attachment_logs_no_file_name() {
+        install_capture();
+        let _turn = CAPTURE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = take_captured();
+
+        let message = build_user_message_with_binaries(
+            "have a look".to_owned(),
+            vec![user_context::UserBinary {
+                name: format!("{SECRET}.pdf"),
+                content_type: "application/pdf".to_owned(),
+                data: "QUJD".to_owned(),
+            }],
+            // Default caps support nothing, so the attachment takes the ERROR-text branch.
+            attachment_caps::AttachmentCaps::default(),
+        );
+
+        let captured = take_captured();
+        let line = find_captured(&captured, "attachment(s) replaced with ERROR text");
+        assert_no_secret_substring(line, "[byop] attachment replacement");
+        assert!(line.contains("mime=application/pdf"), "line: {line}");
+        assert!(line.contains("bytes="), "line: {line}");
+        // The ERROR text handed to the *model* still names the file — that is the whole point
+        // of that branch, and the model is not the log bundle.
+        assert!(
+            message
+                .content
+                .texts()
+                .iter()
+                .any(|text| text.contains(SECRET)),
+            "the model must still be told which attachment was rejected"
+        );
+    }
+
+    // -----------------------------------------------------------------------------------
+    // The whole-file guard.
+    //
+    // Driving every call site is not possible — most of them live inside one enormous async
+    // stream generator. So the class is closed from the other side: every `log::` macro in the
+    // production half of this file is parsed out of the source and checked for content-bearing
+    // expressions. Run against the parent commit this flags all of B1, B2 and B4 by line
+    // number. It does *not* flag B3, whose content was laundered through a local `Vec` before
+    // the macro saw it — that one is covered by the end-to-end test above, and the two together
+    // are what closes the gap.
+    // -----------------------------------------------------------------------------------
+
+    /// Expressions in this file that carry user content. Each entry is here because it leaked
+    /// or is one edit away from leaking. Content may reach a log line only through a redactor
+    /// or as a measurement.
+    const CONTENT_BEARING: &[&str] = &[
+        "fn_name",
+        "fn_arguments",
+        "args_str",
+        "coerced",
+        "preview",
+        "bin.name",
+        "binary.name",
+        "proxy_cfg.url",
+        "streamed_assistant_text",
+        "captured_assistant_text",
+    ];
+
+    /// The tier boundaries. Anything wrapped in one of these is redacted by construction, and
+    /// that is asserted directly by the tests above rather than assumed here.
+    const REDACTORS: &[&str] = &[
+        "tool_name_for_log(",
+        "snippet_or_shape_for_log(",
+        "content_shape_for_log(",
+        "args_shape_for_log(",
+        "binary_summary_for_log(",
+        "json_value_for_log(",
+        "message_summary_for_log(",
+        "redact_url_userinfo(",
+        "diag_digest(",
+    ];
+
+    /// Suffixes that turn a content value into a number. A length is not content — it is most
+    /// of what the default tier is for.
+    const MEASUREMENTS: &[&str] = &[".len()", ".as_ref().map(|t| t.len())"];
+
+    /// Index of the `)` closing the `(` at `open`.
+    fn close_paren(text: &str, open: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for (offset, ch) in text[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn strip_redactor_calls(mut text: String) -> String {
+        loop {
+            // Bound to a local first: the `else` arm returns `text`, and leaving the borrow
+            // from `find` inside the `let`-scrutinee makes that a move-out-of-borrowed.
+            let earliest = REDACTORS
+                .iter()
+                .filter_map(|redactor| text.find(redactor).map(|at| (at, *redactor)))
+                .min_by_key(|(at, _)| *at);
+            let Some((at, redactor)) = earliest else {
+                return text;
+            };
+            let open = at + redactor.len() - 1;
+            let Some(close) = close_paren(&text, open) else {
+                return text;
+            };
+            text.replace_range(at..=close, "REDACTED");
+        }
+    }
+
+    /// What a log macro's arguments actually evaluate: the code outside the format literals,
+    /// plus the identifiers those literals capture inline (`{preview:?}`) — which is how B4
+    /// reached the log without ever appearing as a positional argument.
+    fn logged_expressions(argument_list: &str) -> String {
+        let stripped = strip_redactor_calls(argument_list.to_owned());
+        let mut out = String::new();
+        let mut in_literal = false;
+        let mut escaped = false;
+        let mut capture: Option<String> = None;
+        for ch in stripped.chars() {
+            if in_literal && escaped {
+                escaped = false;
+                continue;
+            }
+            if in_literal && capture.is_some() && !(ch.is_alphanumeric() || ch == '_') {
+                if let Some(name) = capture.take() {
+                    out.push(' ');
+                    out.push_str(&name);
+                    out.push(' ');
+                }
+            }
+            if in_literal {
+                match ch {
+                    '\\' => escaped = true,
+                    '"' => in_literal = false,
+                    '{' => capture = Some(String::new()),
+                    _ => {
+                        if let Some(name) = capture.as_mut() {
+                            name.push(ch);
+                        }
+                    }
+                }
+            } else if ch == '"' {
+                in_literal = true;
+            } else {
+                out.push(ch);
+            }
+        }
+        if let Some(name) = capture {
+            out.push(' ');
+            out.push_str(&name);
+        }
+        out
+    }
+
+    fn content_violations(argument_list: &str) -> Vec<&'static str> {
+        let expressions = logged_expressions(argument_list);
+        let mut found = Vec::new();
+        for needle in CONTENT_BEARING {
+            let mut from = 0usize;
+            while let Some(at) = expressions[from..].find(needle) {
+                let after = &expressions[from + at + needle.len()..];
+                if !MEASUREMENTS
+                    .iter()
+                    .any(|measurement| after.starts_with(measurement))
+                {
+                    found.push(*needle);
+                    break;
+                }
+                from += at + needle.len();
+            }
+        }
+        found
+    }
+
+    /// Every `log::` call site in the production half of this file.
+    fn log_macro_argument_lists(source: &str) -> Vec<(usize, String)> {
+        // Everything from the first `#[cfg(test)]` onwards is test code — including this
+        // module, whose own examples would otherwise be scanned as if they were call sites.
+        let production = match source.find("#[cfg(test)]") {
+            Some(at) => &source[..at],
+            None => source,
+        };
+        let mut sites = Vec::new();
+        for macro_call in [
+            "log::info!(",
+            "log::warn!(",
+            "log::error!(",
+            "log::debug!(",
+            "log::trace!(",
+        ] {
+            let mut from = 0usize;
+            while let Some(at) = production[from..].find(macro_call) {
+                let open = from + at + macro_call.len() - 1;
+                let close = close_paren(production, open).unwrap_or_else(|| {
+                    panic!("unbalanced parentheses after the log macro at byte {open}")
+                });
+                let line = production[..open].matches('\n').count() + 1;
+                sites.push((line, production[open + 1..close].to_owned()));
+                from = open + 1;
+            }
+        }
+        sites
+    }
+
+    #[test]
+    fn no_log_site_interpolates_raw_content() {
+        let source = include_str!("chat_stream.rs");
+        let sites = log_macro_argument_lists(source);
+        // A scanner that finds nothing passes everything. This file had 74 production log sites
+        // when the guard was written; the floor is deliberately well below that so ordinary
+        // deletions do not trip it, and well above zero so a broken scanner does.
+        assert!(
+            sites.len() >= 60,
+            "the scanner found only {} log sites, so it is not scanning what it thinks it is",
+            sites.len()
+        );
+        assert!(
+            sites
+                .iter()
+                .any(|(_, args)| args.contains("tool_name_for_log(")),
+            "no site uses a redactor, so `strip_redactor_calls` is untested by this run"
+        );
+
+        let violations: Vec<String> = sites
+            .iter()
+            .flat_map(|(line, args)| {
+                content_violations(args)
+                    .into_iter()
+                    .map(move |needle| format!("chat_stream.rs:{line} logs `{needle}` raw"))
+            })
+            .collect();
+        assert!(
+            violations.is_empty(),
+            "content reaches a log line without passing a tier boundary. Wrap it in one of \
+             {REDACTORS:?}, or log a measurement instead:\n{}",
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_log_site_guard_is_not_vacuous() {
+        // The two shapes that actually leaked, assembled at run time so this file never holds a
+        // literal bad call site for the scanner to find.
+        let positional = format!(
+            "\"tool={{}} call_id={{}}\", call.{}, call.call_id",
+            "fn_name"
+        );
+        let inline = format!("\"no tools parsed {{{}:?}}\"", "preview");
+        for bad in [&positional, &inline] {
+            assert!(
+                !content_violations(bad).is_empty(),
+                "the guard missed a known leak shape: {bad}"
+            );
+        }
+        // ...and does not fire on the redacted or measured forms, or it would just be noise.
+        let redacted = format!("\"tool={{}}\", tool_name_for_log(&call.{})", "fn_name");
+        assert!(
+            content_violations(&redacted).is_empty(),
+            "false positive on {redacted}"
+        );
+        let measured = format!("\"streamed={{}}B\", {}.len()", "streamed_assistant_text");
+        assert!(
+            content_violations(&measured).is_empty(),
+            "false positive on {measured}"
+        );
+        // A field *name* in the format string is not a value; flagging it would push authors
+        // into renaming fields to appease the guard.
+        assert!(
+            content_violations("\"args_str shape={}\", REDACTED").is_empty(),
+            "false positive on a literal mentioning a banned identifier"
+        );
+    }
+
+    /// The two full-request dumps carry everything, so their gate is the load-bearing one. It
+    /// is an enclosing `if`, which `no_log_site_interpolates_raw_content` cannot see, so it is
+    /// checked here instead of being trusted.
+    #[test]
+    fn the_full_request_dumps_stay_behind_the_content_switch() {
+        let source = include_str!("chat_stream.rs");
+        for marker in [
+            "full_request_json={diag_body_json}",
+            "full_request_json_on_error={diag_body_json}",
+        ] {
+            let at = source
+                .find(marker)
+                .unwrap_or_else(|| panic!("{marker} is gone; this test needs repointing"));
+            // Walk forward to a char boundary: this file is full of em dashes and arrows, so a
+            // fixed byte offset lands mid-codepoint often enough to matter.
+            let mut start = at.saturating_sub(400);
+            while start < at && !source.is_char_boundary(start) {
+                start += 1;
+            }
+            let window = &source[start..at];
+            assert!(
+                window.contains("byop_diag_content_enabled()"),
+                "{marker} is no longer behind the content gate"
+            );
+        }
     }
 
     /// The replacement for the removed ±200-char window: the position still gets logged, it is

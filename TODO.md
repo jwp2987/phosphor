@@ -7121,6 +7121,30 @@ Ordered by severity, not by area.
       would be **pre-existing and would affect the rollup limb equally** — `b18a81603`
       already depends on it — so it is not something the 2026-08-21 change introduced.
       Needs a run to settle; the build gate was closed when it was found.
+
+#### BYOP logging residuals — the exhaustive list (2026-08-21)
+
+All 74 production `log::` sites in `chat_stream.rs` were judged individually: 20 route
+through the tier boundary, 44 are structural (counts, ids, offsets, enum variants), and
+the 10 below are deliberate residuals. This list supersedes the earlier "two residuals"
+claim, which was wrong by four.
+
+- [ ] **`scan_suspicious_backslash` prints up to 5 x 10 bytes of the request body**
+      (`chat_stream.rs:5616,5619`) on a `\u`/`\x` hit. **Not fixed on purpose** — those ten
+      bytes *are* the finding. Documented in-source; it was missing from the ledger.
+- [ ] **`[byop][webfetch] error` (`:7553`) leaks the fetched URL.** `web_runtime` builds
+      `HTTP GET {url}` into its context chain, so the URL reaches `warn` ungated. Websearch
+      (`:7570`) carries the Exa endpoint, not the query.
+- [ ] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
+      error`, not previously recorded.
+- [ ] **Parser error text** (`:6587`, `:7804`, `:7826`) — serde_json is normally
+      position-only, but `unknown field` / `invalid value` renderings can quote a field name
+      or a short value.
+- [ ] **`RUST_LOG=debug` widens the tier** — `:6512` prints raw tool arguments. Off by
+      default, but a verbosity switch is **not** a privacy opt-in, so it is a residual
+      rather than a gate.
+- [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
+      already-recorded `endpoint_url`.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
