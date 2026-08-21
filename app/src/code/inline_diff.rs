@@ -228,45 +228,30 @@ impl InlineDiffView {
     /// The state this view requires the file to still be in before it will
     /// overwrite it — the pre-image the proposed diff was computed against.
     ///
-    /// `Err` means the pre-image could not be established. That is *not* the
-    /// same as "nothing to compare, go ahead": a buffer with no diff base is a
-    /// buffer whose relationship to the file on disk is unknown, and writing it
-    /// would be the very overwrite this guard exists to prevent. The caller
-    /// surfaces the message instead of writing.
+    /// Reads the diff base out of the editor and hands the actual decision to
+    /// [`pre_image_for_diff`], which needs no `AppContext` and is therefore the
+    /// part that can be tested. What is left here is the plumbing: two handle
+    /// dereferences and a clone.
     #[cfg(not(target_family = "wasm"))]
     fn expected_disk_state(&self, ctx: &AppContext) -> Result<ExpectedDiskState, String> {
-        if self.is_new_file {
-            // A creation diff is only offered after the file was found absent
-            // (`apply_create_file` rejects the edit outright if it already
-            // exists), so "still absent" is the pre-image being asserted.
-            return Ok(ExpectedDiskState::Absent);
-        }
-
         // The diff base is the file's text as it was read when the edit was
         // proposed — LF-normalised by `CodeEditorModel::set_base`, which is why
-        // `FileModel` compares normalised on both sides.
-        let base = self
-            .editor
-            .as_ref(ctx)
-            .model
-            .as_ref(ctx)
-            .diff()
-            .as_ref(ctx)
-            .base()
-            .ok_or_else(|| {
-                let path = self
-                    .file_path
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "file".to_owned());
-                format!(
-                    "{path} was not written: the original contents this edit was based on \
-                     are no longer available, so there is no way to tell whether the file \
-                     changed in the meantime. Nothing was changed."
-                )
-            })?;
+        // `FileModel` compares normalised on both sides. Not read at all for a
+        // creation, which has no base and asserts absence instead.
+        let base = if self.is_new_file {
+            None
+        } else {
+            self.editor
+                .as_ref(ctx)
+                .model
+                .as_ref(ctx)
+                .diff()
+                .as_ref(ctx)
+                .base()
+                .map(|base| base.to_string())
+        };
 
-        Ok(ExpectedDiskState::Content(base.to_string()))
+        pre_image_for_diff(self.is_new_file, base, self.file_path.as_ref())
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -311,6 +296,43 @@ impl InlineDiffView {
             });
         }
     }
+}
+
+/// Decides the pre-image a guarded accept asserts, given what the view could
+/// find.
+///
+/// `Err` means the pre-image could not be established. That is *not* the same as
+/// "nothing to compare, go ahead": a buffer with no diff base is a buffer whose
+/// relationship to the file on disk is unknown, and writing it would be the very
+/// overwrite this guard exists to prevent. The caller surfaces the message
+/// instead of writing.
+#[cfg(not(target_family = "wasm"))]
+fn pre_image_for_diff(
+    is_new_file: bool,
+    base: Option<String>,
+    file_path: Option<&StandardizedPath>,
+) -> Result<ExpectedDiskState, String> {
+    if is_new_file {
+        // A creation diff is only offered after the file was found absent
+        // (`apply_create_file` rejects the edit outright if it already exists),
+        // so "still absent" is the pre-image being asserted. The base is not
+        // consulted: a creation has none, and demanding one would refuse every
+        // file creation.
+        return Ok(ExpectedDiskState::Absent);
+    }
+
+    let base = base.ok_or_else(|| {
+        let path = file_path
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "file".to_owned());
+        format!(
+            "{path} was not written: the original contents this edit was based on \
+             are no longer available, so there is no way to tell whether the file \
+             changed in the meantime. Nothing was changed."
+        )
+    })?;
+
+    Ok(ExpectedDiskState::Content(base))
 }
 
 impl InlineDiffView {
@@ -388,6 +410,14 @@ impl DiffViewer for InlineDiffView {
 
             if self.is_new_file {
                 // For newly created files, delete instead of restoring.
+                //
+                // Unguarded, for the same reason as the restore below and with
+                // the same cost: `FileModel::delete_if_unchanged` exists and
+                // would take a pre-image, but the only honest pre-image here is
+                // what the accept wrote, which this view does not retain. A file
+                // the accept created and something else then rewrote is removed
+                // by this call with no check and no message. Filed with the
+                // revert follow-up rather than guarded against the wrong thing.
                 let version = self.editor.as_ref(_ctx).version(_ctx);
                 FileModel::handle(_ctx)
                     .update(_ctx, |file_model, ctx| {
@@ -446,4 +476,75 @@ impl View for InlineDiffView {
 
 impl TypedActionView for InlineDiffView {
     type Action = ();
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+
+    /// What is and is not covered here, stated rather than implied.
+    ///
+    /// [`pre_image_for_diff`] is the whole of the accept path's `Absent` vs
+    /// `Content` vs refuse decision, and it is covered below. What is *not*
+    /// covered is the plumbing in [`InlineDiffView::expected_disk_state`] that
+    /// feeds it: reading the diff base out of the editor's `DiffModel` needs a
+    /// live `CodeEditorView` inside an `App::test`, with the buffer reset,
+    /// diffs applied and a base set — the fixture the app crate's view tests
+    /// build, and more setup than the two handle dereferences it would be
+    /// testing. That plumbing has no branch of its own; the branch is here.
+    const BASE: &str = "fn main() {}\n";
+
+    fn path() -> StandardizedPath {
+        StandardizedPath::try_new("/tmp/example.rs").expect("standardized path")
+    }
+
+    /// A creation asserts absence and never consults the base. It has none, and
+    /// demanding one would refuse every file creation.
+    #[test]
+    fn a_creation_asserts_the_file_is_still_absent() {
+        assert_eq!(
+            pre_image_for_diff(true, None, Some(&path())),
+            Ok(ExpectedDiskState::Absent)
+        );
+        assert_eq!(
+            pre_image_for_diff(true, Some(BASE.to_owned()), Some(&path())),
+            Ok(ExpectedDiskState::Absent)
+        );
+    }
+
+    /// An edit to an existing file asserts the file still holds the text the
+    /// diff was computed from, verbatim.
+    #[test]
+    fn an_edit_asserts_the_diff_base() {
+        assert_eq!(
+            pre_image_for_diff(false, Some(BASE.to_owned()), Some(&path())),
+            Ok(ExpectedDiskState::Content(BASE.to_owned()))
+        );
+    }
+
+    /// The case that must not collapse into "nothing to compare, go ahead": no
+    /// diff base means no way to tell whether the file changed, which is a
+    /// refusal, not a licence to overwrite.
+    #[test]
+    fn a_missing_diff_base_refuses_rather_than_writing_blind() {
+        let error = pre_image_for_diff(false, None, Some(&path()))
+            .expect_err("a missing base must not produce a pre-image");
+        assert!(
+            error.contains("/tmp/example.rs"),
+            "the message must name the file, got: {error}"
+        );
+        assert!(
+            error.contains("Nothing was changed"),
+            "the message must say the write did not happen, got: {error}"
+        );
+    }
+
+    /// The message still reads when the view has no path either — a restored
+    /// conversation, or a path that failed to standardize.
+    #[test]
+    fn a_missing_path_still_produces_a_readable_refusal() {
+        let error = pre_image_for_diff(false, None, None)
+            .expect_err("a missing base must not produce a pre-image");
+        assert!(error.starts_with("file was not written"), "got: {error}");
+    }
 }

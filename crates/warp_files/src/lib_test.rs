@@ -421,7 +421,9 @@ fn guarded_write_saves_when_the_file_is_untouched() {
         assert_eq!(
             files.read(app, |model, _| model.version(file_id)),
             Some(version),
-            "a successful guarded write records the version, like an unguarded one"
+            "`report_save_outcome` records the version on success, guarded or not. \
+             This pins that funnel, not a conflict signal: nothing outside these \
+             tests reads `FileModel::version`."
         );
     });
 }
@@ -479,11 +481,15 @@ fn guarded_write_refuses_after_an_external_modification() {
             GUARD_EXTERNAL,
             "the external edit must still be on disk"
         );
-        assert_eq!(
-            files.read(app, |model, _| model.version(file_id)),
-            None,
-            "a refused write must not record the version it never wrote"
-        );
+        // Nothing is asserted about `model.version(file_id)` here, and that is
+        // deliberate. A refusal does leave it untouched, but that is not a
+        // property *production* has: `InlineDiffView::finish_file_registration`
+        // calls `set_version` at registration with the very value `save_content`
+        // later passes, so after a refusal the model already holds exactly what
+        // a successful write would have recorded. Asserting `None` would pin a
+        // behaviour only this test's setup produces. It would not matter either
+        // way — `FileModel::version` has no non-test reader anywhere in the
+        // tree, and the version was never a concurrency check.
     });
 }
 
@@ -529,10 +535,11 @@ fn guarded_write_refuses_when_the_file_was_deleted() {
 }
 
 /// The diff base is stored LF-normalised whatever the file's real line endings
-/// are, and the write emits the editor's own endings regardless. A CRLF file
-/// that nobody touched must therefore still accept.
+/// are, so on a CRLF file the pre-image and the file never match byte for byte.
+/// The editor's buffer took its ending from the same file, so the write puts
+/// CRLF back; nothing is converted and the accept must land.
 #[test]
-fn guarded_write_ignores_line_ending_differences() {
+fn guarded_write_accepts_a_crlf_file_the_write_will_leave_as_crlf() {
     App::test((), |mut app| async move {
         let app = &mut app;
         let files = app.add_singleton_model(FileModel::new);
@@ -542,12 +549,17 @@ fn guarded_write_ignores_line_ending_differences() {
         let path = directory.path().join("crlf.rs");
         std::fs::write(&path, GUARD_BASE.replace('\n', "\r\n")).expect("write file");
 
+        // What `CodeEditorView::text` produces for this file: the accepted text
+        // with the buffer's inferred ending, which `evaluate_line_endings` took
+        // from the CRLF content it was reset with.
+        let accepted_crlf = GUARD_ACCEPTED.replace('\n', "\r\n");
+
         let file_id = register_for_guarded_write(app, &files, &path);
         files.update(app, |model, ctx| {
             model
                 .save_if_unchanged(
                     file_id,
-                    GUARD_ACCEPTED.to_owned(),
+                    accepted_crlf.clone(),
                     ExpectedDiskState::Content(GUARD_BASE.to_owned()),
                     ContentVersion::new(),
                     ctx,
@@ -559,7 +571,57 @@ fn guarded_write_ignores_line_ending_differences() {
             TestFileModelEvent::FileSaved => (),
             event => panic!("A CRLF file nobody touched must still accept, got {event:?}"),
         }
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), GUARD_ACCEPTED);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), accepted_crlf);
+    });
+}
+
+/// The lossy direction, which LF-normalising both sides would swallow whole:
+/// the file was CRLF when the diff was proposed, the user ran `dos2unix` on it
+/// while the diff sat on screen, and the accept would write CRLF back over every
+/// line. The file now matches the LF-normalised pre-image *exactly*, so nothing
+/// about the text says anything is wrong — only the endings do.
+#[test]
+fn guarded_write_refuses_when_line_endings_were_converted_externally() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("converted.rs");
+        std::fs::write(&path, GUARD_BASE.replace('\n', "\r\n")).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &path);
+
+        // dos2unix, after the diff was proposed and the buffer inferred CRLF.
+        std::fs::write(&path, GUARD_BASE).expect("external conversion");
+
+        files.update(app, |model, ctx| {
+            model
+                .save_if_unchanged(
+                    file_id,
+                    GUARD_ACCEPTED.replace('\n', "\r\n"),
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("save should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(message) => {
+                assert!(
+                    message.contains("line endings"),
+                    "the refusal must name the reason, got: {message}"
+                );
+            }
+            event => panic!("Expected the conversion to be protected, got {event:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            GUARD_BASE,
+            "the user's conversion must still be on disk"
+        );
     });
 }
 
@@ -645,30 +707,96 @@ fn guarded_write_refuses_when_a_created_file_already_appeared() {
 #[test]
 fn an_unreadable_file_is_never_treated_as_safe_to_overwrite() {
     let path = Path::new("/does/not/matter.rs");
-    let denied = || io::Error::new(io::ErrorKind::PermissionDenied, "permission denied");
+    let denied = || DiskProbe::Failed(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+    let content = ExpectedDiskState::Content(GUARD_BASE.to_owned());
 
     assert!(matches!(
-        check_pre_image(
-            path,
-            &ExpectedDiskState::Content(GUARD_BASE.to_owned()),
-            Err(denied()),
-        ),
+        check_pre_image(path, &content, denied(), Some(GUARD_ACCEPTED)),
         PreWriteVerdict::Refuse(_)
     ));
     assert!(matches!(
-        check_pre_image(path, &ExpectedDiskState::Absent, Err(denied())),
+        check_pre_image(path, &ExpectedDiskState::Absent, denied(), Some(GUARD_ACCEPTED)),
         PreWriteVerdict::Refuse(_),
     ));
 
-    // Only an unambiguous "it is not there" clears an `Absent` expectation.
+    // Only an unambiguous "there is nothing there" clears an `Absent`
+    // expectation. Anything at all at the path refuses, including the things a
+    // read would have silently followed or failed on.
     assert_eq!(
         check_pre_image(
             path,
             &ExpectedDiskState::Absent,
-            Err(io::Error::from(io::ErrorKind::NotFound)),
+            DiskProbe::Missing,
+            Some(GUARD_ACCEPTED)
         ),
         PreWriteVerdict::Proceed
     );
+    assert!(matches!(
+        check_pre_image(
+            path,
+            &ExpectedDiskState::Absent,
+            DiskProbe::Occupied,
+            Some(GUARD_ACCEPTED)
+        ),
+        PreWriteVerdict::Refuse(_)
+    ));
+
+    // A probe result that does not answer the question asked fails closed
+    // rather than panicking or assuming.
+    assert!(matches!(
+        check_pre_image(
+            path,
+            &ExpectedDiskState::Absent,
+            DiskProbe::Content(GUARD_EXTERNAL.to_owned()),
+            Some(GUARD_ACCEPTED)
+        ),
+        PreWriteVerdict::Refuse(_)
+    ));
+    assert!(matches!(
+        check_pre_image(path, &content, DiskProbe::Occupied, Some(GUARD_ACCEPTED)),
+        PreWriteVerdict::Refuse(_)
+    ));
+}
+
+/// `ExpectedDiskState::Absent` says nothing may exist at the path, and a
+/// dangling symlink is something. Probing with a read would have followed the
+/// link, seen `NotFound` for its missing target, and let the write create that
+/// target — at whatever path the link pointed to.
+#[cfg(unix)]
+#[test]
+fn guarded_creation_refuses_at_a_dangling_symlink() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let link = directory.path().join("link.rs");
+        let target = directory.path().join("elsewhere.rs");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let file_id = register_for_guarded_write(app, &files, &link);
+        files.update(app, |model, ctx| {
+            model
+                .save_if_unchanged(
+                    file_id,
+                    GUARD_ACCEPTED.to_owned(),
+                    ExpectedDiskState::Absent,
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("save should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(_) => (),
+            event => panic!("Expected the dangling symlink to refuse, got {event:?}"),
+        }
+        assert!(
+            !target.exists(),
+            "the write must not have created the symlink's target"
+        );
+    });
 }
 
 /// The remote guard refuses on a mismatch and on a read it could not complete.
@@ -679,45 +807,437 @@ fn an_unreadable_file_is_never_treated_as_safe_to_overwrite() {
 fn the_remote_guard_refuses_on_mismatch_and_on_unverifiable_content() {
     let expected = ExpectedDiskState::Content(GUARD_BASE.to_owned());
 
+    let accepted = Some(GUARD_ACCEPTED);
+
     assert_eq!(
-        remote_pre_image_refusal::<String>("/tmp/a.rs", &expected, Ok(GUARD_BASE.into())),
+        remote_pre_image_refusal::<String>("/tmp/a.rs", &expected, Ok(GUARD_BASE.into()), accepted),
         None
     );
     assert!(
-        remote_pre_image_refusal::<String>("/tmp/a.rs", &expected, Ok(GUARD_EXTERNAL.into()))
-            .is_some_and(|message| message.contains("changed on the remote host"))
+        remote_pre_image_refusal::<String>(
+            "/tmp/a.rs",
+            &expected,
+            Ok(GUARD_EXTERNAL.into()),
+            accepted
+        )
+        .is_some_and(|message| message.contains("changed on the remote host"))
     );
     assert!(
-        remote_pre_image_refusal("/tmp/a.rs", &expected, Err("connection reset")).is_some(),
+        remote_pre_image_refusal("/tmp/a.rs", &expected, Err("connection reset"), accepted)
+            .is_some(),
         "an unreadable remote file must not be overwritten"
     );
     assert!(
-        remote_pre_image_refusal::<String>("/tmp/a.rs", &expected, Ok(vec![0xff, 0xfe])).is_some(),
+        remote_pre_image_refusal::<String>("/tmp/a.rs", &expected, Ok(vec![0xff, 0xfe]), accepted)
+            .is_some(),
         "a remote file we cannot decode must not be overwritten"
     );
 
+    // The remote path gets the same line-ending treatment as the local one: a
+    // CRLF file the write will leave CRLF passes, a converted one does not.
+    let crlf_base: Vec<u8> = GUARD_BASE.replace('\n', "\r\n").into();
+    let accepted_crlf = GUARD_ACCEPTED.replace('\n', "\r\n");
+    assert_eq!(
+        remote_pre_image_refusal::<String>(
+            "/tmp/a.rs",
+            &expected,
+            Ok(crlf_base),
+            Some(accepted_crlf.as_str())
+        ),
+        None
+    );
     assert!(
-        remote_pre_image_refusal::<String>("/tmp/a.rs", &ExpectedDiskState::Absent, Ok(Vec::new()))
-            .is_none()
+        remote_pre_image_refusal::<String>(
+            "/tmp/a.rs",
+            &expected,
+            Ok(GUARD_BASE.into()),
+            Some(accepted_crlf.as_str())
+        )
+        .is_some_and(|message| message.contains("line endings")),
+        "a remote dos2unix must not be silently reverted"
+    );
+
+    assert!(
+        remote_pre_image_refusal::<String>(
+            "/tmp/a.rs",
+            &ExpectedDiskState::Absent,
+            Ok(Vec::new()),
+            accepted
+        )
+        .is_none(),
+        "documented exception: a zero-byte remote file is indistinguishable from none"
     );
     assert!(
         remote_pre_image_refusal::<String>(
             "/tmp/a.rs",
             &ExpectedDiskState::Absent,
             Ok(GUARD_EXTERNAL.into()),
+            accepted,
         )
         .is_some()
     );
     assert!(
-        remote_pre_image_refusal("/tmp/a.rs", &ExpectedDiskState::Absent, Err("no route")).is_none(),
+        remote_pre_image_refusal("/tmp/a.rs", &ExpectedDiskState::Absent, Err("no route"), accepted)
+            .is_none(),
         "documented exception: remote creation cannot be blocked by an unreadable probe"
     );
 }
 
 /// Line-ending normalisation must not swallow a real content change.
+///
+/// Note what this does *not* establish on its own: the third assertion differs
+/// in case, not in line endings, so it says nothing about the collapse
+/// `normalize_to_lf` deliberately performs. That collapse is constrained by
+/// `line_endings_survive_or_the_write_is_refused` below.
 #[test]
 fn normalisation_only_touches_line_endings() {
     assert_eq!(normalize_to_lf("a\r\nb\rc\nd"), "a\nb\nc\nd");
     assert_eq!(normalize_to_lf("no carriage returns"), "no carriage returns");
     assert_ne!(normalize_to_lf("a\r\nb"), normalize_to_lf("a\r\nB"));
+
+    // All three of these normalise to the same bytes. That is exactly why
+    // normalisation cannot be the whole answer.
+    assert_eq!(normalize_to_lf("a\r\nb"), normalize_to_lf("a\rb"));
+    assert_eq!(normalize_to_lf("a\rb"), normalize_to_lf("a\nb"));
+}
+
+/// The classification `compare_pre_image` uses to tell the harmless direction
+/// from the lossy one, since normalisation cannot.
+#[test]
+fn line_ending_styles_are_classified_exactly() {
+    assert_eq!(line_ending_style(""), LineEndingStyle::Absent);
+    assert_eq!(line_ending_style("one line"), LineEndingStyle::Absent);
+    assert_eq!(line_ending_style("a\nb\n"), LineEndingStyle::Lf);
+    assert_eq!(line_ending_style("a\r\nb\r\n"), LineEndingStyle::CrLf);
+    assert_eq!(line_ending_style("a\rb\r"), LineEndingStyle::Cr);
+    assert_eq!(line_ending_style("a\r\nb\nc"), LineEndingStyle::Mixed);
+    // A trailing lone `\r` is a CR ending, not half of a CRLF.
+    assert_eq!(line_ending_style("a\r"), LineEndingStyle::Cr);
+}
+
+/// The property the original guard's line-ending test implied but never
+/// tested — it covered only the safe direction: normalising both sides must not
+/// let a write revert somebody else's conversion.
+///
+/// Every case here has `expected` and `actual` normalising to the same text, so
+/// content comparison alone says "no conflict" in all of them. What separates
+/// them is whether the write would put the endings back as it found them.
+#[test]
+fn line_endings_survive_or_the_write_is_refused() {
+    let lf = "a\nb\n";
+    let crlf = "a\r\nb\r\n";
+    let cr = "a\rb\r";
+
+    // The safe direction: a CRLF file whose LF-normalised pre-image never
+    // matched it byte for byte, written back as CRLF.
+    assert_eq!(compare_pre_image(lf, crlf, Some(crlf)), ContentMatch::Same);
+    // The plain case: LF throughout.
+    assert_eq!(compare_pre_image(lf, lf, Some(lf)), ContentMatch::Same);
+
+    // The lossy direction. `expected` and `actual` are byte-identical here —
+    // the external `dos2unix` made the file match the normalised pre-image
+    // exactly — and only the incoming endings reveal the conflict.
+    assert_eq!(
+        compare_pre_image(lf, lf, Some(crlf)),
+        ContentMatch::LineEndingsChanged
+    );
+    // And the reverse: a `unix2dos` on a file the buffer read as LF.
+    assert_eq!(
+        compare_pre_image(lf, crlf, Some(lf)),
+        ContentMatch::LineEndingsChanged
+    );
+    // Lone `\r` collapses under normalisation too, and is caught the same way.
+    assert_eq!(
+        compare_pre_image(lf, cr, Some(lf)),
+        ContentMatch::LineEndingsChanged
+    );
+    assert_eq!(
+        compare_pre_image(lf, lf, Some(cr)),
+        ContentMatch::LineEndingsChanged
+    );
+
+    // A real text change still outranks the line-ending question.
+    assert_eq!(
+        compare_pre_image(lf, "a\r\nB\r\n", Some(crlf)),
+        ContentMatch::Different
+    );
+
+    // A delete writes nothing, so it cannot revert anyone's endings.
+    assert_eq!(compare_pre_image(lf, crlf, None), ContentMatch::Same);
+
+    // The two stated blind spots, pinned here so they cannot widen unnoticed
+    // without a test turning red. Text with no line break asserts no
+    // convention...
+    assert_eq!(
+        compare_pre_image("one line", "one line", Some("also one line")),
+        ContentMatch::Same
+    );
+    // ...and a mixed-ending file is rewritten uniformly by any accept, guarded
+    // or not, so mixed is treated as compatible with everything.
+    assert_eq!(
+        compare_pre_image(lf, "a\r\nb\n", Some(crlf)),
+        ContentMatch::Same
+    );
+}
+
+// ── Guarded deletes and guarded renames ───────────────────────────────────
+//
+// The accept path dispatches three write modes, not one. `save_if_unchanged`
+// covers the overwrite; these cover the other two, both of which destroy data
+// without any error path of their own: `remove_file` succeeds, and `rename`
+// succeeds *over* whatever is at the destination.
+
+/// A deletion proposed against a snapshot must not run against a file somebody
+/// rewrote since. The rewritten file is not the file the deletion reasoned
+/// about.
+#[test]
+fn guarded_delete_refuses_after_an_external_modification() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("doomed.rs");
+        std::fs::write(&path, GUARD_BASE).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &path);
+        std::fs::write(&path, GUARD_EXTERNAL).expect("external write");
+
+        files.update(app, |model, ctx| {
+            model
+                .delete_if_unchanged(
+                    file_id,
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("delete should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(message) => {
+                assert!(
+                    message.contains("changed on disk"),
+                    "the refusal must say why, got: {message}"
+                );
+            }
+            event => panic!("Expected the delete to be refused, got {event:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            GUARD_EXTERNAL,
+            "the file somebody else rewrote must still be there"
+        );
+    });
+}
+
+/// ...and the ordinary case still deletes. The guard must not have made a
+/// proposed deletion impossible.
+#[test]
+fn guarded_delete_removes_an_untouched_file() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("doomed.rs");
+        std::fs::write(&path, GUARD_BASE).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &path);
+        files.update(app, |model, ctx| {
+            model
+                .delete_if_unchanged(
+                    file_id,
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("delete should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FileSaved => (),
+            event => panic!("Expected the delete to succeed, got {event:?}"),
+        }
+        assert!(!path.exists(), "the file must be gone");
+    });
+}
+
+/// A file already deleted by something else is the end state the caller asked
+/// for. Reporting a conflict there would be an error toast about a job already
+/// done, and nothing can be lost by agreeing it is done.
+#[test]
+fn guarded_delete_succeeds_when_the_file_is_already_gone() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("already-gone.rs");
+        std::fs::write(&path, GUARD_BASE).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &path);
+        std::fs::remove_file(&path).expect("external delete");
+
+        files.update(app, |model, ctx| {
+            model
+                .delete_if_unchanged(
+                    file_id,
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("delete should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FileSaved => (),
+            event => panic!("An already-deleted file is not a conflict, got {event:?}"),
+        }
+    });
+}
+
+/// The silent destroyer: `async_fs::rename` replaces whatever is at the
+/// destination and *succeeds*, so the unguarded `rename_and_save` has no error
+/// path on which to notice. The rename target's pre-image is `Absent` — the
+/// diff was only offered because the target did not exist when it was proposed
+/// — so a file created there in the meantime must survive.
+#[test]
+fn guarded_rename_refuses_when_the_destination_appeared() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let source = directory.path().join("old-name.rs");
+        let destination = directory.path().join("new-name.rs");
+        std::fs::write(&source, GUARD_BASE).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &source);
+
+        // Somebody creates the rename target after the diff was proposed.
+        std::fs::write(&destination, GUARD_EXTERNAL).expect("external create");
+
+        files.update(app, |model, ctx| {
+            model
+                .rename_and_save_if_unchanged(
+                    file_id,
+                    destination.clone(),
+                    GUARD_ACCEPTED.to_owned(),
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ExpectedDiskState::Absent,
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("rename should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(message) => {
+                assert!(
+                    message.contains("created by something else"),
+                    "the refusal must say why, got: {message}"
+                );
+            }
+            event => panic!("Expected the rename to be refused, got {event:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            GUARD_EXTERNAL,
+            "the file somebody else created at the destination must be untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&source).unwrap(),
+            GUARD_BASE,
+            "a refusal must leave the source alone too, not half-apply the write"
+        );
+    });
+}
+
+/// A source somebody else edited refuses just as it does for a plain overwrite,
+/// and refuses before anything is written — the destination must not appear.
+#[test]
+fn guarded_rename_refuses_after_an_external_modification_to_the_source() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let source = directory.path().join("old-name.rs");
+        let destination = directory.path().join("new-name.rs");
+        std::fs::write(&source, GUARD_EXTERNAL).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &source);
+        files.update(app, |model, ctx| {
+            model
+                .rename_and_save_if_unchanged(
+                    file_id,
+                    destination.clone(),
+                    GUARD_ACCEPTED.to_owned(),
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ExpectedDiskState::Absent,
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("rename should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FailedToSave(message) => {
+                assert!(
+                    message.contains("changed on disk"),
+                    "the refusal must say why, got: {message}"
+                );
+            }
+            event => panic!("Expected the rename to be refused, got {event:?}"),
+        }
+        assert!(!destination.exists(), "nothing may have been moved");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), GUARD_EXTERNAL);
+    });
+}
+
+/// ...and the ordinary rename still lands, with the accepted content at the new
+/// path and nothing left at the old one.
+#[test]
+fn guarded_rename_moves_an_untouched_file() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let files = app.add_singleton_model(FileModel::new);
+        let receiver = setup_event_channel(app, &files);
+
+        let directory = tempfile::tempdir().expect("temp dir");
+        let source = directory.path().join("old-name.rs");
+        let destination = directory.path().join("nested").join("new-name.rs");
+        std::fs::write(&source, GUARD_BASE).expect("write file");
+
+        let file_id = register_for_guarded_write(app, &files, &source);
+        files.update(app, |model, ctx| {
+            model
+                .rename_and_save_if_unchanged(
+                    file_id,
+                    destination.clone(),
+                    GUARD_ACCEPTED.to_owned(),
+                    ExpectedDiskState::Content(GUARD_BASE.to_owned()),
+                    ExpectedDiskState::Absent,
+                    ContentVersion::new(),
+                    ctx,
+                )
+                .expect("rename should dispatch");
+        });
+
+        match receiver.recv().await.expect("Could not receive the result") {
+            TestFileModelEvent::FileSaved => (),
+            event => panic!("Expected the rename to succeed, got {event:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            GUARD_ACCEPTED
+        );
+        assert!(!source.exists(), "the old path must be gone");
+    });
 }

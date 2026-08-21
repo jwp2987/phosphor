@@ -91,8 +91,15 @@ impl FileModelEvent {
 /// was computed against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExpectedDiskState {
-    /// The file must not exist. For a write that *creates* a file which was
-    /// verified absent when the change was proposed.
+    /// Nothing may exist at the path. For a write that *creates* a file which
+    /// was verified absent when the change was proposed.
+    ///
+    /// Checked with `symlink_metadata`, not with a read, so a *dangling
+    /// symlink* counts as something existing and refuses the write. A read
+    /// would have followed the link, reported `NotFound` for its missing
+    /// target, and let the write create that target — at whatever path the link
+    /// pointed to, anywhere on the filesystem. [`FileModel::save`] still has
+    /// that hole; a guarded write must not.
     Absent,
     /// The file must currently hold this text.
     ///
@@ -121,16 +128,177 @@ enum PreWriteVerdict {
 /// Reimplemented here rather than depended on: `warp_files` sits below `editor`
 /// in the crate graph and a three-line normaliser is cheaper than that edge.
 ///
-/// The comparison is therefore *not* byte-exact, and that is deliberate. A
-/// guarded write still emits the caller's own line endings, so a pure
-/// CRLF-to-LF conversion by some external tool is discarded by the write
-/// whether or not the check notices it. Treating it as a conflict would fail
-/// every accept on a CRLF file while protecting nothing.
+/// The comparison is therefore *not* byte-exact. On its own that would make the
+/// guard blind to a line-ending change in *either* direction — `"a\r\nb"`,
+/// `"a\rb"` and `"a\nb"` all normalise to the same three bytes — and only one of
+/// those directions is harmless:
+///
+/// * A CRLF file nobody touched, whose diff base was merely *stored*
+///   LF-normalised, is not a conflict. Refusing it would fail every accept on
+///   every CRLF file while protecting nothing.
+/// * A file something else converted (`dos2unix`, a `.gitattributes` checkout,
+///   an editor changing its setting) *is* a change to every line in it, and a
+///   guarded write emitting the old endings would revert the lot.
+///
+/// Normalisation alone cannot tell those apart, so it is not asked to.
+/// [`compare_pre_image`] uses [`line_ending_style`] on the text about to be
+/// written to decide whether the write would leave the endings on disk alone,
+/// and refuses when it would not.
 fn normalize_to_lf(text: &str) -> String {
     if !text.contains('\r') {
         return text.to_owned();
     }
     text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// The line-ending convention a piece of text uses, as far as a guarded write
+/// needs to care.
+///
+/// Only ever compared, never used to convert anything: its whole job is to tell
+/// "the diff base was stored LF-normalised" apart from "something converted this
+/// file's line endings after the change was proposed".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LineEndingStyle {
+    /// No line break at all, so the text asserts no convention.
+    Absent,
+    Lf,
+    /// Lone `\r`, the convention `normalize_to_lf` also collapses.
+    Cr,
+    CrLf,
+    /// More than one convention in the same text.
+    Mixed,
+}
+
+/// Classifies `text`'s line endings, counting `\r\n` as one ending rather than
+/// as a `\r` and an `\n`.
+fn line_ending_style(text: &str) -> LineEndingStyle {
+    let bytes = text.as_bytes();
+    let (mut lf, mut cr, mut crlf) = (false, false, false);
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\r' => {
+                if bytes.get(index + 1) == Some(&b'\n') {
+                    crlf = true;
+                    index += 2;
+                    continue;
+                }
+                cr = true;
+            }
+            b'\n' => lf = true,
+            _ => {}
+        }
+        index += 1;
+    }
+    match (lf, cr, crlf) {
+        (false, false, false) => LineEndingStyle::Absent,
+        (true, false, false) => LineEndingStyle::Lf,
+        (false, true, false) => LineEndingStyle::Cr,
+        (false, false, true) => LineEndingStyle::CrLf,
+        _ => LineEndingStyle::Mixed,
+    }
+}
+
+/// Whether writing text with `incoming` endings would leave a file whose
+/// endings are `actual` as it found them.
+///
+/// [`LineEndingStyle::Absent`] is compatible with everything: text with no line
+/// break asserts no convention, so a one-line result cannot be evidence that
+/// anything was converted.
+///
+/// [`LineEndingStyle::Mixed`] is compatible with everything too, and that is a
+/// **stated blind spot, not an oversight**. An editor buffer can only emit one
+/// convention — `editor::multiline::infer_line_ending` picks the majority — so
+/// *any* accept on a mixed-ending file rewrites its endings uniformly, whether
+/// or not anything external touched it. Refusing there would block accepts on
+/// files nobody had touched, which is the failure mode this guard exists to
+/// avoid. The consequence, stated rather than implied: an external change that
+/// leaves a file with mixed line endings and identical text is not detected.
+fn line_endings_preserved(incoming: LineEndingStyle, actual: LineEndingStyle) -> bool {
+    matches!(incoming, LineEndingStyle::Absent | LineEndingStyle::Mixed)
+        || matches!(actual, LineEndingStyle::Absent | LineEndingStyle::Mixed)
+        || incoming == actual
+}
+
+/// How the text found on disk relates to the pre-image the caller expected, and
+/// to the text the caller is about to write over it.
+#[derive(Debug, PartialEq, Eq)]
+enum ContentMatch {
+    /// Same text, and the write would not disturb its line endings.
+    Same,
+    /// Same text, but its line endings were converted after the change was
+    /// proposed and the write would convert them straight back.
+    LineEndingsChanged,
+    /// Different text.
+    Different,
+}
+
+/// Compares the file's current text against the caller's pre-image.
+///
+/// `incoming` is the text the guarded write would put there, or `None` for a
+/// guarded *delete*, which writes nothing and so cannot revert anyone's line
+/// endings.
+///
+/// The line-ending question is asked even when `expected` and `actual` are
+/// byte-identical, and that is the whole point. The caller's pre-image arrives
+/// LF-normalised, so a file something ran `dos2unix` over ends up matching it
+/// *exactly* — a byte-equality fast path would report `Same` and the write would
+/// then re-emit CRLF over every line. What decides the question is not how
+/// `actual` compares to `expected` but how `incoming`'s endings compare to
+/// `actual`'s: `editor::multiline::evaluate_line_endings` gives the buffer the
+/// majority ending of the file as it was read at proposal time, so a mismatch
+/// now means the file's endings moved since.
+fn compare_pre_image(expected: &str, actual: &str, incoming: Option<&str>) -> ContentMatch {
+    if normalize_to_lf(expected) != normalize_to_lf(actual) {
+        return ContentMatch::Different;
+    }
+    match incoming {
+        Some(incoming)
+            if !line_endings_preserved(line_ending_style(incoming), line_ending_style(actual)) =>
+        {
+            ContentMatch::LineEndingsChanged
+        }
+        _ => ContentMatch::Same,
+    }
+}
+
+/// What probing a path for a guarded write actually found.
+///
+/// Which syscall produces it depends on the expectation being checked (see
+/// [`probe_disk`]), so the probe is kept separate and [`check_pre_image`] stays
+/// a pure decision over its result.
+#[derive(Debug)]
+enum DiskProbe {
+    /// Something exists at the path. Produced only for an
+    /// [`ExpectedDiskState::Absent`] check, which does not care what it is —
+    /// a file, a directory, or a symlink dangling or otherwise.
+    Occupied,
+    /// Nothing exists at the path.
+    Missing,
+    /// The file was read and holds this text.
+    Content(String),
+    /// The probe itself failed, so the path's state is unknown.
+    Failed(io::Error),
+}
+
+/// Probes `path` for the state `expected` has to be checked against.
+///
+/// `Absent` is probed with `symlink_metadata` rather than a read: a read follows
+/// symlinks, so a dangling link reports `NotFound` and the write that followed
+/// would create the link's *target*. `Content` needs the bytes, so it reads.
+async fn probe_disk(path: &Path, expected: &ExpectedDiskState) -> DiskProbe {
+    match expected {
+        ExpectedDiskState::Absent => match async_fs::symlink_metadata(path).await {
+            Ok(_) => DiskProbe::Occupied,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => DiskProbe::Missing,
+            Err(err) => DiskProbe::Failed(err),
+        },
+        ExpectedDiskState::Content(_) => match async_fs::read_to_string(path).await {
+            Ok(content) => DiskProbe::Content(content),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => DiskProbe::Missing,
+            Err(err) => DiskProbe::Failed(err),
+        },
+    }
 }
 
 /// Decides whether a guarded write may proceed, given what the caller expected
@@ -144,41 +312,51 @@ fn normalize_to_lf(text: &str) -> String {
 fn check_pre_image(
     path: &Path,
     expected: &ExpectedDiskState,
-    read_result: Result<String, io::Error>,
+    probe: DiskProbe,
+    incoming: Option<&str>,
 ) -> PreWriteVerdict {
     let display = path.display();
-    match (expected, read_result) {
-        (ExpectedDiskState::Absent, Err(err)) if err.kind() == io::ErrorKind::NotFound => {
-            PreWriteVerdict::Proceed
-        }
-        (ExpectedDiskState::Absent, Ok(_)) => PreWriteVerdict::Refuse(format!(
+    match (expected, probe) {
+        (ExpectedDiskState::Absent, DiskProbe::Missing) => PreWriteVerdict::Proceed,
+        (ExpectedDiskState::Absent, DiskProbe::Occupied) => PreWriteVerdict::Refuse(format!(
             "{display} was created by something else after this change was proposed, \
              so it was not overwritten. Re-run the request to work from the current file."
         )),
-        (ExpectedDiskState::Absent, Err(err)) => PreWriteVerdict::Refuse(format!(
+        (ExpectedDiskState::Absent, DiskProbe::Failed(err)) => PreWriteVerdict::Refuse(format!(
             "{display} could not be read to check whether it already exists ({err}), \
              so it was not written. Nothing was changed."
         )),
-        (ExpectedDiskState::Content(expected), Ok(actual)) => {
-            if normalize_to_lf(expected) == normalize_to_lf(&actual) {
-                PreWriteVerdict::Proceed
-            } else {
-                PreWriteVerdict::Refuse(format!(
+        (ExpectedDiskState::Content(expected), DiskProbe::Content(actual)) => {
+            match compare_pre_image(expected, &actual, incoming) {
+                ContentMatch::Same => PreWriteVerdict::Proceed,
+                ContentMatch::LineEndingsChanged => PreWriteVerdict::Refuse(format!(
+                    "{display} has the same text as when this change was proposed but its \
+                     line endings were converted since, so it was not overwritten: writing \
+                     it would have converted every line straight back. \
+                     Re-run the request to work from the current file."
+                )),
+                ContentMatch::Different => PreWriteVerdict::Refuse(format!(
                     "{display} changed on disk after this change was proposed, \
                      so it was not overwritten and your edits are intact. \
                      Re-run the request to work from the current file."
-                ))
+                )),
             }
         }
-        (ExpectedDiskState::Content(_), Err(err)) if err.kind() == io::ErrorKind::NotFound => {
-            PreWriteVerdict::Refuse(format!(
-                "{display} was deleted after this change was proposed, so it was not \
-                 recreated. Re-run the request to work from the current file."
-            ))
-        }
-        (ExpectedDiskState::Content(_), Err(err)) => PreWriteVerdict::Refuse(format!(
+        (ExpectedDiskState::Content(_), DiskProbe::Missing) => PreWriteVerdict::Refuse(format!(
+            "{display} was deleted after this change was proposed, so it was not \
+             recreated. Re-run the request to work from the current file."
+        )),
+        (ExpectedDiskState::Content(_), DiskProbe::Failed(err)) => PreWriteVerdict::Refuse(format!(
             "{display} could not be read to check whether it changed since this change \
              was proposed ({err}), so it was not overwritten. Nothing was changed."
+        )),
+        // `probe_disk` pairs each expectation with its own syscall, so no other
+        // combination can arise. Refuse rather than panic or assume: a probe
+        // result that does not answer the question asked is exactly the "we
+        // cannot vouch for this file" case the guard fails closed on.
+        (_, _) => PreWriteVerdict::Refuse(format!(
+            "{display} could not be checked against the state this change was proposed \
+             from, so it was not written. Nothing was changed."
         )),
     }
 }
@@ -189,20 +367,42 @@ fn check_pre_image(
 /// Generic over the read error so it can be exercised without a live
 /// `RemoteServerClient`; production passes `remote_server`'s client error.
 ///
-/// This is deliberately weaker than [`check_pre_image`] in exactly one place.
-/// The remote read reports a missing file as an ordinary operation failure with
-/// no distinguishable kind, so an [`ExpectedDiskState::Absent`] check cannot
-/// tell "not there, as expected" from "the read itself failed". Refusing on
-/// error would make it impossible to create any file on a remote host; the
-/// error case therefore proceeds, and says so in the log rather than passing in
-/// silence. The exposure is bounded: a creation diff is only ever offered after
-/// the same channel reported the file absent moments earlier, and a genuine
-/// transport failure fails the following write too, so nothing is clobbered.
+/// `incoming` is the text about to be written, or `None` for a guarded delete;
+/// it is what [`compare_pre_image`] needs to judge a line-ending change.
+///
+/// # The two weaker cases, stated exactly
+///
+/// This is deliberately weaker than [`check_pre_image`] in the
+/// [`ExpectedDiskState::Absent`] arm, in two ways that the local path does not
+/// share.
+///
+/// **A failed read proceeds.** `RemoteServerClient::read_file_bytes` reports a
+/// missing file as `ClientError::FileOperationFailed` — an ordinary operation
+/// failure carrying only a message — so an `Absent` check cannot tell "not
+/// there, as expected" from "the read itself failed". Refusing on error would
+/// make it impossible to create any file on a remote host, so the error case
+/// proceeds and says so in the log rather than passing in silence.
+///
+/// The containment argument for that only covers *transport* failures: a
+/// creation diff is offered after the same channel reported the file absent,
+/// and a dead channel fails the following write too. It does **not** cover a
+/// read that fails for a reason the write would not hit. A remote file with
+/// mode `0222`, or one an ACL denies reading but permits writing, reads as an
+/// error and is then overwritten by the creation write. That is a real hole,
+/// left open because closing it needs a remote `stat` the protocol does not
+/// expose (`ReadFileChunk` is all there is), not because it is harmless.
+///
+/// **An existing empty file counts as absent.** A zero-byte remote file reads
+/// back as `Ok(vec![])`, indistinguishable from nothing at all, and proceeds.
+/// Unlike the case above this destroys nothing — an empty file has no contents
+/// to lose — but the file's existence, mode and inode are not preserved.
+///
 /// Every other case — and every local case — refuses on an unreadable file.
 fn remote_pre_image_refusal<E: std::fmt::Display>(
     path: &str,
     expected: &ExpectedDiskState,
     read_result: Result<Vec<u8>, E>,
+    incoming: Option<&str>,
 ) -> Option<String> {
     match (expected, read_result) {
         (ExpectedDiskState::Absent, Ok(bytes)) if bytes.is_empty() => None,
@@ -219,12 +419,20 @@ fn remote_pre_image_refusal<E: std::fmt::Display>(
             None
         }
         (ExpectedDiskState::Content(expected), Ok(bytes)) => match String::from_utf8(bytes) {
-            Ok(actual) if normalize_to_lf(expected) == normalize_to_lf(&actual) => None,
-            Ok(_) => Some(format!(
-                "{path} changed on the remote host after this change was proposed, \
-                 so it was not overwritten and your edits are intact. \
-                 Re-run the request to work from the current file."
-            )),
+            Ok(actual) => match compare_pre_image(expected, &actual, incoming) {
+                ContentMatch::Same => None,
+                ContentMatch::LineEndingsChanged => Some(format!(
+                    "{path} has the same text on the remote host as when this change was \
+                     proposed but its line endings were converted since, so it was not \
+                     overwritten: writing it would have converted every line straight \
+                     back. Re-run the request to work from the current file."
+                )),
+                ContentMatch::Different => Some(format!(
+                    "{path} changed on the remote host after this change was proposed, \
+                     so it was not overwritten and your edits are intact. \
+                     Re-run the request to work from the current file."
+                )),
+            },
             Err(_) => Some(format!(
                 "{path} is not valid UTF-8 on the remote host, so it could not be \
                  checked against the text this change was proposed from and was not \
@@ -1032,11 +1240,30 @@ impl FileModel {
     /// state the caller says it was when `content` was derived.
     ///
     /// The guarded counterpart to [`FileModel::save`], for callers holding
-    /// snapshot-derived content. The read, the comparison and the write all
-    /// happen inside a single spawned task so the check sits as close to the
-    /// write as it can; this narrows the window, it does not close it — nothing
-    /// short of an OS-level exclusive open could, and the point here is to stop
-    /// losing minutes-old external edits, not microsecond-old ones.
+    /// snapshot-derived content. The probe, the comparison and the write all
+    /// happen inside a single spawned task, with nothing awaited between the
+    /// comparison and the write — `ensure_parent_directories` is hoisted above
+    /// the probe for exactly that reason, since a `create_dir_all` sitting
+    /// between the compare and the write would widen the window the compare
+    /// exists to narrow. The cost of hoisting it is that a refusal can leave an
+    /// empty parent directory behind; that is the cheaper of the two.
+    ///
+    /// This narrows the window, it does not close it — nothing short of an
+    /// OS-level exclusive open could, and the point here is to stop losing
+    /// minutes-old external edits, not microsecond-old ones.
+    ///
+    /// # Which write modes are guarded
+    ///
+    /// | mode | guarded by |
+    /// |---|---|
+    /// | overwrite an existing file | this method, [`ExpectedDiskState::Content`] |
+    /// | create a new file | this method, [`ExpectedDiskState::Absent`] |
+    /// | delete a file | [`FileModel::delete_if_unchanged`] |
+    /// | rename + write | [`FileModel::rename_and_save_if_unchanged`], both endpoints |
+    ///
+    /// Unguarded and deliberately so: [`FileModel::save`],
+    /// [`FileModel::delete`] and [`FileModel::rename_and_save`], whose callers
+    /// hold a live buffer rather than a snapshot.
     ///
     /// On a mismatch nothing is written and the failure is reported through the
     /// ordinary [`FileModelEvent::FailedToSave`] path, as
@@ -1047,7 +1274,16 @@ impl FileModel {
     ///
     /// The cost is one extra read of the file per guarded write. It is paid on
     /// a user-initiated action that was already going to write the same file,
-    /// so it is not on any hot path.
+    /// so it is not on any hot path — but "one read" means different things on
+    /// the two backends. Locally it is a single `read_to_string` (or, for
+    /// [`ExpectedDiskState::Absent`], one `symlink_metadata`), and the
+    /// check-to-write window really is the microseconds described above. On a
+    /// remote host `RemoteServerClient::read_file_bytes` pulls the whole file in
+    /// 4 MiB `ReadFileChunk` round trips, so the remote check-to-write window is
+    /// at least one full network round trip, and on a large file rather more
+    /// than that. The check is still worth it there — a lost edit costs more
+    /// than a round trip — but it is not the same order of magnitude, and
+    /// nothing in this design pretends otherwise.
     ///
     /// # Why the pre-image is the content, not an mtime
     ///
@@ -1109,19 +1345,26 @@ impl FileModel {
 
                 ctx.spawn(
                     async move {
-                        let read_result = async_fs::read_to_string(&file_path).await;
-                        if let PreWriteVerdict::Refuse(message) =
-                            check_pre_image(&file_path, &expected, read_result)
-                        {
-                            return Err(FileSaveError::Other(message));
-                        }
-
+                        // Above the probe, not between the probe and the write:
+                        // `create_dir_all` is itself a write and an await, and
+                        // an await there would widen the check-to-write window
+                        // for no reason. For a `Content` expectation the parent
+                        // provably exists already, so this is a stat; for
+                        // `Absent` it is the directory the new file needs.
                         if let Err(err) = Self::ensure_parent_directories(&file_path).await {
                             return Err(FileSaveError::IOError {
                                 error: err,
                                 path: file_path,
                             });
                         }
+
+                        let probe = probe_disk(&file_path, &expected).await;
+                        if let PreWriteVerdict::Refuse(message) =
+                            check_pre_image(&file_path, &expected, probe, Some(content.as_str()))
+                        {
+                            return Err(FileSaveError::Other(message));
+                        }
+
                         async_fs::write(&file_path, content).await.map_err(|err| {
                             FileSaveError::IOError {
                                 error: err,
@@ -1139,7 +1382,9 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future = async move {
                     let read_result = client.read_file_bytes(path.clone()).await;
-                    if let Some(message) = remote_pre_image_refusal(&path, &expected, read_result) {
+                    if let Some(message) =
+                        remote_pre_image_refusal(&path, &expected, read_result, Some(content.as_str()))
+                    {
                         return Err(message);
                     }
                     client
@@ -1164,7 +1409,15 @@ impl FileModel {
         Ok(())
     }
 
-    /// Renames a file and also saves its content.
+    /// Renames a file and also saves its content, unconditionally.
+    ///
+    /// Like [`FileModel::save`] this promises **nothing** about what it
+    /// replaces, and it puts two files at risk rather than one. The final step
+    /// is `async_fs::rename`, which on every platform this runs on replaces
+    /// whatever is at `new_path` without complaint — the rename *succeeds*, so
+    /// there is no error path to notice it on. A caller whose `content` came
+    /// from a snapshot, and whose `new_path` was established empty at snapshot
+    /// time, wants [`FileModel::rename_and_save_if_unchanged`].
     // TODO: refactor this against [`FileModel::save`].
     pub fn rename_and_save(
         &mut self,
@@ -1220,7 +1473,108 @@ impl FileModel {
         Ok(())
     }
 
-    /// Deletes the specified file.
+    /// Renames a file and writes `content` at the new path, but only if *both*
+    /// endpoints are still in the state the caller says they were.
+    ///
+    /// The guarded counterpart to [`FileModel::rename_and_save`]. A rename has
+    /// two pre-images, not one, and the destination's is the dangerous half:
+    /// `async_fs::rename` silently replaces whatever is at `new_path`, and
+    /// because the rename then *succeeds* there is no error to report and no
+    /// trace that anything was there. Pass
+    /// [`ExpectedDiskState::Absent`] as `expected_destination` for the case this
+    /// exists for — an AI diff that renames a file onto a path that did not
+    /// exist when the change was proposed — and the file somebody created there
+    /// in the meantime survives.
+    ///
+    /// Both checks run before either mutation, so a refusal leaves both files
+    /// exactly as it found them (bar an empty parent directory; see
+    /// [`FileModel::save_if_unchanged`] for why that is created first). The
+    /// residual window on the destination is wider than on the source by the
+    /// duration of the source write, because `async_fs::rename` has no portable
+    /// no-clobber mode to close it with — `renameat2(RENAME_NOREPLACE)` is
+    /// Linux-only and not exposed here.
+    ///
+    /// Local only, like [`FileModel::rename_and_save`]: remote sessions have no
+    /// rename primitive, and their callers fall back to an in-place write.
+    pub fn rename_and_save_if_unchanged(
+        &mut self,
+        file_id: FileId,
+        new_path: PathBuf,
+        content: String,
+        expected: ExpectedDiskState,
+        expected_destination: ExpectedDiskState,
+        version: ContentVersion,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), FileSaveError> {
+        let file_path = self
+            .file_path(file_id)
+            .ok_or(FileSaveError::NoFilePath(file_id))?;
+
+        ctx.spawn(
+            async move {
+                // Hoisted above both probes for the same reason as in
+                // `save_if_unchanged`: no await belongs between a check and the
+                // mutation it guards.
+                if let Err(err) = Self::ensure_parent_directories(&new_path).await {
+                    return Err(FileSaveError::IOError {
+                        error: err,
+                        path: new_path,
+                    });
+                }
+
+                // The source. Its probe also establishes that the file we are
+                // renaming exists, which is what the unguarded variant's
+                // `metadata` call is for.
+                let source_probe = probe_disk(&file_path, &expected).await;
+                if let PreWriteVerdict::Refuse(message) =
+                    check_pre_image(&file_path, &expected, source_probe, Some(content.as_str()))
+                {
+                    return Err(FileSaveError::Other(message));
+                }
+
+                // The destination, checked before anything is written so a
+                // refusal here has still changed nothing.
+                let destination_probe = probe_disk(&new_path, &expected_destination).await;
+                if let PreWriteVerdict::Refuse(message) = check_pre_image(
+                    &new_path,
+                    &expected_destination,
+                    destination_probe,
+                    Some(content.as_str()),
+                ) {
+                    return Err(FileSaveError::Other(message));
+                }
+
+                // Write the updated contents to the old path first, then rename.
+                async_fs::write(&file_path, content).await.map_err(|err| {
+                    FileSaveError::IOError {
+                        error: err,
+                        path: file_path.clone(),
+                    }
+                })?;
+
+                async_fs::rename(&file_path, &new_path)
+                    .await
+                    .map_err(|err| FileSaveError::IOError {
+                        error: err,
+                        path: file_path.clone(),
+                    })
+            },
+            move |me, write_result: Result<(), FileSaveError>, ctx| {
+                me.report_save_outcome(file_id, version, write_result, ctx);
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Deletes the specified file, unconditionally.
+    ///
+    /// Like [`FileModel::save`], this promises nothing about the file it
+    /// removes: no stat, no compare, and `version` is recorded only after the
+    /// fact. A caller deleting a file because a *snapshot* of it said to —
+    /// an AI diff proposing a deletion — wants
+    /// [`FileModel::delete_if_unchanged`], so that a file somebody rewrote in
+    /// the meantime is not deleted on the strength of contents it no longer has.
     pub fn delete(
         &mut self,
         file_id: FileId,
@@ -1263,6 +1617,107 @@ impl FileModel {
                 let path = path.as_str().to_string();
                 let future =
                     async move { client.delete_file(path).await.map_err(|e| e.to_string()) };
+                ctx.spawn(
+                    future,
+                    move |me, result: Result<(), String>, ctx| {
+                        me.report_save_outcome(
+                            file_id,
+                            version,
+                            result.map_err(FileSaveError::RemoteError),
+                            ctx,
+                        );
+                    },
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Deletes the file, but only if it is still in the state the caller says
+    /// it was when the deletion was proposed.
+    ///
+    /// The guarded counterpart to [`FileModel::delete`]. A deletion derived from
+    /// a snapshot asserts a pre-image just as an overwrite does — "delete this,
+    /// because of what it contained" — and a file rewritten in the meantime is
+    /// no longer the file that reasoning applied to. `expected` is therefore the
+    /// same [`ExpectedDiskState`] the overwrite path uses:
+    /// [`ExpectedDiskState::Content`] holding the text the deletion was proposed
+    /// against.
+    ///
+    /// Nothing is written here, so no line endings can be reverted and
+    /// [`check_pre_image`] is passed `None` for the incoming text: a file that
+    /// differs from its pre-image only by an external `dos2unix` is still the
+    /// same file, and refusing to delete it would be a refusal with no data
+    /// behind it.
+    ///
+    /// A file that is *already* gone reports success rather than a conflict. The
+    /// end state the caller asked for holds, nothing can be lost by agreeing
+    /// that it holds, and a "the file you asked me to delete is already deleted"
+    /// error toast would be noise. This is the one place a guarded operation
+    /// proceeds on a pre-image that did not match, and it proceeds by doing
+    /// nothing at all. Local only: the remote read reports "gone" as an ordinary
+    /// operation failure with no distinguishable kind, so a remote delete of an
+    /// already-deleted file refuses instead. Fail-closed on a file that is
+    /// already in the state the caller wanted is noise, not data loss.
+    pub fn delete_if_unchanged(
+        &mut self,
+        file_id: FileId,
+        expected: ExpectedDiskState,
+        version: ContentVersion,
+        ctx: &mut ModelContext<Self>,
+    ) -> Result<(), FileSaveError> {
+        let backend = self
+            .file_state
+            .get(file_id)
+            .ok_or(FileSaveError::NoFilePath(file_id))?;
+
+        match backend {
+            FileBackend::Local(_) => {
+                let file_path = self
+                    .file_path(file_id)
+                    .ok_or(FileSaveError::NoFilePath(file_id))?;
+
+                ctx.spawn(
+                    async move {
+                        let probe = probe_disk(&file_path, &expected).await;
+                        if matches!(probe, DiskProbe::Missing) {
+                            return Ok(());
+                        }
+                        if let PreWriteVerdict::Refuse(message) =
+                            check_pre_image(&file_path, &expected, probe, None)
+                        {
+                            return Err(FileSaveError::Other(message));
+                        }
+
+                        // No `ensure_parent_directories` here, unlike the
+                        // unguarded `delete`: creating the parent of a file we
+                        // are about to remove makes no sense, and the probe has
+                        // already established that the file is there.
+                        async_fs::remove_file(&file_path).await.map_err(|err| {
+                            FileSaveError::IOError {
+                                error: err,
+                                path: file_path,
+                            }
+                        })
+                    },
+                    move |me, delete_result: Result<(), FileSaveError>, ctx| {
+                        me.report_save_outcome(file_id, version, delete_result, ctx);
+                    },
+                );
+            }
+            FileBackend::Remote { host_id, path } => {
+                let client = Self::resolve_remote_client(host_id, ctx)?;
+                let path = path.as_str().to_string();
+                let future = async move {
+                    let read_result = client.read_file_bytes(path.clone()).await;
+                    if let Some(message) =
+                        remote_pre_image_refusal(&path, &expected, read_result, None)
+                    {
+                        return Err(message);
+                    }
+                    client.delete_file(path).await.map_err(|e| e.to_string())
+                };
                 ctx.spawn(
                     future,
                     move |me, result: Result<(), String>, ctx| {

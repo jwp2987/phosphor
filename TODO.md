@@ -7152,9 +7152,11 @@ claim, which was wrong by four.
       so guarding it against the diff *base* would refuse every revert following a
       format-on-save. Fix: retain the accepted bytes at accept time and guard with those.
 
-- [ ] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
+- [x] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
       **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
       unguarded `save`. `FileModel::save_if_unchanged` is now available for it.
+
+      **FIXED 2026-08-21 — and it was THREE write modes, not one.** `dispatch_write` routes `Write`, **`Delete`** and **`Rename`** through the guarded API, with both rename endpoints checked before any mutation. `rename_and_save` ended in `async_fs::rename`, which **silently destroys whatever is at the destination** — rename succeeds, so there was no error path at all — and `diff_application.rs` rewrites the rename-onto-existing case into deletion+update, so a `PersistAction::Rename` only ever targets a path absent at proposal time, i.e. the destination pre-image genuinely is `Absent`. `FileModel::delete` had no guarded variant and `ExpectedDiskState` could not express a delete's pre-image at all; both now exist.
 
 - [ ] **The save-conflict toast drops the reason.** `code_diff_view.rs:655` hardcodes
       "Failed to save file {path}" and ignores the error's message, so *why* the write was
@@ -7170,6 +7172,37 @@ claim, which was wrong by four.
       and return `TargetStateConflict` (already used three times in that file).
       **Blocker:** `Workspace::can_move_tab` is `pub(super)`; it needs widening to
       `pub(crate)` or a thin `pub(crate)` wrapper. `TabMovement` is already reachable.
+
+- [ ] 🔴 **Redirection glued to or preceding the command name defeats the Agent Mode denylist.**
+      `simple/parser.rs:146-149` consumes `<`/`>` *inside* `parse_part`, so `rm>/dev/null -rf ~`
+      yields candidates `rm>/dev/null -rf ~` and `rm/dev/null -rf ~` and no `rm .*` rule matches;
+      `parser.rs:91-94` consumes a leading redirect, so `>/dev/null rm -rf ~` decomposes with the
+      redirect **target** as the command name. Both confirmed running `rm` in bash.
+      **`rm 2>/dev/null -rf ~` IS caught, so this is accidental, not declined.** The
+      `contains_redirection` guard does not compensate — it is consulted only in the
+      `AgentDecides` arm (`permissions.rs:964`), *after* the denylist, and never under
+      `AlwaysAllow` or auto-approve-with-org-denylist, i.e. the modes where the denylist is the
+      only gate. Fix belongs in `parse_part`/`parse_command_list` (redirect operators should
+      delimit a part, not be absorbed), which needs checking against command x-ray, error
+      underlining and the allowlist. **Deliberately not half-fixed:** closing the glued form
+      while leaving the leading form open is the false-confidence failure the residue list exists
+      to prevent. Pin-parity.
+
+- [ ] 🟠 **Brace expansion and shell control-flow keywords hide the command name from the denylist.**
+      `{rm,-rf,~}` decomposes to `rm,-rf,~`; `{r,}m -rf ~` to `r,` + `m -rf ~`;
+      `if true; then rm -rf ~; fi`, `while … do rm …; done` and `for … do rm …; done` all make
+      `then`/`do` the command name. All confirmed running `rm` in bash. Brace expansion is purely
+      **textual and statically decidable** — it is not covered by the "needs the shell evaluated"
+      residue bullet — and the grouping form `{ rm -rf ~; }` *is* caught, so the parser is
+      inconsistent rather than deliberate. The existing advice to "carry denylist entries for the
+      prefixes" is sound for `sudo` and useless for `then`/`do`. Repair is a parser change.
+      Pin-parity.
+
+- [ ] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
+      and whitespace-only input decompose to zero commands, so the denylist `.any()` is false and
+      the allowlist `.all()` is true, and `AlwaysAsk` returns `Allowed(ExplicitlyAllowlisted)`.
+      No zero-command spelling was found that also executes anything, so this is a latent hazard
+      rather than a bypass — recorded so it is not rediscovered as one.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
