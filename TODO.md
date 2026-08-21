@@ -7362,3 +7362,38 @@ Ordered by severity, not by area.
       opens without a modifier in `Selectable` (LLM-authored) views; `lib.rs:1647`
       rewrites but never validates.
 
+### Refutation round — persistence
+
+- [ ] 🔴 **Rewound sub-agent tasks are resurrected on restart and re-sent to the
+      model.** `persistence/agent.rs:117` — the pin's `upsert_agent_conversation`
+      deletes every `agent_tasks` row for the conversation not in the snapshot
+      (`42effe840:app/src/persistence/agent.rs:66,111-118`); the fork has no such step.
+      Rewind prunes tasks in memory (`prune_unreachable_subtasks`) and persists only
+      the survivors, but the stale rows remain and `read_agent_conversation_by_id`
+      reloads ALL rows by `conversation_id`. **Content the user explicitly rewound away
+      comes back after restart and is sent to the model again.** Upstream titles its fix
+      "Fix conversation rewind re-sending rewound-away prompts and stale sub-agent tasks
+      (#13072)". The fork's OWN generated ledger already records the miss —
+      `docs/sweep/artifacts-2026-08-15/triage_out.txt:255` — and neither TODO.md nor
+      docs/STATE.md tracks it.
+- [ ] **Agent-history retention was silently halved.** `persistence/agent.rs:46` is
+      `100`; both `42effe840` and the older pin are `200`, and the fork also deleted the
+      sentence justifying the number. Introduced by `9840d7d52`, whose message claims a
+      faithful port. Rows are DELETEd, so users lose about half their retained agent
+      conversations permanently. All eight eviction tests pass an explicit `limit`, so
+      none binds the constant.
+- [ ] **`MAX_TASK_BLOB_BYTES`' doc asserts a guard that does not exist, and the
+      write-side skip corrupts conversations.** `agent.rs:13-16` says tasks over 10 MB
+      are "skipped on both write and read"; the constant appears only at `:91` (write).
+      Both read paths decode unconditionally, so the stated startup-OOM protection is
+      absent for exactly the pre-cap rows it targets. Worse, the `continue` at `:99`
+      drops the task while the summary — derived from the full list including
+      `is_restorable` — is still written, so restore sees a conversation with a missing
+      (possibly root) task and silently promotes a child to root.
+- [ ] **The macOS legacy-DB migration looks in a directory that can never exist, then
+      records success forever.** `persistence/sqlite.rs:610` builds the legacy App Group
+      path from the CURRENT app id (`dev.phosphor.Phosphor`); the data it is meant to
+      rescue was written under the OpenWarp/Zap ids. It then writes
+      `.zap-app-group-sqlite-migrated` so the miss is permanent. The three tests inject
+      `legacy_dir` by hand, so they pass with the broken path computation.
+
