@@ -6925,6 +6925,8 @@ Ordered by severity, not by area.
       `maybe_render_frame` diagnosis at TODO:3147 is a false conclusion the whole
       investigation was blocked on. The collapsed hop at `view.rs:25460` was traced
       REACHABLE, contradicting TODO:3268.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/integration/Cargo.toml:69` declares the feature and `:70` `default = ["run_on_linux"]` omits it; `pr-check.yml:603` passes no `--features`; `app/Cargo.toml:653` has it, so only `warp` does. **Verifier closed the chain the original left open:** `driver.rs:242-247` → `winit/event_loop/mod.rs:989` `std::process::exit(0)` → `tests/common/mod.rs:54-57` maps 0 to PASS. One sub-claim wrong: TODO.md:3259 already says the hop is reachable, so that part was not new.
+
 - [ ] 🔴 **`current_repo_path` is filled by LOCAL filesystem detection on SSH sessions
       and never cleared.** `view.rs:11955-11958` assigns before the
       `active_session_path_if_local` bail at `:11982`. On a remote session the remote
@@ -6944,10 +6946,12 @@ Ordered by severity, not by area.
       comment describes the pin's gate; the gate is absent (zero occurrences of the
       pin's `"gh" | "gt"` match). A `gh` subprocess plus a GitHub API call after every
       shell command, per pane.
-- [ ] **TUI: a blocked agent command displays "Command finished".**
+- [x] **TUI: a blocked agent command displays "Command finished".**
       `tui_cli_subagent_view.rs:354-360` reports an unresolved `block_id` as finished,
       and the status text returns before the `is_blocked` branch that carries the only
       ctrl-o/ctrl-r hint. #615's fix turned this from cosmetic into a silent deadlock.
+      **VERDICT REFUTED (independent verifier, 2026-08-21):** `render` returns an EMPTY element when `target(app)` is `None` (`tui_cli_subagent_view.rs:569-573`) and `target_for_block_in_model` bails on an unresolved id (`block/cli_controller.rs:582`). An unresolved `block_id` renders nothing at all — never the wrong text. The finished-before-blocked ordering is also pin-identical.
+
 - [ ] **`TmuxCommandExecutor` never forgets a command and cannot be cancelled.**
       `tmux_executor.rs:53` inserts into `in_flight_commands` with no removal anywhere,
       no `cancel_active_commands` override, no `on_cancel`. Fork-original. Reachable via
@@ -6956,6 +6960,8 @@ Ordered by severity, not by area.
       `block.rs:1548-1565` unconditionally adds command height and padding; the pin
       zeroes the term when the flag is set. Painter and layout disagree — a blank gap,
       and `is_visible()` true for a block with nothing rendered.
+      **VERDICT PARTIAL — latent (independent verifier, 2026-08-21):** The divergence is real (fork's `height()` `:1548-1565` and `prompt_and_command_height()` `:1977-1978` ignore the flag; the pin zeroes both). But the pin's only PRODUCTION setter, `view/ambient_agent/view_impl.rs:383/399`, is absent from this fork — the remaining callers are tests. Latent, not a live blank gap.
+
 - [ ] **Orchestration rollup total is computed and thrown away.**
       `conversation_usage_view.rs:240` computes `rollup`, `:266-275` passes
       `usage_info.credits_spent` instead. "Credits spent (total)" omits every child
@@ -6997,27 +7003,39 @@ Ordered by severity, not by area.
       (`terminal_model.rs:2728`), both gate tests are live, and #532 is closed. They
       also name a nonexistent file. Anyone trusting this concludes the anti-spoofing
       gate is off.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `terminal_model.rs:2728-2730` is `!self.shared_session_status().is_viewer()`, both gate tests are live (`terminal_model_test.rs:2257,:2308`), and `gh issue view` shows #419 AND #532 both CLOSED. The named file `terminal_model_tests.rs` does not exist. **Verifier found a THIRD instance the original missed:** TODO.md:5805 repeats "remains hardcoded `false`", contradicting TODO.md:5739.
+
 - [ ] **A ported denylist test carries the INVERTED, pre-fix assertion, hidden behind
       `#[ignore]`.** `permissions_test.rs:641,661-676` asserts NOT-denylisted where the
       pin asserts denylisted with the message "user denylist entries should be merged
       with org denylist, not replaced". The fork's own fix (`52382d125`) merges, so the
       test now encodes the defect that commit fixed. Its ignore reason never mentions
       the inversion, so lifting it resurrects replace semantics as expected behaviour.
+      **VERDICT PARTIAL — consequence fails (independent verifier, 2026-08-21):** The inversion is real (`permissions_test.rs:661-676` vs pin `:661-668`), but the stated consequence does not follow. The hunk is inherited from `0dbd3d567`, not authored by `52382d125`, and lifting the `#[ignore]` cannot resurrect replace semantics: with `current_team()` = `None` the PRECEDING `git status` assertion (`:641-657`) fails first. The mechanism is already declined (`DECLINED.md:83`, #445).
+
 - [ ] **The regression test for that same fix cannot fail.**
       `permissions_test.rs:1563` — `current_team()` returns `None` unconditionally, so
       the org denylist is never read and the test passes against the pre-fix code. The
       merge arm is unreachable in production.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Verifier checked the counterfactual rather than the doc comment: `test_empty_org_denylist_allows_user_entries` (`permissions_test.rs:1563`) sets `Some(vec![])` into `workspace.teams[0]`, but `ai_autonomy_settings()` reads `current_team()` → `None`. Pre-fix (`unwrap_or_else`) and post-fix (`permissions.rs:419-430`) both take the `None` arm — identical result. The test cannot fail.
+
 - [ ] **Six permission mutators write to a store nothing enforces.**
       `permissions.rs:1009-1202` write `AISettings.agent_mode_command_execution_*`;
       enforcement reads only the profile. Latent only because the four call sites hang
       off editors that are never rendered.
+      **VERDICT PARTIAL — four, not six (independent verifier, 2026-08-21):** The divergence is real: the fork writes `AISettings` (`permissions.rs:1015-1076`) where the pin writes the profile (`42effe840:...:1002-1005`), and enforcement reads the profile (`:400-412`). Call sites are dead (`ai_page.rs:709,741` editors never rendered; `RemoveFromCommandExecution*` never dispatched). But it is **four** mutators, not six, and the lists ARE read once by `execution_profiles/mod.rs:473-479`.
+
 - [ ] **Tab-group header/contiguity assertions never read the rendered bar.**
       `integration_testing/tab_group/assertion.rs:47-65,159-197` reimplements
       `tab_bar_slots` from the model, so "exactly one group header is rendered" cannot
       catch a `tab_bar_slots` regression.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `integration_testing/tab_group/assertion.rs:12-27` reads `workspace.tabs`/`tab_groups` directly and `:47-67` re-implements run-collapsing; `:159-192` and `:194-200` consume only that. `Workspace::tab_bar_slots` (`workspace/view.rs:24740`) is never called by any assertion — verified by grep across the whole `integration_testing/` tree.
+
 - [ ] **`ensure_grouped_tabs_enabled` is unfalsifiable.** `tab_group/step.rs:44-52` sets
       the user-preference tier, which `is_enabled` consults first, so the assertion
       holds even in a build without `grouped_tabs`.
+      **VERDICT PARTIAL — impact wrong (independent verifier, 2026-08-21):** The tautology is confirmed (`warp_features/lib.rs:952-954` consults `USER_PREFERENCE_MAP` before `FLAG_STATES`, so the assert cannot fail). But the impact claim breaks: `grouped_tabs` is **not** a `cfg`-gate on any grouping code — its only uses are `lib.rs:3228` (the default-on flag list) and `settings_view/appearance_page.rs:1588`. The preference genuinely enables the paths, so the step works as setup.
+
 - [ ] **TUI permission fixtures are vacuous.** `queue_tui_permission_action` →
       `queue_confirmation_action` force-installs the blocked state, so tests that claim
       to exercise "the real preprocess pipeline" wait on conditions already true. 38
@@ -7065,6 +7083,8 @@ Ordered by severity, not by area.
       group header this fork already documents. The group-level analogue
       `can_move_tab_group` WAS ported and tested, so this is an omission, not a
       decision.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin has `can_move_tab` (`42effe840:workspace/view.rs:14150`), called at `:14191` inside `move_tab` and at `:7892,:7979` for menu gating. The fork's `move_tab` (`workspace/view.rs:13234-13242`) is a bare bounds-only `swap`, and menu gating (`tab.rs:557,569`) is index-only while the drag guard exists at `view.rs:25436-25441`. Nothing in DECLINED.md. Verifier confirmed the consequence: `pinned_boundary_index` (`tab_grouping.rs:550-554`) is a `take_while`, so the prefix really does shrink.
+
 - [ ] **Warpified `ssh` fails outright when the user's ssh config sets
       `RemoteCommand`.** All three fork bootstrap copies dropped the pin's
       `ssh -G … remotecommand` probe and its plain-ssh fallback
@@ -7114,6 +7134,8 @@ Ordered by severity, not by area.
 - [ ] **Unreachable branch from a mis-desugared let-chain.**
       `current_prompt.rs:822-832`: `if suppress_on_failure { … } else if
       suppress_on_failure { … }`. The pin has one arm.
+      **VERDICT CONFIRMED — dead code only (independent verifier, 2026-08-21):** `current_prompt.rs:822` and `:826` are both `if suppress_on_failure`, so the second arm is unreachable; the pin has one arm as a let-chain (`42effe840:...:791-795`). Verifier went further than the original: behaviour still MATCHES the pin, because `timed_out` implies failure. Dead code, no functional divergence.
+
 - [ ] **Unquoted rcfile paths in the bootstrap.** `bash_body.sh:1220-1226` and four
       `${ZDOTDIR:-$HOME}` sites in `zsh_body.sh`; the pin quotes all of them. A `$HOME`
       containing a space sources the wrong file or nothing. Also: `bootstrap.rs` lacks
@@ -7122,6 +7144,7 @@ Ordered by severity, not by area.
 - [ ] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
       unfiltered, consumed as an index into the filtered list). **Pin-identical** —
       upstream bug, not fork drift. Record before "fixing".
+      **VERDICT CONFIRMED — pin-identical (independent verifier, 2026-08-21):** `app_state.rs:396-400` enumerates ALL `window_ids()` while `:407,:419` skip entries from `windows`; consumers index the filtered vec (`persistence/sqlite.rs:1232`, `root_view.rs:665`). Verifier diffed `get_app_state` against the pin: byte-for-byte identical including the drag-preview skip. Upstream bug — do not "fix" as fork drift.
 
 ### Refutation round — third wave (security-weighted)
 
@@ -7157,11 +7180,15 @@ Ordered by severity, not by area.
       `'rm' -rf ~` — all of which the shell executes identically. Any model-authored
       command evades any user or org denylist. **Pin-parity**, so it is inherited rather
       than a port regression, but it is unrecorded and unfiled.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Chain verified end to end: `simple/mod.rs:242-247` slices raw `src` by span so quotes survive `decompose`, and `permissions.rs:928-934` matches with `^…$` anchors added at `settings/ai.rs:851`. `"rm" -rf ~` misses `rm .*` and falls through to AlwaysAllow. Pin-identical, so inherited. **One caveat the original missed:** "or org denylist" is moot — that list is always empty in this fork.
+
 - [ ] 🔴 **The env-var strip that the fork's own comment says closes that hole strips
       only assignments containing exactly one `=`.** `mod.rs:255` breaks unless
       `split('=').count() == 2`, so `FOO=a=b rm file.txt` — a valid bash assignment —
       reaches the denylist unstripped, which is precisely what the comment at
       `permissions.rs:903-904` claims cannot happen.
+      **VERDICT PARTIAL — attribution wrong (independent verifier, 2026-08-21):** The gap is real: `mod.rs:255` requires `split('=').count() == 2`, so `FOO=a=b rm file.txt` is never stripped and `source()` returns it whole, missing `^rm .*$`. **But the attribution breaks** — `42effe840:.../simple/mod.rs:255` is byte-identical and the pin has the same call site, so only the COMMENT is the fork's, and the comment's own stated example (`X=1 rm file.txt`) genuinely is stripped.
+
 - [ ] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
       `code_review_view.rs:5902-5903` computes `hunk_end` from `hunk.lines.len()`, which
       includes `Delete` lines that occupy no new-file line, so the extent is overstated
@@ -7297,6 +7324,8 @@ Ordered by severity, not by area.
       `RUST_LOG=errors::report_error=off` cannot suppress it and the `extra:` fields are
       missing. `errors_tests.rs:52` filters on `LOG_TARGET`, so it cannot see the
       duplicate.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `report_error!(@log)` calls `err.report_error()` then `log::log!` (`warp_core/src/errors.rs:81-85`); the fork's impls log (`:218`, `errors/anyhow.rs:27`) where the pin captures to Sentry. Verifier traced the sink: `env_logger` defaults to `LevelFilter::Info` with no `warp_core` filter (`warp_logging/src/native.rs:732-751`), so **both Error lines emit in release**. The duplicate's target is `warp_core::errors[::anyhow]`, invisible to `errors_tests.rs:53`.
+
 - [ ] **`script/check_channel_command_names`'s header contradicts the code it guards** —
       it documents `Channel::Oss` as `zap-oss` for both `cli_command_name()` and
       `Display`; both are `phosphor-oss`. The guard passes (it derives from Rust), but
@@ -7500,6 +7529,8 @@ Ordered by severity, not by area.
       goes through `current_team()`, which is hard-`None`, so the restriction never
       existed and the test passes with the bypass deleted. **Its eight siblings were
       `#[ignore]`d for exactly this reason — this one was missed.**
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Verifier checked the deletion counterfactual: both arms of `workspace_autonomy_settings` (`permissions.rs:233-243`) yield `apply_code_diffs_setting`/`read_files_setting` = `None` — the sandboxed arm via `..Default::default()`, the other via `current_team()` → `None`. `determine_write_permissions_from_active_profile` (`:863-878`) then returns the profile's `AlwaysAllow` either way, so **removing the sandbox branch leaves the test green**. Eight `#[ignore]`s carry that reason; this one lacks it.
+
 - [ ] **Tautological test, and the only one in `app/src/workspaces/`.**
       `user_workspaces.rs:922-928` asserts `is_ai_allowed_in_remote_sessions()`, whose
       body at `:734` is a bare `true` that never touches `self`. The pin ships four test
