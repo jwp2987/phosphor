@@ -7286,6 +7286,13 @@ claim, which was wrong by four.
       actively misinforms. Replace with a **pinned literal** through
       `remote_server_identity_dir_name` — that is the only assertion that can catch a silent
       algorithm change.
+
+- [ ] **`AIAgentActionType::FileGlobV2` has no slot for a result limit, so a model's**
+      **`limit` cannot be honoured.** The parameter is accepted and the schema says plainly
+      that results are always capped at 200 and a smaller value is not applied — so it is
+      documented rather than silently dropped — but honouring it needs a field on that
+      pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
+      and result limits`. Filed rather than diverging a shared crate.
 ### Reliability
 
 - [x] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

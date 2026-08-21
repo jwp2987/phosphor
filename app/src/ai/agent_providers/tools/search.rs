@@ -96,6 +96,16 @@ struct GlobArgs {
     patterns: Vec<String>,
     #[serde(default)]
     search_dir: String,
+    /// Accepted and clamped, never silently dropped — see [`GLOB_RESULT_LIMIT`].
+    ///
+    /// Kept in the schema for two reasons. Models in the wild send it: the recovery
+    /// fixture at `chat_stream.rs`'s `recovers_the_observed_run_shell_log_call_to_file_glob`
+    /// is a verbatim call from `zap.log` carrying `"limit":10`, and
+    /// `recover_tool_by_arg_shape` requires **every** sent key to exist in the schema, so
+    /// removing it made that observed call unrecoverable. And rejecting an argument a model
+    /// reasonably supplies costs a round trip to teach it nothing.
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 fn glob_parameters() -> Value {
@@ -111,6 +121,11 @@ fn glob_parameters() -> Value {
                 "type": "string",
                 "description": "Relative path of the directory to search; empty means the current working directory.",
                 "default": "."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum matches to return. Results are always capped at 200; a smaller value is accepted but not currently applied, so ask for fewer patterns or a narrower search_dir if you need a shorter list.",
+                "default": 200
             }
         },
         "required": ["patterns"],
@@ -138,10 +153,22 @@ fn glob_parameters() -> Value {
 /// puts the cut at the one layer that still knows both the full match count and the shape
 /// being serialized, so the model can be told what was left out.
 ///
-/// This is also why the tool takes no `limit` parameter. It used to advertise one; nothing
-/// downstream could honour it, which is the same defect as `grep.md`'s phantom `include`
-/// argument. A knob that cannot be enforced is worse than no knob, because the model
-/// believes it narrowed the search.
+/// `limit` is therefore **accepted, documented as clamped, and not applied** when it is
+/// smaller than this constant. That is deliberate and is not the `grep.md` phantom-`include`
+/// defect, which was an argument advertised as working and dropped in silence: the schema
+/// description states outright that results are always capped at 200 and that a smaller
+/// value is not currently applied, so the model is not misled into believing it narrowed
+/// the search.
+///
+/// It was briefly deleted instead, on 2026-08-21, and that was wrong in a way worth
+/// recording: `recover_tool_by_arg_shape` (`chat_stream.rs`) requires every key a model
+/// sent to exist in the tool's schema, and its `file_glob` fixture is a verbatim call
+/// captured from `zap.log` carrying `"limit":10`. Removing the key made that real observed
+/// call unrecoverable — a round trip and a red row for arguments that were already correct.
+///
+/// Honouring a smaller value needs a slot on `AIAgentActionType::FileGlobV2`, which is
+/// pin-inherited and carries the upstream `TODO` quoted above; that is filed, not smuggled
+/// in here.
 const GLOB_RESULT_LIMIT: usize = 200;
 
 fn glob_from_args(args: &str) -> Result<api::message::tool_call::Tool> {

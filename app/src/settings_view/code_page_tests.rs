@@ -33,6 +33,7 @@ use warpui::platform::WindowStyle;
 use warpui::{App, SingletonEntity as _, TypedActionView as _};
 
 use super::{CodeSettingsPageAction, CodeSettingsPageView};
+use crate::ai::agent_providers::secrets::AgentProviderSecrets;
 use crate::ai::persisted_workspace::{EnablementState, PersistedWorkspace};
 use crate::appearance::Appearance;
 use crate::settings::CodeSettings;
@@ -311,6 +312,11 @@ fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
         // Read by `AutoIndexingToggleWidget::should_render`, and only once the
         // flag below is on -- the other two rows never reach for it.
         app.add_singleton_model(UserWorkspaces::default_mock);
+        // Read by the embedding-model row once the flag is on: it resolves the
+        // configured provider to name a model, and that resolution borrows the
+        // in-memory key map. Absent, `get_singleton_model_as_ref` panics rather
+        // than degrading, so this is a hard requirement of the flag-on half.
+        app.add_singleton_model(AgentProviderSecrets::new);
 
         let (_window_id, page) =
             app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
