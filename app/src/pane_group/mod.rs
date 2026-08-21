@@ -2088,7 +2088,24 @@ impl PaneGroup {
                 })
             }
             PaneNode::Leaf(pane_id) => {
-                let contents = match self.pane_contents.get(pane_id) {
+                // If this leaf is the replacement side of an active swap,
+                // persist the original instead. The swap is UX-only; quitting
+                // mid-swap must not lose the terminal that was swapped out.
+                // The original holds no tree slot while the swap is live, so
+                // snapshotting the tree verbatim would drop it entirely and
+                // persist the child agent pane in its place. The child is
+                // rebuilt from the history model on startup anyway.
+                let snapshot_pane_id = self
+                    .panes
+                    .original_pane_for_replacement(*pane_id)
+                    .unwrap_or(*pane_id);
+                let is_substituted = snapshot_pane_id != *pane_id;
+                // Did the visible leaf hold the active session at snapshot
+                // time? On restore the original takes the slot, so it should
+                // inherit the active-session marker.
+                let visible_leaf_is_active_session =
+                    pane_id.as_terminal_pane_id() == self.active_session_id(app);
+                let mut contents = match self.pane_contents.get(&snapshot_pane_id) {
                     Some(pane) => pane.as_pane().snapshot(app),
                     None => {
                         // Create a new pane uuid if we have a bug where we didn't save it
@@ -2098,7 +2115,7 @@ impl PaneGroup {
                         LeafContents::Terminal(TerminalPaneSnapshot {
                             uuid: Uuid::new_v4().as_bytes().to_vec(),
                             cwd: None,
-                            is_active: pane_id.as_terminal_pane_id() == self.active_session_id(app),
+                            is_active: visible_leaf_is_active_session,
                             is_read_only: false,
                             shell_launch_data: None,
                             input_config: Some(InputConfig::new(app)),
@@ -2109,14 +2126,26 @@ impl PaneGroup {
                         })
                     }
                 };
-                let custom_vertical_tabs_title = self.pane_contents.get(pane_id).and_then(|pane| {
-                    pane.as_pane()
-                        .pane_configuration()
-                        .as_ref(app)
-                        .custom_vertical_tabs_title()
-                        .map(str::to_owned)
-                });
+
+                // After substitution, propagate the visible leaf's
+                // active-session bit so restore focuses the right pane.
+                if is_substituted
+                    && visible_leaf_is_active_session
+                    && let LeafContents::Terminal(ref mut snapshot) = contents
+                {
+                    snapshot.is_active = true;
+                }
+                let custom_vertical_tabs_title =
+                    self.pane_contents.get(&snapshot_pane_id).and_then(|pane| {
+                        pane.as_pane()
+                            .pane_configuration()
+                            .as_ref(app)
+                            .custom_vertical_tabs_title()
+                            .map(str::to_owned)
+                    });
                 PaneNodeSnapshot::Leaf(LeafSnapshot {
+                    // Focus is tracked against the visible leaf, not the
+                    // substituted original.
                     is_focused: *pane_id == self.focused_pane_id(app),
                     custom_vertical_tabs_title,
                     contents,
@@ -3930,8 +3959,11 @@ impl PaneGroup {
             return;
         }
 
-        // If the target is already a visible sibling, just focus it.
-        if self.pane_contents.contains_key(&target_pane_id)
+        // If the target is already a visible sibling, just focus it. This must
+        // test tree membership, not `pane_contents`: a pane can be tracked by
+        // the group while owning no tree slot (the original side of another
+        // active swap), and focusing that would leave nothing on screen.
+        if self.panes.is_pane_in_tree(target_pane_id)
             && !self.panes.is_pane_hidden(&target_pane_id)
         {
             self.handle_pane_count_change(ctx);
@@ -4378,7 +4410,13 @@ impl PaneGroup {
 
         // If this pane is a child agent, re-hide it instead of closing it.
         if self.is_child_agent_pane(pane_id) {
-            if !self.panes.is_pane_hidden(&pane_id) {
+            if self.panes.original_pane_for_replacement(pane_id).is_some() {
+                // The child is currently swapped into another pane's slot.
+                // Re-hiding it in place would blank that slot and strand the
+                // pane it displaced off-tree, so revert the swap instead --
+                // that restores the anchor and puts the child back hidden.
+                self.panes.revert_temporary_replacement(pane_id);
+            } else if !self.panes.is_pane_hidden(&pane_id) {
                 self.panes.hide_pane_for_child_agent(pane_id);
             }
             self.focus_next_terminal_pane_and_activate_session(

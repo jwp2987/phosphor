@@ -60,6 +60,29 @@ pub struct PaneData {
 pub struct HiddenPane {
     pub pane_id: PaneId,
     reason: HiddenPaneReason,
+    /// Only meaningful for [`HiddenPaneReason::TemporaryReplacement`]: records
+    /// that the replacement pane was itself a leaf elsewhere in the tree and
+    /// had to be vacated from that slot to take this pane's, so
+    /// [`PaneData::revert_temporary_replacement`] can put it back. `None` means
+    /// the replacement came from outside the tree and needs no restoration.
+    displaced_replacement: Option<DisplacedReplacement>,
+}
+
+/// How a replacement pane that was displaced out of the tree by a temporary
+/// replacement must be restored when that replacement is reverted.
+///
+/// The pin never needs this: it keeps child agent panes off the split tree
+/// entirely (`PaneGroup::attach_child_pane_off_tree`), so a swap target is
+/// never already a leaf. This fork splits them in and hides them instead, so
+/// the swap has to move the target out of its own slot first -- see
+/// [`PaneData::replace_pane`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplacedReplacement {
+    /// The replacement was hidden as a child agent pane before it took the
+    /// anchor's slot, so it must be re-hidden for the same reason on revert.
+    /// Without this the pill that reveals the child would find it unhidden but
+    /// invisible, and `show_pane_for_child_agent` would log "couldn't find it".
+    was_hidden_for_child_agent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,30 +105,39 @@ impl HiddenPane {
         Self {
             pane_id,
             reason: HiddenPaneReason::FromMove,
+            displaced_replacement: None,
         }
     }
     pub fn from_job(pane_id: PaneId) -> Self {
         Self {
             pane_id,
             reason: HiddenPaneReason::FromJob,
+            displaced_replacement: None,
         }
     }
-    pub fn from_temporary_replacement(pane_id: PaneId, replacement_pane_id: PaneId) -> Self {
+    pub fn from_temporary_replacement(
+        pane_id: PaneId,
+        replacement_pane_id: PaneId,
+        displaced_replacement: Option<DisplacedReplacement>,
+    ) -> Self {
         Self {
             pane_id,
             reason: HiddenPaneReason::TemporaryReplacement(replacement_pane_id),
+            displaced_replacement,
         }
     }
     pub fn from_close(pane_id: PaneId) -> Self {
         Self {
             pane_id,
             reason: HiddenPaneReason::Closed,
+            displaced_replacement: None,
         }
     }
     pub fn from_child_agent(pane_id: PaneId) -> Self {
         Self {
             pane_id,
             reason: HiddenPaneReason::ChildAgent,
+            displaced_replacement: None,
         }
     }
 }
@@ -217,9 +249,9 @@ impl PaneData {
     }
 
     pub fn visible_pane_count(&self) -> usize {
-        let total_panes = self.pane_ids().len();
-        let hidden_count = self.num_hidden_panes();
-        total_panes.saturating_sub(hidden_count)
+        // Use `visible_pane_ids` directly; subtracting hidden count would
+        // double-count temporary-replacement originals (hidden but off-tree).
+        self.visible_pane_ids().len()
     }
 
     pub fn has_horizontal_split(&self) -> bool {
@@ -340,6 +372,11 @@ impl PaneData {
         }
     }
 
+    /// Returns true if `id` is hidden as a child agent pane.
+    pub fn is_pane_hidden_for_child_agent(&self, id: PaneId) -> bool {
+        pane_hidden_for_child_agent(&self.hidden_panes, &id)
+    }
+
     pub fn toggle_pane_visibility_for_job(&mut self, id: PaneId) -> bool {
         if pane_hidden_for_job(&self.hidden_panes, &id) {
             self.show_pane_for_job(id);
@@ -425,12 +462,49 @@ impl PaneData {
             return false;
         }
 
+        // This fork keeps child agent panes *in* the split tree and merely
+        // flags them hidden; the pin attaches them off-tree instead (see
+        // `num_child_agent_hidden_panes`). So a swap target is routinely
+        // already a leaf somewhere else, and simply renaming the anchor's leaf
+        // would leave the replacement at two tree positions at once, both
+        // still flagged hidden. The anchor's slot then renders nothing --
+        // `PaneBranch::render` skips any subtree with no visible children --
+        // and a later `revert_temporary_replacement` rewrites whichever of the
+        // two copies it happens to find first, scrambling the layout. Vacate
+        // the replacement's own slot and unhide it before the rename instead.
+        let displaced_replacement = if replacement_pane_id != original_pane_id
+            && self.root.contains_pane(replacement_pane_id)
+        {
+            let was_hidden_for_child_agent =
+                self.is_pane_hidden_for_child_agent(replacement_pane_id);
+            // Only record the displacement if the slot was actually vacated;
+            // recording it otherwise would have revert re-insert a pane that
+            // is still in the tree, recreating the duplicate from the other
+            // direction.
+            if self.remove(replacement_pane_id) {
+                if was_hidden_for_child_agent {
+                    self.show_pane_for_child_agent(replacement_pane_id);
+                }
+                Some(DisplacedReplacement {
+                    was_hidden_for_child_agent,
+                })
+            } else {
+                log::error!(
+                    "replace_pane: {replacement_pane_id:?} is a leaf but could not be vacated to take {original_pane_id:?}'s slot"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
         // Hide the original pane for temporary replacement
         if is_temporary {
             self.hidden_panes
                 .push(HiddenPane::from_temporary_replacement(
                     original_pane_id,
                     replacement_pane_id,
+                    displaced_replacement,
                 ));
         }
 
@@ -440,10 +514,28 @@ impl PaneData {
             .replace_pane(original_pane_id, replacement_pane_id);
 
         if success {
+            if self.is_pane_hidden(&replacement_pane_id) {
+                // The replacement now owns a visible slot but is still flagged
+                // hidden, so that slot will render empty. Nothing in-tree can
+                // recover from this, so surface it rather than shipping a
+                // silently blank pane.
+                log::error!(
+                    "replace_pane: replacement {replacement_pane_id:?} took {original_pane_id:?}'s slot while still hidden"
+                );
+            }
             return true;
-        } else if is_temporary {
+        }
+
+        // Roll the whole operation back so a failed replace is a no-op.
+        if is_temporary {
             // If our pane replacement failed, remove the newly added pane from the hidden panes list
             self.hidden_panes.pop();
+        }
+        if let Some(displaced) = displaced_replacement {
+            self.split(original_pane_id, replacement_pane_id, Direction::Right);
+            if displaced.was_hidden_for_child_agent {
+                self.hide_pane_for_child_agent(replacement_pane_id);
+            }
         }
         false
     }
@@ -458,6 +550,22 @@ impl PaneData {
 
             // Replace the replacement pane with the original pane in the tree
             if self.root.replace_pane(replacement_pane_id, original_pane_id) {
+                // `replace_pane` vacated the replacement's own slot when it
+                // took the anchor's. Put it back, hidden exactly as it was, or
+                // the pill that reveals this child agent becomes a dead click:
+                // the pane would be in `pane_contents` but in no tree slot, and
+                // `show_pane_for_child_agent` would log "couldn't find it".
+                if let Some(displaced) = hidden_pane.displaced_replacement {
+                    if self.split(original_pane_id, replacement_pane_id, Direction::Right) {
+                        if displaced.was_hidden_for_child_agent {
+                            self.hide_pane_for_child_agent(replacement_pane_id);
+                        }
+                    } else {
+                        log::error!(
+                            "revert_temporary_replacement: failed to restore displaced replacement {replacement_pane_id:?} next to {original_pane_id:?}"
+                        );
+                    }
+                }
                 Some(original_pane_id)
             } else {
                 // If replacement failed, re-add the hidden pane entry
@@ -515,6 +623,15 @@ impl PaneData {
         self.hidden_panes
             .iter()
             .any(|hidden_pane| hidden_pane.pane_id == *pane_id)
+    }
+
+    /// Returns true if `pane_id` is currently a leaf in the layout tree.
+    ///
+    /// Distinct from membership in `PaneGroup::pane_contents`: a pane can be
+    /// tracked by the group while holding no tree slot (the original side of an
+    /// active temporary replacement is exactly that).
+    pub fn is_pane_in_tree(&self, pane_id: PaneId) -> bool {
+        self.root.contains_pane(pane_id)
     }
 
     pub fn len(&self) -> usize {
@@ -1610,5 +1727,152 @@ impl From<crate::launch_configs::launch_config::SplitDirection> for SplitDirecti
                 SplitDirection::Vertical
             }
         }
+    }
+}
+
+/// Regression tests for pane-group *swap* (temporary replacement) against a
+/// target that is already a leaf in the tree.
+///
+/// These live inline rather than in `tree_tests.rs` because that file is the
+/// pin-ported suite and these cover a fork-specific divergence: the pin keeps
+/// child agent panes off the split tree entirely, so it can never hit the
+/// duplicate-leaf case these exercise.
+#[cfg(test)]
+mod swap_layout_tests {
+    use super::*;
+
+    /// Anchor + visible sibling + a child agent pane hidden in the tree --
+    /// the shape a swap operates on. Returns `(tree, anchor, sibling, child)`.
+    fn tree_with_hidden_child() -> (PaneData, PaneId, PaneId, PaneId) {
+        let anchor = PaneId::dummy_pane_id();
+        let sibling = PaneId::dummy_pane_id();
+        let child = PaneId::dummy_pane_id();
+
+        let mut tree = PaneData::new(anchor);
+        tree.split(anchor, sibling, Direction::Right);
+        tree.split(sibling, child, Direction::Right);
+        tree.hide_pane_for_child_agent(child);
+
+        assert_eq!(tree.pane_ids(), vec![anchor, sibling, child]);
+        assert_eq!(tree.visible_pane_ids(), vec![anchor, sibling]);
+        assert_eq!(tree.visible_pane_count(), 2);
+
+        (tree, anchor, sibling, child)
+    }
+
+    /// Swapping a hidden child into the anchor's slot must *move* it, not
+    /// clone it. Before the fix the child stayed at its own leaf and was also
+    /// written over the anchor's, so it occupied two tree positions while
+    /// still flagged hidden -- the anchor's slot then rendered nothing.
+    #[test]
+    fn test_swap_moves_the_hidden_child_into_the_anchor_slot() {
+        let (mut tree, anchor, sibling, child) = tree_with_hidden_child();
+
+        assert!(tree.replace_pane(anchor, child, true));
+
+        // The child occupies the anchor's slot and nothing else.
+        assert_eq!(tree.pane_ids(), vec![child, sibling]);
+        // ...and it is actually visible there, rather than a hidden leaf that
+        // renders as an empty slot.
+        assert!(!tree.is_pane_hidden(&child));
+        assert_eq!(tree.visible_pane_ids(), vec![child, sibling]);
+
+        // The anchor is off-tree but recoverable.
+        assert!(!tree.is_pane_in_tree(anchor));
+        assert_eq!(tree.original_pane_for_replacement(child), Some(anchor));
+    }
+
+    /// `visible_pane_count` is what tells `PaneGroup::close_pane` the group has
+    /// become empty. Mid-swap it used to subtract the off-tree original from a
+    /// total that never included it, reporting 1 while two panes were on
+    /// screen -- so closing either one emitted `Event::Exited` and took the
+    /// whole tab down.
+    #[test]
+    fn test_closing_one_of_two_panes_mid_swap_does_not_empty_the_group() {
+        let (mut tree, anchor, sibling, child) = tree_with_hidden_child();
+        assert!(tree.replace_pane(anchor, child, true));
+
+        // Two panes are on screen, so this is not the last-pane close.
+        assert_eq!(tree.visible_pane_count(), 2);
+        assert_ne!(
+            tree.visible_pane_count(),
+            1,
+            "a mid-swap group with two visible panes must not look empty"
+        );
+
+        // Closing one of them leaves the group alive with one pane.
+        assert!(tree.remove(sibling));
+        assert_eq!(tree.visible_pane_ids(), vec![child]);
+        assert_eq!(tree.visible_pane_count(), 1);
+    }
+
+    /// Quitting mid-swap must persist the terminal that was swapped *out*.
+    /// This applies the same substitution rule `PaneGroup::snapshot_for_node`
+    /// now uses when walking the tree, and asserts the anchor survives it.
+    #[test]
+    fn test_snapshot_walk_mid_swap_persists_the_swapped_out_terminal() {
+        let (mut tree, anchor, sibling, child) = tree_with_hidden_child();
+        assert!(tree.replace_pane(anchor, child, true));
+
+        let persisted: Vec<PaneId> = tree
+            .pane_ids()
+            .into_iter()
+            .map(|pane_id| {
+                tree.original_pane_for_replacement(pane_id)
+                    .unwrap_or(pane_id)
+            })
+            .collect();
+
+        // The anchor's terminal is snapshotted in its own slot...
+        assert_eq!(persisted, vec![anchor, sibling]);
+        // ...and the UX-only child agent pane is not persisted in its place.
+        assert!(!persisted.contains(&child));
+    }
+
+    /// Restoring after a swap must put the child back the way it was found:
+    /// in the tree and hidden. Leaving it unhidden-but-off-tree would make the
+    /// pill that reveals it a dead click.
+    #[test]
+    fn test_revert_restores_the_anchor_and_re_hides_the_displaced_child() {
+        let (mut tree, anchor, sibling, child) = tree_with_hidden_child();
+        assert!(tree.replace_pane(anchor, child, true));
+
+        assert_eq!(tree.revert_temporary_replacement(child), Some(anchor));
+
+        // The anchor is back in its slot and the child is back in the tree.
+        assert!(tree.is_pane_in_tree(anchor));
+        assert!(tree.is_pane_in_tree(child));
+        assert_eq!(tree.pane_ids().len(), 3);
+
+        // The child is hidden again, for the same reason as before the swap.
+        assert!(tree.is_pane_hidden_for_child_agent(child));
+        assert_eq!(tree.num_hidden_panes(), 1);
+        assert_eq!(tree.num_child_agent_hidden_panes(), 1);
+
+        // ...so the visible layout matches the pre-swap state exactly.
+        assert_eq!(tree.visible_pane_ids(), vec![anchor, sibling]);
+        assert_eq!(tree.visible_pane_count(), 2);
+        assert_eq!(tree.len(), 3);
+    }
+
+    /// A swap whose target was never in the tree (the pin's shape: a pane
+    /// attached off-tree) must not gain any restore behaviour from the fix.
+    #[test]
+    fn test_swap_with_an_off_tree_target_reverts_without_reinserting_it() {
+        let anchor = PaneId::dummy_pane_id();
+        let sibling = PaneId::dummy_pane_id();
+        let off_tree = PaneId::dummy_pane_id();
+
+        let mut tree = PaneData::new(anchor);
+        tree.split(anchor, sibling, Direction::Right);
+
+        assert!(tree.replace_pane(anchor, off_tree, true));
+        assert_eq!(tree.pane_ids(), vec![off_tree, sibling]);
+        assert_eq!(tree.visible_pane_count(), 2);
+
+        assert_eq!(tree.revert_temporary_replacement(off_tree), Some(anchor));
+        assert_eq!(tree.pane_ids(), vec![anchor, sibling]);
+        assert!(!tree.is_pane_in_tree(off_tree));
+        assert_eq!(tree.num_hidden_panes(), 0);
     }
 }
