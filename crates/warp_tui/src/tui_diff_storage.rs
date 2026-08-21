@@ -8,15 +8,18 @@
 //! and renders a compact summary over it.
 //!
 //! Content derived from a base read at proposal time is snapshot-derived, so
-//! every write on the *accept* path goes through the guarded `FileModel` API —
-//! all three limbs, not just the plain write. `/rewind` is deliberately
-//! unguarded; [`revert_file_diffs`] says why.
+//! every write goes through the guarded `FileModel` API — all three limbs, on
+//! both the *accept* and the `/rewind` path. The two paths guard against
+//! different pre-images; [`accept_pre_image`] and [`revert_plan`] each say
+//! which and why.
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use ai::agent::action_result::RequestFileEditsResult;
 use ai::diff_validation::{DiffDelta, DiffType};
 use futures::FutureExt;
+use futures::channel::oneshot;
 use futures::future::BoxFuture;
 use warp::tui_export::{
     DiffSessionType, DiffStorage, DiffStorageHelper, FileDiff, FileSnapshot, RegisteredDiffStorage,
@@ -144,15 +147,19 @@ fn accept_pre_image(diff: &FileDiff) -> ExpectedDiskState {
 /// Registers a file with [`FileModel`] and dispatches its write, returning the
 /// write's completion future.
 ///
-/// `expected` is the pre-image the write is guarded against, or `None` to write
-/// unguarded. Only [`revert_file_diffs`] passes `None`, and it says there why.
+/// `expected` is the pre-image the write is guarded against. There is
+/// deliberately no way to ask this function for an unguarded write: nothing in
+/// this module ever holds a live editor buffer — the TUI has none — so every
+/// write it makes is derived from a snapshot and every one of them has a
+/// pre-image it can state. The `/rewind` path used to pass `None` here; see
+/// [`revert_plan`] for the pre-image that replaced it.
 fn dispatch_write(
     file_model: &mut FileModel,
     session_type: &DiffSessionType,
     action: &PersistAction,
     path: &str,
     final_content: String,
-    expected: Option<ExpectedDiskState>,
+    expected: ExpectedDiskState,
     ctx: &mut ModelContext<FileModel>,
 ) -> Result<SaveFuture, FileSaveError> {
     let file_id = register_file(file_model, session_type, path, ctx)?;
@@ -166,22 +173,24 @@ fn dispatch_write(
     // FileSaved and `Err` on FailedToSave. A synchronous dispatch error still
     // short-circuits as an immediately-failed future.
     //
-    // All three limbs are guarded on the accept path, not just the `Write` one.
-    // `delete` removes a file the snapshot reasoned about, and `rename_and_save`
-    // ends in `async_fs::rename`, which replaces whatever is at the destination
-    // and *succeeds* — no error path, no trace, no toast.
-    let dispatch = match (action, expected) {
-        (PersistAction::Delete, Some(expected)) => {
-            file_model.delete_if_unchanged(file_id, expected, version, ctx)
-        }
-        (PersistAction::Delete, None) => file_model.delete(file_id, version, ctx),
-        (PersistAction::Rename(to), Some(expected)) => {
+    // All three limbs are guarded, not just the `Write` one. `delete` removes a
+    // file the snapshot reasoned about, and `rename_and_save` ends in
+    // `async_fs::rename`, which replaces whatever is at the destination and
+    // *succeeds* — no error path, no trace, no toast.
+    let dispatch = match action {
+        PersistAction::Delete => file_model.delete_if_unchanged(file_id, expected, version, ctx),
+        PersistAction::Rename(to) => {
             // The destination's pre-image is always `Absent`.
             // `PersistAction::resolve` only produces a `Rename` for a target
             // that differs from the source, and `diff_application` only emits
             // such a rename when the target did not exist at proposal time —
             // a rename onto an existing file is rewritten there into a deletion
             // plus an update, which never reaches this arm.
+            //
+            // `revert_plan` never produces a `Rename`: undoing an applied
+            // rename is a write at the original path plus a delete of the
+            // renamed file, two separately guarded steps, because the two
+            // endpoints have different pre-images by then.
             file_model.rename_and_save_if_unchanged(
                 file_id,
                 to.clone(),
@@ -192,13 +201,9 @@ fn dispatch_write(
                 ctx,
             )
         }
-        (PersistAction::Rename(to), None) => {
-            file_model.rename_and_save(file_id, to.clone(), final_content, version, ctx)
-        }
-        (PersistAction::Write, Some(expected)) => {
+        PersistAction::Write => {
             file_model.save_if_unchanged(file_id, final_content, expected, version, ctx)
         }
-        (PersistAction::Write, None) => file_model.save(file_id, final_content, version, ctx),
     };
     // Register the completion waiter before the spawned write can resolve (the
     // callback only runs after this synchronous frame yields). Only for a
@@ -266,65 +271,196 @@ fn persist_outcome(
 ///
 /// Used by `/rewind` (via [`crate::tui_revert_registry`]). The TUI surface is
 /// always local, so writes go through the local [`FileModel`] backend.
+///
+/// Every write is guarded, including the delete limbs — see [`revert_plan`] for
+/// the pre-image each one asserts — and every write's outcome is observed
+/// rather than dropped, because a guard whose refusal nobody reads is a guard
+/// that is not there. What is *not* fixed here: `/rewind`'s caller
+/// (`terminal_session_view`) still reports "Rewound conversation and reverted
+/// file edits" unconditionally, because the outcomes arrive after it has
+/// returned and it owns the footer hint this function cannot reach. A refusal
+/// therefore lands in the log, not on screen.
 pub(crate) fn revert_file_diffs(diffs: &[FileDiff], app: &mut AppContext) {
-    let session_type = DiffSessionType::Local;
-    let file_model = FileModel::handle(app);
     for diff in diffs {
         let path = diff.file_path();
-        for (write_path, action, content) in revert_plan(diff, &path) {
-            // Deliberately unguarded, unlike the accept path above. A revert's
-            // pre-image is not the diff base but whatever the accept wrote, and
-            // whatever has happened to the file since — a formatter, a build
-            // step, the user. Guarding against the base would refuse the common
-            // case rather than the dangerous one, and guarding against the
-            // accepted content needs it retained at accept time. Filed as a
-            // follow-up rather than guessed at here; the GUI's
-            // `InlineDiffView::restore_diff_base` carries the same note.
-            let result = file_model.update(app, |file_model, ctx| {
-                dispatch_write(
-                    file_model,
-                    &session_type,
-                    &action,
-                    &write_path,
-                    content,
-                    None,
-                    ctx,
-                )
-            });
-            if let Err(error) = result {
-                log::warn!("Failed to revert file edit at {write_path}: {error}");
+        match revert_plan(diff, &path) {
+            Ok(steps) => {
+                for step in steps {
+                    dispatch_revert(step, app);
+                }
+            }
+            // The accept derives its content the same way, so a derivation that
+            // fails now failed then: `start_saving` returned a failed future and
+            // never wrote anything, and there is correspondingly nothing to
+            // undo. Reverting anyway would write the base over a file this edit
+            // never touched.
+            Err(error) => {
+                log::warn!("Not reverting the file edit at {path}: {error}");
             }
         }
     }
 }
 
-/// The write(s) that undo `diff`, as `(path, action, content)` tuples applied in
-/// order.
-fn revert_plan(diff: &FileDiff, path: &str) -> Vec<(String, PersistAction, String)> {
-    match &diff.diff_type {
+/// Completion of the most recently dispatched revert write, so that the next one
+/// waits for it instead of racing it.
+///
+/// Reverts are dispatched newest-first, and the caller depends on that order:
+/// repeated edits to one file unwind through each intermediate state back to the
+/// original. `FileModel`'s guarded writes run on spawned tasks, though, so
+/// dispatch order is not execution order — two reverts of the same file
+/// otherwise both probe the disk before either writes, and the older one finds
+/// the newer edit's content instead of the state it expects. Unguarded that was
+/// a silent coin-flip between the original content and an intermediate one;
+/// guarded it would be a near-certain spurious refusal. Chaining each dispatch
+/// onto its predecessor's completion makes the sequence the caller already
+/// assumes actually hold.
+///
+/// The chain is a plain `Receiver` rather than a shared future because it is
+/// linear: each tail is awaited by exactly one successor. A cancelled sender
+/// resolves it immediately, which is the right answer — a write whose task went
+/// away has had its turn.
+thread_local! {
+    static REVERT_CHAIN_TAIL: RefCell<Option<oneshot::Receiver<()>>> =
+        const { RefCell::new(None) };
+}
+
+/// Dispatches one guarded revert write behind the [`REVERT_CHAIN_TAIL`] chain,
+/// logging whatever it refuses or fails to do.
+fn dispatch_revert(step: RevertStep, app: &mut AppContext) {
+    let (finished, wait_for_this) = oneshot::channel::<()>();
+    let wait_for_previous = REVERT_CHAIN_TAIL.with(|tail| tail.borrow_mut().replace(wait_for_this));
+
+    FileModel::handle(app).update(app, |_file_model, ctx| {
+        ctx.spawn(
+            async move {
+                if let Some(previous) = wait_for_previous {
+                    let _ = previous.await;
+                }
+            },
+            move |file_model, _, ctx| {
+                let RevertStep {
+                    path,
+                    action,
+                    content,
+                    expected,
+                } = step;
+                // The TUI surface is always local; `revert_file_diffs`'
+                // registry only ever holds diffs applied by this session.
+                let session_type = DiffSessionType::Local;
+                match dispatch_write(
+                    file_model,
+                    &session_type,
+                    &action,
+                    &path,
+                    content,
+                    expected,
+                    ctx,
+                ) {
+                    Ok(completion) => {
+                        ctx.spawn(completion, move |_file_model, outcome, _ctx| {
+                            if let Err(error) = outcome {
+                                log::warn!("Did not revert the file edit at {path}: {error}");
+                            }
+                            let _ = finished.send(());
+                        });
+                    }
+                    Err(error) => {
+                        log::warn!("Failed to revert the file edit at {path}: {error}");
+                        let _ = finished.send(());
+                    }
+                }
+            },
+        );
+    });
+}
+
+/// One write that undoes part of an applied diff, with the disk state it is
+/// guarded against.
+struct RevertStep {
+    path: String,
+    action: PersistAction,
+    content: String,
+    expected: ExpectedDiskState,
+}
+
+/// The write(s) that undo `diff`, in the order they must be applied.
+///
+/// # The pre-image a revert asserts
+///
+/// A revert's pre-image is not the diff base — that is what it is putting
+/// *back*. It is what the accept left on disk, and the accept's own bytes are
+/// not lost or unrecorded: [`TuiDiffStorage::start_saving`] wrote exactly
+/// `final_content_from_op(&diff.base.content, &diff.diff_type)`, a pure function
+/// of the diff this function is already holding. Nothing needs retaining at
+/// accept time; the earlier note claiming otherwise was wrong about where the
+/// accepted content lives, and it is why the delete limb below went unguarded.
+///
+/// So each step asserts the file is still exactly as the accept left it:
+///
+/// * `Create` — the accept wrote the insertion, so the delete that undoes it
+///   requires the insertion to still be there. This is the limb that matters
+///   most: unguarded, `/rewind` removed an agent-created file the user had since
+///   built on, and a delete is the one outcome no later step can undo.
+/// * `Delete` — the accept removed the file, so re-creating it requires the path
+///   to still be free. `Absent` is checked with `symlink_metadata`, so a file
+///   somebody re-created — or a symlink somebody dropped there — refuses instead
+///   of being overwritten (or followed).
+/// * `Update` with a rename — the accept moved the file, so the original path
+///   must still be free and the renamed file must still hold the accepted
+///   content. Two steps, two different pre-images, which is why this does not go
+///   through [`PersistAction::Rename`].
+/// * `Update` in place — the accept overwrote the file, so the revert requires
+///   the accepted content to still be there.
+///
+/// A formatter, a build step or the user having touched the file since the
+/// accept therefore refuses the revert rather than silently discarding their
+/// work. That is the intended trade: the common case (nothing touched the file
+/// between accepting and rewinding) still passes, and `ExpectedDiskState`'s
+/// comparison is line-ending-normalised, so a CRLF checkout is not a refusal.
+fn revert_plan(diff: &FileDiff, path: &str) -> Result<Vec<RevertStep>, String> {
+    let accepted = final_content_from_op(&diff.base.content, &diff.diff_type)?;
+    let steps = match &diff.diff_type {
         // The edit created the file; delete it to revert.
-        DiffType::Create { .. } => vec![(path.to_owned(), PersistAction::Delete, String::new())],
+        DiffType::Create { .. } => vec![RevertStep {
+            path: path.to_owned(),
+            action: PersistAction::Delete,
+            content: String::new(),
+            expected: ExpectedDiskState::Content(accepted),
+        }],
         // The edit deleted the file; re-create it with the base content.
-        DiffType::Delete { .. } => {
-            vec![(path.to_owned(), PersistAction::Write, diff.base.content.clone())]
-        }
+        DiffType::Delete { .. } => vec![RevertStep {
+            path: path.to_owned(),
+            action: PersistAction::Write,
+            content: diff.base.content.clone(),
+            expected: ExpectedDiskState::Absent,
+        }],
         // The edit renamed `path` → `to`; restore the base content at the
         // original path and remove the renamed file.
         DiffType::Update {
             rename: Some(to), ..
         } if to.to_string_lossy() != path => vec![
-            (path.to_owned(), PersistAction::Write, diff.base.content.clone()),
-            (
-                to.to_string_lossy().to_string(),
-                PersistAction::Delete,
-                String::new(),
-            ),
+            RevertStep {
+                path: path.to_owned(),
+                action: PersistAction::Write,
+                content: diff.base.content.clone(),
+                expected: ExpectedDiskState::Absent,
+            },
+            RevertStep {
+                path: to.to_string_lossy().to_string(),
+                action: PersistAction::Delete,
+                content: String::new(),
+                expected: ExpectedDiskState::Content(accepted),
+            },
         ],
         // In-place update; write the base content back.
-        DiffType::Update { .. } => {
-            vec![(path.to_owned(), PersistAction::Write, diff.base.content.clone())]
-        }
-    }
+        DiffType::Update { .. } => vec![RevertStep {
+            path: path.to_owned(),
+            action: PersistAction::Write,
+            content: diff.base.content.clone(),
+            expected: ExpectedDiskState::Content(accepted),
+        }],
+    };
+    Ok(steps)
 }
 
 /// A save future that fails immediately with `error`.
@@ -405,7 +541,7 @@ impl DiffStorage for TuiDiffStorage {
                             &action,
                             &path,
                             final_content,
-                            Some(expected),
+                            expected,
                             ctx,
                         )
                     })

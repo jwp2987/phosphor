@@ -7223,6 +7223,30 @@ claim, which was wrong by four.
       `CodebaseIndex` caches another, and `remote_client_preferences` only ever ships the
       *preferred* model's endpoint. The per-model endpoint table (`set_endpoints`) is available
       to it; wiring it needs that file.
+
+- [ ] **`crates/warp_features/src/lib.rs:888` still states the opposite of the code.**
+      It says *"This fork does not ship autoupdate: … the release workflow publishes no
+      update feed."* `DECLINED.md:179` records that exact sentence as corrected on
+      2026-08-20 **and** says the rationale is duplicated at the removal site "because that
+      is where someone restoring parity will be standing" — but the correction never landed
+      there. The authoritative-looking in-source comment is still wrong.
+
+- [ ] **`InlineDiffView::restore_diff_base` (GUI revert) is still unguarded, on a premise now**
+      **refuted.** `0219e06c3` deferred both reverts saying the accepted bytes are not
+      retained. For the TUI that was shown false on 2026-08-21 — the content is a pure
+      function of the diff the caller already holds — and the TUI revert is now guarded.
+      The GUI path carries the same shape and the same stale note.
+
+- [ ] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
+      The four revert pre-images and the `REVERT_CHAIN_TAIL` ordering added 2026-08-21 are
+      untested.
+
+- [ ] **A refused `/rewind` is invisible to the user.** `terminal_session_view.rs:4151` shows
+      "Rewound conversation and reverted file edits" unconditionally; refusals arrive after
+      that function returns and land only in the log. `TransientHint` is view-owned, so
+      `revert_file_diffs(&[FileDiff], &mut AppContext)` cannot reach it — closing this needs a
+      call-site change, either handing it a way to raise the hint or returning the completions
+      for the view to await.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
@@ -7801,11 +7825,13 @@ claim, which was wrong by four.
 
       **REFUTED THEN REPAIRED 2026-08-21.** The refutation upheld the fail-closed direction but found the fix incomplete in three ways, all now fixed. **(1) Two fail-OPEN siblings were left in the same file.** `get_curr_parsed_version()` ended in `.ok()`, fusing "parse failed" with "no version"; `is_incoming_version_past_current` returned `false` on either string failing to parse — and `false` there means "your version is not past the cutoff", so on any parse failure the user was told nothing was wrong. **The key insight, which one bool could not express:** the consumers split into two classes with **opposite** safe directions. The *deprecation banner* (`view.rs:19868,19893,19916`) needs Unknown ⇒ **true** (over-warning is recoverable — an error banner with "Update Phosphor manually" is already rendering there, so only the wording changes — while under-warning is not); the *prominent-update affordances* (`view.rs:8645,8657,8671,19413,19642`) need Unknown ⇒ **false**, because `true` there *removes* affordances. Hence `CutoffComparison` with five outcomes (`mod.rs:1437-1523`) and two deliberate bool projections; the five prominent-update sites were switched to `is_incoming_version_past_current_strict` (coordinator). The `warn_once` guard suppresses log repeats only — these run from render paths — and **never touches the verdict**, deliberately avoiding defect pattern 2. **(2) The fail-closed branch stranded users silently.** `UpdateReady::No` with only a `log::warn!` meant no banner and no manual-download affordance, and `current_version` is `option_env!("GIT_RELEASE_TAG")` while the release workflow triggers on any `v*` tag — so tagging `v1`, `v0`, `v0.1.1+build.5` or `v0.1.1_hotfix` **once** would have killed autoupdate for every installed client with no user-visible sign. New `UpdateReady::VersionComparisonFailed` maps to `AutoupdateStage::UnableToUpdateToNewVersion`, raising the existing error banner; the update is still refused, so no fail-open hole is reopened. The same mechanism now surfaces the **digest hard-fail availability trade** (a release published without a `digest` bricks updates) via an `UpdateBlocked` marker, escalating only blocked errors while transient network failures keep the quiet retry. **(3) The mac re-hash moved the TOCTOU rather than closing it** — `open` fires after this process exits, an app-shutdown plus up to 200 ms after the hash, on a path in the user-writable cache dir, and the doc claimed otherwise. The comparison is now **inside the deferred script**, between the pid wait-loop and `exec /usr/bin/open`; the other three options were considered and rejected with reasons (`open(1)` takes a path so an fd cannot be held; a private staging dir does not help against the realistic same-uid attacker; copy-after-hash is a several-hundred-MB copy that still sits user-writable across the same teardown) — only re-checking adjacent to the use removes the window. Residual is microseconds inside one shell. Also removed the `.exists()` filter (a second check-then-use), added a hex-shape guard, recovered the poisoned mutex instead of `.ok()`-ing it, and **rewrote the false doc claim** into an explicit statement of what is and is not guaranteed. **(4) The re-verify was mac-only.** Windows now re-checks the digest immediately before `cmd.spawn()` (`windows.rs:356-383`); `verified_sha256` is `None` on official channels, documented as "Authenticode stands here" and explicitly **not** a "verification skipped" value. Linux is documented as needing no second check, with the reason stated rather than assumed.
 
-- [ ] 🔴 **macOS verifies one file and executes another.** `oss_download_dmg` hashes
+- [x] 🔴 **macOS verifies one file and executes another.** `oss_download_dmg` hashes
       `download_dir/<update_id>/<asset>` (`mac.rs:479`), but `relaunch` runs
       `find_latest_dmg` (`mac.rs:646,667`) — the newest `*.dmg` by mtime ANYWHERE under
       `cache_dir/autoupdate/`. The verified identity is never carried to `open`.
       **VERDICT PARTIAL — needs local write access (independent verifier, 2026-08-21):** Divergence real: hashed path is `dmg_path()` (`mac.rs:752-761`, used `:471,479`), executed path is `find_latest_dmg` over ALL subdirs by mtime (`:207,231-258`), no re-verification in `oss_open_installer`. But in the normal flow both resolve to the same file — failed downloads are deleted (`:481`) and `cleanup_all_except` runs (`:446`). Exploiting it requires local write access to the cache dir.
+
+      **ALREADY CLOSED by `01112f35b` — verified 2026-08-21, no further edit.** The hashed file **is** the opened file and the identity survives the shutdown gap: `mac.rs:769-776` records `(path, digest)` in `VERIFIED_OSS_DMG` after verification (recovering a poisoned mutex rather than `.ok()`-ing it, which would have fallen back to the scan permanently); `resolve_oss_dmg` (`:250-285`) is the **single** resolver used by both the pre-flight re-hash (`:316`) and the script (`:426`), so they cannot disagree about which file they mean; the script binds `dmg=<quoted>` once and does `shasum "$dmg"` … `exec /usr/bin/open "$dmg"` (`:479-491`), leaving a residual window of microseconds inside one shell; and `find_latest_dmg` (`:496`) is demoted to a fallback that must itself pass `verify_oss_asset_sha256`. **Every line number in this entry is stale** (`:479`, `:646`, `:667`), as is "the verified identity is never carried to `open`" and the verifier's "needs local write access" note.
 
 - [x] **`DECLINED.md:172` is factually wrong.** It states "This fork does not ship
       autoupdate… the release workflow publishes no update feed". `script/macos/bundle:351`
@@ -7821,11 +7847,15 @@ claim, which was wrong by four.
       nothing tells them.
       **VERDICT PARTIAL — outcome right, mechanism wrong (independent verifier, 2026-08-21):** `autoupdate/linux.rs` is **not** feature-gated — `mod.rs:4-5` gates on `cfg(target_os = "linux")` only, so it compiles. What is off is `FeatureFlag::Autoupdate`: absent from `RELEASE_FLAGS` (`warp_features/src/lib.rs:864`) and added only under `#[cfg(feature = "autoupdate")]` (`lib.rs:2872`), so the runtime guards never fire. Linux gets no updates; the code is dead at runtime, not absent from the binary.
 
-- [ ] **Windows staged-installer reuse regressed against the pin.** `windows.rs:75` uses
+      **VERIFIED OPEN 2026-08-21 — accidental, NOT the recorded decision, and this entry's mechanism is wrong.** It is **not** covered by `DECLINED.md:215`, which is about `warp_tui/src/bin/oss.rs:42` hardcoding `autoupdate_config: None` plus the `192.0.2.0:9` sentinel — a different mechanism, and `DECLINED.md:179` explicitly warns not to conflate them. There is **no** row for the Linux **GUI** path. **Evidence it is an omission:** `160cfca59`, the commit that turned the feature on, touches `script/macos/bundle` and `script/windows/bundle.ps1` and **not** `script/linux/bundle`; the latter's `FEATURES="release_bundle"` (`:203`) was simply never revisited, while `macos/bundle:358` and `windows/bundle.ps1:125` both append `autoupdate`. **Mechanism correction:** `autoupdate/linux.rs` compiles fine (`mod.rs:4-5` gates on `cfg(target_os)` only) — what is off is `FeatureFlag::Autoupdate`, absent from `RELEASE_FLAGS` and added only under `#[cfg(feature = "autoupdate")]`. **Dead at runtime, not absent from the binary**, so "all 523 lines are dead in shipped AppImages" is wrong. **The Linux path is the strongest of the three:** it resolves the real asset URL from the cached release, verifies SHA-256 and `mv`s the verified bytes into place **with no await between**, so unlike mac and Windows it has no TOCTOU to re-check, and it detects AppImage vs package manager with a manual-install bail. Re-enabling is one change — `FEATURES="release_bundle,autoupdate"` — after confirming the published asset name against a real release, since `linux.rs:84` hardcodes it and a mismatch falls back to a constructed URL rather than failing loudly.
+
+- [x] **Windows staged-installer reuse regressed against the pin.** `windows.rs:75` uses
       `already_exists = path.is_file()` where the pin requires `m.len() > 0`. With
       `rand_bytes(0)` the path is fully predictable, so a 0-byte or partial leftover is
       adopted as the installer and later spawned elevated (`windows.rs:346`).
       **VERDICT PARTIAL — not directly spawned (independent verifier, 2026-08-21):** The regression is real: `windows.rs:77` is `path.is_file()` where the pin uses `m.len() > 0` with the comment "Treat a 0-byte file as missing", and `rand_bytes(0)` makes the path predictable. But the reuse branch falls through to the SHA-256 check at `:153-158`, which sits OUTSIDE the `if !already_exists` block — so a partial leftover is rejected unless `verify_oss_asset_sha256` fails open (finding 75).
+
+      **FIXED 2026-08-21.** Regression confirmed: the pin has `// Treat a 0-byte file as missing.` with `m.len() > 0` (`42effe840:windows.rs:48-50`); the fork had a bare `path.is_file()`, and `rand_bytes(0)` makes the path fully predictable. **The 2026-08-21 re-verify changed the picture for OSS only** — there the reuse branch falls through to `verify_oss_asset_sha256`, which now hard-fails and drops the `NamedTempFile` so the bad leftover is removed. **On the official channels it changed nothing:** `verified_sha256` is `None`, so `relaunch`'s re-check is explicitly skipped and the reused file is spawned by Inno with **nothing having examined it** — the macOS TOCTOU shape with a *wider* window, since the file sits in `%TEMP%` from download until the user clicks Install. Fixed in two parts: the pin's non-empty test is restored **with the fail-safe direction preserved** (a metadata error counts as *missing*, never as "safe to reuse"), and reuse is now permitted only on a channel that will check the bytes it reuses (`:126`). On official channels a pre-existing file is truncated and re-fetched over TLS — the weaker-but-real check those channels actually have — instead of adopting an unexamined, predictable-path file and running it elevated.
 
 - [x] **Version tests are vacuous.** `channel_versions_tests.rs:90-120` asserts only
       synthetic tags (`v2026.05.26.2`) the pipeline never emits — and its own comment
@@ -7843,7 +7873,7 @@ claim, which was wrong by four.
 
 ### Refutation round — editor, notebooks, file edits
 
-- [ ] 🔴 **`/rewind` silently rewrites and DELETES files with no content check —
+- [x] 🔴 **`/rewind` silently rewrites and DELETES files with no content check —
       fork-only.** The pin has no file revert at all
       (`git grep rewind 42effe840 -- crates/warp_tui` is empty).
       `warp_tui/src/tui_diff_storage.rs:215-259` writes `diff.base.content` — the
@@ -7856,6 +7886,8 @@ claim, which was wrong by four.
       `terminal_session_view.rs:4151` reports "Rewound conversation and reverted file
       edits" regardless.
       **VERDICT PARTIAL — NOT fork-only (independent verifier, 2026-08-21):** Mechanism real: `tui_diff_storage.rs:233-257` writes `diff.base.content` back, Create → `PersistAction::Delete`, no staleness check; `:216-229` drops the `SaveFuture` and only `log::warn`s while `terminal_session_view.rs:4151` always reports success. **But "fork-only" is false** — the pin reverts identically: `42effe840:app/src/terminal/view.rs:25199` → `block.rs:4461` → `code_diff_view.rs:1033` → `local_code_editor.rs:2235-2277`, with base write-back, `std::fs::remove_file`, and no content check. Inherited.
+
+      **CORRECTION + FIXED 2026-08-21 — and `0219e06c3`'s stated reason for deferring this was WRONG.** That commit recorded that the correct pre-image "needs it retained at accept time" and "the view does not retain it". **Nothing needed retaining:** `start_saving` wrote exactly `final_content_from_op(&diff.base.content, &diff.diff_type)`, a **pure function of the diff `revert_file_diffs` is already holding** — the accepted bytes were re-derivable all along. That mistaken premise is precisely why the delete limb went unguarded. `revert_plan` now returns a per-step `ExpectedDiskState` derived from the accept: `Create` → delete guarded on `Content(insertion)`; `Delete` → write base guarded on `Absent`; rename → write base at the source guarded on `Absent` **plus** delete the target guarded on `Content(accepted)`; in-place → write base guarded on `Content(accepted)`. **The delete limb is guarded** — an agent-created file the user has since built on now refuses instead of vanishing. `dispatch_write`'s `Option<ExpectedDiskState>` is **removed**, so there is no longer any way to ask this module for an unguarded write. **The dropped `SaveFuture` was load-bearing, not cosmetic:** guard refusals arrive *asynchronously*, so keeping only the sync `Result` would have made every refusal invisible and the whole guard inert. **`REVERT_CHAIN_TAIL` is necessary, not gold-plating:** the caller reverts newest-first and depends on that order, but `FileModel` writes run on spawned tasks so dispatch order ≠ execution order — unguarded that was a silent coin-flip between original and intermediate state, and **guarded it would have been a near-certain spurious refusal**, i.e. exactly the "refuse the common case" failure the old comment feared. **"Fork-only" is false** (the verifier was right: the pin reverts identically via `local_code_editor.rs:2235-2277`). **Not closed:** the GUI's `InlineDiffView::restore_diff_base` carries the same unguarded shape and the same now-refuted note.
 
 - [ ] **Notebook load dead-ends on a `ServerId` that never exists (#609 sibling).**
       `notebooks/notebook.rs:1541-1560` — `fetch_needed` calls

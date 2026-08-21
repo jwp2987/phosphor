@@ -108,13 +108,38 @@ pub(super) async fn download_update_and_cleanup(
         )
     };
 
+    // Reuse a previously staged installer only on a channel that will check the
+    // bytes it reuses.
+    //
+    // `rand_bytes(0)` makes this path fully predictable -- `%TEMP%` plus the
+    // version and the asset name -- so "a file is already here" is not evidence
+    // that *we* put it here, and the file is later spawned elevated by
+    // `relaunch`. On the OSS channel the reused bytes still have to pass
+    // `verify_oss_asset_sha256` below before `INSTALLER_PATH` is populated at
+    // all, so a leftover, a truncated download or a planted file is rejected
+    // there and the `NamedTempFile` drop takes it away. On the official
+    // channels there is no digest to check against (see
+    // `DownloadedInstaller::verified_sha256`), so a reused file would be run
+    // having been examined by nothing whatsoever; the TLS fetch is the weaker-
+    // but-real check those channels do have, so pay for it rather than adopt an
+    // unexamined file.
+    let may_reuse_staged_installer = matches!(channel, Channel::Oss);
+
     // Create a temporary file that we'll write the download into.
     let mut already_exists = false;
     let mut new_installer = tempfile::Builder::new()
         .rand_bytes(0)
         .suffix(&format!("{}-{}", version_info.version, installer_file_name))
         .make(|path| {
-            already_exists = path.is_file();
+            // Treat a 0-byte file as missing, as the pin does. `path.is_file()`
+            // -- what this used to be -- adopts an empty or partial leftover as
+            // the installer: the download is then skipped entirely, so nothing
+            // ever replaces those bytes. A metadata error counts as missing for
+            // the same reason: "could not read" must not become "safe to
+            // reuse", and the recovery here (download it again) is cheap and
+            // loses nothing.
+            already_exists = may_reuse_staged_installer
+                && path.metadata().map(|m| m.len() > 0).unwrap_or(false);
             if already_exists {
                 File::open(path)
             } else {
