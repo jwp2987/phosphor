@@ -41,11 +41,55 @@ fi
 # Collect `use crate::server::` / `use crate::cloud_object::` from outside those
 # trees. `app/src/drive` is excluded as a source but not as a target: drive is
 # the sync layer and legitimately talks to both.
+# Three forms have to be caught, not one. The original matcher was
+# `^\s*use crate::(server|cloud_object)::`, which sees only the first:
+#
+#   1. plain          use crate::server::telemetry::X;
+#   2. re-export      pub use crate::server::telemetry::X;      <- MISSED
+#   3. brace/grouped  use crate::{server::telemetry::X, ...};   <- MISSED
+#                     ...including the multi-line form, which no line-based
+#                     regex can see at all.
+#
+# Both misses were live. `app/src/lib.rs:300` is a `pub use crate::server::`
+# re-export whose own comment names THIS GUARD as the reason it exists, so
+# `remote_server::codebase_index_model` can reach cloud code without tripping the
+# check -- a documented laundering point at the crate root. The brace form hid
+# further sites. A guard that a `pub` keyword or a `{` defeats is not a boundary.
+#
+# Awk rather than grep because form 3 spans lines: track entry into a
+# `use crate::{` block and scan until its closing `};`.
 current="$(mktemp)"
-grep -rn --include='*.rs' -E '^\s*use crate::(server|cloud_object)::' app/src \
+find app/src -name '*.rs' -type f \
     | grep -vE '^app/src/(server|cloud_object)/' \
-    | sed -E 's/^([^:]+):[0-9]+:\s*/\1 /' \
-    | sed -E 's/\s+$//' \
+    | LC_ALL=C sort \
+    | while IFS= read -r f; do
+        awk -v FILE="$f" '
+            # forms 1 and 2, plus a single-line form 3
+            /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::(server|cloud_object)::/ {
+                line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+                print FILE " " line; next
+            }
+            /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::\{/ {
+                if ($0 ~ /(server|cloud_object)::/) {
+                    line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+                    print FILE " " line
+                }
+                # multi-line: remember the opening line, scan to the closer
+                if ($0 !~ /\};/) { inblock = 1; opener = $0; hit = 0 }
+                next
+            }
+            inblock == 1 {
+                if ($0 ~ /(server|cloud_object)::/) hit = 1
+                if ($0 ~ /\};/) {
+                    if (hit) {
+                        line = opener; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
+                        print FILE " " line
+                    }
+                    inblock = 0
+                }
+            }
+        ' "$f"
+    done \
     | LC_ALL=C sort -u > "$current" || true
 
 expected="$(mktemp)"

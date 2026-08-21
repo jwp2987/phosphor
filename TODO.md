@@ -7584,12 +7584,13 @@ Ordered by severity, not by area.
       code fragment unencrypted with no guard at all.
       **VERDICT PARTIAL — severity overstated (independent verifier, 2026-08-21):** The nesting is confirmed (`embeddings.rs:244/247` and `:439/442` gate `is_plaintext_bearer_risk` inside the key check), so a keyless `http://` non-loopback provider posts fragments unencrypted. But the guard is scoped to CREDENTIAL exfiltration by name and comment (`mod.rs:72`), the chat path behaves identically, and the endpoint is user-configured with no TLS promise anywhere. Not a bypass.
 
-- [ ] 🔴 **`script/check_cloud_boundary` under-enforces — 10+ live violations it cannot
+- [x] 🔴 **`script/check_cloud_boundary` under-enforces — 10+ live violations it cannot
       see.** Its regex misses `use crate::{server::…}` brace form (live at
       `ai/blocklist/controller.rs:75` and several `code/editor/find/view.rs` variants) and
       inline references (`root_view.rs:488`), contradicting its own header. This is one
       of the two guards CLAUDE.md names as enforcing what the compiler cannot.
       **VERDICT CONFIRMED — 161 sites (independent verifier, 2026-08-21):** `check_cloud_boundary:45` matches only `^\s*use crate::(server|cloud_object)::`. Verifier tested empirically against a scratch file: the brace form does not match. **161** multi-line `use crate::{` + `server::`/`cloud_object::` sites are invisible, plus `ai/blocklist/controller.rs:75` — and the header at `:22` claims to cover exactly that form. One cited example was wrong: `code/editor/find/view.rs:10` is plain-form and allowlisted.
+      **FIXED 2026-08-21:** Matcher widened from `^\s*use crate::(server|cloud_object)::` to all three forms — plain, `pub use`, and the `use crate::{...}` brace form including multi-line, via awk since no line-based regex can span the latter. **169 previously-invisible sites** surfaced, so the allowlist understated the retained cloud surface by 62% (273 → 442). Rebaselined with a header recording that these are pre-existing, not new. Proved by probe: all four forms are now caught and an unrelated import is correctly ignored.
 
 - [ ] **LSP servers are never shut down, and `TODO.md:672` claims the hook is wired.**
       `lib.rs:2360-2392` (`on_will_terminate`) goes straight from `writer.terminate()` to
@@ -7688,7 +7689,7 @@ Ordered by severity, not by area.
 
 ### Refutation round — guards and CI
 
-- [ ] 🔴 **VERIFIED: `check_stub_coverage` has been a no-op in CI since the 2026-08-15
+- [x] 🔴 **VERIFIED: `check_stub_coverage` has been a no-op in CI since the 2026-08-15
       re-pin — it resolves the SUPERSEDED pin.**
       `script/check_stub_coverage:43-44` hardcodes
       `grep -oE '\b02b53fcd8[0-9a-f]*' ORACLE.md`, and ORACLE.md:64 still carries that
@@ -7708,8 +7709,9 @@ Ordered by severity, not by area.
       **This is one of the two guards CLAUDE.md names as enforcing what the compiler
       cannot.** The other, `check_cloud_boundary`, is separately holed (below).
       **VERDICT CONFIRMED (second verification) (independent verifier, 2026-08-21):** Independently re-verified: `:43` resolves `02b53fcd81ac…` from ORACLE.md:64, CI fetches only the 40-char `**Commit (full)**` row after a depth-1 checkout, and the old pin is unreachable from phosphor history (`merge-base --is-ancestor` fails; only `refs/remotes/warp/master` has it), so `:46` fails and `:47-48` exits 0.
+      **FIXED 2026-08-21:** `script/check_stub_coverage` now reads the `**Commit (full)**` row like `script/state`, `generate_pin_identity_manifest` and `pr-check.yml`, with NO hardcoded fallback — guessing a pin is what caused this. Verified it now resolves `42effe840…` and still passes.
 
-- [ ] 🔴 **`check_cloud_boundary` misses `pub use`, and the tree already launders imports
+- [x] 🔴 **`check_cloud_boundary` misses `pub use`, and the tree already launders imports
       through it.** The regex at `:44` requires `^\s*use`. Live and unallowlisted:
       `app/src/lib.rs:300` `pub use crate::server::telemetry::{…}` and
       `app/src/drive/folders/mod.rs:11`. Worse, `lib.rs:302-304` comments that the
@@ -7718,6 +7720,7 @@ Ordered by severity, not by area.
       bypass**, and a crate-root laundering point for any future cloud import. (Separate
       from the brace-form `use crate::{server::…}` hole logged earlier.)
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:45` requires `^\s*use`, which `pub use` never matches. Live and unallowlisted: `lib.rs:300` `pub use crate::server::telemetry::{…}` and `drive/folders/mod.rs:11` — neither is in `script/cloud_boundary_allowlist.txt` (the `lib.rs` entries there are `:118-123` only). `lib.rs:302-303` names the guard as the REASON for the re-export.
+      **FIXED 2026-08-21:** Covered by the same widening. Both live re-exports (`lib.rs:300`, `drive/folders/mod.rs:11`) are now visible and allowlisted with a note that they should be REMOVED rather than allowlisted permanently — `lib.rs:302-303` names the guard itself as the reason its re-export exists.
 
 - [ ] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
       and `script/check_workspace_clean` are referenced by neither `precheck` nor any
@@ -7755,11 +7758,12 @@ Ordered by severity, not by area.
       not use. Verified directly: both write paths, the single caller, and the constant.
       **VERDICT PARTIAL — upstream design, NOT a fork defect (independent verifier, 2026-08-21):** **This corrects my own earlier verification, which checked the mechanism but never checked the pin.** Every limb of the mechanism holds (`linux.rs:246` → 0644 under umask 022; `:252-284` is the only 0600 path; its sole caller is `local_control.rs:132`, a mode enum; `api_keys.rs:235`, `secrets.rs:106`, `oauth.rs:644`, `network_secrets.rs:73` all use `write_value`; `linux_test.rs:59` covers only the unused path). **But it is upstream Warp's design:** `42effe840:linux.rs` is structurally identical, its owner-only path has the same single caller (`42effe840:local_control.rs:91`), its API-key writer uses `write_value` (`42effe840:api_keys.rs:383`), and **the pin hardcodes an AES key too** — disguised as `"https://releases.warp.dev/channel_versions.json"` (`42effe840:linux.rs:108`). Only `secrets.rs` and `network_secrets.rs` are fork-original, so only those two are this fork's own missed opportunity. Reachability is also narrower than "any keyring-less Linux host": GNOME and KDE ship a Secret Service provider, so the fallback needs no D-Bus session bus / no keyring daemon (minimal WMs, containers, WSL, SSH) or a locked keyring with no prompter — and world-readability additionally needs a traversable `~/.local/state` chain (Debian/Ubuntu 0755 homes; not Fedora/RHEL 0700).
 
-- [ ] **`check_stub_coverage` disarmed — CORROBORATED independently by a second agent**,
+- [x] **`check_stub_coverage` disarmed — CORROBORATED independently by a second agent**,
       which additionally found that `generate_repin_queue:178` was repaired for this exact
       literal and cites `check_stub_coverage` as the convention it copied. The script the
       others were modelled on was itself never fixed. (Logged in full above.)
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `generate_repin_queue:176-183` names the removed `02b53fcd8` fallback as "the exact shape of the bug those two were repaired for", and `generate_pin_identity_manifest:50` states "same convention as script/check_stub_coverage" while itself reading the `**Commit (full)**` row — as does `script/state:45`. `check_stub_coverage:43-44` is the only guard still carrying the literal.
+      **FIXED 2026-08-21:** Same fix as above; the literal `02b53fcd8` is gone from the last guard carrying it.
 
 - [ ] **A rejected key event is resurrected by the layer below.**
       `warpui_core/src/event_loop/mod.rs:1336` dropped the pin's

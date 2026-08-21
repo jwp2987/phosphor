@@ -40,8 +40,28 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-PIN="$(grep -oE '\b02b53fcd8[0-9a-f]*' ORACLE.md 2>/dev/null | head -1)"
-PIN="${PIN:-02b53fcd8}"
+# Read the pin from ORACLE.md's "Commit (full)" row, the same way script/state,
+# generate_pin_identity_manifest and .github/workflows/pr-check.yml do.
+#
+# This used to grep for the literal `02b53fcd8` and hard-default to it. ORACLE.md
+# still lists that hash in its HISTORY table, so after the 2026-08-15 re-pin this
+# kept resolving the SUPERSEDED July oracle. CI fetches only the current 40-char
+# pin, so the old one was never present, `git cat-file` failed, and the guard
+# printed "skipped" and exited 0 on every CI run -- while pr-check.yml asserts the
+# current pin IS fetched precisely so this guard "cannot silently skip". That
+# assertion was guarding a different SHA than this script resolved.
+#
+# It survived because a full local clone HAS the old pin, so the guard ran and
+# reported ok everywhere a human would look. generate_repin_queue and
+# generate_pin_identity_manifest were both repaired for this exact literal and
+# cite this script as the convention they copied; this one was missed.
+#
+# There is deliberately NO hardcoded fallback: guessing a pin is what caused this.
+PIN="$(grep -oE '\*\*Commit \(full\)\*\* \| `[0-9a-f]{40}`' ORACLE.md 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1)"
+if [[ -z "$PIN" ]]; then
+    echo "stub coverage: FAILED (ORACLE.md has no 40-char '**Commit (full)**' row)" >&2
+    exit 1
+fi
 
 if ! git cat-file -e "${PIN}^{commit}" 2>/dev/null; then
     echo "stub coverage: skipped (pin ${PIN} not fetched; run 'git fetch warp')"
