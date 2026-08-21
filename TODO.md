@@ -6860,7 +6860,7 @@ Ordered by severity, not by area.
 
 ### Security / permission
 
-- [ ] 🔴 **`use_computer` executes with NO approval check — found independently by
+- [x] 🔴 **`use_computer` executes with NO approval check — found independently by
       TWO agents.** `app/src/ai/blocklist/action_model/execute/use_computer.rs:17-31`
       returns `true` unconditionally, justified by a pin-inherited comment claiming
       the action "is only executed by the computer use subagent, which cannot begin
@@ -6880,7 +6880,7 @@ Ordered by severity, not by area.
 
       **REPAIRED 2026-08-21 (both refutation grounds upheld; the earlier FIXED note overstated what landed and was wrong).** Ground 1: the `is_user_initiated: bool` is now an `ActionInitiator` enum (`execute.rs:225-286`) with `Agent`/`User`/`AutoAcceptedTagIn`. `is_out_of_band()` reproduces the old bool exactly for the serialisation guard, so no concurrency behaviour changed; `can_stand_in_for_confirmation(&action)` grants stand-in authority to `User` always, `Agent` never, and `AutoAcceptedTagIn` for everything **except `UseComputer` and `RequestComputerUse`**. The auto-accept loop calls a new `auto_accept_action` (`action_model.rs:775,1137`) instead of `execute_action`. **The pin has no such caller at all** — `git grep "auto_accept\|queue_actions_with_options" 42effe840 -- app/src/ai/blocklist` is empty and the pin's only two `true` producers (`42effe840:action_model.rs:767,782`) are genuine clicks — so the forged `true` was fork-original and illegitimate. **Hole the refuter did not name:** `RequestComputerUse` was itself auto-acceptable on that path, a one-hop laundering route that *manufactures* the `Approved` record the gate reads; excluded too. All 8 `execute_action` callers traced and all are genuine clicks, so nothing outside the LRC path changed. Ground 2: approval is now session-scoped — `restored_computer_use_approval_ids` (`conversation.rs:271`) is populated once in the restore constructor before the conversation is reachable, and `has_approved_computer_use` (`:1771`) requires an `Approved` whose action id is **not** in that set. Chosen over hooking an append site because approvals can arrive via three different paths, so any single hook would be a gate with a hole; keeping it derived also preserves the invalidation event (a rewind drops the exchange and revokes the approval, where a stored bool would survive). **Remaining debt, deliberately not shipped:** approval is scoped to the session, not to the sub-task as the pin's wording implies; narrowing to `task_id` needs a live trace of BYOP task-id assignment that cannot be run under the closed build gate. Path correction: the file is `app/src/ai/agent/api/convert_conversation.rs`, not `app/src/ai/agent/convert_conversation.rs`.
 
-- [ ] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
+- [x] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
       only the advertised array (`chat_stream.rs:3831,3948`); `parse_incoming_tool_call`
       resolves names straight from the full REGISTRY with no `advertised` check
       (`chat_stream.rs:7171`). The comment at `:3711-3714` claims an unlisted tool
@@ -6976,7 +6976,7 @@ Ordered by severity, not by area.
       this — its detection is `LocalOrRemotePath`-typed.
       **VERDICT PARTIAL — 'never cleared' false (independent verifier, 2026-08-21):** The mechanism holds: `view.rs:11958` assigns before the local bail at `:11982`, and unlike the pin (which routes remote sessions to `RepoDetectionSessionType::Remote`) the fork always probes locally. But "never cleared" is false — each detection reassigns, normally to `None` (`repositories.rs:66` canonicalize fails). Wrong-repo needs an exact remote-path collision, and auto-open is only `view.rs:6809`. Already documented at TODO.md:2432.
 
-- [ ] 🔴 **Pane-group swap corrupts layout and loses a pane on restart.**
+- [x] 🔴 **Pane-group swap corrupts layout and loses a pane on restart.**
       `pane_group/mod.rs:3951` replaces a pane that this fork keeps IN the tree (the pin
       keeps child-agent panes off-tree), so the target becomes a leaf twice and the
       anchor's slot vanishes; `show_pane_for_child_agent` (`tree.rs:330`) has zero
@@ -7158,7 +7158,7 @@ claim, which was wrong by four.
       committed as a complete turn.
       **VERDICT PARTIAL — narrower cause (independent verifier, 2026-08-21):** `end_count` is genuinely write-only (`:5451,:5740`, logged `:5876`), and a stream ending without `End` does commit partial text. But the stated cause breaks: a DROPPED connection surfaces as `Some(Err)` (`web_stream.rs:180`, `openai/streamer.rs:400`) and `:5486-5515` yields `AIApiError::Other` and returns. Silent only for a clean close missing `[DONE]`.
 
-- [ ] **Vertex token cache is never invalidated on 401.** `vertex_auth.rs:189-195`,
+- [x] **Vertex token cache is never invalidated on 401.** `vertex_auth.rs:189-195`,
       30-minute TTL with no eviction path; after a revocation every turn 401s for up to
       30 minutes and a successful re-login still returns the stale cached token.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `vertex_auth.rs:188-195` is the only reader and `store_token:198-212` the only writer; no eviction API exists, and grep for `401` in `agent_providers/` finds only comments. Verifier added the decisive detail: the cache key is the settings `credential` string (`:123`), unchanged by re-login, so a re-mint is impossible before the 30-minute TTL.
@@ -7172,7 +7172,7 @@ claim, which was wrong by four.
       conversation.
       **VERDICT PARTIAL — no production path (independent verifier, 2026-08-21):** The keying divergence is confirmed (`agent_link_id()` = run_id-or-token vs the pin's `orchestration_agent_id()` = run_id only), and `history_model.rs:2218-2220` lacks the equality guard its token sibling has. But the "rebound token" scenario has NO production path: `set_server_conversation_token_for_conversation[_and_persist]` has zero non-test callers.
 
-- [ ] **MCP servers whose sanitised name contains `__` are unroutable.**
+- [x] **MCP servers whose sanitised name contains `__` are unroutable.**
       `mcp.rs:42-53` maps non-alnum to `_`; `parse_mcp_tool_call` splits at the FIRST
       `__` (`:168`). Every tool of such a server is advertised and permanently
       uncallable.
@@ -7182,7 +7182,7 @@ claim, which was wrong by four.
 
       **REFUTED THEN REPAIRED 2026-08-21.** The collapse fix traded "one server unusable" for "two servers silently ambiguous" — a worse failure, since `mcp.rs:196-200` resolved with `find(..)`, first match wins. Confirmed by re-running the old sanitizer: `"GitHub (remote)"` and `"GitHub remote"` both → `GitHub_remote`, both advertised, both resolvable. **Worse than the refuter stated:** `"!!!"`, `"文件服务器"` and `"Сервер"` all → `""`, and the resulting `mcp____read_file` *does* resolve — `split_once("__")` yields `("", "read_file")` — so the empty key was a live misroute covering the entire non-Latin world, not merely a broken name. **The pin offers nothing:** `42effe840` has no `app/src/ai/agent_providers/` tree, no `sanitize_server_name`, and no `mcp__` in `app/src` at all — this module is fork-local, so the design is ours. Repaired with a two-branch injective encoding (`:122`): a name already in `[A-Za-z0-9-]+` is used **verbatim** (so `server-a`/`my-server` keep their exact current keys — no prompt-cache or existing-test regression), anything else becomes `<stem>_<8 hex FNV-1a of the full original>`. `_` is excluded from the canonical alphabet so the branches are disjoint by construction. **The residual 32-bit hash collision is closed at the other end rather than asserted away:** `parse_mcp_tool_call` (`:338`) now **counts** matches and errors naming both candidates instead of taking the first; `build_mcp_tool_defs` (`:271`) dedupes after sorting so a collision cannot produce the duplicate-tool-name 400 that kills the whole turn; `parse_read_resource` falls through to the empty `server_id` (locate-by-uri) on two matches rather than picking. Worst case is visibly unusable tools, never a wrong-server execution. Same-name servers — the one case no name-derived function can solve — get a `_<fingerprint of server.id>` suffix applied **only to the servers that actually clash** (`server_keys:165`). **Stability reasoning:** the tiebreak derives from the persisted `installation_id()`, not from position in `ctx.servers` (this file documents that order as drifting between requests, so an order-derived suffix would rewrite every function name on reshuffle); and `fingerprint` (`:68`) is hand-rolled FNV-1a rather than `DefaultHasher`, whose algorithm is documented as unspecified and free to change between Rust releases — this digest is baked into prompt-cache keys and serialized history. **Point 5 reversed:** `serialize_outgoing_call` (`:503`) no longer sanitises the raw id — sanitising mapped it *into* the key space live servers occupy, making an accidental match **more** likely, i.e. the opposite of the old comment's claim. It now emits `unresolved_<fp>_id`, provably outside the range of `server_keys`. The false "globally unique" comment (`:128-130`) is corrected, and the vacuous tests are replaced by 9 real ones (`:593`) including direct injectivity over a 16-name corpus and key stability under reordering.
 
-- [ ] **Partial agent-message delivery is reported as total failure.**
+- [x] **Partial agent-message delivery is reported as total failure.**
       `send_message.rs:115-137` breaks on the first failing address and discards
       `delivered_ids`, so a retry duplicates to earlier recipients.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `send_message.rs:117-131` breaks on the first `Err`; `:133-161` returns `Error(err)` and drops `delivered_ids` entirely, so the model gets no partial-delivery signal. Verifier established it is fork-introduced: the pin (`42effe840:send_message.rs:186`) makes ONE call for all addresses and reads back `response.message_ids`, so it has no per-address loop that could abort mid-way.
@@ -7220,7 +7220,7 @@ claim, which was wrong by four.
       off editors that are never rendered.
       **VERDICT PARTIAL — four, not six (independent verifier, 2026-08-21):** The divergence is real: the fork writes `AISettings` (`permissions.rs:1015-1076`) where the pin writes the profile (`42effe840:...:1002-1005`), and enforcement reads the profile (`:400-412`). Call sites are dead (`ai_page.rs:709,741` editors never rendered; `RemoveFromCommandExecution*` never dispatched). But it is **four** mutators, not six, and the lists ARE read once by `execution_profiles/mod.rs:473-479`.
 
-- [ ] **Tab-group header/contiguity assertions never read the rendered bar.**
+- [x] **Tab-group header/contiguity assertions never read the rendered bar.**
       `integration_testing/tab_group/assertion.rs:47-65,159-197` reimplements
       `tab_bar_slots` from the model, so "exactly one group header is rendered" cannot
       catch a `tab_bar_slots` regression.
@@ -7264,7 +7264,7 @@ claim, which was wrong by four.
       repo-declared hooks with trust review disabled.
       **VERDICT PARTIAL — impact misattributed (independent verifier, 2026-08-21):** The fork does pass the flag unconditionally (`codex.rs:92,206,211`) and lacks `requires_verified_platform_plugin`. **But the pin passes it just as unconditionally** (`42effe840:.../codex.rs:192,197`) — its gate required plugin INSTALLATION and never conditioned the flag. So the hook-trust bypass is identical at the pin and "deleted the only gate" misattributes the impact. The dropped doc sentence (pin `:184-185`) is confirmed.
 
-- [ ] 🔴 **MCP "Log out" silently keeps OAuth tokens.**
+- [x] 🔴 **MCP "Log out" silently keeps OAuth tokens.**
       `ai/mcp/templatable_manager/oauth.rs:600-612` handles only `get_template_uuid`,
       which reads `locally_installed_servers` — file-based installs are never in it, so
       it logs an error and deletes nothing. The pin has the
@@ -7276,7 +7276,7 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21:** `oauth.rs:611-628` ports the pin's file-based branch. **`CredentialsChanged` deliberately not ported** — no such event exists anywhere in this fork; documented at `:600`.
 
-- [ ] 🔴 **`claude_code_tests` can write to the REAL user profile on Windows.**
+- [x] 🔴 **`claude_code_tests` can write to the REAL user profile on Windows.**
       `claude_code.rs:509-528` duplicates `claude_config_dir` using `dirs::home_dir()`
       instead of the pin's `home_dir_for_claude_config`. `dirs::home_dir()` ignores the
       `HOME` the tests set on Windows, so the suite writes `.claude.json` /
@@ -7399,7 +7399,7 @@ claim, which was wrong by four.
 
 ### Refutation round — third wave (security-weighted)
 
-- [ ] 🔴 **The remote-server SHA-256 integrity check is bypassed by the SCP fallback,
+- [x] 🔴 **The remote-server SHA-256 integrity check is bypassed by the SCP fallback,
       and the tamper signal itself triggers the bypass.**
       `remote_server/ssh_transport.rs:195` — `should_skip_scp_fallback` returns true only
       for exit code 2, but `install_remote_server.sh` exits **4** (no pinned digest),
@@ -7458,7 +7458,7 @@ claim, which was wrong by four.
       `permissions.rs:903-904` claims cannot happen.
       **VERDICT PARTIAL — attribution wrong (independent verifier, 2026-08-21):** The gap is real: `mod.rs:255` requires `split('=').count() == 2`, so `FOO=a=b rm file.txt` is never stripped and `source()` returns it whole, missing `^rm .*$`. **But the attribution breaks** — `42effe840:.../simple/mod.rs:255` is byte-identical and the pin has the same call site, so only the COMMENT is the fork's, and the comment's own stated example (`X=1 rm file.txt`) genuinely is stripped.
 
-- [ ] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
+- [x] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
       `code_review_view.rs:5902-5903` computes `hunk_end` from `hunk.lines.len()`, which
       includes `Delete` lines that occupy no new-file line, so the extent is overstated
       and `.find()` returns the first overlapping hunk. `hunk_to_patch` then rebuilds the
@@ -7573,7 +7573,7 @@ claim, which was wrong by four.
 
 ### Refutation round — fourth wave (de-clouding fallout)
 
-- [ ] 🔴 **Default secret-redaction regexes are NEVER installed — out of the box no
+- [x] 🔴 **Default secret-redaction regexes are NEVER installed — out of the box no
       secret is detected or blurred in terminal output.**
       `settings/privacy.rs:592` `initialize_default_regexes_once` has exactly one caller
       chain, ending at `initialize_from_fetched_settings_or_update_settings` (`:377`),
@@ -7590,7 +7590,7 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21:** new `settings::run_startup_settings_initialization` (`settings/init.rs:326-370`), called once from `lib.rs:1373` right after `PrivacySettings::register_singleton` — the earliest point where both `AuthStateProvider` and `PrivacySettings` exist (`settings::init` runs too early). **No clobbering:** the guard is the persisted private setting `HasInitializedDefaultSecretRegexes` (`privacy.rs:129-135`), not list contents, so "never seeded" and "seeded then user deleted" stay distinguishable and deliberate removals stay removed.
 
-- [ ] 🔴 **`agents.warp_agent.is_any_ai_enabled` is a public, schema-emitted setting that
+- [x] 🔴 **`agents.warp_agent.is_any_ai_enabled` is a public, schema-emitted setting that
       nothing reads.** Defined at `settings/ai.rs:1850-1857` with `private: false` and the
       description "Controls whether all AI features are enabled", so it appears in
       `settings.toml` and the JSON schema. The getter at `:2816` returns a hardcoded
@@ -7603,7 +7603,7 @@ claim, which was wrong by four.
 
       **COMPLETED 2026-08-21 (the writers).** The first fix restored the **reader only**, and the verifier's "no UI writes it either" was recorded and not acted on — leaving a user whose key is `false` with a fully greyed AI page, no switch, no keybinding and no explanation, recoverable only by hand-editing TOML. `git show 14ed5014f` confirms the pairing: that commit removed the getter's honesty **and** every writer together (the `flags::IS_ANY_AI_ENABLED` toggle binding, `AISettingsPageAction::ToggleGlobalAI`, `GlobalAIWidget`'s switch, the telemetry event, and five `.ftl` keys). Now restored in `ai_page.rs`: `MasterAISwitchState::for_setting` (`:180-205`), the single writer `toggle_global_ai` (`:207-215`) shared by switch, keybinding and test, the `ToggleGlobalAI` action pair (`:229-245`) whose `context_prefix` is deliberately the bare parent context rather than `& id!(IS_ANY_AI_ENABLED)` **so the "Enable AI" half is offered in the command palette precisely when AI is off**, and `build_page` pushes the widget before the `match` (`:1640-1646`) so no branch can drop it. Off state renders an explainer banner. `should_offer_cli_agent_in_tab_menu` was added as a separate getter and **REMOVED AGAIN on 2026-08-21** — adjudication found the master switch does not scope third-party CLI agents (two verbatim pin statements say so, in a tree with *more* reason to gate than this one), so the tab menu, the title bar and the footer all gate on their per-agent settings only, and the `e0c3dfe2f` gate was reverted. See the "master AI switch scope" row in `DECLINED.md`. Superseded original text: it was added as a **separate** getter rather than changing `is_cli_agent_tab_menu_enabled`, whose other two call sites are the per-agent settings toggles that must stay editable while AI is off; `workspace/view.rs:6342` switched to it (coordinator). Three i18n keys added to en/ja/zh-CN (coordinator). **Reasoned refusal accepted:** the `DockerSandbox` arm of `default_session_mode` is **not** a defect — it is pin-verbatim (`42effe840:settings/ai.rs:2209-2231`, only `CloudAgent`→`AmbientAgent` differs), and a Docker sandbox session is a containerized *shell*, not an AI surface, so turning AI off must not confiscate it; a comment now records that so it is not re-derived. **Remaining:** `TelemetryEvent::ToggleGlobalAI` was not re-added (`server/telemetry.rs` was outside the edit list); and the "widget is installed" assertion is against `subpage_shows_master_ai_switch` rather than a constructed `AISettingsPageView`, which needs ~8 singletons and could not be verified without a build.
 
-- [ ] **`SettingsInitializer::handle_user_fetched` is dead code and its migrations never
+- [x] **`SettingsInitializer::handle_user_fetched` is dead code and its migrations never
       run.** `settings/initializer.rs:35` has zero callers; the pin calls it from
       `auth_manager.rs:430`. The `KeepThinkingExpanded` → `ThinkingDisplayMode` migration
       never fires, so upgraders silently lose that preference and the stale key is never
@@ -7613,7 +7613,7 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21:** `handle_user_fetched` → `apply_startup_settings_migrations` (`initializer.rs:29-56`), invoked from `run_startup_settings_initialization` **before** the regex seeding, matching pin order (`42effe840:auth_manager.rs:430` precedes `:510`). **Caveat recorded in-source:** the `is_onboarded()==Some(false)` block stays dead because `auth/mod.rs:213` hardcodes `is_onboarded: true`, so the `input_mode.rs:8`/`theme.rs:17` promises still cannot fire; the `KeepThinkingExpanded`→`ThinkingDisplayMode` migration now does.
 
-- [ ] 🔴 **`DOGFOOD_FLAGS` / `PREVIEW_FLAGS` / `LOCAL_FLAGS` have no consumer in any
+- [x] 🔴 **`DOGFOOD_FLAGS` / `PREVIEW_FLAGS` / `LOCAL_FLAGS` have no consumer in any
       buildable binary — six flags gating live code are dark.** Their only
       `with_additional_features` call sites are `crates/warp_tui/src/bin/{dev,local,
       preview,stable}.rs`, which are never compiled (`autobins = false`, one declared
@@ -7674,7 +7674,7 @@ claim, which was wrong by four.
 
 ### Refutation round — autoupdate (bears on any release decision)
 
-- [ ] 🔴 **Downgrade protection is dead code, and a beta user is silently
+- [x] 🔴 **Downgrade protection is dead code, and a beta user is silently
       auto-downgraded.** `crates/channel_versions/src/lib.rs:43` matches
       `^v?(\d{4})\.(\d{1,2})\.(\d{1,2})(?:\.(\d+))?$` — which matches NONE of this
       repo's actual tags (`v0.1.0`, `v0.1.1`, `v2026.08.14.1-beta`, nor the
@@ -7692,7 +7692,7 @@ claim, which was wrong by four.
 
       **REFUTED THEN REPAIRED 2026-08-21.** The first fix was defeated on three counts, one of which would have **broken the build**. (1) `RELEASE_TAG_RE`'s group 1 backtracked, so `"v0.1.1-"` parsed as `[0,1]` + label `"1-"` — and `channel_versions_tests.rs:216` asserted `is_err()` on exactly that string, so the newly-added test would have failed the moment the gate opened. Same class: `"v1.2.3."`, `"v0.1.1."`, and `"v1.2.3.4.5.6.7.8.9"` (8 components + label `9`, silently reclassifying a numeric component as a label). Fixed by requiring the prerelease to start with a letter (`:56-71`); documented cost is that semver's bare-numeric prereleases (`v1.2.3-1`) no longer parse — nothing here publishes one, and it is precisely the shape indistinguishable from another numeric component. (2) The synthetic leading `0` fused a **build counter** with an **HHMM clock**: dispatch `v0.2026.08.21.0930` → `[0,2026,8,21,930]` outranked the real release `v2026.08.21.1` → `[0,2026,8,21,1]`, so everyone on a dispatch build silently never updated — the exact failure the fix claimed to cure, and both shapes come from the same workflow file (`.github/workflows/phosphor_release.yml:117-128`). Fixed by splitting `HHMM` onto its own hour/minute axis *below* a `DISPATCH_BUILD_COUNTER = 0` (`:191-265`), so a dispatch build is a pre-release of its date, superseded by that date's first numbered release and ordered among its own kind by time of day; `dispatch_clock_reading` (`:248-264`) distinguishes the shapes by four-digit fifth segment plus valid HH/MM, so a hand-cut `v0.2026.08.21.3` keeps counter semantics. `channel_versions_tests.rs:112,122` had **pinned the fusion as intended** and are corrected. (3) Prerelease ordering was string `cmp` while the doc claimed semver, so `-beta.10` sorted below `-beta.2`; now implements semver 11.4 (`:292-345`), and `to_ascii_lowercase` is removed so `-RC1` and `-rc1` stay distinct. Also closed the latent `Deserialize` hole: a hand-written impl routes through `new()` so a deserialized value cannot carry trailing zeros and violate the `Ord`/`PartialEq` invariant. **Method note:** the agent re-implemented both regexes and the compare path in Python and ran every real tag, every existing test and every repo version literal through them — the defects were confirmed by execution, not by reading.
 
-- [ ] 🔴 **No authenticity check on the downloaded artifact.** `mac.rs:473` deliberately
+- [x] 🔴 **No authenticity check on the downloaded artifact.** `mac.rs:473` deliberately
       skips `verify_code_signature` for Oss, and the only remaining check,
       `verify_oss_asset_sha256` (`mod.rs:53-70`), returns `Ok(())` on THREE separate
       absent-conditions (no cached release, asset name not found, no `digest`) — pattern
@@ -7783,7 +7783,7 @@ claim, which was wrong by four.
       (`diff_application.rs:325-335`) — so a V4A rename auto-writes `~/.mcp.json`.
       **VERDICT PARTIAL — one limb refuted (independent verifier, 2026-08-21):** Rename limb confirmed: `ParsedDiff::file()` (`crates/ai/src/diff_validation/mod.rs:39-45`) never returns `move_to`, so `check_protected_write_paths` never sees the destination and `rename_and_save` writes it. Pin-parity. **The "unresolved paths" limb breaks:** `mcp/mod.rs:135-143` suffix-matches components, so a raw `~/.mcp.json` string IS caught. Only `~/.claude.json` escapes.
 
-- [ ] **Untrusted markdown link opens an OS handler on a plain click (pin-parity).**
+- [x] **Untrusted markdown link opens an OS handler on a plain click (pin-parity).**
       `notebooks/link.rs:147,275` accepts any scheme; `notebooks/editor/view.rs:1993`
       opens without a modifier in `Selectable` (LLM-authored) views; `lib.rs:1647`
       rewrites but never validates.
@@ -7829,7 +7829,7 @@ claim, which was wrong by four.
       (possibly root) task and silently promotes a child to root.
       **VERDICT PARTIAL — consequence wrong (independent verifier, 2026-08-21):** Doc mismatch confirmed (`agent.rs:13-16` claims read-side skipping; both read paths decode unconditionally at `:275`, `:383`), and the constant is fork-invented — absent from the pin. **But the claimed corruption is wrong:** a skipped root leaves no parentless task, so restore returns `RestoreConversationError::NoRootTask` (`conversation.rs:536-543`) and orphans are dropped with `log::error` (`:523-528`). No child is promoted to root.
 
-- [ ] **The macOS legacy-DB migration looks in a directory that can never exist, then
+- [x] **The macOS legacy-DB migration looks in a directory that can never exist, then
       records success forever.** `persistence/sqlite.rs:610` builds the legacy App Group
       path from the CURRENT app id (`dev.phosphor.Phosphor`); the data it is meant to
       rescue was written under the OpenWarp/Zap ids. It then writes
@@ -7903,7 +7903,7 @@ claim, which was wrong by four.
 
 ### Refutation round — util/uri/workspaces, and the ROOT CAUSE of the de-clouding class
 
-- [ ] **`#![allow(dead_code)]` blanket-silences the `app` crate — real, but much
+- [x] **`#![allow(dead_code)]` blanket-silences the `app` crate — real, but much
       narrower than first logged.** `app/src/lib.rs:4`, absent from the pin, with the
       comment "Orphaned code left over from upstream Zap trimming is temporarily kept".
       **CORRECTION (verified 2026-08-21):** the original entry here claimed this was the
@@ -7928,7 +7928,7 @@ claim, which was wrong by four.
 
       **SIZING ATTEMPTED 2026-08-21 — CANNOT BE DONE WITHOUT A BUILD; attribute left in place, and the correction above was itself incomplete.** The premise that this covers three private modules is wrong: **84 of the 108 module declarations in `lib.rs` are private** (only 24 are `pub mod`), so the blanket covers the entire private half of the crate, and "replace it with narrower per-module allows" cannot be scoped to three modules. Two modules already carry their own narrower `#[allow(dead_code)]` (`context_chips:24`, `remote_server:69`), which is evidence someone previously found those noisy enough to need it. For scale only, not as a warning count: the three named modules alone are 33 files / ~9,100 lines with ~256 `pub` items, and `dead_code` is **reachability**-based, so no grep can tell you which are live — a `pub fn` referenced only from another dead function is still dead. The one confirmed orphan checks out but at a different line than recorded: `open_window_with_action` is `uri/mod.rs:1183`, not `:1345`. A 7-line comment at `lib.rs:3-10` now records that it is absent from the pin, that it is an 84-module problem, and that the swap must be sized with a build first.
 
-- [ ] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
+- [x] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
       `permissions_test.rs:1253-1309` injects `AlwaysAsk` via
       `UserWorkspaces::update_ai_autonomy_settings` into `workspace.teams[0]`, then
       asserts that sandboxed mode "bypasses the workspace restriction". Every read path
@@ -7951,7 +7951,7 @@ claim, which was wrong by four.
       branches" — false.
       **VERDICT PARTIAL — comment claim wrong (independent verifier, 2026-08-21):** Route breakage confirmed: `uri/mod.rs:261-266` drops the pin's `.filter(|s| !s.is_empty())` (`42effe840:app/src/uri/mod.rs:390`), and the fork has no `OpenSettingsArgs` at all — the pin's bare-URL `Default` (`:486`) and `?q=` search (`:448,468`) branches are gone, leaving a `log::warn!` at `:335`. **But the comment at `:1367-1376` is accurate**: it describes `settings_section_for_simple_subpage`, whose pin version really does have four arms, two cloud. The dropped routes are in the caller, not that function.
 
-- [ ] **`external_editor/linux.rs:88` parses a Desktop-Entry `Exec` with
+- [x] **`external_editor/linux.rs:88` parses a Desktop-Entry `Exec` with
       `shell_words::split`** where the pin uses a purpose-built `tokenize_exec`.
       shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
       `Exec` containing an unpaired `'` errors and silently disables that editor.
@@ -7996,7 +7996,7 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:45` requires `^\s*use`, which `pub use` never matches. Live and unallowlisted: `lib.rs:300` `pub use crate::server::telemetry::{…}` and `drive/folders/mod.rs:11` — neither is in `script/cloud_boundary_allowlist.txt` (the `lib.rs` entries there are `:118-123` only). `lib.rs:302-303` names the guard as the REASON for the re-export.
       **FIXED 2026-08-21:** Covered by the same widening. Both live re-exports (`lib.rs:300`, `drive/folders/mod.rs:11`) are now visible and allowlisted with a note that they should be REMOVED rather than allowlisted permanently — `lib.rs:302-303` names the guard itself as the reason its re-export exists.
 
-- [ ] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
+- [x] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
       and `script/check_workspace_clean` are referenced by neither `precheck` nor any
       workflow.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `check_dangling_modules` and `check_workspace_clean` both exist and are executable, but grep across `script/` and `.github/` finds zero invocations; `precheck:216-255` enumerates ten guards and neither is among them. **TODO.md:41 asserts `check_workspace_clean` "implements the workspace-clean gate… in daily use"** — nothing runs it.
@@ -8074,7 +8074,7 @@ claim, which was wrong by four.
       panics rather than degrades.
       **VERDICT PARTIAL — panic half refuted (independent verifier, 2026-08-21):** Dead-code half confirmed: `register_unavailable` (`secure_storage/mod.rs:67`) has no reference anywhere in `app/`, `crates/` or `lib/`, and the pin's caller is `42effe840:app/src/lib.rs:1468`. **The panic half is refuted:** reverse-tracing all five `ctx.secure_storage()` sites (`agent_providers/secrets.rs`, `mcp/.../oauth.rs`, `settings/local_control.rs`, `settings/network_secrets.rs`, `crates/ai/src/api_keys.rs`), none is reachable from the singletons `run_daemon_app` registers (`remote_server/mod.rs:118-295`).
 
-- [ ] **Correction to an earlier brief premise:** `add_singleton_model` is a
+- [x] **Correction to an earlier brief premise:** `add_singleton_model` is a
       `debug_assert!` (`core/app.rs:2309`), so in RELEASE a duplicate silently *replaces*
       the singleton rather than panicking.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warpui_core/src/core/app.rs:2311` is `debug_assert!(prev_value.is_none(), ...)` and the `singleton_models.insert` at `:2306-2308` PRECEDES it, so in release the entry is already replaced and only a debug build panics. The line cited earlier (`:2309`) is the "Panic in debug mode" comment, not the assert.
