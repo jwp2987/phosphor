@@ -1301,7 +1301,7 @@ where
                             Err(err) => {
                                 autoupdate_state.relaunch_failed(ctx);
 
-                                let err = anyhow!(err)
+                                let err = anyhow::anyhow!(err)
                                     .context("Refusing to open the downloaded installer");
                                 crate::report_error!(&err);
                                 callback(Err(err), ctx);
@@ -1333,7 +1333,7 @@ where
                     Err(err) => {
                         autoupdate_state.relaunch_failed(ctx);
 
-                        let err = anyhow!(err).context("Error applying installed update");
+                        let err = anyhow::anyhow!(err).context("Error applying installed update");
                         crate::report_error!(&err);
                         callback(Err(err), ctx);
                     }
@@ -1378,7 +1378,7 @@ pub fn spawn_child_if_necessary(app: &mut AppContext) {
             } else if #[cfg(windows)] {
                 let relaunch_status = windows::relaunch();
             } else {
-                let relaunch_status: Result<()> = Err(anyhow!("No autoupdate support on this platform!"));
+                let relaunch_status: Result<()> = Err(anyhow::anyhow!("No autoupdate support on this platform!"));
             }
         }
         match relaunch_status {
