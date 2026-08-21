@@ -3278,6 +3278,23 @@ impl AISettings {
     }
 
     // ── Per-agent settings ──
+    //
+    // POLICY: none of the three per-agent surfaces (toolbar, tab menu, titlebar) is
+    // gated on [`Self::is_any_ai_enabled`], and that is a decision, not an oversight.
+    // The master switch governs *Zap's own* AI -- the Warp Agent, model calls, agent
+    // handoff, rich input. Claude Code, Codex, Gemini and Antigravity are separate
+    // programs the user installed and can run from any shell; gating their launchers
+    // and their footer removes an affordance without withholding anything. Upstream
+    // says the same thing in as many words at the pin
+    // (`42effe840:app/src/terminal/view/use_agent_footer/mod.rs:318` and
+    // `:app/src/settings_view/ai_page.rs:1156` -- "independent of the global AI
+    // toggle ... because it controls third-party coding agents rather than Warp's own
+    // AI"), and it says it in a tree where `is_any_ai_enabled` also carries an org
+    // policy, i.e. where the argument for gating was strongest.
+    //
+    // These per-agent settings ARE the switch for third-party agents. See the
+    // "master AI switch scope" entry in DECLINED.md before adding an AI gate here or
+    // at any call site. A short-lived gate on the tab menu was removed on 2026-08-21.
 
     /// Queries whether the toolbar is enabled for a given CLI agent. Falls back to the agent's
     /// default value if not present in the per-agent settings.
@@ -3301,21 +3318,6 @@ impl AISettings {
             .get(agent.to_serialized_name().as_str())
             .map(|s| s.tabmenu)
             .unwrap_or_else(|| PerAgentSettings::default_for(agent).tabmenu)
-    }
-
-    /// Whether a CLI coding agent should be *offered* in the new-session menu.
-    ///
-    /// [`Self::is_cli_agent_tab_menu_enabled`] answers only the per-agent `tabmenu`
-    /// setting. That is the right answer on the settings page, where the per-agent
-    /// toggle has to stay visible and editable regardless of the master switch, and
-    /// the wrong one in the menu: a user who set
-    /// `agents.warp_agent.is_any_ai_enabled = false` was still offered Claude Code /
-    /// Codex entries, even though the separator that introduces them is already gated
-    /// on AI (`workspace/view.rs`, "3. Separator -- only shown when an Agent or Coding
-    /// Agent follows") and the neighbouring Agent entry is too. Menu call sites want
-    /// this getter; settings call sites want the raw one.
-    pub fn should_offer_cli_agent_in_tab_menu(&self, agent: CLIAgent, app: &AppContext) -> bool {
-        self.is_any_ai_enabled(app) && self.is_cli_agent_tab_menu_enabled(agent)
     }
 
     /// Queries whether the titlebar button is enabled for a given CLI agent. Falls back to the

@@ -168,13 +168,32 @@ const AI_DISABLED_BANNER_SUBTEXT_FALLBACK: &str = concat!(
 
 /// Whether a given AI settings subpage carries the master AI switch.
 ///
-/// Extracted from `build_page` so it can be asserted directly: the switch is the only
-/// in-app control that writes `agents.warp_agent.is_any_ai_enabled`, so a subpage that
-/// a user with AI already off can reach and that omits it is a dead end. `None` (the
-/// full legacy page) and [`AISubpage::WarpAgent`] are the two entry points reached by
-/// "open AI settings"; the rest are drilled into from there.
+/// The switch is the only in-app control that writes
+/// `agents.warp_agent.is_any_ai_enabled`, so every AI page has to be one click from a
+/// page that has it, or a user whose stored value is `false` is stuck with a grey page
+/// and `settings.toml`.
+///
+/// The four `false` arms are safe for that reason and no other: all six AI sections are
+/// *sidebar* entries under the "Agents" umbrella (`SettingsSection::ai_subpages()`), not
+/// pages drilled into from Warp Agent, and the sidebar is not AI-gated -- so the Warp
+/// Agent entry, which does carry the switch, is always one click away. `None` is the
+/// full legacy page, and `WarpAgent` is where `SettingsSection::AI` lands
+/// (`settings_view/mod.rs`, "map internal backing-page sections to their default
+/// subpage").
+///
+/// Deliberately an exhaustive `match` rather than `matches!`: the arms are the whole
+/// point, so a new [`AISubpage`] variant must not silently inherit `false`. Adding one
+/// is a compile error here until someone decides which side it belongs on.
 fn subpage_shows_master_ai_switch(subpage: Option<AISubpage>) -> bool {
-    matches!(subpage, None | Some(AISubpage::WarpAgent))
+    match subpage {
+        None | Some(AISubpage::WarpAgent) => true,
+        Some(
+            AISubpage::Profiles
+            | AISubpage::Providers
+            | AISubpage::Knowledge
+            | AISubpage::ThirdPartyCLIAgents,
+        ) => false,
+    }
 }
 
 /// What the master-switch header renders for a given value of the setting.
@@ -8299,17 +8318,41 @@ mod master_ai_switch_tests {
     //! read everywhere and written nowhere reads exactly like a working feature until
     //! a user's stored `false` locks them out of their own AI settings page.
     //!
-    //! So the assertions are (a) the switch stays live and explains itself in the
-    //! state that traps the user, (b) it is installed on the pages that state can be
-    //! reached from, and (c) clicking it actually writes the setting back.
+    //! So the assertions are (a) the state the header renders in the trap state, (b)
+    //! that the sidebar always offers a page carrying the switch, and (c) that clicking
+    //! it actually writes the setting back. (c) is the load-bearing one.
+    //!
+    //! **What is deliberately not covered, and why.** Nothing here drives
+    //! `WarpAgentHeaderWidget::render` or `AISettingsPageView::build_page`, so a `render`
+    //! that ignored `MasterAISwitchState` and greyed the switch out anyway, or a
+    //! `build_page` that stopped pushing the widget, would not be caught. Both need a
+    //! live `AISettingsPageView`, and `AISettingsPageView::new` reads thirteen singletons
+    //! (`AISettings`, `UserWorkspaces`, `Appearance`, `BlocklistAIPermissions`,
+    //! `AIRequestUsageModel`, `AIExecutionProfilesModel`, `ApiKeyManager`,
+    //! `LLMPreferences`, `ObjectStoreModel`, `TemplatableMCPServerManager`,
+    //! `CLIAgentInstallModel`, `InputSettings`, `SessionSettings`), each of which panics
+    //! rather than being created on demand. `code_page_tests.rs` shows the
+    //! shape a real version would take -- `app.add_window(.., View::new)` then
+    //! `update_filter("master switch")`, which proves installation via the widget's search
+    //! terms -- and that is the way to write it. It was not written here because the build
+    //! gate is closed and an unrunnable page-construction test is worth less than a stated
+    //! gap. An earlier revision of this module asserted `MasterAISwitchState::for_setting(
+    //! false).toggleable` and `subpage_shows_master_ai_switch(None)` and claimed to cover
+    //! this; both restated a literal three lines above them and are gone.
 
     use super::*;
     use warpui::App;
 
-    /// The trap state. Every other AI control on this page correctly greys out when
-    /// the master switch is off; this one must not, because it is the way back.
+    /// The trap state, as [`MasterAISwitchState::for_setting`] computes it. Every other
+    /// AI control on this page correctly greys out when the master switch is off; this
+    /// one must not, because it is the way back.
+    ///
+    /// Scope, stated plainly: this pins the constructor, which is a five-line function
+    /// this test sits next to. It catches a later edit that makes `toggleable` follow the
+    /// setting -- the exact shape of the original defect -- and nothing else. It does not
+    /// prove `render` honours the fields; see the module doc for why that is not tested.
     #[test]
-    fn the_master_switch_stays_live_and_explains_itself_when_the_setting_is_false() {
+    fn the_master_switch_state_stays_live_and_explains_itself_when_the_setting_is_false() {
         let off = MasterAISwitchState::for_setting(false);
         assert!(!off.checked, "the switch must read as off");
         assert!(
@@ -8332,18 +8375,24 @@ mod master_ai_switch_tests {
         );
     }
 
-    /// A page a user with AI already off can land on, that omits the switch, is a dead
-    /// end. `None` is the full legacy page and `WarpAgent` is the subpage the AI nav
-    /// entry opens; the rest are drilled into from those two.
+    /// The nav coupling. Asserting `subpage_shows_master_ai_switch(None)` would only
+    /// restate that function's own arm, so this asserts the thing the arms exist to
+    /// guarantee and that neither file can establish alone: of the AI sections the
+    /// sidebar offers (`SettingsSection::ai_subpages()`, defined in `settings_view/mod.rs`
+    /// and not AI-gated), at least one carries the switch -- so a user whose stored value
+    /// is `false` is always one sidebar click from the control that turns it back on.
+    /// Dropping `WarpAgent` from either list fails this.
     #[test]
-    fn every_ai_entry_point_page_carries_the_master_switch() {
+    fn the_sidebar_always_offers_a_page_carrying_the_master_switch() {
         assert!(
-            subpage_shows_master_ai_switch(None),
-            "the full AI page must carry the master switch"
-        );
-        assert!(
-            subpage_shows_master_ai_switch(Some(AISubpage::WarpAgent)),
-            "the AISubpage::WarpAgent subpage must carry the master switch"
+            SettingsSection::ai_subpages()
+                .iter()
+                .copied()
+                .filter_map(AISubpage::from_section)
+                .map(Some)
+                .any(subpage_shows_master_ai_switch),
+            "no AI section in the sidebar carries the master switch: a user with \
+             agents.warp_agent.is_any_ai_enabled = false has no in-app way back"
         );
     }
 

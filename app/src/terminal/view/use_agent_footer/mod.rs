@@ -328,6 +328,16 @@ impl TerminalView {
             // For CLI agent commands, only check the CLI agent footer setting.
             // This is independent of the global AI toggle so that users who
             // disable Zap AI still get the footer for third-party coding agents.
+            //
+            // This comment is the fork's POLICY, not a local exception: the master
+            // switch governs Zap's own AI, not third-party CLI agents. It is upstream's
+            // wording, present verbatim at the pin
+            // (`42effe840:app/src/terminal/view/use_agent_footer/mod.rs:318`), in a tree
+            // where `is_any_ai_enabled` also carries an org policy. The new-session tab
+            // menu and the title-bar quick-launch buttons follow the same rule -- see the
+            // "master AI switch scope" entry in DECLINED.md, the policy note above the
+            // per-agent getters in `settings/ai.rs`, and `workspace/view.rs`. A gate added
+            // to the tab menu on 2026-08-21 contradicted this and was removed the same day.
             if !*ai_settings.should_render_cli_agent_footer {
                 return false;
             }

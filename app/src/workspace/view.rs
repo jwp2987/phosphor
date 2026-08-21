@@ -6311,8 +6311,45 @@ impl Workspace {
             }
         }
 
-        // 3. Separator — only shown when an Agent or Coding Agent follows
-        if is_any_ai_enabled {
+        // Coding agent entries are built here, ahead of step 3, because the separator
+        // that introduces them has to know whether any of them will appear.
+        //
+        // Deliberately NOT gated on `is_any_ai_enabled`. See
+        // `AISettings::is_cli_agent_tab_menu_enabled` and the "master AI switch scope"
+        // entry in DECLINED.md: the master switch governs Zap's own AI, not the
+        // third-party coding agents the user installed and can run from any shell.
+        // The per-agent `tabmenu` setting is the switch for these entries.
+        let coding_agent_items: Vec<MenuItem<WorkspaceAction>> = {
+            let ai_settings = AISettings::as_ref(ctx);
+            let install_model = CLIAgentInstallModel::as_ref(ctx);
+            let mut items = Vec::new();
+            for agent in enum_iterator::all::<CLIAgent>() {
+                if matches!(agent, CLIAgent::Unknown) {
+                    continue;
+                }
+                if !install_model.is_cli_agent_installed(agent) {
+                    continue;
+                }
+                // Check the per-agent tab_menu setting
+                if !ai_settings.is_cli_agent_tab_menu_enabled(agent) {
+                    continue;
+                }
+                let icon = agent.icon().unwrap_or(icons::Icon::LayoutAlt01);
+                items.push(
+                    MenuItemFields::new(agent.display_name())
+                        .with_on_select_action(WorkspaceAction::AddSpecificAgentTab(agent))
+                        .with_icon(icon)
+                        .into_item(),
+                );
+            }
+            items
+        };
+
+        // 3. Separator — only shown when an Agent or Coding Agent follows.
+        // Coding agents are not AI-gated, so an AI-only condition here would leave a
+        // user with AI off looking at Claude/Codex entries flush against the terminal
+        // and tab-config items above them.
+        if is_any_ai_enabled || !coding_agent_items.is_empty() {
             menu_items.push(MenuItem::Separator);
         }
 
@@ -6327,30 +6364,10 @@ impl Workspace {
             menu_items.push(agent_item.into_item());
         }
 
-        // 5. Coding Agents — only ones that are installed and have tab_menu enabled appear in the menu
-        let coding_agent_count = {
-            let start_len = menu_items.len();
-            let ai_settings = AISettings::as_ref(ctx);
-            let install_model = CLIAgentInstallModel::as_ref(ctx);
-            for agent in enum_iterator::all::<CLIAgent>() {
-                if matches!(agent, CLIAgent::Unknown) {
-                    continue;
-                }
-                if !install_model.is_cli_agent_installed(agent) {
-                    continue;
-                }
-                // Check the per-agent tab_menu setting
-                if !ai_settings.should_offer_cli_agent_in_tab_menu(agent, ctx) {
-                    continue;
-                }
-                let icon = agent.icon().unwrap_or(icons::Icon::LayoutAlt01);
-                let item = MenuItemFields::new(agent.display_name())
-                    .with_on_select_action(WorkspaceAction::AddSpecificAgentTab(agent))
-                    .with_icon(icon);
-                menu_items.push(item.into_item());
-            }
-            menu_items.len() - start_len
-        };
+        // 5. Coding Agents — only ones that are installed and have tab_menu enabled
+        // appear in the menu. Built above, ahead of the step 3 separator.
+        let coding_agent_count = coding_agent_items.len();
+        menu_items.extend(coding_agent_items);
 
         // 6. Separator — only shown when there are coding agent items and Docker is enabled
         // The TabConfigs section already has its own separator in step 8, so no need to repeat it here
@@ -16926,19 +16943,21 @@ impl Workspace {
 
     fn toggle_scroll_reporting(&mut self, ctx: &mut ViewContext<Self>) {
         AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-            reporting
-                .scroll_reporting_enabled
-                .toggle_and_save_value(ctx)
-                .expect("ScrollReportingEnabled failed to serialize");
+            // Not `.expect(...)`: see `toggle_mouse_reporting` above. Persistence
+            // can legitimately fail now that the write result is propagated, and a
+            // failed write must not crash the app.
+            report_if_error!(
+                reporting
+                    .scroll_reporting_enabled
+                    .toggle_and_save_value(ctx)
+            );
         });
     }
 
     fn toggle_focus_reporting(&mut self, ctx: &mut ViewContext<Self>) {
         AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-            reporting
-                .focus_reporting_enabled
-                .toggle_and_save_value(ctx)
-                .expect("FocusReportingEnabled failed to serialize");
+            // Not `.expect(...)`: see `toggle_mouse_reporting` above.
+            report_if_error!(reporting.focus_reporting_enabled.toggle_and_save_value(ctx));
         });
     }
 
@@ -18899,6 +18918,14 @@ impl Workspace {
 
     /// Renders quick-launch buttons in the title bar for installed CLI agents.
     /// Only shows agents whose per-agent setting has titlebar marked as true.
+    ///
+    /// Deliberately NOT gated on `is_any_ai_enabled`, and this is a decision rather
+    /// than an omission: see the "master AI switch scope" entry in DECLINED.md and
+    /// `terminal/view/use_agent_footer/mod.rs`. The button opens a terminal tab and
+    /// runs the agent's command prefix (`add_tab_with_specific_agent`) — it is a
+    /// launcher for a third-party program the user installed, not a Zap AI surface,
+    /// and turning Zap's AI off should no more remove it than it removes the shell.
+    /// The per-agent `titlebar` setting is the switch for these buttons.
     fn render_cli_agent_titlebar_buttons(
         &self,
         appearance: &Appearance,
