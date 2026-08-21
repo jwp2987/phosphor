@@ -130,10 +130,12 @@ fn test_state_dir_path() {
 /// directly bites everywhere.
 #[test]
 fn test_secure_state_dir_channel_gate() {
-    // Zap must not probe the official Zap App Group from an OSS build, or
-    // macOS treats it as accessing another app's data and pops up a permission
-    // dialog on every launch. `app/src/persistence/sqlite.rs`'s legacy-DB
-    // migration relies on this staying false.
+    // Zap must not resolve its state through the official Zap App Group from an
+    // OSS build: macOS treats that as accessing another app's data and prompts
+    // for permission. See `channel_may_use_secure_state_dir` for what this arm
+    // does and does not guarantee — routine access, not the marker-guarded
+    // legacy-DB rescue in `app/src/persistence/sqlite.rs`, which reads the
+    // container deliberately and relies on this arm staying false.
     assert!(!channel_may_use_secure_state_dir(Channel::Oss));
     // Integration tests get a temporary home directory and must stay in it.
     assert!(!channel_may_use_secure_state_dir(Channel::Integration));
@@ -147,17 +149,45 @@ fn test_secure_state_dir_channel_gate() {
     assert!(channel_may_use_secure_state_dir(Channel::Local));
 }
 
-/// The end-to-end assertion, kept only where it can actually distinguish
-/// anything.
+/// The end-to-end assertion. **This test currently runs on no machine in CI,
+/// and even where it does run it is usually vacuous.** Both facts are stated
+/// here because the version this replaces claimed the opposite.
 ///
-/// `ChannelState` defaults to `Channel::Oss`, and macOS is the only platform on
-/// which `secure_state_dir` can return `Some`, so this is the only platform on
-/// which the assertion is a real test of the wiring between the gate and the
-/// App Group lookup. It is `#[cfg]`-gated rather than left unconditional so the
-/// claim of coverage matches where the coverage exists.
+/// What it is: macOS is the only platform on which `secure_state_dir` has a
+/// non-`None` return path, so it is the only platform on which the assertion
+/// can distinguish anything at all — hence the `cfg`. That much is true, and it
+/// is why the unconditional form was worth removing.
+///
+/// What it is *not* is coverage:
+///
+/// * **No CI job executes it.** The only macOS job is `check-macos`
+///   (`.github/workflows/pr-check.yml:675`), whose test steps are
+///   `cargo nextest run -p warp --features gui ... -E 'test(/login_item/)'`
+///   (`:718`, `:741`). This test is in `warp_core`, and its name does not match
+///   that filter. Its `cargo check` steps are `-p warp` too (`:697`), so it is
+///   not even compiled on macOS in CI.
+/// * **On a developer Mac it is usually vacuous anyway.**
+///   `app_group_container_path` (`paths.rs`) returns `None` unless the group
+///   container directory already exists *and* `tempfile::tempfile_in` succeeds
+///   inside it, which in practice requires official Warp to have created it. If
+///   it returns `None`, `secure_state_dir` returns `None` for every channel and
+///   the assertion holds with the `Oss` arm deleted — the same failure mode the
+///   Linux version had.
+///
+/// The gate itself is covered, platform-independently, by
+/// `test_secure_state_dir_channel_gate` above; that is where the real
+/// protection lives. Making *this* one bite would take either a
+/// channel-override hook on `ChannelState` (there is none — `channel()` reads a
+/// process-global `Mutex` with no test setter, `channel/state.rs:204-206`) or a
+/// macOS CI job that runs the `warp_core` suite. Until one of those exists,
+/// treat this as documentation of the intended end-to-end behaviour that
+/// happens to be executable, not as a guard.
 #[cfg(target_os = "macos")]
 #[test]
 fn test_oss_secure_state_dir_is_disabled() {
+    // Pin the precondition the assertion below depends on, so a future default
+    // channel change fails here rather than turning the test silently green.
+    assert_eq!(ChannelState::channel(), Channel::Oss);
     assert_eq!(secure_state_dir(), None);
 }
 

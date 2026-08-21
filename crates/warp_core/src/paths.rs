@@ -195,11 +195,27 @@ pub fn state_dir() -> PathBuf {
 /// `test_secure_state_dir_channel_gate` in `paths_tests.rs`.
 ///
 /// * `Oss` is excluded because the App Group container belongs to first-party
-///   Warp; probing it from an OSS build makes macOS treat it as reaching into
-///   another application's data and prompt for permission on every launch.
-///   `app/src/persistence/sqlite.rs`'s legacy-database migration depends on
-///   this arm holding: it enumerates the historical app ids precisely because
-///   nothing has been written under the current one since the gate landed.
+///   Warp; reaching into it from an OSS build is, to macOS, an app reading
+///   another app's data, and it prompts for permission.
+///
+///   The invariant this arm actually buys is **no routine App Group access from
+///   an OSS build**: every path that resolves state through
+///   [`secure_state_dir`] — which is every launch, for the lifetime of the
+///   process — stays out of the container. It is *not* "an OSS build never
+///   touches the container", and this comment used to say so. There is one
+///   sanctioned exception: the legacy-database rescue in
+///   `app/src/persistence/sqlite.rs`, which reads
+///   `~/Library/Group Containers/2BBY89MBSN.dev.warp` directly, deliberately,
+///   and only from an OSS build on macOS (`init_db`, `:706-707`). That probe is
+///   marker-guarded and bounded — `migrate_zap_app_group_sqlite_if_needed`
+///   (`:805-814`) returns immediately once the marker is terminal, which on any
+///   install with an existing database is after the first scan and on a fresh
+///   install after `MAX_LEGACY_SCAN_ATTEMPTS` — so the cost is a bounded number
+///   of probes, not one per launch.
+///
+///   That rescue also *depends* on this arm holding: it enumerates the
+///   historical app ids precisely because nothing has been written under the
+///   current one since the gate landed.
 /// * `Integration` is excluded because integration tests run against a
 ///   temporary home directory and must not reach outside it.
 ///

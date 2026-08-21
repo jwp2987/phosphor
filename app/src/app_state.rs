@@ -396,14 +396,29 @@ pub struct PaneFlex(pub f32);
 /// # Why this is separate, and why it counts kept windows
 ///
 /// Every consumer of [`AppState::active_window_index`] uses it as an index into
-/// the *filtered* list — `restore_windows` in `root_view.rs` and
-/// `save_app_state` in `persistence/sqlite.rs` both `enumerate()` over
-/// `app_state.windows`, and `LaunchConfig::from_snapshot` copies the index
-/// beside a `windows` vec derived from the same filtered list. Only
-/// `get_app_state` ever produced it, and it counted over the *unfiltered*
-/// `app.window_ids()`. Any filtered-out window ahead of the active one shifted
-/// the index by one, so the session restored with the wrong window focused, or
-/// with none focused at all when the index ran past the end.
+/// the *filtered* list. `open_from_restored` in `root_view.rs` (`:589`, loop at
+/// `:609`, read at `:664-668`) and `save_app_state` in
+/// `persistence/sqlite.rs` (`:1436`, read at `:1528`) both `enumerate()` over
+/// `app_state.windows`. `get_app_state` instead counted over the *unfiltered*
+/// `app.window_ids()`, so any filtered-out window ahead of the active one
+/// shifted the index by one and the session restored with the wrong window
+/// focused, or with none focused at all when the index ran past the end.
+///
+/// There are **two** producers of the field, not one. `read_sqlite_data` in
+/// `persistence/sqlite.rs` (`:3556`) also fills it, at `:3662`, and that one is
+/// already consistent: its `idx` enumerates the same `db_windows` vec that
+/// becomes `AppState::windows` (`:3589-3594`), with no filtering step in
+/// between. It is named here because an earlier version of this comment
+/// claimed `get_app_state` was the only producer, which is false and would
+/// have sent the next reader looking in one place.
+///
+/// `LaunchConfig::from_snapshot` is a third position, and the reason this
+/// helper is `pub(crate)` rather than private. It does **not** simply index
+/// `AppState::windows`: it narrows that list *again*, dropping quake-mode
+/// windows, and its own consumer (`root_view.rs:452-470`) enumerates the
+/// narrower vec. So it calls this function too, with list positions standing in
+/// for window ids. Copying the index across that second filter was the same
+/// off-by-one one layer down; see `launch_configs/launch_config.rs`.
 ///
 /// The filtered reading is therefore the one that matches every consumer, and
 /// it is also the only reading a persisted `AppState` can express: the
@@ -416,13 +431,39 @@ pub struct PaneFlex(pub f32);
 /// the identical defect — `for (index, window_id) in
 /// app.window_ids().enumerate()` with the assignment above the filters, its
 /// `windows` vec built by the same three skips — so the oracle shares the bug
-/// and we are fixing it ahead of the oracle deliberately. A re-pin must not
-/// "restore parity" by reverting this.
+/// and we are fixing it ahead of the oracle deliberately.
+/// `42effe840:app/src/launch_configs/launch_config.rs:22-33` is likewise
+/// byte-identical to the pre-fix `from_snapshot`, so that half is a second
+/// deliberate divergence. A re-pin must not "restore parity" by reverting
+/// either.
 ///
-/// Generic over the id and snapshot types purely so the ordering rule can be
-/// unit-tested without an `AppContext`; production instantiates it at
-/// `(WindowId, WindowSnapshot)`.
-fn collect_windows_with_active_index<Id, S>(
+/// # What is tested, and what is not
+///
+/// The tests in `app_state_tests.rs` exercise this function directly. They do
+/// **not** exercise [`get_app_state`], and no unit test in this crate can:
+/// `warpui::App::test` installs `warpui_core::platform::test::WindowManager`,
+/// whose `active_window_id()` returns `None` unconditionally
+/// (`crates/warpui_core/src/platform/test/delegate.rs:100-102`), and
+/// `WindowState::active_window` is a straight passthrough to it
+/// (`crates/warpui_core/src/windowing/state.rs:155-157`). Under that harness
+/// `get_app_state` yields `active_window_index: None` no matter what it
+/// computes, so such a test would assert `None == None` and pass against the
+/// pre-fix count exactly as readily — the same vacuity this batch of work
+/// exists to remove.
+///
+/// That leaves a real gap, recorded rather than papered over: **re-inlining the
+/// old unfiltered `enumerate()` at the call site below would leave every test
+/// in this crate green.** All that guards it is that the call site no longer
+/// computes an index at all. Closing it needs either an active-window-tracking
+/// `WindowManager` in `warpui_core`'s test platform — the headless one already
+/// tracks it (`crates/warpui/src/platform/headless/windowing.rs:50-53,72-74`)
+/// — or a `crates/integration` test on a real platform.
+///
+/// Generic over the id and snapshot types so the ordering rule can be tested
+/// without an `AppContext` and shared by both producers: `get_app_state`
+/// instantiates it at `(WindowId, WindowSnapshot)`, `from_snapshot` at
+/// `(usize, WindowTemplate)`.
+pub(crate) fn collect_windows_with_active_index<Id, S>(
     candidates: impl IntoIterator<Item = (Id, Option<S>)>,
     active_window_id: Option<Id>,
 ) -> (Vec<S>, Option<usize>)

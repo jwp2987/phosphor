@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::app_state::{
     AppState, LeafContents, PaneNodeSnapshot, SplitDirection as StateSplitDirection, TabSnapshot,
-    WindowSnapshot,
+    WindowSnapshot, collect_windows_with_active_index,
 };
 use crate::themes::theme::AnsiColorIdentifier;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -20,15 +20,50 @@ pub struct LaunchConfig {
 }
 
 impl LaunchConfig {
+    /// Builds a launch config from a session snapshot.
+    ///
+    /// `active_window_index` is **recomputed**, not copied. `AppState`'s copy
+    /// indexes `AppState::windows`; this `windows` vec drops quake-mode windows
+    /// on top of that, and the consumer indexes *this* vec —
+    /// `root_view.rs:452-470` enumerates `arg.launch_config.windows` and
+    /// compares each position against `arg.launch_config.active_window_index`.
+    /// Copying the number across that extra filter reproduced, one layer down,
+    /// exactly the off-by-one that [`collect_windows_with_active_index`] was
+    /// written to remove: a quake window has to be created by hotkey, so any
+    /// window opened afterwards sits behind one in `window_ids()` order, and
+    /// saving a config while such a window is active matched the wrong template
+    /// on reopen — or, when the stale index landed past the end, matched none,
+    /// so the `if let Some(idx) = active_index` block at `root_view.rs:470-483`
+    /// never ran. That block exists to open the active window *after* the loop
+    /// so it ends up focused; skipping it leaves focus on whatever the loop
+    /// happened to open last. (`root_view.rs:717-745` is the same shape on the
+    /// session-restore path, driven by `AppState` rather than by a launch
+    /// config.)
+    ///
+    /// The list positions of `AppState::windows` stand in for window ids here:
+    /// the helper's contract is only that the id identifies the active entry
+    /// among the candidates, and `AppState::active_window_index` is precisely
+    /// that identifier for this list.
+    ///
+    /// This is a deliberate divergence from the pinned oracle, which copies the
+    /// index verbatim (`42effe840:app/src/launch_configs/launch_config.rs:22-33`
+    /// is byte-identical to the version this replaces). Do not "restore parity"
+    /// on a re-pin.
     pub fn from_snapshot(name: String, app_state: &AppState) -> Self {
+        let (windows, active_window_index) = collect_windows_with_active_index(
+            app_state.windows.iter().enumerate().map(|(index, window)| {
+                (
+                    index,
+                    (!window.quake_mode).then(|| WindowTemplate::from(window.clone())),
+                )
+            }),
+            app_state.active_window_index,
+        );
+
         Self {
             name,
-            active_window_index: app_state.active_window_index,
-            windows: app_state
-                .windows
-                .iter()
-                .filter_map(|window| (!window.quake_mode).then_some(window.clone().into()))
-                .collect::<Vec<WindowTemplate>>(),
+            active_window_index,
+            windows,
         }
     }
 }
