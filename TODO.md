@@ -7212,3 +7212,72 @@ Ordered by severity, not by area.
       fires: a full-tree scan runs to completion after the user clears the box, spawning
       batch callbacks onto the UI thread that the stale-id guard then discards.
 
+### Refutation round — fourth wave (de-clouding fallout)
+
+- [ ] 🔴 **Default secret-redaction regexes are NEVER installed — out of the box no
+      secret is detected or blurred in terminal output.**
+      `settings/privacy.rs:592` `initialize_default_regexes_once` has exactly one caller
+      chain, ending at `initialize_from_fetched_settings_or_update_settings` (`:377`),
+      **which has zero callers** — `fetch_or_update_settings` is now an empty stub and
+      `auth_manager.rs` / `cloud_preferences_syncer.rs` were deleted with the cloud
+      layer. At the pin both entry points are live
+      (`42effe840:app/src/auth/auth_manager.rs:510`,
+      `42effe840:app/src/settings/cloud_preferences_syncer.rs:502`).
+      `CustomSecretRegexList` defaults to `Vec::new()` and
+      `terminal/secret_regex_updater.rs:39` builds the scanner from that list alone. The
+      user must find Settings > Privacy and click "Add all recommended" to get any
+      redaction at all. Unrecorded and unfiled — a de-clouding casualty nobody noticed.
+- [ ] 🔴 **`agents.warp_agent.is_any_ai_enabled` is a public, schema-emitted setting that
+      nothing reads.** Defined at `settings/ai.rs:1850-1857` with `private: false` and the
+      description "Controls whether all AI features are enabled", so it appears in
+      `settings.toml` and the JSON schema. The getter at `:2816` returns a hardcoded
+      `true` and never reads the field. Because the key IS known,
+      `settings_file_diagnostics` will not flag it either. **A user who believes they
+      disabled AI still ships terminal context to their BYOP provider.**
+- [ ] **`SettingsInitializer::handle_user_fetched` is dead code and its migrations never
+      run.** `settings/initializer.rs:35` has zero callers; the pin calls it from
+      `auth_manager.rs:430`. The `KeepThinkingExpanded` → `ThinkingDisplayMode` migration
+      never fires, so upgraders silently lose that preference and the stale key is never
+      cleaned. Comments at `input_mode.rs:9` and `theme.rs:17` still promise an override
+      that cannot occur.
+- [ ] 🔴 **`DOGFOOD_FLAGS` / `PREVIEW_FLAGS` / `LOCAL_FLAGS` have no consumer in any
+      buildable binary — six flags gating live code are dark.** Their only
+      `with_additional_features` call sites are `crates/warp_tui/src/bin/{dev,local,
+      preview,stable}.rs`, which are never compiled (`autobins = false`, one declared
+      bin, and they reference a crate absent from the workspace). `phosphor-oss` adds
+      `DEBUG_FLAGS` alone. So `FullSourceCodeEmbedding`, `CodebaseIndexPersistence`,
+      `WarpControlCli`, `JupyterNotebookRendering`, `MultiLevelOrchestration` and
+      `LocalDockerSandbox` have **no enable path at all** while gating shipped code —
+      including the whole `warpctrl` surface (`lib.rs:2296`), its bundled skill, and two
+      CI guards. **Three in-tree statements assert the opposite**, including
+      `DECLINED.md:161` ("They are not dark") and `warp_features/src/lib.rs:830-834`
+      ("this list is the only thing that turns them on").
+- [ ] **Nine drag tests report PASS without executing a step** — independent
+      confirmation of the tab-group finding above, and it extends to
+      `workspace.rs:187`. `driver.rs:242-248` logs "Skipping test" and exits 0;
+      `tests/common/mod.rs:54-58` maps 0 to success, so **a skip is indistinguishable
+      from a pass** across all 75 `set_should_run_test` sites — including four
+      macOS-only tests on a Linux-only job. No SKIP is ever surfaced.
+- [ ] **Saved-position clicks aim at stale rects.**
+      `warpui_core/src/integration/step.rs:700-716` fails only when the id is absent, but
+      `PositionCache::committed_positions` persists "until explicitly cleared", so a
+      moved or removed element still yields old bounds and the click silently lands
+      nowhere.
+- [ ] **De-clouding turned `report_error()` from a no-op into a duplicate log.**
+      `warp_core/src/errors.rs:218` — every actionable error now logs twice, and the
+      extra line carries the module-path target rather than `LOG_TARGET`, so
+      `RUST_LOG=errors::report_error=off` cannot suppress it and the `extra:` fields are
+      missing. `errors_tests.rs:52` filters on `LOG_TARGET`, so it cannot see the
+      duplicate.
+- [ ] **`script/check_channel_command_names`'s header contradicts the code it guards** —
+      it documents `Channel::Oss` as `zap-oss` for both `cli_command_name()` and
+      `Display`; both are `phosphor-oss`. The guard passes (it derives from Rust), but
+      anyone reading it to decide whether a rename is safe gets the pre-rename answer.
+      Related: `crates/warp_tui/Cargo.toml:9,15` still ships the bin as `zap-tui-oss`,
+      and `DECLINED.md:216` repeats it as current.
+- [ ] **`paths_tests.rs:123` is vacuous** — it asserts `secure_state_dir() == None`, but
+      on non-macOS that function returns `None` unconditionally, so on Linux CI it passes
+      with the `Channel::Oss` guard deleted.
+- [ ] **`step.on_failure_handler.take()`** (`integration/step.rs:846`) discards the
+      handler, so a retried step loses its bail-out.
+
