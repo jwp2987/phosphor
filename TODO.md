@@ -6814,3 +6814,401 @@ Dev machine is Linux; nothing below has been run against a real Windows
   plain no-quotes command still works end-to-end (stdout/exit code correct).
 
 ---
+
+## Refutation round 2026-08-21 — findings from a 24-agent adversarial fleet
+
+Each agent was briefed to REFUTE a subsystem, default to "no defect", cite
+file:line, and never build. **These are agent findings, independently verified
+only where noted.** Verify before acting — that rule applies to this section
+more than any other in this file.
+
+Ordered by severity, not by area.
+
+### Security / permission
+
+- [ ] 🔴 **`use_computer` executes with NO approval check — found independently by
+      TWO agents.** `app/src/ai/blocklist/action_model/execute/use_computer.rs:17-31`
+      returns `true` unconditionally, justified by a pin-inherited comment claiming
+      the action "is only executed by the computer use subagent, which cannot begin
+      without the user approving it via a `RequestComputerUse` action". **That premise
+      is false in this fork.** The pin's server chose the tool set; BYOP builds the
+      array client-side and advertises `USE_COMPUTER` alongside `REQUEST_COMPUTER_USE`
+      (`agent_providers/tools/mod.rs:144-145`), gated only on `computer_use_enabled`,
+      which is true for `ComputerUsePermission::AlwaysAsk`. No approval state is
+      recorded or consulted anywhere. A model calling `use_computer` first drives the
+      real mouse and keyboard, irreversibly, with no prompt, on a profile whose
+      description says "require explicit approval". Reachable by prompt injection via
+      `webfetch`. Not in DECLINED.md.
+- [ ] 🔴 **`/plan` mode is advisory, not enforced.** `PLAN_MODE_BLOCKED_TOOLS` filters
+      only the advertised array (`chat_stream.rs:3831,3948`); `parse_incoming_tool_call`
+      resolves names straight from the full REGISTRY with no `advertised` check
+      (`chat_stream.rs:7171`). The comment at `:3711-3714` claims an unlisted tool
+      "simply can't be called" — contradicted by this same file's dispatch-time
+      re-checks for web (`:6929`) and computer use (`:6285`). A model emitting
+      `run_shell_command` by name during `/plan` executes normally.
+- [ ] 🔴 **`mcp_read_resource` fails open on an unknown server** (#615's shape).
+      `mcp.rs:238-248` — an unmatched `server` falls to `unwrap_or_default()`, giving an
+      empty `server_id`; `permissions.rs:848-858` then treats it as not-denylisted, so
+      under AlwaysAllow it executes against a server the user may have denylisted.
+- [ ] 🔴 **Whole conversation JSON written to the log on every turn.**
+      `chat_stream.rs:5085` `log::info!("[byop-diag] full_request_json={...}")`,
+      unconditional, at the default level, containing system prompt, full history, file
+      contents, shell output, cwd/git env. Repeated at `:5489`. `warp_logging` exposes
+      `write_log_bundle_zip_to`, so this ships in bug reports. Only base64 binaries are
+      redacted (`:5078`).
+- [ ] **`read_skill`'s disk fallback reads outside the skill index with no permission
+      check.** `read_skill.rs:140-170`, `should_autoexecute` unconditionally true; the
+      path shape test requires no home or workspace prefix.
+
+### My own changes today — regressions and false claims
+
+- [ ] 🔴 **#616's fix is HALF A FIX and completions now fail closed silently.**
+      `external_commands` is correctly left unset on a failed probe, but
+      `load_external_commands_future` is still set, so
+      `has_attempted_to_load_external_commands` (`session.rs:1145`) is permanently true
+      and both retry gates (`view.rs:11146`, TUI `completions.rs:78`) skip. Chips now
+      fail OPEN (intended), but `top_level_commands()` yields zero PATH executables for
+      the session's life. Verify and fix — this is a regression introduced 2026-08-21.
+- [ ] 🔴 **`load_deferred_name_set` still caches failure — the sibling #616 never
+      fixed.** `session.rs:1269` sets `storage` on every arm including the error arms
+      that produce an empty set. Unlike `load_external_commands` the failure IS
+      distinguishable (it logs a warn two lines above), so the "empty ≡ unknown"
+      defence does not apply. `session_test.rs:421` blesses the caching and never tests
+      retry.
+- [ ] 🔴 **The #615 regression test cannot fail, and DECLINED.md:179 states the
+      opposite.** `shell_command_tests.rs:362-381` exercises only the extracted helper
+      `write_skips_pty_permission_check`, never `should_autoexecute` (`:230`).
+      Reverting the fix at the call site leaves it green. Both the test's doc comment
+      and the DECLINED row claim "non-vacuous by construction — reverting turns it
+      red". Both are wrong. Same error as the #620 test, made twice.
+- [ ] **DECLINED.md:156 contains a false clause.** The credit-rounding claim checks out
+      against the pin, but "the usage footer never appears at all" is wrong — the
+      footer is opened by user toggle with no credit gate; a `None` rollup only
+      suppresses the drill-down.
+
+### Correctness — user-visible
+
+- [ ] 🔴 **ALL FOUR tab-group drag tests are silently skipped in CI and have never
+      run.** `crates/integration/src/test/tab_groups.rs:228-230` gates on
+      `cfg!(feature = "drag_tabs_to_windows")` evaluated against the **integration**
+      crate, which never enables it (`crates/integration/Cargo.toml:69,73`); the app
+      crate has it on by default, so the `cfg!` asks the wrong crate.
+      `set_should_run_test` false → driver logs "Skipping test" → exit 0 → green. Five
+      cross-window drag tests in `workspace.rs` go the same way.
+      **This supersedes the three open TODO items below** — "tabs=1 slots=1 on all four
+      paints" is exactly what a skipped test looks like, and the
+      `maybe_render_frame` diagnosis at TODO:3147 is a false conclusion the whole
+      investigation was blocked on. The collapsed hop at `view.rs:25460` was traced
+      REACHABLE, contradicting TODO:3268.
+- [ ] 🔴 **`current_repo_path` is filled by LOCAL filesystem detection on SSH sessions
+      and never cleared.** `view.rs:11955-11958` assigns before the
+      `active_session_path_if_local` bail at `:11982`. On a remote session the remote
+      cwd is probed against the local FS, so a same-named local clone wins. The code
+      review panel then auto-opens and diffs the WRONG repository. The pin cannot hit
+      this — its detection is `LocalOrRemotePath`-typed.
+- [ ] 🔴 **Pane-group swap corrupts layout and loses a pane on restart.**
+      `pane_group/mod.rs:3951` replaces a pane that this fork keeps IN the tree (the pin
+      keeps child-agent panes off-tree), so the target becomes a leaf twice and the
+      anchor's slot vanishes; `show_pane_for_child_agent` (`tree.rs:330`) has zero
+      callers. `mod.rs:2090-2124` snapshots the replacement verbatim, so quitting during
+      a swap loses the terminal pane. `visible_pane_count` (`tree.rs:219`) undercounts,
+      so closing one of two panes during a swap kills the whole tab.
+- [ ] **PR info refreshes on EVERY prompt, not only after `gh`/`gt`.**
+      `view.rs:10300-10307` calls `refresh_pr_info` unconditionally in
+      `refresh_warp_prompt`, which runs on every `BlockCompleted` and every OSC 7. The
+      comment describes the pin's gate; the gate is absent (zero occurrences of the
+      pin's `"gh" | "gt"` match). A `gh` subprocess plus a GitHub API call after every
+      shell command, per pane.
+- [ ] **TUI: a blocked agent command displays "Command finished".**
+      `tui_cli_subagent_view.rs:354-360` reports an unresolved `block_id` as finished,
+      and the status text returns before the `is_blocked` branch that carries the only
+      ctrl-o/ctrl-r hint. #615's fix turned this from cosmetic into a silent deadlock.
+- [ ] **`TmuxCommandExecutor` never forgets a command and cannot be cancelled.**
+      `tmux_executor.rs:53` inserts into `in_flight_commands` with no removal anywhere,
+      no `cancel_active_commands` override, no `on_cancel`. Fork-original. Reachable via
+      the user-toggleable SSHTmuxWrapper flag.
+- [ ] **`should_hide_command_grid` is computed then discarded by the layout math.**
+      `block.rs:1548-1565` unconditionally adds command height and padding; the pin
+      zeroes the term when the flag is set. Painter and layout disagree — a blank gap,
+      and `is_visible()` true for a block with nothing rendered.
+- [ ] **Orchestration rollup total is computed and thrown away.**
+      `conversation_usage_view.rs:240` computes `rollup`, `:266-275` passes
+      `usage_info.credits_spent` instead. "Credits spent (total)" omits every child
+      agent's spend while the drill-down beneath lists children summing to more.
+
+### Reliability
+
+- [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
+      `chat_stream.rs:1981` compute the head/tail split with DIFFERENT configs, and both
+      hardcode `ModelLimit::FALLBACK` so a 1M-window model is budgeted at 172k.
+- [ ] **A truncated stream is indistinguishable from success.**
+      `chat_stream.rs:5842-5924` — `end_count` is counted but never checked; a
+      connection dropped mid-SSE ends the loop normally and the partial text is
+      committed as a complete turn.
+- [ ] **Vertex token cache is never invalidated on 401.** `vertex_auth.rs:189-195`,
+      30-minute TTL with no eviction path; after a revocation every turn 401s for up to
+      30 minutes and a successful re-login still returns the stale cached token.
+- [ ] **`agent_id_to_conversation_id` is keyed by a mutable value.**
+      `history_model.rs:2682` keys on run_id-or-server-token; the pin keys on run_id
+      only. A rebound token resolves to the previous owner, and
+      `remove_conversation_from_memory:2219` leaves the old key pointing at a deleted
+      conversation.
+- [ ] **MCP servers whose sanitised name contains `__` are unroutable.**
+      `mcp.rs:42-53` maps non-alnum to `_`; `parse_mcp_tool_call` splits at the FIRST
+      `__` (`:168`). Every tool of such a server is advertised and permanently
+      uncallable.
+- [ ] **Partial agent-message delivery is reported as total failure.**
+      `send_message.rs:115-137` breaks on the first failing address and discards
+      `delivered_ids`, so a retry duplicates to earlier recipients.
+
+### Ledger and test-integrity defects
+
+- [ ] **TODO.md:534-535 and :562 state the opposite of the code.** They claim
+      `should_validate_dcs_hook_session_id` is hardcoded `false` and blocked on #419.
+      The code is `!self.shared_session_status().is_viewer()`
+      (`terminal_model.rs:2728`), both gate tests are live, and #532 is closed. They
+      also name a nonexistent file. Anyone trusting this concludes the anti-spoofing
+      gate is off.
+- [ ] **A ported denylist test carries the INVERTED, pre-fix assertion, hidden behind
+      `#[ignore]`.** `permissions_test.rs:641,661-676` asserts NOT-denylisted where the
+      pin asserts denylisted with the message "user denylist entries should be merged
+      with org denylist, not replaced". The fork's own fix (`52382d125`) merges, so the
+      test now encodes the defect that commit fixed. Its ignore reason never mentions
+      the inversion, so lifting it resurrects replace semantics as expected behaviour.
+- [ ] **The regression test for that same fix cannot fail.**
+      `permissions_test.rs:1563` — `current_team()` returns `None` unconditionally, so
+      the org denylist is never read and the test passes against the pre-fix code. The
+      merge arm is unreachable in production.
+- [ ] **Six permission mutators write to a store nothing enforces.**
+      `permissions.rs:1009-1202` write `AISettings.agent_mode_command_execution_*`;
+      enforcement reads only the profile. Latent only because the four call sites hang
+      off editors that are never rendered.
+- [ ] **Tab-group header/contiguity assertions never read the rendered bar.**
+      `integration_testing/tab_group/assertion.rs:47-65,159-197` reimplements
+      `tab_bar_slots` from the model, so "exactly one group header is rendered" cannot
+      catch a `tab_bar_slots` regression.
+- [ ] **`ensure_grouped_tabs_enabled` is unfalsifiable.** `tab_group/step.rs:44-52` sets
+      the user-preference tier, which `is_enabled` consults first, so the assertion
+      holds even in a build without `grouped_tabs`.
+- [ ] **TUI permission fixtures are vacuous.** `queue_tui_permission_action` →
+      `queue_confirmation_action` force-installs the blocked state, so tests that claim
+      to exercise "the real preprocess pipeline" wait on conditions already true. 38
+      call sites across 9 files.
+- [ ] **`completions.rs:51-59` is factually false** — it claims
+      `load_all_function_names` / `additional_function_names` "do not exist in this
+      fork's Session". All exist; DECLINED.md:158 says so. The pin calls both loaders
+      and the fork does not — a real TUI gap hidden behind a false excuse.
+
+### Refutation round — second wave
+
+- [ ] 🔴 **Codex is launched with `--dangerously-bypass-hook-trust` and the fork
+      deleted the only gate the pin paired with it.**
+      `ai/agent_sdk/driver/harness/codex.rs:92,206,211` always passes the flag. The
+      pin's identical line is guarded by `requires_verified_platform_plugin()` →
+      `setup_platform_plugin`, which hard-fails the run when the plugin is missing
+      (`42effe840:.../codex.rs:96`, `driver.rs:3224`). The fork has neither (removed per
+      DECLINED.md:191), and the pin's doc sentence "Driver setup verifies the Codex
+      platform plugin before launching commands with this flag" was silently dropped
+      from the fork's copy of the comment. **DECLINED.md:191 argues the removal is "not
+      a regression" and never addresses the bypass flag, whose own text says it
+      "bypasses hook trust globally".** Every driver-launched Codex run executes
+      repo-declared hooks with trust review disabled.
+- [ ] 🔴 **MCP "Log out" silently keeps OAuth tokens.**
+      `ai/mcp/templatable_manager/oauth.rs:600-612` handles only `get_template_uuid`,
+      which reads `locally_installed_servers` — file-based installs are never in it, so
+      it logs an error and deletes nothing. The pin has the
+      `FileBasedMCPManager::get_hash_by_uuid` branch, which the fork's own
+      `save_credentials_to_secure_storage` still mirrors. `can_log_out` DOES check the
+      hash map, so the TUI offers a Log Out row that is a no-op. Refresh tokens survive
+      logout and revocation.
+- [ ] 🔴 **`claude_code_tests` can write to the REAL user profile on Windows.**
+      `claude_code.rs:509-528` duplicates `claude_config_dir` using `dirs::home_dir()`
+      instead of the pin's `home_dir_for_claude_config`. `dirs::home_dir()` ignores the
+      `HOME` the tests set on Windows, so the suite writes `.claude.json` /
+      `settings.json` containing `hasTrustDialogAccepted` and
+      `skipDangerousModePermissionPrompt: true` into the developer's actual profile.
+- [ ] 🔴 **`move_tab` has no pinned/group boundary check — the pin's `can_move_tab` was
+      never ported.** `workspace/view.rs:13234-13242` is a bare `swap` guarded only by
+      list bounds; menu gating (`tab.rs:557,569`) is index-only. The fork's DRAG path
+      guards exactly this (`view.rs:25433-25440`), so the same move is blocked by mouse
+      and allowed by menu or keybinding. "Move tab left" on the first unpinned tab
+      evicts a pinned tab and breaks the contiguous pinned prefix that
+      `pinned_boundary_index` assumes; it also splits a group, producing the duplicate
+      group header this fork already documents. The group-level analogue
+      `can_move_tab_group` WAS ported and tested, so this is an omission, not a
+      decision.
+- [ ] **Warpified `ssh` fails outright when the user's ssh config sets
+      `RemoteCommand`.** All three fork bootstrap copies dropped the pin's
+      `ssh -G … remotecommand` probe and its plain-ssh fallback
+      (`bash_body.sh:1035`, `zsh_body.sh`, `fish.sh:658`). OpenSSH aborts with "Cannot
+      execute command-line and remote command" — the connection fails rather than
+      degrades.
+- [ ] **Fish's DCS terminator is the wrong bytes.** `fish.sh:27` sets `\u9c`, which
+      emits **c2 9c**; every other emitter and the Rust constant use the single byte
+      `9c`. A stray `0xC2` makes `hex::decode` fail and the hook is dropped. The pin
+      avoided this by using `ESC \` in all four shells.
+- [ ] **Bash sessions permanently keep the giant HISTSIZE sentinel.**
+      `local_tty/unix.rs:431-436,922-926` exports `HISTSIZE=57265949261`;
+      `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair, where the pin unsets
+      both. Every bash session runs with unbounded in-memory history and leaks
+      `HISTSIZE` + `WARP_INITIAL_HISTSIZE` into every child process. `unix_tests.rs:42-99`
+      asserts the sentinels are set, never that they are removed.
+- [ ] **CDPATH completion is dead code, and #483 plus TODO.md:6498 both say "done".**
+      `completer/mod.rs:289` has no `cdpath()`, so the trait default returns `None`
+      forever and `engine/path.rs:154` always early-returns. No bootstrap script emits
+      it, `dcs_hooks.rs` never parses it, `session.rs` has no field — the pin has the
+      whole chain. The 10 `with_cdpath` tests inject the value into a fake context and
+      pass with the feature entirely unwired.
+- [ ] **Repo detach leaves `GitBranchStatus` stale.** `current_prompt.rs:1511-1517`
+      clears only `GitDiffStats`; the pin loops over both. `is_updated_externally` gates
+      three chips on the watcher, so on detach the branch-status chip keeps the last
+      structured value with no source to correct it.
+- [ ] **Chip-change detection compares rendered TEXT, not values.**
+      `context_chips/display.rs:174-180` uses `chip.text() != value.to_string()`; the
+      pin compares values. `git push -u` on a 0/0 branch yields an identical string, so
+      the chip is never rebuilt and its tooltip still reads "No upstream configured".
+      Same file `:185` compares only the FIRST on-click value, so the branch-switcher
+      dropdown goes stale.
+- [ ] **Tab-completion no longer aborts the in-flight input-detection future.**
+      TUI `completions.rs:110-125` dropped the pin's `abort_input_detection`. A
+      classifier from the previous keystroke lands after Tab and flips input mode,
+      closing the popup the user just opened. The same hunk also dropped the
+      MCP-install guard, so natural-language detection now runs while the user types
+      MCP install answers.
+- [ ] **The TUI prints a command for a binary that does not exist.**
+      `warp_tui/src/session.rs:261` prints `warp --resume {token}`; the bin is
+      `zap-tui-oss`. `#[command(name = "warp")]` also puts "warp" in `--help`, which the
+      branding rule forbids. README:230 and README:141 contradict each other about
+      whether that binary is user-facing.
+- [ ] **`LaunchMode::Tui` folds into the App arm, so the TUI inherits the GUI's default
+      profile object.** `execution_profiles/profiles.rs:175`. The pin makes that arm
+      `unreachable!("TUI profiles use settings")`.
+- [ ] **Unreachable branch from a mis-desugared let-chain.**
+      `current_prompt.rs:822-832`: `if suppress_on_failure { … } else if
+      suppress_on_failure { … }`. The pin has one arm.
+- [ ] **Unquoted rcfile paths in the bootstrap.** `bash_body.sh:1220-1226` and four
+      `${ZDOTDIR:-$HOME}` sites in `zsh_body.sh`; the pin quotes all of them. A `$HOME`
+      containing a space sources the wrong file or nothing. Also: `bootstrap.rs` lacks
+      the pin's `is_container_subshell` guard, so docker/podman subshells get a
+      host-side temp RC file the container cannot read.
+- [ ] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
+      unfiltered, consumed as an index into the filtered list). **Pin-identical** —
+      upstream bug, not fork drift. Record before "fixing".
+
+### Refutation round — third wave (security-weighted)
+
+- [ ] 🔴 **The remote-server SHA-256 integrity check is bypassed by the SCP fallback,
+      and the tamper signal itself triggers the bypass.**
+      `remote_server/ssh_transport.rs:195` — `should_skip_scp_fallback` returns true only
+      for exit code 2, but `install_remote_server.sh` exits **4** (no pinned digest),
+      **5** (no sha tool) and **6** (digest mismatch). All three fall through to
+      `scp_install_fallback` (`:569`), which curls the same GitHub release tarball
+      locally and installs it through the staging branch the script itself documents as
+      needing "no verification … it is a locally cross-compiled dev binary". It is not —
+      it is the published release, fetched off the network, unverified. The local curl
+      also omits the `--proto '=https' --proto-redir '=https'` the remote path sets
+      deliberately, so an HTTP downgrade on redirect is accepted.
+      **Detected tampering escalates to an unverified install of a binary that then runs
+      on the remote host.** `setup_tests.rs:778` asserts the fail-closed exit 4 — the
+      Rust caller undoes it, and `should_skip_scp_fallback` has zero tests.
+      **This contradicts the closed maintainer decision at TODO.md:2866-2881**, which
+      closed the supply-chain objection on "an empty digest is fail-closed", "verified in
+      code before closing".
+- [ ] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
+      `ai/codebase_embeddings.rs:441-448` puts the keychain key into
+      `EmbeddingProviderConfig`; `client/mod.rs:332` ships it in every `Initialize`, and
+      `:356` re-ships to every connected daemon on a settings change. Neither side has a
+      `FeatureFlag::RemoteCodebaseIndexing` gate (`server_model.rs:1683` lacks the one its
+      siblings at `:1663/:1725` have). `auth_token` rides along. The consent dialog
+      (`i18n/en/warp.ftl:260`) mentions only "file browsing, code review". A compromised
+      host harvests both.
+- [ ] 🔴 **The command denylist is bypassable with one quote character.**
+      `warp_completer/src/parsers/simple/mod.rs:242-247` returns the literal typed text,
+      quotes included, and `permissions.rs:929-934` matches it with an anchored regex. A
+      denylist of `rm .*` matches `rm -rf ~` but not `"rm" -rf ~`, `r"m" -rf ~` or
+      `'rm' -rf ~` — all of which the shell executes identically. Any model-authored
+      command evades any user or org denylist. **Pin-parity**, so it is inherited rather
+      than a port regression, but it is unrecorded and unfiled.
+- [ ] 🔴 **The env-var strip that the fork's own comment says closes that hole strips
+      only assignments containing exactly one `=`.** `mod.rs:255` breaks unless
+      `split('=').count() == 2`, so `FOO=a=b rm file.txt` — a valid bash assignment —
+      reaches the denylist unstripped, which is precisely what the comment at
+      `permissions.rs:903-904` claims cannot happen.
+- [ ] 🔴 **Hunk staging can stage a hunk the user did not click, silently.**
+      `code_review_view.rs:5902-5903` computes `hunk_end` from `hunk.lines.len()`, which
+      includes `Delete` lines that occupy no new-file line, so the extent is overstated
+      and `.find()` returns the first overlapping hunk. `hunk_to_patch` then rebuilds the
+      PREVIOUS hunk's patch, so `git apply --cached` succeeds with no error: click
+      "stage" on hunk 2 and hunk 1 lands in the index and the next commit. Fork-original,
+      untested.
+- [ ] **`no_trailing_newline` is never set, so the marker `hunk_to_patch` promises is
+      never emitted.** `diff_state.rs:3034` tests for `"\\No newline at end of file"`;
+      git emits `\ No newline at end of file` (backslash SPACE), which is then skipped as
+      not starting with `+`/`-`/space. The flag is always false, `:294-297` is dead, and
+      `hunk_to_patch_preserves_missing_trailing_newline` hand-sets the flag the parser
+      cannot produce. Staging the last hunk of a newline-less file silently appends a
+      newline or fails.
+- [ ] **Conflicted files get a hunk stage button the file-level path deliberately
+      withholds.** `stage_button_appearance` returns `None` for `Conflicted` because "a
+      click the backend cannot honour", and `toggle_file_staged` re-checks it — but
+      `stage_hunk_direction` and `toggle_hunk_staged` omit the gate, and unmerged entries
+      get `staged: Unstaged` (i.e. `Some`), so the button renders.
+- [ ] **Stage failures are invisible** — `diff_state.rs:1228-1230` handles `Err` with
+      `log::error!` and no toast, so the acknowledged "partially staged file guesses
+      stage" heuristic fails as a silent no-op.
+- [ ] **TODO.md:215 states the opposite of the code.** It lists hunk staging under
+      "Confirmed genuinely absent" with evidence "no `stage_hunk`/`checkout_branch`". It
+      exists end-to-end (`toggle_hunk_staged`, `StageTarget::Hunk`,
+      `run_apply_patch_cached`, `StageHunkButton`, plus the daemon path), and TODO.md:2982
+      records it as landed. The evidence cell is a bare-name grep — the exact failure the
+      surrounding text warns against.
+- [ ] **`@`-context attachments lock the input with no invalidation on edit.**
+      `context_model.rs:748` adds them to `has_locking_attachment`, which kills
+      autodetection and blocks unlock; `prune_stale_at_context_attachments` runs only on
+      menu-accept and submit, never on edit. Delete the `@ref` text and the input stays
+      stuck in AI mode with an empty buffer — **the next shell command goes to the
+      agent.**
+- [ ] **The fork dropped the pin's agent-view guard from the boundary-backspace
+      handler.** `terminal/input.rs:10262-10312` checks only `is_fullscreen()`. With an
+      inline agent view active, backspace at buffer start runs the legacy classic-mode
+      path, clearing follow-up targeting so the next message silently starts a new
+      conversation. The comment at `:10294` claiming this "doesn't get called when
+      AgentView is enabled" is now false.
+- [ ] **Daemon sockets are partitioned by a 32-bit unkeyed `DefaultHasher`**
+      (`remote_server/setup.rs:298-308`) while its sibling at `:317` states collisions
+      are unacceptable and avoids hashing. Colliding identities share a daemon holding
+      the other's token.
+
+### Refutation round — search and AI tool output
+
+- [ ] **`file_glob`'s result cap is computed and then thrown away.**
+      `agent_providers/tools/search.rs:136-156` clamps `max_matches` (default 200, hard
+      cap 2000), but `crates/ai/src/agent/action/convert.rs:162-172` builds the action
+      from only `patterns` + `search_dir`, and the enum has no limit fields at all
+      (`crates/ai/src/agent/action/mod.rs:94-98`, with a standing
+      `// TODO: Maybe implement client side depth and result limits`). The executor
+      applies no cap. Pattern #3 — verdict computed, discarded a layer below. The fork's
+      own comment says the cap exists because thousands of paths "cut the stream off
+      instantly" on a 32K-context local model; that failure is entirely unmitigated. The
+      UI additionally renders `"limit": g.max_matches`, showing the user a limit that was
+      never enforced.
+- [ ] **`grep.md` documents an `include` parameter that does not exist and is
+      schema-forbidden.** `prompts/tool_descriptions/grep.md:4` tells the model to
+      "restrict file types via the `include` glob"; `grep_parameters()` declares only
+      `queries`/`path` with `"additionalProperties": false`. Strict providers reject the
+      call; lax ones drop it silently and the model believes it searched only `*.ts` when
+      it searched everything. Fork-original, not pin drift.
+- [ ] **Both search tools promise mtime ordering that no code produces.** `grep.md:5` and
+      `file_glob.md:3` claim results are "sorted by modification time (most recent
+      first)". `run_ripgrep` collects into a `HashMap` and iterates it
+      (`execute/grep.rs:438-455`), so order is randomised per call; no `sort`/`mtime`
+      call exists in either executor. With the cap unenforced the model gets neither the
+      promised ordering nor a truncation flag — `glob_result_to_json` emits
+      `status: "ok"` unconditionally.
+- [ ] **Clearing the global-search query leaves the ripgrep subprocess running.**
+      `workspace/view/global_search/view.rs:872-878,913-919` reset the id and the
+      in-progress flag but never call `abort_search()`; the pin routes both sites through
+      `cancel_search`, which does. The handle is never aborted so `kill_on_drop` never
+      fires: a full-tree scan runs to completion after the user clears the box, spawning
+      batch callbacks onto the UI thread that the stale-id guard then discards.
+
