@@ -61,6 +61,25 @@ fi
 agent="$1"
 shift
 
+# Refuse to build a checkout nobody authored.
+#
+# script/check_workspace_clean exists for exactly this (see its header: an agent
+# once spent an hour compiling a tree holding three authors' uncommitted work),
+# but until 2026-08-21 NOTHING invoked it -- not precheck, not any workflow --
+# while TODO.md asserted it was "in daily use". Builds are where it belongs, and
+# this governor is the single door every agent build goes through.
+#
+# Skipped when the script is absent (older checkouts) and overridable with
+# ALLOW_DIRTY=1, which the guard itself documents for the case where you have
+# deliberately accepted a dirty tree.
+if [[ -x ./script/check_workspace_clean ]]; then
+  if ! ./script/check_workspace_clean; then
+    echo "[agent-cargo] refusing to build: see script/check_workspace_clean above." >&2
+    echo "[agent-cargo] set ALLOW_DIRTY=1 if you accept building this tree anyway." >&2
+    exit 1
+  fi
+fi
+
 # The governor exists to stop PARALLEL agents from exhausting RAM on one shared build
 # host. Its scratch dirs default to `/cache/git/...`, which is that host's fast disk and
 # exists nowhere else -- not on a GitHub runner, not on the maintainer's laptop.

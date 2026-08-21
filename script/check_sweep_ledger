@@ -57,9 +57,13 @@ cd "$(dirname "$0")/.."
 LEDGER="docs/sweep-verdict-ledger.tsv"
 DECLINED_FILE="DECLINED.md"
 
+# Fail rather than skip. A renamed or deleted ledger is exactly the situation
+# this guard exists to notice, and `precheck` runs every guard with output
+# discarded and reports on exit status alone -- so an exit 0 here printed
+# "ok" and the missing ledger was invisible.
 if [[ ! -f "$LEDGER" ]]; then
-    echo "check_sweep_ledger: skipped ($LEDGER does not exist yet)"
-    exit 0
+    echo "check_sweep_ledger: FAILED ($LEDGER does not exist)" >&2
+    exit 1
 fi
 if [[ ! -f "$DECLINED_FILE" ]]; then
     echo "error: $DECLINED_FILE is missing" >&2

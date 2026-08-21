@@ -299,7 +299,23 @@ description+=$'\n'"${PR_TITLE:-}"$'\n'"${PR_BODY:-}"
 
 cites_declined=0
 has_trailer=0
-grep -qF 'DECLINED.md' <<< "$description" && cites_declined=1
+# The DECLINED.md citation must appear in a commit that actually DELETES
+# something, or in the PR title/body. Previously this grepped every commit
+# message in base..HEAD at once, so a single incidental mention anywhere in the
+# range -- including a docs commit that merely referenced the file -- cleared any
+# bulk deletion elsewhere in the same range. That is a substring test over
+# unrelated commits, not an explanation.
+#
+# The Large-deletion: trailer keeps its range-wide reading deliberately: it is an
+# explicit, purpose-built opt-in that nobody writes by accident, whereas
+# "DECLINED.md" is a filename that appears in ordinary prose constantly.
+deleting_commits="$(git log --format='%H' --diff-filter=D "${base}..${head_rev:-HEAD}" 2>/dev/null || true)"
+deleting_description=""
+if [[ -n "$deleting_commits" ]]; then
+    deleting_description="$(git log --format='%B' --no-walk $deleting_commits 2>/dev/null || true)"
+fi
+deleting_description+=$'\n'"${PR_TITLE:-}"$'\n'"${PR_BODY:-}"
+grep -qF 'DECLINED.md' <<< "$deleting_description" && cites_declined=1
 grep -qE '^[[:space:]]*Large-deletion:[[:space:]]*[^[:space:]]' <<< "$description" && has_trailer=1
 
 # There is deliberately NO third "the allowlist covers it" branch here. The

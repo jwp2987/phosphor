@@ -165,8 +165,13 @@ while IFS= read -r tok; do
 done <<< "$tokens"
 
 total=$((n_test + n_sym + n_path + n_keep))
+# Fail rather than warn. Zero parsed markers means either DECLINED.md lost all
+# of them or the marker syntax changed under this parser -- in both cases the
+# guard is checking nothing, and `precheck` discards output so the warning was
+# never seen. A guard that silently checks nothing is worse than no guard.
 if [[ "$total" -eq 0 ]]; then
-    echo "warning: DECLINED.md has no <!-- markers: ... --> comments at all -- check the marker syntax" >&2
+    echo "check_declined_collisions: FAILED (DECLINED.md has no <!-- markers: ... --> comments at all; check the marker syntax)" >&2
+    exit 1
 fi
 
 if [[ -s "$findings" ]]; then

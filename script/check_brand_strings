@@ -156,9 +156,12 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
+# Fail rather than skip. CI always has python3, so a skip here can only happen
+# on a developer machine -- where it silently disabled the only check on
+# user-visible brand strings, and `precheck` reported "ok".
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "brand strings: skipped (python3 not available)"
-    exit 0
+    echo "brand strings: FAILED (python3 not available; this guard cannot run)" >&2
+    exit 1
 fi
 
 python3 - "$@" <<'PY'

@@ -9,7 +9,7 @@
 # The packaging scripts write two per-channel command names into the bundle:
 #
 #   * the Oz CLI wrapper      -> `Channel::cli_command_name()`
-#     (`oz`, `oz-dev`, ..., and `zap-oss` for the OSS channel)
+#     (`oz`, `oz-dev`, ..., and `phosphor-oss` for the OSS channel)
 #   * the Warp Control wrapper -> `Channel::warpctrl_command_name()`
 #     (`warpctrl`, `warpctrl-dev`, ..., `warpctrl-oss`)
 #
@@ -20,7 +20,7 @@
 # the file.  Rename one side and everything still compiles, every test stays
 # green, and the failure surfaces only when a user clicks "Install CLI" on a
 # real bundle and gets "bundled wrapper not found".  That has already happened
-# once for the warpctrl pair; the `oz` / `zap-oss` pair has the identical shape
+# once for the warpctrl pair; the `oz` / `phosphor-oss` pair has the identical shape
 # and was unguarded.
 #
 # WHAT IS CHECKED
@@ -46,7 +46,7 @@
 # WHAT IS DELIBERATELY NOT CHECKED
 # --------------------------------
 #   * `impl Display for Channel`.  It is a THIRD, independent string
-#     (`Channel::Oss` displays as `zap-oss`, not `oss`) used for discovery
+#     (`Channel::Oss` displays as `phosphor-oss`, not `oss`) used for discovery
 #     records, not for file names.  Locking it to the other two would be wrong.
 #   * script/linux/bundle's per-channel `BINARY_NAME` values (`warp`,
 #     `warp-dev`, ...).  Those are BUILD artifact names, not CLI command names;

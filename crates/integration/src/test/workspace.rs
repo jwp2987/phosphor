@@ -183,8 +183,23 @@ fn assert_total_tab_count(
     }
 }
 
+/// Whether the drag behaviour these tests exercise is actually available.
+///
+/// This was `cfg!(feature = "drag_tabs_to_windows")`, which asks the
+/// **`integration` crate** for a feature only the **`warp` crate** ever enables
+/// (`app/Cargo.toml` has it in `default`; `crates/integration/Cargo.toml` declares
+/// it but never turns it on, and CI passes no `--features`). So it was permanently
+/// false, `set_should_run_test` short-circuited, and the driver logged
+/// "Skipping test", terminated with exit 0, and `tests/common/mod.rs` mapped that
+/// to PASS. Nine drag tests reported green without executing a single step, for as
+/// long as the gate has existed.
+///
+/// `FeatureFlag::DragTabsToWindows.is_enabled()` asks the runtime state that
+/// actually gates the behaviour. Safe here because `run_test_and_cleanup` evaluates
+/// this predicate after the application is initialised, so the flag registry is
+/// live -- see `crates/warpui_core/src/integration/driver.rs:241`.
 fn drag_tabs_feature_enabled() -> bool {
-    cfg!(feature = "drag_tabs_to_windows")
+    FeatureFlag::DragTabsToWindows.is_enabled()
 }
 
 fn assert_tab_color(expected: Option<AnsiColorIdentifier>) -> AssertionCallback {

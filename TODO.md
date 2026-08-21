@@ -6915,7 +6915,7 @@ Ordered by severity, not by area.
 
 ### Correctness — user-visible
 
-- [ ] 🔴 **ALL FOUR tab-group drag tests are silently skipped in CI and have never
+- [x] 🔴 **ALL FOUR tab-group drag tests are silently skipped in CI and have never
       run.** `crates/integration/src/test/tab_groups.rs:228-230` gates on
       `cfg!(feature = "drag_tabs_to_windows")` evaluated against the **integration**
       crate, which never enables it (`crates/integration/Cargo.toml:69,73`); the app
@@ -6928,6 +6928,7 @@ Ordered by severity, not by area.
       investigation was blocked on. The collapsed hop at `view.rs:25460` was traced
       REACHABLE, contradicting TODO:3268.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/integration/Cargo.toml:69` declares the feature and `:70` `default = ["run_on_linux"]` omits it; `pr-check.yml:603` passes no `--features`; `app/Cargo.toml:653` has it, so only `warp` does. **Verifier closed the chain the original left open:** `driver.rs:242-247` → `winit/event_loop/mod.rs:989` `std::process::exit(0)` → `tests/common/mod.rs:54-57` maps 0 to PASS. One sub-claim wrong: TODO.md:3259 already says the hop is reachable, so that part was not new.
+      **FIXED 2026-08-21:** Both `drag_tabs_feature_enabled()` helpers now call `FeatureFlag::DragTabsToWindows.is_enabled()` instead of `cfg!(feature = "drag_tabs_to_windows")`, which asked the `integration` crate for a feature only `warp` enables. Safe because `run_test_and_cleanup` evaluates the predicate AFTER app init (`driver.rs:241`), so the flag registry is live. **These nine tests will now execute for the first time and may fail — that is the intended outcome.**
 
 - [ ] 🔴 **`current_repo_path` is filled by LOCAL filesystem detection on SSH sessions
       and never cleared.** `view.rs:11955-11958` assigns before the
@@ -7389,13 +7390,14 @@ Ordered by severity, not by area.
       ("this list is the only thing that turns them on").
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warp_tui/Cargo.toml:7` sets `autobins = false` with one `[[bin]]`, so `dev/local/preview/stable.rs` never compile; `app/Cargo.toml:6` likewise builds only `phosphor-oss` and `generate_settings_schema`, and `phosphor_oss.rs:44` adds `DEBUG_FLAGS` in debug only. All six flags appear solely in `DOGFOOD_FLAGS` — none in `RELEASE_FLAGS`, `UNSTABLE_FEATURES` (`lib.rs:3306`), `RUNTIME_FEATURE_FLAGS`, or any cargo feature. Both contradicting statements confirmed (`DECLINED.md:161`, `warp_features/src/lib.rs:830-834`).
 
-- [ ] **Nine drag tests report PASS without executing a step** — independent
+- [x] **Nine drag tests report PASS without executing a step** — independent
       confirmation of the tab-group finding above, and it extends to
       `workspace.rs:187`. `driver.rs:242-248` logs "Skipping test" and exits 0;
       `tests/common/mod.rs:54-58` maps 0 to success, so **a skip is indistinguishable
       from a pass** across all 75 `set_should_run_test` sites — including four
       macOS-only tests on a Linux-only job. No SKIP is ever surfaced.
       **NOT ADJUDICATED (2026-08-21):** Its verifier returned verdicts for the other five findings in its batch and silently omitted this one. Note the closely-related finding above (all four tab-group drag tests skipped) IS CONFIRMED, and this one extends the same mechanism to `workspace.rs:187` and to the general claim that a skip is indistinguishable from a pass across all 75 `set_should_run_test` sites — that extension is unverified.
+      **FIXED 2026-08-21:** Same fix; `workspace.rs:187` was the second site.
 
 - [ ] **Saved-position clicks aim at stale rects.**
       `warpui_core/src/integration/step.rs:700-716` fails only when the id is absent, but
@@ -7412,13 +7414,14 @@ Ordered by severity, not by area.
       duplicate.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `report_error!(@log)` calls `err.report_error()` then `log::log!` (`warp_core/src/errors.rs:81-85`); the fork's impls log (`:218`, `errors/anyhow.rs:27`) where the pin captures to Sentry. Verifier traced the sink: `env_logger` defaults to `LevelFilter::Info` with no `warp_core` filter (`warp_logging/src/native.rs:732-751`), so **both Error lines emit in release**. The duplicate's target is `warp_core::errors[::anyhow]`, invisible to `errors_tests.rs:53`.
 
-- [ ] **`script/check_channel_command_names`'s header contradicts the code it guards** —
+- [x] **`script/check_channel_command_names`'s header contradicts the code it guards** —
       it documents `Channel::Oss` as `zap-oss` for both `cli_command_name()` and
       `Display`; both are `phosphor-oss`. The guard passes (it derives from Rust), but
       anyone reading it to decide whether a rename is safe gets the pre-rename answer.
       Related: `crates/warp_tui/Cargo.toml:9,15` still ships the bin as `zap-tui-oss`,
       and `DECLINED.md:216` repeats it as current.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The header says `zap-oss` at `:12`, `:23` (cli name) and `:49` (Display); both are `phosphor-oss` (`warp_core/src/channel/mod.rs:44,:70`). The fragments are derived from Rust (`:38-41`), so the guard still passes while misinforming its reader. `crates/warp_tui/Cargo.toml:9,16` do still ship `zap-tui-oss`, and DECLINED.md:216 repeats it.
+      **FIXED 2026-08-21:** Header corrected: three `zap-oss` occurrences → `phosphor-oss`, matching `channel/mod.rs:44,:70`. Zero `zap-oss` strings remain in the guard.
 
 - [ ] **`paths_tests.rs:123` is vacuous** — it asserts `secure_state_dir() == None`, but
       on non-macOS that function returns `None` unconditionally, so on Linux CI it passes
@@ -7722,22 +7725,25 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:45` requires `^\s*use`, which `pub use` never matches. Live and unallowlisted: `lib.rs:300` `pub use crate::server::telemetry::{…}` and `drive/folders/mod.rs:11` — neither is in `script/cloud_boundary_allowlist.txt` (the `lib.rs` entries there are `:118-123` only). `lib.rs:302-303` names the guard as the REASON for the re-export.
       **FIXED 2026-08-21:** Covered by the same widening. Both live re-exports (`lib.rs:300`, `drive/folders/mod.rs:11`) are now visible and allowlisted with a note that they should be REMOVED rather than allowlisted permanently — `lib.rs:302-303` names the guard itself as the reason its re-export exists.
 
-- [ ] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
+- [x] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
       and `script/check_workspace_clean` are referenced by neither `precheck` nor any
       workflow.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `check_dangling_modules` and `check_workspace_clean` both exist and are executable, but grep across `script/` and `.github/` finds zero invocations; `precheck:216-255` enumerates ten guards and neither is among them. **TODO.md:41 asserts `check_workspace_clean` "implements the workspace-clean gate… in daily use"** — nothing runs it.
+      **FIXED 2026-08-21:** `check_dangling_modules` wired into `script/precheck`. `check_workspace_clean` deliberately NOT put there — reading its header, it is a BUILD gate (it refuses to compile a checkout holding another author's uncommitted work) and precheck runs over uncommitted work by design, so it would fail every time. Wired into `script/agent-cargo` instead, the single door every agent build goes through, with the existing `ALLOW_DIRTY=1` escape hatch documented at the call site.
 
-- [ ] **Guards fail open on missing input, and `precheck` hides it.**
+- [x] **Guards fail open on missing input, and `precheck` hides it.**
       `check_sweep_ledger:59-62` exits 0 if the ledger is renamed;
       `check_declined_collisions:168-170` only warns when zero markers parse;
       `check_brand_strings:159-161` exits 0 without python3. `precheck:216-247` runs every
       guard `>/dev/null 2>&1`, so all of them read `ok` regardless.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `check_sweep_ledger:60-62`, `check_declined_collisions:167-169` (warning only, `status` untouched) and `check_brand_strings:159-161` all exit 0 or merely warn; `precheck:216-255` runs each with `>/dev/null 2>&1` and reports on exit status, so "skipped" is indistinguishable from "ok". Nuance: CI closes only the brand-strings hole (`pr-check.yml:139-141`).
+      **FIXED 2026-08-21:** All three now fail closed: `check_sweep_ledger` exits 1 on a missing ledger, `check_declined_collisions` exits 1 when zero markers parse (it was a warning `precheck` discarded), and `check_brand_strings` exits 1 without python3. Each carries a comment saying why a skip was indistinguishable from an ok.
 
-- [ ] **`check_large_deletions:302` is cleared by one incidental mention.** It does
+- [x] **`check_large_deletions:302` is cleared by one incidental mention.** It does
       `grep -qF 'DECLINED.md'` across all commit messages plus the PR body, so any single
       reference anywhere in the range clears any bulk deletion.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:302` greps `$description` — every commit body in `base..HEAD` plus `PR_TITLE` and `PR_BODY` (`:297-298`) — and `:312-317` exits 0 on `cites_declined`. Any single mention anywhere in the range clears any bulk deletion. It IS a designed escape hatch (`:341-345`); the defect is the range-wide, substring-only test.
+      **FIXED 2026-08-21:** The DECLINED.md citation is now scoped to commits that actually delete something (`git log --diff-filter=D`) plus the PR title/body, instead of every commit message in the range. The `Large-deletion:` trailer keeps its range-wide reading on purpose — it is an explicit opt-in nobody writes by accident, whereas "DECLINED.md" is a filename that appears in ordinary prose.
 
 ### Refutation round — warpui / secure storage (final wave)
 

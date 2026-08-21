@@ -254,6 +254,18 @@ if [[ -x ./script/check_large_deletions ]]; then
     ./script/check_large_deletions >/dev/null 2>&1 && ok "large deletions" \
         || fail "large deletions -- run ./script/check_large_deletions for detail"
 fi
+# Both of these existed, were executable, and were referenced by NOTHING -- not
+# this script, not any workflow. check_dangling_modules covers 3,265 module
+# declarations, and TODO.md asserted check_workspace_clean was "in daily use".
+# A guard nothing invokes is not a guard.
+if [[ -x ./script/check_dangling_modules ]]; then
+    ./script/check_dangling_modules >/dev/null 2>&1 && ok "dangling modules" \
+        || fail "dangling modules -- run ./script/check_dangling_modules for detail"
+fi
+# check_workspace_clean is deliberately NOT run here. It is a BUILD gate -- it
+# refuses to compile a checkout holding another author's uncommitted work -- and
+# precheck's whole purpose is to run over uncommitted work, so it would fail
+# every time. Wired into script/agent-cargo instead, which is where builds go.
 
 # ------------------------------------------------------------- shell tests
 # The packaging scripts are shell, so their tests are shell too -- no cargo,
