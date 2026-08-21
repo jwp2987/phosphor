@@ -68,6 +68,15 @@ pub struct OrchestrationCreditRollup {
 ///
 /// Unloaded descendants (IDs in the topology index without a matching
 /// `AIConversation` in `conversations_by_id`) are silently skipped.
+///
+/// No conversation is counted twice. That is not enforced here: it comes from
+/// [`descendant_conversation_ids_in_spawn_order`], which dedups by id and
+/// never yields `parent_id` itself, so a descendant reachable from two parents
+/// contributes one summand and one row, and the orchestrator cannot be added
+/// both by the block above and by the descendant loop. Any totals-only
+/// re-implementation of this sum elsewhere would have to reproduce that, which
+/// is why the pill calls [`orchestration_headline_credits`] instead of
+/// summing on its own.
 pub fn compute_orchestration_rollup(
     parent_id: AIConversationId,
     history: &BlocklistAIHistoryModel,
@@ -136,6 +145,40 @@ pub fn compute_orchestration_rollup(
         total_credits,
         per_agent: entries.into_iter().map(|(_, entry)| entry).collect(),
     })
+}
+
+/// The credit total that goes on screen for `conversation_id`, shared by the
+/// collapsed usage pill (`block/view_impl/output.rs`) and the expanded usage
+/// footer's "Credits spent (total)" headline
+/// (`ConversationUsageView::headline_total_credits`).
+///
+/// `rollup` is the caller's already-computed [`compute_orchestration_rollup`]
+/// result, threaded in rather than recomputed so the footer — which needs the
+/// rollup for its drill-down rows anyway — walks the tree once.
+///
+/// Both surfaces must route through this one function, and both must read the
+/// number **live** from `history`. The pill re-derives on every render; the
+/// footer's `ConversationUsageInfo` is a snapshot frozen when the footer was
+/// opened (`terminal/view.rs::handle_usage_footer_toggled`). Reading the
+/// snapshot for the no-rollup fallback put two totals for one conversation on
+/// screen at once as soon as it spent anything more with the footer open — the
+/// same "headline disagrees with what's under it" defect the rollup headline
+/// was introduced to fix, displaced one level down into the fallback limb.
+///
+/// Returns `None` only when `conversation_id` is not loaded and no rollup
+/// applies; the caller then has nothing live to read and must fall back to
+/// whatever it was constructed with.
+pub fn orchestration_headline_credits(
+    conversation_id: AIConversationId,
+    history: &BlocklistAIHistoryModel,
+    rollup: Option<&OrchestrationCreditRollup>,
+) -> Option<f32> {
+    match rollup {
+        Some(rollup) => Some(rollup.total_credits),
+        None => history
+            .conversation(&conversation_id)
+            .map(AIConversation::credits_spent),
+    }
 }
 
 /// Display name for the orchestrator row. Prefers the explicitly assigned

@@ -20,7 +20,9 @@ use crate::ai::blocklist::block::view_impl::common::{
 use crate::ai::blocklist::inline_action::aws_bedrock_credentials_error::AwsBedrockCredentialsErrorView;
 use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDocumentAction;
 use crate::ai::blocklist::secret_redaction::SecretRedactionState;
-use crate::ai::blocklist::usage::rollup::compute_orchestration_rollup;
+use crate::ai::blocklist::usage::rollup::{
+    compute_orchestration_rollup, orchestration_headline_credits,
+};
 use crate::ai::blocklist::view_util::format_credits;
 use crate::ai::skills::SkillOpenOrigin;
 use crate::ai::skills::{icon_override_for_skill_name, render_skill_button, skill_path_from_location};
@@ -2754,12 +2756,21 @@ fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Elem
 /// descendants, and for one whose whole tree has spent nothing; both fall back
 /// to this conversation's own spend, which in those cases *is* the tree's
 /// spend.
+/// The choice between those two limbs is not made here: it lives in
+/// [`orchestration_headline_credits`], which the footer headline calls too.
+/// Duplicating the `unwrap_or_else` on each surface is what let the two drift
+/// apart before — the footer's copy fell back to a snapshot frozen at
+/// footer-open time while this one stayed live, so both surfaces could be on
+/// screen showing different totals for the same conversation.
 fn usage_pill_headline_credits(
     conversation: &AIConversation,
     history: &BlocklistAIHistoryModel,
 ) -> f32 {
-    compute_orchestration_rollup(conversation.id(), history)
-        .map(|rollup| rollup.total_credits)
+    let rollup = compute_orchestration_rollup(conversation.id(), history);
+    orchestration_headline_credits(conversation.id(), history, rollup.as_ref())
+        // Unreachable in practice: the caller holds a loaded `conversation`,
+        // so the live read inside cannot miss. Kept total rather than
+        // `expect`-ing, since a panic in a render path is the worse failure.
         .unwrap_or_else(|| conversation.credits_spent())
 }
 
@@ -2800,14 +2811,20 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     // `compute_orchestration_rollup` walks the descendant index for this
     // conversation, which for the overwhelmingly common non-orchestrator case
     // is a single `children_by_parent` probe returning an empty slice — no
-    // allocation, no per-frame work worth memoising. An orchestrator pays an
-    // O(descendants) walk plus one display-name `String` per spending agent,
-    // which is small next to the element tree this function builds anyway, and
-    // it is the price of the pill and the footer being guaranteed to show the
+    // allocation, no per-frame work worth memoising. The cycle/diamond guard
+    // added to `descendant_conversation_ids_in_spawn_order` does not change
+    // that: its fast path returns on the same empty probe, before the visited
+    // set is constructed. An orchestrator pays an O(descendants) walk, a
+    // `HashSet` of that many ids, and one display-name `String` per spending
+    // agent — all small next to the element tree this function builds anyway,
+    // and the price of the pill and the footer being guaranteed to show the
     // same number: a cheaper totals-only sum here would be a second
     // implementation of the rollup, free to drift from the one the footer
-    // renders. If a session ever grows enough descendants for this to matter,
-    // memoise on the history model's revision rather than forking the sum.
+    // renders (and one that would have to re-derive the dedup to stay
+    // correct). If a session ever grows enough descendants for this to matter,
+    // the memoisation trigger is unchanged — memoise on the history model's
+    // revision rather than forking the sum; the guard adds a constant factor
+    // to the walk, not a new order of growth.
     let history = BlocklistAIHistoryModel::as_ref(app);
     let headline_credits = usage_pill_headline_credits(conversation, history);
 

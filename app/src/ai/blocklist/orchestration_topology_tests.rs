@@ -190,6 +190,173 @@ fn descendant_conversation_ids_in_spawn_order_flattens_nested_children_preorder(
     });
 }
 
+/// A descendant reachable from two parents is emitted **once**.
+///
+/// `children_by_parent` is append-only per parent: `set_parent_for_conversation`
+/// and `restore_conversations` both `contains`-check within a single parent's
+/// list, and neither retracts a stale entry from a previous parent. So the same
+/// id can legitimately sit under two parents, and the walk reaches it twice.
+/// Before the visited set that meant `compute_orchestration_rollup` added the
+/// shared agent's credits twice (a total larger than the truth) and the
+/// drill-down and pill bar listed it twice.
+#[test]
+fn descendant_walk_dedups_a_child_reachable_from_two_parents() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let orchestrator_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_a = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_child_conversation(
+                terminal_view_id,
+                "child-a".to_string(),
+                orchestrator_id,
+                None,
+                ctx,
+            )
+        });
+        let child_b = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_child_conversation(
+                terminal_view_id,
+                "child-b".to_string(),
+                orchestrator_id,
+                None,
+                ctx,
+            )
+        });
+        let shared = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_child_conversation(
+                terminal_view_id,
+                "shared-grandchild".to_string(),
+                child_a,
+                None,
+                ctx,
+            )
+        });
+        // Re-parent onto `child_b`. The old entry under `child_a` stays, which
+        // is exactly the diamond the index permits.
+        history_model.update(&mut app, |history_model, _| {
+            history_model.set_parent_for_conversation(shared, child_b);
+        });
+
+        history_model.read(&app, |history_model, _| {
+            assert_eq!(
+                history_model.child_conversation_ids_of(&child_a).to_vec(),
+                vec![shared],
+                "the stale entry under the old parent is still indexed"
+            );
+            assert_eq!(
+                history_model.child_conversation_ids_of(&child_b).to_vec(),
+                vec![shared]
+            );
+
+            let descendants =
+                descendant_conversation_ids_in_spawn_order(history_model, orchestrator_id);
+            assert_eq!(
+                descendants,
+                vec![child_a, shared, child_b],
+                "the shared grandchild must appear once, at its first reachable position"
+            );
+            assert_eq!(
+                descendants.iter().filter(|id| **id == shared).count(),
+                1,
+                "double-counting here inflates the credit rollup total"
+            );
+        });
+    });
+}
+
+/// A cycle in `children_by_parent` terminates instead of overflowing the stack.
+///
+/// The walk is recursive, so before the visited set a back-edge did not merely
+/// produce a wrong number — it recursed until the process died, i.e. it crashed
+/// the app from data. The parent-direction walk
+/// ([`orchestration_root_conversation_id`]) has always guarded this; the child
+/// direction did not.
+///
+/// Is a cycle actually reachable? Not from the local spawn path:
+/// `start_new_child_conversation` always links a freshly minted id to an
+/// already-existing parent, which cannot close a loop. It is reachable in
+/// principle from restore: `restore_conversations` resolves a persisted row's
+/// parent through `resolved_parent_conversation_id_from_refs`, whose
+/// `parent_agent_id` limb goes through the mutable agent-id → conversation
+/// index, so two rows that name each other's agent id (or one that names its
+/// own) index each other as children. That needs corrupt or hand-edited SQLite
+/// to occur, which is why the guard is insurance rather than a bug fix — but a
+/// stack overflow is not a failure mode worth leaving open for a `HashSet` that
+/// the common childless case never even allocates.
+#[test]
+fn descendant_walk_terminates_on_a_cycle() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let root_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_child_conversation(
+                terminal_view_id,
+                "child".to_string(),
+                root_id,
+                None,
+                ctx,
+            )
+        });
+        let grandchild_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_child_conversation(
+                terminal_view_id,
+                "grandchild".to_string(),
+                child_id,
+                None,
+                ctx,
+            )
+        });
+        // Close the loop: the root becomes a child of its own grandchild.
+        history_model.update(&mut app, |history_model, _| {
+            history_model.set_parent_for_conversation(root_id, grandchild_id);
+        });
+
+        // A conversation indexed as its own child — the degenerate one-node
+        // cycle, and the one a self-referential `parent_agent_id` produces.
+        let self_looped_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        history_model.update(&mut app, |history_model, _| {
+            history_model.set_parent_for_conversation(self_looped_id, self_looped_id);
+        });
+
+        history_model.read(&app, |history_model, _| {
+            assert_eq!(
+                history_model
+                    .child_conversation_ids_of(&grandchild_id)
+                    .to_vec(),
+                vec![root_id],
+                "the back-edge is really in the index"
+            );
+            assert_eq!(
+                descendant_conversation_ids_in_spawn_order(history_model, root_id),
+                vec![child_id, grandchild_id],
+                "the walk stops at the back-edge; the root is never its own descendant"
+            );
+            assert_eq!(
+                descendant_conversation_ids_in_spawn_order(history_model, child_id),
+                vec![grandchild_id, root_id],
+                "entering the cycle elsewhere still terminates, covering each node once"
+            );
+            assert!(
+                descendant_conversation_ids_in_spawn_order(history_model, self_looped_id)
+                    .is_empty(),
+                "a self-loop yields no descendants rather than recursing forever"
+            );
+        });
+    });
+}
+
 #[test]
 fn adjacent_orchestration_child_navigation_uses_pinned_first_order() {
     App::test((), |mut app| async move {

@@ -159,26 +159,69 @@ fn pill_secondary_sort_key(status_key: u8, last_modified_ms: Option<i64>) -> i64
 /// it works even before child `AIConversation`s have been loaded into
 /// `conversations_by_id`. Unloaded descendants are still returned by id;
 /// callers can filter them out via `history.conversation(&id)` as needed.
+///
+/// Every id is returned **at most once**, and `parent_id` itself is never
+/// returned, even if the index reaches a node by more than one path. The
+/// index cannot enforce that on its own: `children_by_parent` is append-only
+/// per parent (`set_parent_for_conversation` and `restore_conversations` both
+/// push after a `contains` check *within one parent's* list), so nothing stops
+/// the same id from appearing under two different parents — re-parenting never
+/// retracts the old entry, and the `parent_agent_id` fallback in
+/// `resolved_parent_conversation_id_from_refs` resolves through a mutable
+/// agent-id → conversation index. Without the visited set a diamond is summed
+/// twice by [`super::usage::rollup::compute_orchestration_rollup`] and listed
+/// twice by the pill bar, and a cycle recurses until the stack overflows,
+/// which crashes the app. [`orchestration_root_conversation_id`] already
+/// guards the same index in the parent direction for the same reason.
+///
+/// The guard costs one `HashSet` for orchestrators and nothing at all for the
+/// overwhelmingly common childless conversation, which returns before the set
+/// is ever touched — cheap enough that keeping it as insurance beats proving
+/// the index can never be malformed.
 pub fn descendant_conversation_ids_in_spawn_order(
     history: &BlocklistAIHistoryModel,
     parent_id: AIConversationId,
 ) -> Vec<AIConversationId> {
     let mut descendants = Vec::new();
-    collect_descendant_conversation_ids_in_spawn_order(history, parent_id, &mut descendants);
+    if history.child_conversation_ids_of(&parent_id).is_empty() {
+        // Fast path for the common childless case: no set, no allocation.
+        return descendants;
+    }
+    // Seeded with the root so a back-edge to it is dropped rather than
+    // making the orchestrator its own descendant.
+    let mut visited = HashSet::new();
+    visited.insert(parent_id);
+    collect_descendant_conversation_ids_in_spawn_order(
+        history,
+        parent_id,
+        &mut visited,
+        &mut descendants,
+    );
     descendants
 }
 
-/// Recursive worker for [`descendant_conversation_ids_in_spawn_order`]. Kept
-/// separate so it can be invoked from existing call sites that already own a
-/// buffer.
-pub fn collect_descendant_conversation_ids_in_spawn_order(
+/// Recursive worker for [`descendant_conversation_ids_in_spawn_order`].
+///
+/// `visited` carries the ids already emitted (plus the walk's root) across the
+/// whole traversal, not just the current branch, so it dedups siblings that
+/// reach a shared descendant as well as breaking cycles.
+fn collect_descendant_conversation_ids_in_spawn_order(
     history: &BlocklistAIHistoryModel,
     parent_id: AIConversationId,
+    visited: &mut HashSet<AIConversationId>,
     descendants: &mut Vec<AIConversationId>,
 ) {
     for child_id in history.child_conversation_ids_of(&parent_id) {
+        if !visited.insert(*child_id) {
+            continue;
+        }
         descendants.push(*child_id);
-        collect_descendant_conversation_ids_in_spawn_order(history, *child_id, descendants);
+        collect_descendant_conversation_ids_in_spawn_order(
+            history,
+            *child_id,
+            visited,
+            descendants,
+        );
     }
 }
 

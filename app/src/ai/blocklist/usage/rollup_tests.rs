@@ -687,3 +687,124 @@ fn ties_break_by_preorder_position_not_by_depth_or_branch() {
         });
     });
 }
+
+/// A descendant reachable from two parents contributes **one** summand and
+/// **one** row.
+///
+/// `children_by_parent` permits the diamond (see
+/// `orchestration_topology_tests::descendant_walk_dedups_a_child_reachable_from_two_parents`
+/// for why), and this is the user-visible consequence of walking it naively:
+/// the headline total exceeds the truth and the drill-down lists the same
+/// agent twice — the mirror image of the defect the rollup headline was
+/// introduced to fix, and just as wrong.
+#[test]
+fn a_descendant_reachable_from_two_parents_is_counted_once() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let orchestrator_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_a = spawn_child(
+            &mut app,
+            &history,
+            "ChildA",
+            orchestrator_id,
+            terminal_view_id,
+        );
+        let child_b = spawn_child(
+            &mut app,
+            &history,
+            "ChildB",
+            orchestrator_id,
+            terminal_view_id,
+        );
+        let shared = spawn_child(&mut app, &history, "Shared", child_a, terminal_view_id);
+        // Re-parented onto `child_b`; the entry under `child_a` is not retracted.
+        history.update(&mut app, |history, _| {
+            history.set_parent_for_conversation(shared, child_b);
+        });
+
+        set_credits(&mut app, &history, orchestrator_id, 1.0);
+        set_credits(&mut app, &history, child_a, 2.0);
+        set_credits(&mut app, &history, child_b, 4.0);
+        set_credits(&mut app, &history, shared, 8.0);
+
+        history.read(&app, |history, _| {
+            let rollup = compute_orchestration_rollup(orchestrator_id, history)
+                .expect("orchestrator with spending descendants rolls up");
+
+            assert_eq!(
+                rollup.total_credits, 15.0,
+                "1 + 2 + 4 + 8; the shared agent's 8 must not be added twice"
+            );
+            assert_eq!(
+                rollup
+                    .per_agent
+                    .iter()
+                    .filter(|entry| entry.conversation_id == shared)
+                    .count(),
+                1,
+                "the shared agent must appear on exactly one drill-down row"
+            );
+            // The invariant the headline depends on: it equals the rows below it.
+            let drill_down_sum: f32 = rollup
+                .per_agent
+                .iter()
+                .map(|entry| entry.credits_spent)
+                .sum();
+            assert_eq!(rollup.total_credits, drill_down_sum);
+        });
+    });
+}
+
+/// The orchestrator's own spend is added exactly once even when the index
+/// makes it reachable as one of its own descendants (a back-edge closing a
+/// cycle). The walk seeds its visited set with the walk root precisely so the
+/// prepended orchestrator entry above the descendant loop cannot be duplicated
+/// by it.
+#[test]
+fn the_orchestrator_is_never_also_counted_as_its_own_descendant() {
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+        let terminal_view_id = EntityId::new();
+        let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+        let orchestrator_id = history.update(&mut app, |history, ctx| {
+            history.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let child_id = spawn_child(
+            &mut app,
+            &history,
+            "Child",
+            orchestrator_id,
+            terminal_view_id,
+        );
+        // Back-edge: the orchestrator is indexed as a child of its own child.
+        history.update(&mut app, |history, _| {
+            history.set_parent_for_conversation(orchestrator_id, child_id);
+        });
+
+        set_credits(&mut app, &history, orchestrator_id, 3.0);
+        set_credits(&mut app, &history, child_id, 5.0);
+
+        history.read(&app, |history, _| {
+            let rollup = compute_orchestration_rollup(orchestrator_id, history)
+                .expect("orchestrator with a spending child rolls up");
+            assert_eq!(
+                rollup.total_credits, 8.0,
+                "3 + 5, with no self-double-count"
+            );
+            assert_eq!(
+                rollup
+                    .per_agent
+                    .iter()
+                    .filter(|entry| entry.conversation_id == orchestrator_id)
+                    .count(),
+                1
+            );
+        });
+    });
+}

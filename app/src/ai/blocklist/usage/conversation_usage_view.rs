@@ -6,6 +6,7 @@ use crate::ai::blocklist::agent_view::avatar_disc::{
 use crate::ai::blocklist::usage::render_context_window_usage_icon;
 use crate::ai::blocklist::usage::rollup::{
     AgentAvatar, OrchestrationCreditRollup, PerAgentCreditEntry, compute_orchestration_rollup,
+    orchestration_headline_credits,
 };
 use crate::ai::blocklist::view_util::format_credits;
 use crate::appearance::Appearance;
@@ -183,9 +184,31 @@ impl ConversationUsageView {
     /// falls back to this conversation's own spend, which is then also the
     /// whole tree's spend. The "Credits spent (last response)" row above it
     /// stays bound to the orchestrator's own last block, matching the pin.
-    fn headline_total_credits(&self, rollup: Option<&OrchestrationCreditRollup>) -> f32 {
-        rollup
-            .map(|rollup| rollup.total_credits)
+    ///
+    /// Both limbs are read **live** from the history model, via the same
+    /// [`orchestration_headline_credits`] the collapsed pill calls, so the two
+    /// surfaces cannot disagree. `self.usage_info.credits_spent` is not usable
+    /// for the fallback: `terminal/view.rs::handle_usage_footer_toggled`
+    /// snapshots it when the footer is *opened*, so a conversation that spent
+    /// more while the footer stayed open showed the frozen number here and the
+    /// live one in the pill directly above it — two totals for one
+    /// conversation on screen at the same time. The snapshot survives only as
+    /// the last resort for `DisplayMode::Settings` views (built by
+    /// [`Self::new`], no `parent_conversation_id`), where `usage_info` is
+    /// historical data rather than a live conversation and is authoritative.
+    fn headline_total_credits(
+        &self,
+        app: &AppContext,
+        rollup: Option<&OrchestrationCreditRollup>,
+    ) -> f32 {
+        self.parent_conversation_id
+            .and_then(|parent_id| {
+                orchestration_headline_credits(
+                    parent_id,
+                    BlocklistAIHistoryModel::as_ref(app),
+                    rollup,
+                )
+            })
             .unwrap_or(self.usage_info.credits_spent)
     }
 
@@ -259,7 +282,7 @@ impl ConversationUsageView {
         let text_color = blended_colors::text_main(theme, theme.surface_2());
 
         let rollup = self.rollup(app);
-        let total_credits_value = self.headline_total_credits(rollup.as_ref());
+        let total_credits_value = self.headline_total_credits(app, rollup.as_ref());
 
         let mut labels: Vec<Box<dyn Element>> = vec![];
         let mut values: Vec<Box<dyn Element>> = vec![];
@@ -1382,7 +1405,7 @@ mod tests {
                     .iter()
                     .map(|entry| entry.credits_spent)
                     .sum();
-                let headline = view.headline_total_credits(Some(&rollup));
+                let headline = view.headline_total_credits(app_ctx, Some(&rollup));
 
                 assert_eq!(
                     headline,
@@ -1404,7 +1427,95 @@ mod tests {
 
                 // No rollup (a plain conversation with no descendants): the
                 // fallback is still this conversation's own spend.
-                assert_eq!(view.headline_total_credits(None), orchestrator_own_credits);
+                assert_eq!(
+                    view.headline_total_credits(app_ctx, None),
+                    orchestrator_own_credits
+                );
+            });
+        });
+    }
+
+    /// Regression test for the footer headline going stale while the footer
+    /// is open.
+    ///
+    /// `headline_total_credits`' no-rollup limb used to return
+    /// `self.usage_info.credits_spent`, which
+    /// `TerminalView::handle_usage_footer_toggled` snapshots from the
+    /// conversation at the moment the footer is *opened*. The collapsed pill
+    /// directly above it (`block/view_impl/output.rs`'s
+    /// `usage_pill_headline_credits`) re-derives its number on every render.
+    /// So a conversation that spent more with the footer open put two
+    /// different totals for one conversation on screen simultaneously — the
+    /// rollup fix moved the "headline disagrees with what is under it" defect
+    /// into the fallback limb rather than removing it. Both surfaces now route
+    /// through `rollup::orchestration_headline_credits`, reading live.
+    ///
+    /// The childless conversation here is deliberate: it is the *only* shape
+    /// that reaches the fallback limb, and it is also the overwhelmingly
+    /// common one.
+    #[test]
+    fn headline_total_credits_tracks_live_spend_while_the_footer_is_open() {
+        App::test((), |mut app| async move {
+            crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+            app.add_singleton_model(|_| Appearance::mock());
+            let terminal_view_id = warpui::EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let conversation_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation is loaded")
+                    .set_credits_spent_for_test(1.0);
+            });
+
+            // Exactly the snapshot `handle_usage_footer_toggled` captures when
+            // the user opens the footer.
+            let view = ConversationUsageView::new_footer_with_rollup(
+                ConversationUsageInfo {
+                    credits_spent: 1.0,
+                    ..placeholder_usage_info()
+                },
+                None,
+                MouseStateHandle::default(),
+                conversation_id,
+            );
+
+            // The conversation keeps spending while the footer stays open.
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation is loaded")
+                    .set_credits_spent_for_test(4.0);
+            });
+
+            history.read(&app, |history, app_ctx| {
+                let rollup = view.rollup(app_ctx);
+                assert!(
+                    rollup.is_none(),
+                    "a childless conversation has no rollup; this is the fallback limb"
+                );
+
+                // What the collapsed pill renders, re-derived every frame.
+                let pill_credits = history
+                    .conversation(&conversation_id)
+                    .expect("conversation is loaded")
+                    .credits_spent();
+                assert_eq!(pill_credits, 4.0);
+
+                let headline = view.headline_total_credits(app_ctx, rollup.as_ref());
+                assert_eq!(
+                    headline, pill_credits,
+                    "the footer headline must equal the pill above it, not the \
+                     value frozen when the footer was opened"
+                );
+                assert_ne!(
+                    headline, view.usage_info.credits_spent,
+                    "the open-time snapshot must not reach the screen once the \
+                     conversation has spent more"
+                );
             });
         });
     }
