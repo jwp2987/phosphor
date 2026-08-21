@@ -55,7 +55,17 @@ set -e
 # read as an unrecognised code and fell through to the unverified fallback.
 # Both directions were wrong, which is why nothing is left to `set -e` now.
 # ---------------------------------------------------------------------------
-EXIT_UNSUPPORTED_PLATFORM=2
+# EXIT_UNSUPPORTED_PLATFORM is 10, NOT 2: bash reserves its own statuses --
+# 1 (general error), 2 (usage/PARSE error), 126 (found but not executable),
+# 127 (not found) and 128+N (killed by signal N). A syntax error cannot be
+# caught by the ERR trap below, because the interpreter never gets as far as
+# running the trap; it just exits 2. While this script owned 2, a script the
+# placeholder substitution in `setup.rs::install_script` had mangled would
+# have arrived at the client as "unsupported arch/OS". Every code below is
+# therefore chosen outside bash's reserved set, so an interpreter-level abort
+# lands in the client's unrecognised-code branch (which fails closed) instead
+# of impersonating a verdict this script never reached.
+EXIT_UNSUPPORTED_PLATFORM=10
 EXIT_NO_FETCHER=3
 EXIT_NO_PINNED_DIGEST=4
 EXIT_NO_DIGEST_TOOL=5
@@ -68,6 +78,11 @@ EXIT_INSTALL_FAILED=9
 # abort onto EXIT_INSTALL_FAILED so a stray tool's exit status can never be
 # mistaken for one of the codes above. An explicit `exit N` does NOT go through
 # this trap, so the assignments above still reach the client verbatim.
+#
+# What this trap does NOT cover -- and why the codes above dodge bash's
+# reserved statuses: a parse error aborts the interpreter before any trap is
+# installed, so bash's own 2 is emitted with nothing to remap it. That status
+# now belongs to no code in this contract, so it fails closed as unrecognised.
 on_unexpected_error() {
   status=$?
   echo "error: install script failed unexpectedly at line $1 (status $status)" >&2
@@ -118,18 +133,39 @@ case "$os_name-$arch_name" in
   *)              expected_sha256="" ;;
 esac
 
-# Prints the SHA-256 of "$1" as a bare lowercase hex digest. Tool availability differs by
-# platform: coreutils `sha256sum` on Linux, BSD `shasum` on macOS, `openssl` as a last resort.
+# Prints the SHA-256 of "$1" as a bare lowercase hex digest, and returns non-zero -- printing
+# nothing -- if it could not compute one. Tool availability differs by platform: coreutils
+# `sha256sum` on Linux, BSD `shasum` on macOS, `openssl` as a last resort.
+#
+# Every branch is a PIPELINE, and a pipeline's status is its LAST element's. `cut`/`awk` succeed
+# on empty input, so a digest tool that is installed and then FAILS -- an unreadable staging
+# file, an LSM denial, OOM, an openssl in a FIPS profile that refuses the algorithm -- used to
+# return 0 here with empty output. The caller's `|| exit "$EXIT_NO_DIGEST_TOOL"` never fired,
+# the empty string compared unequal to the pinned digest, and the script reported
+# EXIT_DIGEST_MISMATCH: "could not compute" collapsed into "computed, and it is not the release
+# we pinned". That is the same fusion one layer down that this whole contract exists to prevent,
+# and it fails closed on a FALSE tampering alarm where the SCP fallback would have worked.
+#
+# `pipefail` is set per invocation rather than globally at the top of the script: the
+# `find ... | head -n1` pipelines further down close the pipe on purpose, so `find` dies of
+# SIGPIPE and a global `pipefail` would abort those with 141 (measured, not assumed).
 compute_sha256() {
+  digest=""
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$1" | cut -d' ' -f1
+    digest=$(set -o pipefail; sha256sum "$1" | cut -d' ' -f1) || return 1
   elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 "$1" | cut -d' ' -f1
+    digest=$(set -o pipefail; shasum -a 256 "$1" | cut -d' ' -f1) || return 1
   elif command -v openssl >/dev/null 2>&1; then
-    openssl dgst -sha256 "$1" | awk '{print $NF}'
+    digest=$(set -o pipefail; openssl dgst -sha256 "$1" | awk '{print $NF}') || return 1
   else
     return 1
   fi
+  # A tool can also succeed and still hand back nothing usable. Anything that is not a bare hex
+  # string is "no digest", never a digest that happens to differ from the pinned one.
+  case "$digest" in
+    ""|*[!0-9a-fA-F]*) return 1 ;;
+  esac
+  printf '%s\n' "$digest"
 }
 
 staging_tarball_path="{staging_tarball_path}"
@@ -178,11 +214,18 @@ else
     exit "$EXIT_DOWNLOAD_FAILED"
   fi
 
-  actual_sha256=$(compute_sha256 "$tmpdir/zap.tar.gz") || {
-    echo "error: no SHA-256 tool available (need sha256sum, shasum or openssl);" >&2
+  # Two guards for one property, deliberately: `compute_sha256` already refuses to print a
+  # non-digest, and an empty `actual_sha256` is re-checked here so that no future edit to the
+  # helper can make "no digest" arrive at the comparison below. An empty string is not a
+  # mismatching digest -- it is the absence of a verdict, which is what EXIT_NO_DIGEST_TOOL
+  # means and why the client classifies the two codes the same way but reports them apart.
+  actual_sha256=$(compute_sha256 "$tmpdir/zap.tar.gz") || actual_sha256=""
+  if [ -z "$actual_sha256" ]; then
+    echo "error: could not compute a SHA-256 of the downloaded tarball" >&2
+    echo "       (no working sha256sum, shasum or openssl on this host);" >&2
     echo "       refusing to install an unverified remote server" >&2
     exit "$EXIT_NO_DIGEST_TOOL"
-  }
+  fi
   if [ "$actual_sha256" != "$expected_sha256" ]; then
     # The download SUCCEEDED and the bytes are not the pinned release. Fail closed: the client
     # must not retry this through the unverified staging path.

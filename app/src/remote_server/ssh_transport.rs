@@ -212,7 +212,11 @@ enum InstallFailureKind {
     /// The remote host never obtained the bytes: no fetcher installed
     /// (exit 3), or the fetch failed at the transport layer — DNS, connection
     /// refused, TLS, timeout, HTTP 4xx/5xx (exit 7). Also covers an SSH-level
-    /// failure where the script did not run to completion at all.
+    /// failure where the script did not run to completion at all, which
+    /// reaches us in *two* shapes and not one: as [`InstallError::Other`]
+    /// (ssh could not be spawned, the write to its stdin failed, the run timed
+    /// out), and as a reported script exit of **255**, which is OpenSSH's own
+    /// error status rather than anything this script can emit.
     ///
     /// No integrity claim was made and none was violated, and nothing was
     /// installed. The client downloading and pushing over the already
@@ -227,7 +231,7 @@ enum InstallFailureKind {
     ///
     /// Fails closed. This is the security property; the fallback must not run.
     IntegrityFailed,
-    /// Fatal for a reason the fallback cannot fix: exit 2 (unsupported
+    /// Fatal for a reason the fallback cannot fix: exit 10 (unsupported
     /// arch/OS — no asset exists for this host), 8 (the pinned tarball will
     /// not open or holds no recognised binary, so re-fetching the identical
     /// bytes is pointless), 9 (the script failed somewhere unclassified).
@@ -265,6 +269,29 @@ fn classify_install_failure(error: &InstallError) -> InstallFailureKind {
         InstallError::ScriptFailed { exit_code, .. } => match *exit_code {
             3 | 7 => InstallFailureKind::TransportFailed,
             4 | 5 | 6 => InstallFailureKind::IntegrityFailed,
+            // 255 is SSH's status, not the script's, and it arrives here
+            // wearing the script's clothes: `run_ssh_script` returns
+            // `Ok(output)` whenever the `ssh` *process* ran, and OpenSSH
+            // reports its own failures — connection closed, ControlMaster
+            // gone, host key changed, remote command killed by a signal — as
+            // exit 255. So `Other` above is reached only when ssh could not be
+            // spawned at all, its stdin write failed, or the run timed out;
+            // every other socket-level death lands in this arm.
+            //
+            // The script cannot collide with it: every explicit `exit` uses an
+            // EXIT_* constant (all ≤ 10), its ERR trap remaps any stray status
+            // onto 9, and `exit_codes_in_install_script_are_all_classified`
+            // parses the constants out of the rendered script to keep that
+            // true. 255 therefore means the script did not run to completion —
+            // the same state as `Other`, with nothing verified and nothing
+            // installed — so the SCP fallback is the designed recovery.
+            //
+            // Letting this fall into `_ => Fatal` reported "install script
+            // failed (exit 255)" for a script that never ran, and withdrew the
+            // fallback from the most common genuine transport failure there
+            // is. The doc on `TransportFailed` claimed it was covered while
+            // the code did the opposite.
+            255 => InstallFailureKind::TransportFailed,
             _ => InstallFailureKind::Fatal,
         },
     }
@@ -1088,13 +1115,49 @@ mod tests {
 
     // Unsupported arch/OS: no asset exists, so retrying the same download
     // locally cannot help either.
+    //
+    // The code is 10 rather than 2 because bash emits 2 for a *parse* error,
+    // which the ERR trap cannot catch (the interpreter never gets far enough
+    // to run a trap) — and a mangled placeholder substitution in
+    // `setup::install_script` is exactly what would produce one. While this
+    // outcome owned 2, a script bash refused to parse arrived here claiming
+    // the remote host had an unsupported architecture.
     #[test]
     fn unsupported_platform_does_not_fall_through() {
         assert_eq!(
-            classify_install_failure(&script_failure(2)),
+            classify_install_failure(&script_failure(10)),
             InstallFailureKind::Fatal,
         );
-        assert!(!falls_back(&script_failure(2)));
+        assert!(!falls_back(&script_failure(10)));
+    }
+
+    // The SSH-level failure the client sees most often, and the one this
+    // classification exists for. `run_ssh_script` returns `Ok(output)`
+    // whenever the `ssh` process itself ran, so a dropped connection, a dead
+    // ControlMaster, a changed host key or a signal-killed remote command all
+    // arrive as a script exit of 255 — OpenSSH's own error status — rather
+    // than as `InstallError::Other`.
+    //
+    // It must route exactly like `Other` does: the script never ran to
+    // completion, so nothing was fetched, nothing was verified and nothing was
+    // installed. A round that narrowed the fallback to a code list left 255 in
+    // the `_ => Fatal` catch-all, which reported "install script failed (exit
+    // 255)" for a script that never ran and removed the fallback from the very
+    // class of failure it exists for.
+    #[test]
+    fn ssh_own_error_status_still_uses_scp_fallback() {
+        assert_eq!(
+            classify_install_failure(&script_failure(255)),
+            InstallFailureKind::TransportFailed,
+            "exit 255 is OpenSSH reporting its own failure, not a verdict from \
+             the install script",
+        );
+        assert!(
+            falls_back(&script_failure(255)),
+            "exit 255 means the script did not run, so nothing was verified and \
+             the SCP fallback is the designed recovery — same as an \
+             InstallError::Other",
+        );
     }
 
     // A tarball that matched the pinned digest and then would not open, or
@@ -1173,9 +1236,16 @@ mod tests {
     // Exit 1 in particular is what a bare `set -e` abort used to surface as,
     // which is precisely the status that carries no information about whether
     // the digest was checked.
+    //
+    // The list includes bash's own statuses — 1 (general error), 2 (parse
+    // error), 126 (found but not executable), 127 (not found) — because no
+    // contract code may claim one of them; see
+    // `install_script_exit_codes_avoid_bash_reserved_statuses` in
+    // `crates/remote_server/src/setup_tests.rs`. 255 is deliberately absent:
+    // it is SSH's, and it is classified above.
     #[test]
     fn unrecognised_script_exit_codes_fail_closed() {
-        for exit_code in [1, 22, 42, 127, -1] {
+        for exit_code in [1, 2, 22, 42, 126, 127, -1] {
             assert_eq!(
                 classify_install_failure(&script_failure(exit_code)),
                 InstallFailureKind::Fatal,
@@ -1238,6 +1308,14 @@ mod tests {
         };
 
         for (name, code) in &declared {
+            // No contract code may squat on OpenSSH's own error status: the
+            // client cannot tell "the script said 255" from "ssh said 255",
+            // and it now reads 255 as the latter.
+            assert_ne!(
+                *code, 255,
+                "{name} claims exit 255, which is OpenSSH's own error status and \
+                 is classified as an SSH-level transport failure",
+            );
             assert_eq!(
                 classify_install_failure(&script_failure(*code)),
                 expected(name.as_str()),

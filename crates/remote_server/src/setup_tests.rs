@@ -806,7 +806,8 @@ fn install_script_refuses_unverified_download_when_no_digest_is_pinned() {
 #[cfg(unix)]
 #[test]
 fn install_script_accepts_download_matching_pinned_digest() {
-    let (home, install_dir, output) = run_download_install_with_digest(DigestUnderTest::Matching);
+    let (home, install_dir, output) =
+        run_download_install_with_digest(DigestUnderTest::Matching, None);
 
     assert!(
         output.status.success(),
@@ -824,7 +825,8 @@ fn install_script_accepts_download_matching_pinned_digest() {
 #[cfg(unix)]
 #[test]
 fn install_script_rejects_download_failing_pinned_digest() {
-    let (home, install_dir, output) = run_download_install_with_digest(DigestUnderTest::Mismatched);
+    let (home, install_dir, output) =
+        run_download_install_with_digest(DigestUnderTest::Mismatched, None);
 
     assert_eq!(
         output.status.code(),
@@ -846,6 +848,122 @@ fn install_script_rejects_download_failing_pinned_digest() {
     );
 
     drop(home);
+}
+
+/// "Could not compute a digest" must never be reported as "computed it, and it is not the
+/// release we pinned". Those are opposite verdicts: the first says nothing was checked and is
+/// what `EXIT_NO_DIGEST_TOOL` exists to say; the second is detected tampering.
+///
+/// The fusion was one layer below the guard that was supposed to catch it. Every branch of
+/// `compute_sha256` ends in a PIPELINE (`sha256sum | cut`, `openssl | awk`) and a pipeline's
+/// status is its LAST element's, while the script sets `set -e` but not `pipefail`. `cut` and
+/// `awk` succeed on empty input, so a digest tool that was installed and then FAILED — an
+/// unreadable staging file, an LSM denial, OOM, an openssl in a FIPS profile that refuses the
+/// algorithm — returned 0 with empty output. The caller's `|| exit "$EXIT_NO_DIGEST_TOOL"`
+/// never fired, the empty string compared unequal to the pinned digest, and the host reported
+/// `EXIT_DIGEST_MISMATCH`.
+///
+/// It fails closed, so it is not an exploit — but it raises a FALSE tampering alarm, and the
+/// client hard-fails on it (integrity failures must not retry) where the SCP fallback would
+/// have installed correctly.
+///
+/// The tarball served here MATCHES the pinned digest, so with working tools this exact setup
+/// installs and exits 0 (`install_script_accepts_download_matching_pinned_digest`). The only
+/// variable is the broken tool.
+#[cfg(unix)]
+#[test]
+fn unusable_digest_tool_reports_no_digest_tool_never_a_mismatch() {
+    for (situation, shim) in [
+        ("a digest tool that exists and fails", "#!/bin/sh\nexit 1\n"),
+        (
+            "a digest tool that exits 0 and prints nothing",
+            "#!/bin/sh\nexit 0\n",
+        ),
+        (
+            "a digest tool that exits 0 and prints something that is not a digest",
+            "#!/bin/sh\necho 'no digest for you'\n",
+        ),
+    ] {
+        let (home, install_dir, output) =
+            run_download_install_with_digest(DigestUnderTest::Matching, Some(shim));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_ne!(
+            output.status.code(),
+            Some(6),
+            "{situation} was reported as a DIGEST MISMATCH, which the client hard-fails as \
+             tampering and refuses to retry -- but nothing was compared, because no digest \
+             was ever computed; stderr={stderr}",
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(5),
+            "{situation} must be reported as the documented \"no usable digest tool\" code; \
+             stderr={stderr}",
+        );
+        assert!(
+            stderr.contains("could not compute a SHA-256"),
+            "the failure must name the cause; stderr={stderr}",
+        );
+
+        let binary = install_dir.join(format!("{}{}", binary_name(), version_suffix()));
+        assert!(
+            !binary.exists(),
+            "nothing was verified, so nothing may be installed at {binary:?}",
+        );
+
+        drop(home);
+    }
+}
+
+/// No code in the script's contract may collide with a status bash emits on its own behalf:
+/// 1 (general error), 2 (usage/parse error), 126 (found but not executable), 127 (not found)
+/// and 128+N (killed by signal N).
+///
+/// The ERR trap cannot backstop those. A parse error in particular aborts the interpreter
+/// before any trap is installed, so bash exits 2 with nothing to remap it — and a parse error
+/// is a reachable outcome here, because `install_script` builds this script by substituting
+/// placeholders into it at runtime. While `EXIT_UNSUPPORTED_PLATFORM` was 2, a script bash
+/// refused to parse arrived at the client claiming the remote host had an unsupported
+/// architecture. Codes outside bash's reserved set instead land in the client's
+/// unrecognised-code branch, which fails closed.
+///
+/// 255 is excluded for the same reason one layer up: it is OpenSSH's own error status, and
+/// `classify_install_failure` reads it as an SSH-level transport failure.
+#[test]
+fn install_script_exit_codes_avoid_bash_reserved_statuses() {
+    let script = install_script(None);
+    let declared: Vec<(String, i32)> = script
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("EXIT_")?.split_once('='))
+        .filter_map(|(name, value)| Some((format!("EXIT_{name}"), value.trim().parse().ok()?)))
+        .collect();
+
+    assert!(
+        declared.len() >= 8,
+        "expected the script to declare its exit-code contract as EXIT_*= assignments, \
+         found {declared:?}",
+    );
+
+    for (name, code) in &declared {
+        let reserved = matches!(*code, 0 | 1 | 2 | 126 | 127 | 255) || (128..=192).contains(code);
+        assert!(
+            !reserved,
+            "{name}={code} collides with a status bash (or ssh) emits on its own behalf, so \
+             the client cannot tell this script's verdict from the interpreter failing before \
+             it ever reached one",
+        );
+    }
+
+    for (index, (name, code)) in declared.iter().enumerate() {
+        for (other_name, other_code) in &declared[index + 1..] {
+            assert_ne!(
+                code, other_code,
+                "{name} and {other_name} share exit {code}, which fuses two outcomes the \
+                 client has to tell apart",
+            );
+        }
+    }
 }
 
 /// The regression this pins is the one a previous round shipped: `set -e` plus an unguarded
@@ -912,11 +1030,10 @@ fn run_download_install_with_failing_curl(
 
     let shim_dir = home_path.join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
-    let curl_shim = shim_dir.join("curl");
-    std::fs::write(&curl_shim, format!("#!/bin/sh\nexit {curl_status}\n")).unwrap();
-    let mut perms = std::fs::metadata(&curl_shim).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&curl_shim, perms).unwrap();
+    write_shim(
+        &shim_dir.join("curl"),
+        &format!("#!/bin/sh\nexit {curl_status}\n"),
+    );
 
     // Pin a digest so the script takes the download branch rather than the fail-closed
     // "no pinned digest" branch. Its value is irrelevant: no bytes ever arrive.
@@ -968,6 +1085,7 @@ enum DigestUnderTest {
 #[cfg(unix)]
 fn run_download_install_with_digest(
     which: DigestUnderTest,
+    digest_tool_shim: Option<&str>,
 ) -> (
     tempfile::TempDir,
     std::path::PathBuf,
@@ -1003,20 +1121,24 @@ fn run_download_install_with_digest(
     // invokes it; everything else is ignored.
     let shim_dir = home_path.join("shim");
     std::fs::create_dir_all(&shim_dir).unwrap();
-    let curl_shim = shim_dir.join("curl");
-    std::fs::write(
-        &curl_shim,
-        format!(
+    write_shim(
+        &shim_dir.join("curl"),
+        &format!(
             "#!/bin/sh\nout=\"\"\nprev=\"\"\nfor a in \"$@\"; do\n  \
              if [ \"$prev\" = \"-o\" ]; then out=\"$a\"; fi\n  prev=\"$a\"\ndone\n\
              if [ -z \"$out\" ]; then exit 1; fi\ncp {} \"$out\"\n",
             tarball.display()
         ),
-    )
-    .unwrap();
-    let mut perms = std::fs::metadata(&curl_shim).unwrap().permissions();
-    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-    std::fs::set_permissions(&curl_shim, perms).unwrap();
+    );
+
+    // Optionally shadow every SHA-256 tool the script knows how to use, so what the script
+    // does when it cannot compute a digest does not depend on which tools the machine running
+    // the test happens to have installed.
+    if let Some(body) = digest_tool_shim {
+        for tool in ["sha256sum", "shasum", "openssl"] {
+            write_shim(&shim_dir.join(tool), body);
+        }
+    }
 
     // Pin the digest into every platform arm so the test does not depend on which platform
     // it happens to run on.
@@ -1048,6 +1170,17 @@ fn run_download_install_with_digest(
         remote_server_dir().replacen('~', home_path.to_str().unwrap(), 1),
     );
     (home, install_dir, output)
+}
+
+/// Writes `body` to `path` and makes it executable — a stand-in for whichever tool `path` is
+/// named after. The shims live in a directory prepended to `PATH`, so the script's own
+/// `command -v` finds them ahead of the real tools.
+#[cfg(unix)]
+fn write_shim(path: &std::path::Path, body: &str) {
+    std::fs::write(path, body).unwrap();
+    let mut perms = std::fs::metadata(path).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(path, perms).unwrap();
 }
 
 #[cfg(unix)]
