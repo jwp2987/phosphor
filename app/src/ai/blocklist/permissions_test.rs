@@ -10,19 +10,20 @@ use warp_core::execution_mode::ExecutionMode;
 
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::{
+    GlobalResourceHandles, GlobalResourceHandlesProvider, LaunchMode,
     ai::{
         agent::conversation::AIConversationId,
         blocklist::{
+            CommandExecutionPermissionAllowedReason,
             permissions::{
                 CommandExecutionPermission, CommandExecutionPermissionDeniedReason,
                 FileReadPermission, FileReadPermissionAllowedReason,
                 FileReadPermissionDeniedReason, FileWritePermission,
                 FileWritePermissionAllowedReason, FileWritePermissionDeniedReason,
             },
-            CommandExecutionPermissionAllowedReason,
         },
         execution_profiles::{
-            profiles::AIExecutionProfilesModel, ActionPermission, WriteToPtyPermission,
+            ActionPermission, WriteToPtyPermission, profiles::AIExecutionProfilesModel,
         },
         mcp::templatable_manager::TemplatableMCPServerManager,
     },
@@ -33,7 +34,6 @@ use crate::{
     settings::{AISettings, AgentModeCommandExecutionPredicate, PrivacySettings},
     test_util::settings::initialize_settings_for_tests_with_mode,
     workspaces::{user_workspaces::UserWorkspaces, workspace::SandboxedAgentSettings},
-    GlobalResourceHandles, GlobalResourceHandlesProvider, LaunchMode,
 };
 
 use super::{BlocklistAIHistoryModel, BlocklistAIPermissions};
@@ -628,11 +628,9 @@ fn test_can_autoexecute_command_denylist_precedence() {
             model.setup_test_workspace(ctx);
             model.update_ai_autonomy_settings(
                 |settings| {
-                    settings.execute_commands_denylist =
-                        Some(vec![AgentModeCommandExecutionPredicate::new_regex(
-                            "git .*",
-                        )
-                        .unwrap()]);
+                    settings.execute_commands_denylist = Some(vec![
+                        AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap(),
+                    ]);
                 },
                 ctx,
             );
@@ -1327,11 +1325,9 @@ fn test_sandboxed_denylist_used_in_sandboxed_mode() {
             // Regular workspace denylist blocks "git .*".
             model.update_ai_autonomy_settings(
                 |settings| {
-                    settings.execute_commands_denylist =
-                        Some(vec![AgentModeCommandExecutionPredicate::new_regex(
-                            "git .*",
-                        )
-                        .unwrap()]);
+                    settings.execute_commands_denylist = Some(vec![
+                        AgentModeCommandExecutionPredicate::new_regex("git .*").unwrap(),
+                    ]);
                 },
                 ctx,
             );
@@ -1558,9 +1554,180 @@ fn test_can_autoexecute_command_denylist_matches_env_prefixed_commands() {
     })
 }
 
+#[test]
+fn test_can_autoexecute_command_denylist_matches_quoted_command_names() {
+    // Regression test for the one-quote-character denylist bypass. Every command below is
+    // executed by the shell as `rm -rf ~`; before `denylist_match_candidates` existed the
+    // denylist matched the text exactly as typed, so an `rm .*` rule caught only the first
+    // spelling and a model could evade any user or org rule by adding one quote.
+    //
+    // NOTE: this is a deliberate divergence from the pin (`42effe840`), which has the same
+    // hole. If a re-pin makes this test fail, the pinned code has been restored verbatim and
+    // the bypass is back -- reinstate the fix, do not delete the test.
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
 
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("rm .*").unwrap(),
+                ctx,
+            );
+        });
+
+        for command in [
+            // the spelling that already worked, as a control
+            "rm -rf ~",
+            // fully quoted command name
+            "\"rm\" -rf ~",
+            "'rm' -rf ~",
+            // adjacent concatenation of quoted and unquoted segments
+            "r\"m\" -rf ~",
+            "\"r\"m -rf ~",
+            "'r'\"m\" -rf ~",
+            // backslash escapes: mid-word, and the leading form the parser keeps for aliases
+            "r\\m -rf ~",
+            "\\rm -rf ~",
+            // leading `$` before a quoted segment (ANSI-C / locale-translation quoting)
+            "$'rm' -rf ~",
+            "$\"rm\" -rf ~",
+            // quoting in the arguments rather than the command name
+            "rm \"-rf\" ~",
+            // quoting combined with the env-var prefix, and inside compound commands
+            "X=1 \"rm\" -rf ~",
+            "echo ok && 'rm' -rf ~",
+            "echo $(\"rm\" -rf ~)",
+        ] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{command:?} runs `rm` and should be denied by the `rm .*` rule, got {result:?}"
+                );
+            });
+        }
+
+        // Unquoting must not make the denylist match things it should not: a quoted `git` is
+        // still `git`, and no amount of normalisation turns it into `rm`.
+        for command in ["\"git\" status", "'git' status", "g\"i\"t status"] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Allowed(
+                            CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                        )
+                    ),
+                    "{command:?} should not be caught by the `rm .*` rule, got {result:?}"
+                );
+            });
+        }
+    })
+}
 
 #[test]
+fn test_can_autoexecute_command_denylist_normalisation_never_falls_open() {
+    // `denylist_match_candidates` only ever *adds* spellings; the text as typed stays in the
+    // candidate set. Both halves below pin that, because the natural way to write the fix --
+    // replacing the command text with its normalised form -- silently stops matching rules
+    // written against the original text. The previous helper did exactly that with the
+    // env-var prefix, which is what the first half covers.
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            convo_id,
+            permissions,
+            profile_model,
+            terminal_view_id,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+            model.set_execute_commands(profile_id, &ActionPermission::AlwaysAllow, ctx);
+            // A rule written against the env-var prefix itself.
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex("X=1 rm .*").unwrap(),
+                ctx,
+            );
+            // A rule written against a command whose *name* cannot be resolved without
+            // running the shell, so normalisation has nothing to offer and the as-typed
+            // text is the only thing that can match.
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex(r"\$\(echo rm\) -rf /").unwrap(),
+                ctx,
+            );
+        });
+
+        for command in ["X=1 rm file.txt", "$(echo rm) -rf /"] {
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_autoexecute_command(
+                    &convo_id,
+                    command,
+                    EscapeChar::Backslash,
+                    false,
+                    None,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        CommandExecutionPermission::Denied(
+                            CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                        )
+                    ),
+                    "{command:?} matches a denylist rule as typed and must stay denied \
+                     regardless of what normalisation can or cannot resolve, got {result:?}"
+                );
+            });
+        }
+    })
+}
+
+// Vacuous here: `update_ai_autonomy_settings` writes `execute_commands_denylist = Some(vec![])`
+// into the *team's* organization settings, but `UserWorkspaces::current_team()` is hard-`None`
+// in this fork, so `workspace_autonomy_settings()` returns `Default` and
+// `get_execute_commands_denylist_for_profile` always takes the `None => user_denylist` arm.
+// The `Some(org_denylist)` merge arm this was written to guard (kept verbatim from the pin,
+// `42effe840:permissions.rs:410-421`) is unreachable, so the assertion below holds against the
+// pre-fix code too. Ignored rather than deleted, matching the nine siblings above: the merge
+// logic is correct and the test becomes a real regression test the day #445 gives
+// `current_team()` a producer. See DECLINED.md, "Workspace / team AI-autonomy and
+// sandboxed-agent overrides".
+#[test]
+#[ignore = "workspace/team AI-autonomy overrides are dropped in the BYOP fork: UserWorkspaces::current_team() is stubbed to None (no cloud teams), so permissions fall back to profile settings by design"]
 fn test_empty_org_denylist_allows_user_entries() {
     App::test((), |mut app| async move {
         let PermissionsTestState {

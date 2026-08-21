@@ -104,6 +104,44 @@ pub fn command_without_leading_env_vars<S: AsRef<str>>(
     command.item.source(source)
 }
 
+/// Returns the parts of the first command in `source` with shell quoting and escaping
+/// **removed**, and leading env-var assignments stripped.
+///
+/// Every other API in this module that hands back command text — [`decompose_command`],
+/// [`command_without_leading_env_vars`], `Command::source` — slices the raw `source` by span,
+/// so quotes survive exactly as typed. That is right for anything that displays the command
+/// back to the user, and wrong for anything that has to reason about what the shell will
+/// actually run: `rm -rf ~`, `"rm" -rf ~`, `'rm' -rf ~`, `r"m" -rf ~` and `\rm -rf ~` are five
+/// spellings of one command. This returns the shell's view of it — `["rm", "-rf", "~"]` for
+/// all five (see the caller's notes for the `\` and `$'...'` residue it does not strip).
+///
+/// The only caller today is the Agent Mode command denylist
+/// (`app/src/ai/blocklist/permissions.rs`), which matches anchored regexes against command
+/// text and would otherwise be defeated by a single quote character.
+///
+/// Subshell parts render as the `$(...)` placeholder rather than being evaluated, so a command
+/// whose *name* comes from a subshell (`$(echo rm) -rf ~`) cannot be resolved here. Callers
+/// must treat that as "unknown" and fail closed, never as "no match".
+///
+/// Returns `None` if `source` contains no command at all.
+pub fn unquoted_command_parts<S: AsRef<str>>(
+    source: S,
+    escape_char: EscapeChar,
+) -> Option<Vec<String>> {
+    let parser = Parser::new(Lexer::new(source.as_ref(), escape_char, false));
+    let mut command = parser.parse().commands.into_iter().next()?;
+    command.item.remove_leading_env_vars();
+
+    Some(
+        command
+            .item
+            .parts
+            .iter()
+            .map(|part| part.item.to_string())
+            .collect(),
+    )
+}
+
 /// Given a `command` string, returns:
 /// 1. the subcommands that make it up, including the recomposed commands at each level of nesting.
 ///    For example, given "ls $(foo | echo)", this API returns ["foo", "echo", "foo | echo", "ls $(foo | echo)"]

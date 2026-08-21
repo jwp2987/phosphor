@@ -7,8 +7,8 @@ use crate::{
     ai::{
         agent::conversation::AIConversationId,
         execution_profiles::{
-            profiles::{AIExecutionProfilesModel, ClientProfileId},
             AIExecutionProfile, ActionPermission, AskUserQuestionPermission, WriteToPtyPermission,
+            profiles::{AIExecutionProfilesModel, ClientProfileId},
         },
     },
     report_if_error,
@@ -17,13 +17,15 @@ use crate::{
 };
 use warp_core::execution_mode::AppExecutionMode;
 
-use crate::ai::mcp::mcp_provider_from_file_path;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
+use crate::ai::mcp::mcp_provider_from_file_path;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use warp_completer::parsers::simple::{command_without_leading_env_vars, decompose_command};
+use warp_completer::parsers::simple::{
+    command_without_leading_env_vars, decompose_command, unquoted_command_parts,
+};
 use warp_core::user_preferences::GetUserPreferences;
 use warp_core::{features::FeatureFlag, settings::Setting};
 use warp_util::path::EscapeChar;
@@ -900,11 +902,11 @@ impl BlocklistAIPermissions {
         // The command string might be composed of multiple commands so let's
         // break it up first.
         let (commands, contains_redirection) = decompose_command(&normalized_command, escape_char);
-        // Match denylist predicates against each subcommand with its leading env-var
-        // assignments stripped, so `X=1 rm file.txt` cannot slip past an `rm .*` rule.
-        let commands_for_denylist = commands
+        // Match denylist predicates against every shell-equivalent spelling of each
+        // subcommand, not just the one the model typed. See `denylist_match_candidates`.
+        let denylist_candidates_per_command = commands
             .iter()
-            .map(|command| command_for_execution_predicates(command, escape_char))
+            .map(|command| denylist_match_candidates(command, escape_char))
             .collect::<Vec<_>>();
 
         // Local auto-approve may bypass the user-configured denylist, but workspace policy must
@@ -926,10 +928,11 @@ impl BlocklistAIPermissions {
             // Without the bypass, enforce both the organization and user denylists.
             self.get_execute_commands_denylist(ctx, terminal_view_id)
         };
-        if commands_for_denylist
-            .iter()
-            .any(|c| denylist.iter().any(|d| d.matches(c)))
-        {
+        if denylist_candidates_per_command.iter().any(|candidates| {
+            candidates
+                .iter()
+                .any(|c| denylist.iter().any(|d| d.matches(c)))
+        }) {
             return CommandExecutionPermission::Denied(
                 CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted,
             );
@@ -1264,10 +1267,115 @@ pub fn is_agent_mode_autonomy_allowed(ctx: &AppContext) -> bool {
     crate::UserWorkspaces::as_ref(ctx).is_ai_autonomy_allowed()
 }
 
-fn command_for_execution_predicates(command: &str, escape_char: EscapeChar) -> String {
-    command_without_leading_env_vars(command, escape_char)
-        .filter(|command| !command.is_empty())
-        .unwrap_or_else(|| command.to_string())
+/// Every spelling of `command` that the denylist must be matched against.
+///
+/// # Why this exists (deliberate divergence from the pin, `42effe840`)
+///
+/// A denylist entry is an *anchored* regex (`AgentModeCommandExecutionPredicate`) matched
+/// against command text produced by `decompose_command`, which slices the raw source by span
+/// and therefore returns the text **exactly as the model typed it, quotes included**. So an
+/// entry of `rm .*` matches `rm -rf ~` but not `"rm" -rf ~`, `'rm' -rf ~`, `r"m" -rf ~` or
+/// `\rm -rf ~` — spellings the shell executes identically. One quote character defeats every
+/// user- and org-configured denylist rule.
+///
+/// This is pin-parity behaviour: upstream has the same hole. Fixing it here is therefore an
+/// intentional divergence, **not** a port regression. *Do not revert this when moving the pin*
+/// unless upstream has fixed it too; a re-pin that restores the pinned text verbatim silently
+/// reopens the bypass.
+///
+/// # Why the normalisation lives here and not in `warp_completer`
+///
+/// `decompose_command`'s output is also what command x-ray shows the user, what error
+/// underlining consumes, and what the *allow*list is matched against. Normalising at the
+/// parser would change all three. Two of those changes are actively bad: widening an allowlist
+/// match is the unsafe direction (it grants execution rather than withholding it), and a
+/// denylist that normalises differently from the text shown to the user is its own hazard.
+/// So the completer keeps returning text as typed for every existing consumer, gains one
+/// additive API (`unquoted_command_parts`) because the unquoting logic belongs with the
+/// lexer and not re-implemented inside the security layer, and only the deny decision here
+/// looks at the extra spellings.
+///
+/// # Fail-closed by construction
+///
+/// The as-typed text is always the first candidate, and candidates are only ever *added*.
+/// This function can therefore deny strictly more than before and never less — including when
+/// the command name cannot be resolved at all (`$(echo rm) -rf ~`), where the as-typed text is
+/// still matched rather than being silently dropped from the decision. This also repairs a
+/// smaller fail-open in the previous version, which *replaced* the raw text with its
+/// env-var-stripped form and so stopped matching rules written against the prefix.
+///
+/// # Handled
+///
+/// - `"rm" -rf ~`, `'rm' -rf ~` — fully quoted command name
+/// - `"r"m -rf ~`, `r"m" -rf ~`, `'r'"m" -rf ~` — adjacent concatenation of quoted segments
+/// - `r\m -rf ~`, mid-word backslash escapes (the completer's parser already drops these)
+/// - `\rm -rf ~` — leading escape char, which the parser deliberately *keeps* so `\ls` can
+///   defeat an alias; stripped again here for matching only
+/// - `$'rm' -rf ~`, `$"rm" -rf ~` — leading `$` before a quoted segment
+/// - `X=1 rm file` — leading env-var assignments, including quoted ones (`"X"=1 rm file`)
+/// - quoting anywhere in the *arguments*, e.g. `rm "-rf" ~`, since all parts are unquoted
+/// - any combination of the above, and the same forms inside `$(...)`/backtick subshells,
+///   because `decompose_command` already hands each subcommand here separately
+///
+/// # Not handled (explicit residue, not an oversight)
+///
+/// - ANSI-C escape *decoding* inside `$'...'`: `$'\x72m'` and `$'\162m'` run `rm` and are not
+///   recognised. The completer's lexer keeps single-quoted content verbatim; decoding it would
+///   mean teaching the lexer a bash-only escape dialect, which changes tokenisation for every
+///   consumer — the blast radius this function exists to avoid.
+/// - Command prefixes: `command rm`, `env rm`, `exec rm`, `sudo rm`, `nohup`, `nice`,
+///   `timeout`, `stdbuf`, `setsid`, `xargs rm`. This set is open-ended and each member has its
+///   own option grammar (`env -i`, `env X=1`, `timeout 5s`), so a partial list would create
+///   false confidence. Deliberately out of scope; a denylist that wants to stop these should
+///   also carry entries for the prefixes themselves (as the default denylist does for shells).
+/// - Any indirection that needs the shell to be *evaluated*: `R=rm; $R -rf ~`, `${R} -rf ~`,
+///   `$(echo rm) -rf ~`, shell aliases and functions, `eval`.
+/// - Path equivalence: `/bin/rm`, `./rm`, `busybox rm` are different text and stay different.
+/// - Encoded payloads piped to an interpreter (`... | base64 -d | sh`). The interpreter itself
+///   is on the default denylist; the general class is not solvable here.
+///
+/// The residue is real, and it is bounded by what can be decided without executing the
+/// command. What it is *not* is a one-character bypass.
+fn denylist_match_candidates(command: &str, escape_char: EscapeChar) -> Vec<String> {
+    fn push(candidates: &mut Vec<String>, candidate: String) {
+        if !candidate.is_empty() && !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+
+    // As typed, always first: whatever is added below, the denylist must never match *less*
+    // than it did before this function existed.
+    let mut candidates = vec![command.to_string()];
+
+    // Leading env-var assignments stripped, still as typed: `X=1 rm file.txt` -> `rm file.txt`.
+    if let Some(stripped) = command_without_leading_env_vars(command, escape_char) {
+        push(&mut candidates, stripped);
+    }
+
+    // The shell's own view: quoting and escaping removed from every part.
+    if let Some(parts) = unquoted_command_parts(command, escape_char) {
+        if !parts.is_empty() {
+            push(&mut candidates, parts.join(" "));
+
+            // Two prefixes survive unquoting and still name the same program: a leading escape
+            // char (`\rm`, which the parser keeps so alias-escaping round-trips) and a leading
+            // `$` left behind by `$'rm'` / `$"rm"`.
+            let escape = match escape_char {
+                EscapeChar::Backslash => '\\',
+                EscapeChar::Backtick => '`',
+            };
+            let unprefixed = parts[0]
+                .trim_start_matches(|c| c == escape || c == '$')
+                .to_string();
+            if unprefixed != parts[0] {
+                let mut unprefixed_parts = parts;
+                unprefixed_parts[0] = unprefixed;
+                push(&mut candidates, unprefixed_parts.join(" "));
+            }
+        }
+    }
+
+    candidates
 }
 
 #[cfg(test)]
