@@ -1304,6 +1304,17 @@ pub(crate) fn convert_tool_call_result_to_input(
             })
         }
         Some(ToolCallResultType::RequestComputerUseResult(result)) => {
+            // SECURITY: this arm runs on BOTH the restore path (`ConvertToExchanges` rebuilding
+            // a conversation out of persisted `api::Task` messages) and the live path
+            // (`task.rs` ingesting a streamed `ToolCallResult`), and produces the same value
+            // either way — so a computer-use approval granted months ago is indistinguishable
+            // here from one granted a second ago. It is deliberately left that way: the result
+            // still has to render, and rewriting history here would be lossy. The expiry lives
+            // one level up instead, where the two are still distinguishable:
+            // `AIConversation::new_restored_synthesizing_on_empty` snapshots the approvals
+            // present at restore and `has_approved_computer_use` excludes them, so a
+            // months-old approval cannot silently re-arm `use_computer` in a new session.
+            // Changing the shape of what this produces means checking that gate still matches.
             let request_result = match &result.result {
                 Some(api::request_computer_use_result::Result::Approved(approved)) => {
                     match (approved, convert_api_platform(approved.platform)) {

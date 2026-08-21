@@ -51,7 +51,20 @@ impl UseComputerExecutor {
         // Returning false is not a denial: the action falls through to the normal
         // confirmation path in `try_to_execute_action`, so the unapproved case costs the user
         // one prompt -- the prompt they were promised -- rather than silent control of the
-        // machine. An unknown conversation (not in memory) is treated the same way.
+        // machine. An unknown conversation (not in memory) is treated the same way: the
+        // `is_some_and` fails CLOSED, "absent" is not "ok".
+        //
+        // For this verdict to mean anything it has to survive
+        // `try_to_execute_action`. `needs_confirmation` is `!(stood_in_for || can_auto_execute
+        // || ...)`, so any caller able to stand in for the confirmation discards whatever this
+        // returns. When this gate first landed, the LRC alt-screen tag-in path
+        // (`queue_actions_with_options(auto_accept=true)`) reached the executor as a forged
+        // `is_user_initiated=true` and did exactly that -- the gate was computed and thrown
+        // away on the one path that most needed it. `ActionInitiator::AutoAcceptedTagIn` now
+        // withholds that authority for `UseComputer` and `RequestComputerUse`, so on every
+        // path except a literal user click on this action's own Accept button, this function's
+        // answer is the one that decides. Keep the two in step: widening
+        // `ActionInitiator::can_stand_in_for_confirmation` re-opens this hole silently.
         //
         // Deliberately NOT re-checked here: the profile's own always-allow setting. This
         // executor is constructed without a `terminal_view_id` (`execute.rs`:
@@ -60,9 +73,17 @@ impl UseComputerExecutor {
         // narrow it. Always-allow profiles are unaffected in practice: their
         // `request_computer_use` auto-executes (`request_computer_use.rs::should_autoexecute`)
         // and records the approval this reads.
-        BlocklistAIHistoryModel::as_ref(ctx)
+        let approved = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
-            .is_some_and(|conversation| conversation.has_approved_computer_use())
+            .is_some_and(|conversation| conversation.has_approved_computer_use());
+        if !approved {
+            log::info!(
+                "[computer-use] use_computer action {:?} has no in-session approval for \
+                 conversation {conversation_id:?}; routing to the confirmation prompt",
+                action.id
+            );
+        }
+        approved
     }
 
     pub(super) fn execute(

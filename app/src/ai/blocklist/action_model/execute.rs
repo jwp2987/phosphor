@@ -222,6 +222,70 @@ impl NotExecutedReason {
     }
 }
 
+/// Who is asking for a pending action to run.
+///
+/// This replaces a bare `is_user_initiated: bool`. The bool had exactly two producers at the
+/// pin (`42effe840:app/src/ai/blocklist/action_model.rs:767,782`), both of them genuine user
+/// clicks, so a bool was enough there. This fork added a third
+/// (`BlocklistAIActionModel::queue_actions_with_options(auto_accept=true)`, which has no
+/// counterpart at the pin) that passed `true` for something the user never clicked, and the
+/// bool gave it the full authority of a click. Splitting the cases means a new caller has to
+/// name which one it is instead of inheriting the strongest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ActionInitiator {
+    /// The agent's own turn: actions drain from the queue in order and every confirmation is
+    /// decided by `should_autoexecute` / the execution profile.
+    Agent,
+    /// The user clicked Accept (or Run, or answered the question) on this exact action's
+    /// confirmation UI. This is a real, specific, per-action approval.
+    User,
+    /// Zap: the LRC alt-screen tag-in override. The user tagged the agent in while a
+    /// long-running command owns the alt screen, so the Accept button is not rendered and a
+    /// confirmation prompt would deadlock the turn. The override answers a prompt the user
+    /// cannot see — which is why it is NOT `User`. See
+    /// `BlocklistAIActionModel::queue_actions_with_options`.
+    AutoAcceptedTagIn,
+}
+
+impl ActionInitiator {
+    /// Whether this initiator dequeues one specific action out of band, rather than draining
+    /// the queue in order. Those paths execute one action at a time so interactive
+    /// confirmations do not overlap in the UI.
+    pub(super) fn is_out_of_band(self) -> bool {
+        !matches!(self, Self::Agent)
+    }
+
+    /// Whether this initiator may stand in for the confirmation prompt on `action`.
+    ///
+    /// `User` may, for anything: it *is* the answer to the prompt.
+    ///
+    /// `AutoAcceptedTagIn` may for ordinary actions — that is the deadlock it exists to
+    /// break — but NOT for the computer-use pair. Two reasons, and both are load-bearing:
+    ///
+    /// * `UseComputer` drives the user's real mouse and keyboard. It is the one action whose
+    ///   confirmation cannot be reconstructed after the fact, and the whole point of
+    ///   `AIConversation::has_approved_computer_use` is that it be checked. Letting the
+    ///   override short-circuit `needs_confirmation` computes that verdict and discards it,
+    ///   which is precisely how the first attempt at this fix was defeated.
+    /// * `RequestComputerUse` is the approval prompt itself. Auto-accepting it would
+    ///   manufacture the very `RequestComputerUseResult::Approved` record the gate reads, so
+    ///   excluding only `UseComputer` would leave a one-hop laundering path.
+    ///
+    /// The cost is bounded: on this path a blocked computer-use action stays pending and the
+    /// turn waits, rather than the machine being driven with no prompt. Neither action is a
+    /// shell command, so neither is the thing holding the alt screen.
+    pub(super) fn can_stand_in_for_confirmation(self, action: &AIAgentActionType) -> bool {
+        match self {
+            Self::Agent => false,
+            Self::User => true,
+            Self::AutoAcceptedTagIn => !matches!(
+                action,
+                AIAgentActionType::UseComputer(_) | AIAgentActionType::RequestComputerUse(_)
+            ),
+        }
+    }
+}
+
 /// Result type for `BlocklistAIActionExecutor::try_to_execute_action`.
 #[derive(Debug)]
 pub(super) enum TryExecuteResult {
@@ -504,12 +568,12 @@ impl BlocklistAIActionExecutor {
         &mut self,
         action: AIAgentAction,
         conversation_id: AIConversationId,
-        is_user_initiated: bool,
+        initiator: ActionInitiator,
         ctx: &mut ModelContext<Self>,
     ) -> TryExecuteResult {
         log::info!(
             "[byop-diag] executor.try_to_execute_action: enter action_id={:?} \
-             is_user_initiated={is_user_initiated}",
+             initiator={initiator:?}",
             action.id
         );
         // We should never actually execute actions in view-only mode.
@@ -536,18 +600,29 @@ impl BlocklistAIActionExecutor {
             action.id
         );
 
+        // Whether this caller may answer the confirmation prompt on this caller's behalf.
+        // NOT simply "the caller said user-initiated": the LRC tag-in override says that too,
+        // and it must not be able to say it about computer use. See
+        // `ActionInitiator::can_stand_in_for_confirmation`.
+        let confirmation_stood_in_for = initiator.can_stand_in_for_confirmation(&action.action);
+
         // The agent cannot auto execute and either:
         // - the agent is interactive, OR
         // - the agent is autonomous and the action was not requesting command output
-        let needs_confirmation = !(is_user_initiated
+        let needs_confirmation = !(confirmation_stood_in_for
             || can_auto_execute
             || (is_agent_autonomous && action.action.is_request_command_output()));
         if needs_confirmation {
+            log::info!(
+                "[byop-diag] executor: NotExecuted (NeedsConfirmation) action_id={:?} \
+                 initiator={initiator:?} can_auto_execute={can_auto_execute}",
+                action.id
+            );
             return TryExecuteResult::NotExecuted {
                 action: Box::new(action),
                 reason: NotExecutedReason::NeedsConfirmation,
             };
-        } else if !is_user_initiated && !can_auto_execute && is_agent_autonomous {
+        } else if !initiator.is_out_of_band() && !can_auto_execute && is_agent_autonomous {
             // It must be the case that the autonomous agent is requesting a denylisted command.
             if let AIAgentActionType::RequestCommandOutput { command, .. } = &action.action {
                 let action_id = action.id.clone();
@@ -1299,3 +1374,98 @@ async fn read_file_as_binary(file_path: &std::path::Path) -> Result<Vec<u8>, Fil
 #[cfg(all(test, feature = "local_fs"))]
 #[path = "execute_tests.rs"]
 mod tests;
+
+/// Inline because the natural home, `execute_tests.rs`, is gated on
+/// `feature = "local_fs"` and these assertions are about a pure decision function that has
+/// nothing to do with the filesystem.
+#[cfg(test)]
+mod initiator_tests {
+    use super::ActionInitiator;
+    use crate::ai::agent::{AIAgentActionType, RequestComputerUseRequest, UseComputerRequest};
+
+    fn use_computer() -> AIAgentActionType {
+        AIAgentActionType::UseComputer(UseComputerRequest {
+            action_summary: "Click the button".to_owned(),
+            actions: Vec::new(),
+            screenshot_params: None,
+        })
+    }
+
+    fn request_computer_use() -> AIAgentActionType {
+        AIAgentActionType::RequestComputerUse(RequestComputerUseRequest {
+            task_summary: "Drive the browser".to_owned(),
+            screenshot_params: None,
+        })
+    }
+
+    fn shell_command() -> AIAgentActionType {
+        AIAgentActionType::RequestCommandOutput {
+            command: "free -h".to_owned(),
+            is_read_only: Some(true),
+            is_risky: Some(false),
+            wait_until_completion: true,
+            uses_pager: Some(false),
+            rationale: None,
+            citations: Vec::new(),
+        }
+    }
+
+    /// The agent never answers its own confirmation prompt. This is the arm that makes
+    /// `should_autoexecute` and the execution profile the deciders on the ordinary path.
+    #[test]
+    fn the_agent_never_stands_in_for_a_confirmation() {
+        assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation(&shell_command()));
+        assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation(&use_computer()));
+        assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation(&request_computer_use()));
+    }
+
+    /// A real click on this action's own Accept button is the confirmation, so it stands in
+    /// for anything. Narrowing this arm would strand an approved `use_computer` in a
+    /// confirmation loop the user cannot escape by clicking Accept again.
+    #[test]
+    fn a_user_click_stands_in_for_any_confirmation() {
+        assert!(ActionInitiator::User.can_stand_in_for_confirmation(&shell_command()));
+        assert!(ActionInitiator::User.can_stand_in_for_confirmation(&use_computer()));
+        assert!(ActionInitiator::User.can_stand_in_for_confirmation(&request_computer_use()));
+    }
+
+    /// The whole point of splitting `ActionInitiator` out of `is_user_initiated: bool`.
+    ///
+    /// The tag-in override exists for the alt-screen deadlock, where a long-running shell
+    /// command owns the screen and the Accept button is never rendered — so it keeps its
+    /// authority over shell commands. It must NOT extend to computer use: `UseComputer`
+    /// drives the real mouse and keyboard, and `RequestComputerUse` is the approval prompt
+    /// whose result `AIConversation::has_approved_computer_use` reads, so auto-accepting it
+    /// would manufacture the approval one hop later.
+    ///
+    /// Reverting to the old behaviour (any out-of-band initiator standing in for every
+    /// confirmation) must turn the last two assertions red. If they stay green the test is
+    /// vacuous and pins nothing.
+    #[test]
+    fn the_tag_in_override_stops_at_computer_use() {
+        assert!(
+            ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&shell_command()),
+            "the alt-screen deadlock is about shell commands; the override must still break it"
+        );
+        assert!(
+            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&use_computer()),
+            "a tag-in must never silently grant control of the real mouse and keyboard"
+        );
+        assert!(
+            !ActionInitiator::AutoAcceptedTagIn
+                .can_stand_in_for_confirmation(&request_computer_use()),
+            "auto-accepting the approval prompt would forge the approval record itself"
+        );
+    }
+
+    /// Both out-of-band initiators dequeue one specific action rather than draining the queue,
+    /// so both keep the one-at-a-time serialisation in `start_pending_action_by_id`. This
+    /// pins that the security split did not quietly change the concurrency behaviour the old
+    /// `is_user_initiated=true` provided on the tag-in path.
+    #[test]
+    fn both_out_of_band_initiators_serialise() {
+        assert!(ActionInitiator::User.is_out_of_band());
+        assert!(ActionInitiator::AutoAcceptedTagIn.is_out_of_band());
+        assert!(!ActionInitiator::Agent.is_out_of_band());
+    }
+}

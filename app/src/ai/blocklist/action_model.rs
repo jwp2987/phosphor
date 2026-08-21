@@ -63,7 +63,7 @@ use crate::{
 };
 
 use self::execute::{
-    BlocklistAIActionExecutor, BlocklistAIActionExecutorEvent, NotExecutedReason,
+    ActionInitiator, BlocklistAIActionExecutor, BlocklistAIActionExecutorEvent, NotExecutedReason,
     RunningActionPhase, TryExecuteResult, ask_user_question::AskUserQuestionExecutor,
 };
 
@@ -482,7 +482,12 @@ impl BlocklistAIActionModel {
             }
 
             let Some(result) =
-                self.start_pending_action_by_id(&front_action.id, conversation_id, false, ctx)
+                self.start_pending_action_by_id(
+                    &front_action.id,
+                    conversation_id,
+                    ActionInitiator::Agent,
+                    ctx,
+                )
             else {
                 return;
             };
@@ -721,7 +726,12 @@ impl BlocklistAIActionModel {
         };
 
         if self
-            .start_pending_action_by_id(&pending_action_id, conversation_id, true, ctx)
+            .start_pending_action_by_id(
+                &pending_action_id,
+                conversation_id,
+                ActionInitiator::User,
+                ctx,
+            )
             .is_some_and(|result| matches!(result, StartedAction::Sync))
         {
             self.try_to_execute_available_actions(conversation_id, ctx);
@@ -729,6 +739,13 @@ impl BlocklistAIActionModel {
     }
 
     /// Attempts to execute the pending action with the given `action_id` for the given conversation.
+    ///
+    /// This is the **user clicked Accept** entry point, and every caller must be one: the
+    /// action runs with `ActionInitiator::User`, which stands in for the confirmation prompt
+    /// on any action, computer use included. Callers are the confirmation UIs in `block.rs`
+    /// and `inline_action/ask_user_question_view.rs`.
+    ///
+    /// A caller that is *not* a click does not belong here — see `auto_accept_action`.
     pub fn execute_action(
         &mut self,
         action_id: &AIAgentActionId,
@@ -736,7 +753,34 @@ impl BlocklistAIActionModel {
         ctx: &mut ModelContext<Self>,
     ) {
         if self
-            .start_pending_action_by_id(action_id, conversation_id, true, ctx)
+            .start_pending_action_by_id(action_id, conversation_id, ActionInitiator::User, ctx)
+            .is_some_and(|result| matches!(result, StartedAction::Sync))
+        {
+            self.try_to_execute_available_actions(conversation_id, ctx);
+        }
+    }
+
+    /// The LRC alt-screen tag-in override: run a queued action as though its confirmation had
+    /// been accepted, because the Accept button is not rendered and cannot be.
+    ///
+    /// Split out from `execute_action` deliberately. It used to *be* `execute_action`, which
+    /// meant the override arrived at the executor indistinguishable from a real click and
+    /// inherited a click's authority over every action type. `ActionInitiator::AutoAcceptedTagIn`
+    /// carries the same deadlock-breaking power for ordinary actions and none of it for
+    /// computer use — see `ActionInitiator::can_stand_in_for_confirmation`.
+    fn auto_accept_action(
+        &mut self,
+        action_id: &AIAgentActionId,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        if self
+            .start_pending_action_by_id(
+                action_id,
+                conversation_id,
+                ActionInitiator::AutoAcceptedTagIn,
+                ctx,
+            )
             .is_some_and(|result| matches!(result, StartedAction::Sync))
         {
             self.try_to_execute_available_actions(conversation_id, ctx);
@@ -817,12 +861,16 @@ impl BlocklistAIActionModel {
         &mut self,
         action_id: &AIAgentActionId,
         conversation_id: AIConversationId,
-        is_user_initiated: bool,
+        initiator: ActionInitiator,
         ctx: &mut ModelContext<Self>,
     ) -> Option<StartedAction> {
-        if is_user_initiated && self.running_actions.contains_key(&conversation_id) {
+        if initiator.is_out_of_band() && self.running_actions.contains_key(&conversation_id) {
             // User-driven approvals still execute one action at a time so that interactive
-            // confirmations do not overlap in the UI.
+            // confirmations do not overlap in the UI. `is_out_of_band` rather than "is the
+            // user" on purpose: the tag-in override dequeues out of order too, and this
+            // one-at-a-time serialisation is exactly what it used to get from the old
+            // `is_user_initiated=true`. Narrowing it here would be an unrelated behaviour
+            // change riding along with a security fix.
             return None;
         }
 
@@ -840,10 +888,10 @@ impl BlocklistAIActionModel {
         let phase = self.action_phase_for_action(&action, ctx);
         log::info!(
             "[byop-diag] try_to_execute_action: enter action_id={action_id:?} \
-             is_user_initiated={is_user_initiated} phase={phase:?}"
+             initiator={initiator:?} phase={phase:?}"
         );
         let execute_result = self.executor.update(ctx, |executor, ctx| {
-            executor.try_to_execute_action(action, conversation_id, is_user_initiated, ctx)
+            executor.try_to_execute_action(action, conversation_id, initiator, ctx)
         });
 
         match execute_result {
@@ -919,27 +967,35 @@ impl BlocklistAIActionModel {
     ///
     /// When `auto_accept=true`, after preprocessing finishes
     /// (`handle_preprocess_actions_results`) and each action is pushed into
-    /// pending_actions, **`execute_action` is called immediately for each one**
-    /// (taking the `is_user_initiated=true` path internally, bypassing the
-    /// `NeedsConfirmation` check), instead of the default
-    /// `try_to_execute_available_actions` (`is_user_initiated=false`).
+    /// pending_actions, **`auto_accept_action` is called immediately for each one**
+    /// (running it as `ActionInitiator::AutoAcceptedTagIn`, which stands in for the
+    /// `NeedsConfirmation` prompt), instead of the default
+    /// `try_to_execute_available_actions` (`ActionInitiator::Agent`).
     ///
     /// Use case: the LRC tag-in scenario on the Zap BYOP path — the user proactively
     /// hands control to the agent via SetInputModeAgent, but in full alt-screen mode
     /// the RequestedCommand Accept button isn't visible. Once the controller detects
     /// the LRC state, this method sidesteps the manual-confirmation deadlock.
     ///
-    /// **`auto_accept=true` overrides the execution profile.** Forging
-    /// `is_user_initiated=true` short-circuits `needs_confirmation`, so a profile set
-    /// to `Always ask` has its `can_auto_execute=false` computed and then discarded.
-    /// That is only defensible in the deadlock case above — where there is no Accept
-    /// button to answer — and the caller is responsible for establishing it. The sole
-    /// caller gates on `ResponseStream::is_lrc_tag_in_without_confirmation_ui`, which
-    /// requires the alt screen to actually be held.
+    /// **`auto_accept=true` overrides the execution profile.** Standing in for the
+    /// confirmation short-circuits `needs_confirmation`, so a profile set to `Always ask`
+    /// has its `can_auto_execute=false` computed and then discarded. That is only
+    /// defensible in the deadlock case above — where there is no Accept button to answer
+    /// — and the caller is responsible for establishing it. The sole caller gates on
+    /// `ResponseStream::is_lrc_tag_in_without_confirmation_ui`, which requires the alt
+    /// screen to actually be held.
     ///
     /// It previously gated on the tag-in alone. The deadlock only exists in alt
     /// screen, but the override applied to every tag-in, so ordinary sessions with a
     /// visible Accept button auto-ran whatever the model chose first — #617.
+    ///
+    /// **The override stops at computer use.** It used to reach the executor as a forged
+    /// `is_user_initiated=true`, indistinguishable from a real click, which meant it also
+    /// discarded `UseComputerExecutor::should_autoexecute` — i.e. it silently defeated the
+    /// computer-use approval gate, on a path that grants control of the real mouse and
+    /// keyboard. `ActionInitiator::AutoAcceptedTagIn` keeps the profile override for
+    /// ordinary actions and withholds it for `UseComputer`/`RequestComputerUse`; see
+    /// `ActionInitiator::can_stand_in_for_confirmation` for why both are excluded.
     ///
     /// Note this is a no-op EXCEPT when it overrides a denial: when
     /// `can_auto_execute` is true the default path executes the action anyway. So any
@@ -1065,16 +1121,20 @@ impl BlocklistAIActionModel {
         }
         if auto_accept && !auto_accept_ids.is_empty() {
             // Zap: LRC tag-in auto-authorization path. Bypasses the default
-            // try_to_execute_available_actions (is_user_initiated=false) and calls
-            // execute_action directly on each just-pushed action (equivalent to a
-            // user Accept).
+            // try_to_execute_available_actions (ActionInitiator::Agent) and dequeues each
+            // just-pushed action directly, standing in for an Accept the user cannot click.
+            //
+            // NOT `execute_action`: that is the real-click entry point and grants
+            // ActionInitiator::User, i.e. authority over every action type. This path grants
+            // ActionInitiator::AutoAcceptedTagIn, which breaks the alt-screen deadlock and
+            // leaves the computer-use approval gate standing.
             log::info!(
                 "[byop-diag] queue_actions_with_options(auto_accept=true): \
-                 invoking execute_action for {} action(s)",
+                 invoking auto_accept_action for {} action(s)",
                 auto_accept_ids.len()
             );
             for action_id in auto_accept_ids {
-                self.execute_action(&action_id, conversation_id, ctx);
+                self.auto_accept_action(&action_id, conversation_id, ctx);
             }
         } else {
             self.try_to_execute_available_actions(conversation_id, ctx);

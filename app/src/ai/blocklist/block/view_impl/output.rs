@@ -12,6 +12,7 @@ use crate::ai::agent_providers::attachment_caps;
 use crate::util::truncation::truncate_from_end;
 use ai::agent::file_locations::group_file_contexts_for_display;
 
+use crate::ai::agent::conversation::AIConversation;
 use crate::ai::blocklist::block::view_impl::common::{
     MaybeShimmeringText, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
     BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
@@ -19,6 +20,7 @@ use crate::ai::blocklist::block::view_impl::common::{
 use crate::ai::blocklist::inline_action::aws_bedrock_credentials_error::AwsBedrockCredentialsErrorView;
 use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDocumentAction;
 use crate::ai::blocklist::secret_redaction::SecretRedactionState;
+use crate::ai::blocklist::usage::rollup::compute_orchestration_rollup;
 use crate::ai::blocklist::view_util::format_credits;
 use crate::ai::skills::SkillOpenOrigin;
 use crate::ai::skills::{icon_override_for_skill_name, render_skill_button, skill_path_from_location};
@@ -2736,6 +2738,49 @@ fn render_response_footer(props: Props, app: &AppContext) -> Option<Box<dyn Elem
     Some(flex.finish().with_content_item_spacing().finish())
 }
 
+/// The credit total the collapsed usage pill puts on screen.
+///
+/// For an orchestrator this is the orchestration rollup — its own spend plus
+/// every locally-loaded descendant's — so the pill agrees with the expanded
+/// footer's "Credits spent (total)" headline, which
+/// `ConversationUsageView::headline_total_credits` derives from the same
+/// [`compute_orchestration_rollup`] call (PRODUCT invariants 11, 11b; pin
+/// `42effe840:app/src/ai/blocklist/block/view_impl/output.rs:3686-3697`).
+/// Using `conversation.credits_spent()` here instead would show an
+/// orchestrator only its own spend while the footer beneath it listed a
+/// larger, child-inclusive total.
+///
+/// The rollup helper returns `None` for a conversation with no locally-loaded
+/// descendants, and for one whose whole tree has spent nothing; both fall back
+/// to this conversation's own spend, which in those cases *is* the tree's
+/// spend.
+fn usage_pill_headline_credits(
+    conversation: &AIConversation,
+    history: &BlocklistAIHistoryModel,
+) -> f32 {
+    compute_orchestration_rollup(conversation.id(), history)
+        .map(|rollup| rollup.total_credits)
+        .unwrap_or_else(|| conversation.credits_spent())
+}
+
+/// Whether the usage button should be rendered at all.
+///
+/// A forked conversation resumed mid-way through a prior one can arrive
+/// without any `ConversationUsageMetadata`, and for those the button is
+/// suppressed rather than showing a meaningless zero.
+///
+/// `headline_credits` must be [`usage_pill_headline_credits`]'s
+/// rollup-inclusive number, not `conversation.credits_spent()`: an
+/// orchestrator that has spent nothing itself but whose children have spent
+/// still has usage to show, and testing its own spend would deny it the
+/// button entirely, hiding the spend from the user with no way to reach it.
+fn usage_pill_has_any_usage(conversation: &AIConversation, headline_credits: f32) -> bool {
+    headline_credits > 0.0
+        || conversation.credits_spent_for_last_block().is_some()
+        || !conversation.token_usage().is_empty()
+        || conversation.tool_usage_metadata().total_tool_calls() > 0
+}
+
 /// Renders the usage button that, on click, will expand & collapse the usage summary footer.
 fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
     if UserWorkspaces::as_ref(app).is_byo_api_key_enabled() {
@@ -2746,14 +2791,30 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
         return Empty::new().finish();
     };
 
+    // Both the pill's headline number and the suppression check below run off
+    // the orchestration rollup (PRODUCT invariants 11, 11b). The `(+N)`
+    // last-block annotation further down deliberately stays bound to this
+    // conversation's own last block, matching the pin.
+    //
+    // Render cost: this runs on every render of the block footer.
+    // `compute_orchestration_rollup` walks the descendant index for this
+    // conversation, which for the overwhelmingly common non-orchestrator case
+    // is a single `children_by_parent` probe returning an empty slice — no
+    // allocation, no per-frame work worth memoising. An orchestrator pays an
+    // O(descendants) walk plus one display-name `String` per spending agent,
+    // which is small next to the element tree this function builds anyway, and
+    // it is the price of the pill and the footer being guaranteed to show the
+    // same number: a cheaper totals-only sum here would be a second
+    // implementation of the rollup, free to drift from the one the footer
+    // renders. If a session ever grows enough descendants for this to matter,
+    // memoise on the history model's revision rather than forking the sum.
+    let history = BlocklistAIHistoryModel::as_ref(app);
+    let headline_credits = usage_pill_headline_credits(conversation, history);
+
     // If this conversation has no usage metadata (e.g. a forked conversation from
     // mid-way through a prior conversation where the server did not send
     // ConversationUsageMetadata), avoid rendering the usage button entirely.
-    let has_any_usage = conversation.credits_spent() > 0.0
-        || conversation.credits_spent_for_last_block().is_some()
-        || !conversation.token_usage().is_empty()
-        || conversation.tool_usage_metadata().total_tool_calls() > 0;
-    if !has_any_usage {
+    if !usage_pill_has_any_usage(conversation, headline_credits) {
         return Empty::new().finish();
     }
 
@@ -2766,7 +2827,7 @@ fn render_usage_button(props: Props, app: &AppContext) -> Box<dyn Element> {
         Icon::ChevronRight
     };
 
-    let total_credits_spent = conversation.credits_spent();
+    let total_credits_spent = headline_credits;
     let mut credit_usage_text = format_credits(total_credits_spent);
     if let Some(credits_spent_for_last_block) = conversation.credits_spent_for_last_block() {
         // Only show the credits spent for the last block if it is different from the total credits spent
@@ -3533,3 +3594,131 @@ fn format_conversation_search_phase(phase: &ConversationSearchPhase) -> String {
 #[cfg(test)]
 #[path = "output_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod usage_pill_credits_tests {
+    //! Regression tests for the collapsed usage pill's credit headline.
+    //!
+    //! Kept inline rather than in `output_tests.rs` because they cover the two
+    //! private helpers above and nothing else in this file's test surface.
+    //! Setup mirrors `usage/rollup_tests.rs`, which exercises the same
+    //! `compute_orchestration_rollup` dependency.
+
+    use super::*;
+    use warpui::App;
+
+    /// The defect this fixes: `render_usage_button` derived both the pill's
+    /// number and its `has_any_usage` suppression check from
+    /// `conversation.credits_spent()` — the orchestrator's *own* spend. An
+    /// orchestrator that delegated all its work therefore had a self-spend of
+    /// zero, no token usage and no tool calls of its own, so it was denied the
+    /// usage button entirely and the user had no way to reach the spend its
+    /// children had racked up. The pin derives both from the rollup
+    /// (`42effe840:app/src/ai/blocklist/block/view_impl/output.rs:3686-3713`,
+    /// "PRODUCT invariants 11, 11b").
+    #[test]
+    fn orchestrator_with_zero_own_spend_shows_its_children_spend() {
+        App::test((), |mut app| async move {
+            // `start_new_child_conversation` persists the new child conversation, which reads
+            // `GeneralSettings::persist_conversations` and then the sqlite-backed
+            // `GlobalResourceHandlesProvider`. Register both so the persist path has the
+            // singletons it legitimately needs.
+            crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+            let terminal_view_id = EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let orchestrator_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            let child_id = history.update(&mut app, |history, ctx| {
+                history.start_new_child_conversation(
+                    terminal_view_id,
+                    "ChildAgent".to_string(),
+                    orchestrator_id,
+                    None,
+                    ctx,
+                )
+            });
+
+            // The orchestrator itself spends nothing; only the child does.
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&child_id)
+                    .expect("child conversation is loaded")
+                    .set_credits_spent_for_test(30.0);
+            });
+
+            history.read(&app, |history, _| {
+                let orchestrator = history
+                    .conversation(&orchestrator_id)
+                    .expect("orchestrator conversation is loaded");
+
+                // Precondition: the self-only number the buggy code used is zero,
+                // so this case is exactly the one that lost the button.
+                assert_eq!(orchestrator.credits_spent(), 0.0);
+
+                let headline = usage_pill_headline_credits(orchestrator, history);
+                assert_eq!(
+                    headline, 30.0,
+                    "pill headline must be the orchestration rollup, not the orchestrator's own spend"
+                );
+                assert!(
+                    usage_pill_has_any_usage(orchestrator, headline),
+                    "an orchestrator whose children have spent must still get a usage button"
+                );
+            });
+        });
+    }
+
+    /// The fallback limb: a conversation with no descendants has no rollup, and
+    /// its own spend is then also the whole tree's spend.
+    #[test]
+    fn conversation_without_descendants_falls_back_to_its_own_spend() {
+        App::test((), |mut app| async move {
+            let terminal_view_id = EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let conversation_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation is loaded")
+                    .set_credits_spent_for_test(7.0);
+            });
+
+            history.read(&app, |history, _| {
+                let conversation = history
+                    .conversation(&conversation_id)
+                    .expect("conversation is loaded");
+                let headline = usage_pill_headline_credits(conversation, history);
+                assert_eq!(headline, 7.0);
+                assert!(usage_pill_has_any_usage(conversation, headline));
+            });
+        });
+    }
+
+    /// A conversation with no usage at all still gets no button — the fix must
+    /// not turn the suppression check into a tautology.
+    #[test]
+    fn conversation_without_any_usage_is_still_suppressed() {
+        App::test((), |mut app| async move {
+            let terminal_view_id = EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let conversation_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+
+            history.read(&app, |history, _| {
+                let conversation = history
+                    .conversation(&conversation_id)
+                    .expect("conversation is loaded");
+                let headline = usage_pill_headline_credits(conversation, history);
+                assert_eq!(headline, 0.0);
+                assert!(!usage_pill_has_any_usage(conversation, headline));
+            });
+        });
+    }
+}

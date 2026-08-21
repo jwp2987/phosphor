@@ -268,6 +268,20 @@ pub struct AIConversation {
     /// A set of action IDs that have been reverted by the user.
     reverted_action_ids: HashSet<AIAgentActionId>,
 
+    /// IDs of the `request_computer_use` approvals that were already present in the
+    /// exchanges this conversation was *restored* from, i.e. approvals granted in some
+    /// earlier run of the app.
+    ///
+    /// This exists to make computer-use approval session-scoped. See
+    /// [`AIConversation::has_approved_computer_use`]: the approval is still derived from
+    /// the exchanges (so a rewind that drops the approving exchange revokes it), but an
+    /// approval that arrived on the restore path does not count. Empty for a conversation
+    /// created in this session, so it costs nothing on the normal path.
+    ///
+    /// Deliberately not persisted: it is a record of what came *off* disk, so persisting it
+    /// would be self-defeating.
+    restored_computer_use_approval_ids: HashSet<AIAgentActionId>,
+
     /// Accumulated suggestions received in the course of this conversation.
     existing_suggestions: Option<Suggestions>,
 
@@ -376,6 +390,8 @@ impl AIConversation {
             added_exchanges_by_response: Default::default(),
             hidden_exchanges: Default::default(),
             reverted_action_ids: Default::default(),
+            // Nothing came off disk, so nothing is disqualified.
+            restored_computer_use_approval_ids: Default::default(),
             existing_suggestions: None,
             dismissed_suggestion_ids: Default::default(),
             total_request_cost: RequestCost::new(0.),
@@ -670,6 +686,13 @@ impl AIConversation {
         // Convert these from the persistence type to the runtime one.
         let reverted_action_ids = reverted_action_ids.into_iter().map_into().collect();
 
+        // Snapshot every computer-use approval that came off disk, BEFORE the conversation
+        // is handed to anything that could append to it. Approval is session-scoped
+        // (`has_approved_computer_use`), and this is the only moment at which "already
+        // there" and "granted in this session" are still distinguishable.
+        let restored_computer_use_approval_ids =
+            Self::snapshot_computer_use_approvals(task_store.all_exchanges());
+
         Ok(Self {
             id,
             is_viewing_shared_session: false,
@@ -690,6 +713,7 @@ impl AIConversation {
             existing_suggestions: None,
             hidden_exchanges: Default::default(),
             reverted_action_ids,
+            restored_computer_use_approval_ids,
             dismissed_suggestion_ids: Default::default(),
             total_request_cost: RequestCost::new(0.),
             total_token_usage_by_model: Default::default(),
@@ -1665,15 +1689,73 @@ impl AIConversation {
         })
     }
 
-    /// Whether a `request_computer_use` has actually been approved in this conversation.
+    /// IDs of the actions in `exchange` whose result is an approved `request_computer_use`.
+    ///
+    /// The ID is the *action* ID, which is stable across persistence and across
+    /// `reassign_exchange_ids` (that renumbers exchanges, not actions), so it is usable as
+    /// the identity of one approval.
+    fn approved_computer_use_action_ids<'a>(
+        exchange: &'a AIAgentExchange,
+    ) -> impl Iterator<Item = &'a AIAgentActionId> + 'a {
+        exchange.input.iter().filter_map(|input| {
+            let AIAgentInput::ActionResult { result, .. } = input else {
+                return None;
+            };
+            matches!(
+                result.result,
+                super::AIAgentActionResultType::RequestComputerUse(
+                    super::RequestComputerUseResult::Approved { .. }
+                )
+            )
+            .then_some(&result.id)
+        })
+    }
+
+    /// Every computer-use approval visible in `exchanges`, as a set of action IDs.
+    ///
+    /// Called exactly once, at restore, to record which approvals came off disk. Kept as a
+    /// named function so the restore-scoping rule can be tested without standing up a whole
+    /// persisted `api::Task` tree.
+    fn snapshot_computer_use_approvals<'a>(
+        exchanges: impl Iterator<Item = &'a AIAgentExchange>,
+    ) -> HashSet<AIAgentActionId> {
+        exchanges
+            .flat_map(Self::approved_computer_use_action_ids)
+            .cloned()
+            .collect()
+    }
+
+    /// Whether a `request_computer_use` has actually been approved **in this session** of
+    /// this conversation.
     ///
     /// Derived from the conversation's own inputs rather than stored as a separate flag: the
     /// only way a `RequestComputerUseResult::Approved` reaches an exchange is
     /// `RequestComputerUseExecutor::execute` having run, and that only runs once the action
     /// cleared confirmation (or the profile's always-allow). Deriving it means there is no
-    /// second copy of the approval to keep in sync, and it survives conversation restore.
+    /// second copy of the approval to keep in sync, and — the reason the derivation is kept
+    /// rather than replaced by a boolean — it comes with its invalidation for free: rewinding
+    /// past the approving exchange drops the input, and the approval goes with it. A stored
+    /// flag would survive the rewind.
+    ///
     /// The input is appended by `update_for_new_request_input` when the follow-up request is
     /// sent, so it is in place before the model can answer with a `use_computer` call.
+    ///
+    /// **Session scoping.** The derivation on its own does *not* expire, and that is a
+    /// vulnerability, not a feature: `new_restored_synthesizing_on_empty` rebuilds exchanges
+    /// out of persisted `api::Task` messages (`convert_tool_call_result_to_input` →
+    /// `RequestComputerUseResult::Approved`), so one approval last month would silently
+    /// re-arm computer use in every future session of that conversation, with no prompt and
+    /// no UI trace. So approvals that came off disk are recorded at restore
+    /// (`restored_computer_use_approval_ids`) and excluded here. What remains is exactly the
+    /// approvals granted while the app has been running — which is the scope the pin's own
+    /// wording describes ("the approval extends to all computer use actions within that
+    /// computer use subagent"), the subagent being a live thing.
+    ///
+    /// Excluding by action ID rather than hooking the append site is deliberate: an approval
+    /// can reach an exchange through `update_for_new_request_input`, through
+    /// `append_reassigned_exchange`, or through the server-message paths in `task.rs`, and a
+    /// hook on any one of them would be a gate with a hole in it. A live approval always
+    /// carries a fresh action ID, so it can never be in the restored set.
     ///
     /// Zap BYOP: the pin (`42effe840`) let the server pick the tool set, so `use_computer`
     /// was only ever offered to a computer-use subagent the user had already approved, and
@@ -1682,19 +1764,14 @@ impl AIConversation {
     /// `request_computer_use` (`agent_providers/tools/mod.rs`), so the ordering is enforced
     /// by nothing but prose in the tool description. This is the check that replaces the
     /// assumption.
+    ///
+    /// A `false` here is not a denial — the action falls through to the normal confirmation
+    /// prompt. The cost of the session scoping is therefore one prompt per session, which is
+    /// the prompt the "require explicit approval" profile promised in the first place.
     pub fn has_approved_computer_use(&self) -> bool {
         self.all_exchanges().into_iter().any(|exchange| {
-            exchange.input.iter().any(|input| {
-                let AIAgentInput::ActionResult { result, .. } = input else {
-                    return false;
-                };
-                matches!(
-                    result.result,
-                    super::AIAgentActionResultType::RequestComputerUse(
-                        super::RequestComputerUseResult::Approved { .. }
-                    )
-                )
-            })
+            Self::approved_computer_use_action_ids(exchange)
+                .any(|action_id| !self.restored_computer_use_approval_ids.contains(action_id))
         })
     }
 
@@ -4822,3 +4899,200 @@ impl ConversationStatus {
 #[cfg(test)]
 #[path = "conversation_tests.rs"]
 mod tests;
+
+/// Inline rather than in `conversation_tests.rs` because these assertions read
+/// `AIConversation`'s private `restored_computer_use_approval_ids`, which a sibling `#[path]`
+/// module can see but which is not part of any public API and should not become one.
+#[cfg(test)]
+mod computer_use_approval_tests {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+
+    use chrono::Local;
+
+    use super::super::{AIAgentActionResult, AIAgentActionResultType, RequestComputerUseResult};
+    use super::{
+        AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentInput,
+        AIAgentOutputStatus, AIConversation, TaskId,
+    };
+    use crate::ai::llms::LLMId;
+
+    fn approved_result() -> AIAgentActionResultType {
+        AIAgentActionResultType::RequestComputerUse(RequestComputerUseResult::Approved {
+            screenshot: computer_use::Screenshot {
+                width: 1,
+                height: 1,
+                original_width: 1,
+                original_height: 1,
+                data: Vec::new(),
+                mime_type: "image/png".into(),
+            },
+            platform: computer_use::Platform::LinuxX11,
+            windows: Vec::new(),
+        })
+    }
+
+    /// An exchange whose input carries one action result, the way a follow-up request carries
+    /// the result of the action the previous turn asked for.
+    fn exchange_with_result(
+        task_id: &TaskId,
+        action_id: &str,
+        result: AIAgentActionResultType,
+    ) -> AIAgentExchange {
+        AIAgentExchange {
+            id: AIAgentExchangeId::new(),
+            input: vec![AIAgentInput::ActionResult {
+                result: AIAgentActionResult {
+                    id: AIAgentActionId::from(action_id.to_owned()),
+                    task_id: task_id.clone(),
+                    result,
+                },
+                context: Arc::from(Vec::<AIAgentContext>::new()),
+            }],
+            output_status: AIAgentOutputStatus::Streaming { output: None },
+            added_message_ids: HashSet::new(),
+            start_time: Local::now(),
+            finish_time: None,
+            time_to_first_token_ms: None,
+            working_directory: None,
+            model_id: LLMId::from(""),
+            request_cost: None,
+            coding_model_id: LLMId::from(""),
+            cli_agent_model_id: LLMId::from(""),
+            computer_use_model_id: LLMId::from(""),
+            response_initiator: None,
+        }
+    }
+
+    fn append(conversation: &mut AIConversation, exchange: AIAgentExchange) {
+        let task_id = conversation.task_store.root_task_id().clone();
+        assert!(
+            conversation.task_store.append_exchange(&task_id, exchange),
+            "root task should accept the exchange"
+        );
+    }
+
+    fn root_task_id(conversation: &AIConversation) -> TaskId {
+        conversation.task_store.root_task_id().clone()
+    }
+
+    /// The baseline the gate depends on: with no approval anywhere, `use_computer` must not
+    /// auto-execute. If this ever goes green-by-default the whole gate is decorative.
+    #[test]
+    fn a_conversation_with_no_approval_has_not_approved_computer_use() {
+        let mut conversation = AIConversation::new(false);
+        let task_id = root_task_id(&conversation);
+        append(
+            &mut conversation,
+            exchange_with_result(
+                &task_id,
+                "cancelled-request",
+                AIAgentActionResultType::RequestComputerUse(RequestComputerUseResult::Cancelled),
+            ),
+        );
+
+        assert!(!conversation.has_approved_computer_use());
+    }
+
+    /// An approval granted in this session counts. This is the arm that keeps the gate from
+    /// being a permanent denial.
+    #[test]
+    fn an_approval_granted_in_this_session_counts() {
+        let mut conversation = AIConversation::new(false);
+        let task_id = root_task_id(&conversation);
+        append(
+            &mut conversation,
+            exchange_with_result(&task_id, "approval-1", approved_result()),
+        );
+
+        assert!(conversation.has_approved_computer_use());
+        assert!(
+            conversation.restored_computer_use_approval_ids.is_empty(),
+            "a conversation created in this session has nothing that came off disk"
+        );
+    }
+
+    /// The refuted case. `new_restored_synthesizing_on_empty` rebuilds an approved
+    /// `request_computer_use` out of persisted messages, so a purely exchange-derived
+    /// predicate says "approved" in a session where the user has approved nothing — for
+    /// every future session of that conversation, permanently.
+    ///
+    /// The snapshot taken at restore is what makes it expire. Deleting the
+    /// `restored_computer_use_approval_ids` line from
+    /// `new_restored_synthesizing_on_empty`, or the `!contains` from
+    /// `has_approved_computer_use`, must turn this red.
+    #[test]
+    fn an_approval_restored_from_disk_does_not_count() {
+        let mut conversation = AIConversation::new(false);
+        let task_id = root_task_id(&conversation);
+        append(
+            &mut conversation,
+            exchange_with_result(&task_id, "approval-from-last-month", approved_result()),
+        );
+
+        // Stand in for the restore constructor: snapshot everything already present, exactly
+        // as `new_restored_synthesizing_on_empty` does before the conversation is reachable.
+        let restored =
+            AIConversation::snapshot_computer_use_approvals(conversation.task_store.all_exchanges());
+        conversation.restored_computer_use_approval_ids = restored;
+
+        assert_eq!(
+            conversation.restored_computer_use_approval_ids.len(),
+            1,
+            "the restore snapshot must see the persisted approval"
+        );
+        assert!(
+            !conversation.has_approved_computer_use(),
+            "an approval granted in an earlier run of the app must not silently re-arm \
+             computer use in this one"
+        );
+    }
+
+    /// ...and re-approving in the new session restores it. The scoping must cost one prompt,
+    /// not the feature: a fresh approval carries a fresh action ID, so it can never be in the
+    /// restored set.
+    #[test]
+    fn re_approving_after_restore_counts_again() {
+        let mut conversation = AIConversation::new(false);
+        let task_id = root_task_id(&conversation);
+        append(
+            &mut conversation,
+            exchange_with_result(&task_id, "approval-from-last-month", approved_result()),
+        );
+        let restored =
+            AIConversation::snapshot_computer_use_approvals(conversation.task_store.all_exchanges());
+        conversation.restored_computer_use_approval_ids = restored;
+        assert!(!conversation.has_approved_computer_use());
+
+        append(
+            &mut conversation,
+            exchange_with_result(&task_id, "approval-today", approved_result()),
+        );
+
+        assert!(conversation.has_approved_computer_use());
+    }
+
+    /// The reason the predicate stays derived instead of collapsing into a boolean: rewinding
+    /// past the approving exchange revokes the approval, because the evidence goes with it. A
+    /// stored flag would survive the rewind and keep computer use armed with nothing on screen
+    /// to show for it.
+    #[test]
+    fn rewinding_away_the_approving_exchange_revokes_the_approval() {
+        let mut conversation = AIConversation::new(false);
+        let task_id = root_task_id(&conversation);
+        let exchange = exchange_with_result(&task_id, "approval-1", approved_result());
+        let exchange_id = exchange.id;
+        append(&mut conversation, exchange);
+        assert!(conversation.has_approved_computer_use());
+
+        assert!(
+            conversation
+                .task_store
+                .remove_task_exchange(&task_id, exchange_id)
+                .is_some(),
+            "the approving exchange should have been removable"
+        );
+
+        assert!(!conversation.has_approved_computer_use());
+    }
+}

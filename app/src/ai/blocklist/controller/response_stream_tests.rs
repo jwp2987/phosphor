@@ -83,9 +83,11 @@ fn non_recoverable_post_action_failure_is_terminal() {
     );
 }
 
-/// #617: the tag-in auto-accept path forges `is_user_initiated=true`, which discards
-/// the execution profile's verdict -- an `Always ask` profile has its
-/// `can_auto_execute=false` computed and then ignored. That override exists solely for
+/// #617: the tag-in auto-accept path used to forge `is_user_initiated=true`, which
+/// discarded the execution profile's verdict -- an `Always ask` profile had its
+/// `can_auto_execute=false` computed and then ignored. The bool is now an
+/// `ActionInitiator`, and the tag-in path passes `AutoAcceptedTagIn`, which withholds
+/// stand-in authority for `UseComputer`/`RequestComputerUse`. That override exists for
 /// the deadlock where the tagged-in command holds the alt screen and the Accept button
 /// is therefore never rendered, so there is no way for the user to answer.
 ///
