@@ -308,3 +308,150 @@ fn updated_file_contexts_from_editor_buffers_preserves_full_file_when_no_ranges(
         AnyFileContent::StringContent(content)
     );
 }
+
+/// A refusal from the pre-write conflict check in
+/// `warp_files::FileModel::save_if_unchanged`, in the exact shape the accept
+/// path produces: a `FileSaveError::Other` whose message is a complete
+/// user-facing sentence, paired with the file it was for.
+fn conflict_failure(path: &str) -> FileSaveFailure {
+    FileSaveFailure {
+        path: Some(path.to_owned()),
+        error: Rc::new(FileSaveError::Other(format!(
+            "{path} changed on disk after this change was proposed, so it was not overwritten \
+             and your edits are intact. Re-run the request to work from the current file."
+        ))),
+    }
+}
+
+fn written(path: &str) -> (FileLocations, bool) {
+    (
+        FileLocations {
+            name: path.to_owned(),
+            lines: vec![1..2],
+        },
+        false,
+    )
+}
+
+/// Renders a result the way the conversation transcript hands it to the model.
+fn as_seen_by_the_model(result: RequestFileEditsResult) -> String {
+    crate::ai::agent::MarkdownActionResult(&AIAgentActionResultType::RequestFileEdits(result))
+        .to_string()
+}
+
+/// Regression: the accept path reduced `save_errors` with a `filter_map` that
+/// matched only `FileSaveError::IOError`, so every conflict refusal was dropped
+/// and `join` on the empty iterator produced `""`. The model was handed the
+/// bare string `File edits failed: ` and could not distinguish a refused
+/// overwrite from a full disk.
+#[test]
+fn conflict_refusal_reaches_the_model_with_its_reason() {
+    let result = save_failure_result(&[conflict_failure("/work/src/main.rs")], &[], &[]);
+
+    let RequestFileEditsResult::DiffApplicationFailed { error } = &result else {
+        panic!("a refused write must fail the action, got {result:?}");
+    };
+    assert!(!error.is_empty(), "the refusal message was dropped");
+    assert!(
+        error.contains("/work/src/main.rs changed on disk after this change was proposed"),
+        "reason missing from the result: {error}"
+    );
+    assert!(
+        error.contains("your edits are intact"),
+        "reason missing from the result: {error}"
+    );
+
+    let rendered = as_seen_by_the_model(result);
+    assert!(
+        !rendered.contains("File edits failed:  "),
+        "the model was told the edit failed with no reason: {rendered}"
+    );
+    assert!(
+        rendered.contains("changed on disk after this change was proposed"),
+        "reason missing at the transcript boundary: {rendered}"
+    );
+}
+
+/// An `IOError` keeps its old spelling: its own `Display` is the constant
+/// "IO error when saving file.", so the path and cause have to be spelled out.
+#[test]
+fn io_failure_still_names_the_path_and_the_cause() {
+    let failure = FileSaveFailure {
+        path: Some("/work/src/main.rs".to_owned()),
+        error: Rc::new(FileSaveError::IOError {
+            error: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+            path: std::path::PathBuf::from("/work/src/main.rs"),
+        }),
+    };
+
+    let result = save_failure_result(&[failure], &[], &[]);
+
+    let RequestFileEditsResult::DiffApplicationFailed { error } = result else {
+        panic!("expected a failure result");
+    };
+    assert_eq!(
+        error,
+        "Failed to save file \"/work/src/main.rs\": permission denied"
+    );
+}
+
+/// Finding 1c: a five-file accept where one file conflicts used to report the
+/// whole edit as failed, with an empty message, while four files were already
+/// on disk. A model that re-ran the edit applied those four a second time.
+/// `RequestFileEditsResult` has no partial-success variant, so the partition is
+/// stated in the message: which files landed, which did not, and why.
+#[test]
+fn partial_accept_names_the_files_that_were_written() {
+    let result = save_failure_result(
+        &[conflict_failure("/work/src/c.rs")],
+        &[written("/work/src/a.rs"), written("/work/src/b.rs")],
+        &["/work/src/gone.rs".to_owned()],
+    );
+
+    let RequestFileEditsResult::DiffApplicationFailed { error } = &result else {
+        panic!("a partially applied edit must not be reported as a plain success");
+    };
+    assert!(
+        error.contains("This edit was applied partially."),
+        "partial application not stated: {error}"
+    );
+    for landed in ["/work/src/a.rs", "/work/src/b.rs", "/work/src/gone.rs"] {
+        assert!(
+            error.contains(landed),
+            "{landed} was written but the model was not told: {error}"
+        );
+    }
+    assert!(
+        error.contains("do NOT apply these edits again"),
+        "nothing warns the model against re-applying what landed: {error}"
+    );
+    assert!(
+        error.contains("Not written, still holding their previous contents: /work/src/c.rs"),
+        "the unwritten file is not identified: {error}"
+    );
+    assert!(
+        error.contains("changed on disk after this change was proposed"),
+        "the refusal reason is missing: {error}"
+    );
+}
+
+/// With nothing on disk there is no partition to report, so the message stays
+/// the plain list of reasons rather than claiming a partial application.
+#[test]
+fn total_failure_reports_reasons_without_claiming_partial_application() {
+    let result = save_failure_result(
+        &[
+            conflict_failure("/work/src/a.rs"),
+            conflict_failure("/work/src/b.rs"),
+        ],
+        &[],
+        &[],
+    );
+
+    let RequestFileEditsResult::DiffApplicationFailed { error } = &result else {
+        panic!("expected a failure result");
+    };
+    assert!(!error.contains("applied partially"), "{error}");
+    assert_eq!(error.lines().count(), 2, "one line per refusal: {error}");
+    assert!(error.contains("/work/src/a.rs") && error.contains("/work/src/b.rs"));
+}

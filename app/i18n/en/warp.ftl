@@ -3558,6 +3558,14 @@ ai-cancel-summarization = Cancel summarization
 ai-continue-summarization = Continue summarization
 ai-dont-show-suggested-code-banners-again = Don't show me suggested code banners again
 ai-inline-code-diff-no-file-name = No file name
+# Error toast when accepting an AI diff cannot write a file
+# (app/src/ai/blocklist/inline_action/code_diff_view.rs,
+# save_failure_toast_message). { $reason } is the save failure's own message.
+# Only the variants whose message names neither the file nor the cause reach
+# this key: a refused overwrite (the pre-write conflict check in
+# crates/warp_files/src/lib.rs) already states the file and why in { $reason }
+# and is shown on its own, unwrapped.
+ai-inline-code-diff-save-failed = Failed to save file { $file }: { $reason }
 ai-tool-call-cancelled = Tool call was cancelled
 ai-agent-view-open-in-different-pane = Open in different pane
 passive-suggestion-feature-or-bug-label = Code a feature or fix a bug in {1}

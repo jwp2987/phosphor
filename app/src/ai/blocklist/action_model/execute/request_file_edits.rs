@@ -38,7 +38,7 @@ use crate::{
         blocklist::{
             BlocklistAIPermissions, RequestedEditResolution,
             inline_action::code_diff_view::{
-                CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff,
+                CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff, FileSaveFailure,
             },
         },
         paths::host_native_absolute_path,
@@ -250,20 +250,14 @@ impl RequestFileEditsExecutor {
                     return;
                 };
 
-                // If saving any file failed, report it as an error to the LLM. Other files may
-                // have saved successfully, but we're ignoring this edge case for now.
+                // If saving any file failed, report it as an error to the LLM, naming both
+                // the reason and the files that did land (see `save_failure_result`).
                 if !save_errors.is_empty() {
-                    let error = save_errors
-                        .iter()
-                        .filter_map(|err| match err.as_ref() {
-                            FileSaveError::IOError { error, path } => {
-                                Some(format!("Failed to save file {path:?}: {error}"))
-                            }
-                            _ => None,
-                        })
-                        .join("\n");
-
-                    let _ = result_tx.send(RequestFileEditsResult::DiffApplicationFailed { error });
+                    let _ = result_tx.send(save_failure_result(
+                        save_errors,
+                        updated_files,
+                        deleted_files,
+                    ));
                     return;
                 }
 
@@ -474,6 +468,79 @@ impl RequestFileEditsExecutor {
                 .map(Into::into),
             model_id,
         })
+    }
+}
+
+/// Builds the result reported back to the LLM when accepting a set of edits
+/// left at least one file unwritten.
+///
+/// Two defects this replaces, both introduced in effect by the pre-write
+/// conflict check in `warp_files::FileModel::save_if_unchanged`, which made
+/// [`FileSaveError::Other`] the dominant local failure mode:
+///
+/// 1. The previous reduction was a `filter_map` that matched only
+///    [`FileSaveError::IOError`] and dropped everything else. Every conflict
+///    refusal — the entire user-facing product of that check — was discarded,
+///    `join` on the empty iterator produced `""`, and the model received the
+///    bare string `"File edits failed: "`. It could not tell a refused
+///    overwrite from a full disk. The `.map(..)` with a catch-all `other` arm
+///    below matches `diff_storage::save_failure_result`, the same reduction for
+///    the TUI surface, deliberately: every non-IO variant's `Display` *is* its
+///    user-facing message.
+/// 2. A five-file accept where one file conflicted reported the whole edit as
+///    failed while four files were already written, so a model that re-ran the
+///    edit applied those four a second time. `RequestFileEditsResult` has no
+///    partial-success variant — `Success` has nowhere to carry a failure and the
+///    enum lives in `crates/ai` — so the partition is spelled out in the message
+///    instead, naming what landed and what did not.
+///
+/// `written_files` and `deleted_files` are exactly what reached the disk:
+/// `CodeDiffView::try_emit_diffs_saved` keeps files whose write failed out of
+/// both and reports them through `save_errors` alone.
+fn save_failure_result(
+    save_errors: &[FileSaveFailure],
+    written_files: &[(FileLocations, bool)],
+    deleted_files: &[String],
+) -> RequestFileEditsResult {
+    let reasons = save_errors
+        .iter()
+        .map(|failure| match failure.error.as_ref() {
+            // `IOError`'s own `Display` is the constant "IO error when saving
+            // file.", so this variant is the one that has to be spelled out.
+            FileSaveError::IOError { error, path } => {
+                format!("Failed to save file {path:?}: {error}")
+            }
+            other => other.to_string(),
+        })
+        .join("\n");
+
+    let applied = written_files
+        .iter()
+        .map(|(file, _)| file.name.as_str())
+        .chain(deleted_files.iter().map(String::as_str))
+        .collect_vec();
+
+    if applied.is_empty() {
+        return RequestFileEditsResult::DiffApplicationFailed { error: reasons };
+    }
+
+    let unwritten = save_errors
+        .iter()
+        .filter_map(|failure| failure.path.as_deref())
+        .collect_vec();
+    let unwritten = if unwritten.is_empty() {
+        "the file(s) named above".to_owned()
+    } else {
+        unwritten.join(", ")
+    };
+
+    RequestFileEditsResult::DiffApplicationFailed {
+        error: format!(
+            "This edit was applied partially.\n{reasons}\nAlready applied on disk — do NOT \
+             apply these edits again: {}.\nNot written, still holding their previous \
+             contents: {unwritten}.",
+            applied.join(", ")
+        ),
     }
 }
 

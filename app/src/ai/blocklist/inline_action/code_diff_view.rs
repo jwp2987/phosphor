@@ -242,7 +242,10 @@ pub enum CodeDiffViewEvent {
         /// the LLM.
         file_contents: Vec<(String, String)>,
         deleted_files: Vec<String>,
-        save_errors: Vec<Rc<FileSaveError>>,
+        /// The files that could NOT be written, and why. `updated_files` and
+        /// `deleted_files` above list only what actually landed on disk, so
+        /// these two sets never overlap.
+        save_errors: Vec<FileSaveFailure>,
     },
     Rejected,
     Pane(PaneEvent),
@@ -277,6 +280,26 @@ pub enum CodeDiffViewEvent {
         provider: MCPProvider,
         path: PathBuf,
     },
+}
+
+/// A file whose write failed while accepting a set of diffs, paired with the
+/// path it was being written to.
+///
+/// The path is carried alongside the error because the error cannot be relied
+/// on to identify the file: [`FileSaveError::Other`] — the variant the
+/// pre-write conflict check in `warp_files::FileModel::save_if_unchanged`
+/// reports through — names its path only inside prose, and
+/// [`FileSaveError::NoFilePath`] carries no path at all. Without the pairing the
+/// executor cannot tell the model which files landed and which did not, and a
+/// model told only that the edit failed re-applies the ones that already did.
+#[derive(Debug, Clone)]
+pub struct FileSaveFailure {
+    /// The file the write was for, when the diff view knows it.
+    pub path: Option<String>,
+    /// The failure itself. Its message is user-facing for every variant except
+    /// [`FileSaveError::IOError`], whose `Display` drops both the path and the
+    /// underlying `io::Error`.
+    pub error: Rc<FileSaveError>,
 }
 
 /// The base content and file path for a diff.
@@ -653,9 +676,8 @@ impl CodeDiffView {
                     safe: ("Failed to save file for accepted AgentMode diffs"),
                     full: ("Failed to save file for accepted AgentMode diffs for {}: {}", file_path_clone, error)
                 );
-                let toast = DismissibleToast::error(format!(
-                    "Failed to save file {file_path_clone}"
-                ));
+                let toast =
+                    DismissibleToast::error(save_failure_toast_message(&file_path_clone, error));
                 ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     toast_stack.add_ephemeral_toast(toast, window_id, ctx);
                 });
@@ -2332,13 +2354,29 @@ impl CodeDiffView {
                 let replaced_state = state.take().expect("Checked above");
 
                 let mut combined_diff = DiffResult::default();
-                let mut save_errors = Vec::new();
-                for diff_state in replaced_state.pending_diffs {
+                let mut save_errors: Vec<FileSaveFailure> = Vec::new();
+                // Which pending diff failed to save, positionally. `SavingDiffs`
+                // is built with one slot per `self.pending_diffs` entry and
+                // marked by that same index (see `mark_diff_saved`), so the two
+                // are parallel and the path for a failure can be recovered.
+                let mut save_failed = vec![false; self.pending_diffs.len()];
+                for (idx, diff_state) in replaced_state.pending_diffs.into_iter().enumerate() {
                     if let Some(diff) = diff_state.computed_diff {
                         combined_diff += diff.as_ref();
                     }
                     if let SaveStatus::Failed(error) = diff_state.save_status {
-                        save_errors.push(error);
+                        if let Some(failed) = save_failed.get_mut(idx) {
+                            *failed = true;
+                        }
+                        let path = match self.pending_diffs.get(idx) {
+                            Some(pending) => pending
+                                .diff_view
+                                .as_ref(ctx)
+                                .file_path()
+                                .map(ToString::to_string),
+                            None => None,
+                        };
+                        save_errors.push(FileSaveFailure { path, error });
                     }
                 }
 
@@ -2349,17 +2387,27 @@ impl CodeDiffView {
                 let mut edited_correction_count = 0;
                 let mut unedited_correction_count = 0;
 
-                for diff in self.pending_diffs.iter() {
+                for (idx, diff) in self.pending_diffs.iter().enumerate() {
                     let Some(path) = diff.diff_view.as_ref(ctx).file_path() else {
                         continue;
                     };
+
+                    // A file whose write was refused or failed is NOT reported as
+                    // updated or deleted — it still holds its previous contents.
+                    // It travels in `save_errors` instead, which keeps these two
+                    // lists an exact record of what reached the disk. The
+                    // telemetry counters below are deliberately left counting
+                    // every reviewed file, as they always did.
+                    let saved = !save_failed.get(idx).copied().unwrap_or(false);
 
                     let mut file_path_str = path.to_string();
                     if matches!(
                         diff.diff_view.as_ref(ctx).diff(),
                         Some(DiffType::Delete { .. })
                     ) {
-                        deleted_files.push(file_path_str);
+                        if saved {
+                            deleted_files.push(file_path_str);
+                        }
                     } else {
                         // If this was a rename, the file being renamed should be considered "deleted".
                         if let Some(DiffType::Update {
@@ -2367,7 +2415,9 @@ impl CodeDiffView {
                             ..
                         }) = diff.diff_view.as_ref(ctx).diff()
                         {
-                            deleted_files.push(file_path_str);
+                            if saved {
+                                deleted_files.push(file_path_str);
+                            }
                             file_path_str = rename.to_string_lossy().to_string();
                         }
                         let was_edited = diff.diff_view.as_ref(ctx).was_edited();
@@ -2421,13 +2471,15 @@ impl CodeDiffView {
                                 unedited_correction_count += 1;
                             }
                         }
-                        updated_files.push((
-                            FileLocations {
-                                name: file_path_str,
-                                lines: changed_lines,
-                            },
-                            was_edited,
-                        ));
+                        if saved {
+                            updated_files.push((
+                                FileLocations {
+                                    name: file_path_str,
+                                    lines: changed_lines,
+                                },
+                                was_edited,
+                            ));
+                        }
                     }
                 }
                 if correction_count > 0 {
@@ -3261,3 +3313,43 @@ fn editor_range_to_file_context_range(range: Range<usize>) -> Range<usize> {
 fn file_context_range_to_editor_range(range: Range<usize>) -> Range<usize> {
     range.start.saturating_sub(1)..range.end.saturating_sub(1)
 }
+
+/// The text shown in the error toast when accepting a diff fails to write a
+/// file.
+///
+/// The failure's own message is the entire user-facing product of the guarded
+/// write in `warp_files::FileModel::save_if_unchanged`: on a conflict it says
+/// that nothing was written, that the user's concurrent edits are intact, and
+/// what to do next. The `FailedToSave` arm used to build a fixed
+/// `Failed to save file {path}` and pass `error` only to the log line, so the
+/// one consumer who can act on the reason — the user — never saw it, and a
+/// refused overwrite was indistinguishable from a full disk.
+///
+/// [`FileSaveError::Other`] (the variant every pre-write refusal arrives as)
+/// carries a complete sentence that already names the file, so it is shown
+/// verbatim rather than prefixed with the same path a second time. Every other
+/// variant either has no path or hides it behind an unhelpful `Display`, so
+/// those are wrapped with the file being saved.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+fn save_failure_toast_message(file_path: &str, error: &FileSaveError) -> String {
+    match error {
+        FileSaveError::Other(message) => message.clone(),
+        other => {
+            let reason = match other {
+                // `IOError`'s own `Display` is the constant "IO error when
+                // saving file." — the `io::Error` it wraps is the reason.
+                FileSaveError::IOError { error, .. } => error.to_string(),
+                other => other.to_string(),
+            };
+            crate::t!(
+                "ai-inline-code-diff-save-failed",
+                file = file_path,
+                reason = reason
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "code_diff_view_tests.rs"]
+mod tests;
