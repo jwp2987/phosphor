@@ -168,6 +168,27 @@ impl ConversationUsageView {
         compute_orchestration_rollup(parent_id, history)
     }
 
+    /// The number shown against the "Credits spent (total)" label.
+    ///
+    /// When an orchestration rollup applies this is the rollup total --
+    /// the orchestrator plus every locally-loaded descendant -- so the
+    /// headline agrees with the per-agent drill-down rendered immediately
+    /// beneath it by [`Self::append_per_agent_rows`]. Showing
+    /// `usage_info.credits_spent` here instead would make the headline
+    /// smaller than the list under it whenever a child agent has spent
+    /// anything, which is what the pin avoids by computing the same value
+    /// (`42effe840:app/src/ai/blocklist/usage/conversation_usage_view.rs:329-332`).
+    ///
+    /// Without a rollup (no descendants, or nobody has spent anything) it
+    /// falls back to this conversation's own spend, which is then also the
+    /// whole tree's spend. The "Credits spent (last response)" row above it
+    /// stays bound to the orchestrator's own last block, matching the pin.
+    fn headline_total_credits(&self, rollup: Option<&OrchestrationCreditRollup>) -> f32 {
+        rollup
+            .map(|rollup| rollup.total_credits)
+            .unwrap_or(self.usage_info.credits_spent)
+    }
+
     /// Helper to collect models grouped by category.
     /// Returns a HashMap mapping category name to list of (model_id, is_byok) tuples.
     /// Custom-endpoint rows share the `is_byok` external-key icon bucket with BYOK
@@ -238,6 +259,7 @@ impl ConversationUsageView {
         let text_color = blended_colors::text_main(theme, theme.surface_2());
 
         let rollup = self.rollup(app);
+        let total_credits_value = self.headline_total_credits(rollup.as_ref());
 
         let mut labels: Vec<Box<dyn Element>> = vec![];
         let mut values: Vec<Box<dyn Element>> = vec![];
@@ -264,14 +286,14 @@ impl ConversationUsageView {
 
             labels.push(render_label_text("Credits spent (total)", appearance));
             values.push(self.render_total_credits_value_row(
-                self.usage_info.credits_spent,
+                total_credits_value,
                 rollup.as_ref(),
                 appearance,
             ));
         } else {
             labels.push(render_label_text("Credits spent", appearance));
             values.push(self.render_total_credits_value_row(
-                self.usage_info.credits_spent,
+                total_credits_value,
                 rollup.as_ref(),
                 appearance,
             ));
@@ -1271,6 +1293,118 @@ mod tests {
                     settings.rollup(app_ctx).is_none(),
                     "the settings usage page must never show the footer breakdown"
                 );
+            });
+        });
+    }
+
+    /// Regression test for the headline "Credits spent (total)" figure.
+    ///
+    /// The rollup total was computed at the top of `render_unified_layout`
+    /// and then used only to decide whether to attach the "View details"
+    /// toggle: both `render_total_credits_value_row` call sites passed
+    /// `self.usage_info.credits_spent`, which `terminal/view.rs` fills in
+    /// from the orchestrator conversation alone. So the headline read the
+    /// orchestrator's own spend while the drill-down immediately beneath it
+    /// listed the orchestrator *and* its children -- a total smaller than
+    /// the list it heads. The pin computes the headline from the rollup
+    /// (`42effe840:.../conversation_usage_view.rs:329-332`).
+    ///
+    /// The assertion is the requirement, not the old behaviour: the
+    /// headline must equal the sum of the drill-down rows, computed from
+    /// the rendered breakdown itself rather than from a hardcoded number.
+    #[test]
+    fn headline_total_credits_covers_the_children_listed_in_the_drill_down() {
+        App::test((), |mut app| async move {
+            crate::test_util::settings::initialize_history_persistence_for_tests(&mut app);
+            app.add_singleton_model(|_| Appearance::mock());
+            let terminal_view_id = warpui::EntityId::new();
+            let history = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+
+            let orchestrator_id = history.update(&mut app, |history, ctx| {
+                history.start_new_conversation(terminal_view_id, false, false, ctx)
+            });
+            let first_child_id = history.update(&mut app, |history, ctx| {
+                history.start_new_child_conversation(
+                    terminal_view_id,
+                    "FirstChild".to_string(),
+                    orchestrator_id,
+                    None,
+                    ctx,
+                )
+            });
+            let second_child_id = history.update(&mut app, |history, ctx| {
+                history.start_new_child_conversation(
+                    terminal_view_id,
+                    "SecondChild".to_string(),
+                    orchestrator_id,
+                    None,
+                    ctx,
+                )
+            });
+            history.update(&mut app, |history, _| {
+                history
+                    .conversation_mut(&orchestrator_id)
+                    .expect("orchestrator conversation is loaded")
+                    .set_credits_spent_for_test(1.0);
+                history
+                    .conversation_mut(&first_child_id)
+                    .expect("first child conversation is loaded")
+                    .set_credits_spent_for_test(5.0);
+                history
+                    .conversation_mut(&second_child_id)
+                    .expect("second child conversation is loaded")
+                    .set_credits_spent_for_test(2.0);
+            });
+
+            history.read(&app, |history, app_ctx| {
+                // Exactly what `TerminalView::handle_usage_footer_toggled`
+                // builds: `credits_spent` is the orchestrator's own spend,
+                // with no knowledge of any descendant.
+                let orchestrator_own_credits = history
+                    .conversation(&orchestrator_id)
+                    .expect("orchestrator conversation is loaded")
+                    .credits_spent();
+                let view = ConversationUsageView::new_footer_with_rollup(
+                    ConversationUsageInfo {
+                        credits_spent: orchestrator_own_credits,
+                        ..placeholder_usage_info()
+                    },
+                    None,
+                    MouseStateHandle::default(),
+                    orchestrator_id,
+                );
+
+                let rollup = view
+                    .rollup(app_ctx)
+                    .expect("orchestrator with spending children rolls up");
+                let drill_down_sum: f32 = rollup
+                    .per_agent
+                    .iter()
+                    .map(|entry| entry.credits_spent)
+                    .sum();
+                let headline = view.headline_total_credits(Some(&rollup));
+
+                assert_eq!(
+                    headline,
+                    drill_down_sum,
+                    "the headline total must equal the rows listed beneath it \
+                     (orchestrator {orchestrator_own_credits}, drill-down rows {:?})",
+                    rollup
+                        .per_agent
+                        .iter()
+                        .map(|entry| (entry.display_name.clone(), entry.credits_spent))
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(headline, 8.0, "1 self + 5 + 2 children");
+                assert!(
+                    headline > orchestrator_own_credits,
+                    "the children's spend must not be dropped from the headline"
+                );
+                assert_eq!(format_credits(headline), "8 credits");
+
+                // No rollup (a plain conversation with no descendants): the
+                // fallback is still this conversation's own spend.
+                assert_eq!(view.headline_total_credits(None), orchestrator_own_credits);
             });
         });
     }

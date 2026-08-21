@@ -91,10 +91,17 @@ pub struct ClientPreferences {
     /// `UpdatePreferences`. Populate it only when remote codebase indexing is
     /// actually in use — the sole reason the daemon needs a key. The client-side
     /// producer (`app/src/ai/codebase_embeddings.rs::remote_client_preferences`)
-    /// gates it on `FeatureFlag::RemoteCodebaseIndexing`, which is the same flag
-    /// the daemon requires before it will index anything, so a daemon that could
-    /// not use the key is never sent one. Do not populate this field from any
-    /// path that does not make that check.
+    /// gates it on `should_use_codebase_indexing`, the runtime predicate that
+    /// carries the user's consent: it requires `code.indexing.
+    /// agent_mode_codebase_context` (default `false`, user-written only) on top
+    /// of the feature flags. Do not populate this field from any path that does
+    /// not make that check.
+    ///
+    /// It previously said the gate was `FeatureFlag::RemoteCodebaseIndexing`.
+    /// That was never a gate: `remote_codebase_indexing` is in `app/Cargo.toml`'s
+    /// DEFAULT feature set, so `is_enabled()` is a constant `true` in every build
+    /// this repo ships, and the key went to every SSH host regardless. A
+    /// compile-time feature that is on by default cannot express user consent.
     pub embedding_provider: Option<crate::proto::EmbeddingProviderConfig>,
 }
 

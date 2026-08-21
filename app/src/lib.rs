@@ -2228,27 +2228,43 @@ fn initialize_app(
     ctx.add_singleton_model(crate::ai::codebase_retrieval::CodebaseRetrievalController::new);
 
     // Hand the remote-server manager what a daemon needs to index on its own
-    // host, and refresh it whenever the user edits their providers. Registered
-    // here, after `AISettings` and `AIRequestUsageModel`, because
-    // `remote_client_preferences` reads both; `RemoteServerManager` itself was
-    // registered much earlier, with no sessions yet, so nothing has connected
-    // in between.
+    // host, and refresh it whenever the user edits their providers or changes
+    // their mind about codebase indexing. Registered here, after `AISettings`
+    // and `AIRequestUsageModel`, because `remote_client_preferences` reads
+    // both; `RemoteServerManager` itself was registered much earlier, with no
+    // sessions yet, so nothing has connected in between.
+    //
+    // Both settings groups are subscribed because the credential gate inside
+    // `remote_client_preferences` is `should_use_codebase_indexing`, and that
+    // reads `UserWorkspaces::is_codebase_context_enabled` = the global AI
+    // toggle (`AISettings`) AND `CodeSettings::codebase_context_enabled`.
+    // Subscribing to only one of them would leave the other half of the
+    // predicate without its invalidation event: turning codebase indexing off
+    // would not retract the API key already sent to connected daemons, and
+    // turning it on would not deliver one until the next restart — so the
+    // disclosure in `settings-code-remote-indexed-folders-desc` ("sent when you
+    // turn this on") would be false in both directions.
+    // `update_client_preferences` pushes to every connected client and no-ops
+    // when nothing changed, so subscribing to every settings event is cheap and
+    // the retraction reaches live sessions.
     #[cfg(all(feature = "local_fs", not(target_family = "wasm")))]
     {
         use crate::ai::codebase_embeddings::remote_client_preferences;
         use remote_server::manager::RemoteServerManager;
 
-        let preferences = remote_client_preferences(ctx);
-        RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
-            manager.update_client_preferences(preferences);
-        });
-        ctx.subscribe_to_model(&crate::settings::AISettings::handle(ctx), |_, _, ctx| {
+        fn refresh_remote_client_preferences(ctx: &mut AppContext) {
             let preferences = remote_client_preferences(ctx);
             RemoteServerManager::handle(ctx).update(ctx, |manager, _| {
-                // `update_client_preferences` no-ops when nothing changed, so
-                // subscribing to every AI-settings event is cheap.
                 manager.update_client_preferences(preferences);
             });
+        }
+
+        refresh_remote_client_preferences(ctx);
+        ctx.subscribe_to_model(&crate::settings::AISettings::handle(ctx), |_, _, ctx| {
+            refresh_remote_client_preferences(ctx);
+        });
+        ctx.subscribe_to_model(&crate::settings::CodeSettings::handle(ctx), |_, _, ctx| {
+            refresh_remote_client_preferences(ctx);
         });
     }
 

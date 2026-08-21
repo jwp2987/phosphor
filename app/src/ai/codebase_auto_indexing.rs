@@ -84,6 +84,55 @@ where
     candidates
 }
 
+/// The consent half of the gate, asserted separately from the ported tests.
+///
+/// `codebase_auto_indexing_enabled` is what the ported suite covers; this
+/// covers `codebase_indexing_enabled`, which is the predicate behind
+/// `should_use_codebase_indexing` and therefore the one that decides whether
+/// the user's BYOP embedding API key is transmitted to a remote daemon
+/// (`crate::ai::codebase_embeddings::remote_client_preferences`).
+///
+/// It exists because `FeatureFlag::RemoteCodebaseIndexing` is in
+/// `app/Cargo.toml`'s `default` feature set — `is_enabled()` is a constant
+/// `true` in a shipped build — so `surface.required_feature_enabled()` carries
+/// no consent on its own. Only `codebase_context_enabled` does, and it defaults
+/// to `false` (`app/src/settings/code.rs`, `code.indexing.agent_mode_codebase_context`).
+#[cfg(test)]
+mod consent_gate_tests {
+    use super::*;
+
+    #[test]
+    fn remote_indexing_is_off_when_the_user_has_not_enabled_codebase_context() {
+        let _embedding = FeatureFlag::FullSourceCodeEmbedding.override_enabled(true);
+        let _remote = FeatureFlag::RemoteCodebaseIndexing.override_enabled(true);
+
+        assert!(
+            !codebase_indexing_enabled(CodebaseAutoIndexingSurface::Remote, false),
+            "both feature flags on must not be enough: `RemoteCodebaseIndexing` is a \
+             default-on cargo feature and expresses no user consent"
+        );
+        assert!(
+            !codebase_indexing_enabled(CodebaseAutoIndexingSurface::Local, false),
+            "the local surface takes consent from the same setting"
+        );
+        assert!(
+            codebase_indexing_enabled(CodebaseAutoIndexingSurface::Remote, true),
+            "with consent given the gate must open, or the negative case above is vacuous"
+        );
+    }
+
+    #[test]
+    fn remote_indexing_is_off_without_the_embedding_feature_even_with_consent() {
+        let _embedding = FeatureFlag::FullSourceCodeEmbedding.override_enabled(false);
+        let _remote = FeatureFlag::RemoteCodebaseIndexing.override_enabled(true);
+
+        assert!(!codebase_indexing_enabled(
+            CodebaseAutoIndexingSurface::Remote,
+            true
+        ));
+    }
+}
+
 #[cfg(test)]
 #[path = "codebase_auto_indexing_tests.rs"]
 mod tests;
