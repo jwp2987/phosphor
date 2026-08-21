@@ -325,13 +325,39 @@ impl BlockedTerminalLink {
 /// `Url::parse` accepts (`app/src/terminal/view.rs:18513` there), i.e. `file:`, `vscode:` and
 /// `ms-msdt:` from an SSH banner all reached the OS handler. Do not "restore" that during a
 /// re-pin.
+/// Whether a `file:` URL names this machine.
+///
+/// RFC 8089 allows an empty authority, `localhost`, or a host name. Only the first two mean
+/// "here"; anything else is a remote host, which on Windows is a UNC path and on any platform
+/// is a host chosen by whoever produced the terminal output. Mirrors
+/// `notebooks::link::file_url_is_local`; kept as a local copy rather than an import because
+/// that function is private to a module with a different trust model, and the shared
+/// scheme policy's natural home (`app/src/uri/`) is where both should eventually live.
+fn file_url_is_local(url: &Url) -> bool {
+    matches!(url.host_str(), None | Some("") | Some("localhost"))
+}
+
 pub(super) fn openable_terminal_url(uri: &str) -> Result<Url, BlockedTerminalLink> {
     let Ok(url) = Url::parse(uri) else {
         return Err(BlockedTerminalLink::NotAUrl);
     };
 
     // `Url::parse` lower-cases the scheme, so neither comparison needs normalisation.
-    if !is_openable_url_scheme(&url) || url.scheme() == ChannelState::url_scheme() {
+    //
+    // `file:` is allowed only when the authority is local. A build tool or linter printing
+    // a clickable path to a local file is the feature OSC 8 exists for and is why this fork
+    // ported it (#11, `crates/integration/src/test/osc8_hyperlinks.rs`), so refusing it
+    // outright — as this function briefly did on 2026-08-21 — breaks a real workflow for no
+    // security gain. What is NOT allowed is a non-local authority: `file://host/share/x` is
+    // a UNC path on Windows, so handing it to the OS opens an SMB connection to a host the
+    // link names, and terminal output can arrive from a remote machine over SSH. Same rule,
+    // and same reason, as `notebooks::link::file_url_is_local`.
+    let scheme_allowed = if url.scheme() == "file" {
+        file_url_is_local(&url)
+    } else {
+        is_openable_url_scheme(&url) && url.scheme() != ChannelState::url_scheme()
+    };
+    if !scheme_allowed {
         return Err(BlockedTerminalLink::DisallowedScheme(
             url.scheme().to_owned(),
         ));
@@ -1103,18 +1129,41 @@ mod scheme_policy_tests {
     #[test]
     fn os_handler_schemes_are_blocked() {
         // The exact payloads a hostile SSH banner, `cat`ted file or tool output would emit.
-        assert_blocked_scheme("file:///etc/passwd", "file");
         assert_blocked_scheme("vscode://file/tmp/payload", "vscode");
         assert_blocked_scheme("ms-msdt:/id%20PCWDiagnostic", "ms-msdt");
-        // `Url::parse` lower-cases the scheme, so a mixed-case spelling is the same scheme and
-        // must not slip past a case-sensitive comparison.
-        assert_blocked_scheme("FILE:///etc/passwd", "file");
         assert_blocked_scheme("javascript:alert(1)", "javascript");
         assert_blocked_scheme("data:text/html,<script>alert(1)</script>", "data");
         assert_blocked_scheme("smb://attacker.example/share", "smb");
         // The URL scanner in `grid_handler` recognises these schemes, so they really do become
         // clickable links from plain command output.
         assert_blocked_scheme("ftp://attacker.example/payload", "ftp");
+    }
+
+    /// A `file:` URL naming a REMOTE host is the one that must not open: it is a UNC path on
+    /// Windows, so the OS opens an SMB connection to a host the link chose, and terminal output
+    /// can arrive from a machine over SSH.
+    #[test]
+    fn remote_file_authorities_are_blocked() {
+        assert_blocked_scheme("file://attacker.example/share/payload", "file");
+        assert_blocked_scheme("FILE://attacker.example/share/payload", "file");
+    }
+
+    /// The counterpart, and the reason `file:` is not blocked outright: a build tool or linter
+    /// printing a clickable path to a local file is what OSC 8 is for. Pinned by
+    /// `crates/integration/src/test/osc8_hyperlinks.rs::test_osc8_file_scheme_opens_url`, which
+    /// went red when this function briefly refused every `file:` URL.
+    #[test]
+    fn local_file_urls_still_open() {
+        for uri in [
+            "file:///tmp/osc8-test.txt",
+            "file://localhost/tmp/osc8-test.txt",
+            "FILE:///tmp/osc8-test.txt",
+        ] {
+            assert!(
+                openable_terminal_url(uri).is_ok(),
+                "{uri} names this machine and must still open"
+            );
+        }
     }
 
     /// Terminal content is less trusted than notebook content, so it must not be more

@@ -7058,6 +7058,8 @@ Ordered by severity, not by area.
       is arguably *less* trusted. The scheme allow-list now lives in `notebooks::link`
       (`is_openable_url_scheme`); this call site does not consult it.
 
+      **CORRECTION 2026-08-21 — the first fix was OVER-BROAD and broke a real feature.** `4f5e38690` refused `file:` outright for terminal content. **`crates/integration/src/test/osc8_hyperlinks.rs::test_osc8_file_scheme_opens_url` went red** — and it is right: `file:///tmp/osc8-test.txt` is a **local, hostname-less** URL, and a build tool or linter printing a clickable path to a local file is the feature OSC 8 exists for and why this fork ported it (`ccc1e3c84`, #11). **`precheck` does not run `-p integration`**, so this was invisible to every local run; only the separate 3-shard suite catches it. Now `file:` is allowed when the authority is local and refused when it is not — `file://host/share/x` is a UNC path on Windows, so the OS opens an SMB connection to a host the *link* chose, and terminal output can arrive from a remote machine over SSH. Same rule and same reasoning as `notebooks::link::file_url_is_local`. Two unit tests added on both sides of the line, one of them naming the integration test that caught this.
+
 - [ ] **`AppContext::set_before_open_url` cannot refuse a URL, only rewrite it.**
       `warpui_core/src/core/app.rs:599` — `BeforeOpenUrlCallback` is
       `Fn(&str, &AppContext) -> String`, so the one global pre-open hook cannot enforce
@@ -7293,6 +7295,14 @@ claim, which was wrong by four.
       documented rather than silently dropped — but honouring it needs a field on that
       pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
       and result limits`. Filed rather than diverging a shared crate.
+
+- [ ] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
+      and excludes the integration suite, which CI runs as a separate 3-shard job under
+      `xvfb-run`. So a change to integration assertions — or, as on 2026-08-21, an over-broad
+      security fix that breaks a feature only that suite covers — passes a fully green local
+      `precheck` and fails in CI. That is precisely the round trip `precheck`'s own header
+      says it exists to prevent. Either add it (it takes ~5.5 min locally) or say plainly in
+      the header that integration is not covered.
 ### Reliability
 
 - [x] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
