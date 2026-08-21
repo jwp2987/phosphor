@@ -253,6 +253,14 @@ pub fn rendered_tab_rect(app: &App, window_id: WindowId, tab_index: usize) -> Op
 ///
 /// Groups with no members are excluded: they occupy no layout slot, so the tab
 /// bar correctly paints nothing for them.
+///
+/// **This asks the model which keys to look up.** `PositionCache` offers a
+/// keyed lookup and no enumeration, so the only containers this can find are
+/// the ones the model already predicts. It sees a container that is *missing*
+/// or in the wrong place; it cannot see an *extra* one painted for a group the
+/// model no longer holds. With no groups in the model the result is empty
+/// whatever the tab bar drew — see [`rendered_tab_bar_faults`] for the full
+/// list of what that costs.
 pub fn rendered_group_containers(app: &App, window_id: WindowId) -> Vec<(TabGroupId, RectF)> {
     let workspace = workspace_view(app, window_id);
     workspace.read(app, |workspace, ctx| {
@@ -308,19 +316,46 @@ fn groups_with_members(workspace: &Workspace) -> Vec<TabGroupId> {
 ///   one rect behind however many headers were drawn. The split is caught by
 ///   geometry instead: the earlier run's members are painted outside the
 ///   surviving container, and the tab that broke the run is painted inside it.
+/// * **Only keys the model predicts are looked up.** `PositionCache` exposes
+///   a keyed `get_position` and no way to enumerate what was painted, so every
+///   rect here is fetched under an id derived from the model: the ids of the
+///   groups the model holds, and the indices of the tabs the model holds.
+///   Chrome painted for something the model does *not* have — the second half
+///   of the original report, a header with no live group behind it — writes a
+///   key nothing here asks for and is invisible. Seeing it needs an
+///   enumeration API on `PositionCache` *and* eviction, since a closed group's
+///   rect otherwise lingers forever and would itself read as an extra header.
 /// * **"This element was not painted this frame" is not observable.**
-///   `PositionCache::cache_position_indefinitely` never evicts, so a rect that
-///   has outlived its element is indistinguishable from a fresh one. Every
-///   check here is therefore "the rect that exists is in the wrong place",
-///   never "no rect exists, so nothing was drawn" — the sole exception being a
-///   group container that has never been painted at all, which no stale entry
-///   can fake.
+///   `PositionCache::cache_position_indefinitely` never evicts and
+///   `clear_position` is explicit-only, so a rect that has outlived its
+///   element is indistinguishable from a fresh one. Every check here is
+///   therefore "the rect that exists is in the wrong place", never "no rect
+///   exists, so nothing was drawn". The cost is concrete: a regression that
+///   stops painting a group's chrome *after* one good frame leaves the last
+///   good rect in the cache and passes every lookup below. Only chrome that
+///   was never painted at all in this run fails loudly.
 /// * **A collapsed group's members** are skipped: a collapsed group paints its
 ///   container and no member tabs, so those cached rects are stale by
 ///   construction.
-/// * **A dragged tab or dragged group** is skipped: `Draggable` paints its
-///   child into the overlay layer at the cursor, so the saved rect is the
-///   floating chip's, not a tab-bar slot's.
+/// * **The members of a group that is mid-drag** are skipped, and only they.
+///   `SavePosition` is the *outer* wrapper on both a tab (`TabComponent::build`)
+///   and a group (`vertical_tabs::render_tab_group_internal`), and it caches
+///   `RectF::new(origin, child.size())` **before** it paints its child — so the
+///   rect it stores is the layout slot its parent handed it, which a
+///   `Draggable` underneath it cannot change by drawing somewhere else. A
+///   dragged *tab*'s cached rect is therefore its tab-bar slot and not the
+///   floating chip's, so it is checked like any other tab; production reads
+///   that same rect mid-drag in `raw_tab_insertion_index_for_cursor`, and the
+///   cross-window drag ghost deliberately skips `SavePosition`
+///   (`TabComponent::for_drag_ghost`) so it cannot clobber it. A dragged
+///   *group*'s container rect is a real slot for the same reason — but its
+///   member tabs write their `SavePosition`s from *inside* that `Draggable`,
+///   so the overlay paint re-caches each of them at the drag chip's origin.
+///   Those member rects are the only ones a drag stops being tab-bar geometry.
+/// * **One tab with no painted rect** is not itself a fault: it cannot be told
+///   apart from a tab that has simply not been painted yet. What is reported
+///   is the tab bar resolving *no* tab rects at all, so a tab bar that painted
+///   nothing cannot pass as "no disagreements".
 /// * **Grouping turned off** short-circuits: with `FeatureFlag::GroupedTabs`
 ///   disabled the tab bar draws no group chrome at all, and absent chrome is
 ///   then correct rather than a fault.
@@ -333,15 +368,47 @@ pub fn rendered_tab_bar_faults(app: &App, window_id: WindowId) -> Vec<String> {
         }
         let group_ids = group_ids_in_tab_order(workspace);
 
+        // The tabs the model says are on screen right now: everything except
+        // the members of a collapsed group, which paint nothing. A single one
+        // of these missing its rect is not evidence of anything — it may just
+        // not have been painted yet — but *all* of them missing means the tab
+        // bar resolved nothing at all, and every per-tab lookup below would
+        // then skip silently. Reported once, here, because it is also the only
+        // rendered check that runs when the model holds no groups, where
+        // otherwise nothing in this function executes at all.
+        let expected_on_screen: Vec<usize> = group_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(index, group_id)| {
+                let in_collapsed_group = group_id
+                    .and_then(|id| workspace.tab_groups.get(&id))
+                    .is_some_and(|group| group.collapsed);
+                (!in_collapsed_group).then_some(index)
+            })
+            .collect();
+        if !expected_on_screen.is_empty()
+            && expected_on_screen.iter().all(|index| {
+                ctx.element_position_by_id_at_last_frame(window_id, tab_position_id(*index))
+                    .is_none()
+            })
+        {
+            faults.push(format!(
+                "the model says tab(s) {expected_on_screen:?} are on screen, but the tab bar has \
+                 painted a rect for none of them"
+            ));
+        }
+
         for group_id in groups_with_members(workspace) {
             let Some(group) = workspace.tab_groups.get(&group_id) else {
                 continue;
             };
-            if group.draggable_state.is_dragging() {
-                // The whole group is floating in the overlay layer; its rect is
-                // the drag chip's, not a tab-bar slot's.
-                continue;
-            }
+            // `SavePosition` wraps the group's `Draggable` and caches the rect
+            // before painting, so a dragging group's container is still the
+            // layout slot and the foreign-tab check below stays valid. Its
+            // members are the exception: their own `SavePosition`s sit *inside*
+            // that `Draggable`, so the overlay paint re-caches them at the drag
+            // chip's origin.
+            let members_follow_the_cursor = group.draggable_state.is_dragging();
             let members: Vec<usize> = group_ids
                 .iter()
                 .enumerate()
@@ -357,11 +424,8 @@ pub fn rendered_tab_bar_faults(app: &App, window_id: WindowId) -> Vec<String> {
                 continue;
             };
 
-            if !group.collapsed {
+            if !group.collapsed && !members_follow_the_cursor {
                 for &index in &members {
-                    if workspace.tabs[index].draggable_state.is_dragging() {
-                        continue;
-                    }
                     let Some(rect) =
                         ctx.element_position_by_id_at_last_frame(window_id, tab_position_id(index))
                     else {
@@ -386,16 +450,23 @@ pub fn rendered_tab_bar_faults(app: &App, window_id: WindowId) -> Vec<String> {
             // The other half of the duplicate-header bug: a tab that landed in
             // the middle of a group's run without joining it.
             for (index, member_of) in group_ids.iter().enumerate() {
-                if *member_of == Some(group_id)
-                    || workspace.tabs[index].draggable_state.is_dragging()
-                {
+                if *member_of == Some(group_id) {
                     continue;
                 }
-                let belongs_to_collapsed_group = member_of
-                    .and_then(|id| workspace.tab_groups.get(&id))
-                    .is_some_and(|other| other.collapsed);
-                if belongs_to_collapsed_group {
+                // A tab being dragged is deliberately *not* skipped: its
+                // `SavePosition` sits outside its `Draggable`, so its cached
+                // rect is the tab-bar slot it currently occupies. A dragged tab
+                // painted inside a group's run without having joined the group
+                // is the defect this whole module exists for, and mid-drag is
+                // the only moment it is visible.
+                let other_group = member_of.and_then(|id| workspace.tab_groups.get(&id));
+                if other_group.is_some_and(|other| other.collapsed) {
                     // Not painted this frame, so its cached rect is stale.
+                    continue;
+                }
+                if other_group.is_some_and(|other| other.draggable_state.is_dragging()) {
+                    // Its group is mid-drag, so this tab re-cached at the drag
+                    // chip's origin rather than at a tab-bar slot.
                     continue;
                 }
                 let Some(rect) =
@@ -474,15 +545,25 @@ pub fn assert_groups_contiguous() -> AssertionCallback {
     })
 }
 
-/// Asserts the tab bar renders exactly `expected` group headers — one per
-/// contiguous run of grouped tabs.
+/// Asserts the model collapses to exactly `expected` grouped runs — one per
+/// header the tab bar is asked to draw — and that the tab bar has painted a
+/// container for each of those groups, in agreement with the model about where
+/// every tab went ([`rendered_tab_bar_faults`]).
 ///
-/// Checked on both sides: the model must collapse to `expected` grouped runs,
-/// the app must have painted `expected` group containers, and the painted tab
-/// bar must agree with the model about where every tab went
-/// ([`rendered_tab_bar_faults`]). The container count alone cannot see a
-/// duplicate header — both runs of a split group write one key — so the
-/// agreement check is what turns a split into a failure here.
+/// **What the painted half can and cannot see.** [`rendered_group_containers`]
+/// looks up one key per group the *model* holds, because `PositionCache` has no
+/// enumeration API, so it detects a container that is missing or misplaced and
+/// never one that is extra. Two consequences, both load-bearing:
+///
+/// * The container count alone cannot see a duplicate header — both runs of a
+///   split group write the same key — so the split is caught by the geometric
+///   disagreements in [`rendered_tab_bar_faults`], not by `painted.len()`.
+/// * With `expected == 0` there are no keys to probe, so `painted.len() == 0`
+///   holds whatever was drawn. **This assertion cannot see a header painted
+///   with no live group behind it**, which is the shape of the "duplicate
+///   header that would not close" once its group is gone. At `expected == 0`
+///   the only rendered evidence left is `faults`, which at that point checks
+///   just that the tab bar painted tab rects at all.
 pub fn assert_group_header_count(expected: usize) -> AssertionCallback {
     Box::new(move |app, window_id| {
         let runs = tab_bar_runs(app, window_id);
@@ -492,8 +573,10 @@ pub fn assert_group_header_count(expected: usize) -> AssertionCallback {
         async_assert!(
             modelled == expected && painted.len() == expected && faults.is_empty(),
             "tab bar should render {expected} group header(s): the model collapses to {modelled} \
-             grouped run(s) (runs were {runs:?}), the app painted {} group container(s) \
-             {painted:?}, and the painted tab bar disagrees with the model in: {faults:?}",
+             grouped run(s) (runs were {runs:?}), the app painted {} container(s) {painted:?} for \
+             the group(s) the model holds (containers painted for groups the model no longer \
+             holds are not observable), and the painted tab bar disagrees with the model in: \
+             {faults:?}",
             painted.len()
         )
     })
@@ -563,9 +646,16 @@ pub fn assert_group_member_count(anchor_tab_index: usize, expected: usize) -> As
 /// that the member tabs stop being painted, and "was not painted this frame" is
 /// not observable through the position cache — it never evicts, so the members'
 /// rects survive the collapse and a stale rect is indistinguishable from a
-/// fresh one. What *is* checked on the rendered side, by
-/// [`rendered_tab_bar_faults`], is that a collapsed group still paints exactly
-/// one container and that no other tab is painted inside it.
+/// fresh one.
+///
+/// The rendered side is correspondingly thin, and the earlier wording here
+/// overstated it. [`rendered_tab_bar_faults`] checks that *a* container rect
+/// exists under the collapsed group's key and that no foreign tab is painted
+/// inside it. It does **not** establish that the container was painted *this*
+/// frame — a rect cached before the collapse satisfies the lookup forever — and
+/// it cannot count containers, so "exactly one" is not among the things
+/// checked. A collapse that stopped painting the group's chrome altogether
+/// would pass every rendered check in this module.
 pub fn assert_group_collapsed(anchor_tab_index: usize, expected: bool) -> AssertionCallback {
     Box::new(move |app, window_id| {
         let group_id = group_id_for_tab(app, window_id, anchor_tab_index)
