@@ -64,6 +64,12 @@ pub fn register_noop(service_name: &str, ctx: &mut warpui::AppContext) {
 /// Registers an unavailable Secure Storage provider that deliberately does not persist values.
 ///
 /// Reads report missing values, while writes and removals succeed without accessing storage.
+///
+/// This exists for headless processes that must not touch a platform keychain, where an
+/// interactive unlock prompt has nobody to answer it. Its caller is the remote-server
+/// daemon (`app/src/remote_server/mod.rs`, `run_daemon_app`); the pin registers it from
+/// `initialize_app` under `LaunchMode::RemoteServerDaemon` instead
+/// (`42effe840:app/src/lib.rs:1468`), which this fork's daemon never reaches.
 pub fn register_unavailable(ctx: &mut warpui::AppContext) {
     ctx.add_singleton_model(|_| -> Model { Box::new(unavailable::SecureStorage) });
 }

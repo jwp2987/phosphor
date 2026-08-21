@@ -834,3 +834,120 @@ fn test_view_queries_span_both_registries() {
         );
     });
 }
+
+/// Regression: `get_responder_chain` routed on **presenter presence** — a window with no
+/// presenter went to `view_ancestors`, everything else to the presenter. That gets
+/// TUI-only windows right and the other half of the additive design wrong: a Zap TUI leaf
+/// focused inside a *GUI* window has a presenter, one that has never heard of it, so the
+/// chain collapsed to `[leaf]` and every GUI ancestor stopped receiving keystrokes. Its
+/// sibling `dispatch_typed_action_for_view` already routed by where the leaf view lives;
+/// the focus path now shares that rule via `responder_chain_for_view`.
+///
+/// The existing coverage could not catch this:
+/// `test_self_or_child_interacted_with_reaches_tui_views` builds the chain by calling
+/// `view_ancestors()` itself and passing the result in, so it never exercises the routing
+/// decision at all.
+#[test]
+fn test_get_responder_chain_reaches_gui_ancestors_of_a_focused_tui_leaf() {
+    App::test((), |mut app| async move {
+        let (window_id, gui_root) =
+            app.add_window(WindowStyle::NotStealFocus, |_| RootView::default());
+        let gui_root_id = gui_root.id();
+
+        let tui = app.update(move |ctx| {
+            let handle = ctx.add_tui_view(window_id, |_| CounterView::default());
+            ctx.record_view_parent(window_id, handle.id(), gui_root_id);
+            handle
+        });
+
+        tui.update(&mut app, |_, ctx| ctx.focus_self());
+        assert_eq!(app.focused_view_id(window_id), Some(tui.id()));
+
+        // Ancestor-first: [gui root, tui leaf]. The GUI window *does* have a presenter, so
+        // a presenter-presence test would return `[tui leaf]` here.
+        assert_eq!(
+            app.read(|ctx| ctx.get_responder_chain(window_id)),
+            vec![gui_root_id, tui.id()],
+            "a TUI leaf focused in a GUI window must still resolve its GUI ancestors"
+        );
+    });
+}
+
+/// The case the presenter-presence test did get right, pinned so the shared routing helper
+/// cannot regress it: a TUI-only window (`add_tui_window`) has no presenter at all, and its
+/// hierarchy lives entirely in `view_parents`.
+#[test]
+fn test_get_responder_chain_spans_a_tui_only_window() {
+    App::test((), |mut app| async move {
+        let (window_id, tui_root) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| PlainTuiView,
+            )
+        });
+        let tui_root_id = tui_root.id();
+
+        let tui_leaf = app.update(move |ctx| {
+            let handle = ctx.add_tui_view(window_id, |_| CounterView::default());
+            ctx.record_view_parent(window_id, handle.id(), tui_root_id);
+            handle
+        });
+        tui_leaf.update(&mut app, |_, ctx| ctx.focus_self());
+        assert_eq!(app.focused_view_id(window_id), Some(tui_leaf.id()));
+
+        assert!(
+            app.read(|ctx| ctx.presenter(window_id).is_none()),
+            "a TUI-only window must have no GUI presenter"
+        );
+        assert_eq!(
+            app.read(|ctx| ctx.get_responder_chain(window_id)),
+            vec![tui_root_id, tui_leaf.id()],
+            "a TUI-only window's responder chain must span its `view_parents` hierarchy"
+        );
+    });
+}
+
+/// Regression: `contexts_for_window_and_view` and `editable_bindings_for_view` both did
+/// `self.presenter(window_id).expect("Invalid window id")`. The message states an
+/// invariant that is false in this fork twice over: `presenter` is documented to return
+/// `None` for a window whose close raced an inbound event, and a TUI-only window
+/// (`add_tui_window`) never has a presenter at all — so an entirely valid window id
+/// crashed the process. The pin has no such assertion at either site
+/// (`42effe840:crates/warpui_core/src/core/app.rs:1945,1992` use `view_ancestors`).
+///
+/// These are the two public entry points that reach them:
+/// `key_bindings_for_view` -> `contexts_for_window_and_view`, and
+/// `editable_bindings_for_view` directly. `update_custom_action_binding` reaches the
+/// former too, via `active_binding_for_custom_action`, which resolves the *active* window
+/// and its focused view — the route by which an ordinary keystroke-driven menu refresh
+/// could reach a TUI window.
+#[test]
+fn test_binding_lookups_do_not_panic_on_a_tui_only_window() {
+    App::test((), |mut app| async move {
+        let (window_id, tui_root) = app.update(|ctx| {
+            ctx.add_tui_window(
+                AddWindowOptions {
+                    window_style: WindowStyle::NotStealFocus,
+                    ..Default::default()
+                },
+                |_| PlainTuiView,
+            )
+        });
+
+        assert!(
+            app.read(|ctx| ctx.presenter(window_id).is_none()),
+            "a TUI-only window must have no GUI presenter"
+        );
+
+        // Neither lookup may panic; both degrade to whatever the `view_parents`
+        // hierarchy can supply.
+        let _ = app.read(|ctx| ctx.key_bindings_for_view(window_id, tui_root.id()).len());
+        let _ = app.read(|ctx| {
+            ctx.editable_bindings_for_view(window_id, tui_root.id())
+                .len()
+        });
+    });
+}

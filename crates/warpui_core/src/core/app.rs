@@ -1453,6 +1453,13 @@ impl AppContext {
         None
     }
 
+    /// Dispatch an action by name using the given view as the base of the responder chain.
+    ///
+    /// Shares `responder_chain_for_view` with its typed twin
+    /// [`Self::dispatch_typed_action_for_view`] on purpose: this used to route on
+    /// presenter presence and answer `false` outright when there was none, so the same
+    /// action reached a TUI view when dispatched by type and vanished when dispatched by
+    /// name.
     pub fn dispatch_action_for_view(
         &mut self,
         window_id: WindowId,
@@ -1460,12 +1467,51 @@ impl AppContext {
         name: &str,
         arg: &dyn Any,
     ) -> bool {
-        match self.presenter(window_id) { Some(presenter) => {
-            let responder_chain = presenter.borrow().ancestors(view_id);
-            self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Info)
-        } _ => {
-            false
-        }}
+        let responder_chain = self.responder_chain_for_view(window_id, view_id);
+        self.dispatch_action(window_id, &responder_chain, name, arg, log::Level::Info)
+    }
+
+    /// Returns the responder chain for `view_id` in `window_id`: the view hierarchy from
+    /// the root down to (and including) `view_id`, ancestor first.
+    ///
+    /// This fork keeps *two* parentage records, unlike the pin (`42effe840`), where the
+    /// GUI presenter reports its layout embeddings into `view_parents` and
+    /// `view_ancestors` is therefore the single answer for every view. Here `view_parents`
+    /// is written only by the TUI render path (`record_view_parent` /
+    /// `report_view_embeddings`), so a GUI view's ancestry still lives solely in its
+    /// window's presenter. Porting the pin's one-liner would give every GUI view a
+    /// one-element chain; the fork-correct rule is to route by **where the leaf view
+    /// lives**, which is what this does.
+    ///
+    /// Specifically, *not* by whether the window happens to have a presenter:
+    ///
+    /// * A Zap TUI leaf embedded under a GUI root lives in a window that *does* have a
+    ///   presenter — one that has never heard of it — so a presenter-presence test
+    ///   resolves it to a one-element chain that never reaches its GUI ancestors.
+    /// * A window with no presenter is not an error. `presenter` is documented to return
+    ///   `None` for a window whose close raced an inbound event, and a TUI-only window
+    ///   (`add_tui_window`) never has one at all. Both fall back to `view_parents`, which
+    ///   degrades to `[view_id]` when nothing is recorded — never a panic.
+    pub(crate) fn responder_chain_for_view(
+        &self,
+        window_id: WindowId,
+        view_id: EntityId,
+    ) -> Vec<EntityId> {
+        #[cfg(feature = "tui")]
+        let is_tui_view = self
+            .windows
+            .get(&window_id)
+            .is_some_and(|window| window.tui_views.contains_key(&view_id));
+        #[cfg(not(feature = "tui"))]
+        let is_tui_view = false;
+
+        if is_tui_view {
+            return self.view_ancestors(window_id, view_id);
+        }
+        match self.presenter(window_id) {
+            Some(presenter) => presenter.borrow().ancestors(view_id),
+            None => self.view_ancestors(window_id, view_id),
+        }
     }
 
     /// Dispatch a typed action using the given view as the base of the responder_chain
@@ -1475,32 +1521,7 @@ impl AppContext {
         view_id: EntityId,
         action: &dyn Action,
     ) {
-        // A GUI window's presenter only tracks the parentage of GUI views
-        // (`views`); a Zap TUI view — whether it lives in a TUI-only window or
-        // is embedded as a child of a GUI window — has its ancestry recorded in
-        // `view_parents` instead (see `record_view_parent` /
-        // `report_view_embeddings`). Route by where the leaf view itself lives,
-        // not by whether the window happens to have a presenter: a TUI leaf
-        // under a GUI root would otherwise fall into the presenter branch,
-        // which has never heard of it, and resolve to a one-element responder
-        // chain that never reaches its GUI ancestors.
-        #[cfg(feature = "tui")]
-        let is_tui_view = self
-            .windows
-            .get(&window_id)
-            .is_some_and(|window| window.tui_views.contains_key(&view_id));
-        #[cfg(not(feature = "tui"))]
-        let is_tui_view = false;
-
-        let responder_chain = if is_tui_view {
-            self.view_ancestors(window_id, view_id)
-        } else {
-            match self.presenter(window_id) {
-                Some(presenter) => presenter.borrow().ancestors(view_id),
-                // TUI path: no GUI presenter; use the `view_parents` hierarchy.
-                None => self.view_ancestors(window_id, view_id),
-            }
-        };
+        let responder_chain = self.responder_chain_for_view(window_id, view_id);
         self.dispatch_typed_action(window_id, &responder_chain, action, log::Level::Info);
     }
 
@@ -1909,11 +1930,7 @@ impl AppContext {
     }
 
     fn contexts_for_window_and_view(&self, window_id: WindowId, view_id: EntityId) -> Vec<Context> {
-        let responder_chain = self
-            .presenter(window_id)
-            .expect("Invalid window id")
-            .borrow()
-            .ancestors(view_id);
+        let responder_chain = self.responder_chain_for_view(window_id, view_id);
         match self.contexts_from_responder_chain(window_id, &responder_chain) {
             Ok(ctxs) => ctxs,
             Err(error) => {
@@ -1960,11 +1977,7 @@ impl AppContext {
         window_id: WindowId,
         view_id: EntityId,
     ) -> Vec<EditableBindingLens<'_>> {
-        let responder_chain = self
-            .presenter(window_id)
-            .expect("Invalid window id")
-            .borrow()
-            .ancestors(view_id);
+        let responder_chain = self.responder_chain_for_view(window_id, view_id);
         let contexts = match self.contexts_from_responder_chain(window_id, &responder_chain) {
             Ok(ctxs) => ctxs,
             Err(error) => {
@@ -2055,13 +2068,13 @@ impl AppContext {
         Ok(false)
     }
 
-    /// Returns the responder chain for a given context and window ID.
-    ///
-    /// The "responder chain" is the view hierarchy to match against with bindings.
-    /// This prefers the focused view and its ancestors; if no view is focused it
-    /// dispatches to the root view.
     /// Returns the view id chain from the root down to `view_id` (root first), using the
-    /// `view_parents` map. Only meaningful for the TUI path, which populates `view_parents`.
+    /// `view_parents` map.
+    ///
+    /// In this fork `view_parents` is written only by the TUI render path
+    /// (`record_view_parent` / `report_view_embeddings`), so this answers ancestry for TUI
+    /// views only; a GUI view's parentage lives in its window's presenter. Callers that
+    /// may be handed either kind of leaf want `responder_chain_for_view`, not this.
     pub fn view_ancestors(&self, window_id: WindowId, mut view_id: EntityId) -> Vec<EntityId> {
         let mut chain = vec![view_id];
         if let Some(parents) = self.view_parents.get(&window_id) {
@@ -2078,15 +2091,20 @@ impl AppContext {
         chain
     }
 
+    /// Returns the responder chain for a given context and window ID.
+    ///
+    /// The "responder chain" is the view hierarchy to match against with bindings.
+    /// This prefers the focused view and its ancestors; if no view is focused it
+    /// dispatches to the root view.
     pub(crate) fn get_responder_chain(&self, window_id: WindowId) -> Vec<EntityId> {
         if let Some(focused) = self.focused_view_id(window_id) {
-            match self.presenter(window_id) {
-                Some(presenter) => presenter.borrow().ancestors(focused),
-                // TUI windows have no GUI presenter; their view hierarchy lives in
-                // `view_parents`. Without this the responder chain is empty and no
-                // keystroke/typed-action reaches the focused TUI view.
-                None => self.view_ancestors(window_id, focused),
-            }
+            // Route by where the focused *leaf* lives, not by whether the window has a
+            // presenter -- see `responder_chain_for_view`. A presenter-presence test gets
+            // TUI-only windows right (no presenter) but silently strands the other half of
+            // the additive design: a focused TUI leaf under a GUI root takes the presenter
+            // branch, which has no record of it, so the chain collapses to `[leaf]` and
+            // every GUI ancestor stops receiving keystrokes.
+            self.responder_chain_for_view(window_id, focused)
         } else if let Some(root) = self.root_view_id(window_id) {
             vec![root]
         } else {
@@ -4803,29 +4821,11 @@ impl AppContext {
             None => return false,
         };
 
-        // Resolve the focused view's ancestor chain the same way action
-        // dispatch does (see `dispatch_typed_action_to_focused`): a Zap TUI
-        // view's parentage lives in `view_parents`, not the GUI presenter
-        // (which only tracks `views`). Route by where the focused leaf view
-        // lives so a TUI leaf — including one under a GUI window's presenter —
-        // resolves its real ancestor chain instead of a one-element one.
-        #[cfg(feature = "tui")]
-        let is_tui_view = self
-            .windows
-            .get(&window_id)
-            .is_some_and(|window| window.tui_views.contains_key(&focused_view_id));
-        #[cfg(not(feature = "tui"))]
-        let is_tui_view = false;
-
-        let ancestors = if is_tui_view {
-            self.view_ancestors(window_id, focused_view_id)
-        } else {
-            match self.presenter(window_id) {
-                Some(presenter) => presenter.borrow().ancestors(focused_view_id),
-                None => self.view_ancestors(window_id, focused_view_id),
-            }
-        };
-        ancestors.contains(view_id)
+        // Resolve the focused view's ancestor chain the same way action dispatch does
+        // (see `responder_chain_for_view`): a Zap TUI view's parentage lives in
+        // `view_parents`, not the GUI presenter (which only tracks `views`).
+        self.responder_chain_for_view(window_id, focused_view_id)
+            .contains(view_id)
     }
 
     fn relay_task_output(&mut self, task_id: usize, output: Box<dyn Any>) -> Result<()> {

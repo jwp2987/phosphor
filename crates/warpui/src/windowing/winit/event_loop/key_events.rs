@@ -55,15 +55,36 @@ lazy_static! {
     ]);
 }
 
-/// Converts a KeyboardInput event to a UI framework event, returning None
-/// if no UI framework event should be emitted.
+/// The outcome of converting a winit keyboard event.
+///
+/// The two non-event outcomes are kept apart on purpose. `convert_keyboard_input_event`
+/// makes a *deliberate refusal* for keystrokes in [`KEYS_TO_IGNORE`] — those must reach
+/// no handler at all — while every other failure just means "this backend could not name
+/// the key", which is precisely the case
+/// [`text_fallback_event_for_unconverted_key`] exists to rescue. Collapsing both into a
+/// bare `None` throws the refusal away at the call site, leaving the fallback to
+/// re-derive it from the modifier state; the two then have to be kept in agreement by
+/// hand, and a refusal that ever stops carrying a modifier is silently resurrected.
+pub enum KeyConversion {
+    /// A UI event was produced for this key.
+    Event(crate::Event),
+    /// The keystroke is one we purposefully do not handle. No fallback may act on it.
+    Ignored,
+    /// No UI event could be derived from the key itself. The text fallback may still
+    /// apply.
+    Unconverted,
+}
+
+/// Converts a KeyboardInput event to a UI framework event.
+///
+/// See [`KeyConversion`] for why "refused" and "unconvertible" are distinct results.
 pub fn convert_keyboard_input_event(
     input: winit::event::KeyEvent,
     window_state: &WindowState,
     is_synthetic: bool,
-) -> Option<crate::Event> {
+) -> KeyConversion {
     if input.state != ElementState::Pressed {
-        return None;
+        return KeyConversion::Unconverted;
     }
 
     // Ignore any synthetic keypresses that winit generated for keys that were
@@ -79,7 +100,7 @@ pub fn convert_keyboard_input_event(
     //    the window, as it will close the window and then be synthetically
     //    generated for the next window in the stack.
     if is_synthetic {
-        return None;
+        return KeyConversion::Unconverted;
     }
 
     let chars = text_with_modifiers(&input, window_state.modifiers)
@@ -124,7 +145,10 @@ pub fn convert_keyboard_input_event(
     };
     let input_key = get_input_key(&logical_key, shift);
 
-    let key = convert_key(input_key)?.to_string();
+    let Some(key) = convert_key(input_key) else {
+        return KeyConversion::Unconverted;
+    };
+    let key = key.to_string();
 
     let keystroke = Keystroke {
         ctrl: window_state.modifiers.control_key(),
@@ -138,10 +162,10 @@ pub fn convert_keyboard_input_event(
     // Ignore any keystrokes that we're purposefully not handling. (I.e. cmdorctrl-v needs to fall back
     // to the browser implementation on the web.)
     if KEYS_TO_IGNORE.contains(&keystroke) {
-        return None;
+        return KeyConversion::Ignored;
     }
 
-    Some(crate::event::Event::KeyDown {
+    KeyConversion::Event(crate::event::Event::KeyDown {
         keystroke,
         chars,
         details: KeyEventDetails {

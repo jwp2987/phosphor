@@ -121,6 +121,24 @@ pub(super) fn run_daemon_app(
         ctx.background_executor()
             .spawn(warp_logging::rotate_log_files())
             .detach();
+
+        // Secure storage. Daemon auth arrives through the client handshake, so the
+        // daemon must never reach a platform keychain: on a headless host that either
+        // blocks on an interactive unlock prompt or fails outright. The pin registers
+        // exactly this provider for exactly this reason
+        // (`42effe840:app/src/lib.rs:1468`, under
+        // `LaunchMode::RemoteServerDaemon`). This fork's `RemoteServerDaemon` is a unit
+        // variant that never reaches `initialize_app` (see
+        // `daemon_codebase_index_data_dir` above), so the registration has to happen
+        // here instead — and until it did, `register_unavailable` and its provider had
+        // no caller at all, while `ctx.secure_storage()` in this process would have
+        // panicked with "Cannot get singleton model ... never registered" rather than
+        // degrading, the same failure mode `GlobalBufferModel` and
+        // `WarpManagedPathsWatcher` document below.
+        //
+        // Reads report `Error::NotFound`; writes and removals succeed and discard.
+        warpui_extras::secure_storage::register_unavailable(ctx);
+
         use repo_metadata::repositories::DetectedRepositories;
         use repo_metadata::watcher::DirectoryWatcher;
         use repo_metadata::RepoMetadataModel;

@@ -50,7 +50,9 @@ use super::CustomEvent;
 #[cfg(windows)]
 use super::windows::{add_network_connection_listener, WindowsNetworkConnectionPoint};
 
-use self::key_events::{convert_keyboard_input_event, text_fallback_event_for_unconverted_key};
+use self::key_events::{
+    convert_keyboard_input_event, text_fallback_event_for_unconverted_key, KeyConversion,
+};
 
 /// This is the time duration beyond which clicks get treated as separate single clicks instead of
 /// double-click, triple-click, etc.
@@ -1330,21 +1332,29 @@ impl EventLoop {
                 let event_text = event.text.as_ref().map(|text| text.to_string());
                 let event_state = event.state;
                 let modifiers = window_state.modifiers;
-                let Some(warp_ui_event) =
-                    convert_keyboard_input_event(event, window_state, is_synthetic)
-                else {
-                    return text_fallback_event_for_unconverted_key(
+                match convert_keyboard_input_event(event, window_state, is_synthetic) {
+                    KeyConversion::Event(warp_ui_event) => {
+                        Some(ConvertedEvent::KeyDownWithTypedCharacters {
+                            chars: event_text,
+                            event: warp_ui_event,
+                        })
+                    }
+                    // A refusal is final. The text fallback below re-derives "is this a
+                    // shortcut?" from the modifier state, which is *not* the same question
+                    // `KEYS_TO_IGNORE` answers; routing a refusal into it would let the
+                    // layer below type the character the layer above just declined.
+                    KeyConversion::Ignored => None,
+                    // The key itself could not be named (e.g. non-IME input methods that
+                    // inject pre-composed text with `logical_key == Key::Unidentified`).
+                    // Recover the typed text if there is any.
+                    KeyConversion::Unconverted => text_fallback_event_for_unconverted_key(
                         event_text,
                         event_state,
                         modifiers,
                         is_synthetic,
                     )
-                    .map(ConvertedEvent::Event);
-                };
-                Some(ConvertedEvent::KeyDownWithTypedCharacters {
-                    chars: event_text,
-                    event: warp_ui_event,
-                })
+                    .map(ConvertedEvent::Event),
+                }
             }
             WindowEvent::Resized(_) => Some(ConvertedEvent::Resize),
             WindowEvent::Focused(is_focused) => {
