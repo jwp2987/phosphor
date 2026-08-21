@@ -78,3 +78,154 @@ fn fallback_value_is_owner_only() {
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
 }
+
+/// The *default* fallback path -- the one every real credential takes when the
+/// Secret Service is unavailable -- must be owner-only too.
+///
+/// Before 2026-08-21 this path was a plain `std::fs::write`, i.e. `0o644` under
+/// the default umask, while the `0o600` variant covered only a non-secret mode
+/// enum. `fallback_value_is_owner_only` above tested the variant nobody used,
+/// so it could not fail on the exposure.
+#[test]
+fn default_fallback_value_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("secure-storage");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    std::fs::set_permissions(&fallback_dir, std::fs::Permissions::from_mode(0o755))
+        .expect("relax directory mode");
+    let storage = SecureStorage::new_with_fallback("darmok", fallback_dir.clone());
+
+    storage
+        .write_fallback_value("key", "value")
+        .expect("fallback write");
+
+    let file_mode = std::fs::metadata(storage.fallback_file("key").expect("fallback file"))
+        .expect("file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        file_mode, 0o600,
+        "fallback blob must not be group/other readable"
+    );
+
+    // The registered fallback directory is `paths::state_dir()`, shared with
+    // unrelated state, so the default path must NOT re-mode it as a side effect.
+    let dir_mode = std::fs::metadata(&fallback_dir)
+        .expect("directory metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        dir_mode, 0o755,
+        "default fallback path must not chmod the shared state dir"
+    );
+}
+
+/// A blob left at `0o644` by an older build is tightened when it is rewritten.
+///
+/// `OpenOptions::mode` only applies when the call itself creates the file, and
+/// `truncate(true)` preserves the existing mode, so this needs the explicit
+/// `set_permissions` on the descriptor.
+#[test]
+fn rewriting_an_existing_world_readable_fallback_tightens_it() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("secure-storage");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    let storage = SecureStorage::new_with_fallback("darmok", fallback_dir);
+    let path = storage.fallback_file("key").expect("fallback file");
+
+    // Simulate the pre-hardening writer.
+    std::fs::write(&path, b"stale").expect("seed legacy blob");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("seed legacy mode");
+
+    storage
+        .write_fallback_value("key", "value")
+        .expect("fallback write");
+
+    let mode = std::fs::metadata(&path)
+        .expect("file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    assert_eq!(
+        storage.read_fallback_value("key").expect("read back"),
+        "value"
+    );
+}
+
+/// Migration for blobs that are never rewritten: reading a `0o644` fallback
+/// file tightens it in place, without moving it or re-encrypting it.
+///
+/// A long-lived API key may never be rewritten, so hardening only the write
+/// path would leave the existing exposure standing indefinitely.
+#[test]
+fn reading_a_world_readable_fallback_migrates_it_to_owner_only() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("secure-storage");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    let storage = SecureStorage::new_with_fallback("darmok", fallback_dir);
+    let path = storage.fallback_file("key").expect("fallback file");
+
+    // A blob written by a pre-hardening build: same path, same ciphertext, 0644.
+    let encrypted = storage
+        .fallback_encrypt("shaka when the walls fell")
+        .expect("encrypt");
+    std::fs::write(&path, &encrypted).expect("seed legacy blob");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("seed legacy mode");
+
+    // The credential must still be readable -- the migration must not orphan it.
+    assert_eq!(
+        storage.read_fallback_value("key").expect("read"),
+        "shaka when the walls fell"
+    );
+
+    let mode = std::fs::metadata(&path)
+        .expect("file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "read must migrate a legacy world-readable blob"
+    );
+}
+
+/// The migration must not disturb a file that is already owner-only, and must
+/// not fabricate one that does not exist.
+#[test]
+fn reading_an_absent_or_already_tight_fallback_is_unchanged() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let fallback_dir = temp_dir.path().join("secure-storage");
+    std::fs::create_dir_all(&fallback_dir).expect("create fallback dir");
+    let storage = SecureStorage::new_with_fallback("darmok", fallback_dir);
+
+    assert!(matches!(
+        storage.read_fallback_value("missing"),
+        Err(Error::NotFound)
+    ));
+    assert!(!storage.fallback_file("missing").expect("path").exists());
+
+    storage
+        .write_fallback_value("key", "value")
+        .expect("fallback write");
+    let path = storage.fallback_file("key").expect("fallback file");
+    assert_eq!(storage.read_fallback_value("key").expect("read"), "value");
+    let mode = std::fs::metadata(&path)
+        .expect("file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+}

@@ -4,7 +4,7 @@ use std::{
     cell::OnceCell,
     collections::HashMap,
     fs::OpenOptions,
-    io::Write as _,
+    io::{Read as _, Write as _},
     os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _},
     path::PathBuf,
 };
@@ -238,33 +238,32 @@ impl SecureStorage {
         Ok(path)
     }
 
-    fn write_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
+    /// Writes the encrypted fallback blob for `key` with owner-only (`0o600`)
+    /// file permissions.
+    ///
+    /// `create_dir` additionally creates the fallback directory when it is
+    /// missing and forces it to `0o700`; see
+    /// [`Self::write_owner_only_fallback_value`].
+    fn write_fallback_file(&self, key: &str, value: &str, create_dir: bool) -> Result<(), Error> {
         let fallback_file = self.fallback_file(key)?;
 
         let encrypted = self.fallback_encrypt(value)?;
 
-        std::fs::write(fallback_file, encrypted).map_err(|err| Error::Unknown(err.into()))
-    }
+        if create_dir {
+            let Some(fallback_dir) = fallback_file.parent() else {
+                return Err(Error::Unknown(anyhow!(
+                    "Invalid fallback secure-storage directory"
+                )));
+            };
+            std::fs::create_dir_all(fallback_dir).map_err(|err| Error::Unknown(err.into()))?;
+            let mut dir_permissions = std::fs::metadata(fallback_dir)
+                .map_err(|err| Error::Unknown(err.into()))?
+                .permissions();
+            dir_permissions.set_mode(0o700);
+            std::fs::set_permissions(fallback_dir, dir_permissions)
+                .map_err(|err| Error::Unknown(err.into()))?;
+        }
 
-    /// Like [`Self::write_fallback_value`], but creates the fallback directory and file with
-    /// owner-only permissions (`0o700` / `0o600`) so the encrypted fallback blob isn't readable
-    /// by other local users.
-    fn write_owner_only_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
-        let fallback_file = self.fallback_file(key)?;
-
-        let encrypted = self.fallback_encrypt(value)?;
-        let Some(fallback_dir) = fallback_file.parent() else {
-            return Err(Error::Unknown(anyhow!(
-                "Invalid fallback secure-storage directory"
-            )));
-        };
-        std::fs::create_dir_all(fallback_dir).map_err(|err| Error::Unknown(err.into()))?;
-        let mut dir_permissions = std::fs::metadata(fallback_dir)
-            .map_err(|err| Error::Unknown(err.into()))?
-            .permissions();
-        dir_permissions.set_mode(0o700);
-        std::fs::set_permissions(fallback_dir, dir_permissions)
-            .map_err(|err| Error::Unknown(err.into()))?;
         let mut file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -272,21 +271,92 @@ impl SecureStorage {
             .mode(0o600)
             .open(&fallback_file)
             .map_err(|err| Error::Unknown(err.into()))?;
-        file.write_all(&encrypted)
-            .map_err(|err| Error::Unknown(err.into()))?;
+        // `.mode()` applies only when *this* call creates the file. A blob left
+        // behind by an older build is already `0o644` and `truncate(true)` keeps
+        // that mode, so tighten explicitly through the open descriptor -- and do
+        // it BEFORE `write_all`, so freshly encrypted bytes are never even
+        // momentarily present in a group/other-readable file.
         let mut file_permissions = file
             .metadata()
             .map_err(|err| Error::Unknown(err.into()))?
             .permissions();
         file_permissions.set_mode(0o600);
         file.set_permissions(file_permissions)
+            .map_err(|err| Error::Unknown(err.into()))?;
+        file.write_all(&encrypted)
             .map_err(|err| Error::Unknown(err.into()))
+    }
+
+    /// Writes the fallback blob, owner-only, without creating the fallback
+    /// directory.
+    ///
+    /// This is the path every real credential takes when the Secret Service is
+    /// unavailable: BYOP API keys, agent-provider secrets, MCP OAuth refresh
+    /// tokens and the proxy password all reach it through
+    /// [`super::SecureStorage::write_value`]. Upstream -- and this fork until
+    /// 2026-08-21 -- used a plain `std::fs::write` here, which takes the process
+    /// umask and therefore lands at `0o644` under the default `022`, leaving
+    /// every one of those secrets readable by any other local user. The
+    /// `0o600` variant existed but its only caller was a non-secret mode enum.
+    ///
+    /// Deliberately does NOT create or chmod the fallback directory: the
+    /// registered fallback dir is `warp_core::paths::state_dir()`, shared with
+    /// unrelated application state, so forcing it to `0o700` as a side effect
+    /// of writing one secret is a wider change than this path needs. The file
+    /// mode alone protects the ciphertext; only the *key names* remain listable.
+    fn write_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.write_fallback_file(key, value, false)
+    }
+
+    /// Like [`Self::write_fallback_value`], but additionally creates the fallback directory
+    /// with owner-only permissions (`0o700`) when it does not already exist.
+    fn write_owner_only_fallback_value(&self, key: &str, value: &str) -> Result<(), Error> {
+        self.write_fallback_file(key, value, true)
+    }
+
+    /// Best-effort tightening of an already-written fallback blob to `0o600`.
+    ///
+    /// Hardening only the write path would leave blobs written by earlier
+    /// builds at `0o644` until the credential happens to be rewritten, which
+    /// for a long-lived API key may be never. Reads run at startup, so this is
+    /// where the migration can actually happen -- and it is a migration that
+    /// changes no path, no filename and no ciphertext, so nothing becomes
+    /// unreadable.
+    ///
+    /// Operates on the open descriptor rather than the path, so a symlink
+    /// swapped in between the open and the chmod cannot redirect it.
+    ///
+    /// Failure is deliberately not propagated: the caller already holds the
+    /// bytes, and a read-only filesystem must not turn a readable credential
+    /// into a missing one.
+    fn tighten_fallback_permissions(file: &std::fs::File, path: &std::path::Path) {
+        let Ok(metadata) = file.metadata() else {
+            return;
+        };
+        if !metadata.is_file() || metadata.permissions().mode() & 0o077 == 0 {
+            return;
+        }
+        let mut permissions = metadata.permissions();
+        permissions.set_mode(0o600);
+        match file.set_permissions(permissions) {
+            Ok(()) => log::info!(
+                "Tightened group/other-readable secure-storage fallback file to 0600: {}",
+                path.display()
+            ),
+            Err(err) => log::warn!(
+                "Failed to tighten group/other-readable secure-storage fallback file {}: {err}",
+                path.display()
+            ),
+        }
     }
 
     fn read_fallback_value(&self, key: &str) -> Result<String, Error> {
         let fallback_file = self.fallback_file(key)?;
 
-        let data = std::fs::read(fallback_file).map_err(|_| Error::NotFound)?;
+        let mut file = std::fs::File::open(&fallback_file).map_err(|_| Error::NotFound)?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).map_err(|_| Error::NotFound)?;
+        Self::tighten_fallback_permissions(&file, &fallback_file);
         self.fallback_decrypt(&data)
     }
 
@@ -296,6 +366,24 @@ impl SecureStorage {
             ref io_error if io_error.kind() == std::io::ErrorKind::NotFound => Error::NotFound,
             io_error => Error::Unknown(io_error.into()),
         })
+    }
+
+    /// Records, at warn level, that a secret is going to the on-disk fallback
+    /// rather than to the OS keyring.
+    ///
+    /// Without this the two backends are indistinguishable from the outside:
+    /// a write into the Secret Service and a write of a locally-encrypted blob
+    /// both simply succeed. They are not equivalent -- the fallback's key is a
+    /// build-time constant in an open-source binary (see [`Self::encryption_key`])
+    /// -- so an operator has to be able to tell which one is in use.
+    fn warn_fallback_backend(&self, key: &str, err: &Error) {
+        log::warn!(
+            "Secret Service unavailable ({err}); storing {}/{key} in the local encrypted \
+             fallback instead. The fallback file is owner-only (0600), but its encryption \
+             key is a build-time constant, so it defends against other local users only -- \
+             not against anyone able to read files as this user.",
+            self.service_name,
+        );
     }
 }
 
@@ -309,7 +397,10 @@ impl super::SecureStorage for SecureStorage {
                 let _ = self.delete_fallback_value(key);
                 Ok(())
             }
-            Err(_) => self.write_fallback_value(key, value),
+            Err(err) => {
+                self.warn_fallback_backend(key, &err);
+                self.write_fallback_value(key, value)
+            }
         }
     }
 
@@ -321,7 +412,10 @@ impl super::SecureStorage for SecureStorage {
                 let _ = self.delete_fallback_value(key);
                 Ok(())
             }
-            Err(_) => self.write_owner_only_fallback_value(key, value),
+            Err(err) => {
+                self.warn_fallback_backend(key, &err);
+                self.write_owner_only_fallback_value(key, value)
+            }
         }
     }
 
