@@ -1575,28 +1575,27 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleMouseReporting => {
                 AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-                    reporting
-                        .mouse_reporting_enabled
-                        .toggle_and_save_value(ctx)
-                        .expect("MouseReportingEnabled failed to serialize");
+                    // Not an `expect`: a `settings.toml` that does not parse
+                    // inhibits writes, so this returns `Err` on an ordinary
+                    // click. Panicking would crash the app in exactly the
+                    // state write inhibition exists to survive.
+                    report_if_error!(reporting.mouse_reporting_enabled.toggle_and_save_value(ctx));
                 });
                 ctx.notify();
             }
             ToggleScrollReporting => {
                 AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-                    reporting
-                        .scroll_reporting_enabled
-                        .toggle_and_save_value(ctx)
-                        .expect("ScrollReportingEnabled failed to serialize");
+                    report_if_error!(
+                        reporting
+                            .scroll_reporting_enabled
+                            .toggle_and_save_value(ctx)
+                    );
                 });
                 ctx.notify();
             }
             ToggleFocusReporting => {
                 AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-                    reporting
-                        .focus_reporting_enabled
-                        .toggle_and_save_value(ctx)
-                        .expect("FocusReportingEnabled failed to serialize");
+                    report_if_error!(reporting.focus_reporting_enabled.toggle_and_save_value(ctx));
                 });
                 ctx.notify();
             }
@@ -1802,27 +1801,26 @@ impl TypedActionView for FeaturesPageView {
                 })
             }
             ToggleVimMode => AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                editor_settings
-                    .vim_mode
-                    .toggle_and_save_value(ctx)
-                    .expect("failed to serialize VimMode");
+                // Not an `expect`: a `settings.toml` that does not parse inhibits
+                // writes, so this returns `Err` on an ordinary click. Panicking
+                // would crash the app in exactly the state write inhibition
+                // exists to survive.
+                report_if_error!(editor_settings.vim_mode.toggle_and_save_value(ctx));
                 ctx.notify();
             }),
             ToggleVimUnnamedSystemClipboard => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    editor_settings
-                        .vim_unnamed_system_clipboard
-                        .toggle_and_save_value(ctx)
-                        .expect("failed to serialize VimUnnamedSystemClipboard");
+                    report_if_error!(
+                        editor_settings
+                            .vim_unnamed_system_clipboard
+                            .toggle_and_save_value(ctx)
+                    );
                     ctx.notify();
                 })
             }
             ToggleVimStatusBar => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    editor_settings
-                        .vim_status_bar
-                        .toggle_and_save_value(ctx)
-                        .expect("failed to serialize VimStatusBar");
+                    report_if_error!(editor_settings.vim_status_bar.toggle_and_save_value(ctx));
                     ctx.notify();
                 })
             }
@@ -1849,28 +1847,35 @@ impl TypedActionView for FeaturesPageView {
             }
             ToggleAutosuggestions => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    editor_settings
-                        .enable_autosuggestions
-                        .toggle_and_save_value(ctx)
-                        .expect("failed to serialize EnableAutosuggestions");
+                    // Not an `expect`: a `settings.toml` that does not parse
+                    // inhibits writes, so this returns `Err` on an ordinary
+                    // click. Panicking would crash the app in exactly the
+                    // state write inhibition exists to survive.
+                    report_if_error!(
+                        editor_settings
+                            .enable_autosuggestions
+                            .toggle_and_save_value(ctx)
+                    );
                     ctx.notify();
                 })
             }
             ToggleAutosuggestionKeybindingHint => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    editor_settings
-                        .autosuggestion_keybinding_hint
-                        .toggle_and_save_value(ctx)
-                        .expect("failed to serialize HideAutosuggestionKeybindingHint");
+                    report_if_error!(
+                        editor_settings
+                            .autosuggestion_keybinding_hint
+                            .toggle_and_save_value(ctx)
+                    );
                     ctx.notify();
                 })
             }
             ToggleShowAutosuggestionIgnoreButton => {
                 AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
-                    editor_settings
-                        .show_autosuggestion_ignore_button
-                        .toggle_and_save_value(ctx)
-                        .expect("failed to serialize ShowAutosuggestionIgnoreButton");
+                    report_if_error!(
+                        editor_settings
+                            .show_autosuggestion_ignore_button
+                            .toggle_and_save_value(ctx)
+                    );
                     ctx.notify();
                 })
             }

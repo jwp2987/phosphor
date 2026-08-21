@@ -48,10 +48,17 @@ pub fn goto_line_confirm(app: &mut App, window_id: WindowId, input: &str) {
 pub fn set_code_editor_line_number_mode(app: &mut App, mode: CodeEditorLineNumberMode) {
     app.update(|ctx| {
         AppEditorSettings::handle(ctx).update(ctx, |settings, ctx| {
+            // Deliberately still a panic, and deliberately not `report_if_error!`.
+            // This is an integration-test driver (the module is behind the
+            // `integration_tests` feature and is not in a shipped build), so a
+            // setup step that silently did nothing would leave the assertions
+            // below testing the default value -- a vacuous pass. The message is
+            // corrected: `set_value` can now fail because writes are inhibited,
+            // not only because serialization failed.
             settings
                 .code_editor_line_number_mode
                 .set_value(mode, ctx)
-                .expect("failed to serialize CodeEditorLineNumberModeSetting");
+                .expect("could not set CodeEditorLineNumberMode (serialization failed, or the preferences backend refused the write)");
             ctx.notify();
         });
     });

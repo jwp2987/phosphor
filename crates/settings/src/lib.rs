@@ -489,9 +489,32 @@ pub trait Setting {
         }
     }
 
+    /// Returns whether durable storage currently holds `expected` for this
+    /// setting.
+    ///
+    /// This is the only honest answer to "did my write land". `set_value`
+    /// returns `Ok(())` both for a write the backend stored and for one it
+    /// silently skipped: per-key write inhibition (see
+    /// [`UserPreferences::inhibit_writes_for_key`]) deliberately returns
+    /// `Ok(())` without writing, so that a value the user can still fix by
+    /// hand is not overwritten with a default. Any caller that persists a
+    /// one-shot "already done" marker on the strength of a write must ask
+    /// this question rather than trust `Ok(())`.
+    ///
+    /// Note that this re-reads through [`Self::read_from_preferences`], so a
+    /// stored value that cannot be parsed counts as "not stored", which is
+    /// exactly the situation per-key inhibition exists for.
+    fn is_value_durably_stored(expected: &Self::Value, preferences: &dyn UserPreferences) -> bool {
+        Self::read_from_preferences(preferences).is_some_and(|stored| &stored == expected)
+    }
+
     /// Persists the current value of the setting in some form of durable
     /// storage. Returns whether the value was changed from what was currently
     /// stored.
+    ///
+    /// A `true` return means the new value is now in durable storage. A write
+    /// the backend accepted but silently skipped returns `false`, not `true`
+    /// — see the read-back below.
     fn write_to_preferences(
         new_value: &Self::Value,
         preferences: &dyn UserPreferences,
@@ -521,47 +544,63 @@ pub trait Setting {
         // spurious writes caused by serialization differences (key ordering,
         // null-vs-missing fields, formatting) that don't represent actual
         // value changes.
-        let stored_value_matches = preferences
-            .read_value_with_hierarchy(key, Self::hierarchy())?
-            .as_deref()
-            .and_then(|stored| {
-                if preferences.is_settings_file() {
-                    let json_value = serde_json::from_str::<serde_json::Value>(stored).ok()?;
-                    return <Self::Value as SettingsValue>::from_file_value(&json_value);
-                }
-                serde_json::from_str::<Self::Value>(stored).ok()
-            })
-            .is_some_and(|stored_val| &stored_val == new_value);
+        let stored_value_matches = || -> Result<bool> {
+            Ok(preferences
+                .read_value_with_hierarchy(key, Self::hierarchy())?
+                .as_deref()
+                .and_then(|stored| {
+                    if preferences.is_settings_file() {
+                        let json_value = serde_json::from_str::<serde_json::Value>(stored).ok()?;
+                        return <Self::Value as SettingsValue>::from_file_value(&json_value);
+                    }
+                    serde_json::from_str::<Self::Value>(stored).ok()
+                })
+                .is_some_and(|stored_val| &stored_val == new_value))
+        };
 
-        if !stored_value_matches {
-            log::debug!(
-                "Writing new value of {} to storage; key: {}; value: {:?}",
-                Self::setting_name(),
-                key,
-                value
-            );
-            // Propagate the write result rather than discarding it. This
-            // function's contract is "returns whether the value was changed in
-            // durable storage", and `let _ = ...` made it answer `Ok(true)`
-            // even when the backend had refused the write — a verdict computed
-            // and thrown away. Callers that record a one-shot "already
-            // initialized" marker on the strength of that answer (see
-            // `PrivacySettings::initialize_default_regexes_once`) then cache a
-            // failure as a permanent success.
-            preferences
-                .write_value_with_hierarchy(
-                    key,
-                    value,
-                    Self::hierarchy(),
-                    Self::max_table_depth(),
-                )
-                .with_context(|| {
-                    format!("Failed to persist setting {}", Self::storage_key())
-                })?;
-            Ok(true)
-        } else {
-            Ok(false)
+        if stored_value_matches()? {
+            return Ok(false);
         }
+
+        log::debug!(
+            "Writing new value of {} to storage; key: {}; value: {:?}",
+            Self::setting_name(),
+            key,
+            value
+        );
+        // Propagate the write result rather than discarding it. This
+        // function's contract is "returns whether the value was changed in
+        // durable storage", and `let _ = ...` made it answer `Ok(true)`
+        // even when the backend had refused the write — a verdict computed
+        // and thrown away. Callers that record a one-shot "already
+        // initialized" marker on the strength of that answer (see
+        // `PrivacySettings::initialize_default_regexes_once`) then cache a
+        // failure as a permanent success.
+        preferences
+            .write_value_with_hierarchy(key, value, Self::hierarchy(), Self::max_table_depth())
+            .with_context(|| format!("Failed to persist setting {}", Self::storage_key()))?;
+
+        // `Ok(())` from the backend is not evidence that the value is durable.
+        // A key whose stored value could not be deserialized is individually
+        // write-inhibited, and `write_value_with_hierarchy` then returns
+        // `Ok(())` having written nothing — on purpose, so the user's
+        // broken-but-fixable value survives, and deliberately without erroring
+        // so that resetting such a setting is not itself an error. That leaves
+        // the *verdict* as the only thing that can be wrong, so read the value
+        // back and let storage answer for itself. Without this, a single typo
+        // in a hand-edited list is enough for a caller to record "seeded"
+        // against a list that was never written.
+        if !stored_value_matches()? {
+            log::warn!(
+                "The backend accepted the write of {} at key {} but did not store it; \
+                 reporting no durable change",
+                Self::setting_name(),
+                key
+            );
+            return Ok(false);
+        }
+
+        Ok(true)
     }
 
     /// Clears the setting from the given durable storage and returns whether the setting was cleared.

@@ -586,6 +586,32 @@ impl PrivacySettings {
             return false;
         }
 
+        // `Ok(())` is not the same claim as "it is on disk". If
+        // `privacy.custom_secret_regex_list` is present in `settings.toml` as
+        // valid TOML but holds a value that will not deserialize -- one pattern
+        // that does not compile is enough, in a list users are explicitly
+        // invited to hand-edit -- then `read_from_preferences` inhibits writes
+        // for that one key, the setting falls back to the empty default, and
+        // the seeding write is accepted and silently dropped. Whole-file
+        // inhibition errors; this per-key case deliberately does not, because
+        // making it error would break resetting exactly those settings whose
+        // stored value is broken. So the write cannot report the failure and
+        // only a read-back can see it. Without this check the guard below is
+        // written `true` into the *native* store -- which is not inhibited --
+        // and the user has no secret redaction, permanently, with no signal.
+        if !CustomSecretRegexList::is_value_durably_stored(
+            self.user_secret_regex_list.value(),
+            CustomSecretRegexList::preferences_for_setting(ctx),
+        ) {
+            log::error!(
+                "The recommended secret regexes were accepted in memory but are not in \
+                 durable storage; writes for privacy.custom_secret_regex_list are most \
+                 likely inhibited by an unparseable value in settings.toml"
+            );
+            ctx.notify();
+            return false;
+        }
+
         ctx.notify();
         true
     }

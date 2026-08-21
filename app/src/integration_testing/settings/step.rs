@@ -80,19 +80,27 @@ pub fn assert_theme_chooser_contains(theme_name: &'static str, count: usize) -> 
 /// * The setting for the window height in columns
 pub fn set_window_custom_size(rows: u16, columns: u16) -> TestStep {
     TestStep::new("Set custom size for new windows").with_action(move |app, _, _| {
+        // Deliberately still panics, and deliberately not `report_if_error!`.
+        // This is an integration-test driver (the module is behind the
+        // `integration_tests` feature and is not in a shipped build); a setup
+        // step that silently did nothing would leave every later assertion
+        // measuring the default window size -- a vacuous pass. The messages are
+        // corrected: `set_value` can now fail because the preferences backend
+        // refused the write, not only because serialization failed. (The row and
+        // column messages also had "width" and "height" the wrong way round.)
         WindowSettings::handle(app).update(app, |settings, ctx| {
             settings
                 .open_windows_at_custom_size
                 .set_value(true, ctx)
-                .expect("Could not enable custom window sizes");
+                .expect("could not enable custom window sizes (the preferences backend refused the write)");
             settings
                 .new_windows_num_rows
                 .set_value(rows, ctx)
-                .expect("Could not set window width");
+                .expect("could not set the window height in rows (the preferences backend refused the write)");
             settings
                 .new_windows_num_columns
                 .set_value(columns, ctx)
-                .expect("Could not set window height");
+                .expect("could not set the window width in columns (the preferences backend refused the write)");
         })
     })
 }

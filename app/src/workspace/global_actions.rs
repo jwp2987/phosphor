@@ -4,6 +4,7 @@ use crate::persistence::ModelEvent;
 // `workspace:debug_create_anonymous_user` debug action were physically
 // removed together with the auth subsystem.
 use crate::app_state::get_app_state;
+use crate::report_if_error;
 use crate::terminal::alt_screen_reporting::AltScreenReporting;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::workspace::cross_window_tab_drag::CrossWindowTabDrag;
@@ -136,28 +137,35 @@ pub fn init_global_actions(app: &mut AppContext) {
 
 fn toggle_mouse_reporting(_: &(), ctx: &mut AppContext) {
     AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-        reporting
-            .mouse_reporting_enabled
-            .toggle_and_save_value(ctx)
-            .expect("MouseReportingEnabled failed to serialize");
+        // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
+        // so this returns `Err` on an ordinary keybinding or command-palette
+        // invocation. Panicking there would crash the app in exactly the state
+        // write inhibition exists to survive.
+        report_if_error!(reporting.mouse_reporting_enabled.toggle_and_save_value(ctx));
     });
 }
 
 fn toggle_scroll_reporting(_: &(), ctx: &mut AppContext) {
     AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-        reporting
-            .scroll_reporting_enabled
-            .toggle_and_save_value(ctx)
-            .expect("ScrollReportingEnabled failed to serialize");
+        // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
+        // so this returns `Err` on an ordinary keybinding or command-palette
+        // invocation. Panicking there would crash the app in exactly the state
+        // write inhibition exists to survive.
+        report_if_error!(
+            reporting
+                .scroll_reporting_enabled
+                .toggle_and_save_value(ctx)
+        );
     });
 }
 
 fn toggle_focus_reporting(_: &(), ctx: &mut AppContext) {
     AltScreenReporting::handle(ctx).update(ctx, |reporting, ctx| {
-        reporting
-            .focus_reporting_enabled
-            .toggle_and_save_value(ctx)
-            .expect("FocusReportingEnabled failed to serialize");
+        // Not an `expect`: a `settings.toml` that does not parse inhibits writes,
+        // so this returns `Err` on an ordinary keybinding or command-palette
+        // invocation. Panicking there would crash the app in exactly the state
+        // write inhibition exists to survive.
+        report_if_error!(reporting.focus_reporting_enabled.toggle_and_save_value(ctx));
     });
 }
 

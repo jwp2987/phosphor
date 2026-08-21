@@ -7061,6 +7061,26 @@ Ordered by severity, not by area.
       scheme is now `phosphor`, so the browser build's own deep links fail its check), and
       the WSL guard in `crates/warpui/src/windowing/winit/delegate.rs:110`. The policy's
       natural home is `app/src/uri/`; move it there and have all three consume one definition.
+
+- [ ] **Failed settings writes are invisible to the user.**
+      `report_if_error!` is log-only since the Sentry sink was removed
+      (`crates/warp_core/src/errors.rs:212-223` — `report_error` is a documented no-op),
+      so a toggle clicked while `settings.toml` is unparseable flips **in-memory**, never
+      persists, and silently reverts at next launch. The startup
+      `SettingsFileError::FileParseFailed` banner (`app/src/lib.rs:1401-1424`) says the
+      *file* is broken — captured once at startup, not shown at the click, which may be
+      hours later — and never says *this toggle was lost*.
+      **Fix:** error toast at the write site (`ToastStack` + `add_ephemeral_toast`, the
+      pattern at `app/src/root_view.rs:889-895`) plus a new `t!` string. **Blocked on**
+      the `AppContext`-only global-action handlers (`workspace/global_actions.rs:137-172`)
+      having no `window_id`. Deliberately not built blind during a no-build round.
+
+- [ ] **~40 production `let _ = …set_value(…)` sites discard the error entirely.**
+      `settings_view/ai_page.rs` (~20), `appearance_page.rs`, `app_menus.rs:730`,
+      `agent_input_footer/mod.rs:1369`. This is the *pre-`e0c3dfe2f`* behaviour — silent
+      no-op with no log line at all — so they are not crashes and were left out of the
+      `.expect` sweep. `settings_view/features/external_editor.rs:245-250` is already
+      correct (`report_if_error!` + `unwrap_or`) and is the pattern to copy.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

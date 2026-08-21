@@ -600,6 +600,94 @@ mod write_to_preferences_tests {
         );
     }
 
+    /// A write the backend accepted but silently skipped must not be reported
+    /// as a durable change.
+    ///
+    /// This is the per-key inhibition path, and it is reached by one typo in a
+    /// list users are invited to hand-edit: the file is valid TOML, so the
+    /// whole-file inhibition (which does error) never fires, but the value at
+    /// this one key will not deserialize, so `read_from_preferences` inhibits
+    /// writes for the key to preserve the user's broken-but-fixable text.
+    /// `write_value_with_hierarchy` then returns `Ok(())` having written
+    /// nothing -- deliberately, so that resetting such a setting is not itself
+    /// an error. That leaves the *verdict* as the only thing that can be wrong,
+    /// and a caller that records a one-shot "already initialized" marker on the
+    /// strength of a `true` here caches a failure as a permanent success.
+    #[test]
+    fn test_per_key_inhibited_write_does_not_report_durable_success() {
+        use warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("settings.toml");
+        // Valid TOML, invalid value for this setting's type.
+        std::fs::write(&file_path, "[test]\nstruct_setting = \"oops\"\n").unwrap();
+
+        let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path.clone());
+        assert!(
+            parse_error.is_none(),
+            "precondition: the file must parse as TOML, so that whole-file write \
+             inhibition (which does error) is not what is being measured here"
+        );
+
+        // Reading is what establishes the inhibition, exactly as it does at
+        // startup.
+        assert!(
+            StructSetting::read_from_preferences(&prefs).is_none(),
+            "precondition: the stored value must fail to deserialize"
+        );
+
+        let value = StructWithOptionals::default();
+        let changed = StructSetting::write_to_preferences(&value, &prefs).expect(
+            "per-key inhibition must not be an error -- resetting a broken setting \
+                     to its default has to stay possible",
+        );
+        assert!(
+            !changed,
+            "an inhibited write stored nothing, so it must not report a durable change"
+        );
+        assert!(
+            !StructSetting::is_value_durably_stored(&value, &prefs),
+            "is_value_durably_stored must agree that the value is not in storage"
+        );
+
+        // And the point of the inhibition: the user's text is still there for
+        // them to fix.
+        let contents = std::fs::read_to_string(&file_path).unwrap();
+        assert!(
+            contents.contains("oops"),
+            "the broken-but-fixable value must not have been overwritten, but the file is: \
+             {contents}"
+        );
+    }
+
+    /// The whole-file case, for contrast: an unparseable `settings.toml`
+    /// inhibits every write and that *is* an error, so it cannot be mistaken
+    /// for a durable success either.
+    #[test]
+    fn test_whole_file_inhibited_write_is_an_error() {
+        use warpui_extras::user_preferences::toml_backed::TomlBackedUserPreferences;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("settings.toml");
+        std::fs::write(&file_path, "[test\nstruct_setting = broken\n").unwrap();
+
+        let (prefs, parse_error) = TomlBackedUserPreferences::new(file_path.clone());
+        assert!(
+            parse_error.is_some(),
+            "precondition: the file must fail to parse"
+        );
+
+        let value = StructWithOptionals::default();
+        assert!(
+            StructSetting::write_to_preferences(&value, &prefs).is_err(),
+            "a write against a wholly inhibited backend must not report success"
+        );
+        assert!(
+            !StructSetting::is_value_durably_stored(&value, &prefs),
+            "nothing was stored, so nothing is durably stored"
+        );
+    }
+
     /// Same test but using the real TOML backend
     /// null-stripping and key-reordering happens.
     #[test]
