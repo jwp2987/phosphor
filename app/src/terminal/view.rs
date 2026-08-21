@@ -4717,30 +4717,84 @@ impl TerminalView {
             .and_then(|h| h.as_ref(ctx).metadata(ctx))
     }
 
-    /// Returns whether this terminal view should subscribe to git status
-    /// updates. We subscribe when:
-    /// 1. Agent mode is active and its chip list includes `GitDiffStats`, or
-    /// 2. Terminal mode with the Zap prompt enabled and the git stats chip
-    ///    configured.
+    /// Whether a chip list contains anything backed by git status.
+    ///
+    /// `GitDiffStats` alone was the old test, which missed a user who configured
+    /// `GitBranchStatus` or `GithubPullRequest` without it -- a git-backed chip with
+    /// no subscription feeding it (#620).
     #[cfg(feature = "local_fs")]
-    fn should_subscribe_to_git_status(&self, ctx: &AppContext) -> bool {
-        // Agent view: subscribe only when the configured agent footer includes git stats.
+    fn uses_git_status_chips(chips: Vec<ContextChipKind>) -> bool {
+        chips.iter().any(|chip| {
+            matches!(
+                chip,
+                ContextChipKind::GitBranchStatus
+                    | ContextChipKind::GitDiffStats
+                    | ContextChipKind::GithubPullRequest
+            )
+        })
+    }
+
+    /// Returns whether visible prompt/footer chips need git status updates.
+    #[cfg(feature = "local_fs")]
+    fn needs_git_status_for_chip_ui(&self, ctx: &AppContext) -> bool {
+        // Agent view: subscribe when the configured agent footer includes git
+        // stats or PR info.
         if self.agent_view_controller.as_ref(ctx).is_active() {
-            return SessionSettings::as_ref(ctx)
-                .agent_footer_chip_selection
-                .all_chips()
-                .contains(&ContextChipKind::GitDiffStats);
+            return Self::uses_git_status_chips(
+                SessionSettings::as_ref(ctx)
+                    .agent_footer_chip_selection
+                    .all_chips(),
+            );
+        }
+
+        // CLI-agent footer: subscribe only while a CLI-agent session is active, so
+        // normal terminal panes do not subscribe just because of CLI footer defaults.
+        if self.has_active_cli_agent_session(ctx)
+            && Self::uses_git_status_chips(
+                SessionSettings::as_ref(ctx)
+                    .cli_agent_footer_chip_selection
+                    .all_chips(),
+            )
+        {
+            return true;
         }
 
         // Terminal prompt path: the Zap prompt is active when honor_ps1 is
-        // off, or when UDI overrides PS1. GitDiffStats must also be in the
-        // configured chip list.
+        // off, or when UDI overrides PS1. The prompt must include a chip backed
+        // by git status.
+        //
+        // The pin has a `should_retry_default_pr_chip_validation` clause here.
+        // That helper does not exist in this fork, and it gates PR-chip
+        // validation rather than git status, so it is deliberately not ported.
         let is_using_warp_prompt = !*SessionSettings::as_ref(ctx).honor_ps1
             || InputSettings::as_ref(ctx).is_universal_developer_input_enabled(ctx);
-        is_using_warp_prompt
-            && Prompt::as_ref(ctx)
-                .chip_kinds()
-                .contains(&ContextChipKind::GitDiffStats)
+        is_using_warp_prompt && Self::uses_git_status_chips(Prompt::as_ref(ctx).chip_kinds())
+    }
+
+    /// The agent's input context carries repository metadata, so an AI-enabled
+    /// terminal in a repo needs the model even with no git chip on screen.
+    ///
+    /// This is the disjunct #620 was about. Without it the whole subscription hangs
+    /// off *prompt* configuration, while `TabMetadata::current_git_branch` -- which
+    /// feeds the tab context menu's "Copy branch", the vertical-tabs branch line, the
+    /// "Pane title as: Branch" setting and notification text -- has nothing to do with
+    /// prompts. A user with `honor_ps1 = true` lost both of its sources at once: the
+    /// chip is never computed because `active_surfaces` reports no prompt surface, and
+    /// the model was never subscribed because of the gate above.
+    #[cfg(feature = "local_fs")]
+    fn needs_git_status_for_agent_context(&self, ctx: &AppContext) -> bool {
+        // Location, not `current_repo_path` -- deviating from the pin here on
+        // purpose, and matching `needs_pr_info_for_agent_context` next door, which
+        // this fork already fixed the same way: an SSH session is in a repo too, and
+        // `current_repo_path` would starve it.
+        self.current_repo_location().is_some()
+            && self.ai_input_model.as_ref(ctx).is_ai_input_enabled()
+    }
+
+    /// Returns whether this terminal view should subscribe to git status updates.
+    #[cfg(feature = "local_fs")]
+    fn should_subscribe_to_git_status(&self, ctx: &AppContext) -> bool {
+        self.needs_git_status_for_chip_ui(ctx) || self.needs_git_status_for_agent_context(ctx)
     }
 
     /// No-op when the `local_fs` feature is disabled – git status is not

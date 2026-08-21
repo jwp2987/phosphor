@@ -9325,3 +9325,44 @@ fn back_button_label_resolves_token_only_parent_linkage() {
         });
     });
 }
+
+/// #620: the git-status subscription tested for `GitDiffStats` specifically, so a
+/// prompt configured with `GitBranchStatus` or `GithubPullRequest` and nothing else
+/// got no subscription at all -- a git-backed chip with no source feeding it.
+///
+/// The pin gates on any of the three via `uses_git_status_chips`
+/// (`42effe840:app/src/terminal/view.rs:5100`); this fork had never ported it.
+///
+/// The single-chip cases are the point of this test. The old predicate was
+/// `chips.contains(&ContextChipKind::GitDiffStats)`, which differs from the correct
+/// one on exactly those arms, so reverting the fix must turn this red. If it stays
+/// green the test is vacuous and pins nothing.
+#[cfg(feature = "local_fs")]
+#[test]
+fn git_status_chips_are_not_just_git_diff_stats() {
+    // Each git-backed chip alone must be enough to warrant a subscription.
+    assert!(
+        TerminalView::uses_git_status_chips(vec![ContextChipKind::GitBranchStatus]),
+        "GitBranchStatus alone is backed by git status (#620)"
+    );
+    assert!(
+        TerminalView::uses_git_status_chips(vec![ContextChipKind::GithubPullRequest]),
+        "GithubPullRequest alone is backed by git status (#620)"
+    );
+    assert!(TerminalView::uses_git_status_chips(vec![
+        ContextChipKind::GitDiffStats
+    ]));
+
+    // Mixed with unrelated chips, the git-backed one still counts.
+    assert!(TerminalView::uses_git_status_chips(vec![
+        ContextChipKind::Time12,
+        ContextChipKind::GitBranchStatus,
+    ]));
+
+    // Nothing git-backed: no subscription is warranted.
+    assert!(!TerminalView::uses_git_status_chips(vec![
+        ContextChipKind::Time12,
+        ContextChipKind::Time24,
+    ]));
+    assert!(!TerminalView::uses_git_status_chips(vec![]));
+}
