@@ -41,56 +41,22 @@ fi
 # Collect `use crate::server::` / `use crate::cloud_object::` from outside those
 # trees. `app/src/drive` is excluded as a source but not as a target: drive is
 # the sync layer and legitimately talks to both.
-# Three forms have to be caught, not one. The original matcher was
-# `^\s*use crate::(server|cloud_object)::`, which sees only the first:
+# Collected by script/_cloud_boundary_scan.py, which parses the `use` statements
+# and records the RESOLVED PATHS rather than matching source lines. Read that
+# file's header: three successive regex/awk versions of this check were each
+# defeated, most recently by inserting a new cloud import into a brace block that
+# was already allowlisted under an opaque `<file> use crate::{` entry.
 #
-#   1. plain          use crate::server::telemetry::X;
-#   2. re-export      pub use crate::server::telemetry::X;      <- MISSED
-#   3. brace/grouped  use crate::{server::telemetry::X, ...};   <- MISSED
-#                     ...including the multi-line form, which no line-based
-#                     regex can see at all.
-#
-# Both misses were live. `app/src/lib.rs:300` is a `pub use crate::server::`
-# re-export whose own comment names THIS GUARD as the reason it exists, so
-# `remote_server::codebase_index_model` can reach cloud code without tripping the
-# check -- a documented laundering point at the crate root. The brace form hid
-# further sites. A guard that a `pub` keyword or a `{` defeats is not a boundary.
-#
-# Awk rather than grep because form 3 spans lines: track entry into a
-# `use crate::{` block and scan until its closing `};`.
+# An allowlist of paths cannot be defeated by adding a path.
 current="$(mktemp)"
-find app/src -name '*.rs' -type f \
-    | grep -vE '^app/src/(server|cloud_object)/' \
-    | LC_ALL=C sort \
-    | while IFS= read -r f; do
-        awk -v FILE="$f" '
-            # forms 1 and 2, plus a single-line form 3
-            /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::(server|cloud_object)::/ {
-                line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-                print FILE " " line; next
-            }
-            /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::\{/ {
-                if ($0 ~ /(server|cloud_object)::/) {
-                    line = $0; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-                    print FILE " " line
-                }
-                # multi-line: remember the opening line, scan to the closer
-                if ($0 !~ /\};/) { inblock = 1; opener = $0; hit = 0 }
-                next
-            }
-            inblock == 1 {
-                if ($0 ~ /(server|cloud_object)::/) hit = 1
-                if ($0 ~ /\};/) {
-                    if (hit) {
-                        line = opener; sub(/^[[:space:]]+/, "", line); sub(/[[:space:]]+$/, "", line)
-                        print FILE " " line
-                    }
-                    inblock = 0
-                }
-            }
-        ' "$f"
-    done \
-    | LC_ALL=C sort -u > "$current" || true
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "cloud boundary: FAILED (python3 not available; this guard cannot run)" >&2
+    exit 1
+fi
+python3 script/_cloud_boundary_scan.py | LC_ALL=C sort -u > "$current" || {
+    echo "cloud boundary: FAILED (scanner errored)" >&2
+    exit 1
+}
 
 expected="$(mktemp)"
 grep -vE '^\s*(#|$)' "$ALLOWLIST_FILE" | LC_ALL=C sort -u > "$expected"

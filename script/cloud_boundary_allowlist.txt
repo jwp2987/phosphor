@@ -1,467 +1,1043 @@
 # Import sites of app/src/server and app/src/cloud_object from outside those
-# modules. Generated as the baseline on 2026-08-07; see script/check_cloud_boundary.
+# modules. One line per RESOLVED PATH: "<file> <fully-qualified-path>".
 #
 # This list may SHRINK freely. Adding to it means the fork took on another
 # dependency on retained cloud scaffolding, and needs maintainer sign-off plus
 # a tracking issue (AGENTS.md 5.10).
 #
+# 2026-08-21 REBASELINE #2 -- format changed from source lines to resolved paths.
 #
+# The previous format recorded the matched SOURCE LINE, so 154 of 442 entries
+# were the opaque string "<file> use crate::{". An adversarial probe defeated
+# it by inserting a brand-new cloud import into a brace block that was already
+# allowlisted under one of those entries: the guard reported ok. Recording the
+# resolved path instead means a new import is a new line, always.
 #
-# 2026-08-21 REBASELINE: +169 entries, and they are NOT new dependencies.
+# The count rises from 442 to 1018 because one `use crate::{a, b, c}` statement
+# is now three entries rather than one. It is the same surface, described
+# precisely for the first time -- not new dependencies.
 #
-# The matcher was `^\s*use crate::(server|cloud_object)::`, which could see neither
-# `pub use` re-exports nor the `use crate::{...}` brace form -- including the multi-line
-# one, which no line-based regex can match at all. Widening it to all three surfaced
-# 169 sites that were always present and always invisible: this file understated the
-# retained cloud surface by roughly 62%.
+# Two of these launder the boundary at the crate root and should be REMOVED
+# rather than allowlisted permanently:
+#   app/src/lib.rs                pub use crate::server::telemetry::*
+#   app/src/drive/folders/mod.rs  pub use crate::server::ids::FolderId
+# app/src/lib.rs:302-303 cites THIS GUARD as the reason its re-export exists.
 #
-# Two of them launder the boundary at the crate root and should be REMOVED rather than
-# allowlisted permanently:
-#   app/src/lib.rs                pub use crate::server::telemetry::{...}
-#   app/src/drive/folders/mod.rs  pub use crate::server::ids::FolderId;
-# lib.rs:302-303 names THIS GUARD as the reason its re-export exists, so that
-# remote_server::codebase_index_model need not import from crate::server:: directly.
-# Tracked in TODO.md's refutation-round section.
-#
-app/src/ai/agent/api.rs use crate::cloud_object::StoredObject;
-app/src/ai/agent/api.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/agent/api.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent/api_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent/api_tests.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/ai/agent/api_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/agent/api_tests.rs use crate::cloud_object::{StoredObjectMetadata, StoredObjectPermissions};
-app/src/ai/agent/api_tests.rs use crate::server::ids::SyncId;
-app/src/ai/agent/task.rs use crate::{
-app/src/ai/agent/telemetry.rs use crate::{
-app/src/ai/agent_sdk/common.rs use crate::cloud_object::Owner;
-app/src/ai/agent_sdk/common.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent_sdk/driver.rs use crate::{
-app/src/ai/agent_sdk/mcp.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent_sdk/mod.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent_sdk/profiles.rs use crate::cloud_object::model::generic_string_model::StringModel;
-app/src/ai/agent_sdk/profiles.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/agent_sdk/profiles.rs use crate::server::ids::SyncId;
-app/src/ai/agent_tips.rs use crate::server::telemetry::PaletteSource;
-app/src/ai/ai_document_view.rs use crate::{
-app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs use crate::server::telemetry::PluginChipTelemetryAction;
-app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs use crate::{
-app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/blocklist/agent_view/conversation_selection_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/blocklist/agent_view/shortcuts/model.rs use crate::{
-app/src/ai/blocklist/block.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/blocklist/block.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/blocklist/block.rs use crate::server::ids::SyncId;
-app/src/ai/blocklist/block.rs use crate::server::telemetry::AgentModeRewindEntrypoint;
-app/src/ai/blocklist/block.rs use crate::server::telemetry::{AutonomySettingToggleSource, InteractionSource};
-app/src/ai/blocklist/block.rs use crate::{
-app/src/ai/blocklist/block/cli.rs use crate::server::telemetry::TelemetryEvent;
-app/src/ai/blocklist/block/cli_controller.rs use crate::server::telemetry::{CLISubagentControlState, TelemetryEvent};
-app/src/ai/blocklist/block/status_bar.rs use crate::{
-app/src/ai/blocklist/block/view_impl.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/blocklist/context_model_test.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/blocklist/context_model_test.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/blocklist/controller.rs use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
-app/src/ai/blocklist/controller/input_context.rs use crate::{
-app/src/ai/blocklist/inline_action/code_diff_view.rs use crate::{
-app/src/ai/blocklist/inline_action/requested_command_attribution.rs use crate::{
-app/src/ai/blocklist/inline_action/suggested_unit_tests.rs use crate::{
-app/src/ai/blocklist/passive_suggestions/legacy.rs use crate::server::telemetry::PromptSuggestionFallbackReason;
-app/src/ai/blocklist/permissions_test.rs use crate::{
-app/src/ai/blocklist/suggested_agent_mode_workflow_modal.rs use crate::{
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::cloud_object::Owner;
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::cloud_object::update_manager::{
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::server::ids::SyncId;
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::server::telemetry::TelemetryEvent;
-app/src/ai/blocklist/suggested_rule_modal.rs use crate::{
-app/src/ai/blocklist/suggestion_chip_view.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/blocklist/suggestion_chip_view.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/ai/blocklist/suggestion_chip_view.rs use crate::cloud_object::update_manager::{
-app/src/ai/blocklist/suggestion_chip_view.rs use crate::server::ids::SyncId;
-app/src/ai/blocklist/suggestion_chip_view.rs use crate::{
-app/src/ai/document/ai_document_model_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/execution_profiles/mod.rs use crate::cloud_object::UniquePer;
-app/src/ai/execution_profiles/mod.rs use crate::{
-app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, UpdateSource};
-app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/execution_profiles/profiles.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject as _};
-app/src/ai/execution_profiles/profiles.rs use crate::server::ids::SyncId;
-app/src/ai/execution_profiles/profiles.rs use crate::{
-app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/execution_profiles/profiles_tests.rs use crate::cloud_object::{Owner, StoredObjectMetadata, StoredObjectPermissions};
-app/src/ai/execution_profiles/profiles_tests.rs use crate::server::ids::{ServerId, SyncId};
-app/src/ai/facts/mod.rs use crate::server::ids::SyncId;
-app/src/ai/facts/mod.rs use crate::{
-app/src/ai/facts/view/mod.rs use crate::server::ids::SyncId;
-app/src/ai/facts/view/rule.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/facts/view/rule.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/ai/facts/view/rule.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/facts/view/rule.rs use crate::cloud_object::{
-app/src/ai/facts/view/rule.rs use crate::server::ids::{ClientId, SyncId};
-app/src/ai/facts/view/rule_editor.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/ai/facts/view/rule_editor.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/facts/view/rule_editor.rs use crate::cloud_object::{Revision, StoredObject};
-app/src/ai/facts/view/rule_editor.rs use crate::server::ids::SyncId;
-app/src/ai/llms_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai/llms_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/ai/mcp/gallery.rs use crate::server::datetime_ext::DateTimeExt;
-app/src/ai/mcp/mod.rs use crate::server::datetime_ext::DateTimeExt;
-app/src/ai/mcp/mod.rs use crate::{
-app/src/ai/mcp/parsing.rs use crate::{
-app/src/ai/mcp/templatable.rs use crate::{
-app/src/ai/mcp/templatable_manager/native.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/ai/mcp/templatable_manager/native.rs use crate::cloud_object::update_manager::{InitiatedBy, UpdateManager};
-app/src/ai/mcp/templatable_manager/native.rs use crate::cloud_object::{Space, StoredObject, StoredObjectLocation, StoredObjectMetadataExt};
-app/src/ai/mcp/templatable_manager/native.rs use crate::server::ids::{ClientId, ServerId};
-app/src/ai/mcp/templatable_manager/native.rs use crate::server::telemetry::{
-app/src/ai/mcp/templatable_manager/native.rs use crate::{
-app/src/ai/mcp/templatable_manager/wasm.rs use crate::cloud_object::Space;
-app/src/ai/mcp/templatable_manager/wasm.rs use crate::cloud_object::update_manager::InitiatedBy;
-app/src/ai/mcp/templatable_manager/wasm.rs use crate::server::ids::ServerId;
-app/src/ai/predict/next_command_model.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/ai_assistant/mod.rs use crate::{server::telemetry::OpenedWarpAISource, terminal::model::terminal_model::BlockIndex};
-app/src/ai_assistant/panel.rs use crate::server::telemetry::{TelemetryEvent, WarpAIActionType};
-app/src/ai_assistant/requests.rs use crate::{
-app/src/ai_assistant/transcript.rs use crate::{
-app/src/app_menus.rs use crate::server::telemetry::LaunchConfigUiLocation;
-app/src/app_state.rs use crate::server::ids::SyncId;
-app/src/autoupdate/mod.rs use crate::server::telemetry::TelemetryEvent;
-app/src/autoupdate/mod.rs use crate::{
-app/src/autoupdate/windows.rs use crate::server::telemetry::TelemetryEvent;
-app/src/code/editor/comment_editor_tests.rs use crate::{
-app/src/code/editor/find/view.rs use crate::server::telemetry::{FindOption, TelemetryEvent};
-app/src/code/editor/view/view_tests.rs use crate::{
-app/src/code/editor/view/vim_handler_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/code/file_tree/view.rs use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
-app/src/code/file_tree/view.rs use crate::{
-app/src/code/file_tree/view/editing.rs use crate::{
-app/src/code/view.rs use crate::server::telemetry::CodeContextDestination;
-app/src/code_review/code_review_view.rs use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
-app/src/code_review/code_review_view_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/code_review/find_model_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/code_review/telemetry_event.rs use crate::server::telemetry::CLIAgentType;
-app/src/drive/cloud_object_naming_dialog.rs use crate::cloud_object::Space;
-app/src/drive/cloud_object_naming_dialog.rs use crate::{
-app/src/drive/drive_helpers.rs use crate::{
-app/src/drive/export.rs use crate::{
-app/src/drive/export_tests.rs use crate::{
-app/src/drive/folders/mod.rs pub use crate::server::ids::FolderId;
-app/src/drive/folders/mod.rs use crate::{
-app/src/drive/import/import_tests.rs use crate::{
-app/src/drive/import/modal.rs use crate::{
-app/src/drive/import/modal_body.rs use crate::{
-app/src/drive/import/nodes.rs use crate::{
-app/src/drive/import/queue.rs use crate::{
-app/src/drive/index.rs use crate::{
-app/src/drive/index_test.rs use crate::{
-app/src/drive/items/ai_fact.rs use crate::{
-app/src/drive/items/ai_fact_collection.rs use crate::{
-app/src/drive/items/env_var_collection.rs use crate::{
-app/src/drive/items/folder.rs use crate::{
-app/src/drive/items/item.rs use crate::{
-app/src/drive/items/item.rs use crate::{cloud_object::StoredObjectLocation, drive::items::WarpDriveItem};
-app/src/drive/items/mcp_server.rs use crate::{
-app/src/drive/items/mcp_server_collection.rs use crate::{
-app/src/drive/items/mod.rs use crate::{
-app/src/drive/items/notebook.rs use crate::{
-app/src/drive/items/space.rs use crate::{
-app/src/drive/items/workflow.rs use crate::{
-app/src/drive/mod.rs use crate::{
-app/src/drive/panel.rs use crate::{
-app/src/drive/panel_test.rs use crate::{
-app/src/drive/sharing/mod.rs use crate::{
-app/src/drive/workflows/ai_assist.rs use crate::{
-app/src/drive/workflows/enum_creation_dialog.rs use crate::{
-app/src/drive/workflows/modal.rs use crate::{
-app/src/drive/workflows/modal_test.rs use crate::{
-app/src/drive/workflows/workflow_arg_selector.rs use crate::{
-app/src/drive/workflows/workflow_arg_type_helpers.rs use crate::{
-app/src/editor/view/mod.rs use crate::server::telemetry::TelemetryEvent;
-app/src/editor/view/voice.rs use crate::server::telemetry::TelemetryEvent;
-app/src/env_vars/active_env_var_collection_data.rs use crate::{
-app/src/env_vars/manager.rs use crate::{
-app/src/env_vars/mod.rs use crate::{
-app/src/env_vars/view/env_var_collection.rs use crate::{
-app/src/env_vars/view/env_var_collection_tests.rs use crate::{
-app/src/env_vars/view/menus.rs use crate::{
-app/src/integration_testing/assertions.rs use crate::{
-app/src/integration_testing/cloud_object/assertion.rs use crate::{
-app/src/integration_testing/cloud_object/mod.rs use crate::{
-app/src/integration_testing/notebook/assertion.rs use crate::{
-app/src/integration_testing/notebook/step.rs use crate::{
-app/src/integration_testing/rules/assertion.rs use crate::{
-app/src/integration_testing/rules/step.rs use crate::{
-app/src/integration_testing/type_getters.rs use crate::server::telemetry::LaunchConfigUiLocation;
-app/src/integration_testing/workflow/assertion.rs use crate::{
-app/src/integration_testing/workflow/step.rs use crate::{
-app/src/launch_configs/save_modal.rs use crate::server::telemetry::TelemetryEvent;
-app/src/lib.rs pub use crate::server::telemetry::{
-app/src/lib.rs use crate::cloud_object::model::actions::ObjectActions;
-app/src/lib.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/lib.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/lib.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/lib.rs use crate::server::experiments::ServerExperiments;
-app/src/lib.rs use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource};
-app/src/local_control/handlers/app_state.rs use crate::server::telemetry::PaletteSource;
-app/src/notebooks/active_notebook_data.rs use crate::{
-app/src/notebooks/context_menu_tests.rs use crate::{
-app/src/notebooks/editor/block_insertion_menu.rs use crate::{
-app/src/notebooks/editor/embedded_item.rs use crate::{
-app/src/notebooks/editor/embedding_model.rs use crate::{
-app/src/notebooks/editor/model.rs use crate::{
-app/src/notebooks/editor/model_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/notebooks/editor/model_tests.rs use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermissions};
-app/src/notebooks/editor/model_tests.rs use crate::server::ids::{ServerId, SyncId};
-app/src/notebooks/editor/view.rs use crate::{
-app/src/notebooks/editor/view_tests.rs use crate::{
-app/src/notebooks/file/mod.rs use crate::{
-app/src/notebooks/file/mod_tests.rs use crate::{
-app/src/notebooks/manager.rs use crate::{
-app/src/notebooks/manager_tests.rs use crate::{
-app/src/notebooks/mod.rs use crate::cloud_object::SerializedModel;
-app/src/notebooks/mod.rs use crate::{
-app/src/notebooks/notebook.rs use crate::{
-app/src/notebooks/notebook/details_bar.rs use crate::{
-app/src/notebooks/notebook_tests.rs use crate::{
-app/src/notebooks/telemetry.rs use crate::{server::ids::ServerId, workflows::WorkflowId};
-app/src/notifications/model.rs use crate::server::telemetry::TelemetryEvent;
-app/src/pane_group/mod.rs use crate::cloud_object::Space;
-app/src/pane_group/mod.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/pane_group/mod.rs use crate::server::ids::{ObjectUid, SyncId};
-app/src/pane_group/mod.rs use crate::server::telemetry::{PaletteSource, TelemetryEvent};
-app/src/pane_group/pane/env_var_collection_pane.rs use crate::{
-app/src/pane_group/pane/notebook_pane.rs use crate::{
-app/src/pane_group/pane/view/header/mod.rs use crate::{
-app/src/pane_group/pane/view/header/mod_test.rs use crate::{
-app/src/pane_group/pane/workflow_pane.rs use crate::{
-app/src/persistence/cloud_object_tests.rs use crate::{
-app/src/persistence/cloud_objects.rs use crate::{
-app/src/persistence/mod.rs use crate::cloud_object::model::actions::ObjectAction;
-app/src/persistence/mod.rs use crate::cloud_object::model::generic_string_model::StoredStringObject;
-app/src/persistence/mod.rs use crate::cloud_object::{ObjectIdType, StoredObject, StoredObjectMetadata};
-app/src/persistence/mod.rs use crate::server::experiments::ServerExperiment;
-app/src/persistence/mod.rs use crate::server::ids::SyncId;
-app/src/persistence/sqlite.rs use crate::cloud_object::model::actions::{ObjectAction, ObjectActionSubtype};
-app/src/persistence/sqlite.rs use crate::cloud_object::model::generic_string_model::{GenericStringObjectId, StoredStringObject};
-app/src/persistence/sqlite.rs use crate::cloud_object::{
-app/src/persistence/sqlite.rs use crate::server::experiments::ServerExperiment;
-app/src/persistence/sqlite.rs use crate::server::ids::{ClientId, HashableId, ServerId, SyncId, ToServerId};
-app/src/persistence/sqlite.rs use crate::server::telemetry::TelemetryEvent;
-app/src/persistence/sqlite.rs use crate::{
-app/src/persistence/sqlite_tests.rs use crate::{
-app/src/prompt/editor_modal.rs use crate::server::telemetry::{PromptChoice, TelemetryEvent};
-app/src/quit_warning/mod.rs use crate::{
-app/src/resource_center/main_page.rs use crate::{
-app/src/resource_center/section_views/changelog_section.rs use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
-app/src/resource_center/section_views/feature_section.rs use crate::{
-app/src/root_view.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/root_view.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, ObjectType};
-app/src/root_view.rs use crate::server::ids::SyncId;
-app/src/root_view.rs use crate::server::telemetry::LaunchConfigUiLocation;
-app/src/root_view.rs use crate::{
-app/src/search/ai_context_menu/mixer.rs use crate::cloud_object::ObjectType;
-app/src/search/ai_context_menu/notebooks/data_source.rs use crate::cloud_object::StoredObjectModel;
-app/src/search/ai_context_menu/notebooks/data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/ai_context_menu/notebooks/data_source_test.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/ai_context_menu/notebooks/data_source_test.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/search/ai_context_menu/notebooks/data_source_test.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/search/ai_context_menu/notebooks/data_source_test.rs use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermissions};
-app/src/search/ai_context_menu/notebooks/data_source_test.rs use crate::server::ids::SyncId;
-app/src/search/ai_context_menu/notebooks/search_item.rs use crate::cloud_object::ObjectType;
-app/src/search/ai_context_menu/rules/data_source.rs use crate::cloud_object::StoredObject;
-app/src/search/ai_context_menu/rules/data_source.rs use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
-app/src/search/ai_context_menu/rules/data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/ai_context_menu/rules/data_source_tests.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/ai_context_menu/rules/data_source_tests.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/search/ai_context_menu/rules/data_source_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/search/ai_context_menu/rules/data_source_tests.rs use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermissions};
-app/src/search/ai_context_menu/rules/data_source_tests.rs use crate::server::ids::SyncId;
-app/src/search/ai_context_menu/rules/search_item.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, ObjectType};
-app/src/search/ai_context_menu/workflows/data_source.rs use crate::cloud_object::StoredObjectModel;
-app/src/search/ai_context_menu/workflows/data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/ai_context_menu/workflows/search_item.rs use crate::cloud_object::ObjectType;
-app/src/search/command_palette/data_sources_test.rs use crate::cloud_object::{Owner, StoredObjectMetadata, StoredObjectPermissions};
-app/src/search/command_palette/data_sources_test.rs use crate::server::ids::SyncId::{self};
-app/src/search/command_palette/data_sources_test.rs use crate::{
-app/src/search/command_palette/mixer.rs use crate::server::ids::SyncId;
-app/src/search/command_palette/new_session/new_session_option.rs use crate::server::telemetry::AddTabWithShellSource;
-app/src/search/command_palette/view.rs use crate::server::ids::SyncId;
-app/src/search/command_palette/view.rs use crate::server::telemetry::LaunchConfigUiLocation;
-app/src/search/command_palette/view.rs use crate::server::telemetry::TelemetryEvent;
-app/src/search/command_palette/warp_drive/data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/command_palette/warp_drive/data_source.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/search/command_palette/warp_drive/data_source.rs use crate::cloud_object::{
-app/src/search/command_palette/warp_drive/data_source.rs use crate::server::ids::ObjectUid;
-app/src/search/command_palette/warp_drive/data_source.rs use crate::server::ids::{ObjectUid, SyncId};
-app/src/search/command_palette/warp_drive/env_var_collection_search_item.rs use crate::cloud_object::StoredObject;
-app/src/search/command_palette/warp_drive/notebook_search_item.rs use crate::cloud_object::StoredObject;
-app/src/search/command_palette/warp_drive/workflow_search_item.rs use crate::cloud_object::StoredObject;
-app/src/search/command_search/env_var_collections/env_var_collections_data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/command_search/notebooks/notebook_search_item.rs use crate::server::ids::SyncId;
-app/src/search/command_search/notebooks/notebooks_data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/command_search/notebooks/notebooks_data_source.rs use crate::server::ids::SyncId;
-app/src/search/command_search/searcher.rs use crate::server::ids::SyncId;
-app/src/search/command_search/view.rs use crate::{
-app/src/search/command_search/view_test.rs use crate::{
-app/src/search/command_search/workflows/stored_workflows_data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/command_search/workflows/stored_workflows_data_source.rs use crate::server::ids::SyncId;
-app/src/search/command_search/workflows/workflow_search_item.rs use crate::server::ids::SyncId;
-app/src/search/mixer.rs use crate::server::telemetry::TelemetryEvent;
-app/src/search/notebook_embedding/mod.rs use crate::cloud_object::{Owner, Space};
-app/src/search/notebook_embedding/notebooks/notebook_search_item.rs use crate::{
-app/src/search/notebook_embedding/notebooks/notebooks_data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/notebook_embedding/notebooks/notebooks_data_source.rs use crate::cloud_object::{Space, StoredObject};
-app/src/search/notebook_embedding/searcher.rs use crate::server::ids::SyncId;
-app/src/search/notebook_embedding/view.rs use crate::{
-app/src/search/notebook_embedding/workflows/workflow_search_item.rs use crate::{
-app/src/search/notebook_embedding/workflows/workflows_data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/notebook_embedding/workflows/workflows_data_source.rs use crate::cloud_object::{Space, StoredObject};
-app/src/search/notebook_embedding/workflows/workflows_data_source_tests.rs use crate::{
-app/src/search/notebooks/fuzzy_match.rs use crate::server::ids::SyncId;
-app/src/search/notebooks/fuzzy_match.rs use crate::{appearance::Appearance, cloud_object::StoredObject};
-app/src/search/welcome_palette/view.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/search/welcome_palette/view.rs use crate::server::{ids::SyncId, telemetry::TelemetryEvent};
-app/src/settings/cloud_preferences.rs use crate::cloud_object::{
-app/src/settings/onboarding_tests.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/settings/onboarding_tests.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/settings/onboarding_tests.rs use crate::cloud_object::{StoredObjectMetadata, StoredObjectPermissions};
-app/src/settings/onboarding_tests.rs use crate::server::ids::{ServerId, SyncId};
-app/src/settings/privacy.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/settings_view/ai_page.rs use crate::cloud_object::GenericStringObjectFormat::Json;
-app/src/settings_view/ai_page.rs use crate::cloud_object::JsonObjectType;
-app/src/settings_view/ai_page.rs use crate::cloud_object::ObjectType;
-app/src/settings_view/ai_page.rs use crate::cloud_object::model::persistence::{ObjectStoreEvent, ObjectStoreModel};
-app/src/settings_view/ai_page.rs use crate::server::telemetry::{
-app/src/settings_view/appearance_page.rs use crate::server::telemetry::InputUXChangeOrigin;
-app/src/settings_view/appearance_page.rs use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
-app/src/settings_view/execution_profile_view.rs use crate::cloud_object::model::generic_string_model::StringModel;
-app/src/settings_view/features/external_editor.rs use crate::{
-app/src/settings_view/features/startup_shell.rs use crate::{
-app/src/settings_view/features/working_directory.rs use crate::{
-app/src/settings_view/features_page.rs use crate::server::telemetry::TelemetryEvent;
-app/src/settings_view/features_page_tests.rs use crate::server::telemetry::TelemetryEvent;
-app/src/settings_view/mcp_servers/edit_page.rs use crate::{
-app/src/settings_view/mcp_servers/list_page.rs use crate::server::telemetry::{MCPTemplateInstallationSource, TelemetryEvent};
-app/src/settings_view/mcp_servers/list_page.rs use crate::{
-app/src/settings_view/mcp_servers/mod.rs use crate::server::ids::ObjectUid;
-app/src/settings_view/mcp_servers/server_card.rs use crate::{
-app/src/settings_view/mcp_servers_page.rs use crate::{
-app/src/settings_view/mod.rs use crate::server::telemetry::MCPServerCollectionPaneEntrypoint;
-app/src/settings_view/privacy_page.rs use crate::server::telemetry::TelemetryEvent;
-app/src/settings_view/warpify_page.rs use crate::{
-app/src/system/info.rs use crate::{
-app/src/terminal/block_filter.rs use crate::{
-app/src/terminal/cli_agent.rs use crate::server::telemetry::CLIAgentType;
-app/src/terminal/cli_agent_tests.rs use crate::server::ids::ServerId;
-app/src/terminal/event.rs use crate::server::ids::SyncId;
-app/src/terminal/event.rs use crate::server::telemetry::ImageProtocol;
-app/src/terminal/history.rs use crate::{
-app/src/terminal/input.rs use crate::server::telemetry::{PaletteSource, SlashCommandAcceptedDetails, SlashMenuSource};
-app/src/terminal/input.rs use crate::{
-app/src/terminal/input/profiles/data_source.rs use crate::cloud_object::model::generic_string_model::StringModel;
-app/src/terminal/input/prompts/data_source.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/terminal/input/prompts/data_source.rs use crate::server::ids::SyncId;
-app/src/terminal/input/prompts/view.rs use crate::server::ids::SyncId;
-app/src/terminal/input/slash_commands/data_source/saved_prompts.rs use crate::cloud_object::StoredObject;
-app/src/terminal/input/slash_commands/data_source/saved_prompts.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/terminal/input/slash_commands/data_source/saved_prompts.rs use crate::server::ids::SyncId;
-app/src/terminal/input/slash_commands/data_source/saved_prompts_tests.rs use crate::server::ids::{ClientId, SyncId};
-app/src/terminal/input/slash_commands/mod.rs use crate::cloud_object::{model::persistence::ObjectStoreModel, ObjectType};
-app/src/terminal/input/slash_commands/mod.rs use crate::server::ids::SyncId;
-app/src/terminal/input/slash_commands/mod.rs use crate::server::telemetry::PaletteSource;
-app/src/terminal/input/slash_commands/mod.rs use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
-app/src/terminal/input/slash_commands/view.rs use crate::server::ids::SyncId;
-app/src/terminal/input_test.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/terminal/input_test.rs use crate::cloud_object::{
-app/src/terminal/input_test.rs use crate::server::ids::ClientId;
-app/src/terminal/local_tty/spawner.rs use crate::{
-app/src/terminal/local_tty/terminal_manager.rs use crate::server::telemetry::TelemetryEvent;
-app/src/terminal/model/block.rs use crate::{
-app/src/terminal/model/grid/ansi_handler.rs use crate::server::telemetry::ImageProtocol;
-app/src/terminal/model/session.rs use crate::server::telemetry::{BootstrappingInfo, TelemetryEvent};
-app/src/terminal/model/session/command_executor.rs use crate::{
-app/src/terminal/model/session/command_executor/in_band_command_executor.rs use crate::server::datetime_ext::DateTimeExt;
-app/src/terminal/model/session/command_executor/tmux_executor.rs use crate::server::datetime_ext::DateTimeExt;
-app/src/terminal/model_events.rs use crate::server::telemetry::ImageProtocol;
-app/src/terminal/profile_model_selector.rs use crate::{
-app/src/terminal/universal_developer_input.rs use crate::{
-app/src/terminal/view.rs use crate::cloud_object::model::actions::ObjectActionType;
-app/src/terminal/view.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/terminal/view.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/terminal/view.rs use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, StoredObject};
-app/src/terminal/view.rs use crate::server::ids::{ObjectUid, SyncId};
-app/src/terminal/view.rs use crate::server::telemetry::{
-app/src/terminal/view.rs use crate::server::telemetry::{BlockLatencyInfo, BootstrappingInfo};
-app/src/terminal/view.rs use crate::server::telemetry::{FileTreeSource, TelemetryEvent};
-app/src/terminal/view/action.rs use crate::server::telemetry::{AgentModeRewindEntrypoint, PaletteSource, ToggleBlockFilterSource};
-app/src/terminal/view/action.rs use crate::{
-app/src/terminal/view/agent_view.rs use crate::{
-app/src/terminal/view/block_onboarding/onboarding_prompt_block.rs use crate::server::telemetry::{PromptChoice, TelemetryEvent};
-app/src/terminal/view/init.rs use crate::server::telemetry::InteractionSource;
-app/src/terminal/view/init.rs use crate::server::telemetry::ToggleBlockFilterSource;
-app/src/terminal/view/inline_banner/prompt_suggestions.rs use crate::server::telemetry::InteractionSource;
-app/src/terminal/view/link_detection.rs use crate::{
-app/src/terminal/view/passive_suggestions.rs use crate::{server::telemetry::InteractionSource, terminal::view::CodeDiffAction};
-app/src/terminal/view/ssh_remote_server_choice_view.rs use crate::{
-app/src/terminal/view/use_agent_footer/mod.rs use crate::{
-app/src/terminal/wsl/model.rs use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
-app/src/test_util/terminal.rs use crate::{
-app/src/themes/theme_chooser.rs use crate::{
-app/src/themes/theme_creator_body.rs use crate::{
-app/src/themes/theme_deletion_body.rs use crate::server::telemetry::TelemetryEvent;
-app/src/tui_export.rs use crate::cloud_object::model::generic_string_model::StringModel;
-app/src/tui_export.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/undo_close/stack.rs use crate::{
-app/src/uri/docker.rs use crate::{
-app/src/uri/mod.rs use crate::server::ids::ServerId;
-app/src/uri/mod.rs use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
-app/src/uri/mod.rs use crate::{cloud_object::ObjectType, workspace::ToastStack};
-app/src/uri/parse_url_paths.rs use crate::cloud_object::extract_server_id_and_object_type_from_warp_drive_link;
-app/src/uri/uri_test.rs use crate::cloud_object::ObjectType;
-app/src/uri/uri_test.rs use crate::server::ids::ServerId;
-app/src/view_components/find.rs use crate::server::telemetry::{FindOption, TelemetryEvent};
-app/src/workflows/aliases.rs use crate::{
-app/src/workflows/categories.rs use crate::{
-app/src/workflows/categories.rs use crate::{server::telemetry::TelemetryEvent, user_config::WarpConfig};
-app/src/workflows/command_parser.rs use crate::server::ids::SyncId;
-app/src/workflows/export_workflow.rs use crate::{
-app/src/workflows/info_box.rs use crate::{
-app/src/workflows/info_box.rs use crate::{cloud_object::model::actions::ObjectActionType, terminal::view::TerminalAction};
-app/src/workflows/manager.rs use crate::{
-app/src/workflows/mod.rs use crate::cloud_object::SerializedModel;
-app/src/workflows/mod.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/workflows/mod.rs use crate::cloud_object::{GenericStoredObject, ObjectType, StoredObjectModel};
-app/src/workflows/mod.rs use crate::server::ids::{ServerId, SyncId};
-app/src/workflows/mod_test.rs use crate::server::ids::SyncId;
-app/src/workflows/workflow.rs use crate::{
-app/src/workflows/workflow_enum.rs use crate::cloud_object::{
-app/src/workflows/workflow_test.rs use crate::{
-app/src/workflows/workflow_view.rs use crate::{
-app/src/workflows/workflow_view/alias_argument_selector.rs use crate::{
-app/src/workflows/workflow_view/alias_bar.rs use crate::{
-app/src/workflows/workflow_view/env_var_selector.rs use crate::{
-app/src/workspace/action.rs use crate::server::ids::SyncId;
-app/src/workspace/action.rs use crate::server::telemetry::{AddTabWithShellSource, AgentModeEntrypoint, PaletteSource};
-app/src/workspace/mod.rs use crate::server::telemetry::AgentModeEntrypoint;
-app/src/workspace/mod.rs use crate::server::telemetry::PaletteSource;
-app/src/workspace/view.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/workspace/view.rs use crate::cloud_object::toast_message::StoredObjectToastMessage;
-app/src/workspace/view.rs use crate::cloud_object::update_manager::{
-app/src/workspace/view.rs use crate::cloud_object::{
-app/src/workspace/view.rs use crate::server::ids::{ObjectUid, SyncId};
-app/src/workspace/view.rs use crate::server::telemetry::{
-app/src/workspace/view.rs use crate::server::telemetry::{NotificationsTurnedOnSource, PaletteSource, TabRenameEvent};
-app/src/workspace/view/launch_modal/cta_button.rs use crate::server::telemetry::TelemetryEvent;
-app/src/workspace/view/left_panel.rs use crate::server::telemetry::CodePanelsFileOpenEntrypoint;
-app/src/workspace/view/left_panel.rs use crate::server::telemetry::{FileTreeSource, WarpDriveSource};
-app/src/workspace/view_test.rs use crate::cloud_object::model::persistence::ObjectStoreModel;
-app/src/workspace/view_test.rs use crate::cloud_object::model::view::ObjectStoreViewModel;
-app/src/workspace/view_test.rs use crate::cloud_object::update_manager::UpdateManager;
-app/src/workspace/view_test.rs use crate::server::experiments::ServerExperiments;
-app/src/workspaces/team.rs use crate::{auth::UserUid, server::ids::ServerId};
-app/src/workspaces/user_workspaces.rs use crate::{
-app/src/workspaces/workspace.rs use crate::{
+app/src/ai/agent/api.rs crate::cloud_object::StoredObject
+app/src/ai/agent/api.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/agent/api.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent/api_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/ai/agent/api_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/ai/agent/api_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent/api_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/ai/agent/api_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/agent/api_tests.rs crate::server::ids::SyncId
+app/src/ai/agent/task.rs crate::server::datetime_ext::DateTimeExt
+app/src/ai/agent/telemetry.rs crate::server::telemetry::AgentModeCitation
+app/src/ai/agent_sdk/common.rs crate::cloud_object::Owner
+app/src/ai/agent_sdk/common.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent_sdk/driver.rs crate::server::ids::ServerId
+app/src/ai/agent_sdk/driver.rs crate::server::ids::SyncId
+app/src/ai/agent_sdk/mcp.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent_sdk/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent_sdk/profiles.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/ai/agent_sdk/profiles.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/agent_sdk/profiles.rs crate::server::ids::SyncId
+app/src/ai/agent_tips.rs crate::server::telemetry::PaletteSource
+app/src/ai/ai_document_view.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/action_model/execute/ask_user_question_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs crate::server::telemetry::PluginChipTelemetryAction
+app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs crate::server::telemetry::PluginChipTelemetryKind
+app/src/ai/blocklist/agent_view/agent_input_footer/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/agent_view/conversation_selection_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/agent_view/conversation_selection_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/agent_view/shortcuts/model.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/block.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/blocklist/block.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/block.rs crate::server::ids::SyncId
+app/src/ai/blocklist/block.rs crate::server::telemetry::AgentModeRewindEntrypoint
+app/src/ai/blocklist/block.rs crate::server::telemetry::AutonomySettingToggleSource
+app/src/ai/blocklist/block.rs crate::server::telemetry::InteractionSource
+app/src/ai/blocklist/block.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/block/cli.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/block/cli_controller.rs crate::server::telemetry::CLISubagentControlState
+app/src/ai/blocklist/block/cli_controller.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/block/status_bar.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/block/view_impl.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/context_model_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/context_model_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/controller.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::GenericStoredObject
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::JsonObjectType
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::ObjectType
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::model::generic_string_model::StoredStringObject
+app/src/ai/blocklist/controller/input_context.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/inline_action/code_diff_view.rs crate::server::telemetry::AgentModeCodeFileNavigationSource
+app/src/ai/blocklist/inline_action/code_diff_view.rs crate::server::telemetry::ToggleCodeSuggestionsSettingSource
+app/src/ai/blocklist/inline_action/requested_command_attribution.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/inline_action/suggested_unit_tests.rs crate::server::telemetry::ToggleCodeSuggestionsSettingSource
+app/src/ai/blocklist/passive_suggestions/legacy.rs crate::server::telemetry::PromptSuggestionFallbackReason
+app/src/ai/blocklist/permissions_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/permissions_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/suggested_agent_mode_workflow_modal.rs crate::server::ids::SyncId
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::Owner
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::update_manager::ObjectOperation
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::update_manager::OperationSuccessType
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/suggested_rule_modal.rs crate::cloud_object::update_manager::UpdateManagerEvent
+app/src/ai/blocklist/suggested_rule_modal.rs crate::server::ids::SyncId
+app/src/ai/blocklist/suggested_rule_modal.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::update_manager::ObjectOperation
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::update_manager::OperationSuccessType
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/blocklist/suggestion_chip_view.rs crate::cloud_object::update_manager::UpdateManagerEvent
+app/src/ai/blocklist/suggestion_chip_view.rs crate::server::ids::ClientId
+app/src/ai/blocklist/suggestion_chip_view.rs crate::server::ids::SyncId
+app/src/ai/document/ai_document_model_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::GenericStoredObject
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::JsonObjectType
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::UniquePer
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::model::json_model::JsonModel
+app/src/ai/execution_profiles/mod.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::JsonObjectType
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::StoredObject
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::model::persistence::UpdateSource
+app/src/ai/execution_profiles/profiles.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/execution_profiles/profiles.rs crate::server::ids::ClientId
+app/src/ai/execution_profiles/profiles.rs crate::server::ids::SyncId
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::Owner
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/execution_profiles/profiles_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/execution_profiles/profiles_tests.rs crate::server::ids::ServerId
+app/src/ai/execution_profiles/profiles_tests.rs crate::server::ids::SyncId
+app/src/ai/facts/mod.rs crate::cloud_object::GenericStoredObject
+app/src/ai/facts/mod.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/facts/mod.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/ai/facts/mod.rs crate::cloud_object::JsonObjectType
+app/src/ai/facts/mod.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/ai/facts/mod.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/facts/mod.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/ai/facts/mod.rs crate::cloud_object::model::json_model::JsonModel
+app/src/ai/facts/mod.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/ai/facts/mod.rs crate::server::ids::SyncId
+app/src/ai/facts/view/mod.rs crate::server::ids::SyncId
+app/src/ai/facts/view/rule.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/facts/view/rule.rs crate::cloud_object::JsonObjectType
+app/src/ai/facts/view/rule.rs crate::cloud_object::Owner
+app/src/ai/facts/view/rule.rs crate::cloud_object::Revision
+app/src/ai/facts/view/rule.rs crate::cloud_object::StoredObject
+app/src/ai/facts/view/rule.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/facts/view/rule.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/facts/view/rule.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/facts/view/rule.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/facts/view/rule.rs crate::server::ids::ClientId
+app/src/ai/facts/view/rule.rs crate::server::ids::SyncId
+app/src/ai/facts/view/rule_editor.rs crate::cloud_object::Revision
+app/src/ai/facts/view/rule_editor.rs crate::cloud_object::StoredObject
+app/src/ai/facts/view/rule_editor.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/facts/view/rule_editor.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/facts/view/rule_editor.rs crate::server::ids::SyncId
+app/src/ai/llms_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/llms_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/mcp/gallery.rs crate::server::datetime_ext::DateTimeExt
+app/src/ai/mcp/mod.rs crate::cloud_object::GenericStoredObject
+app/src/ai/mcp/mod.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/mcp/mod.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/ai/mcp/mod.rs crate::cloud_object::JsonObjectType
+app/src/ai/mcp/mod.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/ai/mcp/mod.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/mcp/mod.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/ai/mcp/mod.rs crate::cloud_object::model::json_model::JsonModel
+app/src/ai/mcp/mod.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/ai/mcp/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/mcp/mod.rs crate::server::datetime_ext::DateTimeExt
+app/src/ai/mcp/mod.rs crate::server::ids::SyncId
+app/src/ai/mcp/parsing.rs crate::server::datetime_ext::DateTimeExt
+app/src/ai/mcp/templatable.rs crate::cloud_object::GenericStoredObject
+app/src/ai/mcp/templatable.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/mcp/templatable.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/ai/mcp/templatable.rs crate::cloud_object::JsonObjectType
+app/src/ai/mcp/templatable.rs crate::cloud_object::UniquePer
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::json_model::JsonModel
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/ai/mcp/templatable.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/mcp/templatable.rs crate::server::datetime_ext::DateTimeExt
+app/src/ai/mcp/templatable.rs crate::server::ids::SyncId
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::GenericStringObjectFormat
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::JsonObjectType
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::Space
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::StoredObject
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::StoredObjectLocation
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::StoredObjectMetadataExt
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/ai/mcp/templatable_manager/native.rs crate::cloud_object::update_manager::UpdateManager
+app/src/ai/mcp/templatable_manager/native.rs crate::server::ids::ClientId
+app/src/ai/mcp/templatable_manager/native.rs crate::server::ids::ServerId
+app/src/ai/mcp/templatable_manager/native.rs crate::server::ids::SyncId
+app/src/ai/mcp/templatable_manager/native.rs crate::server::telemetry::MCPServerModel
+app/src/ai/mcp/templatable_manager/native.rs crate::server::telemetry::MCPServerTelemetryError
+app/src/ai/mcp/templatable_manager/native.rs crate::server::telemetry::MCPServerTelemetryTransportType
+app/src/ai/mcp/templatable_manager/native.rs crate::server::telemetry::MCPTemplateCreationSource
+app/src/ai/mcp/templatable_manager/native.rs crate::server::telemetry::TelemetryEvent
+app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::Space
+app/src/ai/mcp/templatable_manager/wasm.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/ai/mcp/templatable_manager/wasm.rs crate::server::ids::ServerId
+app/src/ai/predict/next_command_model.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/ai_assistant/mod.rs crate::server::telemetry::OpenedWarpAISource
+app/src/ai_assistant/panel.rs crate::server::telemetry::TelemetryEvent
+app/src/ai_assistant/panel.rs crate::server::telemetry::WarpAIActionType
+app/src/ai_assistant/requests.rs crate::server::telemetry::TelemetryEvent
+app/src/ai_assistant/requests.rs crate::server::telemetry::WarpAIRequestResult
+app/src/ai_assistant/transcript.rs crate::server::telemetry::SaveAsWorkflowModalSource
+app/src/ai_assistant/transcript.rs crate::server::telemetry::TelemetryEvent
+app/src/ai_assistant/transcript.rs crate::server::telemetry::WarpAIActionType
+app/src/app_menus.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/app_state.rs crate::server::ids::SyncId
+app/src/autoupdate/mod.rs crate::server::datetime_ext::DateTimeExt
+app/src/autoupdate/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/autoupdate/windows.rs crate::server::telemetry::TelemetryEvent
+app/src/code/editor/comment_editor_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/code/editor/find/view.rs crate::server::telemetry::FindOption
+app/src/code/editor/find/view.rs crate::server::telemetry::TelemetryEvent
+app/src/code/editor/view/view_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/code/editor/view/vim_handler_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/code/file_tree/view.rs crate::server::telemetry::CodePanelsFileOpenEntrypoint
+app/src/code/file_tree/view.rs crate::server::telemetry::TelemetryEvent
+app/src/code/file_tree/view/editing.rs crate::server::telemetry::TelemetryEvent
+app/src/code/view.rs crate::server::telemetry::CodeContextDestination
+app/src/code_review/code_review_view.rs crate::server::telemetry::CodePanelsFileOpenEntrypoint
+app/src/code_review/code_review_view_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/code_review/find_model_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/code_review/telemetry_event.rs crate::server::telemetry::CLIAgentType
+app/src/drive/cloud_object_naming_dialog.rs crate::cloud_object::Space
+app/src/drive/cloud_object_naming_dialog.rs crate::server::ids::SyncId
+app/src/drive/drive_helpers.rs crate::cloud_object::GenericStringObjectFormat
+app/src/drive/drive_helpers.rs crate::cloud_object::JsonObjectType
+app/src/drive/drive_helpers.rs crate::cloud_object::ObjectType
+app/src/drive/drive_helpers.rs crate::cloud_object::Space
+app/src/drive/drive_helpers.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/export.rs crate::cloud_object::Space
+app/src/drive/export.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/export.rs crate::cloud_object::update_manager::get_duplicate_object_name
+app/src/drive/export_tests.rs crate::cloud_object::ObjectIdType
+app/src/drive/export_tests.rs crate::cloud_object::ObjectType
+app/src/drive/export_tests.rs crate::cloud_object::Space
+app/src/drive/export_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/export_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/drive/export_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/export_tests.rs crate::server::ids::SyncId
+app/src/drive/folders/mod.rs crate::cloud_object::GenericStoredObject
+app/src/drive/folders/mod.rs crate::cloud_object::ObjectType
+app/src/drive/folders/mod.rs crate::cloud_object::SerializedModel
+app/src/drive/folders/mod.rs crate::cloud_object::Space
+app/src/drive/folders/mod.rs crate::cloud_object::StoredObjectModel
+app/src/drive/folders/mod.rs crate::server::ids::FolderId
+app/src/drive/folders/mod.rs crate::server::ids::SyncId
+app/src/drive/import/import_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/import/import_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/import/modal.rs crate::cloud_object::Owner
+app/src/drive/import/modal.rs crate::cloud_object::StoredObject
+app/src/drive/import/modal.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/import/modal.rs crate::server::ids::SyncId
+app/src/drive/import/modal_body.rs crate::cloud_object::Owner
+app/src/drive/import/modal_body.rs crate::server::ids::ClientId
+app/src/drive/import/modal_body.rs crate::server::ids::SyncId
+app/src/drive/import/nodes.rs crate::server::ids::ClientId
+app/src/drive/import/queue.rs crate::cloud_object::Owner
+app/src/drive/import/queue.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/drive/import/queue.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/import/queue.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/drive/import/queue.rs crate::cloud_object::update_manager::ObjectOperation
+app/src/drive/import/queue.rs crate::cloud_object::update_manager::OperationSuccessType
+app/src/drive/import/queue.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/import/queue.rs crate::cloud_object::update_manager::UpdateManagerEvent
+app/src/drive/import/queue.rs crate::server::ids::ClientId
+app/src/drive/import/queue.rs crate::server::ids::SyncId
+app/src/drive/index.rs crate::cloud_object::GenericStoredObject
+app/src/drive/index.rs crate::cloud_object::GenericStringObjectFormat
+app/src/drive/index.rs crate::cloud_object::JsonObjectType
+app/src/drive/index.rs crate::cloud_object::ObjectType
+app/src/drive/index.rs crate::cloud_object::Space
+app/src/drive/index.rs crate::cloud_object::StoredObject
+app/src/drive/index.rs crate::cloud_object::StoredObjectLocation
+app/src/drive/index.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/drive/index.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/index.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/index.rs crate::cloud_object::model::view::ObjectStoreViewModelEvent
+app/src/drive/index.rs crate::cloud_object::model::view::UpdateTimestamp
+app/src/drive/index.rs crate::cloud_object::update_manager::FetchSingleObjectOption
+app/src/drive/index.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/index.rs crate::server::ids::ClientId
+app/src/drive/index.rs crate::server::ids::ObjectUid
+app/src/drive/index.rs crate::server::ids::ServerId
+app/src/drive/index.rs crate::server::ids::SyncId
+app/src/drive/index.rs crate::server::telemetry::TelemetryEvent
+app/src/drive/index_test.rs crate::cloud_object::ObjectType
+app/src/drive/index_test.rs crate::cloud_object::Owner
+app/src/drive/index_test.rs crate::cloud_object::Space
+app/src/drive/index_test.rs crate::cloud_object::StoredObjectSyncStatus
+app/src/drive/index_test.rs crate::cloud_object::model::actions::ObjectActions
+app/src/drive/index_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/index_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/index_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/index_test.rs crate::server::ids::ClientId
+app/src/drive/index_test.rs crate::server::ids::SyncId
+app/src/drive/items/ai_fact.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/ai_fact_collection.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/ai_fact_collection.rs crate::server::ids::ClientId
+app/src/drive/items/env_var_collection.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/env_var_collection.rs crate::cloud_object::model::actions::ObjectActionType
+app/src/drive/items/env_var_collection.rs crate::cloud_object::model::actions::ObjectActions
+app/src/drive/items/folder.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/item.rs crate::cloud_object::Owner
+app/src/drive/items/item.rs crate::cloud_object::Space
+app/src/drive/items/item.rs crate::cloud_object::StoredObject
+app/src/drive/items/item.rs crate::cloud_object::StoredObjectLocation
+app/src/drive/items/item.rs crate::cloud_object::StoredObjectMetadataExt
+app/src/drive/items/item.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/items/item.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/items/mcp_server.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/mcp_server_collection.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/mcp_server_collection.rs crate::server::ids::ClientId
+app/src/drive/items/mod.rs crate::cloud_object::Space
+app/src/drive/items/mod.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/notebook.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/space.rs crate::cloud_object::Space
+app/src/drive/items/space.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/workflow.rs crate::cloud_object::StoredObjectMetadata
+app/src/drive/items/workflow.rs crate::cloud_object::model::actions::ObjectActionType
+app/src/drive/items/workflow.rs crate::cloud_object::model::actions::ObjectActions
+app/src/drive/mod.rs crate::cloud_object::GenericStringObjectFormat
+app/src/drive/mod.rs crate::cloud_object::ObjectIdType
+app/src/drive/mod.rs crate::cloud_object::ObjectType
+app/src/drive/mod.rs crate::cloud_object::StoredObject
+app/src/drive/mod.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/mod.rs crate::cloud_object::model::view::UpdateTimestamp
+app/src/drive/mod.rs crate::server::ids::HashedSqliteId
+app/src/drive/mod.rs crate::server::ids::ObjectUid
+app/src/drive/mod.rs crate::server::ids::ServerId
+app/src/drive/mod.rs crate::server::ids::SyncId
+app/src/drive/panel.rs crate::cloud_object::GenericStringObjectFormat
+app/src/drive/panel.rs crate::cloud_object::JsonObjectType
+app/src/drive/panel.rs crate::cloud_object::Owner
+app/src/drive/panel.rs crate::cloud_object::Space
+app/src/drive/panel.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/drive/panel.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/panel.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/panel.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/drive/panel.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/panel.rs crate::server::ids::ClientId
+app/src/drive/panel.rs crate::server::ids::ServerId
+app/src/drive/panel.rs crate::server::ids::SyncId
+app/src/drive/panel_test.rs crate::cloud_object::Space
+app/src/drive/panel_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/panel_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/drive/panel_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/sharing/mod.rs crate::cloud_object::Owner
+app/src/drive/sharing/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/sharing/mod.rs crate::server::ids::ServerId
+app/src/drive/workflows/ai_assist.rs crate::server::telemetry::TelemetryEvent
+app/src/drive/workflows/enum_creation_dialog.rs crate::cloud_object::Revision
+app/src/drive/workflows/enum_creation_dialog.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/workflows/enum_creation_dialog.rs crate::server::ids::ClientId
+app/src/drive/workflows/enum_creation_dialog.rs crate::server::ids::SyncId
+app/src/drive/workflows/modal.rs crate::cloud_object::ObjectType
+app/src/drive/workflows/modal.rs crate::cloud_object::Owner
+app/src/drive/workflows/modal.rs crate::cloud_object::Revision
+app/src/drive/workflows/modal.rs crate::cloud_object::StoredObject
+app/src/drive/workflows/modal.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/drive/workflows/modal.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/drive/workflows/modal.rs crate::cloud_object::breadcrumbs::ContainingObjectKind
+app/src/drive/workflows/modal.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/drive/workflows/modal.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/workflows/modal.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/workflows/modal.rs crate::server::ids::ClientId
+app/src/drive/workflows/modal.rs crate::server::ids::ServerId
+app/src/drive/workflows/modal.rs crate::server::ids::SyncId
+app/src/drive/workflows/modal_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/workflows/workflow_arg_selector.rs crate::server::ids::SyncId
+app/src/drive/workflows/workflow_arg_type_helpers.rs crate::cloud_object::Owner
+app/src/drive/workflows/workflow_arg_type_helpers.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/drive/workflows/workflow_arg_type_helpers.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/drive/workflows/workflow_arg_type_helpers.rs crate::cloud_object::update_manager::UpdateManager
+app/src/drive/workflows/workflow_arg_type_helpers.rs crate::server::ids::SyncId
+app/src/editor/view/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/editor/view/voice.rs crate::server::telemetry::TelemetryEvent
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::Owner
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::Revision
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::Space
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::StoredObject
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/env_vars/active_env_var_collection_data.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/env_vars/active_env_var_collection_data.rs crate::server::ids::ClientId
+app/src/env_vars/active_env_var_collection_data.rs crate::server::ids::SyncId
+app/src/env_vars/manager.rs crate::cloud_object::Owner
+app/src/env_vars/manager.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/env_vars/manager.rs crate::server::ids::SyncId
+app/src/env_vars/mod.rs crate::cloud_object::GenericStoredObject
+app/src/env_vars/mod.rs crate::cloud_object::GenericStringObjectFormat
+app/src/env_vars/mod.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/env_vars/mod.rs crate::cloud_object::JsonObjectType
+app/src/env_vars/mod.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/env_vars/mod.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/env_vars/mod.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/env_vars/mod.rs crate::cloud_object::model::json_model::JsonModel
+app/src/env_vars/mod.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/env_vars/mod.rs crate::server::ids::SyncId
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::Owner
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::update_manager::FetchSingleObjectOption
+app/src/env_vars/view/env_var_collection.rs crate::cloud_object::update_manager::UpdateManager
+app/src/env_vars/view/env_var_collection.rs crate::server::ids::ServerId
+app/src/env_vars/view/env_var_collection.rs crate::server::ids::SyncId
+app/src/env_vars/view/env_var_collection_tests.rs crate::cloud_object::model::actions::ObjectActions
+app/src/env_vars/view/env_var_collection_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/env_vars/view/env_var_collection_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/env_vars/view/env_var_collection_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/env_vars/view/menus.rs crate::cloud_object::GenericStringObjectFormat
+app/src/env_vars/view/menus.rs crate::cloud_object::Space
+app/src/env_vars/view/menus.rs crate::cloud_object::StoredObject
+app/src/env_vars/view/menus.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/assertions.rs crate::cloud_object::Space
+app/src/integration_testing/assertions.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/integration_testing/assertions.rs crate::cloud_object::StoredObjectLocation
+app/src/integration_testing/assertions.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/assertions.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/assertions.rs crate::server::ids::ClientId
+app/src/integration_testing/cloud_object/assertion.rs crate::cloud_object::GenericStoredObject
+app/src/integration_testing/cloud_object/assertion.rs crate::cloud_object::Revision
+app/src/integration_testing/cloud_object/assertion.rs crate::cloud_object::StoredObjectModel
+app/src/integration_testing/cloud_object/assertion.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::HashableId
+app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::ServerId
+app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::SyncId
+app/src/integration_testing/cloud_object/assertion.rs crate::server::ids::ToServerId
+app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::Space
+app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/cloud_object/mod.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/integration_testing/notebook/assertion.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/notebook/assertion.rs crate::server::ids::SyncId
+app/src/integration_testing/notebook/step.rs crate::cloud_object::Space
+app/src/integration_testing/notebook/step.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/integration_testing/notebook/step.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/notebook/step.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/notebook/step.rs crate::server::ids::ClientId
+app/src/integration_testing/notebook/step.rs crate::server::ids::SyncId
+app/src/integration_testing/rules/assertion.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/integration_testing/rules/assertion.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/rules/assertion.rs crate::server::ids::SyncId
+app/src/integration_testing/rules/step.rs crate::cloud_object::Space
+app/src/integration_testing/rules/step.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/rules/step.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/rules/step.rs crate::server::ids::ClientId
+app/src/integration_testing/rules/step.rs crate::server::ids::SyncId
+app/src/integration_testing/type_getters.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/integration_testing/workflow/assertion.rs crate::server::ids::SyncId
+app/src/integration_testing/workflow/step.rs crate::cloud_object::Space
+app/src/integration_testing/workflow/step.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/integration_testing/workflow/step.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/integration_testing/workflow/step.rs crate::cloud_object::update_manager::UpdateManager
+app/src/integration_testing/workflow/step.rs crate::server::ids::ClientId
+app/src/integration_testing/workflow/step.rs crate::server::ids::SyncId
+app/src/launch_configs/save_modal.rs crate::server::telemetry::TelemetryEvent
+app/src/lib.rs crate::cloud_object::model::actions::ObjectActions
+app/src/lib.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/lib.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/lib.rs crate::cloud_object::update_manager::UpdateManager
+app/src/lib.rs crate::server::experiments::ServerExperiments
+app/src/lib.rs crate::server::telemetry::AgentModeEntrypoint
+app/src/lib.rs crate::server::telemetry::AgentModeEntrypointSelectionType
+app/src/lib.rs crate::server::telemetry::AppStartupInfo
+app/src/lib.rs crate::server::telemetry::CloseTarget
+app/src/lib.rs crate::server::telemetry::PaletteSource
+app/src/lib.rs crate::server::telemetry::RemoteCodebaseAutoIndexTrigger
+app/src/lib.rs crate::server::telemetry::RemoteCodebaseIndexStatusTelemetrySource
+app/src/lib.rs crate::server::telemetry::TelemetryEvent
+app/src/local_control/handlers/app_state.rs crate::server::telemetry::PaletteSource
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::Owner
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::Space
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::StoredObject
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::model::view::Editor
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::model::view::EditorState
+app/src/notebooks/active_notebook_data.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/notebooks/active_notebook_data.rs crate::server::ids::ClientId
+app/src/notebooks/active_notebook_data.rs crate::server::ids::SyncId
+app/src/notebooks/context_menu_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/context_menu_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/notebooks/context_menu_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/notebooks/editor/block_insertion_menu.rs crate::cloud_object::ObjectIdType
+app/src/notebooks/editor/block_insertion_menu.rs crate::cloud_object::Space
+app/src/notebooks/editor/block_insertion_menu.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/editor/block_insertion_menu.rs crate::server::ids::SyncId
+app/src/notebooks/editor/embedded_item.rs crate::cloud_object::StoredObject
+app/src/notebooks/editor/embedded_item.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/editor/embedded_item.rs crate::server::ids::HashableId
+app/src/notebooks/editor/embedded_item.rs crate::server::ids::ToServerId
+app/src/notebooks/editor/embedding_model.rs crate::cloud_object::StoredObject
+app/src/notebooks/editor/embedding_model.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/editor/embedding_model.rs crate::server::ids::HashableId
+app/src/notebooks/editor/embedding_model.rs crate::server::ids::ToServerId
+app/src/notebooks/editor/model.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/notebooks/editor/model.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/editor/model_tests.rs crate::cloud_object::Revision
+app/src/notebooks/editor/model_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/notebooks/editor/model_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/notebooks/editor/model_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/editor/model_tests.rs crate::server::ids::ServerId
+app/src/notebooks/editor/model_tests.rs crate::server::ids::SyncId
+app/src/notebooks/editor/view.rs crate::server::ids::SyncId
+app/src/notebooks/editor/view_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/file/mod.rs crate::server::telemetry::NotebookActionEvent
+app/src/notebooks/file/mod.rs crate::server::telemetry::NotebookTelemetryMetadata
+app/src/notebooks/file/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/notebooks/file/mod_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/manager.rs crate::cloud_object::Owner
+app/src/notebooks/manager.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/notebooks/manager.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/manager.rs crate::server::ids::SyncId
+app/src/notebooks/manager_tests.rs crate::cloud_object::Owner
+app/src/notebooks/manager_tests.rs crate::cloud_object::model::actions::ObjectActions
+app/src/notebooks/manager_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/manager_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/notebooks/manager_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/notebooks/mod.rs crate::cloud_object::GenericStoredObject
+app/src/notebooks/mod.rs crate::cloud_object::ObjectType
+app/src/notebooks/mod.rs crate::cloud_object::Owner
+app/src/notebooks/mod.rs crate::cloud_object::SerializedModel
+app/src/notebooks/mod.rs crate::cloud_object::StoredObjectModel
+app/src/notebooks/mod.rs crate::server::ids::ServerId
+app/src/notebooks/mod.rs crate::server::ids::SyncId
+app/src/notebooks/notebook.rs crate::cloud_object::ObjectType
+app/src/notebooks/notebook.rs crate::cloud_object::Owner
+app/src/notebooks/notebook.rs crate::cloud_object::Space
+app/src/notebooks/notebook.rs crate::cloud_object::StoredObject
+app/src/notebooks/notebook.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/notebooks/notebook.rs crate::cloud_object::grab_edit_access_modal::GrabEditAccessModal
+app/src/notebooks/notebook.rs crate::cloud_object::grab_edit_access_modal::GrabEditAccessModalEvent
+app/src/notebooks/notebook.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/notebooks/notebook.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/notebook.rs crate::cloud_object::model::persistence::UpdateSource
+app/src/notebooks/notebook.rs crate::cloud_object::model::view::Editor
+app/src/notebooks/notebook.rs crate::cloud_object::model::view::EditorState
+app/src/notebooks/notebook.rs crate::cloud_object::update_manager::FetchSingleObjectOption
+app/src/notebooks/notebook.rs crate::cloud_object::update_manager::UpdateManager
+app/src/notebooks/notebook.rs crate::server::ids::ClientId
+app/src/notebooks/notebook.rs crate::server::ids::ServerId
+app/src/notebooks/notebook.rs crate::server::ids::SyncId
+app/src/notebooks/notebook.rs crate::server::telemetry::NotebookActionEvent
+app/src/notebooks/notebook.rs crate::server::telemetry::NotebookTelemetryMetadata
+app/src/notebooks/notebook.rs crate::server::telemetry::ObjectTelemetryMetadata
+app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryEvent
+app/src/notebooks/notebook.rs crate::server::telemetry::TelemetryObjectType
+app/src/notebooks/notebook/details_bar.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::Editor
+app/src/notebooks/notebook/details_bar.rs crate::cloud_object::model::view::EditorState
+app/src/notebooks/notebook_tests.rs crate::cloud_object::Owner
+app/src/notebooks/notebook_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/notebooks/notebook_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/notebooks/notebook_tests.rs crate::cloud_object::model::actions::ObjectActions
+app/src/notebooks/notebook_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/notebooks/notebook_tests.rs crate::cloud_object::model::view::Editor
+app/src/notebooks/notebook_tests.rs crate::cloud_object::model::view::EditorState
+app/src/notebooks/notebook_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/notebooks/notebook_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/notebooks/notebook_tests.rs crate::server::ids::ClientId
+app/src/notebooks/notebook_tests.rs crate::server::ids::ServerId
+app/src/notebooks/notebook_tests.rs crate::server::ids::SyncId
+app/src/notebooks/telemetry.rs crate::server::ids::ServerId
+app/src/notifications/model.rs crate::server::telemetry::TelemetryEvent
+app/src/pane_group/mod.rs crate::cloud_object::Space
+app/src/pane_group/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/pane_group/mod.rs crate::server::ids::ObjectUid
+app/src/pane_group/mod.rs crate::server::ids::SyncId
+app/src/pane_group/mod.rs crate::server::telemetry::PaletteSource
+app/src/pane_group/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/pane_group/pane/env_var_collection_pane.rs crate::server::ids::SyncId
+app/src/pane_group/pane/notebook_pane.rs crate::cloud_object::Space
+app/src/pane_group/pane/notebook_pane.rs crate::server::ids::SyncId
+app/src/pane_group/pane/view/header/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/pane_group/pane/view/header/mod_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/pane_group/pane/workflow_pane.rs crate::server::ids::SyncId
+app/src/persistence/cloud_object_tests.rs crate::cloud_object::ServerObjectContainer
+app/src/persistence/cloud_object_tests.rs crate::cloud_object::StoredObjectGuest
+app/src/persistence/cloud_object_tests.rs crate::server::ids::ServerId
+app/src/persistence/cloud_objects.rs crate::cloud_object::LinkSharing
+app/src/persistence/cloud_objects.rs crate::cloud_object::ObjectIdType
+app/src/persistence/cloud_objects.rs crate::cloud_object::ObjectType
+app/src/persistence/cloud_objects.rs crate::cloud_object::Owner
+app/src/persistence/cloud_objects.rs crate::cloud_object::ServerObjectContainer
+app/src/persistence/cloud_objects.rs crate::cloud_object::StoredObjectGuest
+app/src/persistence/cloud_objects.rs crate::cloud_object::StoredObjectMetadata
+app/src/persistence/cloud_objects.rs crate::cloud_object::StoredObjectPermissions
+app/src/persistence/cloud_objects.rs crate::server::ids::ServerId
+app/src/persistence/mod.rs crate::cloud_object::ObjectIdType
+app/src/persistence/mod.rs crate::cloud_object::StoredObject
+app/src/persistence/mod.rs crate::cloud_object::StoredObjectMetadata
+app/src/persistence/mod.rs crate::cloud_object::model::actions::ObjectAction
+app/src/persistence/mod.rs crate::cloud_object::model::generic_string_model::StoredStringObject
+app/src/persistence/mod.rs crate::server::experiments::ServerExperiment
+app/src/persistence/mod.rs crate::server::ids::SyncId
+app/src/persistence/sqlite.rs crate::cloud_object::GENERIC_STRING_OBJECT_PREFIX
+app/src/persistence/sqlite.rs crate::cloud_object::JSON_OBJECT_PREFIX
+app/src/persistence/sqlite.rs crate::cloud_object::JsonObjectType
+app/src/persistence/sqlite.rs crate::cloud_object::NumInFlightRequests
+app/src/persistence/sqlite.rs crate::cloud_object::ObjectIdType
+app/src/persistence/sqlite.rs crate::cloud_object::ObjectType
+app/src/persistence/sqlite.rs crate::cloud_object::Owner
+app/src/persistence/sqlite.rs crate::cloud_object::Revision
+app/src/persistence/sqlite.rs crate::cloud_object::StoredObject
+app/src/persistence/sqlite.rs crate::cloud_object::StoredObjectMetadata
+app/src/persistence/sqlite.rs crate::cloud_object::StoredObjectPermissions
+app/src/persistence/sqlite.rs crate::cloud_object::StoredObjectStatuses
+app/src/persistence/sqlite.rs crate::cloud_object::StoredObjectSyncStatus
+app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectAction
+app/src/persistence/sqlite.rs crate::cloud_object::model::actions::ObjectActionSubtype
+app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/persistence/sqlite.rs crate::cloud_object::model::generic_string_model::StoredStringObject
+app/src/persistence/sqlite.rs crate::server::experiments::ServerExperiment
+app/src/persistence/sqlite.rs crate::server::ids::ClientId
+app/src/persistence/sqlite.rs crate::server::ids::HashableId
+app/src/persistence/sqlite.rs crate::server::ids::ServerId
+app/src/persistence/sqlite.rs crate::server::ids::SyncId
+app/src/persistence/sqlite.rs crate::server::ids::ToServerId
+app/src/persistence/sqlite.rs crate::server::telemetry::TelemetryEvent
+app/src/persistence/sqlite_tests.rs crate::cloud_object::Owner
+app/src/persistence/sqlite_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/persistence/sqlite_tests.rs crate::server::ids::ClientId
+app/src/prompt/editor_modal.rs crate::server::telemetry::PromptChoice
+app/src/prompt/editor_modal.rs crate::server::telemetry::TelemetryEvent
+app/src/quit_warning/mod.rs crate::server::telemetry::CloseTarget
+app/src/resource_center/main_page.rs crate::server::telemetry::TelemetryEvent
+app/src/resource_center/section_views/changelog_section.rs crate::server::telemetry::TelemetryEvent
+app/src/resource_center/section_views/feature_section.rs crate::server::telemetry::TelemetryEvent
+app/src/root_view.rs crate::cloud_object::GenericStringObjectFormat
+app/src/root_view.rs crate::cloud_object::JsonObjectType
+app/src/root_view.rs crate::cloud_object::ObjectType
+app/src/root_view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/root_view.rs crate::server::ids::SyncId
+app/src/root_view.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/root_view.rs crate::server::telemetry::TelemetryEvent
+app/src/search/ai_context_menu/mixer.rs crate::cloud_object::ObjectType
+app/src/search/ai_context_menu/notebooks/data_source.rs crate::cloud_object::StoredObjectModel
+app/src/search/ai_context_menu/notebooks/data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::Revision
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::StoredObjectMetadata
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::StoredObjectPermissions
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/search/ai_context_menu/notebooks/data_source_test.rs crate::server::ids::SyncId
+app/src/search/ai_context_menu/notebooks/search_item.rs crate::cloud_object::ObjectType
+app/src/search/ai_context_menu/rules/data_source.rs crate::cloud_object::StoredObject
+app/src/search/ai_context_menu/rules/data_source.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/search/ai_context_menu/rules/data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::Revision
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/search/ai_context_menu/rules/data_source_tests.rs crate::server::ids::SyncId
+app/src/search/ai_context_menu/rules/search_item.rs crate::cloud_object::GenericStringObjectFormat
+app/src/search/ai_context_menu/rules/search_item.rs crate::cloud_object::JsonObjectType
+app/src/search/ai_context_menu/rules/search_item.rs crate::cloud_object::ObjectType
+app/src/search/ai_context_menu/workflows/data_source.rs crate::cloud_object::StoredObjectModel
+app/src/search/ai_context_menu/workflows/data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/ai_context_menu/workflows/search_item.rs crate::cloud_object::ObjectType
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::Owner
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::Revision
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::StoredObjectMetadata
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::StoredObjectPermissions
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/search/command_palette/data_sources_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/search/command_palette/data_sources_test.rs crate::server::ids::SyncId::self
+app/src/search/command_palette/mixer.rs crate::server::ids::SyncId
+app/src/search/command_palette/new_session/new_session_option.rs crate::server::telemetry::AddTabWithShellSource
+app/src/search/command_palette/view.rs crate::server::ids::SyncId
+app/src/search/command_palette/view.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/search/command_palette/view.rs crate::server::telemetry::TelemetryEvent
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::GenericStringObjectFormat
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::JsonObjectType
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::ObjectType
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::StoredObject
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::StoredObjectLocation
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/search/command_palette/warp_drive/data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_palette/warp_drive/data_source.rs crate::server::ids::ObjectUid
+app/src/search/command_palette/warp_drive/data_source.rs crate::server::ids::SyncId
+app/src/search/command_palette/warp_drive/env_var_collection_search_item.rs crate::cloud_object::StoredObject
+app/src/search/command_palette/warp_drive/notebook_search_item.rs crate::cloud_object::StoredObject
+app/src/search/command_palette/warp_drive/workflow_search_item.rs crate::cloud_object::StoredObject
+app/src/search/command_search/env_var_collections/env_var_collections_data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_search/notebooks/notebook_search_item.rs crate::server::ids::SyncId
+app/src/search/command_search/notebooks/notebooks_data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_search/notebooks/notebooks_data_source.rs crate::server::ids::SyncId
+app/src/search/command_search/searcher.rs crate::server::ids::SyncId
+app/src/search/command_search/view.rs crate::server::telemetry::TelemetryEvent
+app/src/search/command_search/view_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_search/view_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/search/command_search/workflows/stored_workflows_data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/command_search/workflows/stored_workflows_data_source.rs crate::server::ids::SyncId
+app/src/search/command_search/workflows/workflow_search_item.rs crate::server::ids::SyncId
+app/src/search/mixer.rs crate::server::telemetry::TelemetryEvent
+app/src/search/notebook_embedding/mod.rs crate::cloud_object::Owner
+app/src/search/notebook_embedding/mod.rs crate::cloud_object::Space
+app/src/search/notebook_embedding/notebooks/notebook_search_item.rs crate::cloud_object::StoredObject
+app/src/search/notebook_embedding/notebooks/notebooks_data_source.rs crate::cloud_object::Space
+app/src/search/notebook_embedding/notebooks/notebooks_data_source.rs crate::cloud_object::StoredObject
+app/src/search/notebook_embedding/notebooks/notebooks_data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/notebook_embedding/searcher.rs crate::server::ids::SyncId
+app/src/search/notebook_embedding/view.rs crate::cloud_object::Space
+app/src/search/notebook_embedding/workflows/workflow_search_item.rs crate::cloud_object::StoredObject
+app/src/search/notebook_embedding/workflows/workflows_data_source.rs crate::cloud_object::Space
+app/src/search/notebook_embedding/workflows/workflows_data_source.rs crate::cloud_object::StoredObject
+app/src/search/notebook_embedding/workflows/workflows_data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/notebook_embedding/workflows/workflows_data_source_tests.rs crate::cloud_object::Owner
+app/src/search/notebook_embedding/workflows/workflows_data_source_tests.rs crate::cloud_object::Space
+app/src/search/notebook_embedding/workflows/workflows_data_source_tests.rs crate::server::ids::ServerId
+app/src/search/notebooks/fuzzy_match.rs crate::cloud_object::StoredObject
+app/src/search/notebooks/fuzzy_match.rs crate::server::ids::SyncId
+app/src/search/welcome_palette/view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/search/welcome_palette/view.rs crate::server::ids::SyncId
+app/src/search/welcome_palette/view.rs crate::server::telemetry::TelemetryEvent
+app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStoredObject
+app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectFormat
+app/src/settings/cloud_preferences.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/settings/cloud_preferences.rs crate::cloud_object::JsonObjectType
+app/src/settings/cloud_preferences.rs crate::cloud_object::UniquePer
+app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/settings/cloud_preferences.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonModel
+app/src/settings/cloud_preferences.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectMetadata
+app/src/settings/onboarding_tests.rs crate::cloud_object::StoredObjectPermissions
+app/src/settings/onboarding_tests.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/settings/onboarding_tests.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/settings/onboarding_tests.rs crate::cloud_object::update_manager::UpdateManager
+app/src/settings/onboarding_tests.rs crate::server::ids::ServerId
+app/src/settings/onboarding_tests.rs crate::server::ids::SyncId
+app/src/settings/privacy.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/settings_view/ai_page.rs crate::cloud_object::GenericStringObjectFormat::Json
+app/src/settings_view/ai_page.rs crate::cloud_object::JsonObjectType
+app/src/settings_view/ai_page.rs crate::cloud_object::ObjectType
+app/src/settings_view/ai_page.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/settings_view/ai_page.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/settings_view/ai_page.rs crate::server::telemetry::AgentModeAutoDetectionSettingOrigin
+app/src/settings_view/ai_page.rs crate::server::telemetry::AutonomySettingToggleSource
+app/src/settings_view/ai_page.rs crate::server::telemetry::ToggleCodeSuggestionsSettingSource
+app/src/settings_view/appearance_page.rs crate::server::telemetry::InputUXChangeOrigin
+app/src/settings_view/appearance_page.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/execution_profile_view.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/settings_view/features/external_editor.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/features/startup_shell.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/features/working_directory.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/features_page.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/features_page_tests.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/mcp_servers/edit_page.rs crate::cloud_object::Space
+app/src/settings_view/mcp_servers/edit_page.rs crate::cloud_object::StoredObject
+app/src/settings_view/mcp_servers/edit_page.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/settings_view/mcp_servers/edit_page.rs crate::server::telemetry::MCPTemplateCreationSource
+app/src/settings_view/mcp_servers/edit_page.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/mcp_servers/list_page.rs crate::cloud_object::GenericStringObjectFormat
+app/src/settings_view/mcp_servers/list_page.rs crate::cloud_object::JsonObjectType
+app/src/settings_view/mcp_servers/list_page.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/settings_view/mcp_servers/list_page.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/settings_view/mcp_servers/list_page.rs crate::server::telemetry::MCPTemplateInstallationSource
+app/src/settings_view/mcp_servers/list_page.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/mcp_servers/mod.rs crate::server::ids::ObjectUid
+app/src/settings_view/mcp_servers/server_card.rs crate::cloud_object::StoredObject
+app/src/settings_view/mcp_servers_page.rs crate::cloud_object::Space
+app/src/settings_view/mcp_servers_page.rs crate::cloud_object::update_manager::InitiatedBy
+app/src/settings_view/mod.rs crate::server::telemetry::MCPServerCollectionPaneEntrypoint
+app/src/settings_view/privacy_page.rs crate::server::telemetry::TelemetryEvent
+app/src/settings_view/warpify_page.rs crate::server::telemetry::TelemetryEvent
+app/src/system/info.rs crate::server::telemetry
+app/src/terminal/block_filter.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/cli_agent.rs crate::server::telemetry::CLIAgentType
+app/src/terminal/cli_agent_tests.rs crate::server::ids::ServerId
+app/src/terminal/event.rs crate::server::ids::SyncId
+app/src/terminal/event.rs crate::server::telemetry::ImageProtocol
+app/src/terminal/history.rs crate::cloud_object::Space
+app/src/terminal/history.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/history.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/terminal/history.rs crate::server::ids::ClientId
+app/src/terminal/history.rs crate::server::ids::HashableId
+app/src/terminal/history.rs crate::server::ids::SyncId
+app/src/terminal/input.rs crate::cloud_object::Space
+app/src/terminal/input.rs crate::cloud_object::StoredObject
+app/src/terminal/input.rs crate::cloud_object::model::actions::ObjectActionType
+app/src/terminal/input.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/input.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/terminal/input.rs crate::cloud_object::update_manager::UpdateManager
+app/src/terminal/input.rs crate::server::ids::SyncId
+app/src/terminal/input.rs crate::server::telemetry::AICommandSearchEntrypoint
+app/src/terminal/input.rs crate::server::telemetry::AgentModeAutoDetectionFalsePositivePayload
+app/src/terminal/input.rs crate::server::telemetry::AgentModeAutoDetectionSettingOrigin
+app/src/terminal/input.rs crate::server::telemetry::CommandXRayTrigger
+app/src/terminal/input.rs crate::server::telemetry::EnvVarTelemetryMetadata
+app/src/terminal/input.rs crate::server::telemetry::PaletteSource
+app/src/terminal/input.rs crate::server::telemetry::SlashCommandAcceptedDetails
+app/src/terminal/input.rs crate::server::telemetry::SlashMenuSource
+app/src/terminal/input.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/input.rs crate::server::telemetry::TelemetrySpace
+app/src/terminal/input.rs crate::server::telemetry::WorkflowTelemetryMetadata
+app/src/terminal/input/profiles/data_source.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/terminal/input/prompts/data_source.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/input/prompts/data_source.rs crate::server::ids::SyncId
+app/src/terminal/input/prompts/view.rs crate::server::ids::SyncId
+app/src/terminal/input/slash_commands/data_source/saved_prompts.rs crate::cloud_object::StoredObject
+app/src/terminal/input/slash_commands/data_source/saved_prompts.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/input/slash_commands/data_source/saved_prompts.rs crate::server::ids::SyncId
+app/src/terminal/input/slash_commands/data_source/saved_prompts_tests.rs crate::server::ids::ClientId
+app/src/terminal/input/slash_commands/data_source/saved_prompts_tests.rs crate::server::ids::SyncId
+app/src/terminal/input/slash_commands/mod.rs crate::cloud_object::ObjectType
+app/src/terminal/input/slash_commands/mod.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/input/slash_commands/mod.rs crate::server::ids::SyncId
+app/src/terminal/input/slash_commands/mod.rs crate::server::telemetry::AgentModeAutoDetectionSettingOrigin
+app/src/terminal/input/slash_commands/mod.rs crate::server::telemetry::PaletteSource
+app/src/terminal/input/slash_commands/mod.rs crate::server::telemetry::SlashCommandAcceptedDetails
+app/src/terminal/input/slash_commands/view.rs crate::server::ids::SyncId
+app/src/terminal/input_test.rs crate::cloud_object::GenericStringObjectFormat
+app/src/terminal/input_test.rs crate::cloud_object::JsonObjectType
+app/src/terminal/input_test.rs crate::cloud_object::ObjectType
+app/src/terminal/input_test.rs crate::cloud_object::Owner
+app/src/terminal/input_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/input_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/terminal/input_test.rs crate::server::ids::ClientId
+app/src/terminal/local_tty/spawner.rs crate::server::telemetry::PtySpawnMode
+app/src/terminal/local_tty/spawner.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/local_tty/terminal_manager.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/model/block.rs crate::server::ids::SyncId
+app/src/terminal/model/grid/ansi_handler.rs crate::server::telemetry::ImageProtocol
+app/src/terminal/model/session.rs crate::server::telemetry::BootstrappingInfo
+app/src/terminal/model/session.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/model/session/command_executor/in_band_command_executor.rs crate::server::datetime_ext::DateTimeExt
+app/src/terminal/model/session/command_executor/tmux_executor.rs crate::server::datetime_ext::DateTimeExt
+app/src/terminal/model_events.rs crate::server::telemetry::ImageProtocol
+app/src/terminal/profile_model_selector.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/terminal/universal_developer_input.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/terminal/view.rs crate::cloud_object::GenericStringObjectFormat
+app/src/terminal/view.rs crate::cloud_object::JsonObjectType
+app/src/terminal/view.rs crate::cloud_object::StoredObject
+app/src/terminal/view.rs crate::cloud_object::model::actions::ObjectActionType
+app/src/terminal/view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/terminal/view.rs crate::cloud_object::update_manager::UpdateManager
+app/src/terminal/view.rs crate::server::ids::ObjectUid
+app/src/terminal/view.rs crate::server::ids::SyncId
+app/src/terminal/view.rs crate::server::telemetry::AgentModeAttachContextMethod
+app/src/terminal/view.rs crate::server::telemetry::AgentModeEntrypoint
+app/src/terminal/view.rs crate::server::telemetry::AgentModeRewindEntrypoint
+app/src/terminal/view.rs crate::server::telemetry::BlockLatencyInfo
+app/src/terminal/view.rs crate::server::telemetry::BootstrappingInfo
+app/src/terminal/view.rs crate::server::telemetry::CommandCorrectionAcceptedType
+app/src/terminal/view.rs crate::server::telemetry::CommandCorrectionEvent
+app/src/terminal/view.rs crate::server::telemetry::FileTreeSource
+app/src/terminal/view.rs crate::server::telemetry::InteractionSource
+app/src/terminal/view.rs crate::server::telemetry::LinkOpenMethod
+app/src/terminal/view.rs crate::server::telemetry::NotificationAgentVariant
+app/src/terminal/view.rs crate::server::telemetry::NotificationsTurnedOnSource
+app/src/terminal/view.rs crate::server::telemetry::PaletteSource
+app/src/terminal/view.rs crate::server::telemetry::PromptSuggestionViewType
+app/src/terminal/view.rs crate::server::telemetry::SaveAsWorkflowModalSource
+app/src/terminal/view.rs crate::server::telemetry::SecretInteraction
+app/src/terminal/view.rs crate::server::telemetry::SlowBootstrapInfo
+app/src/terminal/view.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/view.rs crate::server::telemetry::ToggleBlockFilterSource
+app/src/terminal/view.rs crate::server::telemetry::WorkflowTelemetryMetadata
+app/src/terminal/view.rs crate::server::telemetry::self
+app/src/terminal/view/action.rs crate::server::ids::SyncId
+app/src/terminal/view/action.rs crate::server::telemetry::AgentModeRewindEntrypoint
+app/src/terminal/view/action.rs crate::server::telemetry::PaletteSource
+app/src/terminal/view/action.rs crate::server::telemetry::ToggleBlockFilterSource
+app/src/terminal/view/agent_view.rs crate::server::telemetry::TelemetryAgentViewEntryOrigin
+app/src/terminal/view/block_onboarding/onboarding_prompt_block.rs crate::server::telemetry::PromptChoice
+app/src/terminal/view/block_onboarding/onboarding_prompt_block.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/view/init.rs crate::server::telemetry::InteractionSource
+app/src/terminal/view/init.rs crate::server::telemetry::ToggleBlockFilterSource
+app/src/terminal/view/inline_banner/prompt_suggestions.rs crate::server::telemetry::InteractionSource
+app/src/terminal/view/link_detection.rs crate::server::telemetry::LinkOpenMethod
+app/src/terminal/view/link_detection.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/view/passive_suggestions.rs crate::server::telemetry::InteractionSource
+app/src/terminal/view/ssh_remote_server_choice_view.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/view/use_agent_footer/mod.rs crate::server::telemetry::CLIAgentType
+app/src/terminal/view/use_agent_footer/mod.rs crate::server::telemetry::CLISubagentControlState
+app/src/terminal/view/use_agent_footer/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/terminal/wsl/model.rs crate::server::telemetry::TelemetryEvent
+app/src/test_util/terminal.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/test_util/terminal.rs crate::cloud_object::update_manager::UpdateManager
+app/src/themes/theme_chooser.rs crate::server::telemetry::TelemetryEvent
+app/src/themes/theme_creator_body.rs crate::server::telemetry::TelemetryEvent
+app/src/themes/theme_deletion_body.rs crate::server::telemetry::TelemetryEvent
+app/src/tui_export.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/tui_export.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/undo_close/stack.rs crate::server::telemetry::TelemetryEvent
+app/src/undo_close/stack.rs crate::server::telemetry::UndoCloseItemType
+app/src/uri/docker.rs crate::server::telemetry::TelemetryEvent
+app/src/uri/mod.rs crate::cloud_object::ObjectType
+app/src/uri/mod.rs crate::server::ids::ServerId
+app/src/uri/mod.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/uri/mod.rs crate::server::telemetry::TelemetryEvent
+app/src/uri/parse_url_paths.rs crate::cloud_object::extract_server_id_and_object_type_from_warp_drive_link
+app/src/uri/uri_test.rs crate::cloud_object::ObjectType
+app/src/uri/uri_test.rs crate::server::ids::ServerId
+app/src/view_components/find.rs crate::server::telemetry::FindOption
+app/src/view_components/find.rs crate::server::telemetry::TelemetryEvent
+app/src/workflows/aliases.rs crate::cloud_object::StoredObject
+app/src/workflows/aliases.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/workflows/aliases.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/aliases.rs crate::server::ids::SyncId
+app/src/workflows/categories.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/categories.rs crate::server::telemetry::TelemetryEvent
+app/src/workflows/command_parser.rs crate::server::ids::SyncId
+app/src/workflows/export_workflow.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/export_workflow.rs crate::server::ids::ClientId
+app/src/workflows/export_workflow.rs crate::server::ids::SyncId
+app/src/workflows/info_box.rs crate::cloud_object::StoredObjectMetadataExt
+app/src/workflows/info_box.rs crate::cloud_object::model::actions::ObjectActionType
+app/src/workflows/info_box.rs crate::cloud_object::model::actions::ObjectActions
+app/src/workflows/info_box.rs crate::server::ids::SyncId
+app/src/workflows/manager.rs crate::cloud_object::GenericStoredObject
+app/src/workflows/manager.rs crate::cloud_object::Owner
+app/src/workflows/manager.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/manager.rs crate::server::ids::ClientId
+app/src/workflows/manager.rs crate::server::ids::SyncId
+app/src/workflows/mod.rs crate::cloud_object::GenericStoredObject
+app/src/workflows/mod.rs crate::cloud_object::ObjectType
+app/src/workflows/mod.rs crate::cloud_object::SerializedModel
+app/src/workflows/mod.rs crate::cloud_object::StoredObjectModel
+app/src/workflows/mod.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/workflows/mod.rs crate::server::ids::ServerId
+app/src/workflows/mod.rs crate::server::ids::SyncId
+app/src/workflows/mod_test.rs crate::server::ids::SyncId
+app/src/workflows/workflow.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/workflows/workflow.rs crate::server::ids::SyncId
+app/src/workflows/workflow_enum.rs crate::cloud_object::GenericStoredObject
+app/src/workflows/workflow_enum.rs crate::cloud_object::GenericStringObjectFormat
+app/src/workflows/workflow_enum.rs crate::cloud_object::GenericStringObjectUniqueKey
+app/src/workflows/workflow_enum.rs crate::cloud_object::JsonObjectType
+app/src/workflows/workflow_enum.rs crate::cloud_object::model::generic_string_model::GenericStringModel
+app/src/workflows/workflow_enum.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/workflows/workflow_enum.rs crate::cloud_object::model::generic_string_model::StringModel
+app/src/workflows/workflow_enum.rs crate::cloud_object::model::json_model::JsonModel
+app/src/workflows/workflow_enum.rs crate::cloud_object::model::json_model::JsonSerializer
+app/src/workflows/workflow_test.rs crate::cloud_object::model::generic_string_model::GenericStringObjectId
+app/src/workflows/workflow_test.rs crate::server::ids::ClientId
+app/src/workflows/workflow_test.rs crate::server::ids::HashableId
+app/src/workflows/workflow_test.rs crate::server::ids::ServerId
+app/src/workflows/workflow_test.rs crate::server::ids::SyncId
+app/src/workflows/workflow_view.rs crate::cloud_object::ObjectType
+app/src/workflows/workflow_view.rs crate::cloud_object::Owner
+app/src/workflows/workflow_view.rs crate::cloud_object::Revision
+app/src/workflows/workflow_view.rs crate::cloud_object::Space
+app/src/workflows/workflow_view.rs crate::cloud_object::StoredObject
+app/src/workflows/workflow_view.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/workflows/workflow_view.rs crate::cloud_object::breadcrumbs::ContainingObject
+app/src/workflows/workflow_view.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/workflows/workflow_view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/workflow_view.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/workflows/workflow_view.rs crate::cloud_object::update_manager::FetchSingleObjectOption
+app/src/workflows/workflow_view.rs crate::cloud_object::update_manager::ObjectOperation
+app/src/workflows/workflow_view.rs crate::cloud_object::update_manager::OperationSuccessType
+app/src/workflows/workflow_view.rs crate::cloud_object::update_manager::UpdateManager
+app/src/workflows/workflow_view.rs crate::cloud_object::update_manager::UpdateManagerEvent
+app/src/workflows/workflow_view.rs crate::server::ids::ClientId
+app/src/workflows/workflow_view.rs crate::server::ids::ServerId
+app/src/workflows/workflow_view.rs crate::server::ids::SyncId
+app/src/workflows/workflow_view.rs crate::server::telemetry::ObjectTelemetryMetadata
+app/src/workflows/workflow_view.rs crate::server::telemetry::TelemetryEvent
+app/src/workflows/workflow_view.rs crate::server::telemetry::TelemetryObjectType
+app/src/workflows/workflow_view/alias_argument_selector.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/workflow_view/alias_argument_selector.rs crate::server::ids::SyncId
+app/src/workflows/workflow_view/alias_bar.rs crate::cloud_object::StoredObject
+app/src/workflows/workflow_view/alias_bar.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/workflow_view/alias_bar.rs crate::server::ids::SyncId
+app/src/workflows/workflow_view/alias_bar.rs crate::server::telemetry::TelemetrySpace
+app/src/workflows/workflow_view/env_var_selector.rs crate::cloud_object::GenericStringObjectFormat
+app/src/workflows/workflow_view/env_var_selector.rs crate::cloud_object::JsonObjectType
+app/src/workflows/workflow_view/env_var_selector.rs crate::cloud_object::StoredObject
+app/src/workflows/workflow_view/env_var_selector.rs crate::cloud_object::model::persistence::ObjectStoreEvent
+app/src/workflows/workflow_view/env_var_selector.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workflows/workflow_view/env_var_selector.rs crate::server::ids::SyncId
+app/src/workspace/action.rs crate::server::ids::SyncId
+app/src/workspace/action.rs crate::server::telemetry::AddTabWithShellSource
+app/src/workspace/action.rs crate::server::telemetry::AgentModeEntrypoint
+app/src/workspace/action.rs crate::server::telemetry::PaletteSource
+app/src/workspace/mod.rs crate::server::telemetry::AgentModeEntrypoint
+app/src/workspace/mod.rs crate::server::telemetry::PaletteSource
+app/src/workspace/view.rs crate::cloud_object::GenericStringObjectFormat
+app/src/workspace/view.rs crate::cloud_object::JsonObjectType
+app/src/workspace/view.rs crate::cloud_object::ObjectType
+app/src/workspace/view.rs crate::cloud_object::Owner
+app/src/workspace/view.rs crate::cloud_object::Space
+app/src/workspace/view.rs crate::cloud_object::StoredObject
+app/src/workspace/view.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workspace/view.rs crate::cloud_object::toast_message::StoredObjectToastMessage
+app/src/workspace/view.rs crate::cloud_object::update_manager::ObjectOperation
+app/src/workspace/view.rs crate::cloud_object::update_manager::OperationSuccessType
+app/src/workspace/view.rs crate::cloud_object::update_manager::UpdateManager
+app/src/workspace/view.rs crate::cloud_object::update_manager::UpdateManagerEvent
+app/src/workspace/view.rs crate::server::ids::ObjectUid
+app/src/workspace/view.rs crate::server::ids::SyncId
+app/src/workspace/view.rs crate::server::telemetry::AddTabWithShellSource
+app/src/workspace/view.rs crate::server::telemetry::CloseTarget
+app/src/workspace/view.rs crate::server::telemetry::EnvVarTelemetryMetadata
+app/src/workspace/view.rs crate::server::telemetry::FileTreeSource
+app/src/workspace/view.rs crate::server::telemetry::KnowledgePaneEntrypoint
+app/src/workspace/view.rs crate::server::telemetry::LaunchConfigUiLocation
+app/src/workspace/view.rs crate::server::telemetry::MCPServerCollectionPaneEntrypoint
+app/src/workspace/view.rs crate::server::telemetry::NotificationsTurnedOnSource
+app/src/workspace/view.rs crate::server::telemetry::OpenedWarpAISource
+app/src/workspace/view.rs crate::server::telemetry::PaletteSource
+app/src/workspace/view.rs crate::server::telemetry::TabRenameEvent
+app/src/workspace/view.rs crate::server::telemetry::WarpDriveSource
+app/src/workspace/view/launch_modal/cta_button.rs crate::server::telemetry::TelemetryEvent
+app/src/workspace/view/left_panel.rs crate::server::telemetry::CodePanelsFileOpenEntrypoint
+app/src/workspace/view/left_panel.rs crate::server::telemetry::FileTreeSource
+app/src/workspace/view/left_panel.rs crate::server::telemetry::WarpDriveSource
+app/src/workspace/view_test.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workspace/view_test.rs crate::cloud_object::model::view::ObjectStoreViewModel
+app/src/workspace/view_test.rs crate::cloud_object::update_manager::UpdateManager
+app/src/workspace/view_test.rs crate::server::experiments::ServerExperiments
+app/src/workspaces/team.rs crate::server::ids::ServerId
+app/src/workspaces/user_workspaces.rs crate::cloud_object::ObjectType
+app/src/workspaces/user_workspaces.rs crate::cloud_object::Owner
+app/src/workspaces/user_workspaces.rs crate::cloud_object::Space
+app/src/workspaces/user_workspaces.rs crate::cloud_object::StoredObjectEventEntrypoint
+app/src/workspaces/user_workspaces.rs crate::cloud_object::model::persistence::ObjectStoreModel
+app/src/workspaces/user_workspaces.rs crate::server::ids::ServerId
+app/src/workspaces/workspace.rs crate::server::ids::ServerId

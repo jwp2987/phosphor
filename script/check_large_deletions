@@ -309,9 +309,28 @@ has_trailer=0
 # The Large-deletion: trailer keeps its range-wide reading deliberately: it is an
 # explicit, purpose-built opt-in that nobody writes by accident, whereas
 # "DECLINED.md" is a filename that appears in ordinary prose constantly.
-deleting_commits="$(git log --format='%H' --diff-filter=D "${base}..${head_rev:-HEAD}" 2>/dev/null || true)"
+# Select commits that REMOVE something -- lines or whole files. `--diff-filter=D`
+# alone was wrong and regressed this guard on 2026-08-21: trigger T1 fires on
+# deleted LINE COUNT and can reach its threshold with zero whole-file deletions,
+# in which case --diff-filter=D returns nothing, the description is empty, and a
+# commit that DOES cite DECLINED.md is never read. That made remedy #1 in this
+# guard's own error text unreachable for T1. Verified against a synthetic repo:
+# one commit deleting 1,700 lines from a surviving file, message citing
+# DECLINED.md, went from "ok -- explained" to a hard failure.
+#
+# numstat's second column is deletions; any commit with a non-zero, non-binary
+# deletion count qualifies.
+deleting_commits=""
+while IFS= read -r sha; do
+    [[ -z "$sha" ]] && continue
+    if git show --numstat --format='' "$sha" 2>/dev/null \
+        | awk 'NF >= 3 && $2 != "-" && $2 + 0 > 0 { found = 1 } END { exit !found }'; then
+        deleting_commits+="$sha"$'\n'
+    fi
+done <<< "$(git log --format='%H' "${base}..${head_rev:-HEAD}" 2>/dev/null || true)"
+
 deleting_description=""
-if [[ -n "$deleting_commits" ]]; then
+if [[ -n "${deleting_commits//[[:space:]]/}" ]]; then
     deleting_description="$(git log --format='%B' --no-walk $deleting_commits 2>/dev/null || true)"
 fi
 deleting_description+=$'\n'"${PR_TITLE:-}"$'\n'"${PR_BODY:-}"

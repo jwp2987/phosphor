@@ -19,6 +19,7 @@
 
 use pathfinder_geometry::vector::{Vector2F, vec2f};
 use warp::cmd_or_ctrl_shift;
+use warp::features::FeatureFlag;
 use warp::integration_testing::step::new_step_with_default_assertions;
 use warp::integration_testing::tab_group::{
     assert_group_collapsed, assert_group_header_count, assert_group_member_count,
