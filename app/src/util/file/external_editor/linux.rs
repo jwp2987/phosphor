@@ -35,11 +35,6 @@ static INSTALLED_EDITOR_METADATA: OnceLock<HashMap<Editor, EditorMetadata>> = On
 /// `MalformedFieldCode`, which `open_file_command` logged and turned into `None`: the
 /// editor kept appearing in the picker and clicking it silently did nothing. Per the spec
 /// `'` is an ordinary character, and this tokenizer treats it as one.
-///
-/// Divergence from the pin, deliberate: the pin returns a dedicated
-/// `DesktopExecError::UnterminatedQuote` for an unclosed `"`. This fork keeps folding that
-/// into `MalformedFieldCode`, because `linux_tests.rs` asserts that mapping and is outside
-/// the edit set for this fix. The user-visible behaviour (log + no command) is identical.
 fn tokenize_exec(exec: &str) -> Result<Vec<String>, DesktopExecError> {
     let mut tokens = Vec::new();
     let mut current = String::new();
@@ -94,8 +89,7 @@ fn tokenize_exec(exec: &str) -> Result<Vec<String>, DesktopExecError> {
     }
 
     if in_quotes {
-        // The pin's `UnterminatedQuote`; see the divergence note above.
-        return Err(DesktopExecError::MalformedFieldCode);
+        return Err(DesktopExecError::UnterminatedQuote);
     }
 
     if in_token {
@@ -159,52 +153,64 @@ impl EditorMetadata {
 
     /// Generic implementation for building the external editor command.
     ///
-    /// - First splits the Exec field into shell words, then expands field
-    ///   codes within each token, yielding the correct argv vector
+    /// - First tokenizes the Exec field per the Desktop Entry grammar, then
+    ///   expands field codes, yielding the correct argv vector
     /// - Sets program and args directly, avoiding going through a shell
     ///
+    /// A token is a field code only when the *whole* token is `%X`, which is
+    /// what the pin does. `%` is an ordinary character anywhere else, so
+    /// `--arg=100%` and `/opt/50%off/ed` are passed through untouched. An
+    /// earlier version of this fork scanned for `%` anywhere inside a token,
+    /// which rejected the first as a malformed field code and expanded `%o` in
+    /// the second, swallowing the `%` to give `/opt/50off/ed` — both of them
+    /// working .desktop entries.
+    ///
     /// Field code substitution is handled by the `field_code_processor`
-    /// callback. The callback receives `&mut Vec<String>`: modifying the last
-    /// element means appending to the current argument, pushing a new
-    /// `String` means adding a new argument.
+    /// callback, which receives the field code character (the char after `%`)
+    /// and pushes replacement arguments onto the provided `Vec<String>`. One
+    /// field code may expand to zero (`%d`), one (`%f`) or several (`%i`)
+    /// arguments.
     fn build_command<T>(&self, field_code_processor: T) -> Result<Command, DesktopExecError>
     where
         T: Fn(&Self, &mut Vec<String>, char),
     {
-        let raw_exec = &self.exec;
-
         // Tokenize Exec per the Desktop Entry grammar first, then expand field
-        // codes within each token. This preserves spaces in substituted values
+        // codes token by token. This preserves spaces in substituted values
         // (e.g. file paths) while respecting the quoting rules in the .desktop
         // Exec's original content.
-        let tokens = tokenize_exec(raw_exec)?;
+        let tokens = tokenize_exec(&self.exec)?;
 
         let mut argv: Vec<String> = Vec::with_capacity(tokens.len());
         for token in &tokens {
-            let mut iter = token.chars();
-            let mut parts: Vec<String> = vec![String::new()];
-            while let Some(ch) = iter.next() {
-                if ch != '%' {
-                    parts.last_mut().unwrap().push(ch);
-                    continue;
+            if let Some(field_code) = token.strip_prefix('%') {
+                match field_code.len() {
+                    // A bare `%` with nothing after it is malformed.
+                    0 => return Err(DesktopExecError::MalformedFieldCode),
+                    1 => {
+                        let code_char = field_code.chars().next().unwrap();
+                        if code_char == '%' {
+                            // Literal percent.
+                            argv.push("%".to_string());
+                        } else {
+                            // The processor can push several argv items — e.g.
+                            // %i writes "--icon" and the icon value separately.
+                            field_code_processor(self, &mut argv, code_char);
+                        }
+                        continue;
+                    }
+                    // Tokens like `%foo` are not field codes; treat as literal.
+                    _ => {}
                 }
-                let Some(next_char) = iter.next() else {
-                    return Err(DesktopExecError::MalformedFieldCode);
-                };
-                // The field code processor can append extra argv items — e.g.
-                // %i writes "--icon" and the icon value as two separate arguments.
-                field_code_processor(self, &mut parts, next_char);
             }
-            for p in parts {
-                if !p.is_empty() {
-                    argv.push(p);
-                }
-            }
+            // Pushed unconditionally, including when empty: a quoted empty
+            // string (`""`) is a valid zero-length argument, which is the whole
+            // reason `tokenize_exec` tracks `in_token` separately from
+            // `current.is_empty()`. Filtering empties here discarded it.
+            argv.push(token.clone());
         }
 
-        let (program, args) = argv
-            .split_first()
-            .ok_or(DesktopExecError::MalformedFieldCode)?;
+        // No tokens at all means the Exec key named no program to run.
+        let (program, args) = argv.split_first().ok_or(DesktopExecError::NoExec)?;
         let mut command = Command::new(program);
         command.args(args);
 
@@ -213,20 +219,19 @@ impl EditorMetadata {
 
     /// Default field code substitution logic.
     ///
-    /// Handles `field_code` per the FreeDesktop spec, appending the substituted value to the current argv argument
-    /// or adding a new argv argument:
+    /// Handles `field_code` per the FreeDesktop spec, pushing the substituted
+    /// value(s) onto `args`:
     /// https://specifications.freedesktop.org/desktop-entry-spec/latest/ar01s07.html
     /// %f, %F, %u, %U, which depend on the file path, use the `file_path` parameter.
     ///
     /// Preserves the original behavior when information is missing or processing fails: silently skips the corresponding substitution value.
-    fn process_field_code(&self, parts: &mut Vec<String>, field_code: char, file_path: &Path) {
+    fn process_field_code(&self, args: &mut Vec<String>, field_code: char, file_path: &Path) {
         match field_code {
             // File path
             'f' | 'F' => {
-                parts
-                    .last_mut()
-                    .unwrap()
-                    .push_str(file_path.to_str().unwrap_or_default());
+                if let Some(path) = file_path.to_str() {
+                    args.push(path.to_string());
+                }
             }
             // URI
             'u' | 'U' => {
@@ -237,34 +242,35 @@ impl EditorMetadata {
                 // See https://github.com/rust-lang/rust/issues/92750
                 if let Ok(absolute) = file_path.canonicalize() {
                     if let Ok(file_url) = url::Url::from_file_path(absolute) {
-                        parts.last_mut().unwrap().push_str(file_url.as_str());
+                        args.push(file_url.as_str().to_string());
                     }
                 }
             }
             // Localized name
             'c' => {
                 if let Some(localized_name) = self.localized_name.as_ref() {
-                    parts.last_mut().unwrap().push_str(localized_name);
+                    args.push(localized_name.clone());
                 }
             }
             // The icon argument needs to be split into a separate argv item
             'i' => {
                 if let Some(icon) = &self.icon {
-                    parts.last_mut().unwrap().push_str("--icon");
-                    parts.push(icon.clone());
+                    args.push("--icon".to_string());
+                    args.push(icon.clone());
                 }
             }
             // desktop file path
             'k' => {
-                parts
-                    .last_mut()
-                    .unwrap()
-                    .push_str(self.desktop_file_path.to_str().unwrap_or_default());
+                if let Some(path) = self.desktop_file_path.to_str() {
+                    args.push(path.to_string());
+                }
             }
-            // Deprecated field codes per the Desktop Entry spec; silently dropped.
-            'd' | 'D' | 'n' | 'N' | 'v' | 'm' => {}
-            // Unknown field code: keep the character as-is per the spec
-            other => parts.last_mut().unwrap().push(other),
+            // Deprecated field codes per the Desktop Entry spec (%d %D %n %N %v
+            // %m), and any code we do not recognize: silently dropped, matching
+            // the pin. This fork used to keep an unrecognized code's character
+            // as a literal argument, which could only hand the editor an
+            // argument no .desktop file meant to pass (`%z` became `z`).
+            _ => {}
         };
     }
 
@@ -279,7 +285,7 @@ impl EditorMetadata {
     ///
     /// See https://specifications.freedesktop.org/desktop-entry-spec/latest/ar01s07.html
     fn build_default_command(&self, file_path: &Path) -> Result<Command, DesktopExecError> {
-        self.build_command(|me, parts, c| me.process_field_code(parts, c, file_path))
+        self.build_command(|me, args, c| me.process_field_code(args, c, file_path))
     }
 
     /// A variant of [`Self::build_default_command`] for jetbrains IDEs
@@ -295,21 +301,21 @@ impl EditorMetadata {
         file_path: &Path,
         line_column_number: Option<LineAndColumnArg>,
     ) -> Result<Command, DesktopExecError> {
-        self.build_command(|me, parts, field_code| match field_code {
+        self.build_command(|me, args, field_code| match field_code {
             'f' | 'F' | 'u' | 'U' => {
                 if let Some(file_path) = file_path.to_str() {
                     if let Some(line_column_number) = line_column_number {
-                        parts.last_mut().unwrap().push_str("--line");
-                        parts.push(line_column_number.line_num.to_string());
+                        args.push("--line".to_string());
+                        args.push(line_column_number.line_num.to_string());
                         if let Some(column_num) = line_column_number.column_num {
-                            parts.push("--column".to_string());
-                            parts.push(column_num.to_string());
+                            args.push("--column".to_string());
+                            args.push(column_num.to_string());
                         }
                     }
-                    parts.push(file_path.to_string());
+                    args.push(file_path.to_string());
                 }
             }
-            other => me.process_field_code(parts, other, file_path),
+            other => me.process_field_code(args, other, file_path),
         })
     }
     /// A variant of [`Self::build_default_command`] for sublime
@@ -324,7 +330,7 @@ impl EditorMetadata {
         file_path: &Path,
         line_column_number: Option<LineAndColumnArg>,
     ) -> Result<Command, DesktopExecError> {
-        self.build_command(|me, parts, field_code| match field_code {
+        self.build_command(|me, args, field_code| match field_code {
             'f' | 'F' | 'u' | 'U' => {
                 if let Some(file_path) = file_path.to_str() {
                     let mut arg = file_path.to_string();
@@ -335,10 +341,10 @@ impl EditorMetadata {
                             arg += &format!(":{column_num}");
                         }
                     }
-                    parts.last_mut().unwrap().push_str(&arg);
+                    args.push(arg);
                 }
             }
-            other => me.process_field_code(parts, other, file_path),
+            other => me.process_field_code(args, other, file_path),
         })
     }
 }
@@ -665,7 +671,10 @@ enum DesktopExecError {
     #[error("Attempted to create command for desktop entry with no exec field")]
     NoExec,
 
-    #[error("Malformed exec call: non-terminated field code")]
+    #[error("Unterminated double quote in Exec string")]
+    UnterminatedQuote,
+
+    #[error("Malformed field code in Exec string (bare %)")]
     MalformedFieldCode,
 }
 

@@ -1,6 +1,6 @@
 use warp_util::path::LineAndColumnArg;
 
-use super::{DesktopExecError, EditorMetadata};
+use super::{DesktopExecError, EditorMetadata, tokenize_exec};
 use std::path::PathBuf;
 
 #[cfg(test)]
@@ -71,10 +71,11 @@ fn test_unterminated_quote_errors() {
         |desktop, content| {
             let metadata = EditorMetadata::try_new(desktop)?;
             let result = metadata.build_default_command(&content);
-            // The fork tokenizes Exec= with `shell_words::split` instead of a hand-rolled
-            // tokenizer, so an unterminated quote surfaces as the generic `MalformedFieldCode`
-            // rather than upstream's dedicated `UnterminatedQuote` variant.
-            assert!(matches!(result, Err(DesktopExecError::MalformedFieldCode)));
+            // An unterminated quote is a quoting fault, not a field-code fault:
+            // `tokenize_exec` reports it as `UnterminatedQuote`, as the pin does.
+            // Folding it into `MalformedFieldCode` made the log line ("non-terminated
+            // field code") describe the wrong error class.
+            assert!(matches!(result, Err(DesktopExecError::UnterminatedQuote)));
             Ok(())
         },
     )
@@ -419,13 +420,11 @@ fn test_sublime_command_line_and_col_numbers() {
 
 // ---------- Shell-metacharacter / quoting behavior of build_default_command ----------
 //
-// Ported from warp/master's linux_tests.rs. Upstream also exercises a hand-rolled
-// `tokenize_exec` function directly; this fork instead delegates tokenization to the
-// `shell_words` crate (see `EditorMetadata::build_command`), so the `tokenize_exec`-specific
-// unit tests (and the exact `DesktopExecError::UnterminatedQuote` variant, which no longer
-// exists here — unterminated quotes surface as `MalformedFieldCode` instead) are not portable
-// as literal ports. The behavioral tests below go through the same public
-// `try_new`/`build_default_command` surface as the tests above and still apply.
+// Ported from the pin's linux_tests.rs. Tokenization is done by this file's own
+// `tokenize_exec` (see `EditorMetadata::build_command`), itself a port of the pin's,
+// so these exercise the same grammar upstream does. A few of the pin's tests call
+// `tokenize_exec` directly; the rest go through the `try_new`/`build_default_command`
+// surface used by the tests above.
 
 #[test]
 fn test_file_path_with_shell_metacharacters_is_single_arg() {
@@ -594,13 +593,11 @@ fn test_shell_constructs_in_exec_are_literal() {
     );
 }
 
-// Regression check: upstream Warp drops the deprecated FreeDesktop field codes
-// (%d %D %n %N %v %m) entirely per spec. This fork's `process_field_code` has no
-// explicit arm for them, so they fall into the `other => parts.last_mut().push(other)`
-// catch-all and are kept as literal single-character arguments instead of being
-// dropped. If this test is red, that confirms the fork emits extra bogus argv
-// entries ("d", "D", "n", "N", "v", "m") when launching an external editor whose
-// .desktop Exec line still has these legacy codes.
+// The deprecated FreeDesktop field codes (%d %D %n %N %v %m) are dropped per spec,
+// by `process_field_code`'s catch-all `_ => {}` arm, which drops unrecognized codes
+// too — the same disposition the pin has. If this test goes red the fork is emitting
+// bogus single-character argv entries ("d", "D", ...) when launching an external
+// editor whose .desktop Exec line still carries these legacy codes.
 #[test]
 fn test_deprecated_field_codes_are_dropped() {
     let data = r#"
@@ -625,4 +622,149 @@ fn test_deprecated_field_codes_are_dropped() {
             Ok(())
         },
     );
+}
+
+// ---------- `%` is a field code only when it is the whole token ----------
+//
+// The pin only treats a token as a field code when the entire token is `%X`
+// (`strip_prefix('%')`, then `len() == 1`). An earlier version of this fork scanned
+// for `%` anywhere inside a token, which rejected or mangled working .desktop
+// entries: the editor stayed in the picker and clicking it silently did nothing.
+
+#[test]
+fn test_trailing_percent_inside_token_is_literal() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/foo --arg=100% %f
+    "#;
+    with_files(
+        "test_trailing_percent_inside_token_is_literal",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            // `--arg=100%` is not a field code, so the trailing `%` is not a
+            // "field code with nothing after it".
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/foo");
+            assert_eq!(
+                cmd.get_args().collect::<Vec<_>>(),
+                ["--arg=100%", file_path.as_str()]
+            );
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn test_percent_inside_program_path_is_preserved() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/opt/50%off/ed %f
+    "#;
+    with_files(
+        "test_percent_inside_program_path_is_preserved",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            // Not `/opt/50off/ed`: `%o` is not a field code here, so the `%`
+            // is not swallowed and no substitution happens.
+            assert_eq!(cmd.get_program(), "/opt/50%off/ed");
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), [file_path.as_str()]);
+            Ok(())
+        },
+    );
+}
+
+#[test]
+fn test_unknown_field_code_is_dropped() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=/usr/bin/app %z %f
+    "#;
+    with_files(
+        "test_unknown_field_code_is_dropped",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let file_path = content.display().to_string();
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "/usr/bin/app");
+            // Not ["z", <path>]: an unknown code expands to nothing.
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), [file_path.as_str()]);
+            Ok(())
+        },
+    );
+}
+
+// ---------- Zero-length arguments ----------
+
+#[test]
+fn test_tokenize_quoted_empty_string_produces_token() {
+    // `tokenize_exec` tracks `in_token` separately from `current.is_empty()`
+    // precisely so this token survives.
+    let tokens = tokenize_exec(r#"cmd """#).unwrap();
+    assert_eq!(tokens, vec!["cmd", ""]);
+}
+
+#[test]
+fn test_quoted_empty_string_is_kept_as_an_argument() {
+    let data = r#"
+    [Desktop Entry]
+    Version=1.0
+    Type=Application
+    Exec=foo "" bar
+    "#;
+    with_files(
+        "test_quoted_empty_string_is_kept_as_an_argument",
+        data,
+        |desktop, content| {
+            let metadata = EditorMetadata::try_new(desktop)?;
+            let result = metadata.build_default_command(&content);
+
+            assert!(result.is_ok());
+            let cmd = result.unwrap();
+            assert_eq!(cmd.get_program(), "foo");
+            // The empty argument is passed through, not filtered out.
+            assert_eq!(cmd.get_args().collect::<Vec<_>>(), ["", "bar"]);
+            Ok(())
+        },
+    );
+}
+
+// ---------- Empty argv ----------
+
+#[test]
+fn test_exec_with_no_tokens_reports_no_exec() {
+    // An Exec value that is nothing but whitespace tokenizes to zero tokens, so
+    // there is no program to run. That is a missing exec field, which is what
+    // the pin reports; `MalformedFieldCode` named a field code that isn't there.
+    // Built directly because `try_new` rejects a desktop file without an Exec
+    // key before `build_command` ever runs.
+    let metadata = EditorMetadata {
+        desktop_file_path: PathBuf::from("/tmp/bar.desktop"),
+        exec: "   ".to_string(),
+        localized_name: None,
+        icon: None,
+    };
+
+    let result = metadata.build_default_command(&PathBuf::from("/tmp/foo.txt"));
+    assert!(matches!(result, Err(DesktopExecError::NoExec)));
 }
