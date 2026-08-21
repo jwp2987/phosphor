@@ -3295,9 +3295,14 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
     // Unstable feature switch: unstable features not yet officially released can be
     // explicitly enabled in release builds via the `ZAP_UNSTABLE_FEATURES` env var. The
     // value is a comma-separated list of unstable feature names (snake_case), or
-    // `all` / `*` to enable everything at once. Dev builds already auto-enable all
-    // current unstable features via the debug_assertions path, so this mainly serves
-    // release users.
+    // `all` / `*` to enable everything at once.
+    //
+    // This previously claimed "dev builds already auto-enable all current unstable
+    // features via the debug_assertions path". That is false, and it contradicts the
+    // doc block below. `enabled_features()` has exactly one `debug_assertions`
+    // insertion -- `FeatureFlag::SshRemoteServer` -- so a `cargo run` does NOT enable
+    // the flags listed in `UNSTABLE_FEATURES`. This env var is the only enable path
+    // for them, in dev builds and release builds alike.
     if let Ok(raw) = std::env::var("ZAP_UNSTABLE_FEATURES") {
         let normalized = raw.trim().to_ascii_lowercase();
         let enable_all = matches!(normalized.as_str(), "all" | "*");
