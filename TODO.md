@@ -7484,3 +7484,44 @@ Ordered by severity, not by area.
       shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
       `Exec` containing an unpaired `'` errors and silently disables that editor.
 
+### Refutation round — guards and CI
+
+- [ ] 🔴 **VERIFIED: `check_stub_coverage` has been a no-op in CI since the 2026-08-15
+      re-pin — it resolves the SUPERSEDED pin.**
+      `script/check_stub_coverage:43-44` hardcodes
+      `grep -oE '\b02b53fcd8[0-9a-f]*' ORACLE.md`, and ORACLE.md:64 still carries that
+      string, so PIN resolves to the OLD `02b53fcd81ac…` rather than `42effe840…`.
+      CI fetches only the 40-char NEW pin (`pr-check.yml:102-107`) and then asserts it is
+      present with the comment *"stop the job rather than silently disarm a guard"* and
+      the error text *"stub coverage would silently skip"* (`:114-117`).
+      **That assertion guards the wrong SHA.** The old pin is absent from a depth-1
+      checkout, so the guard's own `git cat-file -e` fails, it prints `skipped` and exits
+      0 — exactly the outcome the workflow step was written to prevent.
+      Verified directly: the hardcoded literal, the ORACLE.md line, and the CI fetch/assert
+      block. Locally the guard still runs (a full clone has the old pin), which is why
+      this survived — it is green everywhere a human would look.
+      `script/state:42` and `generate_pin_identity_manifest:57` were both fixed for this
+      exact literal; this script was missed. Any test written against a stub gutted after
+      `02b53fcd8` slips through.
+      **This is one of the two guards CLAUDE.md names as enforcing what the compiler
+      cannot.** The other, `check_cloud_boundary`, is separately holed (below).
+- [ ] 🔴 **`check_cloud_boundary` misses `pub use`, and the tree already launders imports
+      through it.** The regex at `:44` requires `^\s*use`. Live and unallowlisted:
+      `app/src/lib.rs:300` `pub use crate::server::telemetry::{…}` and
+      `app/src/drive/folders/mod.rs:11`. Worse, `lib.rs:302-304` comments that the
+      re-export exists so `remote_server::codebase_index_model` "must not import from
+      `crate::server::` directly (`script/check_cloud_boundary`)" — a **documented
+      bypass**, and a crate-root laundering point for any future cloud import. (Separate
+      from the brace-form `use crate::{server::…}` hole logged earlier.)
+- [ ] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
+      and `script/check_workspace_clean` are referenced by neither `precheck` nor any
+      workflow.
+- [ ] **Guards fail open on missing input, and `precheck` hides it.**
+      `check_sweep_ledger:59-62` exits 0 if the ledger is renamed;
+      `check_declined_collisions:168-170` only warns when zero markers parse;
+      `check_brand_strings:159-161` exits 0 without python3. `precheck:216-247` runs every
+      guard `>/dev/null 2>&1`, so all of them read `ok` regardless.
+- [ ] **`check_large_deletions:302` is cleared by one incidental mention.** It does
+      `grep -qF 'DECLINED.md'` across all commit messages plus the PR body, so any single
+      reference anywhere in the range clears any bulk deletion.
+
