@@ -7022,6 +7022,20 @@ Ordered by severity, not by area.
 
       **FIXED 2026-08-21:** `output.rs:2741-2782` new `usage_pill_headline_credits` + `usage_pill_has_any_usage`, both rollup-derived, used for **both** the displayed number (`:2830`) and the suppression check — fixing only the number would have left the worse limb (button entirely absent) in place. Ported from `42effe840:output.rs:3686-3713`; no `platform_credits_spent` term exists in the pin's `render_usage_button`, so nothing BYOP-divergent had to be dropped, and the fork's BYO-API-key early return is preserved *ahead* of the rollup so BYOK users pay no cost. **Render cost considered and kept unmemoised, documented at the call site:** the non-orchestrator case is one empty-slice probe with no allocation; a cheaper totals-only sum was explicitly rejected as a second implementation free to drift from the footer, and headline-equals-footer is the invariant being fixed. Tests at `:3598` include the required case (orchestrator spends 0, child spends 30) plus a guard against the suppression check becoming a tautology. **Unrelated gap noticed, not acted on:** the pin's `output.rs` renders a "This response won't count towards your usage" notice via `should_show_failed_output_usage_notice`; the fork has both symbols (`view_util.rs:70,168`) but only `tui_export.rs:117` uses them, so the GUI output view is missing that notice.
 
+
+- [ ] **`[byop] build_client: endpoint_url=` logs the user's provider base URL.**
+      `chat_stream.rs:4584` prints the configured endpoint at `Info`, which for a
+      self-hosted or corporate gateway is an internal hostname, and `warp.log` goes
+      into `write_log_bundle_zip_to`. Same exposure class as the request-content leak
+      fixed 2026-08-21 but **config rather than conversation content**, so it was left
+      out of that change deliberately and needs its own decision: redact to scheme+host,
+      digest it, or accept it. Flagged by the agent that fixed the content leak.
+
+- [ ] **`[byop] stream chunk error:` prints the provider's error body verbatim.**
+      `chat_stream.rs:5794`. Some providers echo a fragment of the request in a 400
+      body, so this can carry request content. **Deliberately kept** — suppressing it
+      leaves a failed turn with no diagnosis at all — and documented in-source as a
+      known residual. Recorded here so the trade is visible rather than implicit.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

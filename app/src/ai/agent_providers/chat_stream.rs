@@ -2719,7 +2719,119 @@ fn snippet_for_log(s: &str, max_chars: usize) -> String {
 fn json_value_for_log(value: &Value) -> (usize, String) {
     let json = serde_json::to_string(value)
         .unwrap_or_else(|_| "<failed-to-serialize-json-value>".to_owned());
-    (json.len(), snippet_for_log(&json, BYOP_DIAG_SNIPPET_CHARS))
+    (
+        json.len(),
+        snippet_or_shape_for_log(&json, BYOP_DIAG_SNIPPET_CHARS),
+    )
+}
+
+/// 64-bit FNV-1a rendered as 16 lowercase hex digits.
+///
+/// Explicitly not a cryptographic hash and not standing in for one — nothing here gates a
+/// security decision. It only has to be *stable*, within a run and across runs, so that two
+/// `[byop-diag]` lines can be compared for "same string or not" without either line carrying
+/// the string. `DefaultHasher` happens to be stable today, but std does not promise that, and
+/// a diag digest whose meaning silently changes on a toolchain bump is worse than six lines
+/// of arithmetic here.
+///
+/// Note the residual it does leave: a digest of a *short, low-entropy* string (a one-word
+/// query, a two-character file name) is guessable by anyone who can enumerate candidates. That
+/// is the deliberate trade — it is a large improvement on printing the string, and the field
+/// it replaces is one whose turn-to-turn stability is the actual diagnostic question.
+fn diag_digest(s: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in s.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// A non-content descriptor for a string the default diagnostic tier must not print.
+///
+/// Carries shape only: byte and char length, the character-class counts the illegal-escape
+/// hunt actually asks about (backslashes, raw control characters, non-ASCII), and a digest for
+/// cross-line identity. Deliberately contains no substring of the input — that property is what
+/// `content_shape_leaks_no_secret_substring` in the test module below pins.
+fn content_shape_for_log(s: &str) -> String {
+    let mut control = 0usize;
+    let mut backslash = 0usize;
+    let mut non_ascii = 0usize;
+    let mut chars = 0usize;
+    for ch in s.chars() {
+        chars += 1;
+        if ch == '\\' {
+            backslash += 1;
+        } else if ch.is_control() && !matches!(ch, '\n' | '\r' | '\t') {
+            control += 1;
+        } else if !ch.is_ascii() {
+            non_ascii += 1;
+        }
+    }
+    format!(
+        "<redacted bytes={} chars={chars} backslashes={backslash} control={control} \
+         non_ascii={non_ascii} digest={}>",
+        s.len(),
+        diag_digest(s),
+    )
+}
+
+/// `snippet_for_log` under the opt-in content tier, `content_shape_for_log` otherwise.
+///
+/// Every `[byop-diag]` field that can carry user text routes through here, so the tier
+/// boundary is one function rather than a dozen call sites that have to each remember.
+fn snippet_or_shape_for_log(s: &str, max_chars: usize) -> String {
+    if byop_diag_content_enabled() {
+        snippet_for_log(s, max_chars)
+    } else {
+        content_shape_for_log(s)
+    }
+}
+
+/// Pulls the number following `marker` out of a rendered error, e.g. `"column "` out of
+/// serde_json's `expected value at line 1 column 42`.
+///
+/// Returns `None` when the marker is absent or is not followed by digits — the two cases are
+/// deliberately fused here because both mean the same thing to the only caller ("this error
+/// carries no position"), and neither is actionable on its own.
+fn error_number_after(err_text: &str, marker: &str) -> Option<usize> {
+    err_text.split(marker).nth(1).and_then(|rest| {
+        rest.chars()
+            .take_while(char::is_ascii_digit)
+            .collect::<String>()
+            .parse::<usize>()
+            .ok()
+    })
+}
+
+/// A tool name safe for the default tier: `mcp__<server>__<tool>` with the user-configured
+/// `<server>` segment replaced by a digest.
+///
+/// **The decision, deliberately:** built-in tool names are a fixed vocabulary that says nothing
+/// about the user, so they go out verbatim — "which tools were offered" is most of what the
+/// tool list is read for. The `<server>` segment of an MCP name is a different thing: it is a
+/// string the user typed into their own MCP config, routinely a company, product, customer, or
+/// internal-host name, and `warp.log` ships inside `write_log_bundle_zip_to`. So it is replaced
+/// by a stable digest, which still answers the two questions the list is actually used for —
+/// how many MCP tools were offered, and whether tool X and tool Y came from the same server.
+/// The `<tool>` segment stays: it names a capability rather than a deployment, and "which tool
+/// misbehaved" is the question being asked. The real names are one env var away.
+///
+/// The `mcp__` / `__` encoding belongs to `tools::mcp` (`PREFIX` / `SEP` there). It is spelled
+/// out again here instead of exported because this is a display concern and a wrong guess
+/// degrades to "name printed verbatim", not to a bug. `sanitize_server_name` collapses `_`
+/// runs, so the server segment cannot itself contain `__` and the first split is the right one.
+fn tool_name_for_log(name: &str) -> String {
+    if byop_diag_content_enabled() {
+        return name.to_owned();
+    }
+    let Some(rest) = name.strip_prefix("mcp__") else {
+        return name.to_owned();
+    };
+    let Some((server, tool)) = rest.split_once("__") else {
+        return name.to_owned();
+    };
+    format!("mcp__srv-{}__{tool}", diag_digest(server))
 }
 
 /// A view of one message safe to dump, with binary payloads replaced by a one-line summary.
@@ -2745,29 +2857,57 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
     std::borrow::Cow::Owned(redacted)
 }
 
-/// Opt-in switch for the `[byop-diag] full_request_json*` dumps.
+/// Opt-in switch for every `[byop-diag]` field that can carry user text.
 ///
-/// Those lines serialize the *entire* outbound request — system prompt, the full conversation
-/// history, attached file contents, shell output, and the cwd/git environment blocks. Only
-/// base64 binaries are redacted (`diag_request_with_redacted_binaries`); nothing else is
-/// scrubbed, `warp_logging` runs at Info with no `release_max_level`, and
-/// `write_log_bundle_zip_to` puts `warp.log` straight into a user-submitted bug report. Logging
-/// all of that on every turn by default means shipping the user's conversation to whoever
-/// receives the bundle.
+/// # Why there is a switch at all
 ///
-/// So the dump is now opt-in, in the same shape as `ZAP_PROMPT_DIR` in `prompt_renderer.rs`:
-/// set the env var for the session you are actually debugging an illegal-escape / truncated-
-/// history problem in. With it unset, the size/shape summary still goes out on every turn, and
-/// the error path still logs the bounded ±200-character window around the offending column,
-/// which is what actually localizes a bad escape.
-const FULL_REQUEST_DUMP_ENV: &str = "ZAP_BYOP_LOG_FULL_REQUEST";
+/// `warp_logging` runs at Info with no `release_max_level`, and `write_log_bundle_zip_to` puts
+/// `warp.log` straight into a user-submitted bug report. Anything this module logs at Info is
+/// therefore something the user hands to whoever receives the bundle. The `full_request_json`
+/// dumps serialize the *entire* outbound request — system prompt, whole conversation history,
+/// attached file contents, shell output, cwd/git environment blocks — with only base64
+/// binaries redacted (`diag_request_with_redacted_binaries`).
+///
+/// # The two tiers
+///
+/// **Default (env var unset) — shape, no content.** Every turn still logs: adapter, model,
+/// message and tool counts, per-message role / part counts / byte sizes / cache_control,
+/// per-tool description and schema *lengths*, the tool-call ↔ tool-response pairing checks
+/// (which is where truncated or misordered history actually shows up), tool-call and
+/// tool-response *ids*, the total request byte size, the suspicious-backslash and
+/// control-character *offsets*, and the error class of a failed turn. Every free-text field —
+/// system prompt, message text, tool-call arguments, tool results, persistence inputs,
+/// attachment file names and URLs — is replaced by `content_shape_for_log`: lengths, character
+/// class counts, and a digest. MCP tool names have their user-configured server segment
+/// digested (`tool_name_for_log`).
+///
+/// What the default tier therefore *cannot* answer: "what did the bad escape look like", "what
+/// was in the tool result", "what did the user ask". Those need the opt-in.
+///
+/// **Opt-in (`ZAP_BYOP_LOG_FULL_REQUEST=1`) — everything**, in the same shape as `ZAP_PROMPT_DIR`
+/// in `prompt_renderer.rs`: set it for the session you are actually debugging an illegal-escape
+/// or truncated-history problem in, and every field above prints verbatim (bounded to
+/// `BYOP_DIAG_SNIPPET_CHARS`) alongside the full request dumps.
+///
+/// # Known residuals in the default tier
+///
+/// Two things still print provider- or content-adjacent text with the var unset, both
+/// deliberately:
+///
+/// * `[byop] stream chunk error: {err_text}` — the provider's own error message. Some providers
+///   echo a fragment of the offending request back in a 400 body. Suppressing it would leave a
+///   failed turn with no diagnosis at all, which is the one thing this module exists to prevent.
+/// * `scan_suspicious_backslash` prints up to 5 × 10 bytes starting *at* a `\\u` / `\\x` pair.
+///   That decade of bytes is the escape sequence itself — it is the finding, not context around
+///   it — and it is bounded and only emitted on a hit.
+const BYOP_DIAG_CONTENT_ENV: &str = "ZAP_BYOP_LOG_FULL_REQUEST";
 
 /// Read once per process: an env var cannot meaningfully change mid-run, and this is consulted
-/// on every turn.
-fn full_request_dump_enabled() -> bool {
+/// several times per message per turn.
+fn byop_diag_content_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| {
-        std::env::var(FULL_REQUEST_DUMP_ENV)
+        std::env::var(BYOP_DIAG_CONTENT_ENV)
             .is_ok_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
     })
 }
@@ -2817,6 +2957,132 @@ fn binary_for_log(binary: &Binary) -> String {
     }
 }
 
+/// The `warp.log` form of `binary_for_log`: same fields, but the attachment's file name and any
+/// source URL collapse to a shape descriptor under the default tier. A file name names people,
+/// projects and clients ("Q3-layoffs-draft.pdf"), and an attachment URL names hosts and carries
+/// signed query strings.
+///
+/// `binary_for_log` itself is left verbatim on purpose: its other caller,
+/// `diag_message_with_redacted_binaries`, feeds the opt-in dump (already gated) and the
+/// in-memory wire inspector (a UI the user opened themselves and which never reaches the log
+/// bundle), where showing the real file name is the point.
+fn binary_summary_for_log(binary: &Binary) -> String {
+    if byop_diag_content_enabled() {
+        return binary_for_log(binary);
+    }
+    let name = binary
+        .name
+        .as_deref()
+        .map(content_shape_for_log)
+        .unwrap_or_default();
+    match &binary.source {
+        BinarySource::Base64(data) => format!(
+            "mime={} name={} source=base64 chars={}",
+            binary.content_type,
+            name,
+            data.len()
+        ),
+        BinarySource::Url(url) => format!(
+            "mime={} name={} source=url chars={} url={}",
+            binary.content_type,
+            name,
+            url.len(),
+            content_shape_for_log(url)
+        ),
+    }
+}
+
+/// One `[byop-diag] request message[N]` line, built rather than logged so a test can assert on
+/// what it contains. The counts and sizes are unconditional; every free-text field goes through
+/// `snippet_or_shape_for_log` / `binary_summary_for_log` / `tool_name_for_log`, so with
+/// `BYOP_DIAG_CONTENT_ENV` unset this string carries no substring of the message.
+fn message_summary_for_log(idx: usize, msg: &ChatMessage) -> String {
+    let mut text_count = 0;
+    let mut text_total_len = 0;
+    let mut first_text_snippet: Option<String> = None;
+    let mut binary_summaries: Vec<String> = Vec::new();
+    let mut tool_call_summaries: Vec<String> = Vec::new();
+    let mut tool_response_summaries: Vec<String> = Vec::new();
+    let mut thought_count = 0;
+    let mut thought_total_len = 0;
+    let mut reasoning_count = 0;
+    let mut reasoning_total_len = 0;
+    let mut custom_count = 0;
+
+    for part in &msg.content {
+        match part {
+            ContentPart::Text(text) => {
+                text_count += 1;
+                text_total_len += text.len();
+                if first_text_snippet.is_none() {
+                    first_text_snippet =
+                        Some(snippet_or_shape_for_log(text, BYOP_DIAG_SNIPPET_CHARS));
+                }
+            }
+            ContentPart::Binary(binary) => {
+                binary_summaries.push(binary_summary_for_log(binary));
+            }
+            ContentPart::ToolCall(tool_call) => {
+                let (args_len, args_snippet) = json_value_for_log(&tool_call.fn_arguments);
+                tool_call_summaries.push(format!(
+                    "call_id={} name={} args_len={} args={} thought_signatures={}",
+                    tool_call.call_id,
+                    tool_name_for_log(&tool_call.fn_name),
+                    args_len,
+                    args_snippet,
+                    tool_call
+                        .thought_signatures
+                        .as_ref()
+                        .map(|s| s.len())
+                        .unwrap_or(0)
+                ));
+            }
+            ContentPart::ToolResponse(tool_response) => {
+                tool_response_summaries.push(format!(
+                    "call_id={} content_len={} placeholder={} content={}",
+                    tool_response.call_id,
+                    tool_response.content.len(),
+                    is_placeholder_tool_response_content(&tool_response.content),
+                    snippet_or_shape_for_log(&tool_response.content, BYOP_DIAG_SNIPPET_CHARS)
+                ));
+            }
+            ContentPart::ThoughtSignature(thought) => {
+                thought_count += 1;
+                thought_total_len += thought.len();
+            }
+            ContentPart::ReasoningContent(reasoning) => {
+                reasoning_count += 1;
+                reasoning_total_len += reasoning.len();
+            }
+            ContentPart::Custom(_) => {
+                custom_count += 1;
+            }
+        }
+    }
+
+    let cache_control = msg
+        .options
+        .as_ref()
+        .and_then(|options| options.cache_control.as_ref())
+        .map(|cache| format!("{cache:?}"))
+        .unwrap_or_else(|| "None".to_owned());
+    format!(
+        "[byop-diag] request message[{idx}]: role={:?} parts={} size={} \
+         cache_control={cache_control} text_parts={text_count} \
+         text_total_len={text_total_len} first_text={:?} binaries={:?} tool_calls={:?} \
+         tool_responses={:?} thought_signatures={thought_count} \
+         thought_total_len={thought_total_len} reasoning_parts={reasoning_count} \
+         reasoning_total_len={reasoning_total_len} custom_parts={custom_count}",
+        msg.role,
+        msg.content.len(),
+        msg.content.size(),
+        first_text_snippet.unwrap_or_default(),
+        binary_summaries,
+        tool_call_summaries,
+        tool_response_summaries,
+    )
+}
+
 fn log_chat_request_details(
     chat_req: &ChatRequest,
     model_id: &str,
@@ -2830,10 +3096,17 @@ fn log_chat_request_details(
             .map(|m| matches!(m.role, ChatRole::System))
             .unwrap_or(false);
     let tool_count = chat_req.tools.as_ref().map(|t| t.len()).unwrap_or(0);
+    // `tool_name_for_log`, not the raw name: an `mcp__<server>__<tool>` entry names the user's
+    // own MCP config. See that function for the reasoning and what survives redaction.
     let tool_names: Vec<String> = chat_req
         .tools
         .as_ref()
-        .map(|tools| tools.iter().map(|t| t.name.as_str().to_owned()).collect())
+        .map(|tools| {
+            tools
+                .iter()
+                .map(|t| tool_name_for_log(t.name.as_str()))
+                .collect()
+        })
         .unwrap_or_default();
     log::info!(
         "[byop-diag] request summary: adapter={:?} model={} system_len={} \
@@ -2851,7 +3124,7 @@ fn log_chat_request_details(
         chat_req
             .system
             .as_deref()
-            .map(|s| snippet_for_log(s, BYOP_DIAG_SNIPPET_CHARS))
+            .map(|s| snippet_or_shape_for_log(s, BYOP_DIAG_SNIPPET_CHARS))
             .unwrap_or_default(),
     );
 
@@ -2866,7 +3139,7 @@ fn log_chat_request_details(
             log::info!(
                 "[byop-diag] request tool[{idx}]: name={} desc_len={} schema_len={} \
                  strict={:?} cache_control={:?}",
-                tool.name.as_str(),
+                tool_name_for_log(tool.name.as_str()),
                 tool.description.as_deref().map(str::len).unwrap_or(0),
                 schema_len,
                 tool.strict,
@@ -2902,96 +3175,7 @@ fn log_chat_request_details(
     log::info!("[byop-diag] request message_flow={flow:?}");
 
     for (idx, msg) in chat_req.messages.iter().enumerate() {
-        let mut text_count = 0;
-        let mut text_total_len = 0;
-        let mut first_text_snippet: Option<String> = None;
-        let mut binary_summaries: Vec<String> = Vec::new();
-        let mut tool_call_summaries: Vec<String> = Vec::new();
-        let mut tool_response_summaries: Vec<String> = Vec::new();
-        let mut thought_count = 0;
-        let mut thought_total_len = 0;
-        let mut reasoning_count = 0;
-        let mut reasoning_total_len = 0;
-        let mut custom_count = 0;
-
-        for part in &msg.content {
-            match part {
-                ContentPart::Text(text) => {
-                    text_count += 1;
-                    text_total_len += text.len();
-                    if first_text_snippet.is_none() {
-                        first_text_snippet = Some(snippet_for_log(text, BYOP_DIAG_SNIPPET_CHARS));
-                    }
-                }
-                ContentPart::Binary(binary) => {
-                    binary_summaries.push(binary_for_log(binary));
-                }
-                ContentPart::ToolCall(tool_call) => {
-                    let (args_len, args_snippet) = json_value_for_log(&tool_call.fn_arguments);
-                    tool_call_summaries.push(format!(
-                        "call_id={} name={} args_len={} args={} thought_signatures={}",
-                        tool_call.call_id,
-                        tool_call.fn_name,
-                        args_len,
-                        args_snippet,
-                        tool_call
-                            .thought_signatures
-                            .as_ref()
-                            .map(|s| s.len())
-                            .unwrap_or(0)
-                    ));
-                }
-                ContentPart::ToolResponse(tool_response) => {
-                    tool_response_summaries.push(format!(
-                        "call_id={} content_len={} placeholder={} content={}",
-                        tool_response.call_id,
-                        tool_response.content.len(),
-                        is_placeholder_tool_response_content(&tool_response.content),
-                        snippet_for_log(&tool_response.content, BYOP_DIAG_SNIPPET_CHARS)
-                    ));
-                }
-                ContentPart::ThoughtSignature(thought) => {
-                    thought_count += 1;
-                    thought_total_len += thought.len();
-                }
-                ContentPart::ReasoningContent(reasoning) => {
-                    reasoning_count += 1;
-                    reasoning_total_len += reasoning.len();
-                }
-                ContentPart::Custom(_) => {
-                    custom_count += 1;
-                }
-            }
-        }
-
-        let cache_control = msg
-            .options
-            .as_ref()
-            .and_then(|options| options.cache_control.as_ref())
-            .map(|cache| format!("{cache:?}"))
-            .unwrap_or_else(|| "None".to_owned());
-        log::info!(
-            "[byop-diag] request message[{idx}]: role={:?} parts={} size={} \
-             cache_control={} text_parts={} text_total_len={} first_text={:?} \
-             binaries={:?} tool_calls={:?} tool_responses={:?} \
-             thought_signatures={} thought_total_len={} reasoning_parts={} \
-             reasoning_total_len={} custom_parts={}",
-            msg.role,
-            msg.content.len(),
-            msg.content.size(),
-            cache_control,
-            text_count,
-            text_total_len,
-            first_text_snippet.unwrap_or_default(),
-            binary_summaries,
-            tool_call_summaries,
-            tool_response_summaries,
-            thought_count,
-            thought_total_len,
-            reasoning_count,
-            reasoning_total_len,
-            custom_count,
-        );
+        log::info!("{}", message_summary_for_log(idx, msg));
     }
 
     for (idx, msg) in chat_req.messages.iter().enumerate() {
@@ -5165,6 +5349,11 @@ pub async fn generate_byop_output(
     // tool count + reasoning marker); visible with the default log configuration, useful
     // for diagnosing questions like "was the history sent up completely?"
     //
+    // Called unconditionally, and that is safe *because* every free-text field inside it is
+    // tier-gated (`snippet_or_shape_for_log`, `binary_summary_for_log`, `tool_name_for_log`).
+    // With `BYOP_DIAG_CONTENT_ENV` unset these lines carry counts, sizes, ids and digests and
+    // no conversation text — see the tier description on that constant.
+    //
     // Note: on the Anthropic path, `build_chat_request` pushes the system text as a
     // `ChatMessage::system` to messages[0] so it can carry `cache_control`, so
     // `chat_req.system` will be None and `system_len` will show as 0; the actual system
@@ -5181,8 +5370,10 @@ pub async fn generate_byop_output(
     // turns, and dumping those verbatim would write megabytes per turn to the log for content
     // the escape scan below cannot say anything useful about anyway (base64 has no backslashes).
     //
-    // The JSON is always built (the escape scan and the on-error column window both read it),
-    // but writing it to the log is opt-in — see `FULL_REQUEST_DUMP_ENV`.
+    // The JSON is always built — `scan_suspicious_backslash` below reads it, and it emits only
+    // offsets — but writing it to the log is opt-in; see `BYOP_DIAG_CONTENT_ENV`. (It used to
+    // have a second reader, the on-error column window, which indexed it with an offset into
+    // the provider's *response*; that is gone, see the stream-error branch.)
     let diag_request = diag_request_with_redacted_binaries(&chat_req);
     let diag_body_json = serde_json::to_string(&json!({
         "model": &model_id,
@@ -5190,7 +5381,7 @@ pub async fn generate_byop_output(
     }))
     .unwrap_or_default();
     log::info!("[byop] diag_body_approx_len={}", diag_body_json.len());
-    if full_request_dump_enabled() {
+    if byop_diag_content_enabled() {
         log::info!("[byop-diag] full_request_json={diag_body_json}");
     } else {
         // The non-content summary that stays on by default. Everything the unconditional dump
@@ -5199,7 +5390,7 @@ pub async fn generate_byop_output(
         // line; the raw text itself needs the opt-in.
         log::info!(
             "[byop-diag] full_request_json suppressed: bytes={} messages={} tools={} \
-             (set {FULL_REQUEST_DUMP_ENV}=1 to log the whole request body)",
+             (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
             diag_body_json.len(),
             chat_req.messages.len(),
             chat_req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
@@ -5349,7 +5540,7 @@ pub async fn generate_byop_output(
                         attachments.binaries.len(),
                         running_command.is_some(),
                         lrc_command_id.as_deref().unwrap_or(""),
-                        snippet_for_log(query, BYOP_DIAG_SNIPPET_CHARS),
+                        snippet_or_shape_for_log(query, BYOP_DIAG_SNIPPET_CHARS),
                     );
                     persistence_order.push(format!(
                         "{input_idx}:UserQuery(query_len={},binaries={})",
@@ -5373,7 +5564,7 @@ pub async fn generate_byop_output(
                         persistence_task_id,
                         result.id,
                         content.len(),
-                        snippet_for_log(&content, BYOP_DIAG_SNIPPET_CHARS),
+                        snippet_or_shape_for_log(&content, BYOP_DIAG_SNIPPET_CHARS),
                     );
                     persistence_order.push(format!(
                         "{input_idx}:ActionResult(call_id={},content_len={})",
@@ -5611,37 +5802,46 @@ pub async fn generate_byop_output(
                     log::error!("[byop] stream chunk error: {err_text}");
                     evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                     // Same payload as the per-turn dump, so it carries the same content and the
-                    // same opt-in. The bounded ±200-char window below is what actually localizes
-                    // a bad escape, and it still runs either way.
-                    if full_request_dump_enabled() {
+                    // same opt-in.
+                    if byop_diag_content_enabled() {
                         log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
                     } else {
                         log::error!(
                             "[byop-diag] full_request_json_on_error suppressed: bytes={} \
-                             (set {FULL_REQUEST_DUMP_ENV}=1 to log the whole request body)",
+                             (set {BYOP_DIAG_CONTENT_ENV}=1 to log the whole request body)",
                             diag_body_json.len()
                         );
                     }
-                    // Parses "column N" out of the error message, and dumps ±200 chars of
-                    // context around that position in diag_body_json plus a byte hex dump.
-                    if let Some(col) = err_text
-                        .split("column ")
-                        .nth(1)
-                        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse::<usize>().ok())
-                    {
-                        let body = &diag_body_json;
-                        let byte_len = body.len();
-                        let start = col.saturating_sub(200).min(byte_len);
-                        let end = (col + 200).min(byte_len);
-                        let context = body.get(start..end).unwrap_or("(slice failed: not on a char boundary)");
+                    // There is deliberately no ±200-character context window here any more.
+                    //
+                    // The version that used to sit at this spot parsed `column N` out of *this*
+                    // error — a `genai::Error::StreamParse`, i.e. serde failing to decode the
+                    // provider's *response* chunk — and then sliced `diag_body_json`, the
+                    // outbound *request*. Those are two unrelated documents with no shared
+                    // coordinate system, so the "context" it printed was an arbitrary 400-char
+                    // slice of the user's conversation that localized nothing. It was kept
+                    // ungated on the grounds that it is what pins down a bad escape; it never
+                    // was. So it is a pure leak, and it goes.
+                    //
+                    // It also cannot simply be repointed at the right document: `StreamParse`
+                    // carries only the `serde_json::Error`, not the chunk it failed on, and the
+                    // raw SSE text is never surfaced past genai's decoder. A response-side
+                    // window has to be captured where the chunk is read (inside genai, or in a
+                    // wrapping decoder), not reconstructed here.
+                    //
+                    // What survives is the position itself — a number, no content — labelled for
+                    // the document it actually refers to, so the next reader does not repeat the
+                    // mistake. `line`/`column` are serde_json's own wording; both are reported
+                    // when present.
+                    if let Some(column) = error_number_after(&err_text, "column ") {
+                        let line = error_number_after(&err_text, "line ");
                         log::error!(
-                            "[byop] error column={col} diag_body_len={byte_len} context[{start}..{end}]={context:?}"
+                            "[byop] response decode position: line={line:?} column={column} \
+                             (an offset into the provider's response chunk, NOT into the \
+                             request; request_bytes={} for scale). The chunk text itself is \
+                             not available at this layer — see the comment at this call site.",
+                            diag_body_json.len()
                         );
-                        let hex_start = col.saturating_sub(20).min(byte_len);
-                        let hex_end = (col + 20).min(byte_len);
-                        if let Some(slice) = body.as_bytes().get(hex_start..hex_end) {
-                            log::error!("[byop] error bytes[{hex_start}..{hex_end}] hex={slice:02x?}");
-                        }
                     }
                     yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
                         "BYOP stream error: {mapped}"
@@ -11704,5 +11904,153 @@ mod plan_mode_round_trip_tests {
                 .any(|name| name == SHELL),
             "leaving Plan Mode must restore {SHELL}"
         );
+    }
+}
+
+/// The privacy tier of the `[byop-diag]` log lines.
+///
+/// These tests run with `BYOP_DIAG_CONTENT_ENV` unset — nothing in the tree sets it, and
+/// `byop_diag_content_enabled` caches its first read in a `OnceLock`, so the default tier is
+/// what is under test here. That is the tier that matters: it is the one that ships inside
+/// `write_log_bundle_zip_to`.
+///
+/// The assertions are substring searches for a planted secret rather than equality checks on a
+/// formatted string, so they keep holding if the field list is reordered or extended, and they
+/// fail the moment a new field starts carrying user text.
+#[cfg(test)]
+mod byop_diag_privacy_tests {
+    use super::*;
+
+    /// Long enough that no short prefix of it can collide with real log vocabulary, and made of
+    /// pieces that would show up individually if a formatter leaked only part of a field.
+    const SECRET: &str = "sk-live-9f3zc71q-CORRECT-HORSE-BATTERY-STAPLE-do-not-log-me";
+
+    /// Every non-trivial run of `SECRET`, so a partial leak (a 20-char truncation, a
+    /// character-escaped rendering) is caught, not just a verbatim copy.
+    fn assert_no_secret_substring(haystack: &str, what: &str) {
+        const MIN_RUN: usize = 8;
+        for start in 0..=SECRET.len().saturating_sub(MIN_RUN) {
+            for end in (start + MIN_RUN)..=SECRET.len() {
+                let run = &SECRET[start..end];
+                assert!(
+                    !haystack.contains(run),
+                    "{what} leaked {run:?} from the secret:\n{haystack}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn content_shape_leaks_no_secret_substring() {
+        let shaped = content_shape_for_log(SECRET);
+        assert_no_secret_substring(&shaped, "content_shape_for_log");
+        // ...but it is not vacuous: the shape it does report has to be right, or the default
+        // tier is useless rather than merely private.
+        assert!(
+            shaped.contains(&format!("bytes={}", SECRET.len())),
+            "shape must carry the length: {shaped}"
+        );
+        assert!(shaped.contains("backslashes=0"), "shape: {shaped}");
+        assert!(shaped.contains("control=0"), "shape: {shaped}");
+    }
+
+    #[test]
+    fn content_shape_counts_the_classes_the_escape_hunt_asks_about() {
+        let shaped = content_shape_for_log("a\\\\u00e9\u{7}\u{e9}");
+        assert!(shaped.contains("backslashes=2"), "shape: {shaped}");
+        assert!(shaped.contains("control=1"), "shape: {shaped}");
+        assert!(shaped.contains("non_ascii=1"), "shape: {shaped}");
+    }
+
+    #[test]
+    fn digest_is_stable_and_distinguishes() {
+        assert_eq!(diag_digest(SECRET), diag_digest(SECRET));
+        assert_ne!(diag_digest(SECRET), diag_digest("something else"));
+        // Pinned so a refactor of the hash constants is a deliberate act: the digest is the
+        // only cross-line identity the default tier has, and silently changing it invalidates
+        // comparisons against previously collected logs.
+        assert_eq!(diag_digest(""), "cbf29ce484222325");
+        assert_eq!(diag_digest("a"), "af63dc4c8601ec8c");
+    }
+
+    #[test]
+    fn message_summary_leaks_no_secret_from_text_args_or_tool_results() {
+        let msg = ChatMessage::user(MessageContent::from_parts(vec![
+            ContentPart::Text(format!("please read {SECRET}")),
+            ContentPart::ToolCall(ToolCall {
+                call_id: "call_1".to_owned(),
+                fn_name: "read_documents".to_owned(),
+                fn_arguments: serde_json::json!({ "path": SECRET }),
+                thought_signatures: None,
+            }),
+            ContentPart::ToolResponse(ToolResponse::new(
+                "call_1".to_owned(),
+                format!("file contents: {SECRET}"),
+            )),
+            ContentPart::Binary(Binary::new(
+                "application/pdf",
+                BinarySource::Url(format!("https://example.invalid/{SECRET}")),
+                Some(format!("{SECRET}.pdf")),
+            )),
+        ]));
+
+        let line = message_summary_for_log(3, &msg);
+        assert_no_secret_substring(&line, "message_summary_for_log");
+
+        // Non-vacuous: the shape that makes the line worth logging must survive.
+        assert!(line.contains("request message[3]"), "line: {line}");
+        assert!(line.contains("text_parts=1"), "line: {line}");
+        assert!(line.contains("call_id=call_1"), "line: {line}");
+        assert!(line.contains("name=read_documents"), "line: {line}");
+        assert!(line.contains("mime=application/pdf"), "line: {line}");
+        assert!(line.contains("args_len="), "line: {line}");
+        assert!(line.contains("content_len="), "line: {line}");
+    }
+
+    #[test]
+    fn mcp_tool_names_hide_the_server_and_keep_the_tool() {
+        let redacted = tool_name_for_log("mcp__acme-internal-billing__create_invoice");
+        assert!(
+            !redacted.contains("acme-internal-billing"),
+            "server segment must not survive: {redacted}"
+        );
+        assert!(
+            redacted.ends_with("__create_invoice"),
+            "tool segment must survive: {redacted}"
+        );
+        // Same server twice must render identically, or "did these two tools come from one
+        // server?" — the only reason to keep the segment at all — stops being answerable.
+        assert_eq!(
+            tool_name_for_log("mcp__acme-internal-billing__create_invoice")
+                .trim_end_matches("__create_invoice"),
+            tool_name_for_log("mcp__acme-internal-billing__void_invoice")
+                .trim_end_matches("__void_invoice")
+        );
+        assert_ne!(
+            tool_name_for_log("mcp__server_a__t"),
+            tool_name_for_log("mcp__server_b__t")
+        );
+    }
+
+    #[test]
+    fn builtin_tool_names_are_untouched() {
+        for name in ["run_shell_command", "read_documents", "mcp_read_resource"] {
+            assert_eq!(tool_name_for_log(name), name);
+        }
+        // A malformed MCP name (no separator after the server segment) has no server segment to
+        // strip; printing it verbatim is the documented degradation, not a silent panic.
+        assert_eq!(tool_name_for_log("mcp__weird"), "mcp__weird");
+    }
+
+    /// The replacement for the removed ±200-char window: the position still gets logged, it is
+    /// just a number now. Shaped like a real `genai::Error::StreamParse` rendering.
+    #[test]
+    fn response_decode_position_is_parsed_from_the_error_text() {
+        let stream_parse = "Failed to parse stream data for model 'gpt-4o'.\n\
+                            Cause: invalid escape at line 1 column 4173";
+        assert_eq!(error_number_after(stream_parse, "column "), Some(4173));
+        assert_eq!(error_number_after(stream_parse, "line "), Some(1));
+        assert_eq!(error_number_after("no position in here", "column "), None);
+        assert_eq!(error_number_after("column not-a-number", "column "), None);
     }
 }
