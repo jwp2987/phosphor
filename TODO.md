@@ -7525,3 +7525,50 @@ Ordered by severity, not by area.
       `grep -qF 'DECLINED.md'` across all commit messages plus the PR body, so any single
       reference anywhere in the range clears any bulk deletion.
 
+### Refutation round — warpui / secure storage (final wave)
+
+- [ ] 🔴 **VERIFIED: every real credential takes the world-readable Linux fallback; the
+      hardened write is used only for a non-secret.**
+      `warpui_extras/src/secure_storage/linux.rs:246` writes with plain `std::fs::write`
+      (default umask → 0644). The 0700/0600 variant
+      `write_owner_only_fallback_value` exists at `:252-284`, and the **only** caller of
+      its public wrapper is `app/src/settings/local_control.rs:132` — a mode enum.
+      Everything that is actually secret uses the unhardened path: BYOP API keys
+      (`crates/ai/src/api_keys.rs:235`), agent-provider secrets
+      (`agent_providers/secrets.rs:106`, fork-original), MCP OAuth refresh tokens
+      (`oauth.rs:644`), the proxy password (`network_secrets.rs:73`, fork-original).
+      **And the AES-256-GCM key is a literal in this open-source repo** —
+      `"zap-local-secure-storage-fallback-key"` zero-padded (`linux.rs:116`). So on a
+      keyring-less Linux host any local user can read and decrypt them.
+      `linux_test.rs:59` tests owner-only permissions only on the path these callers do
+      not use. Verified directly: both write paths, the single caller, and the constant.
+- [ ] **`check_stub_coverage` disarmed — CORROBORATED independently by a second agent**,
+      which additionally found that `generate_repin_queue:178` was repaired for this exact
+      literal and cites `check_stub_coverage` as the convention it copied. The script the
+      others were modelled on was itself never fixed. (Logged in full above.)
+- [ ] **A rejected key event is resurrected by the layer below.**
+      `warpui_core/src/event_loop/mod.rs:1336` dropped the pin's
+      `matches!(logical_key, Key::Unidentified(_))` gate
+      (`42effe840:…:1301-1311`); `key_events.rs:162` re-checks only
+      synthetic/state/modifiers, so every key `convert_keyboard_input_event`
+      deliberately rejects now types characters.
+- [ ] **GUI ancestors get no keystrokes under a focused TUI leaf.**
+      `warpui_core/src/core/app.rs:2081` routes on presenter presence while its sibling at
+      `:1487` routes on `tui_views.contains_key`, and the comment at `:1481` states
+      exactly why the presenter branch is wrong. `tui_view_tests.rs:479` cannot catch it —
+      it builds the chain with `view_ancestors()` and passes it in, never calling
+      `get_responder_chain`.
+- [ ] **Panic on TUI-only windows.** `core/app.rs:1911` and `:1963` `.expect("Invalid
+      window id")` on a presenter that `add_tui_window` never inserts.
+- [ ] **#585's "inventory corrected" is still one site short.**
+      `secure_storage/registry_backed.rs:28` is `Software\Zap\`, joined to
+      `application_name()` = `Phosphor`, so Windows prefs live under a pre-rename
+      identity.
+- [ ] **`register_unavailable` + `unavailable.rs` + 3 tests are dead** — the pin's only
+      caller (RemoteServerDaemon, `42effe840:app/src/lib.rs:1468`) was not ported, and
+      `run_daemon_app` registers no secure storage at all, so `ctx.secure_storage()` there
+      panics rather than degrades.
+- [ ] **Correction to an earlier brief premise:** `add_singleton_model` is a
+      `debug_assert!` (`core/app.rs:2309`), so in RELEASE a duplicate silently *replaces*
+      the singleton rather than panicking.
+
