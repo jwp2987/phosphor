@@ -7073,6 +7073,8 @@ Ordered by severity, not by area.
       a regression" and never addresses the bypass flag, whose own text says it
       "bypasses hook trust globally".** Every driver-launched Codex run executes
       repo-declared hooks with trust review disabled.
+      **VERDICT PARTIAL — impact misattributed (independent verifier, 2026-08-21):** The fork does pass the flag unconditionally (`codex.rs:92,206,211`) and lacks `requires_verified_platform_plugin`. **But the pin passes it just as unconditionally** (`42effe840:.../codex.rs:192,197`) — its gate required plugin INSTALLATION and never conditioned the flag. So the hook-trust bypass is identical at the pin and "deleted the only gate" misattributes the impact. The dropped doc sentence (pin `:184-185`) is confirmed.
+
 - [ ] 🔴 **MCP "Log out" silently keeps OAuth tokens.**
       `ai/mcp/templatable_manager/oauth.rs:600-612` handles only `get_template_uuid`,
       which reads `locally_installed_servers` — file-based installs are never in it, so
@@ -7081,12 +7083,16 @@ Ordered by severity, not by area.
       `save_credentials_to_secure_storage` still mirrors. `can_log_out` DOES check the
       hash map, so the TUI offers a Log Out row that is a no-op. Refresh tokens survive
       logout and revocation.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `oauth.rs:600-614` handles only `get_template_uuid`, which reads `locally_installed_servers`; the pin's file-based branch (`42effe840:.../native.rs:214-225`) is absent while `save_credentials_to_secure_storage` still mirrors it. Verifier closed the caller chain: `tui/mcp.rs:383-395` resolves `FileBased(hash)`→uuid then calls delete, and `can_log_out` returns true. The pin's `CredentialsChanged` emit is also gone.
+
 - [ ] 🔴 **`claude_code_tests` can write to the REAL user profile on Windows.**
       `claude_code.rs:509-528` duplicates `claude_config_dir` using `dirs::home_dir()`
       instead of the pin's `home_dir_for_claude_config`. `dirs::home_dir()` ignores the
       `HOME` the tests set on Windows, so the suite writes `.claude.json` /
       `settings.json` containing `hasTrustDialogAccepted` and
       `skipDangerousModePermissionPrompt: true` into the developer's actual profile.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `claude_code.rs:508-518` and `:521-528` both use `dirs::home_dir()` where the pin uses `home_dir_for_claude_config()`, whose `#[cfg(test)]` HOME check exists precisely for this (`claude_transcript.rs:77-85`). Verifier established the reachable path: `claude_code_tests.rs:719-733` removes `CLAUDE_CONFIG_DIR`, sets only `HOME`, then calls `prepare_claude_environment_config`, writing `has_trust_dialog_accepted` and `skip_dangerous_mode_permission_prompt`.
+
 - [ ] 🔴 **`move_tab` has no pinned/group boundary check — the pin's `can_move_tab` was
       never ported.** `workspace/view.rs:13234-13242` is a bare `swap` guarded only by
       list bounds; menu gating (`tab.rs:557,569`) is index-only. The fork's DRAG path
@@ -7185,6 +7191,8 @@ Ordered by severity, not by area.
       **This contradicts the closed maintainer decision at TODO.md:2866-2881**, which
       closed the supply-chain objection on "an empty digest is fail-closed", "verified in
       code before closing".
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Exit codes enumerated: 2 (arch/OS), 3 (no fetcher), 4 (no digest, `:101`), 5 (no sha tool, `:117`), 6 (MISMATCH, `:124`). `should_skip_scp_fallback` filters only 2 (`ssh_transport.rs:195-197`), so 4/5/6 all reach `scp_install_fallback` (`:750-753`). Verifier also confirmed the local curl omits `--proto` (`:536-544`) and the staged branch skips verification by design. **TODO.md:2866-2881 rests on exit 4 being fail-closed — genuinely contradicted.**
+
 - [ ] 🔴 **The BYOP API key is sent to every SSH host, ungated and undisclosed.**
       `ai/codebase_embeddings.rs:441-448` puts the keychain key into
       `EmbeddingProviderConfig`; `client/mod.rs:332` ships it in every `Initialize`, and
@@ -7193,6 +7201,8 @@ Ordered by severity, not by area.
       siblings at `:1663/:1725` have). `auth_token` rides along. The consent dialog
       (`i18n/en/warp.ftl:260`) mentions only "file browsing, code review". A compromised
       host harvests both.
+      **VERDICT PARTIAL — not every host (independent verifier, 2026-08-21):** The chain holds: keychain → `secrets.rs:22-37` → `embeddings.rs:112-117` → `codebase_embeddings.rs:441-448` → every `Initialize` (`client/mod.rs:330-333`) and every settings change (`manager.rs:818-827`), with no flag check at `lib.rs:2229-2245`. **But "every SSH host" is wrong** — transmission requires the per-host install choice (`ssh_remote_server_choice_view.rs:78-91`). The undisclosed limb stands (`warp.ftl:260`).
+
 - [ ] 🔴 **The command denylist is bypassable with one quote character.**
       `warp_completer/src/parsers/simple/mod.rs:242-247` returns the literal typed text,
       quotes included, and `permissions.rs:929-934` matches it with an anchored regex. A
@@ -7216,6 +7226,8 @@ Ordered by severity, not by area.
       PREVIOUS hunk's patch, so `git apply --cached` succeeds with no error: click
       "stage" on hunk 2 and hunk 1 lands in the index and the next commit. Fork-original,
       untested.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Verifier walked a concrete case as instructed: editor ranges cover only changed lines, no context (`diff.rs:294-303`); with hunk1 `@@ -1,10 +1,6 @@` (4 deletes) and hunk2 at new line 11, `hunk_end = 1 + lines.len() = 11 >= 11`, so `.find()` (`code_review_view.rs:5897-5904`) returns **hunk1**. Trigger threshold is deletes ≥ gap+3, gap min 1. The pin has the same arithmetic (`:6209`) but FILTERS the lines; the fork returns the whole earlier hunk and stages it (`:5874-5880`).
+
 - [ ] **`no_trailing_newline` is never set, so the marker `hunk_to_patch` promises is
       never emitted.** `diff_state.rs:3034` tests for `"\\No newline at end of file"`;
       git emits `\ No newline at end of file` (backslash SPACE), which is then skipped as
@@ -7223,20 +7235,28 @@ Ordered by severity, not by area.
       `hunk_to_patch_preserves_missing_trailing_newline` hand-sets the flag the parser
       cannot produce. Staging the last hunk of a newline-less file silently appends a
       newline or fails.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `diff_state.rs:3034` tests `"\\No newline..."` without the space, and the marker never reaches it anyway — it starts with `\`, so `:3022-3025`'s else-branch skips it. The flag is unconditionally false and `:295-297` is dead. Verifier added the attribution: the parser line is pin-parity (`42effe840:.../diff_state/local.rs:2676`) where the flag was only SERIALIZED — the fork's `hunk_to_patch` is what made a dead flag load-bearing.
+
 - [ ] **Conflicted files get a hunk stage button the file-level path deliberately
       withholds.** `stage_button_appearance` returns `None` for `Conflicted` because "a
       click the backend cannot honour", and `toggle_file_staged` re-checks it — but
       `stage_hunk_direction` and `toggle_hunk_staged` omit the gate, and unmerged entries
       get `staged: Unstaged` (i.e. `Some`), so the button renders.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `code_review_view.rs:340-341` returns `None` for `Conflicted` and `:5809` re-checks it in `toggle_file_staged`, but `stage_hunk_direction` (`:3157-3160,:3260-3263`) and `toggle_hunk_staged` (`:5867-5871`) read `file_diff.staged` only, and `diff_state.rs:2658-2662` gives unmerged entries `Some(Unstaged)` — so the gutter button renders. Consequence is a failing `git apply --cached`, silent per finding 55; not corruption.
+
 - [ ] **Stage failures are invisible** — `diff_state.rs:1228-1230` handles `Err` with
       `log::error!` and no toast, so the acknowledged "partially staged file guesses
       stage" heuristic fails as a silent no-op.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `diff_state.rs:1226-1229` is `Err(err) => log::error!(...)` with no toast and no `ToastStack` reference anywhere in the file; reload runs only on `Ok`, so a rejected patch leaves the UI unchanged — indistinguishable from nothing happening. `code_review_view.rs:5853-5854` acknowledges it. Verifier noted the sibling DISCARD path (`:1183`) behaves identically, so it is a design gap rather than staging-specific.
+
 - [ ] **TODO.md:215 states the opposite of the code.** It lists hunk staging under
       "Confirmed genuinely absent" with evidence "no `stage_hunk`/`checkout_branch`". It
       exists end-to-end (`toggle_hunk_staged`, `StageTarget::Hunk`,
       `run_apply_patch_cached`, `StageHunkButton`, plus the daemon path), and TODO.md:2982
       records it as landed. The evidence cell is a bare-name grep — the exact failure the
       surrounding text warns against.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `TODO.md:215` sits under "Confirmed genuinely absent" (`:204`) and is contradicted by `toggle_hunk_staged`, `StageTarget::Hunk` (`diff_state.rs:163`), `run_apply_patch_cached`, `StageHunkButton` and the daemon leg (`server_model.rs:3542`, proto `:1418`); TODO.md:2980 records it landed. Verifier also checked the row's SECOND half: `checkout_branch` was a deliberate removal shipped via prompt chip, so **both cells are stale**.
+
 - [ ] **`@`-context attachments lock the input with no invalidation on edit.**
       `context_model.rs:748` adds them to `has_locking_attachment`, which kills
       autodetection and blocks unlock; `prune_stale_at_context_attachments` runs only on
@@ -7257,6 +7277,7 @@ Ordered by severity, not by area.
       (`remote_server/setup.rs:298-308`) while its sibling at `:317` states collisions
       are unacceptable and avoids hashing. Colliding identities share a daemon holding
       the other's token.
+      **VERDICT PARTIAL — consequence fails (independent verifier, 2026-08-21):** `setup.rs:298-308` does truncate to 32 bits and the sibling comment does call collisions unacceptable for the data dir. But the consequence fails: the directory sits under ONE remote UNIX account's `$HOME` (`:270-282`) — already a shared trust boundary — and no protocol message discloses a stored token; `server_model.rs:1631-1632` merely overwrites it. The hashing is a documented `sun_path` length tradeoff with tests (`setup_tests.rs:440-478`).
 
 ### Refutation round — search and AI tool output
 
@@ -7456,6 +7477,8 @@ Ordered by severity, not by area.
       but `request_file_edits.rs:126-129` feeds it raw LLM strings, and
       `ParsedDiff::file()` returns the SOURCE, never `move_to`
       (`diff_application.rs:325-335`) — so a V4A rename auto-writes `~/.mcp.json`.
+      **VERDICT PARTIAL — one limb refuted (independent verifier, 2026-08-21):** Rename limb confirmed: `ParsedDiff::file()` (`crates/ai/src/diff_validation/mod.rs:39-45`) never returns `move_to`, so `check_protected_write_paths` never sees the destination and `rename_and_save` writes it. Pin-parity. **The "unresolved paths" limb breaks:** `mcp/mod.rs:135-143` suffix-matches components, so a raw `~/.mcp.json` string IS caught. Only `~/.claude.json` escapes.
+
 - [ ] **Untrusted markdown link opens an OS handler on a plain click (pin-parity).**
       `notebooks/link.rs:147,275` accepts any scheme; `notebooks/editor/view.rs:1993`
       opens without a modifier in `Selectable` (LLM-authored) views; `lib.rs:1647`
