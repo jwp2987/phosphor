@@ -7442,25 +7442,28 @@ Ordered by severity, not by area.
 
 ### Refutation round — util/uri/workspaces, and the ROOT CAUSE of the de-clouding class
 
-- [ ] 🔴🔴 **`#![allow(dead_code)]` blanket-silences the entire `app` crate — this is why
-      the de-clouding casualties went unnoticed.** `app/src/lib.rs:4`, with the comment
-      "Orphaned code left over from upstream Zap trimming is temporarily kept; dead_code
-      warnings are suppressed globally." **VERIFIED against the pin, which has no such
-      attribute** (`42effe840:app/src/lib.rs` carries only the clippy attr).
-      Removing the cloud layer orphaned every function whose callers lived there, and the
-      fork then suppressed the one compiler warning that would have enumerated them.
-      `mod uri`, `mod workspaces` and `mod ui_components` are PRIVATE modules, so rustc
-      would otherwise flag every `pub fn` inside them.
-      **Both of today's severe de-clouding finds are instances**:
-      `initialize_default_regexes_once` (secret redaction never installed) and
-      `SettingsInitializer::handle_user_fetched` (settings migrations never run) are
-      zero-caller functions rustc would have named on every build.
-      A scan of five directories found **35+ zero-caller non-test functions**; one
-      confirmed example is `uri/mod.rs:1345 open_window_with_action`, whose only callers
-      were the deleted `UriHost::Team` arm.
-      **Fixing this attribute is the highest-leverage item in this file** — it converts
-      an open-ended manual hunt into a compiler-enumerated list. Expect it to be noisy;
-      the value is the list, not the silence.
+- [ ] **`#![allow(dead_code)]` blanket-silences the `app` crate — real, but much
+      narrower than first logged.** `app/src/lib.rs:4`, absent from the pin, with the
+      comment "Orphaned code left over from upstream Zap trimming is temporarily kept".
+      **CORRECTION (verified 2026-08-21):** the original entry here claimed this was the
+      root cause of the de-clouding defect class and that rustc "would have named
+      `initialize_default_regexes_once` and `handle_user_fetched` on every build".
+      **That is false.** `app` is a lib crate and `pub mod settings;` (lib.rs:131) is
+      PUBLIC, so both functions are publicly reachable and `dead_code` never fires on
+      them — with or without the attribute. Neither of the two severe de-clouding finds
+      would have been surfaced by removing it.
+      What DOES hold: `mod ui_components` (:89), `mod uri` (:91) and `mod workspaces`
+      (:103) are private, so orphaned `pub fn`s inside those three would be flagged —
+      `uri/mod.rs:1345 open_window_with_action` is a confirmed instance. That is a
+      tidiness win over three modules, not a mechanism that catches the class.
+      **The real lesson is the opposite one:** the de-clouding orphans are mostly in
+      PUBLIC modules, where no compiler lint will ever find them. Finding them needs
+      call-graph analysis, not a lint. Sized accordingly, this is a low-priority cleanup.
+      *(Logged first as 🔴🔴 "highest-leverage item in this file" on the strength of an
+      agent's framing plus a two-line check that the attribute exists — without checking
+      whether it does what was claimed. Recorded here rather than quietly edited, because
+      it is the same error this round keeps finding in others.)*
+
 - [ ] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
       `permissions_test.rs:1253-1309` injects `AlwaysAsk` via
       `UserWorkspaces::update_ai_autonomy_settings` into `workspace.teams[0]`, then
