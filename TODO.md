@@ -38,7 +38,7 @@ input nobody can name is worse than no build, because its result gets believed.
       | `app/src/ai/agent_events/{driver,driver_tests,mod}.rs`, `app/src/server/retry_strategies.rs` | agent-events package |
       | `crates/ai/src/project_context/{model,model_tests}.rs` | project-context package |
       | `TODO.md`, `docs/STATE.md`, `script/state` | coordinator |
-      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Resolved as an action item. Its own recommended fixes exist and are in daily use: `script/check_workspace_clean` implements the workspace-clean gate, and per-agent worktree isolation is standard (`docs/FLEET-ROUND.md`, `script/agent-worktree`). Kept as history. NB the `/cache/git/zap` path is dead; the checkout is `/home/winters/git/phosphor`.
+      **RECONCILED 2026-08-17 (v0.1.0 agent audit)** — Resolved as an action item. Its own recommended fixes exist: per-agent worktree isolation is standard (`docs/FLEET-ROUND.md`, `script/agent-worktree`), and `script/check_workspace_clean` implements the workspace-clean gate. **Corrected 2026-08-20: "and are in daily use" was false of the gate.** `check_workspace_clean` had zero invocations anywhere in `script/` or `.github/` until 2026-08-21 — it was a script nothing ran. It is now wired into the build path: `script/agent-cargo:75-77` runs it and refuses to build if it fails. It is still deliberately NOT run by `script/precheck` (see the comment at `script/precheck:259-265`), so it gates builds, not pushes. Kept as history. NB the `/cache/git/zap` path is dead; the checkout is `/home/winters/git/phosphor`.
 
       **Consequence, and the reason this is a hazard and not an annoyance: the
       build agent runs `cargo`/`nextest` in this same tree.** Its results
@@ -212,7 +212,7 @@ are `GlobalBufferModel::resolve_conflict`, same method name, different type.
 | ~~6~~ | ~~`use_computer_decoration`~~ **— NOT A SYMBOL.** It is a pin *test name*: `output_tests.rs:170 fn use_computer_decoration_skips_screenshot_only_rows()`. Screenshot handling exists (`view_impl/output.rs`, 25 refs). Re-scope against the actual decoration predicate or drop. | corrected 2026-08-11 |
 | ~~7~~ | ~~TUI renderer for `MessagesReceivedFromAgents`/`EventsFromAgents`~~ **— FALSE.** `crates/warp_tui/src/agent_block.rs:1311` renders `MessagesReceivedFromAgents { messages }`; `:1318` deliberately no-ops `EventsFromAgents`. Types exist in `convert_{conversation,from,to}.rs`. `agent_block_tests.rs` exists in fork and pin. If the real complaint is the `EventsFromAgents` no-op, file that narrowly with `:1318` as evidence. | corrected 2026-08-11 |
 | 8 | **Zap #324 — pane min size** | `MIN_PANEL_WIDTH: f32 = 300.` hardcoded, `ai_assistant/panel.rs:61` |
-| 9 | **Zap #329 remainder** — hunk staging, branch create/switch | no `stage_hunk`/`checkout_branch` |
+| ~~9~~ | ~~**Zap #329 remainder** — hunk staging, branch create/switch~~ **— BOTH HALVES FALSE, corrected 2026-08-20.** *Hunk staging ships end to end:* `toggle_hunk_staged` (`app/src/code_review/code_review_view.rs:5856`, called at `:5968`) → `StageTarget::Hunk` (`app/src/code_review/diff_state.rs:163`, matched at `:1259`) → `run_apply_patch_cached` (`app/src/util/git.rs:946`, `git apply --cached`), with a `StageHunkButton` in the gutter (`app/src/code/editor/element/gutter_button.rs`, `code/editor/{element,view}.rs`) and an SSH leg (`app/src/remote_server/server_model.rs:3568`). TODO.md records it landing further down this file. *Branch create/switch was a deliberate removal, not an absence:* `run_create_branch`/`run_switch_branch` were deleted 2026-08-18 with the rationale in place at `app/src/util/git.rs:922-932` — they were local-only and callerless, while the shipping path emits a shell command via `PromptChipShellCommand::{GitCheckout, GitCreateAndCheckoutBranch}`, which also works over SSH. **Why the evidence was wrong:** `no stage_hunk/checkout_branch` was a bare-name grep for symbols this fork never named that way. The rule stated below this table (grep `fn <name>`, and grep the *behaviour* not a guessed identifier) exists for exactly this; the row violated it. | corrected 2026-08-20 |
 | 10 | 🛑 **Feature-reduced daemon target — DO NOT START.** Maintainer hold, 2026-08-11. Architectural, gates the distribution decision. No agent is to be assigned this without an explicit instruction. | on hold |
 | 11 | **Remote-host global search has no binder** (opened 2026-08-15 by the server-file-browser removal) | `GlobalSearchView::set_server_search_root` (`workspace/view/global_search/view.rs`) now has **zero callers**: its only one was `LeftPanelView::set_server_file_browser_root`, deleted with that feature. It was already unreachable in shipped builds — the caller sat behind the never-enabled `ServerFileBrowser` flag — so this is a **pre-existing** dead path now made visible, **not a regression from the removal**. `server_search_root` is therefore permanently `None`, and since local `DirectoriesChanged` only reports local sessions, global search never sees an SSH root. Decide: re-bind it (natural guard is `SshRemoteServer`, which *is* live in release — so this would newly ENABLE the path, and it has never run in a shipped build) or delete the mechanism. Deliberately not decided during a removal, and not touched under the build freeze. |
 
@@ -530,9 +530,15 @@ those without re-adjudicating would manufacture debt from decisions.
       `auth_check_command`/`auth_check_command_for`, **deliberately deferred
       under #289** — the fork's own test header says so. Do not port without
       reopening #289.
-- [>] **`app/src/terminal/model/terminal_model_tests.rs` — 2 tests.**
-      `should_validate_dcs_hook_session_id` is hardcoded `false`, not
-      role-conditional. Blocked on **#419** PTY-spawn registration wiring.
+- [x] **`app/src/terminal/model/terminal_model_test.rs` — 2 tests. DONE, and the
+      old text here was wrong in three separate ways (corrected 2026-08-20).**
+      (a) The file is `terminal_model_test.rs`, singular — `terminal_model_tests.rs`
+      has never existed in this tree. (b) `should_validate_dcs_hook_session_id` is
+      **not** hardcoded `false`: `app/src/terminal/model/terminal_model.rs:2728-2730`
+      is the pin's `!self.shared_session_status().is_viewer()`. (c) Both gate tests
+      are live and un-`#[ignore]`d — `viewer_processes_dcs_hook_with_unregistered_session_id`
+      (`terminal_model_test.rs:2257`) and `sharer_rejects_dcs_hook_with_unregistered_session_id`
+      (`:2311`). #419 and #532 are both CLOSED; neither blocks anything.
 - [>] **`crates/warp_tui/src/orchestration_model_tests.rs` — 2 tests.**
       `cleanup_failed_child`/`begin_local_oz_child_launch` — explicitly deferred
       per the module's own doc comment (`:1-23`).
@@ -559,7 +565,8 @@ read about five times smaller than it is.
 
 None of these need a new blocking symbol resolved first (unlike the 22-symbol
 list above) — each is either a small, well-scoped addition or a genuine
-product-scope question (the ordering reversal, the DCS-hook role gate).
+product-scope question (the ordering reversal; the DCS-hook role gate is no
+longer one of them — it landed, see the corrected entry above).
 
 ## LSP TRACK — **[x] document lifecycle BUILT AND TEST-GREEN, NEVER RUN** (verdict 2026-08-10: RESTORE)
 
@@ -670,7 +677,22 @@ measurement.**
 ### Done
 - [x] `crates/lsp` restored verbatim, 22 tests unweakened (`f4e99118a`)
 - [x] initial app wiring — deps, `lsp::init`, `FeatureFlag::LSPAsATool`,
-      terminate hook, `lsp_logs.rs`, `lsp_telemetry.rs` catalog, 3 editor helpers
+      `lsp_logs.rs`, `lsp_telemetry.rs` catalog, 3 editor helpers
+      (**"terminate hook" removed from this line 2026-08-20 — it was never done;
+      see the open item immediately below**)
+
+### Open — the shutdown hook this section claimed was Done
+- [ ] **No LSP terminate on app shutdown.** `app/src/lib.rs:2360-2392` runs
+      `on_will_terminate` straight from `PersistenceWriter::terminate()` to
+      `PtySpawner::prepare_for_app_termination()`, with no LSP step anywhere in
+      the closure. The pin has one at `42effe840:app/src/lib.rs:2692-2694`:
+      `lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| manager.terminate(ctx))`.
+      `LspManagerModel::terminate` exists (`crates/lsp/src/manager.rs:306`) and
+      has **zero callers repo-wide** — the only same-named call is
+      `LspServerModel::terminate` from its own `Drop` (`crates/lsp/src/model.rs:745-747`),
+      a different type, which merely detaches an async shutdown and is not a
+      substitute for the graceful all-workspaces teardown. Consequence: language
+      servers are left to be reaped by the OS on quit rather than shut down.
 - [x] `workspace_language_server` migration, re-applied onto current main (`5f2f5d103`)
 - [x] PersistedWorkspace LSP **state** layer — `EnablementState`,
       `language_servers`, the seven enable/disable/query methods, `ModelEvent`
@@ -5802,7 +5824,8 @@ only reality and never looking at the branches:**
       > `requires_registered_session`, `is_registered_session`, and
       > `should_validate_dcs_hook_session_id` are present in
       > `app/src/terminal/model/ansi/{dcs_hooks,mod}.rs` and `terminal_model.rs`."
-      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — "0 production call sites" is false: `terminal_manager.rs:816`, `remote_tty/event_loop.rs:172` and `view.rs:13613` all register (commit `1f793fb0d`). Still open: `should_validate_dcs_hook_session_id` remains hardcoded `false` because `session_id` is not threaded through the remaining `DProtoHook` variants. Narrow to that.
+      **RESCOPE 2026-08-17 (v0.1.0 agent audit)** — "0 production call sites" is false: `terminal_manager.rs:816`, `remote_tty/event_loop.rs:172` and `view.rs:13613` all register (commit `1f793fb0d`).
+      **SUPERSEDED 2026-08-20.** The rescope's own residue — "`should_validate_dcs_hook_session_id` remains hardcoded `false`" — is itself false and contradicted the CLOSED note at `:5739` in this same file. The gate at `terminal_model.rs:2728-2730` reads `!self.shared_session_status().is_viewer()`, i.e. the pin's role-conditional form, and both gate tests run un-`#[ignore]`d (`terminal_model_test.rs:2257`, `:2311`). Nothing is left open here.
 
       **PRODUCT DECISION MADE 2026-08-17 (maintainer): trust-on-first-use.**
       This settles the *second* blocker found today — the SSH warpify wrapper
@@ -6495,7 +6518,7 @@ the old "3 decisions/holds + 7 buildable" framing:
 | `local_control` / `warpctrl` | #216 (open, comprehensive); #401 (installer sliver, open); #184/#200/#183 closed as subsets |
 | Banner-immune PATH capture | #481 (closed — done) |
 | TUI live background re-probe | #482 (open) |
-| CDPATH-aware `cd` completion | #483 (closed — done) |
+| CDPATH-aware `cd` completion | #483 (**closed as done, but the chain is UNWIRED — see "CDPATH completion is dead code" below**) |
 | Launch-at-login | #484 (closed — done, see "Requires macOS/Windows" below) |
 | NLD heuristic feature flags | #485 (closed — done) |
 | AI bundled + global skills | #487 (**CLOSED 2026-08-10** — resolved as delete, not a gap; see correction below) |
@@ -6907,11 +6930,12 @@ Ordered by severity, not by area.
       red". Both are wrong. Same error as the #620 test, made twice.
       **VERDICT PARTIAL — 'cannot fail' overstated (independent verifier, 2026-08-21):** Confirmed that `shell_command_tests.rs:363` calls only `write_skips_pty_permission_check` and never `should_autoexecute` (zero references in the file), and that reverting `shell_command.rs:230` to `is_none_or` leaves it GREEN — `lib.rs:4`'s `#![allow(dead_code)]` silences the then-orphaned helper. **But 'cannot fail' is wrong:** the fix's predicate IS the helper (`:64`), so reverting THAT turns the test red. Only the call-site wiring is unpinned. DECLINED.md:179's claim is therefore overstated rather than false, and the #620 analogy holds.
 
-- [ ] **DECLINED.md:156 contains a false clause.** The credit-rounding claim checks out
+- [x] **DECLINED.md:156 contains a false clause.** The credit-rounding claim checks out
       against the pin, but "the usage footer never appears at all" is wrong — the
       footer is opened by user toggle with no credit gate; a `None` rollup only
       suppresses the drill-down.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Rounding matches the pin (`conversation.rs:783-785` vs `42effe840:...:769-773`), and the verifier checked the consumer the original did not: `conversation_usage_view.rs:558-560` returns the bare value text when `rollup.is_none()` and `append_per_agent_rows` (`:590-592`) early-returns, while footer construction (`view.rs:6380-6446`) is driven by `ToggleIsUsageFooterExpanded` with no credit gate. The clause is false.
+      **FIXED 2026-08-21:** False clause removed and replaced with what actually happens (the footer opens on an ungated user toggle; a `None` rollup suppresses only the drill-down). The rounding half of the row is untouched.
 
 ### Correctness — user-visible
 
@@ -7017,13 +7041,14 @@ Ordered by severity, not by area.
 
 ### Ledger and test-integrity defects
 
-- [ ] **TODO.md:534-535 and :562 state the opposite of the code.** They claim
+- [x] **TODO.md:534-535 and :562 state the opposite of the code.** They claim
       `should_validate_dcs_hook_session_id` is hardcoded `false` and blocked on #419.
       The code is `!self.shared_session_status().is_viewer()`
       (`terminal_model.rs:2728`), both gate tests are live, and #532 is closed. They
       also name a nonexistent file. Anyone trusting this concludes the anti-spoofing
       gate is off.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `terminal_model.rs:2728-2730` is `!self.shared_session_status().is_viewer()`, both gate tests are live (`terminal_model_test.rs:2257,:2308`), and `gh issue view` shows #419 AND #532 both CLOSED. The named file `terminal_model_tests.rs` does not exist. **Verifier found a THIRD instance the original missed:** TODO.md:5805 repeats "remains hardcoded `false`", contradicting TODO.md:5739.
+      **FIXED 2026-08-21:** All three sites corrected to `!self.shared_session_status().is_viewer()`; #419/#532 noted closed; filename corrected to the singular `terminal_model_test.rs`; the `:5805` residue marked SUPERSEDED.
 
 - [ ] **A ported denylist test carries the INVERTED, pre-fix assertion, hidden behind
       `#[ignore]`.** `permissions_test.rs:641,661-676` asserts NOT-denylisted where the
@@ -7062,11 +7087,12 @@ Ordered by severity, not by area.
       call sites across 9 files.
       **VERDICT PARTIAL — not vacuous (independent verifier, 2026-08-21):** `queue_confirmation_action` (`action_model.rs:997-1012`) does force the blocked state, and the "real preprocess pipeline" comments are stale. **But it is a faithful port** — `42effe840:tui_test_support.rs:299` calls the identical helper — and the tests are not vacuous: events reach the view only through the effect loop and the assertions check real rendering (`:60-79`).
 
-- [ ] **`completions.rs:51-59` is factually false** — it claims
+- [x] **`completions.rs:51-59` is factually false** — it claims
       `load_all_function_names` / `additional_function_names` "do not exist in this
       fork's Session". All exist; DECLINED.md:158 says so. The pin calls both loaders
       and the fork does not — a real TUI gap hidden behind a false excuse.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** All five named items exist and are public (`session.rs:1181,1206,1232,922,924`). Verifier went further: the pin warms BOTH loaders (`42effe840:.../completions.rs:47-50`) and the fork's GUI does too (`terminal/view.rs:12767`) — so the TUI-only gap is real and not a declined decision.
+      **FIXED 2026-08-21:** Comment corrected: all five symbols exist and are public, the GUI warms them at `view.rs:12766-12773`, and the TUI's omission is now stated as a genuine open gap instead of being justified falsely. The missing calls were deliberately NOT added — comment only.
 
 ### Refutation round — second wave
 
@@ -7136,13 +7162,27 @@ Ordered by severity, not by area.
       asserts the sentinels are set, never that they are removed.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `local_tty/unix.rs:432,436` and `:924,926` export both sentinels; `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair while the pin also unsets `HISTSIZE`/`WARP_INITIAL_HISTSIZE` (`42effe840:bash_body.sh:1230-1233`). Verifier checked the whole fork tree: `HISTSIZE` is never unset anywhere, and inherited-from-environment variables stay exported in bash, so children do inherit. Not in DECLINED.md.
 
-- [ ] **CDPATH completion is dead code, and #483 plus TODO.md:6498 both say "done".**
+- [x] **CDPATH completion is dead code, and #483 plus TODO.md:6498 both say "done".**
       `completer/mod.rs:289` has no `cdpath()`, so the trait default returns `None`
       forever and `engine/path.rs:154` always early-returns. No bootstrap script emits
       it, `dcs_hooks.rs` never parses it, `session.rs` has no field — the pin has the
       whole chain. The 10 `with_cdpath` tests inject the value into a fake context and
       pass with the feature entirely unwired.
-      **NOT ADJUDICATED (2026-08-21):** Its verifier returned verdicts for the other six findings in its batch and silently omitted this one. Still an unverified lead — the claim that `#483` and TODO.md:6498 both say "done" while the chain is unwired has NOT been independently checked.
+      **VERIFIED 2026-08-20, but by a SINGLE reader — NOT independently confirmed.**
+      Everything above checks out against the tree; treat it as one verification, not two.
+      What I read: `app/src/completer/mod.rs:289` is the only `impl PathCompletionContext
+      for SessionContext` in `app/`, and it defines no `cdpath()`, so the trait default at
+      `crates/warp_completer/src/completer/context/mod.rs:167-170` (`fn cdpath(&self) ->
+      Option<&str> { None }`) is what production uses. `engine/path.rs:154`
+      (`let Some(cdpath) = ctx.cdpath() else { return sorted_directories_relative_to(...) }`)
+      therefore always takes the early return. `CDPATH`/`cdpath` appears in **no** `.sh`,
+      `.ps1` or `.fish` asset in this repo and in **no** field of
+      `app/src/terminal/model/session.rs`. The only other implementor is
+      `MockPathCompletionContext` (`crates/warp_completer/src/completer/testing/mod.rs:220`),
+      which is what the `with_cdpath` tests inject into — so they pass with the feature
+      entirely unwired, exactly as the entry says.
+      **Still open** and needs a second reader before #483 is reopened.
+      **FIXED 2026-08-21:** TODO/#483 entry corrected. Marked explicitly as single-reader verification rather than independent, since this finding was one of the two the verifier fleet skipped.
 
 - [ ] **Repo detach leaves `GitBranchStatus` stale.** `current_prompt.rs:1511-1517`
       clears only `GitDiffStats`; the pin loops over both. `is_updated_externally` gates
@@ -7272,13 +7312,14 @@ Ordered by severity, not by area.
       stage" heuristic fails as a silent no-op.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `diff_state.rs:1226-1229` is `Err(err) => log::error!(...)` with no toast and no `ToastStack` reference anywhere in the file; reload runs only on `Ok`, so a rejected patch leaves the UI unchanged — indistinguishable from nothing happening. `code_review_view.rs:5853-5854` acknowledges it. Verifier noted the sibling DISCARD path (`:1183`) behaves identically, so it is a design gap rather than staging-specific.
 
-- [ ] **TODO.md:215 states the opposite of the code.** It lists hunk staging under
+- [x] **TODO.md:215 states the opposite of the code.** It lists hunk staging under
       "Confirmed genuinely absent" with evidence "no `stage_hunk`/`checkout_branch`". It
       exists end-to-end (`toggle_hunk_staged`, `StageTarget::Hunk`,
       `run_apply_patch_cached`, `StageHunkButton`, plus the daemon path), and TODO.md:2982
       records it as landed. The evidence cell is a bare-name grep — the exact failure the
       surrounding text warns against.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `TODO.md:215` sits under "Confirmed genuinely absent" (`:204`) and is contradicted by `toggle_hunk_staged`, `StageTarget::Hunk` (`diff_state.rs:163`), `run_apply_patch_cached`, `StageHunkButton` and the daemon leg (`server_model.rs:3542`, proto `:1418`); TODO.md:2980 records it landed. Verifier also checked the row's SECOND half: `checkout_branch` was a deliberate removal shipped via prompt chip, so **both cells are stale**.
+      **FIXED 2026-08-21:** Row struck with citations, and the second half corrected too — `checkout_branch` was a deliberate removal shipped via prompt chip, not an absence. The bare-name-grep failure is explained against the table's own stated evidence rule.
 
 - [ ] **`@`-context attachments lock the input with no invalidation on edit.**
       `context_model.rs:748` adds them to `has_locking_attachment`, which kills
@@ -7317,15 +7358,16 @@ Ordered by severity, not by area.
       never enforced.
       **VERDICT PARTIAL — not unmitigated (independent verifier, 2026-08-21):** The enum drop is confirmed (`crates/ai/src/agent/action/mod.rs:94-97`, `convert.rs:161-172`) and the executor applies no cap. **But "entirely unmitigated" is wrong:** `chat_stream.rs:805-822` truncates every tool response at 40,000 chars with an explicit notice. The UI claim is also wrong — `:3514` is `serialize_outgoing_tool_call`, model-facing history, not the UI.
 
-- [ ] **`grep.md` documents an `include` parameter that does not exist and is
+- [x] **`grep.md` documents an `include` parameter that does not exist and is
       schema-forbidden.** `prompts/tool_descriptions/grep.md:4` tells the model to
       "restrict file types via the `include` glob"; `grep_parameters()` declares only
       `queries`/`path` with `"additionalProperties": false`. Strict providers reject the
       call; lax ones drop it silently and the model believes it searched only `*.ts` when
       it searched everything. Fork-original, not pin drift.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `prompts/tool_descriptions/grep.md:4` advertises `include`; `tools/search.rs:21-37` declares only `queries`/`path` with `"additionalProperties": false`, and `GrepArgs:14-19` has no `deny_unknown_fields`, so a passed `include` is silently discarded. The file is absent at the pin, so fork-original. Verifier added the decisive detail: **no `strict: true` is set anywhere** in `tools/mod.rs`, so the silent-drop branch is the one that actually runs.
+      **FIXED 2026-08-21:** Removed, and replaced with true guidance rather than a bare deletion: the model is told `queries` and `path` are the only parameters and pointed at `file_glob` + `read_files` for type filtering.
 
-- [ ] **Both search tools promise mtime ordering that no code produces.** `grep.md:5` and
+- [x] **Both search tools promise mtime ordering that no code produces.** `grep.md:5` and
       `file_glob.md:3` claim results are "sorted by modification time (most recent
       first)". `run_ripgrep` collects into a `HashMap` and iterates it
       (`execute/grep.rs:438-455`), so order is randomised per call; no `sort`/`mtime`
@@ -7333,6 +7375,7 @@ Ordered by severity, not by area.
       promised ordering nor a truncation flag — `glob_result_to_json` emits
       `status: "ok"` unconditionally.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `execute/grep.rs:437-455` builds a `HashMap` and consumes it with `into_iter()`; neither `grep.rs` nor `file_glob.rs` contains any `sort` or `mtime` call, and the git-grep/git-ls-files fallbacks yield path order. Contradicts `grep.md:5` and `file_glob.md:3`. **The trailing "no truncation flag" rider is wrong** — `chat_stream.rs:816-821` appends an explicit notice.
+      **FIXED 2026-08-21:** Both promises removed from `grep.md` and `file_glob.md` and replaced with an explicit "order is unspecified — do not read anything into it", which is what the HashMap iteration actually gives.
 
 - [ ] **Clearing the global-search query leaves the ripgrep subprocess running.**
       `workspace/view/global_search/view.rs:872-878,913-919` reset the id and the
@@ -7463,12 +7506,13 @@ Ordered by severity, not by area.
       `cache_dir/autoupdate/`. The verified identity is never carried to `open`.
       **VERDICT PARTIAL — needs local write access (independent verifier, 2026-08-21):** Divergence real: hashed path is `dmg_path()` (`mac.rs:752-761`, used `:471,479`), executed path is `find_latest_dmg` over ALL subdirs by mtime (`:207,231-258`), no re-verification in `oss_open_installer`. But in the normal flow both resolve to the same file — failed downloads are deleted (`:481`) and `cleanup_all_except` runs (`:446`). Exploiting it requires local write access to the cache dir.
 
-- [ ] **`DECLINED.md:172` is factually wrong.** It states "This fork does not ship
+- [x] **`DECLINED.md:172` is factually wrong.** It states "This fork does not ship
       autoupdate… the release workflow publishes no update feed". `script/macos/bundle:351`
       and `script/windows/bundle.ps1:118` both set `autoupdate` for the OSS channel, and
       the workflow publishes the GitHub Releases that `github.rs` consumes as its feed.
       The decision recorded is not the code shipped.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `script/macos/bundle:351` and `bundle.ps1:118` add `autoupdate` to `FEATURES`, consumed by `cargo build --features` (`bundle.ps1:162`), and the workflow's `softprops/action-gh-release` step (`phosphor_release.yml:952-963`) publishes exactly the Release `github.rs:84` polls. Only the "not in Cargo.toml default" half is true.
+      **FIXED 2026-08-21:** Row rewritten. The agent also caught a nuance I had missed: `autoupdate_ui_revamp` IS in `app/Cargo.toml` default but is a DIFFERENT feature from `autoupdate`, which is not — so the row's first clause was true and only the feed claim was false.
 
 - [ ] **Linux OSS ships with autoupdate compiled out.** `script/linux/bundle:203` sets
       `FEATURES="release_bundle"` only, so all 523 lines of `autoupdate/linux.rs` are dead
@@ -7487,11 +7531,12 @@ Ordered by severity, not by area.
       names the above failure mode as the thing it exists to prevent.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `channel_versions_tests.rs:90-129` exercises only `v2026.05.26.2`, `v2026.05.26`, `2026.05.26.2` — none of which the pipeline emits. Its own header (`:85-89`) says the tests exist so the function does not "keep returning Err, misleading users into upgrading to a rolled-back version" — the exact live failure.
 
-- [ ] **Stale docs in the bundle scripts.** `script/macos/bundle:350` and
+- [x] **Stale docs in the bundle scripts.** `script/macos/bundle:350` and
       `bundle.ps1:117` name repo `zerx-lab/warp` (the code uses `jwp2987/phosphor`) and
       claim Inno Setup is not invoked — `windows.rs:348-357` invokes it.
       `settings/local_control.rs:8` cites the superseded pin `02b53fcd8`.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `script/macos/bundle:350` and `bundle.ps1:117` name `zerx-lab/warp` while `github.rs:13-14` uses `jwp2987`/`phosphor`. `bundle.ps1:117` claims "without invoking Inno Setup" but `windows.rs:347-357` spawns it with Inno switches. Both also claim downloads land in Downloads; mac uses `cache_dir/autoupdate/`, Windows a tempfile.
+      **FIXED 2026-08-21:** Repo corrected to `jwp2987/phosphor`; download locations corrected (mac `cache_dir/autoupdate/<id>`, Windows a tempfile); the "without invoking Inno Setup" claim removed — `windows.rs:347-357` invokes it. `local_control.rs:8` re-pinned to `42effe840`.
 
 ### Refutation round — editor, notebooks, file edits
 
@@ -7595,7 +7640,7 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED — 161 sites (independent verifier, 2026-08-21):** `check_cloud_boundary:45` matches only `^\s*use crate::(server|cloud_object)::`. Verifier tested empirically against a scratch file: the brace form does not match. **161** multi-line `use crate::{` + `server::`/`cloud_object::` sites are invisible, plus `ai/blocklist/controller.rs:75` — and the header at `:22` claims to cover exactly that form. One cited example was wrong: `code/editor/find/view.rs:10` is plain-form and allowlisted.
       **FIXED 2026-08-21:** Matcher widened from `^\s*use crate::(server|cloud_object)::` to all three forms — plain, `pub use`, and the `use crate::{...}` brace form including multi-line, via awk since no line-based regex can span the latter. **169 previously-invisible sites** surfaced, so the allowlist understated the retained cloud surface by 62% (273 → 442). Rebaselined with a header recording that these are pre-existing, not new. Proved by probe: all four forms are now caught and an unrelated import is correctly ignored.
 
-- [ ] **LSP servers are never shut down, and `TODO.md:672` claims the hook is wired.**
+- [x] **LSP servers are never shut down, and `TODO.md:672` claims the hook is wired.**
       `lib.rs:2360-2392` (`on_will_terminate`) goes straight from `writer.terminate()` to
       `PtySpawner`; the pin calls `lsp::LspManagerModel::terminate(ctx)` there
       (`42effe840:app/src/lib.rs:2691`), and `crates/lsp/src/manager.rs:306` has zero
@@ -7604,6 +7649,7 @@ Ordered by severity, not by area.
       comment claims to prevent. **Fifth TODO entry found stating the opposite of the
       code.**
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Fork `lib.rs:2360-2392` goes `PersistenceWriter` → `PtySpawner`; the pin has `lsp::LspManagerModel::handle(ctx).update(...manager.terminate(ctx))` at `42effe840:app/src/lib.rs:2692-2694`. `crates/lsp/src/manager.rs:306` has zero callers repo-wide, and TODO.md:673 lists "terminate hook" under Done. The only residual path is `Drop for LspServerModel` (`model.rs:745-747`), whose terminate merely detaches an async shutdown.
+      **FIXED 2026-08-21:** TODO entry moved out of Done into an open item stating the real state. The missing `LspManagerModel::terminate` call itself is NOT yet fixed — that is a code change, queued for a later wave.
 
 - [ ] **The embedding endpoint is frozen at startup.** `build_store_client` resolves once
       at `lib.rs:2209`; `set_endpoint` is called only by the daemon. Its own doc claims

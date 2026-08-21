@@ -5,7 +5,7 @@
 //! authoritative enablement bit for local control.
 //!
 //! Ported from Warp's `app/src/settings/local_control.rs` at the pinned
-//! oracle (`02b53fcd8`, Warp `2026.07.29.09.05` stable — see `ORACLE.md`).
+//! oracle (`42effe840`, Warp `2026.08.12` stable — see `ORACLE.md`).
 //! The oracle implements this against a `SecureSetting` trait defined in
 //! `crates/settings`; that trait does not exist in this fork and adding it is
 //! out of this change's scope (`app/src/settings/` only), so the same

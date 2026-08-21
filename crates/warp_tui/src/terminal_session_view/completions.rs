@@ -48,16 +48,30 @@ impl TuiTerminalSessionView {
     /// Warms the sources the completer reads from once a session's shell has
     /// bootstrapped, so the first Tab press does not pay for a cold engine.
     ///
-    /// **Partial vs. the oracle.** The pin also warms shell *functions* and
-    /// *builtins* here (`Session::load_all_function_names` /
-    /// `Session::load_all_builtins`, on background-executor tasks). Neither
-    /// loader — nor the deferred-name-set machinery they sit on
-    /// (`additional_function_names`, `additional_builtin_names`,
-    /// `load_deferred_name_set`, `ShellType::shell_command_to_get_all_functions`
-    /// / `_builtins`) — exists in this fork's `Session`. That absence predates
-    /// this port and is not part of the ported commit; function and builtin
-    /// names still come from the bootstrap snapshot, they are simply never
-    /// refreshed in-band afterwards.
+    /// **Partial vs. the oracle — and this is a real gap, not a justified
+    /// divergence.** The pin also warms shell *functions* and *builtins* here
+    /// (`42effe840:crates/warp_tui/src/terminal_session_view/completions.rs:47-50`,
+    /// two detached `background_executor` tasks). This function warms only
+    /// external commands.
+    ///
+    /// **Correction, 2026-08-20.** This comment used to claim the loaders and
+    /// their deferred-name-set machinery "do not exist in this fork's
+    /// `Session`". That was false in every part. All of it exists and is
+    /// public: `Session::load_all_function_names`
+    /// (`app/src/terminal/model/session.rs:1181`), `Session::load_all_builtins`
+    /// (`:1206`), `Session::load_deferred_name_set` (`:1232`), the
+    /// `additional_function_names` / `additional_builtin_names` cells (`:922`,
+    /// `:924`), and `ShellType::shell_command_to_get_all_functions` /
+    /// `_builtins` (`crates/warp_terminal/src/shell/mod.rs:770`, `:796`). The
+    /// fork's **GUI** already warms both, exactly as the pin does
+    /// (`app/src/terminal/view.rs:12766-12773`).
+    ///
+    /// So the accurate statement is: the TUI simply does not call them. Its
+    /// function and builtin names come from the bootstrap snapshot and are
+    /// never refreshed in-band, while the GUI's are — a behavioural difference
+    /// between the two front-ends of this same fork, with nothing blocking the
+    /// two `background_executor().spawn(...).detach()` calls that would close
+    /// it. Left open deliberately rather than fixed in a comment-only change.
     pub(super) fn warm_shell_completion_sources(
         &self,
         session: Arc<Session>,

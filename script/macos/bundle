@@ -347,7 +347,14 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     BUNDLE_ID="dev.phosphor.Phosphor"
     WARP_APP_NAME="Phosphor"
     WARP_SCHEME_NAME="phosphor"
-    # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads the DMG to Downloads, and doesn't auto-overwrite the .app.
+    # autoupdate polls the GitHub Releases API for jwp2987/phosphor -- the repo
+    # is REPO_OWNER/REPO_NAME in app/src/autoupdate/github.rs:13-14, not a URL
+    # configured here. On the Oss channel it downloads the DMG to
+    # cache_dir/autoupdate/<update_id>/ (get_download_dir, app/src/autoupdate/mac.rs:841-846)
+    # -- NOT to ~/Downloads -- and never overwrites the .app: there is no Developer ID
+    # signature, so instead of the official mount+cp+codesign path it just runs
+    # `/usr/bin/open <dmg>` after this process exits (mac.rs:142-150, :211-220) and the
+    # user drags the app into /Applications themselves.
     FEATURES="release_bundle,extern_plist,autoupdate"
 fi
 

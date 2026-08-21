@@ -1,6 +1,6 @@
 - Fast file-pattern matching tool that works with any codebase size.
 - Supports glob patterns like "**/*.js" or "src/**/*.{ts,tsx}". Also supports `?` (single char), `*` (single segment), and `**` (multiple segments).
-- Returns matching file paths sorted by modification time (most recent first).
+- Returns matching file paths. The order is unspecified and depends on the underlying lister (`git ls-files`, `find`, or `Get-ChildItem`) — it is NOT sorted by modification time, so do not treat the first result as the most recently changed.
 - Use this tool when you need to find files by name pattern.
 - You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.
 - For finding files containing specific text, use `grep` instead.

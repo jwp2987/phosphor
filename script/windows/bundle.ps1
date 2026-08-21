@@ -114,7 +114,14 @@ if ("$CHANNEL" -eq 'local') {
     $BINARY_NAME = 'phosphor-oss.exe'
     $APP_NAME = 'Phosphor'
     # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
-    # autoupdate goes through GitHub Release (zerx-lab/warp); it only downloads to Downloads, without invoking Inno Setup.
+    # autoupdate polls the GitHub Releases API for jwp2987/phosphor -- the repo is
+    # REPO_OWNER/REPO_NAME in app/src/autoupdate/github.rs:13-14, not a URL configured
+    # here. The installer is downloaded to a tempfile (tempfile::Builder in
+    # app/src/autoupdate/windows.rs:72-75), NOT to ~/Downloads, and Inno Setup IS
+    # invoked: windows.rs:347-357 execs the downloaded installer with Inno switches
+    # (/SP- /NORESTART /LOG /update=1 /NOCLOSEAPPLICATIONS /DIR=...). On the Oss channel
+    # it deliberately omits /SILENT, so the user sees the standard install UI and can
+    # cancel -- that is the difference from the official channels, not "no Inno Setup".
     $FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'
 }
 
