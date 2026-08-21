@@ -2,8 +2,9 @@
 //!
 //! New, not ported — the pin had no client-side embeddings code at all. These
 //! cover the two things that would corrupt an index silently if they were
-//! wrong: the truncation-parameter branch between provider families, and the
-//! ordering of the returned vectors.
+//! wrong — the truncation-parameter branch between provider families, and the
+//! ordering of the returned vectors — plus the two transport refusals, which
+//! are the only things here that fail *dangerously* rather than merely wrongly.
 
 use futures::executor::block_on;
 
@@ -246,8 +247,10 @@ fn a_rerank_provider_reports_the_model_it_will_call() {
 
 #[test]
 fn a_rerank_provider_refuses_to_send_a_key_over_plaintext() {
-    // Same rule as the chat and embedding paths. A rerank request carries the
-    // user's source code as well as their key, so this one is not optional.
+    // Same rule as the chat and embedding paths. This one covers the *key*
+    // only — the code in `documents` is covered by `is_plaintext_payload_risk`,
+    // asserted separately below, because this guard does not run at all when
+    // the provider needs no key.
     block_on(async {
         let provider = HttpRerankProvider::new(
             Client::new_for_test(),
@@ -286,6 +289,170 @@ fn an_empty_rerank_costs_no_request() {
                 .await
                 .expect("nothing to rerank is not a failure")
                 .is_empty()
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Transport: the credential rule and the payload rule
+// ---------------------------------------------------------------------------
+//
+// The defect these exist for: the plaintext check used to live *inside*
+// `if !api_key.is_empty()` on both request paths, so a keyless provider on a
+// public `http://` endpoint posted every code fragment in the clear with
+// nothing checked at all. Every assertion below that names "source code" fails
+// against that version.
+
+fn a_keyless_endpoint(base_url: &str) -> EmbeddingEndpoint {
+    EmbeddingEndpoint {
+        base_url: base_url.to_owned(),
+        api_key: String::new(),
+    }
+}
+
+#[test]
+fn a_keyless_public_http_endpoint_is_refused_before_any_code_is_posted() {
+    block_on(async {
+        let provider = HttpEmbeddingProvider::new(
+            Client::new_for_test(),
+            Some(a_keyless_endpoint("http://embeddings.example.com/v1")),
+        );
+
+        let error = provider
+            .embed(EmbeddingConfig::default(), vec!["fn main() {}".to_owned()])
+            .await
+            .expect_err("a public plaintext host must be refused with or without a key");
+        assert!(
+            error.to_string().contains("source code"),
+            "the refusal must name what is being protected, not the key that is \
+             absent here: {error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("http://embeddings.example.com/v1"),
+            "the refusal must name the endpoint the user has to change: {error}"
+        );
+    });
+}
+
+#[test]
+fn a_keyless_public_http_rerank_endpoint_is_refused_too() {
+    // `documents` are the code fragments a search already matched and `query` is
+    // what the user typed, so this path leaks the same class of thing.
+    block_on(async {
+        let provider = HttpRerankProvider::new(
+            Client::new_for_test(),
+            a_keyless_endpoint("http://rerank.example.com/v1"),
+            "rerank-2.5",
+        );
+
+        let error = provider
+            .rerank("query", vec!["fn a() {}".to_owned()])
+            .await
+            .expect_err("a public plaintext host must be refused with or without a key");
+        assert!(
+            error.to_string().contains("source code"),
+            "the refusal must name what is being protected: {error}"
+        );
+    });
+}
+
+#[test]
+fn loopback_and_private_network_hosts_may_carry_code_without_tls() {
+    // The deployment this tolerance exists for: a self-hosted embedding server,
+    // either on this machine or on a box the user owns. Refusing these would
+    // break a real setup for no gain the user has not already accepted.
+    for base_url in [
+        "http://localhost:11434/v1",
+        "http://127.0.0.1:11434/v1",
+        "http://[::1]:11434/v1",
+        "http://192.168.1.50:11434/v1",
+        "http://10.0.0.5:8080/v1",
+        "http://172.16.4.4:8080/v1",
+        "http://169.254.10.10:8080/v1",
+        "http://[fd00::1]:8080/v1",
+        "http://[fe80::1]:8080/v1",
+        "https://api.voyageai.com/v1",
+    ] {
+        assert!(
+            !is_plaintext_payload_risk(base_url),
+            "{base_url} must not be refused"
+        );
+    }
+}
+
+#[test]
+fn public_and_unresolvable_hosts_may_not() {
+    for base_url in [
+        "http://api.example.com/v1",
+        "http://8.8.8.8/v1",
+        "http://[2606:4700::1111]/v1",
+        // Fail-closed: nothing short of a DNS lookup could say whether a bare
+        // hostname is on the user's own network, so it is treated as public.
+        // The refusal names both fixes, so a user who really is pointing at a
+        // LAN box is told what to do.
+        "http://embeddings.internal:8080/v1",
+        "http://box:11434/v1",
+        // Non-loopback by `is_loopback_host`'s definition, and not private
+        // either.
+        "http://0.0.0.0:1/v1",
+    ] {
+        assert!(
+            is_plaintext_payload_risk(base_url),
+            "{base_url} must be refused"
+        );
+    }
+}
+
+#[test]
+fn the_payload_rule_is_strictly_weaker_than_the_credential_rule() {
+    // The invariant the two-guard arrangement rests on: anything the payload
+    // rule refuses, the credential rule refuses too. If that ever stopped
+    // holding there would be a URL where checking the credential first hid a
+    // code exposure behind a key-shaped error message.
+    for base_url in [
+        "http://api.example.com/v1",
+        "http://192.168.1.50:11434/v1",
+        "http://localhost:11434/v1",
+        "https://api.voyageai.com/v1",
+        "http://box:11434/v1",
+    ] {
+        assert!(
+            !is_plaintext_payload_risk(base_url)
+                || super::super::is_plaintext_bearer_risk(base_url),
+            "{base_url} is refused for its payload but not for its credential"
+        );
+    }
+
+    // And the rules are genuinely different widths, or the payload rule would
+    // be dead code: a LAN box is fine for code, never for a key.
+    assert!(!is_plaintext_payload_risk("http://192.168.1.50:11434/v1"));
+    assert!(super::super::is_plaintext_bearer_risk(
+        "http://192.168.1.50:11434/v1"
+    ));
+}
+
+#[test]
+fn a_keyed_private_network_endpoint_is_still_refused_for_its_key() {
+    // The tolerance is for the code, not for the credential: a bearer token
+    // skimmed off a LAN works from anywhere in the world afterwards.
+    block_on(async {
+        let provider = HttpEmbeddingProvider::new(
+            Client::new_for_test(),
+            Some(EmbeddingEndpoint {
+                base_url: "http://192.168.1.50:11434/v1".to_owned(),
+                api_key: "sk-secret".to_owned(),
+            }),
+        );
+
+        let error = provider
+            .embed(EmbeddingConfig::default(), vec!["fn main() {}".to_owned()])
+            .await
+            .expect_err("a key must not go out in the clear, even on the user's own LAN");
+        assert!(
+            error.to_string().contains("refusing to send the API key"),
+            "the credential rule is the one that applies here: {error}"
         );
     });
 }

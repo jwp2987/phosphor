@@ -30,6 +30,29 @@
 //! capability rather than a setting — see [`SUPPORTED_RERANK_MODELS`] — and
 //! returning `None` is an ordinary outcome, because the index has a hybrid
 //! fallback that needs no reranking model at all.
+//!
+//! # Transport
+//!
+//! Both request paths refuse to open a socket at all under two separate rules,
+//! because two different things travel on the wire and they are not equally
+//! exposed:
+//!
+//! * the **credential** — `super::is_plaintext_bearer_risk`, `https://` or
+//!   loopback only, because a bearer token skimmed off any wire works from
+//!   anywhere afterwards; and
+//! * the **payload** — `is_plaintext_payload_risk`, the user's own source code,
+//!   which additionally tolerates an address on the user's own network, because
+//!   a self-hosted embedding server on the LAN box next to them is a deployment
+//!   this fork means to support.
+//!
+//! (Both are private, so they are named rather than linked — rustdoc's
+//! `private_intra_doc_links` lint fires on a link from a public module to a
+//! private item.)
+//!
+//! The second rule exists because the first one was once the only one *and* was
+//! nested inside `if !api_key.is_empty()`: a keyless provider on a public
+//! `http://` endpoint posted every code fragment in the clear with nothing
+//! checked at all.
 
 use std::sync::{Arc, Mutex};
 
@@ -359,6 +382,95 @@ fn uses_voyage_dimension_field(embedding_config: EmbeddingConfig) -> bool {
     }
 }
 
+/// Whether `host` is an address on a network the user themselves administers:
+/// an RFC 1918 private range (`10/8`, `172.16/12`, `192.168/16`), IPv4
+/// link-local (`169.254/16`), IPv6 unique-local (`fc00::/7`), or IPv6
+/// link-local (`fe80::/10`).
+///
+/// Loopback is deliberately *not* folded in here — [`is_plaintext_payload_risk`]
+/// asks [`is_loopback_host`][super::is_loopback_host] separately — so the two
+/// categories stay nameable apart: loopback never reaches a wire at all, a
+/// private address reaches a wire the user owns.
+///
+/// A bare hostname (`embeddings.internal`) is **not** private by this
+/// definition, because nothing short of a DNS lookup could say whether it is,
+/// and the reasoning that keeps [`is_loopback_host`][super::is_loopback_host] a
+/// literal check applies here verbatim. That is the fail-closed direction: such
+/// a host is refused over `http://`, and the refusal names the fixes.
+fn is_private_network_host(host: &str) -> bool {
+    use std::net::IpAddr;
+
+    // `Url::host_str` has already stripped the brackets from an IPv6 literal;
+    // tolerate a caller passing the raw bracketed form, as `is_loopback_host`
+    // does.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => ip.is_private() || ip.is_link_local(),
+        // `Ipv6Addr::is_unique_local` and `::is_unicast_link_local` are both
+        // still unstable, so the two prefixes are matched by hand.
+        Ok(IpAddr::V6(ip)) => {
+            let leading = ip.segments()[0];
+            leading & 0xfe00 == 0xfc00 || leading & 0xffc0 == 0xfe80
+        }
+        Err(_) => false,
+    }
+}
+
+/// Whether POSTing to `url_str` would put the user's source code on a wire they
+/// do not control, in the clear.
+///
+/// # Why this is not [`is_plaintext_bearer_risk`][super::is_plaintext_bearer_risk]
+///
+/// That guard is about the *credential*: a bearer token skimmed off a LAN works
+/// from anywhere in the world afterwards, so it may travel over `https://` or to
+/// loopback and nowhere else. This one is about the *payload*: the request body
+/// of `/embeddings` and `/rerank` is the user's own code, and pointing a provider
+/// at a self-hosted embedding server on the LAN is a legitimate deployment —
+/// refusing `http://192.168.1.50` outright would break it for no gain the user
+/// has not already accepted by typing that address.
+///
+/// So the two are deliberately different widths, and both run. This one is the
+/// strictly weaker rule: every URL it refuses, the credential rule refuses too.
+/// A *keyed* provider on a plaintext LAN host is therefore still refused — on
+/// the credential rule, which is the one reported.
+fn is_plaintext_payload_risk(url_str: &str) -> bool {
+    match url::Url::parse(url_str.trim()) {
+        Ok(url) => {
+            url.scheme() == "http"
+                && !url.host_str().is_some_and(|host| {
+                    super::is_loopback_host(host) || is_private_network_host(host)
+                })
+        }
+        // Unparseable: no request can be built from it either, so it fails
+        // downstream with an error about the URL rather than a misleading one
+        // about plaintext. Same disposition as `is_plaintext_bearer_risk`.
+        Err(_) => false,
+    }
+}
+
+/// The credential refusal, shared by the embedding and rerank paths so the two
+/// cannot drift.
+///
+/// The wording is asserted on in `app/src/ai/codebase_embeddings.rs`, where it is
+/// the observable proving a rotated key reached the client the manager holds.
+fn plaintext_bearer_refusal(base_url: &str) -> IndexError {
+    IndexError::Other(anyhow::anyhow!(
+        "refusing to send the API key to {base_url} over plaintext HTTP — use https, or point this provider at a local runtime"
+    ))
+}
+
+/// The payload refusal, shared the same way.
+///
+/// It names the private-network escape as well as `https`, because a user who
+/// runs their own embedding server has a second correct answer, and an error
+/// that only said "use https" would send them looking for a certificate they do
+/// not need.
+fn plaintext_payload_refusal(base_url: &str) -> IndexError {
+    IndexError::Other(anyhow::anyhow!(
+        "refusing to send source code to {base_url} over plaintext HTTP — this request body is your code, and that host is neither loopback nor an address on your own network. Use https, or point this provider at a local runtime"
+    ))
+}
+
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 impl EmbeddingProvider for HttpEmbeddingProvider {
@@ -383,17 +495,26 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
             output_dimension: voyage.then_some(dimensions),
         };
 
+        // Two refusals, neither nested inside the other, both before a socket
+        // is opened. Strictest first: the credential rule refuses a superset of
+        // what the payload rule refuses, so where both apply the credential is
+        // what the user is told about.
+        let has_key = !endpoint.api_key.trim().is_empty();
+        if has_key && super::is_plaintext_bearer_risk(&endpoint.base_url) {
+            return Err(plaintext_bearer_refusal(&endpoint.base_url));
+        }
+        // Unconditional on the key: `input` above is the user's source code, and
+        // a provider that needs no key exposes it exactly as much as one that
+        // does. This check used to live *inside* the `has_key` branch, which is
+        // why a keyless provider on a public `http://` endpoint had no guard at
+        // all.
+        if is_plaintext_payload_risk(&endpoint.base_url) {
+            return Err(plaintext_payload_refusal(&endpoint.base_url));
+        }
+
         let url = format!("{}/embeddings", endpoint.base_url);
         let mut request = self.client.post(&url).json(&body);
-        if !endpoint.api_key.trim().is_empty() {
-            // Same rule as the chat path: an API key never goes out as a
-            // plaintext bearer token to a non-loopback host.
-            if super::is_plaintext_bearer_risk(&endpoint.base_url) {
-                return Err(IndexError::Other(anyhow::anyhow!(
-                    "refusing to send the API key to {} over plaintext HTTP — use https, or point this provider at a local runtime",
-                    endpoint.base_url
-                )));
-            }
+        if has_key {
             request = request.bearer_auth(&endpoint.api_key);
         }
 
@@ -578,17 +699,20 @@ impl RerankProvider for HttpRerankProvider {
             documents,
         };
 
+        // The same pair as the embedding path, for the same reasons — and the
+        // payload here is if anything more sensitive: `documents` are the code
+        // fragments a search already matched, and `query` is what the user asked.
+        let has_key = !self.endpoint.api_key.trim().is_empty();
+        if has_key && super::is_plaintext_bearer_risk(&self.endpoint.base_url) {
+            return Err(plaintext_bearer_refusal(&self.endpoint.base_url));
+        }
+        if is_plaintext_payload_risk(&self.endpoint.base_url) {
+            return Err(plaintext_payload_refusal(&self.endpoint.base_url));
+        }
+
         let url = format!("{}/rerank", self.endpoint.base_url);
         let mut request = self.client.post(&url).json(&body);
-        if !self.endpoint.api_key.trim().is_empty() {
-            // Same rule as the embedding and chat paths: an API key never goes
-            // out as a plaintext bearer token to a non-loopback host.
-            if super::is_plaintext_bearer_risk(&self.endpoint.base_url) {
-                return Err(IndexError::Other(anyhow::anyhow!(
-                    "refusing to send the API key to {} over plaintext HTTP — use https, or point this provider at a local runtime",
-                    self.endpoint.base_url
-                )));
-            }
+        if has_key {
             request = request.bearer_auth(&self.endpoint.api_key);
         }
 

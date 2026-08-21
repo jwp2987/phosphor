@@ -901,9 +901,12 @@ fn remote_embedding_provider(
 /// `wiring_tests` below. Neither set substitutes for the other: this one would
 /// still pass with every subscription deleted.
 ///
-/// No request leaves the machine: an `http://` non-loopback endpoint carrying a
-/// key is refused by the plaintext-bearer guard before the socket is opened, so
-/// "the endpoint took effect" is observable offline and deterministically.
+/// No request leaves the machine: an `http://` endpoint that is neither loopback
+/// nor on a private network is refused by `agent_providers::embeddings`' two
+/// transport guards -- the credential rule when a key is present, the payload
+/// rule regardless -- before the socket is opened, so "the endpoint took effect"
+/// is observable offline and deterministically. The hosts below are
+/// `*.example.invalid`, which is public by both rules.
 #[cfg(test)]
 mod endpoint_refresh_tests {
     use std::path::PathBuf;
@@ -960,9 +963,10 @@ mod endpoint_refresh_tests {
         embed_error_for(client, EmbeddingConfig::default())
     }
 
-    /// A non-loopback `http://` endpoint with a key: the plaintext-bearer guard
-    /// refuses it before a socket is opened, so "which endpoint would this
-    /// request have gone to" is observable offline and deterministically.
+    /// A public `http://` endpoint with a key: both transport guards refuse it
+    /// before a socket is opened, so "which endpoint would this request have
+    /// gone to" is observable offline and deterministically. Only the error's
+    /// *host* is asserted on, so it does not matter which of the two reports.
     fn an_endpoint(host: &str) -> EmbeddingEndpoint {
         EmbeddingEndpoint {
             base_url: format!("http://{host}/v1"),
@@ -1246,15 +1250,15 @@ mod wiring_tests {
     use crate::test_util::settings::initialize_settings_for_tests;
     use crate::workspaces::user_workspaces::UserWorkspaces;
 
-    /// Non-loopback `http://`, so the plaintext-bearer guard refuses the request
-    /// before a socket is opened once a key is present. Nothing is ever sent.
+    /// A public `http://` host, so `agent_providers::embeddings` refuses the
+    /// request before a socket is opened. Nothing is ever sent.
     const A_HOST: &str = "embeddings.example.invalid";
 
     /// The same, for the test whose *failing* path would still have a keyless
-    /// endpoint and therefore would not be stopped by the guard. `0.0.0.0` is
-    /// non-loopback by the guard's definition (`is_loopback_host`), so a key
-    /// still triggers the refusal, but a connection to it can only ever be
-    /// refused by this machine — a regression cannot turn into real traffic.
+    /// endpoint and so would report the payload refusal rather than the
+    /// credential one. `0.0.0.0` is neither loopback nor private, so both rules
+    /// apply and a connection to it could in any case only ever be refused by
+    /// this machine — a regression cannot turn into real traffic.
     const A_KEYLESS_HOST: &str = "0.0.0.0:1";
 
     fn init_indexing_test_app(app: &mut App) {
@@ -1391,8 +1395,10 @@ mod wiring_tests {
             // guard it trips: refusing to put a bearer token on a plaintext
             // non-loopback connection. Without the `AgentProviderSecrets`
             // subscription the endpoint still has the empty key it was resolved
-            // with, the guard does not apply, and the error is a transport
-            // failure instead.
+            // with, the credential rule does not apply, and the error is the
+            // *payload* refusal — which names the code being protected and not
+            // the key, so this assertion still fails against a broken
+            // subscription.
             let error = embed_error(&store_client).await.to_string();
             assert!(
                 error.contains("refusing to send the API key"),

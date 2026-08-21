@@ -36,8 +36,10 @@ use super::{CodeSettingsPageAction, CodeSettingsPageView};
 use crate::ai::persisted_workspace::{EnablementState, PersistedWorkspace};
 use crate::appearance::Appearance;
 use crate::settings::CodeSettings;
-use crate::settings_view::settings_page::SettingsPageMeta as _;
 use crate::settings_view::SettingsSection;
+use crate::settings_view::settings_page::SettingsPageMeta as _;
+#[cfg(not(target_family = "wasm"))]
+use crate::workspaces::user_workspaces::UserWorkspaces;
 
 fn add_code_page(app: &mut App) -> warpui::ViewHandle<CodeSettingsPageView> {
     crate::test_util::settings::initialize_settings_for_tests(app);
@@ -65,11 +67,23 @@ fn register_base_singletons(app: &mut App) {
 /// `state`. `navigated_ts` must be set: `workspaces()` filters out non-persisted
 /// entries, so a workspace without a timestamp never reaches the page at all.
 ///
-/// Callers must hold a `FullSourceCodeEmbedding` override for the duration --
-/// that flag is on by default in this fork, and it is what makes
-/// `PersistedWorkspace::new` subscribe to `CodebaseIndexManager` and
-/// `BlocklistAIHistoryModel`, two singletons this page never touches and whose
-/// `handle()` would panic here. Nothing on the LSP path reads the flag.
+/// Callers must hold a `FullSourceCodeEmbedding` override for the duration.
+///
+/// **That flag is off in this fork, not on.** It is `DOGFOOD_FLAGS`-only, and
+/// `DOGFOOD_FLAGS` enables nothing at runtime here -- this fork ships no binary
+/// that passes those lists to `with_additional_features`
+/// (`crates/warp_features/src/lib.rs:800-819`) -- so its one enable path is
+/// `ZAP_UNSTABLE_FEATURES=full_source_code_embedding`. The override callers hold
+/// is therefore `false`, and it is a pin against a developer shell that has that
+/// variable set rather than a correction of the default: with the flag on,
+/// `PersistedWorkspace::new` subscribes to `CodebaseIndexManager` and
+/// `BlocklistAIHistoryModel` (`ai/persisted_workspace.rs:335`), two singletons
+/// this page never touches and whose `handle()` would panic here. Nothing on the
+/// LSP path reads the flag.
+///
+/// The earlier version of this comment said the flag was "on by default in this
+/// fork", which read as if these tests were *disabling* the shipped state. They
+/// are holding it.
 fn register_persisted_workspace(app: &mut App, server_type: LSPServerType, state: EnablementState) {
     let path = PathBuf::from(WORKSPACE);
     let metadata = WorkspaceMetadata {
@@ -258,6 +272,91 @@ fn code_page_action_writes_through_to_auto_indexing_setting() {
             page.handle_action(&CodeSettingsPageAction::ToggleAutoIndexing, ctx);
         });
         assert!(!app.read(|ctx| *CodeSettings::as_ref(ctx).auto_indexing_enabled));
+    });
+}
+
+/// The three codebase-indexing rows, and the gates that decide whether they are
+/// on the page at all.
+///
+/// Not a screenshot assertion, and not a vacuous one: `PageType::update_filter`
+/// (`settings_view/settings_page.rs:1412-1430`) calls each widget's
+/// `should_render` **before** matching its search terms, so a query that matches
+/// exactly one widget is a real read of that widget's gate. Each query below is
+/// a substring of exactly one widget's `search_terms` in `code_page.rs` --
+/// matching is `terms.to_lowercase().contains(word)`, which is why `embeddings`
+/// (plural) picks out the codebase-context row without also hitting the
+/// embedding-model row's `embedding model`.
+///
+/// Gated on `not(wasm)` because `codebase_context_enabled` is
+/// `SupportedPlatforms::DESKTOP`, which is defined as exactly
+/// `cfg!(not(target_family = "wasm"))` (`crates/settings/src/lib.rs:200`), so on
+/// wasm `codebase_indexing_settings_supported` is false whatever the flag says
+/// and these rows correctly never appear.
+///
+/// **What this still does not cover.** The widgets' `render` bodies are never
+/// executed. `PageType` owns the boxed widgets privately, so the only way in is
+/// `View::render` on the whole page, which would also run every *other* widget's
+/// render -- including `LanguageServersWidget`, whose tolerance of missing
+/// singletons is the separate subject of
+/// `the_page_is_constructible_without_the_lsp_singletons`. So what is asserted
+/// here is installation and gating: a row nobody added to `build_page`, or one
+/// whose `should_render` is wrong, fails this test; a row that panics while
+/// drawing does not.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
+    App::test((), |mut app| async move {
+        register_base_singletons(&mut app);
+        // Read by `AutoIndexingToggleWidget::should_render`, and only once the
+        // flag below is on -- the other two rows never reach for it.
+        app.add_singleton_model(UserWorkspaces::default_mock);
+
+        let (_window_id, page) =
+            app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
+
+        // The shipped state: the flag is dark, so none of the three rows exist.
+        page.update(&mut app, |view, ctx| {
+            for query in ["embeddings", "voyage", "automatic"] {
+                assert!(
+                    !view.update_filter(query, ctx).is_truthy(),
+                    "{query} matched a widget with FullSourceCodeEmbedding off"
+                );
+            }
+            view.update_filter("", ctx);
+        });
+
+        let _indexing = FeatureFlag::FullSourceCodeEmbedding.override_enabled(true);
+
+        page.update(&mut app, |view, ctx| {
+            assert!(
+                view.update_filter("embeddings", ctx).is_truthy(),
+                "the codebase-context toggle is not reachable from the Code page"
+            );
+            assert!(
+                view.update_filter("voyage", ctx).is_truthy(),
+                "the embedding-model readout is not reachable from the Code page"
+            );
+            // The auto-indexing row is additionally gated on codebase context
+            // being on -- hidden rather than greyed, which is what the pin does.
+            assert!(
+                !view.update_filter("automatic", ctx).is_truthy(),
+                "the auto-indexing row must stay hidden while codebase context is off"
+            );
+            view.update_filter("", ctx);
+        });
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(&CodeSettingsPageAction::ToggleCodebaseContext, ctx);
+        });
+
+        page.update(&mut app, |view, ctx| {
+            assert!(
+                view.update_filter("automatic", ctx).is_truthy(),
+                "turning codebase context on must reveal the auto-indexing row"
+            );
+            view.update_filter("", ctx);
+        });
     });
 }
 
