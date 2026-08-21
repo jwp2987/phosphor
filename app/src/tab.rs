@@ -1,5 +1,5 @@
 use crate::ai::agent::conversation::ConversationStatus;
-use crate::ai::conversation_status_ui::{render_status_element, STATUS_ELEMENT_PADDING};
+use crate::ai::conversation_status_ui::{STATUS_ELEMENT_PADDING, render_status_element};
 use crate::appearance::Appearance;
 /// Tab module contains structures related to Tabs (such as TabData or TabComponent) that simplify
 /// the rendering and management of tabs in general.
@@ -19,11 +19,12 @@ use crate::terminal::shared_session::render_util::shared_session_indicator_color
 use crate::terminal::view::TerminalViewState;
 use crate::themes::theme::{AnsiColorIdentifier, Fill as ThemeFill, VerticalGradient};
 use crate::ui_components::buttons::icon_button;
-use crate::ui_components::color_dot::{render_color_dot, TAB_COLOR_OPTIONS};
-use crate::ui_components::icons::{Icon, ICON_DIMENSIONS};
-use crate::util::color::{coloru_with_opacity, Opacity};
+use crate::ui_components::color_dot::{TAB_COLOR_OPTIONS, render_color_dot};
+use crate::ui_components::icons::{ICON_DIMENSIONS, Icon};
+use crate::util::color::{Opacity, coloru_with_opacity};
 use crate::util::truncation::truncate_from_end;
 
+use crate::BlocklistAIHistoryModel;
 use crate::window_settings::WindowSettings;
 use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
@@ -33,14 +34,13 @@ use crate::workspace::tab_settings::{
 use crate::workspace::{
     PaneViewLocator, TabBarDropTargetData, TabBarLocation, TabContextMenuAnchor, WorkspaceAction,
 };
-use crate::BlocklistAIHistoryModel;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
 use serde::{Deserialize, Serialize};
 use warp_core::context_flag::ContextFlag;
 use warp_core::ui::builder::UiBuilder;
-use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::AnsiColors;
+use warp_core::ui::theme::color::internal_colors;
 use warpui::elements::{
     Align, Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius,
     CrossAxisAlignment, DragAxis, Draggable, DraggableState, DropTarget, Element, Empty, Fill,
@@ -211,6 +211,34 @@ pub struct TabData {
     pub pinned: bool,
 }
 
+/// Whether the tab context menu should offer its "move left"/"move right"
+/// entries ("move up"/"move down" under vertical tabs).
+///
+/// Filled in from `Workspace::can_move_tab`, which is the single source of
+/// truth for whether a one-slot reorder is legal: a neighbouring tab merely
+/// existing is not enough, the move must also stay on its side of the
+/// pinned/unpinned boundary and must not tear a tab out of its group. Offering
+/// an entry that `Workspace::move_tab` will refuse is what made the menu look
+/// like it could evict a pinned tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabMoveGating {
+    pub can_move_left: bool,
+    pub can_move_right: bool,
+}
+
+impl TabMoveGating {
+    /// List-bounds-only gating, i.e. what every caller did before
+    /// `Workspace::can_move_tab` existed. Test-only on purpose: production
+    /// callers have a `Workspace` and must ask it instead.
+    #[cfg(test)]
+    pub fn from_list_bounds(index: usize, tabs_len: usize) -> Self {
+        Self {
+            can_move_left: index != 0,
+            can_move_right: index + 1 < tabs_len,
+        }
+    }
+}
+
 const TAB_COLOR_ICON_PATH: &str = "bundled/svg/ellipse.svg";
 const TAB_NO_COLOR_ICON_PATH: &str = "bundled/svg/no_color_ellipse.svg";
 
@@ -252,7 +280,13 @@ impl TabData {
             )
     }
 
-    /// Returns the menu items for the context menu on right mouse click.
+    /// Returns the menu items for the context menu on right mouse click, with
+    /// the move entries gated on list bounds alone.
+    ///
+    /// Test-only: bounds are not a sufficient gate, so every production menu
+    /// path calls [`Self::menu_items_with_pane_name_target`] with real
+    /// [`TabMoveGating`] from `Workspace::can_move_tab`.
+    #[cfg(test)]
     pub fn menu_items(
         &self,
         index: usize,
@@ -266,6 +300,7 @@ impl TabData {
             tabs_len,
             tab_groups,
             is_only_member_of_group,
+            TabMoveGating::from_list_bounds(index, tabs_len),
             None,
             ctx,
         )
@@ -277,6 +312,7 @@ impl TabData {
         tabs_len: usize,
         tab_groups: &HashMap<TabGroupId, TabGroup>,
         is_only_member_of_group: bool,
+        move_gating: TabMoveGating,
         pane_name_target: Option<PaneNameMenuTarget>,
         ctx: &AppContext,
     ) -> Vec<MenuItem<WorkspaceAction>> {
@@ -289,7 +325,7 @@ impl TabData {
             self.tab_group_menu_items(index, tab_groups, is_only_member_of_group),
             self.session_sharing_menu_items(index, ctx),
             self.copy_metadata_menu_items(pane_name_target, ctx),
-            self.modify_tab_menu_items(index, tabs_len, pane_name_target, ctx),
+            self.modify_tab_menu_items(index, move_gating, pane_name_target, ctx),
             self.close_tab_menu_items(index, tabs_len, ctx),
             Self::save_config_menu_items(index),
             self.color_option_menu_items(index, terminal_colors),
@@ -316,9 +352,11 @@ impl TabData {
         } else {
             ("Pin tab", WorkspaceAction::PinTab(index))
         };
-        vec![MenuItemFields::new(label)
-            .with_on_select_action(action)
-            .into_item()]
+        vec![
+            MenuItemFields::new(label)
+                .with_on_select_action(action)
+                .into_item(),
+        ]
     }
 
     /// Returns the tab-group entries for the top-level right-click menu:
@@ -520,7 +558,7 @@ impl TabData {
     fn modify_tab_menu_items(
         &self,
         index: usize,
-        tabs_len: usize,
+        move_gating: TabMoveGating,
         pane_name_target: Option<PaneNameMenuTarget>,
         ctx: &AppContext,
     ) -> Vec<MenuItem<WorkspaceAction>> {
@@ -552,10 +590,12 @@ impl TabData {
         if let Some(pane_name_target) = pane_name_target {
             menu_items.extend(self.pane_name_menu_items(pane_name_target, ctx));
         }
-        // Don't show options that aren't relevant (moving end tabs, closing
-        // other tabs when you don't have any others to close)
-        let not_last_tab = index != tabs_len - 1;
-        if not_last_tab {
+        // Don't show options that aren't relevant. A move is only offered when
+        // `Workspace::can_move_tab` says it would actually happen -- being able
+        // to name a neighbouring index is not the same as being allowed to swap
+        // with it, and hiding the entry is what `can_move_tab_group` already
+        // does for the group-level move entries.
+        if move_gating.can_move_right {
             menu_items.push(
                 MenuItemFields::new(if uses_vertical_tabs {
                     crate::t!("menu-tab-move-down")
@@ -566,7 +606,7 @@ impl TabData {
                 .into_item(),
             );
         }
-        if index != 0 {
+        if move_gating.can_move_left {
             menu_items.push(
                 MenuItemFields::new(if uses_vertical_tabs {
                     crate::t!("menu-tab-move-up")
@@ -598,9 +638,11 @@ impl TabData {
             .custom_vertical_tabs_title()
             .is_some();
 
-        let mut menu_items = vec![MenuItemFields::new(target.rename_label)
-            .with_on_select_action(WorkspaceAction::RenamePane(target.locator))
-            .into_item()];
+        let mut menu_items = vec![
+            MenuItemFields::new(target.rename_label)
+                .with_on_select_action(WorkspaceAction::RenamePane(target.locator))
+                .into_item(),
+        ];
         if has_custom_name {
             menu_items.push(
                 MenuItemFields::new(target.reset_label)
@@ -1662,20 +1704,21 @@ impl<'a> TabComponent<'a> {
         };
 
         let compact_icon = {
-            match self.render_indicator() { Some(indicator) => {
-                indicator
-            } _ => {
-                // Fallback to terminal icon if no indicator is present
-                Icon::Terminal
-                    .to_warpui_icon(
-                        self.styles
-                            .default
-                            .font_color
-                            .unwrap_or(ColorU::white())
-                            .into(),
-                    )
-                    .finish()
-            }}
+            match self.render_indicator() {
+                Some(indicator) => indicator,
+                _ => {
+                    // Fallback to terminal icon if no indicator is present
+                    Icon::Terminal
+                        .to_warpui_icon(
+                            self.styles
+                                .default
+                                .font_color
+                                .unwrap_or(ColorU::white())
+                                .into(),
+                        )
+                        .finish()
+                }
+            }
         };
         let compact_tab_content = Clipped::new(
             Flex::row()

@@ -7,7 +7,6 @@ pub mod global_search;
 pub(crate) mod launch_modal;
 pub(crate) mod left_panel;
 pub(crate) mod onboarding;
-pub(crate) mod zap_launch_modal;
 pub(crate) mod right_panel;
 mod startup_directory;
 mod tab_grouping;
@@ -20,12 +19,14 @@ pub(crate) mod tests;
 mod vertical_tabs;
 #[cfg(target_family = "wasm")]
 mod wasm_view;
+pub(crate) mod zap_launch_modal;
 
 use self::vertical_tabs::telemetry::{VerticalTabsDisplayOption, VerticalTabsTelemetryEvent};
 use self::vertical_tabs::{
-    htab_group_position_id, pane_summary_kind, render_detail_sidecar, render_settings_popup,
-    render_summary_pane_kind_icons, show_before_indicator, vtab_group_position_id, SummaryPaneKind,
-    SummaryPaneKindIcons, VerticalTabsPanelState, VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID,
+    SummaryPaneKind, SummaryPaneKindIcons, VERTICAL_TABS_SETTINGS_BUTTON_POSITION_ID,
+    VerticalTabsPanelState, htab_group_position_id, pane_summary_kind, render_detail_sidecar,
+    render_settings_popup, render_summary_pane_kind_icons, show_before_indicator,
+    vtab_group_position_id,
 };
 use crate::workspace::cross_window_tab_drag::{
     AttachTarget, CrossWindowTabDrag, DragResult, DropResult, GhostState,
@@ -35,8 +36,8 @@ pub(crate) use onboarding::OnboardingTutorial;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::agent_conversations_model::ConversationOrTask;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::blocklist::agent_view::agent_input_footer::editor::AgentToolbarEditorMode;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
+use crate::ai::blocklist::agent_view::agent_input_footer::editor::AgentToolbarEditorMode;
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use crate::ai::blocklist::suggested_rule_modal::{
     SuggestedRuleAndId, SuggestedRuleModal, SuggestedRuleModalEvent,
@@ -46,15 +47,15 @@ use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel};
 use crate::ai::llms::LLMPreferences;
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::{
-    agent::{api::ServerConversationToken, conversation::AIConversationId, EntrypointType},
+    agent::{EntrypointType, api::ServerConversationToken, conversation::AIConversationId},
     blocklist::{
+        SlashCommandRequest,
         inline_action::code_diff_view::CodeDiffView,
         suggested_agent_mode_workflow_modal::{
             SuggestedAgentModeWorkflowModal, SuggestedAgentModeWorkflowModalEvent,
         },
-        SlashCommandRequest,
     },
-    facts::{view::AIFactPage, AIFactManager, AIFactView, AIFactViewEvent},
+    facts::{AIFactManager, AIFactView, AIFactViewEvent, view::AIFactPage},
 };
 use crate::ai_assistant::execution_context::WarpAiExecutionContext;
 use crate::app_state::{
@@ -62,10 +63,10 @@ use crate::app_state::{
     PaneNodeSnapshot, PaneUuid, RightPanelSnapshot, SettingsPaneSnapshot, TabGroupSnapshot,
     TabSnapshot, TerminalPaneSnapshot, WindowSnapshot, WorkflowPaneSnapshot,
 };
-use crate::code_review::diff_state::DiffStateModel;
 #[cfg(feature = "local_fs")]
 use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::GlobalCodeReviewModel;
+use crate::code_review::diff_state::DiffStateModel;
 use crate::coding_panel_enablement_state::CodingPanelEnablementState;
 use crate::default_terminal::DefaultTerminal;
 use crate::notebooks::NotebookObject;
@@ -103,35 +104,33 @@ use crate::util::file::external_editor::Editor;
 use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::FileTarget;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{resolve_file_target_with_editor_choice, EditorLayout};
+use crate::util::openable_file_type::{EditorLayout, resolve_file_target_with_editor_choice};
 
-use crate::ai::blocklist::history_model::LoadedConversationData;
+use crate::BlocklistAIHistoryModel;
 use crate::ai::blocklist::FORK_PREFIX;
-#[cfg(not(target_family = "wasm"))]
-use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
-use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
-use crate::terminal::cli_agent::{CLIAgentInstallEvent, CLIAgentInstallModel};
+use crate::ai::blocklist::history_model::LoadedConversationData;
 use crate::terminal::CLIAgent;
+use crate::terminal::cli_agent::{CLIAgentInstallEvent, CLIAgentInstallModel};
+#[cfg(not(target_family = "wasm"))]
+use crate::terminal::cli_agent_sessions::plugin_manager::{PluginModalKind, plugin_manager_for};
+use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
 use crate::workspace::header_toolbar_editor::{HeaderToolbarEditorEvent, HeaderToolbarEditorModal};
 use crate::workspace::header_toolbar_item::HeaderToolbarItemKind;
 use crate::workspace::tab_group::{TabGroup, TabGroupId};
 use crate::workspace::tab_settings::TabCloseButtonPosition;
 use crate::workspace::view::codex_modal::{CodexModal, CodexModalEvent};
-use crate::workspace::view::zap_launch_modal::{
-    ZapLaunchModal, ZapLaunchModalEvent,
-};
+use crate::workspace::view::zap_launch_modal::{ZapLaunchModal, ZapLaunchModalEvent};
 use crate::workspace::{ForkFromExchange, ForkedConversationDestination};
-use crate::BlocklistAIHistoryModel;
 
 use serde_json;
 use warpui::notification::NotificationSendError;
 
+use super::WorkspaceRegistry;
 use super::hoa_onboarding::{
-    mark_hoa_onboarding_completed, HoaOnboardingFlow, HoaOnboardingFlowEvent, HoaOnboardingStep,
+    HoaOnboardingFlow, HoaOnboardingFlowEvent, HoaOnboardingStep, mark_hoa_onboarding_completed,
 };
 use super::lightbox_view::{LightboxParams, LightboxView, LightboxViewEvent};
 use super::util;
-use super::WorkspaceRegistry;
 use crate::ai::execution_profiles::editor::ExecutionProfileEditorManager;
 use crate::ai::execution_profiles::profiles::{AIExecutionProfilesModel, ClientProfileId};
 use crate::auth::AuthState;
@@ -194,16 +193,17 @@ use crate::wasm_nux_dialog::WasmNUXDialog;
 use crate::drive::items::WarpDriveItemId;
 use crate::drive::settings::WarpDriveSettingsChangedEvent;
 use crate::env_vars::{
-    manager::{EnvVarCollectionManager, EnvVarCollectionSource},
     EnvVarCollectionObject,
+    manager::{EnvVarCollectionManager, EnvVarCollectionSource},
 };
 use crate::settings::cloud_preferences::PreferencesSettings;
 
+use crate::ai::agent_providers::wire_inspector::{WireInspectorModal, WireInspectorModalEvent};
 use crate::appearance::{Appearance, AppearanceManager};
 use crate::auth::AuthStateProvider;
 use crate::autoupdate::{
-    is_incoming_version_past_current, is_incoming_version_past_current_strict,
-    AutoupdateState, AutoupdateStateEvent, RelaunchModel,
+    AutoupdateState, AutoupdateStateEvent, RelaunchModel, is_incoming_version_past_current,
+    is_incoming_version_past_current_strict,
 };
 use crate::banner::BannerState;
 use crate::changelog_model::{ChangelogModel, ChangelogRequestType, Event as ChangelogEvent};
@@ -221,10 +221,9 @@ use crate::drive::{
 };
 use crate::experiments::{BlockOnboarding, Experiment};
 use crate::menu::{
-    Event as MenuEvent, Menu, MenuItem, MenuItemFields, MenuSelectionSource,
-    DEFAULT_WIDTH as MENU_DEFAULT_WIDTH,
+    DEFAULT_WIDTH as MENU_DEFAULT_WIDTH, Event as MenuEvent, Menu, MenuItem, MenuItemFields,
+    MenuSelectionSource,
 };
-use crate::ai::agent_providers::wire_inspector::{WireInspectorModal, WireInspectorModalEvent};
 use crate::modal::{Modal, ModalEvent, ModalViewState};
 use crate::network::{NetworkStatus, NetworkStatusEvent};
 use crate::notebooks::manager::{NotebookManager, NotebookSource};
@@ -250,8 +249,8 @@ use crate::prompt::editor_modal::{
 };
 use crate::report_if_error;
 use crate::resource_center::{
-    mark_feature_used_and_write_to_user_defaults, skip_tips_and_write_to_user_defaults,
     ResourceCenterEvent, ResourceCenterPage, ResourceCenterView, Tip, TipAction, TipsCompleted,
+    mark_feature_used_and_write_to_user_defaults, skip_tips_and_write_to_user_defaults,
 };
 use crate::root_view::{NewWorkspaceSource, OpenLaunchConfigArg};
 use crate::search::command_search::searcher::{
@@ -267,10 +266,10 @@ use crate::server::telemetry::{
 use crate::server_time::ServerTime;
 use crate::session_management::{SessionNavigationData, SessionSource, TabNavigationData};
 use crate::settings::{
-    active_theme_kind, respect_system_theme, AccessibilitySettings, AliasExpansionSettings,
-    AppEditorSettings, BlockVisibilitySettings, CursorBlink, DebugSettings, FontSettings,
-    GPUSettings, InputSettings, MonospaceFontSize, PaneSettings, PrivacySettings,
-    SelectionSettings, SshSettings, ThemeSettings,
+    AccessibilitySettings, AliasExpansionSettings, AppEditorSettings, BlockVisibilitySettings,
+    CursorBlink, DebugSettings, FontSettings, GPUSettings, InputSettings, MonospaceFontSize,
+    PaneSettings, PrivacySettings, SelectionSettings, SshSettings, ThemeSettings,
+    active_theme_kind, respect_system_theme,
 };
 use crate::settings_view::flags;
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
@@ -284,7 +283,7 @@ use crate::terminal::model::blockgrid::BlockGrid;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::resizable_data::{
-    ModalSizes, ModalType, ResizableData, DEFAULT_LEFT_PANEL_WIDTH, DEFAULT_RIGHT_PANEL_WIDTH,
+    DEFAULT_LEFT_PANEL_WIDTH, DEFAULT_RIGHT_PANEL_WIDTH, ModalSizes, ModalType, ResizableData,
 };
 use crate::terminal::safe_mode_settings::SafeModeSettings;
 use crate::terminal::session_settings::{
@@ -304,7 +303,7 @@ use warp_core::features::FeatureFlag;
 
 use crate::search::{self, QueryFilter};
 use crate::terminal::view::{
-    SyncEvent, SyncInputType, TerminalAction, NOTIFICATIONS_TROUBLESHOOT_URL,
+    NOTIFICATIONS_TROUBLESHOOT_URL, SyncEvent, SyncInputType, TerminalAction,
 };
 use crate::terminal::{BlockListSettings, TerminalModel};
 use crate::themes::theme::{AnsiColorIdentifier, RespectSystemTheme, ThemeKind};
@@ -314,27 +313,27 @@ use crate::themes::theme_deletion_modal::{ThemeDeletionModal, ThemeDeletionModal
 use crate::tips::{TipsEvent, TipsView};
 use crate::ui_components::buttons::{combo_inner_button, icon_button_with_color};
 use crate::undo_close::UndoCloseStack;
+use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 #[cfg(feature = "local_fs")]
 use crate::user_config::{
     ensure_default_worktree_config, find_unused_tab_config_path, find_unused_toml_path,
     find_unused_worktree_config_path, materialize_default_worktree_config, sanitize_toml_base_name,
     tab_configs_dir,
 };
-use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
 use crate::util::bindings::{keybinding_name_to_display_string, keybinding_name_to_keystroke};
 use crate::util::links;
-use crate::util::traffic_lights::{traffic_light_data, TrafficLightMouseStates, TrafficLightSide};
+use crate::util::traffic_lights::{TrafficLightMouseStates, TrafficLightSide, traffic_light_data};
 use crate::util::truncation::truncate_from_end;
 #[cfg(target_family = "wasm")]
 use crate::view_components::action_button::ActionButton;
 use crate::view_components::callout_bubble::{
-    render_callout_bubble, CalloutArrowDirection, CalloutArrowPosition, CalloutBubbleConfig,
+    CalloutArrowDirection, CalloutArrowPosition, CalloutBubbleConfig, render_callout_bubble,
 };
 use crate::view_components::{AgentToastStack, DismissibleToast, DismissibleToastStack, ToastLink};
 use crate::window_settings::{WindowSettings, WindowSettingsChangedEvent, ZoomLevel};
 use crate::workflows::{
-    manager::WorkflowOpenSource, AIWorkflowOrigin, WorkflowObject, WorkflowSelectionSource,
-    WorkflowSource, WorkflowType, WorkflowViewMode,
+    AIWorkflowOrigin, WorkflowObject, WorkflowSelectionSource, WorkflowSource, WorkflowType,
+    WorkflowViewMode, manager::WorkflowOpenSource,
 };
 use crate::workspace::action::CommandSearchOptions;
 use crate::workspace::one_time_modal_model::OneTimeModalModel;
@@ -342,15 +341,15 @@ use crate::workspace::sync_inputs::SyncedInputState;
 use crate::workspace::toast_stack::{
     ToastStack as WorkspaceToastStack, ToastStackEvent as WorkspaceToastStackEvent,
 };
+use crate::{GlobalResourceHandles, send_telemetry_from_ctx};
 use crate::{
     ai_assistant::{
+        AI_ASSISTANT_FEATURE_NAME, AI_ASSISTANT_LOGO_COLOR, AskAIType,
         panel::{AIAssistantPanelEvent, AIAssistantPanelView},
-        AskAIType, AI_ASSISTANT_FEATURE_NAME, AI_ASSISTANT_LOGO_COLOR,
     },
     settings,
     ui_components::blended_colors,
 };
-use crate::{send_telemetry_from_ctx, GlobalResourceHandles};
 
 use futures::Future;
 use itertools::Itertools;
@@ -366,7 +365,7 @@ use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use warp_core::context_flag::ContextFlag;
 use warp_core::semantic_selection::SemanticSelection;
-use warp_util::path::{user_friendly_path, LineAndColumnArg};
+use warp_util::path::{LineAndColumnArg, user_friendly_path};
 use warpui::fonts::Weight;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 
@@ -440,20 +439,20 @@ use crate::tab_configs::{
     NewWorktreeModal, NewWorktreeModalEvent, TabConfigParamsModal, TabConfigParamsModalEvent,
 };
 
+use crate::TelemetryEvent;
 use crate::code::editor::{add_color, remove_color};
 use crate::palette::PaletteMode;
 use crate::search::command_palette::view::{Event as CommandPaletteEvent, View as CommandPalette};
 use crate::server::telemetry::{NotificationsTurnedOnSource, PaletteSource, TabRenameEvent};
 use crate::tab::{
-    color_picker_menu_items, next_tab_color, tab_position_id, uses_vertical_tabs,
-    ColorPickerTarget, NewSessionMenuItem, PaneNameMenuTarget, SelectedTabColor, TabBarState,
-    TabComponent, TabData, TabTelemetryAction, COMPACT_TAB_WIDTH_THRESHOLD, MOVE_TO_GROUP_LABEL,
-    TAB_BAR_BORDER_HEIGHT, TAB_INDICATOR_HEIGHT, TAB_PIN_INDICATOR_ICON_SIZE,
-    TAB_PIN_VANISH_THRESHOLD,
+    COMPACT_TAB_WIDTH_THRESHOLD, ColorPickerTarget, MOVE_TO_GROUP_LABEL, NewSessionMenuItem,
+    PaneNameMenuTarget, SelectedTabColor, TAB_BAR_BORDER_HEIGHT, TAB_INDICATOR_HEIGHT,
+    TAB_PIN_INDICATOR_ICON_SIZE, TAB_PIN_VANISH_THRESHOLD, TabBarState, TabComponent, TabData,
+    TabMoveGating, TabTelemetryAction, color_picker_menu_items, next_tab_color, tab_position_id,
+    uses_vertical_tabs,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::ui_components::icons;
-use crate::TelemetryEvent;
 use autoupdate::AutoupdateStage;
 #[cfg(target_os = "macos")]
 use command::blocking::Command;
@@ -468,10 +467,10 @@ use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use std::process;
-use std::sync::{mpsc, Mutex};
+use std::sync::{Mutex, mpsc};
 use std::{cmp::Ordering, sync::Arc};
-use warp_core::ui::theme::{color::internal_colors, phenomenon::PhenomenonStyle, AnsiColors, Fill};
-use warp_core::ui::{color::coloru_with_opacity, Icon};
+use warp_core::ui::theme::{AnsiColors, Fill, color::internal_colors, phenomenon::PhenomenonStyle};
+use warp_core::ui::{Icon, color::coloru_with_opacity};
 use warp_editor::editor::NavigationKey;
 use warpui::keymap::Context;
 use warpui::notification::{RequestPermissionsOutcome, UserNotification};
@@ -481,6 +480,7 @@ use warpui::platform::{
 use warpui::text_layout::ClipConfig;
 use warpui::ui_components::components::{Coords, UiComponent, UiComponentStyles};
 use warpui::{
+    AppContext, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
     accessibility::{
         AccessibilityContent, AccessibilityVerbosity, ActionAccessibilityContent, WarpA11yRole,
     },
@@ -492,8 +492,7 @@ use warpui::{
         PositionedElementAnchor, PositionedElementOffsetBounds, Radius, SavePosition, Shrinkable,
         SizeConstraintCondition, SizeConstraintSwitch, Stack, Text,
     },
-    geometry::vector::{vec2f, Vector2F},
-    AppContext, Entity, TypedActionView, UpdateView, View, ViewContext, ViewHandle,
+    geometry::vector::{Vector2F, vec2f},
 };
 use warpui::{
     EntityId, FocusContext, ModelHandle, SingletonEntity, UpdateModel, ViewAsRef, WeakViewHandle,
@@ -1528,11 +1527,7 @@ impl Workspace {
                     id_to_force_expand = Some(workflow.id);
                 }
                 if let Some(id) = id_to_force_expand {
-                    self.open_workflow_with_existing(
-                        id,
-                        &ZapDriveObjectSettings::default(),
-                        ctx,
-                    );
+                    self.open_workflow_with_existing(id, &ZapDriveObjectSettings::default(), ctx);
                     ObjectStoreModel::handle(ctx).update(ctx, |object_store_model, ctx| {
                         object_store_model.force_expand_object_and_ancestors(id, ctx);
                     });
@@ -2085,12 +2080,16 @@ impl Workspace {
                     && ai_settings.default_tab_config_path() == path.to_string_lossy();
                 if is_removed_default {
                     AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                        report_if_error!(settings
-                            .default_session_mode_internal
-                            .set_value(DefaultSessionMode::Terminal, ctx));
-                        report_if_error!(settings
-                            .default_tab_config_path
-                            .set_value(String::new(), ctx));
+                        report_if_error!(
+                            settings
+                                .default_session_mode_internal
+                                .set_value(DefaultSessionMode::Terminal, ctx)
+                        );
+                        report_if_error!(
+                            settings
+                                .default_tab_config_path
+                                .set_value(String::new(), ctx)
+                        );
                     });
                 }
                 if let Err(e) = std::fs::remove_file(path) {
@@ -5411,9 +5410,11 @@ impl Workspace {
             right,
         };
         TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-            report_if_error!(settings
-                .header_toolbar_chip_selection
-                .set_value(selection, ctx));
+            report_if_error!(
+                settings
+                    .header_toolbar_chip_selection
+                    .set_value(selection, ctx)
+            );
         });
     }
 
@@ -5610,24 +5611,27 @@ impl Workspace {
                         .active_tab_pane_group()
                         .as_ref(ctx)
                         .terminal_view_from_pane_id(new_pane_id, ctx)
-                    { Some(terminal_view_handle) => {
-                        let editor_ref = Some(editor_env.as_str());
-                        let path_clone = path.clone();
-                        terminal_view_handle.update(ctx, |terminal, ctx| {
-                            let editor_command =
-                                crate::util::file::external_editor::generate_editor_command(
-                                    &path_clone,
-                                    line_col,
-                                    editor_ref,
-                                );
-                            terminal.set_pending_command(&editor_command, ctx);
-                        });
-                        return;
-                    } _ => {
-                        log::error!(
-                            "Could not get terminal view handle for new pane when attempting to open file with $EDITOR."
-                        );
-                    }}
+                    {
+                        Some(terminal_view_handle) => {
+                            let editor_ref = Some(editor_env.as_str());
+                            let path_clone = path.clone();
+                            terminal_view_handle.update(ctx, |terminal, ctx| {
+                                let editor_command =
+                                    crate::util::file::external_editor::generate_editor_command(
+                                        &path_clone,
+                                        line_col,
+                                        editor_ref,
+                                    );
+                                terminal.set_pending_command(&editor_command, ctx);
+                            });
+                            return;
+                        }
+                        _ => {
+                            log::error!(
+                                "Could not get terminal view handle for new pane when attempting to open file with $EDITOR."
+                            );
+                        }
+                    }
                 }
 
                 crate::util::file::open_file_path_in_external_editor(line_col, path.clone(), ctx);
@@ -6587,9 +6591,7 @@ impl Workspace {
                     open_in_active_window: false,
                 },
             ),
-            NewSessionMenuItem::OpenLaunchConfigDocs => {
-                ctx.open_url("")
-            }
+            NewSessionMenuItem::OpenLaunchConfigDocs => ctx.open_url(""),
             #[cfg(feature = "local_fs")]
             NewSessionMenuItem::CreateNewTabConfig => {
                 self.create_and_open_new_tab_config(ctx);
@@ -6770,13 +6772,16 @@ impl Workspace {
         }
 
         let is_only_member_of_group = self.tab_is_only_member_of_its_group(tab_index);
+        let move_gating = self.tab_move_gating(tab_index);
         let menu_items = {
             let tab = &self.tabs[tab_index];
-            tab.menu_items(
+            tab.menu_items_with_pane_name_target(
                 tab_index,
                 self.tabs.len(),
                 &self.tab_groups,
                 is_only_member_of_group,
+                move_gating,
+                None,
                 ctx,
             )
         };
@@ -6870,11 +6875,13 @@ impl Workspace {
             },
         };
         let is_only_member_of_group = self.tab_is_only_member_of_its_group(tab_index);
+        let move_gating = self.tab_move_gating(tab_index);
         let menu_items = tab.menu_items_with_pane_name_target(
             tab_index,
             self.tabs.len(),
             &self.tab_groups,
             is_only_member_of_group,
+            move_gating,
             Some(pane_name_target),
             ctx,
         );
@@ -7998,7 +8005,8 @@ impl Workspace {
                     });
                 }
                 Err(error) => {
-                    let error_message = format!("Failed to uninstall Phosphor CLI command: {error}");
+                    let error_message =
+                        format!("Failed to uninstall Phosphor CLI command: {error}");
                     log::error!("{error_message}");
                     view.toast_stack.update(ctx, |toast_stack, ctx| {
                         let toast = DismissibleToast::error(error_message);
@@ -8074,17 +8082,21 @@ impl Workspace {
 
     fn toggle_recording_mode(&self, ctx: &mut ViewContext<Self>) {
         DebugSettings::handle(ctx).update(ctx, |debug_settings, settings_ctx| {
-            report_if_error!(debug_settings
-                .recording_mode
-                .toggle_and_save_value(settings_ctx));
+            report_if_error!(
+                debug_settings
+                    .recording_mode
+                    .toggle_and_save_value(settings_ctx)
+            );
         });
     }
 
     fn toggle_in_band_generators(&self, ctx: &mut ViewContext<Self>) {
         DebugSettings::handle(ctx).update(ctx, |debug_settings, settings_ctx| {
-            report_if_error!(debug_settings
-                .are_in_band_generators_for_all_sessions_enabled
-                .toggle_and_save_value(settings_ctx));
+            report_if_error!(
+                debug_settings
+                    .are_in_band_generators_for_all_sessions_enabled
+                    .toggle_and_save_value(settings_ctx)
+            );
         });
     }
 
@@ -8247,9 +8259,11 @@ impl Workspace {
 
         // Mark that we've done the one-time auto-open
         AISettings::handle(ctx).update(ctx, |settings, ctx| {
-            report_if_error!(settings
-                .has_auto_opened_conversation_list
-                .set_value(true, ctx));
+            report_if_error!(
+                settings
+                    .has_auto_opened_conversation_list
+                    .set_value(true, ctx)
+            );
         });
     }
 
@@ -8375,7 +8389,12 @@ impl Workspace {
                 |(repo_path, terminal_view): (Option<PathBuf>, WeakViewHandle<TerminalView>)| {
                     let diff_state_model = repo_path.as_ref().and_then(|rp: &PathBuf| {
                         self.working_directories_model.update(ctx, |model, ctx| {
-                            model.get_or_create_diff_state_model(warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()), ctx)
+                            model.get_or_create_diff_state_model(
+                                warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                                    rp.clone(),
+                                ),
+                                ctx,
+                            )
                         })
                     })?;
                     Some((repo_path, diff_state_model, terminal_view))
@@ -8411,7 +8430,11 @@ impl Workspace {
                 .repo_path
                 .as_ref()
                 .is_some_and(|target_repo_path| {
-                    self.right_panel_view.as_ref(ctx).selected_repo_path().and_then(|p| p.to_local_path()) == Some(target_repo_path.as_path())
+                    self.right_panel_view
+                        .as_ref(ctx)
+                        .selected_repo_path()
+                        .and_then(|p| p.to_local_path())
+                        == Some(target_repo_path.as_path())
                 });
         if panel_already_showing_repo {
             return;
@@ -8420,7 +8443,10 @@ impl Workspace {
         let repo_path = panel_context.repo_path.clone();
         let diff_state_model = repo_path.as_ref().and_then(|rp| {
             self.working_directories_model.update(ctx, |model, ctx| {
-                model.get_or_create_diff_state_model(warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()), ctx)
+                model.get_or_create_diff_state_model(
+                    warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()),
+                    ctx,
+                )
             })
         });
         let Some(diff_state_model) = diff_state_model else {
@@ -8537,7 +8563,10 @@ impl Workspace {
             |(repo_path, terminal_view): (Option<PathBuf>, WeakViewHandle<TerminalView>)| {
                 let diff_state_model = repo_path.as_ref().and_then(|rp: &PathBuf| {
                     self.working_directories_model.update(ctx, |model, ctx| {
-                        model.get_or_create_diff_state_model(warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()), ctx)
+                        model.get_or_create_diff_state_model(
+                            warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()),
+                            ctx,
+                        )
                     })
                 })?;
                 Some(CodeReviewPaneContext {
@@ -8572,7 +8601,12 @@ impl Workspace {
         if pane_group_handle.as_ref(ctx).right_panel_open {
             if let Some(repo_path) = &context.repo_path {
                 self.right_panel_view.update(ctx, |right_panel, ctx| {
-                    right_panel.update_selected_repo(warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx);
+                    right_panel.update_selected_repo(
+                        warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                            repo_path.clone(),
+                        ),
+                        ctx,
+                    );
                 });
             }
             return;
@@ -8590,7 +8624,10 @@ impl Workspace {
         );
         if let Some(repo_path) = &context.repo_path {
             self.right_panel_view.update(ctx, |right_panel, ctx| {
-                right_panel.update_selected_repo(warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()), ctx);
+                right_panel.update_selected_repo(
+                    warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                    ctx,
+                );
             });
         }
     }
@@ -10075,13 +10112,12 @@ impl Workspace {
             self.active_tab_pane_group()
                 .as_ref(app)
                 .active_session_view(app),
-        ) { (Some(terminal_model), Some(terminal_view)) => {
-            terminal_view.read(app, |view, ctx| {
+        ) {
+            (Some(terminal_model), Some(terminal_view)) => terminal_view.read(app, |view, ctx| {
                 view.is_input_box_visible(&terminal_model.lock(), ctx)
-            })
-        } _ => {
-            false
-        }}
+            }),
+            _ => false,
+        }
     }
 
     fn maybe_refresh_workflow_info_box_and_input(
@@ -10324,10 +10360,7 @@ impl Workspace {
                         );
                     }
                     DeleteConversationDialogSource::All { .. } => {
-                        self.handle_action(
-                            &WorkspaceAction::ExecuteDeleteAllConversations,
-                            ctx,
-                        );
+                        self.handle_action(&WorkspaceAction::ExecuteDeleteAllConversations, ctx);
                     }
                 }
                 ctx.focus(&self.left_panel_view);
@@ -10364,9 +10397,11 @@ impl Workspace {
 
     pub fn toggle_block_snackbar(&mut self, ctx: &mut ViewContext<Self>) {
         BlockListSettings::handle(ctx).update(ctx, |blocklist_settings, ctx| {
-            report_if_error!(blocklist_settings
-                .snackbar_enabled
-                .toggle_and_save_value(ctx));
+            report_if_error!(
+                blocklist_settings
+                    .snackbar_enabled
+                    .toggle_and_save_value(ctx)
+            );
         });
     }
 
@@ -10378,9 +10413,11 @@ impl Workspace {
 
     pub fn toggle_syntax_highlighting(&mut self, ctx: &mut ViewContext<Self>) {
         InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
-            report_if_error!(input_settings
-                .syntax_highlighting
-                .toggle_and_save_value(ctx));
+            report_if_error!(
+                input_settings
+                    .syntax_highlighting
+                    .toggle_and_save_value(ctx)
+            );
         });
     }
 
@@ -10395,9 +10432,11 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         AccessibilitySettings::handle(ctx).update(ctx, |accessibility_settings, ctx| {
-            report_if_error!(accessibility_settings
-                .a11y_verbosity
-                .set_value(verbosity, ctx));
+            report_if_error!(
+                accessibility_settings
+                    .a11y_verbosity
+                    .set_value(verbosity, ctx)
+            );
         });
     }
 
@@ -11261,9 +11300,7 @@ impl Workspace {
     }
 
     pub fn open_autoupdate_failure_link(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.open_url(
-            "",
-        );
+        ctx.open_url("");
     }
 
     pub fn add_terminal_tab(&mut self, hide_homepage: bool, ctx: &mut ViewContext<Self>) {
@@ -12917,7 +12954,9 @@ impl Workspace {
 
         ctx.spawn(future, move |workspace, source_conversation, ctx| {
             let Some(LoadedConversationData::Oz(source_conversation)) = source_conversation else {
-                log::error!("Failed to load Phosphor Agent conversation {conversation_id} for forking.");
+                log::error!(
+                    "Failed to load Phosphor Agent conversation {conversation_id} for forking."
+                );
                 WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                     let toast = DismissibleToast::error(crate::t!(
                         "workspace-toast-failed-load-conversation-for-forking"
@@ -13234,8 +13273,10 @@ impl Workspace {
             if let Some(prompt) = initial_prompt {
                 // The `/compact-and` slash-command handler short-circuits when there is no active
                 // conversation, so `selected_conversation_id` is set by the time we get here.
-                if let Some(conversation_id) =
-                    terminal.ai_context_model().as_ref(ctx).selected_conversation_id(ctx)
+                if let Some(conversation_id) = terminal
+                    .ai_context_model()
+                    .as_ref(ctx)
+                    .selected_conversation_id(ctx)
                 {
                     terminal.enqueue_followup_prompt(
                         prompt,
@@ -13248,26 +13289,139 @@ impl Workspace {
         });
     }
 
-    // Move tab, given tab index, left or right
-    fn move_tab(&mut self, index: usize, direction: TabMovement, ctx: &mut ViewContext<Self>) {
-        let tabs_len = self.tabs.len();
-        let new_index = match direction {
-            TabMovement::Left if index > 0 => index - 1,
-            TabMovement::Right if index < tabs_len - 1 => index + 1,
-            _ => return,
+    /// True when the tabs at `a` and `b` sit on the same side of the
+    /// pinned/unpinned boundary, so exchanging them leaves the pinned prefix
+    /// contiguous -- the invariant `pinned_boundary_index` and
+    /// `clamp_to_unpinned_region` both assume.
+    ///
+    /// This is the one spelling of that policy. The drag path enforced it while
+    /// `move_tab` enforced nothing, so the same reorder was refused by mouse and
+    /// allowed by menu or keybinding; `can_move_tab` and
+    /// `update_tab_index_from_drag` now both ask here.
+    ///
+    /// Marginally stricter than `42effe840`'s `can_move_tab`, which also permits
+    /// a pinned tab to step left past an unpinned one (and the mirror case on
+    /// the right). Those only differ once the pinned prefix is already broken,
+    /// and refusing there is what the fork's drag path has always done.
+    fn tabs_share_pinned_region(&self, a: usize, b: usize) -> bool {
+        let (Some(a), Some(b)) = (self.tabs.get(a), self.tabs.get(b)) else {
+            return false;
         };
-        // Don't need to worry about negative numbers because that case is covered above
-        self.tabs.swap(index, new_index);
+        self.is_tab_effectively_pinned(a) == self.is_tab_effectively_pinned(b)
+    }
 
-        if index == self.active_tab_index {
-            self.set_active_tab_index(new_index, ctx);
+    /// True when reordering the tab at `index` one slot in `direction` is legal:
+    /// the slot exists, the move does not cross the pinned/unpinned boundary,
+    /// and it does not tear the tab out of its group.
+    ///
+    /// Ported from `42effe840:app/src/workspace/view.rs:14150`. Used by
+    /// `move_tab` to no-op a blocked move and by the tab context menus to hide
+    /// the entry rather than offer one that does nothing -- the same shape as
+    /// `can_move_tab_group`, which was ported with its call sites.
+    pub(super) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
+        let Some(tab) = self.tabs.get(index) else {
+            return false;
+        };
+        let neighbor_index = match direction {
+            TabMovement::Left if index > 0 => index - 1,
+            TabMovement::Right if index + 1 < self.tabs.len() => index + 1,
+            // First tab moving left, or last tab moving right: nothing to move
+            // past. Also covers an empty list, where no index is in bounds.
+            TabMovement::Left | TabMovement::Right => return false,
+        };
+        let neighbor = &self.tabs[neighbor_index];
+
+        // A grouped tab may only reorder within its own group. Stepping over the
+        // group's edge leaves its run non-contiguous, and `tab_bar_slots` only
+        // collapses contiguous runs, so the group would render as two headers
+        // sharing one id. A single-member group therefore cannot be reordered
+        // this way at all; the group header's own move entries
+        // (`can_move_tab_group`) are the affordance for that.
+        //
+        // Flag-guarded for the same reason `is_tab_effectively_pinned` is: with
+        // grouping off, groups are not rendered and a stale persisted `group_id`
+        // must not start refusing moves.
+        if FeatureFlag::GroupedTabs.is_enabled() && tab.group_id.is_some() {
+            return tab.group_id == neighbor.group_id;
+        }
+
+        self.tabs_share_pinned_region(index, neighbor_index)
+    }
+
+    /// [`TabMoveGating`] for the tab at `index`, so a context menu only offers
+    /// a move that `move_tab` would actually perform. Mirrors how the group
+    /// header menu gates its own entries on `can_move_tab_group`.
+    fn tab_move_gating(&self, index: usize) -> TabMoveGating {
+        TabMoveGating {
+            can_move_left: self.can_move_tab(index, TabMovement::Left),
+            can_move_right: self.can_move_tab(index, TabMovement::Right),
+        }
+    }
+
+    /// Moves the tab at `index` one slot left or right, where a "slot" is either
+    /// a single tab or an entire adjacent group: an ungrouped tab hops over a
+    /// neighbouring group as a unit rather than swapping into the middle of its
+    /// run, which would split it (collapsed groups included -- that is the
+    /// duplicate-header symptom the drag path already guards against).
+    /// Reordering within the tab's own group, or past an ungrouped tab, is an
+    /// ordinary one-step move.
+    ///
+    /// Ported from `42effe840:app/src/workspace/view.rs:14191`.
+    fn move_tab(&mut self, index: usize, direction: TabMovement, ctx: &mut ViewContext<Self>) {
+        if !self.can_move_tab(index, direction) {
+            return;
+        }
+        let grouped_tabs_enabled = FeatureFlag::GroupedTabs.is_enabled();
+        // The group the moved tab belongs to, so we can tell "reorder within my
+        // own group" from "hop over a different group".
+        let moved_group_id = self.tabs[index].group_id;
+        // `can_move_tab` returned true, so `index` is in bounds and the
+        // neighbour in `direction` exists: neither arm can underflow or run off
+        // the end, and the old `tabs_len - 1` underflow on an empty list is gone
+        // with it.
+        let target = match direction {
+            TabMovement::Left => {
+                let neighbor = index - 1;
+                match self.tabs[neighbor].group_id {
+                    // A different group sits to the left: target its first
+                    // member so the tab lands just before the whole group.
+                    Some(group_id) if grouped_tabs_enabled && Some(group_id) != moved_group_id => {
+                        group_member_index_range(&self.tabs, group_id)
+                            .map_or(neighbor, |(first, _)| first)
+                    }
+                    // Ungrouped neighbour, or a member of our own group: step one.
+                    Some(_) | None => neighbor,
+                }
+            }
+            TabMovement::Right => {
+                let neighbor = index + 1;
+                match self.tabs[neighbor].group_id {
+                    // A different group sits to the right: target its last
+                    // member; the remove+insert leaves the tab just past it.
+                    Some(group_id) if grouped_tabs_enabled && Some(group_id) != moved_group_id => {
+                        group_member_index_range(&self.tabs, group_id)
+                            .map_or(neighbor, |(_, last)| last)
+                    }
+                    // Ungrouped neighbour, or a member of our own group: step one.
+                    Some(_) | None => neighbor,
+                }
+            }
+        };
+
+        let moving_active_tab = index == self.active_tab_index;
+        // `hop_tab_to_index` preserves the order of everything it steps over and
+        // retargets `active_tab_index` at the same tab, so the user's active tab
+        // never changes underneath them.
+        self.hop_tab_to_index(index, target, ctx);
+
+        if moving_active_tab {
+            // Re-run the activation path so the side effects a bare index
+            // rewrite skips still happen (MRU order, vertical-tabs
+            // scroll-to-tab, panel reconciliation).
+            let new_active_tab_index = self.active_tab_index;
+            self.set_active_tab_index(new_active_tab_index, ctx);
             send_telemetry_from_ctx!(TelemetryEvent::MoveActiveTab { direction }, ctx);
         } else {
-            // Don't want to change the active tab for the user due to an adjacent
-            // tab being moved left/right.
-            if new_index == self.active_tab_index {
-                self.set_active_tab_index(index, ctx);
-            }
             send_telemetry_from_ctx!(TelemetryEvent::MoveTab { direction }, ctx);
         }
 
@@ -14244,11 +14398,7 @@ impl Workspace {
                 self.open_workflow_with_command(command.clone(), ctx)
             }
             pane_group::Event::OpenCloudWorkflowForEdit(workflow_id) => self
-                .open_workflow_with_existing(
-                    *workflow_id,
-                    &ZapDriveObjectSettings::default(),
-                    ctx,
-                ),
+                .open_workflow_with_existing(*workflow_id, &ZapDriveObjectSettings::default(), ctx),
             pane_group::Event::OpenWorkflowModalWithTemporary(workflow) => {
                 self.open_workflow_with_temporary(*workflow.clone(), ctx)
             }
@@ -14299,13 +14449,7 @@ impl Workspace {
                 #[cfg(feature = "local_fs")]
                 {
                     let layout = *EditorSettings::as_ref(ctx).open_file_layout.value();
-                    self.open_file_notebook(
-                        path.clone(),
-                        Some(session.clone()),
-                        layout,
-                        None,
-                        ctx,
-                    );
+                    self.open_file_notebook(path.clone(), Some(session.clone()), layout, None, ctx);
                 }
             }
             pane_group::Event::MoveToSpace {
@@ -14638,7 +14782,8 @@ impl Workspace {
                 use warp_util::standardized_path::StandardizedPath;
 
                 if let Ok(std_path) = StandardizedPath::try_new(indexed_path) {
-                    let remote_id = RemoteRepositoryIdentifier::new(host_id.clone(), std_path.clone());
+                    let remote_id =
+                        RemoteRepositoryIdentifier::new(host_id.clone(), std_path.clone());
                     let pane_group_id = pane_group.id();
                     if let Some(file_tree_view) = self
                         .working_directories_model
@@ -14655,8 +14800,7 @@ impl Workspace {
                     // DiffStateModel. The event's warp_core HostId is bridged to
                     // the warp_util family used by the diff-state remote path.
                     if *is_git {
-                        let util_host =
-                            crate::code::buffer_location::core_host_id_to_util(host_id);
+                        let util_host = crate::code::buffer_location::core_host_id_to_util(host_id);
                         let remote_path =
                             warp_util::remote_path::RemotePath::new(util_host, std_path);
                         repo_metadata::repositories::DetectedRepositories::handle(ctx).update(
@@ -15248,7 +15392,9 @@ impl Workspace {
                     .update(ctx, |working_directories, ctx| {
                         working_directories.insert_code_review_comments(
                             pane_group.id(),
-                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                                repo_path.clone(),
+                            ),
                             comments,
                             diff_mode,
                             ctx,
@@ -15268,7 +15414,9 @@ impl Workspace {
                 self.working_directories_model
                     .update(ctx, |working_directories, ctx| {
                         working_directories.upsert_flattened_code_review_comments(
-                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                                repo_path.clone(),
+                            ),
                             vec![comment.clone()],
                             ctx,
                         );
@@ -15277,7 +15425,12 @@ impl Workspace {
                 let Some(code_review_view) = self
                     .working_directories_model
                     .as_ref(ctx)
-                    .get_code_review_view(pane_group.id(), &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()))
+                    .get_code_review_view(
+                        pane_group.id(),
+                        &warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                            repo_path.clone(),
+                        ),
+                    )
                 else {
                     return;
                 };
@@ -15298,7 +15451,9 @@ impl Workspace {
                 self.working_directories_model
                     .update(ctx, |working_directories, ctx| {
                         working_directories.upsert_flattened_code_review_comments(
-                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()),
+                            &warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                                repo_path.clone(),
+                            ),
                             comments.clone(),
                             ctx,
                         );
@@ -15307,7 +15462,12 @@ impl Workspace {
                 if let Some(code_review_view) = self
                     .working_directories_model
                     .as_ref(ctx)
-                    .get_code_review_view(pane_group.id(), &warp_util::local_or_remote_path::LocalOrRemotePath::Local(repo_path.clone()))
+                    .get_code_review_view(
+                        pane_group.id(),
+                        &warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                            repo_path.clone(),
+                        ),
+                    )
                 {
                     code_review_view.update(ctx, |code_review_view, ctx| {
                         code_review_view.set_diff_base(diff_mode.clone(), ctx);
@@ -15480,17 +15640,20 @@ impl Workspace {
     ) {
         let window_id = ctx.window_id();
 
-        match self.get_active_input_view_handle(ctx) { Some(active_input_view_handle) => {
-            active_input_view_handle.update(ctx, |input_view, input_ctx| {
-                input_view.replace_buffer_content(contents, input_ctx);
-            });
+        match self.get_active_input_view_handle(ctx) {
+            Some(active_input_view_handle) => {
+                active_input_view_handle.update(ctx, |input_view, input_ctx| {
+                    input_view.replace_buffer_content(contents, input_ctx);
+                });
 
-            ctx.windows().show_window_and_focus_app(window_id);
+                ctx.windows().show_window_and_focus_app(window_id);
 
-            ctx.notify();
-        } _ => {
-            log::error!("workspace::view::fill_input(): no active input view handle to fill");
-        }}
+                ctx.notify();
+            }
+            _ => {
+                log::error!("workspace::view::fill_input(): no active input view handle to fill");
+            }
+        }
     }
 
     /// Insert the given command that should open a subshell. And set a flag that we should
@@ -15542,124 +15705,128 @@ impl Workspace {
         let pane_group_handle = pane_group_handle.clone();
         self.refresh_working_directories_for_pane_group(&pane_group_handle, ctx);
 
-        match pane_group_handle.as_ref(ctx).active_session_view(ctx) { Some(terminal_handle) => {
-            #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
-            let (
-                session,
-                path_if_local,
-                is_local,
-                is_wsl_session,
-                session_id,
-                pwd,
-                has_pending_ssh,
-            ) = terminal_handle.read(ctx, |terminal, ctx| {
-                let active_session_id = terminal.active_block_session_id();
-                let session =
-                    active_session_id.and_then(|id| terminal.sessions_model().as_ref(ctx).get(id));
-                let path_if_local = terminal.active_session_path_if_local(ctx);
-                let is_local = terminal.active_session_is_local(ctx);
-                let is_wsl_session = session.as_ref().map(|s| s.is_wsl()).unwrap_or(false);
-                let pwd = terminal.pwd();
-                let has_pending_ssh = terminal.has_pending_ssh_command();
-                (
+        match pane_group_handle.as_ref(ctx).active_session_view(ctx) {
+            Some(terminal_handle) => {
+                #[cfg_attr(not(feature = "local_fs"), allow(unused_variables))]
+                let (
                     session,
                     path_if_local,
                     is_local,
                     is_wsl_session,
-                    active_session_id,
+                    session_id,
                     pwd,
                     has_pending_ssh,
-                )
-            });
-
-            let window_id = ctx.window_id();
-            let path_if_local_clone = path_if_local.clone();
-            ActiveSession::handle(ctx).update(ctx, |active_session, ctx| {
-                active_session.set_session_state(
-                    window_id,
-                    session,
-                    path_if_local_clone.clone(),
-                    Some(terminal_handle.id()),
-                    ctx,
-                );
-            });
-
-            let is_remote = matches!(is_local, Some(false));
-            let is_unsupported_session = is_wsl_session;
-
-            // Check whether this remote session has an active remote server
-            // connection (or is in the process of connecting). This is only
-            // true for Auto SSH Warpification (mode 1) sessions where
-            // `connect_session` was called at `InitShell` time.
-            let has_remote_server = is_remote
-                && FeatureFlag::SshRemoteServer.is_enabled()
-                && session_id.is_some_and(|sid| {
-                    RemoteServerManager::as_ref(ctx).is_session_potentially_active(sid)
+                ) = terminal_handle.read(ctx, |terminal, ctx| {
+                    let active_session_id = terminal.active_block_session_id();
+                    let session = active_session_id
+                        .and_then(|id| terminal.sessions_model().as_ref(ctx).get(id));
+                    let path_if_local = terminal.active_session_path_if_local(ctx);
+                    let is_local = terminal.active_session_is_local(ctx);
+                    let is_wsl_session = session.as_ref().map(|s| s.is_wsl()).unwrap_or(false);
+                    let pwd = terminal.pwd();
+                    let has_pending_ssh = terminal.has_pending_ssh_command();
+                    (
+                        session,
+                        path_if_local,
+                        is_local,
+                        is_wsl_session,
+                        active_session_id,
+                        pwd,
+                        has_pending_ssh,
+                    )
                 });
 
-            // When the session has a remote server, tell it about the current
-            // directory so it can start indexing and push repo metadata back.
-            #[cfg(feature = "local_fs")]
-            if has_remote_server {
-                if let (Some(sid), Some(cwd)) = (session_id, pwd.clone()) {
-                    RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
-                        mgr.navigate_to_directory(sid, cwd.clone(), ctx);
+                let window_id = ctx.window_id();
+                let path_if_local_clone = path_if_local.clone();
+                ActiveSession::handle(ctx).update(ctx, |active_session, ctx| {
+                    active_session.set_session_state(
+                        window_id,
+                        session,
+                        path_if_local_clone.clone(),
+                        Some(terminal_handle.id()),
+                        ctx,
+                    );
+                });
+
+                let is_remote = matches!(is_local, Some(false));
+                let is_unsupported_session = is_wsl_session;
+
+                // Check whether this remote session has an active remote server
+                // connection (or is in the process of connecting). This is only
+                // true for Auto SSH Warpification (mode 1) sessions where
+                // `connect_session` was called at `InitShell` time.
+                let has_remote_server = is_remote
+                    && FeatureFlag::SshRemoteServer.is_enabled()
+                    && session_id.is_some_and(|sid| {
+                        RemoteServerManager::as_ref(ctx).is_session_potentially_active(sid)
                     });
+
+                // When the session has a remote server, tell it about the current
+                // directory so it can start indexing and push repo metadata back.
+                #[cfg(feature = "local_fs")]
+                if has_remote_server {
+                    if let (Some(sid), Some(cwd)) = (session_id, pwd.clone()) {
+                        RemoteServerManager::handle(ctx).update(ctx, |mgr, ctx| {
+                            mgr.navigate_to_directory(sid, cwd.clone(), ctx);
+                        });
+                    }
                 }
-            }
 
-            let enablement = CodingPanelEnablementState::from_session_env(
-                file_tree_and_global_search_are_enabled,
-                is_remote,
-                is_unsupported_session,
-                has_remote_server,
-            );
+                let enablement = CodingPanelEnablementState::from_session_env(
+                    file_tree_and_global_search_are_enabled,
+                    is_remote,
+                    is_unsupported_session,
+                    has_remote_server,
+                );
 
-            // When an SSH command is running (pending host set + block
-            // still long-running), the old local session is still active
-            // so the enablement computes as `Enabled`. Override to
-            // `PendingRemoteSession` so the file tree shows loading
-            // instead of the stale local tree.
-            let enablement =
-                if has_pending_ssh && matches!(enablement, CodingPanelEnablementState::Enabled) {
+                // When an SSH command is running (pending host set + block
+                // still long-running), the old local session is still active
+                // so the enablement computes as `Enabled`. Override to
+                // `PendingRemoteSession` so the file tree shows loading
+                // instead of the stale local tree.
+                let enablement = if has_pending_ssh
+                    && matches!(enablement, CodingPanelEnablementState::Enabled)
+                {
                     CodingPanelEnablementState::PendingRemoteSession
                 } else {
                     enablement
                 };
 
-            self.left_panel_view.update(ctx, |left_panel, ctx| {
-                left_panel.update_coding_panel_enablement(enablement, ctx);
-            });
-
-            #[cfg(feature = "local_fs")]
-            {
-                self.right_panel_view.update(ctx, |right_panel, ctx| {
-                    right_panel.update_session_env(is_remote, is_wsl_session, ctx);
+                self.left_panel_view.update(ctx, |left_panel, ctx| {
+                    left_panel.update_coding_panel_enablement(enablement, ctx);
                 });
 
-                if self.active_tab_pane_group().as_ref(ctx).right_panel_open {
-                    self.setup_code_review_panel(None, ctx);
+                #[cfg(feature = "local_fs")]
+                {
+                    self.right_panel_view.update(ctx, |right_panel, ctx| {
+                        right_panel.update_session_env(is_remote, is_wsl_session, ctx);
+                    });
+
+                    if self.active_tab_pane_group().as_ref(ctx).right_panel_open {
+                        self.setup_code_review_panel(None, ctx);
+                    }
                 }
             }
-        } _ => {
-            let enablement = CodingPanelEnablementState::from_session_env(
-                file_tree_and_global_search_are_enabled,
-                false,
-                false,
-                false,
-            );
+            _ => {
+                let enablement = CodingPanelEnablementState::from_session_env(
+                    file_tree_and_global_search_are_enabled,
+                    false,
+                    false,
+                    false,
+                );
 
-            self.left_panel_view.update(ctx, |left_panel, ctx| {
-                left_panel.update_coding_panel_enablement(enablement, ctx);
-            });
-
-            #[cfg(feature = "local_fs")]
-            {
-                self.right_panel_view.update(ctx, |right_panel, ctx| {
-                    right_panel.update_session_env(false, false, ctx);
+                self.left_panel_view.update(ctx, |left_panel, ctx| {
+                    left_panel.update_coding_panel_enablement(enablement, ctx);
                 });
+
+                #[cfg(feature = "local_fs")]
+                {
+                    self.right_panel_view.update(ctx, |right_panel, ctx| {
+                        right_panel.update_session_env(false, false, ctx);
+                    });
+                }
             }
-        }}
+        }
     }
 
     fn handle_warp_drive_event(&mut self, event: &DrivePanelEvent, ctx: &mut ViewContext<Self>) {
@@ -15700,12 +15867,7 @@ impl Workspace {
                 );
             }
             DrivePanelEvent::OpenSearch => {
-                self.open_palette_action(
-                    PaletteMode::ZapDrive,
-                    PaletteSource::ZapDrive,
-                    None,
-                    ctx,
-                );
+                self.open_palette_action(PaletteMode::ZapDrive, PaletteSource::ZapDrive, None, ctx);
             }
             DrivePanelEvent::OpenNotebook(source) => {
                 self.open_notebook(source, &ZapDriveObjectSettings::default(), ctx, true)
@@ -15713,12 +15875,9 @@ impl Workspace {
             DrivePanelEvent::OpenEnvVarCollection(source) => {
                 self.open_env_var_collection(source, false, ctx)
             }
-            DrivePanelEvent::OpenWorkflowInPane(source, mode) => self.open_workflow_in_pane(
-                source,
-                &ZapDriveObjectSettings::default(),
-                *mode,
-                ctx,
-            ),
+            DrivePanelEvent::OpenWorkflowInPane(source, mode) => {
+                self.open_workflow_in_pane(source, &ZapDriveObjectSettings::default(), *mode, ctx)
+            }
             DrivePanelEvent::OpenAIFactCollection => {
                 self.open_ai_fact_collection_pane(None, None, ctx);
                 send_telemetry_from_ctx!(
@@ -16852,9 +17011,11 @@ impl Workspace {
 
     fn reset_zoom(&mut self, ctx: &mut ViewContext<Self>) {
         WindowSettings::handle(ctx).update(ctx, |window_settings, ctx| {
-            report_if_error!(window_settings
-                .zoom_level
-                .set_value(ZoomLevel::default_value(), ctx));
+            report_if_error!(
+                window_settings
+                    .zoom_level
+                    .set_value(ZoomLevel::default_value(), ctx)
+            );
         });
     }
 
@@ -16874,9 +17035,11 @@ impl Workspace {
         };
 
         WindowSettings::handle(ctx).update(ctx, |window_settings, ctx| {
-            report_if_error!(window_settings
-                .zoom_level
-                .set_value(crate::window_settings::ZoomLevel::VALUES[next_index], ctx));
+            report_if_error!(
+                window_settings
+                    .zoom_level
+                    .set_value(crate::window_settings::ZoomLevel::VALUES[next_index], ctx)
+            );
         });
     }
 
@@ -16889,9 +17052,11 @@ impl Workspace {
 
     fn set_terminal_font_size(&mut self, new_font_size: f32, ctx: &mut ViewContext<Self>) {
         FontSettings::handle(ctx).update(ctx, |font_settings, ctx| {
-            report_if_error!(font_settings
-                .monospace_font_size
-                .set_value(new_font_size, ctx));
+            report_if_error!(
+                font_settings
+                    .monospace_font_size
+                    .set_value(new_font_size, ctx)
+            );
         });
     }
 
@@ -16917,9 +17082,11 @@ impl Workspace {
                 // `settings.toml` that failed to parse inhibits writes, and I/O
                 // errors are now propagated rather than discarded), and a
                 // failed write must not crash the app.
-                report_if_error!(reporting
-                    .mouse_reporting_enabled
-                    .set_value(!prev_mouse_reporting_enabled, ctx));
+                report_if_error!(
+                    reporting
+                        .mouse_reporting_enabled
+                        .set_value(!prev_mouse_reporting_enabled, ctx)
+                );
                 prev_mouse_reporting_enabled
             });
 
@@ -17058,8 +17225,8 @@ impl Workspace {
     }
 
     fn handle_codex_modal_event(&mut self, event: &CodexModalEvent, ctx: &mut ViewContext<Self>) {
-        use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
         use crate::AIExecutionProfilesModel;
+        use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 
         match event {
             CodexModalEvent::Close => {
@@ -18956,33 +19123,24 @@ impl Workspace {
             let icon = agent.icon().unwrap_or(icons::Icon::LayoutAlt01);
             let theme = appearance.theme();
             let icon_color = theme.sub_text_color(theme.background());
-            let button = icon_button_with_color(
-                appearance,
-                icon,
-                false,
-                handle.clone(),
-                icon_color,
-            )
-            .with_hovered_styles(UiComponentStyles {
-                font_color: Some(icon_color.into()),
-                background: Some(theme.surface_2().into()),
-                ..UiComponentStyles::default()
-            })
-            .with_clicked_styles(UiComponentStyles {
-                font_color: Some(icon_color.into()),
-                background: Some(theme.background().into()),
-                ..UiComponentStyles::default()
-            })
-            // Icon shrunk to 14x14: padding increased from 4 to 5.0, button outer frame stays 24x24
-            .with_style(UiComponentStyles::default()
-                .set_padding(Coords::uniform(5.0))
-            );
+            let button =
+                icon_button_with_color(appearance, icon, false, handle.clone(), icon_color)
+                    .with_hovered_styles(UiComponentStyles {
+                        font_color: Some(icon_color.into()),
+                        background: Some(theme.surface_2().into()),
+                        ..UiComponentStyles::default()
+                    })
+                    .with_clicked_styles(UiComponentStyles {
+                        font_color: Some(icon_color.into()),
+                        background: Some(theme.background().into()),
+                        ..UiComponentStyles::default()
+                    })
+                    // Icon shrunk to 14x14: padding increased from 4 to 5.0, button outer frame stays 24x24
+                    .with_style(UiComponentStyles::default().set_padding(Coords::uniform(5.0)));
 
             let agent_name = agent.display_name().to_string();
             let button = button
-                .with_tooltip(
-                    self.render_tab_bar_icon_button_tooltip(appearance, agent_name, None),
-                )
+                .with_tooltip(self.render_tab_bar_icon_button_tooltip(appearance, agent_name, None))
                 .build()
                 .on_click(move |ctx, _, _| {
                     ctx.dispatch_typed_action(WorkspaceAction::AddSpecificAgentTab(agent));
@@ -19438,7 +19596,9 @@ impl Workspace {
             && autoupdate_stage
                 .available_new_version()
                 .map(|version| {
-                    !is_incoming_version_past_current_strict(version.last_prominent_update.as_deref())
+                    !is_incoming_version_past_current_strict(
+                        version.last_prominent_update.as_deref(),
+                    )
                 })
                 .unwrap_or(false)
         {
@@ -19667,7 +19827,9 @@ impl Workspace {
                 || autoupdate_stage
                     .available_new_version()
                     .map(|version| {
-                        is_incoming_version_past_current_strict(version.last_prominent_update.as_deref())
+                        is_incoming_version_past_current_strict(
+                            version.last_prominent_update.as_deref(),
+                        )
                     })
                     .unwrap_or(false))
         {
@@ -21280,12 +21442,16 @@ impl TypedActionView for Workspace {
                         } else {
                             // Config missing or deleted — clear and fall through to Terminal.
                             AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                                report_if_error!(settings
-                                    .default_session_mode_internal
-                                    .set_value(DefaultSessionMode::Terminal, ctx));
-                                report_if_error!(settings
-                                    .default_tab_config_path
-                                    .set_value(String::new(), ctx));
+                                report_if_error!(
+                                    settings
+                                        .default_session_mode_internal
+                                        .set_value(DefaultSessionMode::Terminal, ctx)
+                                );
+                                report_if_error!(
+                                    settings
+                                        .default_tab_config_path
+                                        .set_value(String::new(), ctx)
+                                );
                             });
                             self.add_terminal_tab(false, ctx);
                         }
@@ -21408,9 +21574,11 @@ impl TypedActionView for Workspace {
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
                     report_if_error!(settings.default_session_mode_internal.set_value(*mode, ctx));
                     if let Some(path) = tab_config_path {
-                        report_if_error!(settings
-                            .default_tab_config_path
-                            .set_value(path.to_string_lossy().into_owned(), ctx));
+                        report_if_error!(
+                            settings
+                                .default_tab_config_path
+                                .set_value(path.to_string_lossy().into_owned(), ctx)
+                        );
                     }
                 });
                 #[cfg(feature = "local_tty")]
@@ -21766,7 +21934,12 @@ impl TypedActionView for Workspace {
                     if let Some((repo_path, terminal_view)) = read_result {
                         let diff_state_model = repo_path.as_ref().and_then(|rp| {
                             self.working_directories_model.update(ctx, |model, ctx| {
-                                model.get_or_create_diff_state_model(warp_util::local_or_remote_path::LocalOrRemotePath::Local(rp.clone()), ctx)
+                                model.get_or_create_diff_state_model(
+                                    warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                                        rp.clone(),
+                                    ),
+                                    ctx,
+                                )
                             })
                         });
                         if let Some(diff_state_model) = diff_state_model {
@@ -24224,27 +24397,30 @@ impl View for Workspace {
             .background_opacity
             .effective_opacity(self.window_id, app);
 
-        match theme.background_image() { Some(img) => {
-            let opacity_ratio = background_opacity as f32 / 100.;
-            stack.add_child(
-                Shrinkable::new(
-                    1.,
-                    Image::new(img.source(), CacheOption::Original)
-                        .cover()
-                        .with_opacity(opacity_ratio)
-                        .with_corner_radius(window_corner_radius)
-                        .finish(),
-                )
-                .finish(),
-            );
-            stack.add_child(workspace.finish());
-        } _ => {
-            stack.add_child(
-                workspace
-                    .with_background(theme.surface_2().with_opacity(background_opacity))
+        match theme.background_image() {
+            Some(img) => {
+                let opacity_ratio = background_opacity as f32 / 100.;
+                stack.add_child(
+                    Shrinkable::new(
+                        1.,
+                        Image::new(img.source(), CacheOption::Original)
+                            .cover()
+                            .with_opacity(opacity_ratio)
+                            .with_corner_radius(window_corner_radius)
+                            .finish(),
+                    )
                     .finish(),
-            );
-        }}
+                );
+                stack.add_child(workspace.finish());
+            }
+            _ => {
+                stack.add_child(
+                    workspace
+                        .with_background(theme.surface_2().with_opacity(background_opacity))
+                        .finish(),
+                );
+            }
+        }
 
         let input_position_id = self
             .get_active_input_view_handle(app)
@@ -25464,9 +25640,11 @@ impl Workspace {
             // pinned states do not match. This prevents an unpinned tab from
             // entering the pinned area (and vice versa). Dragging into a pinned tab
             // group is already handled by the grouping logic above.
-            if self.is_tab_effectively_pinned(&self.tabs[current_index])
-                != self.is_tab_effectively_pinned(&self.tabs[new_index])
-            {
+            //
+            // Shared with `can_move_tab` deliberately: this check used to be
+            // spelled out only here, so a move the mouse refused could still be
+            // performed from the tab menu or a keybinding.
+            if !self.tabs_share_pinned_region(current_index, new_index) {
                 return;
             }
 
@@ -26208,4 +26386,190 @@ fn group_member_index_range(tabs: &[TabData], group_id: TabGroupId) -> Option<(u
 /// group drags the entire group rather than orphaning it.
 pub(super) fn group_has_single_member(tabs: &[TabData], group_id: TabGroupId) -> bool {
     group_member_index_range(tabs, group_id).is_some_and(|(first, last)| first == last)
+}
+
+/// Tests for the pinned/group gating on one-slot tab reorders. They live here
+/// rather than in `view_test.rs` so the change stays inside `view.rs`; the
+/// harness (`initialize_app` / `mock_workspace`) is reused from that module.
+#[cfg(test)]
+mod move_tab_gating_tests {
+    use super::tests::{initialize_app, mock_workspace};
+    use super::*;
+    use warpui::App;
+
+    /// Pane-group ids in tab order, the stable identity for asserting that a
+    /// blocked move really did leave the list alone.
+    fn tab_order(workspace: &Workspace) -> Vec<EntityId> {
+        workspace
+            .tabs
+            .iter()
+            .map(|tab| tab.pane_group.id())
+            .collect()
+    }
+
+    #[test]
+    fn test_move_tab_left_refused_for_first_unpinned_tab() {
+        // The pinned tabs form a contiguous prefix that `pinned_boundary_index`
+        // depends on. Moving the first unpinned tab left would evict a pinned
+        // tab from that prefix, so both the action and the menu entry are gated.
+        let _pinned_guard = FeatureFlag::PinnedTabs.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 2);
+                workspace.tabs[0].pinned = true;
+
+                assert!(
+                    !workspace.can_move_tab(1, TabMovement::Left),
+                    "the first unpinned tab must not move into the pinned prefix"
+                );
+                assert!(
+                    !workspace.tab_move_gating(1).can_move_left,
+                    "the menu must hide an entry the action would refuse"
+                );
+                // The mirror case: the last pinned tab must not leave the prefix.
+                assert!(
+                    !workspace.can_move_tab(0, TabMovement::Right),
+                    "a pinned tab must not move into the unpinned region"
+                );
+
+                let before = tab_order(workspace);
+                workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
+                assert_eq!(
+                    tab_order(workspace),
+                    before,
+                    "a refused move must not reorder the tabs"
+                );
+                workspace.handle_action(&WorkspaceAction::MoveTabRight(0), ctx);
+                assert_eq!(tab_order(workspace), before);
+                assert!(workspace.tabs[0].pinned);
+            });
+        });
+    }
+
+    #[test]
+    fn test_move_tab_refused_when_it_would_split_a_group() {
+        // A grouped tab may only reorder within its own group: `tab_bar_slots`
+        // collapses *contiguous* runs only, so a torn group renders as two
+        // headers sharing one id.
+        let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                // Three tabs: [t0] ungrouped, [g0, g1] in one group.
+                workspace.add_terminal_tab(false, ctx);
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 3);
+
+                let group = TabGroup::new();
+                let group_id = group.id;
+                workspace.tab_groups.insert(group_id, group);
+                workspace.tabs[1].group_id = Some(group_id);
+                workspace.tabs[2].group_id = Some(group_id);
+
+                let t0 = workspace.tabs[0].pane_group.id();
+                let g0 = workspace.tabs[1].pane_group.id();
+                let g1 = workspace.tabs[2].pane_group.id();
+
+                // The group's first member cannot step left out of the group,
+                // and its last member cannot step right out of it.
+                assert!(!workspace.can_move_tab(1, TabMovement::Left));
+                assert!(!workspace.can_move_tab(2, TabMovement::Right));
+                assert!(!workspace.tab_move_gating(1).can_move_left);
+
+                workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
+                assert_eq!(
+                    tab_order(workspace),
+                    vec![t0, g0, g1],
+                    "pulling a tab out of its group must be refused, not performed"
+                );
+
+                // Reordering *within* the group is still an ordinary move.
+                workspace.handle_action(&WorkspaceAction::MoveTabRight(1), ctx);
+                assert_eq!(tab_order(workspace), vec![t0, g1, g0]);
+                assert_eq!(workspace.tabs[1].group_id, Some(group_id));
+                assert_eq!(workspace.tabs[2].group_id, Some(group_id));
+
+                // An ungrouped tab moving toward the group hops the whole block
+                // instead of landing inside its run and splitting it.
+                workspace.handle_action(&WorkspaceAction::MoveTabRight(0), ctx);
+                assert_eq!(tab_order(workspace), vec![g1, g0, t0]);
+                assert!(workspace.tabs[0].group_id == Some(group_id));
+                assert!(workspace.tabs[1].group_id == Some(group_id));
+                assert!(workspace.tabs[2].group_id.is_none());
+            });
+        });
+    }
+
+    #[test]
+    fn test_sole_member_of_a_group_cannot_be_reordered_by_itself() {
+        // A one-member group has no interior to reorder within, so both
+        // directions are refused: moving it either way would leave the group
+        // straddling a tab that is not in it. The group header's own move
+        // entries (`can_move_tab_group`) are how such a group is moved.
+        let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                // Three tabs, the middle one alone in its own group.
+                workspace.add_terminal_tab(false, ctx);
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 3);
+
+                let group = TabGroup::new();
+                let group_id = group.id;
+                workspace.tab_groups.insert(group_id, group);
+                workspace.tabs[1].group_id = Some(group_id);
+
+                assert!(!workspace.can_move_tab(1, TabMovement::Left));
+                assert!(!workspace.can_move_tab(1, TabMovement::Right));
+                let gating = workspace.tab_move_gating(1);
+                assert!(!gating.can_move_left && !gating.can_move_right);
+
+                let before = tab_order(workspace);
+                workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
+                workspace.handle_action(&WorkspaceAction::MoveTabRight(1), ctx);
+                assert_eq!(tab_order(workspace), before);
+            });
+        });
+    }
+
+    #[test]
+    fn test_ordinary_move_tab_still_swaps_neighbors() {
+        // The gate must not block the common case: two ungrouped, unpinned tabs
+        // swap, and the active tab follows the tab the user moved.
+        App::test((), |mut app| async move {
+            initialize_app(&mut app);
+
+            let workspace = mock_workspace(&mut app);
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.add_terminal_tab(false, ctx);
+                assert_eq!(workspace.tab_count(), 2);
+
+                let first = workspace.tabs[0].pane_group.id();
+                let second = workspace.tabs[1].pane_group.id();
+                // `add_terminal_tab` activates the tab it created.
+                assert_eq!(workspace.active_tab_index, 1);
+
+                assert!(workspace.can_move_tab(1, TabMovement::Left));
+                workspace.handle_action(&WorkspaceAction::MoveTabLeft(1), ctx);
+
+                assert_eq!(tab_order(workspace), vec![second, first]);
+                assert_eq!(
+                    workspace.active_tab_index, 0,
+                    "the active tab follows the tab that moved"
+                );
+            });
+        });
+    }
 }
