@@ -2745,6 +2745,33 @@ fn diag_message_with_redacted_binaries(message: &ChatMessage) -> std::borrow::Co
     std::borrow::Cow::Owned(redacted)
 }
 
+/// Opt-in switch for the `[byop-diag] full_request_json*` dumps.
+///
+/// Those lines serialize the *entire* outbound request — system prompt, the full conversation
+/// history, attached file contents, shell output, and the cwd/git environment blocks. Only
+/// base64 binaries are redacted (`diag_request_with_redacted_binaries`); nothing else is
+/// scrubbed, `warp_logging` runs at Info with no `release_max_level`, and
+/// `write_log_bundle_zip_to` puts `warp.log` straight into a user-submitted bug report. Logging
+/// all of that on every turn by default means shipping the user's conversation to whoever
+/// receives the bundle.
+///
+/// So the dump is now opt-in, in the same shape as `ZAP_PROMPT_DIR` in `prompt_renderer.rs`:
+/// set the env var for the session you are actually debugging an illegal-escape / truncated-
+/// history problem in. With it unset, the size/shape summary still goes out on every turn, and
+/// the error path still logs the bounded ±200-character window around the offending column,
+/// which is what actually localizes a bad escape.
+const FULL_REQUEST_DUMP_ENV: &str = "ZAP_BYOP_LOG_FULL_REQUEST";
+
+/// Read once per process: an env var cannot meaningfully change mid-run, and this is consulted
+/// on every turn.
+fn full_request_dump_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var(FULL_REQUEST_DUMP_ENV)
+            .is_ok_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
+    })
+}
+
 /// A copy of the request safe to dump into the log, with binary payloads replaced.
 ///
 /// The escape scan and the on-error dump that consume this only care about text the caller
@@ -4791,6 +4818,38 @@ fn map_genai_error(err: genai::Error) -> OpenAiCompatibleError {
     }
 }
 
+/// Drops the cached Vertex bearer when the provider rejects it as an auth failure.
+///
+/// `credential` is `Some` only on the Vertex path (see `generate_byop_output`); every other
+/// api_type sends a static key that this cannot help with.
+///
+/// Why it has to happen here: `vertex_auth` caches the minted token for `TOKEN_TTL` (30 min)
+/// under the settings credential string, which a re-login does not change. Without an eviction
+/// on rejection, a revoked token keeps being replayed on every turn for the rest of the TTL,
+/// and a successful `gcloud auth login` in between is invisible — the user re-authenticates and
+/// still gets 401s. Evicting costs at most one extra `gcloud` subprocess on the next turn.
+///
+/// 403 counts as well as 401: Vertex answers a wrong-*type* or otherwise unusable credential
+/// with either, and a stale-token 403 is indistinguishable from a genuine permission denial
+/// from here. Re-minting a token we would otherwise have kept is the cheaper mistake.
+fn evict_vertex_token_on_auth_failure(credential: Option<&String>, err: &OpenAiCompatibleError) {
+    let Some(credential) = credential else {
+        return;
+    };
+    let OpenAiCompatibleError::Status { status, .. } = err else {
+        return;
+    };
+    if !matches!(status, 401 | 403) {
+        return;
+    }
+    if super::vertex_auth::invalidate_token(credential) {
+        log::warn!(
+            "[byop-vertex] provider answered {status}; dropped the cached access token so the \
+             next request mints a fresh one"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main flow
 // ---------------------------------------------------------------------------
@@ -5019,6 +5078,11 @@ pub async fn generate_byop_output(
         },
         max_output_tokens,
     );
+    // Vertex is the one api_type whose credential is not the thing sent on the wire: the bearer
+    // is a short-lived OAuth2 token minted by `gcloud` and cached in-process under this exact
+    // string. Keep it so an auth failure below can evict that cache entry — see
+    // `evict_vertex_token_on_auth_failure`.
+    let vertex_credential = (api_type == AgentProviderApiType::Vertex).then(|| api_key.clone());
     let client = build_client(api_type, &base_url, api_key);
     let request_id = Uuid::new_v4().to_string();
     let mcp_context = params.mcp_context.clone();
@@ -5084,10 +5148,12 @@ pub async fn generate_byop_output(
     // through another layer by the genai adapter, but this already covers every raw string
     // fed into BYOP, which is enough to pin down whether an illegal escape came from the
     // prompt, a tool description, a schema, or a tool result.
-    // Binary parts are redacted first. This dump goes to `log::info!` on *every* turn, and a
-    // computer-use loop attaches a base64 screenshot to most of them — dumping those verbatim
-    // would write megabytes per turn to the log for content the escape scan below cannot say
-    // anything useful about anyway (base64 has no backslashes).
+    // Binary parts are redacted first: a computer-use loop attaches a base64 screenshot to most
+    // turns, and dumping those verbatim would write megabytes per turn to the log for content
+    // the escape scan below cannot say anything useful about anyway (base64 has no backslashes).
+    //
+    // The JSON is always built (the escape scan and the on-error column window both read it),
+    // but writing it to the log is opt-in — see `FULL_REQUEST_DUMP_ENV`.
     let diag_request = diag_request_with_redacted_binaries(&chat_req);
     let diag_body_json = serde_json::to_string(&json!({
         "model": &model_id,
@@ -5095,7 +5161,21 @@ pub async fn generate_byop_output(
     }))
     .unwrap_or_default();
     log::info!("[byop] diag_body_approx_len={}", diag_body_json.len());
-    log::info!("[byop-diag] full_request_json={diag_body_json}");
+    if full_request_dump_enabled() {
+        log::info!("[byop-diag] full_request_json={diag_body_json}");
+    } else {
+        // The non-content summary that stays on by default. Everything the unconditional dump
+        // was routinely used for that isn't the raw text — "did the history go up whole?",
+        // "how big was it?" — is already covered by `log_chat_request_details` above plus this
+        // line; the raw text itself needs the opt-in.
+        log::info!(
+            "[byop-diag] full_request_json suppressed: bytes={} messages={} tools={} \
+             (set {FULL_REQUEST_DUMP_ENV}=1 to log the whole request body)",
+            diag_body_json.len(),
+            chat_req.messages.len(),
+            chat_req.tools.as_ref().map(|t| t.len()).unwrap_or(0)
+        );
+    }
 
     // Proactively scans the raw text for "suspicious backslash sequences": serde_json
     // serializes a literal `\` in the source string as `\\`, so it's only when "two
@@ -5409,6 +5489,7 @@ pub async fn generate_byop_output(
             Err(e) => {
                 let mapped = map_genai_error(e);
                 log::error!("[byop] open stream failed: {mapped:#}");
+                evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
                 yield Err(Arc::new(AIApiError::Other(anyhow::anyhow!(
                     "BYOP open stream failed: {mapped}"
                 ))));
@@ -5499,7 +5580,19 @@ pub async fn generate_byop_output(
                     let mapped = map_genai_error(e);
                     let err_text = format!("{mapped:#}");
                     log::error!("[byop] stream chunk error: {err_text}");
-                    log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
+                    evict_vertex_token_on_auth_failure(vertex_credential.as_ref(), &mapped);
+                    // Same payload as the per-turn dump, so it carries the same content and the
+                    // same opt-in. The bounded ±200-char window below is what actually localizes
+                    // a bad escape, and it still runs either way.
+                    if full_request_dump_enabled() {
+                        log::error!("[byop-diag] full_request_json_on_error={diag_body_json}");
+                    } else {
+                        log::error!(
+                            "[byop-diag] full_request_json_on_error suppressed: bytes={} \
+                             (set {FULL_REQUEST_DUMP_ENV}=1 to log the whole request body)",
+                            diag_body_json.len()
+                        );
+                    }
                     // Parses "column N" out of the error message, and dumps ±200 chars of
                     // context around that position in diag_body_json plus a byte hex dump.
                     if let Some(col) = err_text

@@ -1370,6 +1370,14 @@ fn initialize_app(
 
     PrivacySettings::register_singleton(ctx);
 
+    // Second phase of settings init: the one-shot settings migrations and the
+    // seeding of the default secret-redaction regexes. Both hung off the pin's
+    // server round-trip in `auth/auth_manager.rs`, which this fork deleted; both
+    // need `AuthStateProvider` and `PrivacySettings`, so this is the earliest
+    // point they can run. See the function's own comment for why startup is the
+    // right trigger and why re-running it cannot clobber the user's edits.
+    settings::run_startup_settings_initialization(ctx);
+
     // If any part of sqlite initialization fails, we just don't do session restoration (i.e.
     // feature degradation).
     let (sqlite_data, writer_handles) = persistence::initialize(ctx);
@@ -3325,8 +3333,11 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // here. Upstream's dogfood channel is a GUI build, so its team can exercise
     // the chip and eventually promote it. In this fork `bin/phosphor_oss.rs` is
     // the only GUI binary and it adds `DEBUG_FLAGS` alone; `DOGFOOD_FLAGS`
-    // reaches only `warp_tui`'s `dev`/`local` binaries (a TUI, which has no
-    // plugin chip) and the schema generators. So the validation upstream is
+    // reaches no binary at all. (Corrected: this comment used to say it reached
+    // `warp_tui`'s `dev`/`local` binaries. Those files are never compiled --
+    // `crates/warp_tui/Cargo.toml` sets `autobins = false` with a single declared
+    // `[[bin]]`, and they import a crate that is not in the workspace -- so the
+    // only readers left are the schema generators.) So the validation upstream is
     // waiting on could never happen here, and `GeminiPluginManager` plus its six
     // `cli-agent-plugin-gemini-*` catalogue strings would stay permanently dead.
     //
@@ -3339,6 +3350,40 @@ const UNSTABLE_FEATURES: &[(&str, FeatureFlag)] = &[
     // local OSC 777 listener, which already accepts `CLIAgent::Gemini` under
     // `HOANotifications` alone. See TODO.md, issue #594.
     ("gemini_notifications", FeatureFlag::GeminiNotifications),
+    // The six flags below gate live, shipped code but sat in `DOGFOOD_FLAGS` with
+    // no reader: upstream's channel binaries pass that list to
+    // `with_additional_features`, and this fork's equivalents
+    // (`crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`) never compile --
+    // `autobins = false`, one declared `[[bin]]`, and they import a crate absent
+    // from the workspace. `bin/phosphor_oss.rs` adds `DEBUG_FLAGS` alone. So the
+    // code was unreachable in every binary this repo actually builds, including
+    // the entire `warpctrl` local-control surface and its bundled skill.
+    //
+    // They are registered here rather than promoted to `RELEASE_FLAGS` or to
+    // `app/Cargo.toml`'s `default` on purpose. Promotion would *ship* six
+    // features that are unfinished or unvalidated here (none of them is
+    // default-on at the pin either); this gives a user or a developer an enable
+    // path they can actually take -- `ZAP_UNSTABLE_FEATURES=warp_control_cli`,
+    // or `=all` -- while the default stays exactly as it is today: off. Nothing
+    // about a normal build changes.
+    (
+        "full_source_code_embedding",
+        FeatureFlag::FullSourceCodeEmbedding,
+    ),
+    (
+        "codebase_index_persistence",
+        FeatureFlag::CodebaseIndexPersistence,
+    ),
+    ("warp_control_cli", FeatureFlag::WarpControlCli),
+    (
+        "jupyter_notebook_rendering",
+        FeatureFlag::JupyterNotebookRendering,
+    ),
+    (
+        "multi_level_orchestration",
+        FeatureFlag::MultiLevelOrchestration,
+    ),
+    ("local_docker_sandbox", FeatureFlag::LocalDockerSandbox),
 ];
 
 #[cfg(test)]

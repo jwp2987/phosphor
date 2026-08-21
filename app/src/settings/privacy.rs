@@ -589,6 +589,14 @@ impl PrivacySettings {
 
     /// Initializes the custom secret regex list with the default regexes.
     /// This will only be executed once per user, and only if they haven't already initialized.
+    ///
+    /// Zap: called from `settings::run_startup_settings_initialization` on every
+    /// launch. That is safe to repeat, and specifically cannot resurrect patterns
+    /// the user removed: the guard is the persisted private setting
+    /// `HasInitializedDefaultSecretRegexes`, not the contents of the list, and it is
+    /// set the first time seeding runs. So an empty list means "seeded, then emptied
+    /// on purpose" once the flag is set, and only a user who has never been seeded
+    /// gets the defaults.
     pub fn initialize_default_regexes_once(&mut self, ctx: &mut ModelContext<Self>) {
         // Only initialize if we haven't done so before
         if !*self.has_initialized_default_secret_regexes.value() {

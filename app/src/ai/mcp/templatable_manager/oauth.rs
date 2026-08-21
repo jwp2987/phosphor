@@ -597,11 +597,36 @@ impl TemplatableMCPServerManager {
         }
     }
 
+    /// Deletes the stored OAuth credentials for an installation, for both storage backings.
+    ///
+    /// Not ported from the pin: its matching `CredentialsChanged` emit. This fork has no such
+    /// event (no `TemplatableMCPServerManagerEvent::CredentialsChanged` exists anywhere), and
+    /// the sibling `save_credentials_to_secure_storage` above emits nothing either, so adding
+    /// one here would mean adding an event variant no listener subscribes to.
     pub fn delete_credentials_from_secure_storage(
         &mut self,
         installation_uuid: Uuid,
         app: &mut warpui::AppContext,
     ) {
+        // File-based (locally installed) servers keep their credentials in
+        // `file_based_server_credentials`, keyed by config hash -- exactly as
+        // `save_credentials_to_secure_storage` above writes them. This branch is the pin's
+        // (`42effe840:app/src/ai/mcp/templatable_manager/native.rs:214-225`) and was missing
+        // here: `get_template_uuid` only looks at `locally_installed_servers`, which a
+        // file-based install is never in, so "Log out" fell straight through to the error log
+        // and deleted nothing. `can_log_out` does consult this map, so the TUI/settings offered
+        // a Log Out row that silently kept the OAuth refresh token alive -- surviving both
+        // logout and a server-side revocation of the access token.
+        if let Some(hash) = FileBasedMCPManager::as_ref(app).get_hash_by_uuid(installation_uuid) {
+            self.file_based_server_credentials.remove(&hash);
+            write_to_secure_storage(
+                app,
+                FILE_BASED_MCP_CREDENTIALS_KEY,
+                &self.file_based_server_credentials,
+            );
+            return;
+        }
+
         if let Some(template_uuid) = self.get_template_uuid(installation_uuid) {
             self.server_credentials.remove(&template_uuid);
             write_to_secure_storage(

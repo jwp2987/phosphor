@@ -26,13 +26,34 @@ impl SettingsInitializer {
         Self
     }
 
-    /// A hook for changing settings values after a user is fetched from the server.
+    /// Adjusts settings values once the user identity is known.
     ///
     /// Specifically useful for adjusting settings for first-time users when the default value of a
     /// setting as set in define_settings_group! is no longer the desired default value,
     /// but we don't want to change it for existing users (which is what would happen if we changed the
-    /// default value in define_settings_group! in code).
-    pub fn handle_user_fetched(&self, auth_state: Arc<AuthState>, ctx: &mut ModelContext<Self>) {
+    /// default value in define_settings_group! in code), and for one-shot migrations of renamed
+    /// settings keys.
+    ///
+    /// Zap: at the pin this was `handle_user_fetched`, called from
+    /// `42effe840:app/src/auth/auth_manager.rs:430` when the server returned the
+    /// user. This fork deleted that call site with the cloud auth layer, which left
+    /// the whole function — and therefore the `KeepThinkingExpanded` ->
+    /// `ThinkingDisplayMode` migration below — unreachable. There is no user-fetch
+    /// event left to hang it off: `AuthState` here is a local placeholder that is
+    /// fully determined the moment it is constructed, so startup is the trigger and
+    /// `settings::run_startup_settings_initialization` is the caller.
+    ///
+    /// Caveat, so it is not re-derived: the `is_onboarded() == Some(false)` block is
+    /// still unreachable in this fork, because the local user hardcodes
+    /// `is_onboarded: true` (`app/src/auth/mod.rs:213`). It is kept intact rather
+    /// than deleted so it works again if a real onboarding state is ever introduced.
+    /// The migrations below the block are the part that this fork actually needs,
+    /// and they now run.
+    pub fn apply_startup_settings_migrations(
+        &self,
+        auth_state: Arc<AuthState>,
+        ctx: &mut ModelContext<Self>,
+    ) {
         /// We use a font-size of 16px (12pt) on Windows to more closely match the default font size of
         /// Windows terminal.
         const DEFAULT_WINDOWS_MONOSPACE_FONT_SIZE: f32 = 16.;

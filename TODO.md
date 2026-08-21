@@ -7024,6 +7024,8 @@ Ordered by severity, not by area.
       30 minutes and a successful re-login still returns the stale cached token.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `vertex_auth.rs:188-195` is the only reader and `store_token:198-212` the only writer; no eviction API exists, and grep for `401` in `agent_providers/` finds only comments. Verifier added the decisive detail: the cache key is the settings `credential` string (`:123`), unchanged by re-login, so a re-mint is impossible before the 30-minute TTL.
 
+      **FIXED 2026-08-21:** `vertex_auth.rs:198-220` adds `invalidate_token`; `chat_stream.rs:4790` `evict_vertex_token_on_auth_failure` evicts on 401/403 (403 included deliberately, documented) from both stream error sites (`:5492`, `:5583`). Credential captured at `:5085` before `api_key` moves into `build_client`. Cache test added.
+
 - [ ] **`agent_id_to_conversation_id` is keyed by a mutable value.**
       `history_model.rs:2682` keys on run_id-or-server-token; the pin keys on run_id
       only. A rebound token resolves to the previous owner, and
@@ -7037,10 +7039,14 @@ Ordered by severity, not by area.
       uncallable.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `mcp.rs:44-53` collapses each non-alnum char to `_`, so any two adjacent characters (e.g. `"GitHub (remote)"` → `GitHub__remote_`) produce `__`. `function_name:57-63` embeds it; `parse_mcp_tool_call:172-177` splits at the FIRST `__` and then requires an exact `sanitize_server_name` match the truncated prefix cannot satisfy. Verifier also checked recovery: `is_mcp_function` (`:7157`) returns before `recover_tool_by_arg_shape`, so there is no fallback.
 
+      **FIXED 2026-08-21:** `mcp.rs:59-78` `sanitize_server_name` collapses `_` runs and trims ends, so a sanitised name can neither contain nor abut `SEP`; the server-id fallback in `serialize_outgoing_call` goes through it too. Round-trip test added inline (`function_name_roundtrip_tests`) because `mcp_tests.rs` was outside the edit set.
+
 - [ ] **Partial agent-message delivery is reported as total failure.**
       `send_message.rs:115-137` breaks on the first failing address and discards
       `delivered_ids`, so a retry duplicates to earlier recipients.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `send_message.rs:117-131` breaks on the first `Err`; `:133-161` returns `Error(err)` and drops `delivered_ids` entirely, so the model gets no partial-delivery signal. Verifier established it is fork-introduced: the pin (`42effe840:send_message.rs:186`) makes ONE call for all addresses and reads back `response.message_ids`, so it has no per-address loop that could abort mid-way.
+
+      **FIXED 2026-08-21:** `send_message.rs:117-175` attempts every address; `Success` only if all land, otherwise `Error` naming delivered addresses+ids and failed addresses and instructing the model not to resend to the delivered ones. `SendMessageToAgentResult` in `crates/ai` has no partial variant and was not editable, hence the encoding in the error text.
 
 ### Ledger and test-integrity defects
 
@@ -7123,6 +7129,8 @@ Ordered by severity, not by area.
       logout and revocation.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `oauth.rs:600-614` handles only `get_template_uuid`, which reads `locally_installed_servers`; the pin's file-based branch (`42effe840:.../native.rs:214-225`) is absent while `save_credentials_to_secure_storage` still mirrors it. Verifier closed the caller chain: `tui/mcp.rs:383-395` resolves `FileBased(hash)`→uuid then calls delete, and `can_log_out` returns true. The pin's `CredentialsChanged` emit is also gone.
 
+      **FIXED 2026-08-21:** `oauth.rs:611-628` ports the pin's file-based branch. **`CredentialsChanged` deliberately not ported** — no such event exists anywhere in this fork; documented at `:600`.
+
 - [ ] 🔴 **`claude_code_tests` can write to the REAL user profile on Windows.**
       `claude_code.rs:509-528` duplicates `claude_config_dir` using `dirs::home_dir()`
       instead of the pin's `home_dir_for_claude_config`. `dirs::home_dir()` ignores the
@@ -7130,6 +7138,8 @@ Ordered by severity, not by area.
       `settings.json` containing `hasTrustDialogAccepted` and
       `skipDangerousModePermissionPrompt: true` into the developer's actual profile.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `claude_code.rs:508-518` and `:521-528` both use `dirs::home_dir()` where the pin uses `home_dir_for_claude_config()`, whose `#[cfg(test)]` HOME check exists precisely for this (`claude_transcript.rs:77-85`). Verifier established the reachable path: `claude_code_tests.rs:719-733` removes `CLAUDE_CONFIG_DIR`, sets only `HOME`, then calls `prepare_claude_environment_config`, writing `has_trust_dialog_accepted` and `skip_dangerous_mode_permission_prompt`.
+
+      **FIXED 2026-08-21:** `claude_code.rs:28` imports `claude_config_dir`/`home_dir_for_claude_config` from `claude_transcript`; the duplicate local `claude_config_dir` is deleted and `:525` uses the helper.
 
 - [ ] 🔴 **`move_tab` has no pinned/group boundary check — the pin's `can_move_tab` was
       never ported.** `workspace/view.rs:13234-13242` is a bare `swap` guarded only by
@@ -7417,6 +7427,8 @@ Ordered by severity, not by area.
       redaction at all. Unrecorded and unfiled — a de-clouding casualty nobody noticed.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Chain verified end to end: `privacy.rs:592` is reached only from `:629` ← `:619` ← `:403` inside `initialize_from_fetched_settings_or_update_settings` (`:377`), which repo-wide grep shows has **zero callers**; `fetch_or_update_settings` (`:368`) is an empty stub, also uncalled. The pin calls it at `42effe840:app/src/auth/auth_manager.rs:510`. An empty list makes `secrets.rs:348` compile a match-nothing regex. Not in DECLINED.md. **Verifier also explains why CI never noticed:** the only other caller is `integration_testing/terminal/step.rs:55`, gated on `feature = "integration_tests"` and invoked explicitly by `crates/integration/src/test/secrets.rs` — so the suite seeds the regexes itself and stays green.
 
+      **FIXED 2026-08-21:** new `settings::run_startup_settings_initialization` (`settings/init.rs:326-370`), called once from `lib.rs:1373` right after `PrivacySettings::register_singleton` — the earliest point where both `AuthStateProvider` and `PrivacySettings` exist (`settings::init` runs too early). **No clobbering:** the guard is the persisted private setting `HasInitializedDefaultSecretRegexes` (`privacy.rs:129-135`), not list contents, so "never seeded" and "seeded then user deleted" stay distinguishable and deliberate removals stay removed.
+
 - [ ] 🔴 **`agents.warp_agent.is_any_ai_enabled` is a public, schema-emitted setting that
       nothing reads.** Defined at `settings/ai.rs:1850-1857` with `private: false` and the
       description "Controls whether all AI features are enabled", so it appears in
@@ -7426,6 +7438,8 @@ Ordered by severity, not by area.
       disabled AI still ships terminal context to their BYOP provider.**
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `ai.rs:2816-2820` returns `true` unconditionally and the field is read nowhere — all ~40 hits are the getter. The pin's version (`42effe840:app/src/settings/ai.rs:2182-2191`) reads `*self.is_any_ai_enabled`. It is emitted publicly (`ai.rs:1850-1857`, `private: false`, with a `toml_path`). **Verifier added:** no UI writes it either — only `slash_command_model_tests.rs:57,194`, and `:192`'s own comment concedes the value "is now ignored".
 
+      **FIXED 2026-08-21:** `settings/ai.rs:2829` returns `*self.is_any_ai_enabled` (pin semantics minus the auth/org-policy terms this fork does not have). **Consequence accepted:** `slash_command_model_tests.rs` `test_ai_commands_ignore_legacy_global_ai_disabled_setting` asserted the defect (that the user's off-switch is ignored); it was inverted to `test_ai_commands_honour_global_ai_disabled_setting` — this is correcting a defect-enshrining test, not weakening a test to go green.
+
 - [ ] **`SettingsInitializer::handle_user_fetched` is dead code and its migrations never
       run.** `settings/initializer.rs:35` has zero callers; the pin calls it from
       `auth_manager.rs:430`. The `KeepThinkingExpanded` → `ThinkingDisplayMode` migration
@@ -7433,6 +7447,8 @@ Ordered by severity, not by area.
       cleaned. Comments at `input_mode.rs:9` and `theme.rs:17` still promise an override
       that cannot occur.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `initializer.rs:35` has zero callers tree-wide; `init.rs:127` only registers the singleton, and the pin calls it at `42effe840:app/src/auth/auth_manager.rs:430-431`. So the `KeepThinkingExpanded` → `ThinkingDisplayMode` migration (`initializer.rs:121-170`) and its key cleanup never run, and `disable_default_regex_trigger` never fires for new users. The stale promises at `input_mode.rs:8` and `theme.rs:17` are confirmed.
+
+      **FIXED 2026-08-21:** `handle_user_fetched` → `apply_startup_settings_migrations` (`initializer.rs:29-56`), invoked from `run_startup_settings_initialization` **before** the regex seeding, matching pin order (`42effe840:auth_manager.rs:430` precedes `:510`). **Caveat recorded in-source:** the `is_onboarded()==Some(false)` block stays dead because `auth/mod.rs:213` hardcodes `is_onboarded: true`, so the `input_mode.rs:8`/`theme.rs:17` promises still cannot fire; the `KeepThinkingExpanded`→`ThinkingDisplayMode` migration now does.
 
 - [ ] 🔴 **`DOGFOOD_FLAGS` / `PREVIEW_FLAGS` / `LOCAL_FLAGS` have no consumer in any
       buildable binary — six flags gating live code are dark.** Their only
@@ -7447,6 +7463,8 @@ Ordered by severity, not by area.
       `DECLINED.md:161` ("They are not dark") and `warp_features/src/lib.rs:830-834`
       ("this list is the only thing that turns them on").
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warp_tui/Cargo.toml:7` sets `autobins = false` with one `[[bin]]`, so `dev/local/preview/stable.rs` never compile; `app/Cargo.toml:6` likewise builds only `phosphor-oss` and `generate_settings_schema`, and `phosphor_oss.rs:44` adds `DEBUG_FLAGS` in debug only. All six flags appear solely in `DOGFOOD_FLAGS` — none in `RELEASE_FLAGS`, `UNSTABLE_FEATURES` (`lib.rs:3306`), `RUNTIME_FEATURE_FLAGS`, or any cargo feature. Both contradicting statements confirmed (`DECLINED.md:161`, `warp_features/src/lib.rs:830-834`).
+
+      **FIXED 2026-08-21:** the six flags added to `UNSTABLE_FEATURES` (`lib.rs:3353-3386`) — opt-in via `ZAP_UNSTABLE_FEATURES`, default unchanged (off), no promotion. **The two false in-tree statements were corrected**, not just noted: `warp_features/src/lib.rs:848-853` and `app/src/lib.rs:3335-3340` (the claim that `DOGFOOD_FLAGS` reaches warp_tui's dev/local binaries — they never compile), plus a new doc block at `warp_features/src/lib.rs:795-818`.
 
 - [x] **Nine drag tests report PASS without executing a step** — independent
       confirmation of the tab-group finding above, and it extends to
@@ -7507,6 +7525,8 @@ Ordered by severity, not by area.
       soft-cutoff / prominent-update gates in `workspace/view.rs`.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Tags are only `v0.1.0`, `v0.1.1`, `v2026.08.14.1-beta`; none match `channel_versions/src/lib.rs:43` (needs `\d{4}` first, `$`-anchored) nor `:34`. The dispatch tag also fails. `mod.rs:403` `if let Ok(true)` swallows the Err and `:477-491` auto-downloads. `make_latest:false` for beta at `:960`; `github.rs:84` fetches `/releases/latest`. `get_curr_parsed_version` → None → `mod.rs:1291` always false.
 
+      **FIXED 2026-08-21:** `ParsedVersion` is now `{components: Vec<usize>, prerelease: Option<String>}` (`channel_versions/src/lib.rs:34-196`) instead of the `(major, date, patch)` triple no real tag fits. New anchored `RELEASE_TAG_RE` accepts every shape actually in use — `v0.1.0`, `v0.1.1`, `v2026.08.14.1-beta`, the workflow-generated `v0.$(date +%Y.%m.%d.%H%M)`. Bare date tags get a synthetic leading `0` so they share an axis with the dispatch tag; trailing zeros trimmed so `PartialEq` stays consistent with the zero-padding `Ord`. `mod.rs:425-451` `if let Ok(true)` became a full `match` that fails closed to `UpdateReady::No` on `Err`. **Known limit, flagged at `lib.rs:143-155`:** a beta user is correctly not downgraded but also will not be offered later `v0.1.x` — moving them forward needs channel awareness, not a numeric compare.
+
 - [ ] 🔴 **No authenticity check on the downloaded artifact.** `mac.rs:473` deliberately
       skips `verify_code_signature` for Oss, and the only remaining check,
       `verify_oss_asset_sha256` (`mod.rs:53-70`), returns `Ok(())` on THREE separate
@@ -7515,6 +7535,8 @@ Ordered by severity, not by area.
       `browser_download_url`, so it is corruption detection, not supply-chain integrity:
       no signature, no pinned key. Zero test references to `verify_oss_asset_sha256`.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `mac.rs:471-476` documents skipping `verify_code_signature`; `mod.rs:57,61,65` each `return Ok(())` on absent cached release / asset / digest. `github.rs:32-38` shows `digest` and `browser_download_url` in the SAME response — no independent key. Grep finds zero tests for `verify_oss_asset_sha256`.
+
+      **FIXED 2026-08-21:** `mod.rs:41-115` — all three absent-conditions are now `Err`, the verified digest is returned, and `sha256_file` is new; `mac.rs:140-154,212-250,522-540` records the verified path+digest in `VERIFIED_OSS_DMG` and re-hashes before `open`, with `find_latest_dmg` demoted to a fallback that must itself pass verification. **The in-source comment states plainly that this is corruption detection, not supply-chain integrity** — there is still no signature check.
 
 - [ ] 🔴 **macOS verifies one file and executes another.** `oss_download_dmg` hashes
       `download_dir/<update_id>/<asset>` (`mac.rs:479`), but `relaunch` runs
@@ -7755,6 +7777,8 @@ Ordered by severity, not by area.
       shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
       `Exec` containing an unpaired `'` errors and silently disables that editor.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `external_editor/linux.rs:89-90` uses `shell_words::split` where the pin hand-rolls `tokenize_exec` (`42effe840:...:27-79`) treating `'` as an ordinary character. shell-words 1.1.1 has `SingleQuoted` and `Comment` states and errs "missing closing quote". Consequence traced: error → `MalformedFieldCode` → `linux.rs:554-559` logs and returns `None`, so the open silently does nothing while the editor still lists.
+
+      **FIXED 2026-08-21:** `linux.rs:17-105` ports the pin's `tokenize_exec`; `build_command` uses it. **Deliberate divergence:** an unterminated `"` keeps mapping to `MalformedFieldCode` (no `UnterminatedQuote` variant exists) because `linux_tests.rs:61-79` asserts that and was outside the edit set.
 
 ### Refutation round — guards and CI
 

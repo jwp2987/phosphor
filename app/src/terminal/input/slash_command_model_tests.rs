@@ -176,7 +176,7 @@ fn test_parse_rename_tab_slash_command_arguments() {
 }
 
 #[test]
-fn test_ai_commands_ignore_legacy_global_ai_disabled_setting() {
+fn test_ai_commands_honour_global_ai_disabled_setting() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
 
@@ -189,7 +189,9 @@ fn test_ai_commands_ignore_legacy_global_ai_disabled_setting() {
         let slash_command_data_source =
             input.read(&app, |input, _| input.slash_command_data_source.clone());
 
-        // The legacy global-off value is now ignored; AI features stay enabled.
+        // `is_any_ai_enabled` used to be a hardcoded `true`, so this setting was a
+        // user-writable key that nothing read. It is honoured again, so turning AI
+        // off must withdraw the AI-gated commands while leaving the rest alone.
         AISettings::handle(&app).update(&mut app, |settings, ctx| {
             report_if_error!(settings.is_any_ai_enabled.set_value(false, ctx));
         });
@@ -206,12 +208,12 @@ fn test_ai_commands_ignore_legacy_global_ai_disabled_setting() {
             );
 
             assert!(
-                active_command_names.contains(&commands::AGENT.name),
-                "/agent should remain active, got: {active_command_names:?}"
+                !active_command_names.contains(&commands::AGENT.name),
+                "/agent requires AI and should be withdrawn, got: {active_command_names:?}"
             );
             assert!(
-                active_command_names.contains(&commands::PLAN.name),
-                "/plan should remain active, got: {active_command_names:?}"
+                !active_command_names.contains(&commands::PLAN.name),
+                "/plan requires AI and should be withdrawn, got: {active_command_names:?}"
             );
         });
     });

@@ -195,6 +195,30 @@ fn cached_token(credential: &str) -> Option<String> {
         .map(|c| c.token.clone())
 }
 
+/// Drops the cached token for `credential`, so the next [`access_token`] mints a fresh one.
+///
+/// Returns whether an entry was actually evicted (used only for logging).
+///
+/// The cache key is the settings `credential` string, which does not change when the user
+/// re-authenticates — so without this, a token that was revoked (or an account switched, or a
+/// `gcloud auth login` completed after a failure) stays in the cache for the rest of
+/// [`TOKEN_TTL`], and *every* turn keeps 401ing with a token we know upstream has already
+/// rejected. Successfully signing in again would not help: the cache would keep serving the
+/// stale token.
+///
+/// Called from the BYOP stream error paths in `chat_stream.rs` when the provider answers an
+/// auth failure. Eviction is the whole remedy: the next request mints via `gcloud`, which is
+/// where an interactive re-login takes effect.
+pub fn invalidate_token(credential: &str) -> bool {
+    let credential = credential.trim();
+    let mut cache = TOKEN_CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let before = cache.len();
+    cache.retain(|c| c.credential != credential);
+    before != cache.len()
+}
+
 fn store_token(credential: &str, token: &str) {
     let mut cache = TOKEN_CACHE
         .lock()
@@ -363,6 +387,36 @@ mod token_shape_tests {
             "AIza (api key, NOT an access token)"
         );
         assert_eq!(token_shape("something-else"), "unrecognized");
+    }
+}
+
+#[cfg(test)]
+mod token_cache_tests {
+    use super::*;
+
+    /// A revoked token has to be evictable, otherwise every turn keeps 401ing for up to
+    /// `TOKEN_TTL` and a fresh `gcloud auth login` changes nothing (the cache key is the
+    /// unchanged settings credential string).
+    #[test]
+    fn invalidate_token_evicts_only_the_named_credential() {
+        // Keys unique to this test: TOKEN_CACHE is process-global.
+        let evicted = "evict-me@invalidate-test.iam.gserviceaccount.com";
+        let kept = "keep-me@invalidate-test.iam.gserviceaccount.com";
+        store_token(evicted, "ya29.evicted");
+        store_token(kept, "ya29.kept");
+
+        assert!(
+            invalidate_token(evicted),
+            "the entry should have been found"
+        );
+        assert_eq!(cached_token(evicted), None);
+        assert_eq!(cached_token(kept).as_deref(), Some("ya29.kept"));
+
+        // Evicting twice is not an error, just a no-op -- both stream error paths may fire for
+        // the same failed turn.
+        assert!(!invalidate_token(evicted));
+
+        invalidate_token(kept);
     }
 }
 

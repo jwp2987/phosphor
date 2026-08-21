@@ -323,6 +323,50 @@ pub fn init(
     user_defaults_on_startup
 }
 
+/// Second-phase settings initialization: the work [`init`] cannot do because it
+/// needs singletons that `initialize_app` registers *after* it runs
+/// (`AuthStateProvider` and `PrivacySettings`). Call it once, from
+/// `initialize_app`, right after `PrivacySettings::register_singleton`.
+///
+/// At the pin both halves hung off the server round-trip in
+/// `42effe840:app/src/auth/auth_manager.rs`: `handle_user_fetched` at `:430-431`
+/// and `PrivacySettings::fetch_or_update_settings` at `:510`, which is what
+/// eventually reached `initialize_default_regexes_once`. This fork deleted that
+/// file's cloud half and with it both call sites, so the settings migrations and
+/// the default secret-redaction regexes became unreachable. Startup is the right
+/// trigger for both here: there is no "user fetched" moment left, because
+/// `AuthState` is a local placeholder that is fully determined the instant it is
+/// constructed.
+///
+/// Order matches the pin — the initializer first, then the regex seeding — because
+/// for a not-yet-onboarded user the initializer calls
+/// `disable_default_regex_trigger`, which must be set before the seeding reads it.
+pub fn run_startup_settings_initialization(ctx: &mut AppContext) {
+    use super::PrivacySettings;
+    use crate::auth::AuthStateProvider;
+
+    let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
+    SettingsInitializer::handle(ctx).update(ctx, |initializer, ctx| {
+        initializer.apply_startup_settings_migrations(auth_state, ctx);
+    });
+
+    // Install the recommended secret-redaction regexes. `CustomSecretRegexList`
+    // defaults to `Vec::new()` and `terminal/secret_regex_updater.rs` builds the
+    // scanner from that list alone, so without this the redactor compiles a
+    // match-nothing regex: no secret in terminal output is ever blurred until the
+    // user finds Settings > Privacy and clicks "Add all recommended".
+    //
+    // Re-seeding on a later launch cannot clobber the user's edits. The guard
+    // inside `initialize_default_regexes_once` is the persisted private setting
+    // `HasInitializedDefaultSecretRegexes`, not the contents of the list: it flips
+    // to `true` the first time seeding runs, so "never seeded" and "seeded, then
+    // the user deleted some or all of them" are distinguishable, and only the
+    // former seeds. A deliberate removal stays removed.
+    PrivacySettings::handle(ctx).update(ctx, |privacy_settings, ctx| {
+        privacy_settings.initialize_default_regexes_once(ctx);
+    });
+}
+
 /// Reads the current `NetworkSettings` plus the externally supplied `password`, updating both
 /// `http_client::set_global_proxy_config` and `websocket::set_global_proxy_config` so they stay
 /// consistent with the same proxy semantics (see Issue #72).

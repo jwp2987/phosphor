@@ -1,5 +1,3 @@
-use chrono::NaiveDate;
-
 use super::*;
 
 #[test]
@@ -8,15 +6,15 @@ fn test_parse_version_string() {
     let parsed_version: ParsedVersion = version_string
         .try_into()
         .expect("version string is parsable");
-    assert_eq!(parsed_version.major, 0);
-    assert_eq!(
-        parsed_version.date,
-        NaiveDate::from_ymd_opt(2023, 5, 15)
-            .unwrap()
-            .and_hms_opt(8, 4, 0)
-            .unwrap()
-    );
-    assert_eq!(parsed_version.patch, 1);
+    // major.year.month.day.hour.minute.patch
+    assert_eq!(parsed_version.components, vec![0, 2023, 5, 15, 8, 4, 1]);
+    assert_eq!(parsed_version.prerelease, None);
+}
+
+#[test]
+fn test_official_version_rejects_impossible_date() {
+    // The date half is still validated as a date, not as three more integers.
+    assert!(ParsedVersion::try_from("v0.2023.13.45.08.04.stable_01").is_err());
 }
 
 #[test]
@@ -82,63 +80,144 @@ fn test_ignores_unknown_channels() {
     );
 }
 
-// openWarp (OSS) uses this simplified vYYYY.MM.DD.N tag format. The tests below ensure:
-// 1. This format can be parsed by ParsedVersion (otherwise
-//    is_current_version_ahead_of_latest_version would keep returning Err,
-//    misleading users into "upgrading" to a rolled-back version).
-// 2. Size comparison is monotonic over the (major=0, date, patch) triple.
+// The tags below are the shapes this repository's release pipeline actually
+// emits -- taken from `git tag` and from `.github/workflows/phosphor_release.yml`
+// -- not synthetic examples. The previous version of this section tested only
+// `vYYYY.MM.DD.N`, a shape no release here has ever used, so it passed while
+// every real tag failed to parse and every guard built on `ParsedVersion`
+// silently went inert.
+//
+// Real tags, as of writing:
+//   v0.1.0
+//   v0.1.1
+//   v2026.08.14.1-beta
+//   v0.<date +%Y.%m.%d.%H%M>   (phosphor_release.yml, workflow_dispatch branch)
+
 #[test]
-fn test_oss_version_parses() {
-    let parsed: ParsedVersion = "v2026.05.26.2"
+fn test_repo_semver_tags_parse_and_order() {
+    let older: ParsedVersion = "v0.1.0".try_into().expect("v0.1.0 should parse");
+    let newer: ParsedVersion = "v0.1.1".try_into().expect("v0.1.1 should parse");
+    assert_eq!(newer.components, vec![0, 1, 1]);
+    assert_eq!(newer.prerelease, None);
+    assert!(newer > older);
+}
+
+#[test]
+fn test_repo_beta_tag_parses() {
+    let parsed: ParsedVersion = "v2026.08.14.1-beta"
         .try_into()
-        .expect("OSS 4-segment tag should parse");
-    assert_eq!(parsed.major, 0);
-    assert_eq!(
-        parsed.date,
-        NaiveDate::from_ymd_opt(2026, 5, 26)
-            .unwrap()
-            .and_hms_opt(0, 0, 0)
-            .unwrap()
+        .expect("the published beta tag should parse");
+    // The leading synthetic 0 puts a bare date tag on the same
+    // major.YYYY.MM.DD axis as the dispatch-generated v0.YYYY.MM.DD.HHMM.
+    assert_eq!(parsed.components, vec![0, 2026, 8, 14, 1]);
+    assert_eq!(parsed.prerelease.as_deref(), Some("beta"));
+}
+
+#[test]
+fn test_dispatch_generated_tag_parses() {
+    // phosphor_release.yml: TAG="v0.$(date +%Y.%m.%d.%H%M)"
+    let parsed: ParsedVersion = "v0.2026.08.21.1430"
+        .try_into()
+        .expect("the workflow_dispatch tag should parse");
+    assert_eq!(parsed.components, vec![0, 2026, 8, 21, 1430]);
+    assert_eq!(parsed.prerelease, None);
+}
+
+#[test]
+fn test_dispatch_generated_tags_order_by_timestamp() {
+    let morning: ParsedVersion = "v0.2026.08.21.0930".try_into().unwrap();
+    let afternoon: ParsedVersion = "v0.2026.08.21.1430".try_into().unwrap();
+    let previous_day: ParsedVersion = "v0.2026.08.20.2359".try_into().unwrap();
+    assert!(afternoon > morning);
+    assert!(morning > previous_day);
+}
+
+#[test]
+fn test_beta_is_not_downgraded_to_the_semver_release() {
+    // The regression this whole module exists for. A user running the beta gets
+    // `v0.1.1` back from `/releases/latest`, because betas are published with
+    // `make_latest:false` and that endpoint skips prereleases. The downgrade
+    // guard only works if the beta parses *and* compares greater.
+    let installed: ParsedVersion = "v2026.08.14.1-beta"
+        .try_into()
+        .expect("installed beta tag must parse, or the guard is inert");
+    // `github::GithubRelease::version()` has already trimmed the `v`.
+    let offered: ParsedVersion = "0.1.1"
+        .try_into()
+        .expect("the latest-release version must parse");
+    assert!(
+        installed > offered,
+        "the beta must not be treated as older than v0.1.1"
     );
-    assert_eq!(parsed.patch, 2);
 }
 
 #[test]
-fn test_oss_version_without_patch_parses() {
-    // Early OSS tags may not have a 4th segment (sequence number).
-    let parsed: ParsedVersion = "v2026.05.26"
-        .try_into()
-        .expect("OSS 3-segment tag should parse");
-    assert_eq!(parsed.patch, 0);
+fn test_v_prefix_is_optional_and_does_not_change_ordering() {
+    // `ChannelState::app_version()` keeps the `v`; `GithubRelease::version()`
+    // trims it. Both sides must land on the same ParsedVersion.
+    let prefixed: ParsedVersion = "v0.1.1".try_into().unwrap();
+    let bare: ParsedVersion = "0.1.1".try_into().unwrap();
+    assert_eq!(prefixed, bare);
 }
 
 #[test]
-fn test_oss_version_without_v_prefix_parses() {
-    let parsed: ParsedVersion = "2026.05.26.2"
-        .try_into()
-        .expect("OSS tag without v prefix should parse");
-    assert_eq!(parsed.patch, 2);
-}
-
-#[test]
-fn test_oss_version_rollback_detected() {
-    // Remote was rolled back: the newly published release tag is earlier than the current local version;
-    // is_current_version_ahead_of_latest_version should detect this as true, so the rolled-back version isn't incorrectly shown as an "upgrade".
-    let local: ParsedVersion = "v2026.05.26.2".try_into().unwrap();
-    let rolled_back_remote: ParsedVersion = "v2026.05.20.1".try_into().unwrap();
-    assert!(local > rolled_back_remote);
-}
-
-#[test]
-fn test_oss_version_newer_patch_wins() {
-    let older: ParsedVersion = "v2026.05.26.1".try_into().unwrap();
-    let newer: ParsedVersion = "v2026.05.26.2".try_into().unwrap();
+fn test_channel_labelled_tag_parses() {
+    // `app/src/autoupdate/mod.rs` documents this shape for `GIT_RELEASE_TAG`,
+    // and `mod_test.rs`'s openWarp cases compare two of them; the label can be
+    // attached with a `.` as well as with a `-`.
+    let older: ParsedVersion = "v2026.05.10.preview".try_into().unwrap();
+    let newer: ParsedVersion = "2026.05.11.preview".try_into().unwrap();
+    assert_eq!(older.components, vec![0, 2026, 5, 10]);
+    assert_eq!(older.prerelease.as_deref(), Some("preview"));
     assert!(newer > older);
 }
 
 #[test]
-fn test_oss_version_newer_date_wins() {
-    let older: ParsedVersion = "v2026.05.26.9".try_into().unwrap();
-    let newer: ParsedVersion = "v2026.05.27.0".try_into().unwrap();
-    assert!(newer > older);
+fn test_prerelease_sorts_before_its_release() {
+    let prerelease: ParsedVersion = "v2026.08.14.1-beta".try_into().unwrap();
+    let release: ParsedVersion = "v2026.08.14.1".try_into().unwrap();
+    assert!(release > prerelease);
+}
+
+#[test]
+fn test_trailing_zero_components_do_not_break_equality() {
+    // `Ord` zero-pads the shorter component list, so `PartialEq` has to agree.
+    let short: ParsedVersion = "v0.1".try_into().unwrap();
+    let padded: ParsedVersion = "v0.1.0".try_into().unwrap();
+    assert_eq!(short, padded);
+    assert_eq!(short.cmp(&padded), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn test_rollback_of_a_date_tag_is_detected() {
+    // A rolled-back release must not read as an upgrade.
+    let installed: ParsedVersion = "v0.2026.08.21.1430".try_into().unwrap();
+    let rolled_back: ParsedVersion = "v0.2026.08.20.0900".try_into().unwrap();
+    assert!(installed > rolled_back);
+}
+
+#[test]
+fn test_non_version_strings_are_rejected() {
+    // `warp_tui::autoupdate::parse_safe_version_component` uses a successful
+    // parse as half of its path-traversal gate, so these must keep failing.
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "v1..dev",
+        "../v1",
+        "nested/v1",
+        "version:stream",
+        "CON",
+        "trailing.",
+        "contains space",
+        "preview-1",
+        "A",
+        "v0.1.1-",
+    ] {
+        assert!(
+            ParsedVersion::try_from(invalid).is_err(),
+            "{invalid:?} should not parse as a version"
+        );
+    }
 }

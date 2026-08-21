@@ -25,6 +25,7 @@ use crate::terminal::CLIAgent;
 
 use super::super::terminal::{CommandHandle, TerminalDriver};
 use super::super::{AgentDriver, AgentDriverError};
+use super::claude_transcript::{claude_config_dir, home_dir_for_claude_config};
 use super::json_utils::{read_json_file_or_default, write_json_file};
 use super::{
     HarnessCleanupDisposition, HarnessRunner, ManagedSecretValue, SavePoint, ThirdPartyHarness,
@@ -513,17 +514,16 @@ fn claude_global_config_path() -> Result<PathBuf> {
         return Ok(PathBuf::from(dir).join(CLAUDE_JSON_FILE_NAME));
     }
 
-    dirs::home_dir()
+    // `home_dir_for_claude_config`, not `dirs::home_dir`: on Windows the latter reads the
+    // shell-folder API and ignores `HOME`, so the tests that point HOME at a temp dir
+    // (`claude_code_tests.rs`) were writing `.claude.json` -- carrying
+    // `has_trust_dialog_accepted` and `skip_dangerous_mode_permission_prompt` -- into the
+    // developer's real profile. The helper's `#[cfg(test)]` HOME check exists for exactly
+    // this, and the pin uses it here (`42effe840:.../claude_code.rs:631`). The sibling
+    // `claude_config_dir` is now the shared one from `claude_transcript` (which already
+    // routes through the helper) instead of a second copy that did not.
+    home_dir_for_claude_config()
         .map(|home| home.join(CLAUDE_JSON_FILE_NAME))
-        .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
-}
-
-fn claude_config_dir() -> Result<PathBuf> {
-    if let Ok(dir) = std::env::var("CLAUDE_CONFIG_DIR") {
-        return Ok(PathBuf::from(dir));
-    }
-    dirs::home_dir()
-        .map(|h| h.join(".claude"))
         .ok_or_else(|| anyhow::anyhow!("could not determine home directory"))
 }
 

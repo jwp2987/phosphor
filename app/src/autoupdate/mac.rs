@@ -11,6 +11,7 @@ use std::{
     os::unix::{ffi::OsStrExt as _, fs::MetadataExt, io::AsRawFd as _},
     path::{Path, PathBuf},
     str,
+    sync::Mutex,
     time::Duration,
 };
 use warp_core::safe_error;
@@ -136,6 +137,22 @@ where
     })
 }
 
+/// The dmg that passed SHA-256 verification in [`oss_download_dmg`], together
+/// with the digest it was checked against.
+///
+/// This exists because the download path and the install path used to name the
+/// file two different ways: verification hashed `dmg_path()`, while
+/// [`oss_open_installer`] handed `/usr/bin/open` whatever `find_latest_dmg`
+/// turned up -- the newest `*.dmg` by mtime anywhere under
+/// `cache_dir/autoupdate/`. In practice both resolve to the same file, and
+/// steering them apart needs write access to the user's cache directory, so
+/// this is defence in depth rather than a hole. Still: verify one file and
+/// execute another is not a property worth keeping.
+///
+/// Keeping the digest as well as the path means the re-check below does not
+/// depend on `github::cached_release()` still being populated at install time.
+static VERIFIED_OSS_DMG: Mutex<Option<(PathBuf, String)>> = Mutex::new(None);
+
 pub(super) fn relaunch() -> Result<()> {
     let channel = ChannelState::channel();
 
@@ -192,21 +209,49 @@ pub(super) fn relaunch() -> Result<()> {
     Ok(())
 }
 
-/// OSS macOS install entry point: scans `cache_dir/autoupdate/<id>/` for the
-/// just-downloaded dmg, and triggers Finder's standard mount via
-/// `/usr/bin/open <dmg>` once the current process exits.
+/// OSS macOS install entry point: triggers Finder's standard mount of the
+/// verified dmg via `/usr/bin/open <dmg>` once the current process exits.
+///
+/// The file opened here is the one [`VERIFIED_OSS_DMG`] recorded, re-checked
+/// against its recorded digest, so this no longer verifies one file and
+/// executes another.
 fn oss_open_installer() -> Result<()> {
-    // Before reaching this path, AutoupdateState.stage is guaranteed to be
-    // UpdateReady / Updating, and downloaded_update.update_id is guaranteed to
-    // exist; but since we don't access AutoupdateState from a stateless
-    // function, this instead scans disk: walk cache_dir/autoupdate/ to find the
-    // newest dmg.
-    let mut autoupdate_dir = warp_core::paths::cache_dir();
-    autoupdate_dir.push("autoupdate");
+    // Prefer the exact path this process verified. Only if that record is
+    // missing -- it should not be, the download and the install happen in one
+    // process -- do we fall back to scanning cache_dir/autoupdate/ for the
+    // newest dmg, and then the file has to earn its way through verification
+    // before it is opened.
+    let verified = VERIFIED_OSS_DMG
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .filter(|(path, _)| path.exists());
 
-    let dmg = find_latest_dmg(&autoupdate_dir).ok_or_else(|| {
-        anyhow!("Phosphor: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
-    })?;
+    let dmg = match verified {
+        Some((path, expected)) => {
+            // Re-hash rather than trusting the earlier pass: between download
+            // and install the file has been sitting in a user-writable cache
+            // directory.
+            let actual = super::sha256_file(&path)?;
+            ensure!(
+                actual == expected,
+                "Phosphor: refusing to open {path:?}: its contents changed since verification (expected={expected} actual={actual})"
+            );
+            path
+        }
+        None => {
+            let mut autoupdate_dir = warp_core::paths::cache_dir();
+            autoupdate_dir.push("autoupdate");
+            let found = find_latest_dmg(&autoupdate_dir).ok_or_else(|| {
+                anyhow!("Phosphor: could not find a downloaded dmg (directory: {autoupdate_dir:?})")
+            })?;
+            log::warn!(
+                "Phosphor: no verified dmg on record, re-verifying the newest one found on disk ({found:?})"
+            );
+            super::verify_oss_asset_sha256(&found, &dmg_name(ChannelState::channel()))?;
+            found
+        }
+    };
 
     log::info!("Phosphor: preparing to open installer dmg {dmg:?}");
 
@@ -472,15 +517,29 @@ async fn oss_download_dmg(
 
     // Deliberately skip hdiutil mount / verify_code_signature: OSS has no Apple
     // codesign, and there's no need to copy the .app into the current bundle
-    // anyway. The dmg itself is the thing the user is meant to "open". But we do
-    // verify the SHA-256 from the GitHub Release metadata, to guard against a
-    // CDN man-in-the-middle / asset corruption.
+    // anyway. The dmg itself is the thing the user is meant to "open".
+    //
+    // What replaces it is weaker, and worth naming precisely: the SHA-256 comes
+    // from the same api.github.com response that gave us the download URL, so it
+    // proves the bytes on disk are the bytes GitHub's API described. That covers
+    // a truncated download or a CDN edge serving something else. It is not
+    // supply-chain integrity -- nothing here is signed by a key this binary
+    // holds, so a forged API response carries a matching forged digest.
     let asset_name = dmg_name(channel);
-    if let Err(e) = super::verify_oss_asset_sha256(&dmg_path_buf, &asset_name) {
-        // Immediately delete the downloaded file on verification failure, so the
-        // user doesn't click "Install" and open a corrupted dmg.
-        let _ = async_fs::remove_file(&dmg_path_buf).await;
-        return Err(e);
+    let digest = match super::verify_oss_asset_sha256(&dmg_path_buf, &asset_name) {
+        Ok(digest) => digest,
+        Err(e) => {
+            // Immediately delete the downloaded file on verification failure, so
+            // the user doesn't click "Install" and open a corrupted dmg.
+            let _ = async_fs::remove_file(&dmg_path_buf).await;
+            return Err(e);
+        }
+    };
+
+    // Hand the install path the file we actually checked, instead of letting it
+    // re-discover a dmg by mtime.
+    if let Ok(mut guard) = VERIFIED_OSS_DMG.lock() {
+        *guard = Some((dmg_path_buf, digest));
     }
     Ok(DownloadReady::Yes)
 }

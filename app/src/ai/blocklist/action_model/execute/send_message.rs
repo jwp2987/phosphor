@@ -112,8 +112,18 @@ impl SendMessageToAgentExecutor {
         }
 
         let root = warp_cli::agent_mailbox::mailbox_root();
-        let mut delivered_ids = Vec::with_capacity(addresses.len());
-        let mut delivery_error = None;
+        // Every address is attempted, and a failure on one does not cancel the rest.
+        //
+        // The pin makes a single server call for the whole address list and reads
+        // `response.message_ids` back (`42effe840:send_message.rs:186`), so partial
+        // delivery is not a state it can be in. The local mailbox writes one address at
+        // a time, so it is: stopping at the first `Err` used to leave the later
+        // recipients unwritten *and* report the whole call as a flat failure, dropping
+        // the ids that did land. The model's only recovery from a flat failure is to
+        // resend to the full list, which duplicates the message for everyone who
+        // already received it while the addresses after the failure still get nothing.
+        let mut delivered: Vec<(String, String)> = Vec::with_capacity(addresses.len());
+        let mut failures: Vec<(String, String)> = Vec::new();
         for address in &addresses {
             match warp_cli::agent_mailbox::send_message(
                 &root,
@@ -122,17 +132,47 @@ impl SendMessageToAgentExecutor {
                 &subject,
                 &message,
             ) {
-                Ok(sent) => delivered_ids.push(sent.message_id),
-                Err(err) => {
-                    delivery_error = Some(err.to_string());
-                    break;
-                }
+                Ok(sent) => delivered.push((address.clone(), sent.message_id)),
+                Err(err) => failures.push((address.clone(), err.to_string())),
             }
         }
 
+        // `SendMessageToAgentResult` (crates/ai) has only `Success { message_id }` and
+        // `Error(String)` -- there is no partial variant to return, and inventing one
+        // would diverge from the pin's action-result shape. So a partial delivery is
+        // reported as an error whose text names both halves: which addresses already
+        // hold the message (with their ids) and which did not, so a retry can target
+        // only the latter instead of re-sending to everyone.
+        let delivery_error = (!failures.is_empty()).then(|| {
+            let failed = failures
+                .iter()
+                .map(|(address, error)| format!("{address} ({error})"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if delivered.is_empty() {
+                format!("Failed to deliver to any recipient: {failed}.")
+            } else {
+                let sent = delivered
+                    .iter()
+                    .map(|(address, message_id)| format!("{address} (message id {message_id})"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "Partially delivered: {}/{} recipients received the message -- {sent}. \
+                     Failed: {failed}. Do not resend to the recipients listed as delivered.",
+                    delivered.len(),
+                    addresses.len()
+                )
+            }
+        });
+
         let result = match delivery_error {
             None => SendMessageToAgentResult::Success {
-                message_id: delivered_ids.into_iter().next().unwrap_or_default(),
+                message_id: delivered
+                    .into_iter()
+                    .next()
+                    .map(|(_, message_id)| message_id)
+                    .unwrap_or_default(),
             },
             Some(error) => {
                 send_telemetry_from_ctx!(
@@ -155,7 +195,9 @@ impl SendMessageToAgentExecutor {
                 log::warn!(
                     "Failed to deliver local agent message: conversation_id={conversation_id:?} \
                      sender_run_id={sender_run_id:?} target_agent_ids={addresses:?} \
-                     subject={subject:?} error={error}"
+                     subject={subject:?} delivered={}/{} error={error}",
+                    delivered.len(),
+                    addresses.len()
                 );
                 SendMessageToAgentResult::Error(error)
             }

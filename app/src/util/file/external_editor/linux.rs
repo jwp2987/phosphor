@@ -14,6 +14,97 @@ use super::Editor;
 
 static INSTALLED_EDITOR_METADATA: OnceLock<HashMap<Editor, EditorMetadata>> = OnceLock::new();
 
+/// Tokenizes a freedesktop Exec string into a list of arguments.
+///
+/// Follows the quoting rules from the [Desktop Entry Specification](
+/// https://specifications.freedesktop.org/desktop-entry-spec/latest/exec-variables.html):
+/// - Arguments are separated by unquoted whitespace.
+/// - Double-quoted strings are treated as a single argument (quotes stripped).
+/// - Within double quotes, the escape sequences `\"`, `` \` ``, `\$`, and
+///   `\\` are recognized and resolved.
+///
+/// Field codes (`%f`, `%u`, etc.) are left as-is in the output tokens; they
+/// are expanded in a separate pass by the caller.
+///
+/// Ported from the pin (`42effe840:app/src/util/file/external_editor/linux.rs:27-79`),
+/// replacing a `shell_words::split` call. `shell_words` implements POSIX *shell* word
+/// splitting, which has states the Desktop-Entry grammar does not: a `'` opens a
+/// single-quoted string and a `#` starts a comment. An `Exec=` line containing an
+/// apostrophe -- `/opt/Bob's Editor/bob %f`, and any editor whose vendor name has one --
+/// therefore failed with "missing closing quote", which `build_command` mapped to
+/// `MalformedFieldCode`, which `open_file_command` logged and turned into `None`: the
+/// editor kept appearing in the picker and clicking it silently did nothing. Per the spec
+/// `'` is an ordinary character, and this tokenizer treats it as one.
+///
+/// Divergence from the pin, deliberate: the pin returns a dedicated
+/// `DesktopExecError::UnterminatedQuote` for an unclosed `"`. This fork keeps folding that
+/// into `MalformedFieldCode`, because `linux_tests.rs` asserts that mapping and is outside
+/// the edit set for this fix. The user-visible behaviour (log + no command) is identical.
+fn tokenize_exec(exec: &str) -> Result<Vec<String>, DesktopExecError> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = exec.chars().peekable();
+    let mut in_quotes = false;
+    // Tracks whether we have started accumulating a token. This is separate
+    // from `current.is_empty()` because a quoted empty string (`""`) is a
+    // valid zero-length token that should be emitted.
+    let mut in_token = false;
+
+    while let Some(ch) = chars.next() {
+        if in_quotes {
+            match ch {
+                '"' => {
+                    // Closing quote. The quoted content has already been
+                    // accumulated into `current`.
+                    in_quotes = false;
+                }
+                '\\' => {
+                    // Inside double quotes the spec recognizes four escape
+                    // sequences: \", \`, \$, \\.
+                    match chars.peek() {
+                        Some('"' | '`' | '$' | '\\') => {
+                            current.push(chars.next().unwrap());
+                        }
+                        _ => {
+                            // Not a recognized escape; keep the backslash.
+                            current.push('\\');
+                        }
+                    }
+                }
+                other => current.push(other),
+            }
+        } else {
+            match ch {
+                ' ' | '\t' | '\n' => {
+                    if in_token {
+                        tokens.push(std::mem::take(&mut current));
+                        in_token = false;
+                    }
+                }
+                '"' => {
+                    in_quotes = true;
+                    in_token = true;
+                }
+                other => {
+                    current.push(other);
+                    in_token = true;
+                }
+            }
+        }
+    }
+
+    if in_quotes {
+        // The pin's `UnterminatedQuote`; see the divergence note above.
+        return Err(DesktopExecError::MalformedFieldCode);
+    }
+
+    if in_token {
+        tokens.push(current);
+    }
+
+    Ok(tokens)
+}
+
 /// A data struct to hold relevant info pulled from a [freedesktop_desktop_entry::DesktopEntry].
 /// Mostly here to get around the lack of an owned version of DesktopEntry.
 struct EditorMetadata {
@@ -82,12 +173,11 @@ impl EditorMetadata {
     {
         let raw_exec = &self.exec;
 
-        // Split Exec into shell words first, then expand field codes within
-        // each token. This preserves spaces in substituted values (e.g. file
-        // paths) while respecting the quoting rules in the .desktop Exec's
-        // original content.
-        let tokens =
-            shell_words::split(raw_exec).map_err(|_| DesktopExecError::MalformedFieldCode)?;
+        // Tokenize Exec per the Desktop Entry grammar first, then expand field
+        // codes within each token. This preserves spaces in substituted values
+        // (e.g. file paths) while respecting the quoting rules in the .desktop
+        // Exec's original content.
+        let tokens = tokenize_exec(raw_exec)?;
 
         let mut argv: Vec<String> = Vec::with_capacity(tokens.len());
         for token in &tokens {

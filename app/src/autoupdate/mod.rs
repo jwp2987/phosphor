@@ -40,35 +40,66 @@ pub use self::changelog::get_current_changelog;
 use self::channel_versions::fetch_channel_versions;
 
 /// SHA-256 verification shared across the three platforms once an OSS download
-/// completes:
-/// 1. If the cached release has no matching asset, skip (degrade to no verification);
-/// 2. If the asset has no digest field (an old release), skip;
-/// 3. If the digest isn't in `sha256:xxx` format or has the wrong length, skip;
-/// 4. Otherwise, stream-read the file to compute its sha256; return Ok on a match,
-///    or Err on a mismatch, marking the file as invalid (the caller decides
-///    whether to delete it).
+/// completes. Returns the verified lowercase-hex digest so a caller can re-check
+/// the same file later without re-consulting the release metadata.
+///
+/// What this buys us, stated honestly: the digest arrives in the same
+/// `api.github.com` response that supplied `browser_download_url`, so it is only
+/// as trustworthy as that single TLS connection. It catches a truncated or
+/// corrupted download, and a CDN edge that serves different bytes than the API
+/// described. It is **not** supply-chain integrity -- nothing signs the artifact
+/// with a key held outside GitHub, so anyone able to forge the API response
+/// forges the digest along with it. Real integrity would need a detached
+/// signature verified against a key baked into this binary; the OSS path
+/// deliberately skips `verify_code_signature` because these builds carry no
+/// Apple Developer ID signature to check.
+///
+/// Every exit other than "the bytes matched" is an error. This function
+/// previously returned `Ok(())` when there was no cached release, no asset by
+/// that name, or no `digest` field -- three ways for the only check standing
+/// between an unsigned download and executing it to be switched off by whatever
+/// the check was aimed at. If a release genuinely ships without a digest the
+/// update now refuses rather than proceeding blind; the fix is to republish the
+/// asset (GitHub has populated `digest` for uploads since late 2024), not to
+/// install unverified bytes.
 ///
 /// This function should not be called outside the OSS path: other channels use
 /// codesign / Inno's built-in verification.
 pub(crate) fn verify_oss_asset_sha256(
     path: &std::path::Path,
     asset_name: &str,
-) -> anyhow::Result<()> {
-    let Some(release) = github::cached_release() else {
-        log::info!("Phosphor: no cached release, skipping SHA-256 verification");
-        return Ok(());
-    };
-    let Some(asset) = release.find_asset(asset_name) else {
-        log::warn!("Phosphor: {asset_name} not found in the cached release, skipping SHA-256 verification");
-        return Ok(());
-    };
-    let Some(expected) = asset.sha256_hex() else {
-        log::info!(
-            "Phosphor: asset {asset_name} has no recognizable digest (possibly an algorithm other than sha256), skipping verification"
-        );
-        return Ok(());
-    };
+) -> anyhow::Result<String> {
+    let release = github::cached_release().ok_or_else(|| {
+        anyhow!("Refusing to install {asset_name}: no cached GitHub release metadata to verify its SHA-256 against")
+    })?;
+    let asset = release.find_asset(asset_name).ok_or_else(|| {
+        anyhow!(
+            "Refusing to install {asset_name}: release {} lists no asset by that name, so its expected SHA-256 is unknown",
+            release.tag_name
+        )
+    })?;
+    let expected = asset.sha256_hex().ok_or_else(|| {
+        anyhow!(
+            "Refusing to install {asset_name}: release {} publishes no usable sha256 digest for it (digest={:?})",
+            release.tag_name,
+            asset.digest
+        )
+    })?;
 
+    let actual = sha256_file(path)?;
+    if actual == expected {
+        log::info!("Phosphor: SHA-256 verification passed ({asset_name})");
+        Ok(expected)
+    } else {
+        Err(anyhow!(
+            "SHA-256 verification failed: expected={expected} actual={actual} (asset={asset_name}, path={})",
+            path.display()
+        ))
+    }
+}
+
+/// Streams `path` and returns its lowercase-hex SHA-256.
+pub(crate) fn sha256_file(path: &std::path::Path) -> anyhow::Result<String> {
     use sha2::{Digest as _, Sha256};
     use std::io::Read as _;
     let mut hasher = Sha256::new();
@@ -82,16 +113,7 @@ pub(crate) fn verify_oss_asset_sha256(
         }
         hasher.update(&buf[..n]);
     }
-    let actual = format!("{:x}", hasher.finalize());
-    if actual == expected {
-        log::info!("Phosphor: SHA-256 verification passed ({asset_name})");
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "SHA-256 verification failed: expected={expected} actual={actual} (asset={asset_name}, path={})",
-            path.display()
-        ))
-    }
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// A successfully downloaded and unpacked target update.
@@ -400,13 +422,27 @@ impl AutoupdateState {
             log::info!("Already up to date with {}", version.version);
             UpdateReady::No
         } else {
-            if let Ok(true) =
-                self.is_current_version_ahead_of_latest_version(&version, current_version)
-            {
-                let is_rollback = version.is_rollback.unwrap_or(false);
-                if !is_rollback {
-                    log::info!(
-                        "Current version ({}) is ahead of version in channel versions({}), not updating",
+            // Fail closed. This was `if let Ok(true) = ...`, which folded `Err`
+            // in with `Ok(false)` and carried straight on to the download: an
+            // unparseable version on either side silently disabled the very
+            // guard that stops a user being walked backwards onto an older
+            // release. If we cannot establish the ordering we do not update.
+            match self.is_current_version_ahead_of_latest_version(&version, current_version) {
+                Ok(true) => {
+                    let is_rollback = version.is_rollback.unwrap_or(false);
+                    if !is_rollback {
+                        log::info!(
+                            "Current version ({}) is ahead of version in channel versions({}), not updating",
+                            current_version,
+                            version.version
+                        );
+                        return UpdateReady::No;
+                    }
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    log::warn!(
+                        "Cannot compare current version ({}) against offered version ({}): {e:#}; not updating",
                         current_version,
                         version.version
                     );

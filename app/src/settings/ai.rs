@@ -1845,8 +1845,8 @@ impl Default for PerAgentSettings {
 impl settings_value::SettingsValue for PerAgentSettings {}
 
 define_settings_group!(AISettings, settings: [
-    // Legacy setting. The Zap Agent is now always enabled; don't use this field to determine
-    // enablement status.
+    // The master AI switch. Read it through the `is_any_ai_enabled()` getter rather than
+    // directly: every other AI getter is defined in terms of that one.
     is_any_ai_enabled: IsAnyAIEnabled {
         type: bool,
         default: true,
@@ -2813,10 +2813,21 @@ impl AISettings {
         });
     }
 
+    /// The master AI switch: `agents.warp_agent.is_any_ai_enabled` in
+    /// `settings.toml`. Every other AI getter on this type funnels through it.
+    ///
+    /// This used to return a hardcoded `true`, which made the setting a public,
+    /// schema-documented, user-writable key that nothing read — a user who set it
+    /// to `false` kept every AI surface live, and because the key *is* known,
+    /// `settings_file_diagnostics` had nothing to warn about either. Now it reads
+    /// the field, as the pin does (`42effe840:app/src/settings/ai.rs:2182-2191`).
+    ///
+    /// The pin additionally returned `false` for anonymous/logged-out users and
+    /// under a remote-session org policy; this fork has neither (`AuthState::
+    /// is_anonymous_or_logged_out` is a hardcoded `false` and there is no org
+    /// policy), so the stored value is the whole answer here.
     pub fn is_any_ai_enabled(&self, _app: &AppContext) -> bool {
-        // Zap no longer allows disabling the Zap Agent via settings. A persisted
-        // `agents.warp_agent.is_any_ai_enabled = false` in an old config file is ignored.
-        true
+        *self.is_any_ai_enabled
     }
 
     pub fn is_orchestration_enabled(&self, app: &AppContext) -> bool {

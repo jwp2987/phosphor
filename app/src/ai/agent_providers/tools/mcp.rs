@@ -13,7 +13,9 @@
 //! - Separated by double underscores, to avoid colliding with built-in tool names
 //!   (which are underscore-separated words)
 //! - server_name_safe = server.name with every character not in
-//!   `[a-zA-Z0-9_-]` replaced with `_`
+//!   `[a-zA-Z0-9_-]` replaced with `_`, then runs of `_` collapsed to one and
+//!   leading/trailing `_` trimmed, so the safe name can never contain (or abut)
+//!   the `__` separator — see `sanitize_server_name`
 //!
 //! ## Reverse resolution
 //!
@@ -41,16 +43,38 @@ const SEP: &str = "__";
 const READ_RESOURCE_NAME: &str = "mcp_read_resource";
 
 /// Convert server.name into a string safe to use as part of an OpenAI function name.
+///
+/// **Invariant this must preserve**: the result never contains `__` and never starts or ends
+/// with `_`. `SEP` is `__`, and `parse_mcp_tool_call` recovers the server by splitting the
+/// body at its *first* `__` — so a sanitized name that could contain (or abut) a `__` makes
+/// the encoding ambiguous and the split lands in the wrong place.
+///
+/// That is not hypothetical: mapping every non-alphanumeric character to `_` one-for-one turns
+/// `"GitHub (remote)"` into `GitHub__remote_`, whose function names split back to the server
+/// `GitHub`, which matches nothing — every tool of such a server was advertised to the model
+/// and then permanently uncallable. Collapsing runs of `_` and trimming the ends removes both
+/// failure modes (`GitHub_remote`), and a trailing `_` cannot merge with the separator into a
+/// three-underscore run either.
+///
+/// A tool name may still contain `__` freely: only the *first* `__` is the separator, and
+/// everything after it is the tool name verbatim.
 fn sanitize_server_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        let c = if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            c
+        } else {
+            '_'
+        };
+        // Collapse runs: two adjacent `_` would reintroduce the `SEP` sequence.
+        if c == '_' && out.ends_with('_') {
+            continue;
+        }
+        out.push(c);
+    }
+    // A leading `_` would put a `__` at the very start of the body (`mcp__` + `_x`); a trailing
+    // one would merge with the separator that follows it.
+    out.trim_matches('_').to_owned()
 }
 
 /// Generate an OpenAI function name for an MCP tool.
@@ -292,7 +316,10 @@ pub fn serialize_outgoing_call(
     let server_name = ctx
         .and_then(|c| c.servers.iter().find(|s| s.id == tc.server_id))
         .map(|s| sanitize_server_name(&s.name))
-        .unwrap_or_else(|| tc.server_id.clone());
+        // The id fallback goes through the same sanitizer: an id carrying `__` (or ending in
+        // `_`) would otherwise emit a name that `parse_mcp_tool_call` splits in the wrong
+        // place, turning an unresolvable call into a mis-resolved one.
+        .unwrap_or_else(|| sanitize_server_name(&tc.server_id));
     let name = format!("{PREFIX}{server_name}{SEP}{}", tc.name);
     // args (Option<prost_types::Struct>) → serde_json
     let args_value = tc
@@ -363,3 +390,79 @@ pub fn serialize_result(result: &api::message::tool_call_result::Result) -> Opti
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;
+
+/// Round-trip coverage for the `mcp__<server>__<tool>` encoding.
+///
+/// Lives here rather than in `mcp_tests.rs` only because that file was outside the edit set
+/// for this fix. It exists because every case in `mcp_tests.rs` used a server named
+/// `server-a` / `server-b`, i.e. names that survive sanitization unchanged — so the class of
+/// name that broke the encoding (anything with a space, a bracket, or any other run of
+/// non-alphanumerics) was never exercised.
+#[cfg(test)]
+mod function_name_roundtrip_tests {
+    use super::*;
+    use crate::ai::agent::{MCPContext, MCPServer};
+
+    fn mk_server(id: &str, name: &str) -> MCPServer {
+        MCPServer {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            description: String::new(),
+            resources: Vec::new(),
+            tools: Vec::new(),
+        }
+    }
+
+    /// The invariant the split in `parse_mcp_tool_call` depends on.
+    #[test]
+    fn sanitized_names_never_contain_or_abut_the_separator() {
+        for name in [
+            "GitHub (remote)",
+            "my  server",
+            "__leading",
+            "trailing__",
+            "a---b",
+            "!!!",
+            "server-a",
+        ] {
+            let safe = sanitize_server_name(name);
+            assert!(!safe.contains(SEP), "{name:?} sanitized to {safe:?}");
+            assert!(!safe.starts_with('_'), "{name:?} sanitized to {safe:?}");
+            assert!(!safe.ends_with('_'), "{name:?} sanitized to {safe:?}");
+        }
+    }
+
+    #[test]
+    fn function_names_round_trip_back_to_their_server_and_tool() {
+        // Names picked for the shapes that used to break: a run of non-alphanumerics
+        // (`GitHub (remote)` -> `GitHub__remote_` under the old one-for-one mapping), a name
+        // ending in a separator-adjacent `_`, and a tool name that itself contains `__`.
+        let servers = vec![
+            mk_server("id-github", "GitHub (remote)"),
+            mk_server("id-plain", "server-a"),
+            mk_server("id-underscored", "weird__name_"),
+        ];
+        let ctx = MCPContext {
+            #[allow(deprecated)]
+            resources: vec![],
+            #[allow(deprecated)]
+            tools: vec![],
+            servers: servers.clone(),
+        };
+
+        for server in &servers {
+            for tool_name in ["list_issues", "odd__tool", "_leading_underscore"] {
+                let fname = function_name(server, tool_name);
+                assert!(is_mcp_function(&fname), "{fname}");
+
+                let parsed = parse_mcp_tool_call(&fname, "{}", Some(&ctx))
+                    .unwrap_or_else(|e| panic!("{fname} should resolve: {e}"));
+                let api::message::tool_call::Tool::CallMcpTool(call) = parsed else {
+                    panic!("{fname} should parse as a CallMcpTool");
+                };
+                assert_eq!(call.server_id, server.id, "server for {fname}");
+                assert_eq!(call.name, tool_name, "tool for {fname}");
+            }
+        }
+    }
+}

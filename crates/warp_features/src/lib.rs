@@ -793,10 +793,30 @@ static FEATURES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Features used in debugging.
 pub const DEBUG_FLAGS: &[FeatureFlag] = &[FeatureFlag::DebugMode, FeatureFlag::RuntimeFeatureFlags];
 /// Features enabled only for the WarpLocal developer build.
+///
+/// **Dark in this fork** — see [`DOGFOOD_FLAGS`].
 pub const LOCAL_FLAGS: &[FeatureFlag] = &[FeatureFlag::LocalClaudeCodexChildHarnesses];
 
 /// Features enabled for the development team.  The expectation is that, over
 /// time, these will move on to PREVIEW_FLAGS before being launched.
+///
+/// **This fork ships no binary that *enables* the flags in this list, or in
+/// [`LOCAL_FLAGS`] or [`PREVIEW_FLAGS`].** Upstream's channel binaries pass them to
+/// `with_additional_features`, and the only such call sites left here are
+/// `crates/warp_tui/src/bin/{dev,local,preview,stable}.rs`, which never compile:
+/// `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares one `[[bin]]`,
+/// and those files reference a crate that is not in the workspace. `app/Cargo.toml`
+/// builds `phosphor-oss` (which adds `DEBUG_FLAGS`, debug builds only) and
+/// `generate_settings_schema`. So membership here enables nothing at runtime; it
+/// only tells the schema/default-settings generators which channel a flag belongs
+/// to (and, for `PREVIEW_FLAGS`, what `changelog_model` lists), and documents
+/// upstream's intent.
+///
+/// A flag whose *code* is live and needs to be reachable in this fork therefore
+/// needs a real enable path, which means one of: a cargo feature in
+/// `app/Cargo.toml`'s `default`, `RELEASE_FLAGS`, or an entry in `UNSTABLE_FEATURES`
+/// (`app/src/lib.rs`), i.e. opt-in via `ZAP_UNSTABLE_FEATURES=<name>`. Six flags in
+/// this list have the last of those; see that table.
 pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::ToggleBootstrapBlock,
     FeatureFlag::RemoveAutosuggestionDuringTabCompletions,
@@ -829,7 +849,9 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::QueuedPromptsV2,
     // Codebase indexing. At the pin these two were enabled by a 100% server-side
     // experiment and listed here only so dogfood builds matched; this fork has no
-    // server, so this list is the only thing that turns them on.
+    // server, and — contrary to what this comment used to claim — this list turns
+    // nothing on either (see the doc comment above). Their enable path is
+    // `ZAP_UNSTABLE_FEATURES=full_source_code_embedding,codebase_index_persistence`.
     FeatureFlag::FullSourceCodeEmbedding,
     FeatureFlag::CodebaseIndexPersistence,
     // End manually enabled Code features.
