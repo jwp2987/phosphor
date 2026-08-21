@@ -7440,3 +7440,44 @@ Ordered by severity, not by area.
 > the 20-agent concurrency cap — **warpui / warpui_core**, **guards + CI**, and
 > **util / uri / themes / workspaces / lib.rs**. Nothing below is known about them.
 
+### Refutation round — util/uri/workspaces, and the ROOT CAUSE of the de-clouding class
+
+- [ ] 🔴🔴 **`#![allow(dead_code)]` blanket-silences the entire `app` crate — this is why
+      the de-clouding casualties went unnoticed.** `app/src/lib.rs:4`, with the comment
+      "Orphaned code left over from upstream Zap trimming is temporarily kept; dead_code
+      warnings are suppressed globally." **VERIFIED against the pin, which has no such
+      attribute** (`42effe840:app/src/lib.rs` carries only the clippy attr).
+      Removing the cloud layer orphaned every function whose callers lived there, and the
+      fork then suppressed the one compiler warning that would have enumerated them.
+      `mod uri`, `mod workspaces` and `mod ui_components` are PRIVATE modules, so rustc
+      would otherwise flag every `pub fn` inside them.
+      **Both of today's severe de-clouding finds are instances**:
+      `initialize_default_regexes_once` (secret redaction never installed) and
+      `SettingsInitializer::handle_user_fetched` (settings migrations never run) are
+      zero-caller functions rustc would have named on every build.
+      A scan of five directories found **35+ zero-caller non-test functions**; one
+      confirmed example is `uri/mod.rs:1345 open_window_with_action`, whose only callers
+      were the deleted `UriHost::Team` arm.
+      **Fixing this attribute is the highest-leverage item in this file** — it converts
+      an open-ended manual hunt into a compiler-enumerated list. Expect it to be noisy;
+      the value is the list, not the silence.
+- [ ] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
+      `permissions_test.rs:1253-1309` injects `AlwaysAsk` via
+      `UserWorkspaces::update_ai_autonomy_settings` into `workspace.teams[0]`, then
+      asserts that sandboxed mode "bypasses the workspace restriction". Every read path
+      goes through `current_team()`, which is hard-`None`, so the restriction never
+      existed and the test passes with the bypass deleted. **Its eight siblings were
+      `#[ignore]`d for exactly this reason — this one was missed.**
+- [ ] **Tautological test, and the only one in `app/src/workspaces/`.**
+      `user_workspaces.rs:922-928` asserts `is_ai_allowed_in_remote_sessions()`, whose
+      body at `:734` is a bare `true` that never touches `self`. The pin ships four test
+      files in that directory. `check_stub_coverage` did not catch it.
+- [ ] **`zap://settings` (bare) is dead.** `uri/mod.rs:261,279,335` dropped the pin's
+      `.filter(|s| !s.is_empty())` and the `OpenSettingsArgs::Default` / `?q=` routes,
+      both non-cloud. The comment at `:1370-1379` claims parity "minus the two cloud
+      branches" — false.
+- [ ] **`external_editor/linux.rs:88` parses a Desktop-Entry `Exec` with
+      `shell_words::split`** where the pin uses a purpose-built `tokenize_exec`.
+      shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
+      `Exec` containing an unpaired `'` errors and silently disables that editor.
+
