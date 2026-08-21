@@ -28,27 +28,57 @@ fn group_id_for_anchor(
     })
 }
 
-/// Turns `FeatureFlag::GroupedTabs` on for the rest of the test and asserts it
-/// took effect.
+/// Turns `FeatureFlag::GroupedTabs` on for the rest of the test, and checks the
+/// one precondition that forcing the flag cannot fake: that this build ships
+/// tab groups at all.
 ///
-/// The flag is default-on today, but every grouping code path — the model
-/// mutations, `tab_bar_slots`, and the group-membership block in
-/// `on_tab_drag` — is gated on it, so a tab-group test that merely assumed it
-/// would degrade into a test of ungrouped tabs that still passes. `set_user_preference`
-/// is the process-global tier `is_enabled` consults ahead of the compiled-in
-/// state (unlike `override_enabled`, which is thread-local and would not hold
-/// for the app's UI thread).
+/// The action is load-bearing setup. Every grouping path is gated on
+/// `FeatureFlag::GroupedTabs.is_enabled()` at run time — the model mutations
+/// (`workspace/view.rs:11753`, `:11807`, `:11841`, `:11872`), `tab_bar_slots`
+/// (`:25010`) and the insertion-group resolution `on_tab_drag` consults
+/// (`:24799`) — so a tab-group test that merely assumed the flag would degrade
+/// into a test of ungrouped tabs that still passes. `set_user_preference` is
+/// the process-global tier `is_enabled` consults ahead of the compiled-in state
+/// (unlike `override_enabled`, which is thread-local and would not hold for the
+/// app's UI thread).
+///
+/// The assertion used to be `is_enabled()` alone, which could not fail: the
+/// action had just written the tier `is_enabled` reads first
+/// (`warp_features/src/lib.rs:972-974`, user preference ahead of
+/// `FLAG_STATES`). The `cfg!` half is the part with teeth. `grouped_tabs` is a
+/// default cargo feature (`app/Cargo.toml:655`) that gates the flag's
+/// default-on entry (`app/src/lib.rs:3283`) and the settings toggle
+/// (`settings_view/appearance_page.rs:1588`), and `settings/init.rs:301`
+/// samples the flag *before* any preference is written precisely so the toggle
+/// "can turn tab groups off but never on in a build that did not have them"
+/// (`settings/init.rs:427-429`). `set_user_preference` walks straight past that
+/// guard, so without this check a build compiled without the feature would run
+/// the whole tab-group suite against a configuration it does not ship, and
+/// report PASS.
+///
+/// The `is_enabled()` half is kept because it is not inert: it still fails if
+/// `GroupedTabs` is added to `FORCE_DISABLED_FLAGS` (consulted ahead of every
+/// tier, `warp_features/src/lib.rs:959-961`) or if a thread-local
+/// `override_enabled(false)` is left in place (consulted ahead of the user
+/// preference). It is not evidence that grouping is live, and does not claim to
+/// be — that comes from the next step, whose `group_id_for_anchor` panics if
+/// `create_tab_group_from_tab` produced no group.
 pub fn ensure_grouped_tabs_enabled() -> TestStep {
     TestStep::new("Ensure grouped tabs are enabled")
         .with_action(|_app, _window_id, _data| {
             FeatureFlag::GroupedTabs.set_user_preference(true);
         })
-        .add_named_assertion("GroupedTabs is enabled", |_app, _window_id| {
-            async_assert!(
-                FeatureFlag::GroupedTabs.is_enabled(),
-                "FeatureFlag::GroupedTabs must be enabled for tab group tests"
-            )
-        })
+        .add_named_assertion(
+            "this build ships tab groups, and GroupedTabs is enabled",
+            |_app, _window_id| {
+                async_assert!(
+                    cfg!(feature = "grouped_tabs") && FeatureFlag::GroupedTabs.is_enabled(),
+                    "tab-group tests require a build with the `grouped_tabs` cargo feature: \
+                     forcing FeatureFlag::GroupedTabs on without it exercises a configuration \
+                     this build does not ship"
+                )
+            },
+        )
 }
 
 /// Creates a new tab group containing only the tab at `tab_index`

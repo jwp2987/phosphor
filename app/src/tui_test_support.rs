@@ -74,12 +74,30 @@ pub fn blocklist_ai_history_model_with_queries(queries: Vec<String>) -> Blocklis
     BlocklistAIHistoryModel::new(persisted_queries, vec![], &[])
 }
 
-/// Queues an action as the active confirmation request for a TUI view test.
+/// Installs an action as the active confirmation request for a TUI view test.
 ///
-/// Zap has no `queue_confirmation_action`; the equivalent is `queue_actions`,
-/// which runs the preprocess→dispatch pipeline and leaves confirmation-requiring
-/// actions in a pending-confirmation state. Exposed for tests via
-/// [`BlocklistAIActionModel::queue_action_for_test`].
+/// Matches the pin, which routes the same helper to the same method
+/// (`42effe840:app/src/tui_test_support.rs:299`).
+///
+/// **What this does and does not exercise.** It calls
+/// `BlocklistAIActionModel::queue_confirmation_action`, which pushes the
+/// action onto the conversation's pending queue and emits `QueuedAction`
+/// followed by `ActionBlockedOnUserConfirmation` — i.e. it *installs* the
+/// blocked state rather than arriving at it. The preprocess→dispatch pipeline
+/// (`queue_actions` → preprocessing → `should_autoexecute` → the
+/// `BlocklistAIPermissions` lookup) does not run, so no caller of this helper
+/// is evidence that the real pipeline would block this action. What the tests
+/// on top of it do cover is genuine and is the reason the fixture exists: the
+/// emitted events only reach a view through the effect loop, so the focus,
+/// selector-delegation, keystroke and rendering assertions downstream are
+/// reading real view behaviour. Callers that describe themselves as driving
+/// "the real preprocess pipeline" are describing their singleton setup, not
+/// this call.
+///
+/// An earlier version of this comment claimed the fork had no
+/// `queue_confirmation_action` and that this helper fell back to
+/// `queue_action_for_test`. Both halves are stale: the method was ported (see
+/// its own doc comment for why) and is what this calls.
 pub fn queue_tui_permission_action(
     action_model: &mut BlocklistAIActionModel,
     action: AIAgentAction,

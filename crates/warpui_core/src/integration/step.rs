@@ -245,6 +245,12 @@ pub struct TestStep {
 
     /// An optional final assertion that is run when the timeout has hit.
     /// If omitted the test fails.
+    ///
+    /// Consulted by reference, so it survives the assertion it fired for: it
+    /// can run once per assertion in the step (a handler that returns
+    /// `Success` resumes the assertion loop) and again on every retry attempt,
+    /// since the driver re-runs the same `TestStep`. A handler with side
+    /// effects must tolerate that.
     on_failure_handler: Option<Assertion>,
 
     /// The name of the group this step belongs to, used for failure reporting.
@@ -695,6 +701,39 @@ pub(super) async fn run_step(
                         unreachable!("already handled WithEvent variants")
                     }
                 };
+                // This resolves the last frame in which the element was
+                // *painted*, which is not necessarily the current frame, and
+                // the difference is not detectable here.
+                //
+                // A still-visible element is never stale: `PositionCache::end`
+                // (`presenter.rs:162-168`) does
+                // `committed_positions.extend(last.drain())`, so a re-rendered
+                // element overwrites its own key every frame and a *moved*
+                // element yields its new rect. What does go stale is an element
+                // that stops being painted. Eviction is explicit-only --
+                // `cache_position_indefinitely` (`presenter.rs:172`) never
+                // expires, and the whole tree has exactly one caller of
+                // `clear_position` (`app/src/editor/view/element.rs:1281`) --
+                // so a removed, closed or scrolled-away element keeps its final
+                // rect forever. The click below is then dispatched at that
+                // rect's centre, landing on whatever is painted there now, and
+                // the only failure this step can report is `bounds.is_none()`,
+                // i.e. an id that was never painted at all. A click on the
+                // wrong element is silent.
+                //
+                // Left unchecked deliberately rather than papered over with a
+                // check that cannot fail. "Not painted this frame" is
+                // unobservable through the cache's public API: entries carry no
+                // frame stamp, `committed_positions` is private with no
+                // iterator, and there is no eviction to hang a freshness rule
+                // on. Nor can the harness re-derive it by clearing the key and
+                // forcing a repaint -- `maybe_render_frame` only waits for a
+                // frame when `App::has_window_invalidations` is already true,
+                // so a still-live but idle element would come back as a
+                // spurious "No position for ..." failure. A real freshness
+                // requirement needs a generation counter on `PositionCache`,
+                // which is shared production code (menu anchoring, tab drag
+                // hit-testing) and is byte-identical to the pin.
                 let bounds = {
                     let presenter_ref = presenter.borrow();
                     presenter_ref.position_cache().get_position(&position_id)
@@ -898,7 +937,26 @@ pub(super) async fn run_step(
 
         // If we are here, the timer for the current assertion has elapsed without hitting success.
         // Check if there is a final assertion to run, and if so run it.
-        if let Some(mut final_assertion) = step.on_failure_handler.take() {
+        // `as_mut`, not `take`. This is a deliberate divergence from the pin,
+        // which takes here (`42effe840:crates/warpui_core/src/integration/step.rs:895`).
+        //
+        // `run_step` borrows the step mutably and the driver re-runs the *same*
+        // `TestStep` for every retry attempt (`integration/driver.rs:562-592`),
+        // so taking the handler destroys it after the first attempt: attempt 2
+        // of a `set_retries` step reaches its timeout with no bail-out and
+        // panics as a hard failure instead of reporting the
+        // `PreconditionFailed` the handler exists to produce. The handler is
+        // also lost for the remaining assertions of the same step, since a
+        // handler that returns `Success` resumes the `'outer` loop over
+        // `step.assertions`.
+        //
+        // Every other field `run_step` touches on the step is iterated by
+        // reference and survives a retry; `on_failure_handler` was the only
+        // single-use one. No step pairs `set_retries` with
+        // `set_on_failure_handler` today (the sole handler is
+        // `app/src/integration_testing/terminal/step.rs:68`, which sets no
+        // retries), so this closes a latent defect rather than a live one.
+        if let Some(final_assertion) = step.on_failure_handler.as_mut() {
             // Log the timed-out assertion's failure message before running the final assertion
             if let Some(AssertionOutcome::Failure { message, .. }) = &last_failure {
                 log::error!(
