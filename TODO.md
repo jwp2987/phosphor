@@ -7327,3 +7327,38 @@ Ordered by severity, not by area.
       claim Inno Setup is not invoked — `windows.rs:348-357` invokes it.
       `settings/local_control.rs:8` cites the superseded pin `02b53fcd8`.
 
+### Refutation round — editor, notebooks, file edits
+
+- [ ] 🔴 **`/rewind` silently rewrites and DELETES files with no content check —
+      fork-only.** The pin has no file revert at all
+      (`git grep rewind 42effe840 -- crates/warp_tui` is empty).
+      `warp_tui/src/tui_diff_storage.rs:215-259` writes `diff.base.content` — the
+      snapshot taken at PREPROCESS time — back over Update/Delete targets, and for
+      Create it **deletes the file**, never checking the file still matches what the
+      agent wrote. Any user edit made after the AI edit is destroyed; an
+      agent-created file the user has since built on is deleted.
+      `revert_file_diffs:216-226` keeps only the sync `Result` and drops the returned
+      `SaveFuture`, so async write failures are invisible and
+      `terminal_session_view.rs:4151` reports "Rewound conversation and reverted file
+      edits" regardless.
+- [ ] **Notebook load dead-ends on a `ServerId` that never exists (#609 sibling).**
+      `notebooks/notebook.rs:1541-1560` — `fetch_needed` calls
+      `notebook_id.into_server()`, but `set_server_id` (`cloud_object/mod.rs:172,673`)
+      has zero callers, so ids stay `ClientId` and the arm is a `log::warn`.
+      `fetch_needed` is also true when `focused_folder_id` does not resolve, so an
+      in-memory notebook computed one line earlier is discarded with no toast.
+- [ ] **Lost update on every AI edit (pin-parity).** `code/inline_diff.rs:137`
+      registers with `subscribe_to_updates=false` and `:213-228` writes the whole stale
+      snapshot buffer; `warp_files/src/lib.rs:797-830` writes unconditionally with no
+      mtime or version compare. Accepting a diff minutes later clobbers concurrent
+      external edits.
+- [ ] **The protected-path guard operates on unresolved paths and ignores rename
+      targets (pin-parity).** `permissions.rs:1239` matches absolute MCP config paths,
+      but `request_file_edits.rs:126-129` feeds it raw LLM strings, and
+      `ParsedDiff::file()` returns the SOURCE, never `move_to`
+      (`diff_application.rs:325-335`) — so a V4A rename auto-writes `~/.mcp.json`.
+- [ ] **Untrusted markdown link opens an OS handler on a plain click (pin-parity).**
+      `notebooks/link.rs:147,275` accepts any scheme; `notebooks/editor/view.rs:1993`
+      opens without a modifier in `Selectable` (LLM-authored) views; `lib.rs:1647`
+      rewrites but never validates.
+
