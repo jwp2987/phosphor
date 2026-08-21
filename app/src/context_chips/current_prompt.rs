@@ -819,16 +819,10 @@ impl CurrentPrompt {
                         }
 
                         if timed_out {
-                            if suppress_on_failure {
-                                if let Some(state) = me.states.get_mut(&chip_kind) {
-                                    state.last_failure_fingerprint = current_fingerprint;
-                                }
-                            } else if suppress_on_failure {
-                                if let Some(state) = me.states.get_mut(&chip_kind) {
-                                    if state.last_failure_fingerprint == current_fingerprint {
-                                        state.last_failure_fingerprint = None;
-                                    }
-                                }
+                            if suppress_on_failure
+                                && let Some(state) = me.states.get_mut(&chip_kind)
+                            {
+                                state.last_failure_fingerprint = current_fingerprint;
                             }
                             me.update_chip_value(&chip_kind, None);
                             me.set_chip_update_status(&chip_kind, ChipUpdateStatus::TimedOut);

@@ -214,9 +214,16 @@ pub trait ErrorExt: RegisteredError + std::error::Error {
     /// engineering team.
     fn is_actionable(&self) -> bool;
 
-    fn report_error(&self) {
-        log::error!("ErrorExt::report_error: {self}");
-    }
+    /// Hook for out-of-band error reporting.
+    ///
+    /// Upstream this captured the error to Sentry; that sink is gone with the
+    /// cloud integrations, so there is nothing left to do here. It must stay a
+    /// no-op: `report_error!(@log ..)` already emits the log line (at
+    /// `LOG_TARGET`, with the `extra:` fields attached), so logging here would
+    /// emit every actionable error twice — the second copy carrying the
+    /// module-path target, which `RUST_LOG` filters on `LOG_TARGET` cannot
+    /// suppress.
+    fn report_error(&self) {}
 }
 
 #[cfg(test)]

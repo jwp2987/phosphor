@@ -57,6 +57,17 @@ impl RowBuilder {
 pub struct PromptDisplay {
     prompt: ModelHandle<PromptType>,
     display_chips: Vec<ViewHandle<DisplayChip>>,
+
+    /// The `ChipResult`s the current `display_chips` were built from.
+    ///
+    /// Change detection has to compare chip *values*, not the rendered text:
+    /// `DisplayChip` only retains the rendered string and the first on-click
+    /// value, and distinct values can render identically (a branch with no
+    /// upstream and a branch that is level with its upstream both render as
+    /// the bare branch name, while their tooltips differ). Keeping the source
+    /// `ChipResult`s lets `check_if_chip_values_have_changed` compare the
+    /// value and the full on-click slice, as upstream does.
+    last_chip_results: Vec<ChipResult>,
     ai_input_model: ModelHandle<BlocklistAIInputModel>,
     ai_context_model: ModelHandle<BlocklistAIContextModel>,
     terminal_view_id: EntityId,
@@ -146,6 +157,7 @@ impl PromptDisplay {
         Self {
             prompt,
             display_chips: vec![],
+            last_chip_results: vec![],
             ai_input_model,
             ai_context_model,
             terminal_view_id,
@@ -168,22 +180,14 @@ impl PromptDisplay {
     fn check_if_chip_values_have_changed(
         &mut self,
         new_chips: &[ChipResult],
-        ctx: &mut ViewContext<Self>,
+        _ctx: &mut ViewContext<Self>,
     ) -> bool {
-        self.display_chips.len() != new_chips.len()
+        self.last_chip_results.len() != new_chips.len()
             || new_chips.iter().enumerate().any(|(i, chip_result)| {
-                let existing_chip = &self.display_chips[i];
-                existing_chip.read(ctx, |chip, _| {
-                    chip.text()
-                        != chip_result
-                            .value
-                            .as_ref()
-                            .map(|v| v.to_string())
-                            .unwrap_or_default()
-                        || chip.chip_kind() != &chip_result.kind
-                        // I'm only comparing the first on-click values for efficiency, but we may need to change this in the future.
-                        || chip.first_on_click_value() != chip_result.on_click_values.first()
-                })
+                let existing = &self.last_chip_results[i];
+                existing.value() != chip_result.value.as_ref()
+                    || existing.kind() != &chip_result.kind
+                    || existing.on_click_values() != chip_result.on_click_values.as_slice()
             })
     }
 
@@ -212,6 +216,7 @@ impl PromptDisplay {
         let git_line_changes_info = git_line_changes_from_chips(new_chips);
 
         self.display_chips.clear();
+        self.last_chip_results = new_chips.to_vec();
         let mut display_chips = new_chips.iter().peekable();
         while let Some(chip_result) = display_chips.next() {
             let next_chip_kind = display_chips

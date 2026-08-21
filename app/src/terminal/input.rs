@@ -10283,6 +10283,16 @@ impl Input {
             return;
         }
 
+        // When the agent view is active, the classic-mode AI icon toggling and
+        // follow-up clearing logic below does not apply. Without this guard an
+        // inline (non-fullscreen) agent view falls through to
+        // `set_pending_query_state_for_new_conversation`, silently starting a
+        // new conversation on the next message.
+        if FeatureFlag::AgentView.is_enabled() && self.agent_view_controller.as_ref(ctx).is_active()
+        {
+            return;
+        }
+
         // If we have an AI follow up icon, backspace should clear that icon.
         if self
             .ai_context_model
@@ -10291,8 +10301,8 @@ impl Input {
         {
             self.ai_context_model.update(ctx, |ai_context_model, ctx| {
                 ai_context_model.set_pending_query_state_for_new_conversation(
-                    // This origin is unused in this codepath, which doesn't get called when
-                    // AgentView is enabled.
+                    // This origin is unused in this codepath: the guard above
+                    // returns early whenever AgentView is enabled and active.
                     AgentViewEntryOrigin::Input {
                         was_prompt_autodetected: false,
                     },

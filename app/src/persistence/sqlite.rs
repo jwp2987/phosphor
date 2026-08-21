@@ -1888,6 +1888,25 @@ fn upsert_workspace_language_server(
     Ok(())
 }
 
+/// Deletes one repository's `workspace_metadata` row.
+///
+/// It deliberately does NOT touch `codebase_index_nodes`,
+/// `codebase_index_embeddings` or `codebase_index_node_summaries`, and cannot:
+/// those three tables are keyed by `(embedding_space, hash)` and carry no
+/// repository column at all. `embedding_space` is `EmbeddingConfig::storage_key()`
+/// — the embedding model, e.g. `voyage:voyage-4:512` — not a workspace, so
+/// deleting by it would wipe every indexed repository that shares the model.
+/// Nor is reachability a way out: the rows are content-addressed, so a node
+/// hash reached from one repository's root can be the same row another
+/// repository still needs, and nothing records a repository's root hash for the
+/// walk to start from anyway.
+///
+/// The consequence is real and unaddressed here: those three tables have no
+/// TTL, no cap and no garbage collection, unlike their comparators (snapshots
+/// expire at 30 days; `ai_queries` is capped in `block_list.rs`). They grow for
+/// the life of the database. Giving them a retention policy is a product
+/// decision about how much disk an index may keep, and needs a way to attribute
+/// rows to a repository first — a schema change, not a query change.
 fn delete_codebase_index_metadata(conn: &mut SqliteConnection, index_path: &Path) -> Result<()> {
     use schema::workspace_metadata::dsl::*;
 

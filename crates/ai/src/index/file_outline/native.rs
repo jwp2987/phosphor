@@ -55,7 +55,12 @@ pub async fn build_outline(
         MAX_DEPTH,
         0,
         &IgnoredPathStrategy::Exclude, // override_ignore_for_files
-        repo_metadata::entry::BudgetExceededBehavior::FailFast,
+        // Parity with `42effe840`: over the caller's file budget the outline
+        // degrades to a partial tree rather than failing. `FailFast` is for the
+        // embedding path (see the enum's own docs) -- here it turned every repo
+        // above the caller's 5,000-file limit into `ExceededMaxFileLimit`, which
+        // `?` propagates, so those repos got no outline at all.
+        repo_metadata::entry::BudgetExceededBehavior::StopAndLazyLoad,
     )
     .await?;
 

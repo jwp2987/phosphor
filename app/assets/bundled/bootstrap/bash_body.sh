@@ -1032,6 +1032,17 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
                 return
             fi
 
+            # If the user's SSH config sets a RemoteCommand for this destination,
+            # OpenSSH refuses to also run our bootstrap as a command-line remote
+            # command, aborting with "Cannot execute command-line and remote
+            # command." Warpification is structurally impossible there, so fall
+            # back to plain SSH. `ssh -G` prints `remotecommand none` when unset.
+            local user_remote_command=$(command ssh -G "${@:1}" 2>/dev/null | command -p sed -n 's/^remotecommand //p')
+            if [[ -n "$user_remote_command" && "$user_remote_command" != "none" ]]; then
+                command ssh "${@:1}"
+                return
+            fi
+
             # Hex-encode the ZSH environment script we use to bootstrap remote zsh b/c it contains control characters
             # We decode on the SSH server using xxd if its available, otherwise fall back to a for-loop over each byte
             # and use printf to convert back to plaintext
@@ -1228,17 +1239,24 @@ esac
         rcfiles_end_time="$(LC_ALL="C"; echo $EPOCHREALTIME)"
     fi
 
-    # Unset HISTFILESIZE if the user rcfiles didn't change it away from our
-    # very large sentinel value.  We need to set the initial value of HISTSIZE
-    # to ensure that the user's history file doesn't get truncated when we spawn
-    # the shell, but once bootstrap has completes, we want the value to be what
-    # it would have been if we hadn't set an initial value.
+    # Unset HISTFILESIZE and HISTSIZE if the user rcfiles didn't change them
+    # away from our very large sentinel values.  We need to set the initial
+    # values to ensure that the user's history file and in-memory history list
+    # don't get truncated when we spawn the shell, but once bootstrap has
+    # completed, we want the values to be what they would have been if we hadn't
+    # set initial values.
     #
-    #
+    # Both are exported into the shell's environment by the client, and bash
+    # keeps an inherited-from-environment variable exported, so leaving the
+    # sentinel in place would hand it to every child process.
     if [[ $HISTFILESIZE == $WARP_INITIAL_HISTFILESIZE ]]; then
         unset HISTFILESIZE
     fi
     unset WARP_INITIAL_HISTFILESIZE
+    if [[ $HISTSIZE == $WARP_INITIAL_HISTSIZE ]]; then
+        unset HISTSIZE
+    fi
+    unset WARP_INITIAL_HISTSIZE
 
     # Save the value of HISTCONTROL as it existed just after reading the user's
     # rcfiles.

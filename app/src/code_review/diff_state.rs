@@ -1181,6 +1181,10 @@ impl LocalDiffStateModel {
                 }
                 Err(err) => {
                     log::error!("Failed to restore files: {err}");
+                    ctx.emit(DiffStateModelEvent::GitWriteFailed {
+                        operation: GitWriteOperation::Discard,
+                        message: err.to_string(),
+                    });
                 }
             },
         );
@@ -1214,9 +1218,17 @@ impl LocalDiffStateModel {
             .root_dir()
             .to_local_path_lossy();
 
+        // Read before `request` moves into the future: the failure toast has to
+        // name the direction the user actually asked for.
+        let operation = if request.unstage {
+            GitWriteOperation::Unstage
+        } else {
+            GitWriteOperation::Stage
+        };
+
         ctx.spawn(
             async move { Self::stage_changes_impl(&repo_path, &request).await },
-            |me, result, ctx| match result {
+            move |me, result, ctx| match result {
                 Ok(_) => {
                     me.load_diffs_for_current_repo(false, ctx);
                     me.refresh_diff_metadata_for_current_repo(
@@ -1226,6 +1238,12 @@ impl LocalDiffStateModel {
                 }
                 Err(err) => {
                     log::error!("Failed to stage changes: {err}");
+                    // Nothing reloads on this path, so without this the view is
+                    // unchanged and the click looks like it did nothing.
+                    ctx.emit(DiffStateModelEvent::GitWriteFailed {
+                        operation,
+                        message: err.to_string(),
+                    });
                 }
             },
         );
@@ -3018,6 +3036,28 @@ impl LocalDiffStateModel {
                         old_line += 1;
                         new_line += 1;
                         (DiffLineType::Context, Some(old_num), Some(new_num))
+                    } else if content_line.starts_with('\\') {
+                        // `\ No newline at end of file` is its OWN line in git's
+                        // output -- backslash, space, text -- emitted directly
+                        // after the line it describes, on whichever side that
+                        // line was. So the flag belongs to the entry already
+                        // pushed, not to this one, and a hunk that rewrites the
+                        // final line carries two markers, one per side.
+                        //
+                        // Testing the content line itself for the text (which is
+                        // what this parser used to do) can never match: such a
+                        // line starts with `\`, so it lands here in the skip
+                        // branch, and `no_trailing_newline` stayed false for
+                        // every line ever parsed. That was harmless until
+                        // `hunk_to_patch` started replaying the flag into a
+                        // patch for `git apply --cached`, where a missing marker
+                        // makes git either append a newline the file never had
+                        // or reject the hunk outright.
+                        if let Some(last) = hunk_lines.last_mut() {
+                            last.no_trailing_newline = true;
+                        }
+                        i += 1;
+                        continue;
                     } else {
                         // Skip lines that don't start with +, -, or space
                         i += 1;
@@ -3030,15 +3070,14 @@ impl LocalDiffStateModel {
                         String::new()
                     };
 
-                    // Check for no trailing newline
-                    let no_trailing_newline = content_line.ends_with("\\No newline at end of file");
-
                     hunk_lines.push(DiffLine {
                         line_type,
                         old_line_number: old_num,
                         new_line_number: new_num,
                         text,
-                        no_trailing_newline,
+                        // Set retroactively by the `\` branch above when the
+                        // marker line that follows this one says so.
+                        no_trailing_newline: false,
                     });
 
                     i += 1;
@@ -3420,6 +3459,28 @@ pub enum DiffStateModelEvent {
     /// `Disconnected` state) so the view can keep showing stale data while
     /// signaling the loss separately, e.g. a "reconnecting…" indicator.
     ConnectionLost,
+    /// A git write the user explicitly asked for failed (Zap #329).
+    ///
+    /// Staging and discarding both reload the diff only on success, so a
+    /// rejected `git apply --cached` — which is not rare, since the hunk path
+    /// guesses its direction from the *file's* staged column — leaves the view
+    /// byte-identical to before the click. Logging alone made that
+    /// indistinguishable from the click never having registered. The model has
+    /// no window, so it reports the failure here and the view, which does, turns
+    /// it into a toast.
+    GitWriteFailed {
+        operation: GitWriteOperation,
+        message: String,
+    },
+}
+
+/// Which user-initiated git write failed, for
+/// [`DiffStateModelEvent::GitWriteFailed`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitWriteOperation {
+    Stage,
+    Unstage,
+    Discard,
 }
 
 impl warpui::Entity for LocalDiffStateModel {
@@ -3500,6 +3561,12 @@ impl DiffStateModel {
             // other backend event so wrapper subscribers see it too.
             DiffStateModelEvent::ConnectionLost => {
                 ctx.emit(DiffStateModelEvent::ConnectionLost);
+            }
+            DiffStateModelEvent::GitWriteFailed { operation, message } => {
+                ctx.emit(DiffStateModelEvent::GitWriteFailed {
+                    operation: *operation,
+                    message: message.clone(),
+                });
             }
         }
     }

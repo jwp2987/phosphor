@@ -46,8 +46,8 @@ use crate::{
         diff_state::{
             hunk_to_patch, DiffHunk, DiffLineType, DiffMode, DiffState, DiffStateModel,
             DiffStateModelEvent, DiffStats, FileDiff, FileDiffAndContent, FileStatusInfo,
-            GitDiffWithBaseContent, GitFileStatus, InvalidationBehavior, LocalDiffStateModel,
-            StageRequest, StageTarget,
+            GitDiffWithBaseContent, GitFileStatus, GitWriteOperation, InvalidationBehavior,
+            LocalDiffStateModel, StageRequest, StageTarget,
         },
         editor_state::CodeReviewEditorState,
         hidden_lines::calculate_hidden_lines,
@@ -348,6 +348,23 @@ fn stage_button_appearance(file_diff: &FileDiff) -> Option<(Icon, String)> {
     } else {
         (Icon::Plus, crate::t!("code-review-stage-file"))
     })
+}
+
+/// Direction for the hunk gutter's stage button — `true` un-stages, `false`
+/// stages — or `None` when the file gets no hunk button at all (Zap #329).
+///
+/// Deliberately the same gate as [`stage_button_appearance`], including the
+/// conflicted case. A conflicted file is no more stageable one hunk at a time
+/// than it is whole: `git apply --cached` on an unmerged path fails, so a
+/// gutter button there is exactly the click the backend cannot honour that the
+/// file-level path already refuses to offer. `parse_git_status_entries` reports
+/// unmerged entries as `Unstaged`, i.e. `Some`, so reading `staged` alone lets
+/// the button through.
+fn hunk_stage_direction(file_diff: &FileDiff) -> Option<bool> {
+    if matches!(file_diff.status, GitFileStatus::Conflicted) {
+        return None;
+    }
+    Some(file_diff.staged?.is_fully_staged())
 }
 
 pub fn get_discard_button_disabled_tooltip(git_operation_blocked: bool) -> String {
@@ -2345,6 +2362,24 @@ impl CodeReviewView {
                 }
                 self.update_diff_selector_selection(ctx);
             }
+            DiffStateModelEvent::GitWriteFailed { operation, message } => {
+                // The model reloads the diff only on success, so a failed write
+                // leaves the view exactly as it was. Say so, or the click is
+                // indistinguishable from one that never registered.
+                let what = match operation {
+                    GitWriteOperation::Stage => "stage changes",
+                    GitWriteOperation::Unstage => "unstage changes",
+                    GitWriteOperation::Discard => "discard changes",
+                };
+                let text = format!("Failed to {what}: {message}");
+                ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    toast_stack.add_ephemeral_toast(
+                        DismissibleToast::error(text),
+                        self.window_id,
+                        ctx,
+                    );
+                });
+            }
         }
     }
 
@@ -3154,10 +3189,7 @@ impl CodeReviewView {
             // Zap #329: does this file's hunk gutter offer "stage" or
             // "unstage"? `None` leaves the button off entirely — see
             // `CodeEditorView::with_stage_diff_hunk_button`.
-            let stage_hunk_direction = file
-                .file_diff
-                .staged
-                .map(|staged| staged.is_fully_staged());
+            let stage_hunk_direction = hunk_stage_direction(&file.file_diff);
 
             let local_code_view = ctx.add_typed_action_view(|ctx| {
                 let editor = LocalCodeEditorView::new_with_global_buffer(
@@ -3257,10 +3289,7 @@ impl CodeReviewView {
             // Zap #329: does this file's hunk gutter offer "stage" or
             // "unstage"? `None` leaves the button off entirely — see
             // `CodeEditorView::with_stage_diff_hunk_button`.
-            let stage_hunk_direction = file
-                .file_diff
-                .staged
-                .map(|staged| staged.is_fully_staged());
+            let stage_hunk_direction = hunk_stage_direction(&file.file_diff);
             let code_editor_view = ctx.add_typed_action_view(|ctx| {
                 let mut editor_view = CodeEditorView::new(
                     None,
@@ -5850,8 +5879,9 @@ impl CodeReviewView {
     /// staged file's hunks un-stage and every other file's hunks stage. On a
     /// *partially* staged file that guesses "stage", and re-staging an
     /// already-staged hunk is rejected by `git apply` on its context check
-    /// rather than corrupting the index — the failure is logged by the model
-    /// layer. Reporting per-hunk index state honestly would need a second
+    /// rather than corrupting the index — and the model reports that failure as
+    /// `DiffStateModelEvent::GitWriteFailed`, which this view turns into a
+    /// toast. Reporting per-hunk index state honestly would need a second
     /// `git diff --cached` parse per file, which is a separate change.
     fn toggle_hunk_staged(
         &mut self,
@@ -5865,7 +5895,11 @@ impl CodeReviewView {
         let Some(file_state) = state.file_states.get(path) else {
             return;
         };
-        let Some(staged) = file_state.file_diff.staged else {
+        // `None` covers the no-index-column cases and the conflicted one, the
+        // same gate the gutter button itself is built from. Re-checking here
+        // keeps a keyboard or test-driven dispatch from reaching a `git apply
+        // --cached` that cannot succeed, exactly as `toggle_file_staged` does.
+        let Some(unstage) = hunk_stage_direction(&file_state.file_diff) else {
             return;
         };
         let Some(hunk) = Self::hunk_covering_line_range(&file_state.file_diff, line_range) else {
@@ -5874,7 +5908,7 @@ impl CodeReviewView {
 
         let request = StageRequest {
             target: StageTarget::Hunk(hunk_to_patch(path, &hunk)),
-            unstage: staged.is_fully_staged(),
+            unstage,
         };
         self.diff_state_model.update(ctx, |model, ctx| {
             model.stage_changes(request, ctx);

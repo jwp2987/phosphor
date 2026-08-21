@@ -24,7 +24,8 @@ impl AnyhowErrorExt for anyhow::Error {
         true
     }
 
-    fn report_error(&self) {
-        log::error!("AnyhowErrorExt::report_error: {self:#}");
-    }
+    // Deliberately a no-op: upstream captured to Sentry here, and
+    // `report_error!(@log ..)` already emits the log line at `LOG_TARGET`.
+    // See `ErrorExt::report_error`.
+    fn report_error(&self) {}
 }

@@ -843,6 +843,17 @@ impl GlobalSearchView {
     }
     fn abort_search(&mut self, ctx: &mut ViewContext<Self>) {
         self.capped_matches = true;
+        self.cancel_search(ctx);
+    }
+
+    /// Drops the in-flight search and the handles that own its subprocess.
+    ///
+    /// Every site that stops caring about a search must come through here.
+    /// Clearing `current_search_id` alone only makes the results arriving from
+    /// the old search get discarded: the spawned handle stays alive, so
+    /// `kill_on_drop(true)` never fires and the ripgrep child keeps scanning the
+    /// whole tree. Only `FindModel::abort_search` drops the handles.
+    fn cancel_search(&mut self, ctx: &mut ViewContext<Self>) {
         self.is_search_in_progress = false;
         self.current_search_id = None;
 
@@ -870,8 +881,7 @@ impl GlobalSearchView {
             | EditorEvent::BufferReinitialized => {
                 let query_text = self.query_editor.as_ref(ctx).buffer_text(ctx);
                 if query_text.is_empty() {
-                    self.current_search_id = None;
-                    self.is_search_in_progress = false;
+                    self.cancel_search(ctx);
                     self.reset_search_state(true);
                     ctx.notify();
                     return;
@@ -911,8 +921,7 @@ impl GlobalSearchView {
 
         let pattern = self.query_editor.as_ref(ctx).buffer_text(ctx);
         if pattern.is_empty() {
-            self.current_search_id = None;
-            self.is_search_in_progress = false;
+            self.cancel_search(ctx);
             self.reset_search_state(true);
             ctx.notify();
             return;

@@ -4801,6 +4801,28 @@ impl TerminalView {
         self.needs_git_status_for_chip_ui(ctx) || self.needs_git_status_for_agent_context(ctx)
     }
 
+    /// Triggers a PR info refresh after a `gh`/`gt` command completes.
+    ///
+    /// These commands don't touch `.git/` so the filesystem watcher won't
+    /// catch them; we refresh explicitly while a PR-info subscription is
+    /// active for this terminal.
+    #[cfg(feature = "local_fs")]
+    fn refresh_pr_info_after_gh_or_gt_command(&mut self, ctx: &mut ViewContext<Self>) {
+        // Ensure we have a subscription to the per-repo status model and the
+        // per-repo PR-info model. `should_subscribe_to_git_status` already
+        // returns true while suppression is active so the default chip can
+        // recover, so this is a no-op when already subscribed and creates a
+        // fresh subscription when one is needed.
+        self.update_git_status_subscription(ctx);
+
+        let Some(handle) = self.github_repo_model.clone() else {
+            return;
+        };
+        handle.update(ctx, |model, ctx| {
+            model.refresh_pr_info(ctx);
+        });
+    }
+
     /// No-op when the `local_fs` feature is disabled – git status is not
     /// available so there is nothing to subscribe to.
     #[cfg(not(feature = "local_fs"))]
@@ -10297,15 +10319,6 @@ impl TerminalView {
                 model.refresh_metadata(ctx);
             });
         }
-        // `gh`/`gt` commands don't touch `.git/`, so the filesystem watcher
-        // won't catch them; refresh PR info explicitly.
-        #[cfg(feature = "local_fs")]
-        if let Some(handle) = self.github_repo_model.clone() {
-            handle.update(ctx, |model, ctx| {
-                model.refresh_pr_info(ctx);
-            });
-        }
-
         self.input.update(ctx, |input, ctx| {
             input.update_prompt_display_chips(ctx);
         });
@@ -11273,6 +11286,50 @@ impl TerminalView {
                         .is_bootstrapping_precmd_done()
                 {
                     self.refresh_warp_prompt(ctx);
+
+                    // If the completed command was a `gh` or `gt` invocation, eagerly refresh PR
+                    // info since these don't touch .git/ and won't be caught by the filesystem watcher.
+                    #[cfg(feature = "local_fs")]
+                    if (FeatureFlag::GitOperationsInCodeReview.is_enabled()
+                        || FeatureFlag::GithubPrPromptChip.is_enabled())
+                        && match &block_type {
+                            BlockType::User(user_block_completed) => {
+                                let command = user_block_completed.command.as_str();
+                                let top_level = user_block_completed
+                                    .serialized_block
+                                    .session_id
+                                    .and_then(|session_id| {
+                                        self.sessions.as_ref(ctx).get(session_id)
+                                    })
+                                    .and_then(|session| {
+                                        let escape_char = session.shell_family().escape_char();
+                                        let cmd =
+                                            warp_completer::parsers::simple::top_level_command(
+                                                command,
+                                                escape_char,
+                                            )?;
+                                        let cmd = session
+                                            .alias_value(cmd.as_str())
+                                            .and_then(|alias| {
+                                                warp_completer::parsers::simple::top_level_command(
+                                                    alias,
+                                                    escape_char,
+                                                )
+                                            })
+                                            .unwrap_or(cmd);
+                                        Some(cmd)
+                                    })
+                                    .or_else(|| {
+                                        command.split_whitespace().next().map(|cmd| cmd.to_owned())
+                                    });
+
+                                matches!(top_level.as_deref(), Some("gh" | "gt"))
+                            }
+                            _ => false,
+                        }
+                    {
+                        self.refresh_pr_info_after_gh_or_gt_command(ctx);
+                    }
                 }
 
                 if let BlockType::User(block_completed) = block_type {

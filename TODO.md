@@ -6973,13 +6973,14 @@ Ordered by severity, not by area.
       so closing one of two panes during a swap kills the whole tab.
       **VERDICT CONFIRMED — one limb false (independent verifier, 2026-08-21):** `mod.rs:3951` calls `replace_pane` on a target that IS an in-tree hidden leaf (`add_pane_with_options` splits then hides, `:5921`), and `PaneNode::replace_pane` (`tree.rs:886-889`) overwrites only the anchor leaf, duplicating the target. The pin proves both other limbs: `42effe840:mod.rs:2129-2133` substitutes the original on snapshot (the fork's `:2090` does not), and `42effe840:tree.rs:216-218` warns against exactly the subtraction at `tree.rs:219-222`. **One limb false:** `show_pane_for_child_agent` has three production callers (`terminal_pane.rs:1002,1030,1046`), not zero.
 
-- [ ] **PR info refreshes on EVERY prompt, not only after `gh`/`gt`.**
+- [x] **PR info refreshes on EVERY prompt, not only after `gh`/`gt`.**
       `view.rs:10300-10307` calls `refresh_pr_info` unconditionally in
       `refresh_warp_prompt`, which runs on every `BlockCompleted` and every OSC 7. The
       comment describes the pin's gate; the gate is absent (zero occurrences of the
       pin's `"gh" | "gt"` match). A `gh` subprocess plus a GitHub API call after every
       shell command, per pane.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `view.rs:10302-10307` calls `refresh_pr_info` inside `refresh_warp_prompt` with no command gate, and grep for `"gh" | "gt"` across `app/src/` returns nothing; the pin gates it at `42effe840:...:12393`. Verifier went past the citation: `github_repo_model/local.rs:177-208` has only an in-flight guard, no debounce, and spawns a `gh` subprocess. Callers include `BlockCompleted` (`:11500`) and OSC 7 (`:11512`).
+      **FIXED 2026-08-21:** Unconditional call removed from `refresh_warp_prompt`; the pin's `refresh_pr_info_after_gh_or_gt_command` ported at `view.rs:4804-4824` with the `gh`/`gt` top-level-command gate (alias-resolved, flag-guarded) in the `AfterBlockCompleted` arm `:11289-11331`.
 
 - [x] **TUI: a blocked agent command displays "Command finished".**
       `tui_cli_subagent_view.rs:354-360` reports an unresolved `block_id` as finished,
@@ -7142,13 +7143,14 @@ Ordered by severity, not by area.
       decision.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin has `can_move_tab` (`42effe840:workspace/view.rs:14150`), called at `:14191` inside `move_tab` and at `:7892,:7979` for menu gating. The fork's `move_tab` (`workspace/view.rs:13234-13242`) is a bare bounds-only `swap`, and menu gating (`tab.rs:557,569`) is index-only while the drag guard exists at `view.rs:25436-25441`. Nothing in DECLINED.md. Verifier confirmed the consequence: `pinned_boundary_index` (`tab_grouping.rs:550-554`) is a `take_while`, so the prefix really does shrink.
 
-- [ ] **Warpified `ssh` fails outright when the user's ssh config sets
+- [x] **Warpified `ssh` fails outright when the user's ssh config sets
       `RemoteCommand`.** All three fork bootstrap copies dropped the pin's
       `ssh -G … remotecommand` probe and its plain-ssh fallback
       (`bash_body.sh:1035`, `zsh_body.sh`, `fish.sh:658`). OpenSSH aborts with "Cannot
       execute command-line and remote command" — the connection fails rather than
       degrades.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin probes `remotecommand` and falls back to plain ssh (`42effe840:bash_body.sh:1013-1022`, `zsh_body.sh:967-976`, `fish.sh:641-650`); the fork has ZERO `remotecommand` matches repo-wide and still passes a command-line remote command. Verifier confirmed the consequence empirically on OpenSSH 10.2: it prints "Cannot execute command-line and remote command." Not in DECLINED.md.
+      **FIXED 2026-08-21:** The pin's `ssh -G … remotecommand` probe and plain-ssh fallback ported into all three scripts (`bash_body.sh:1035-1045`, `zsh_body.sh:932-942`, `fish.sh:660-670`), at the pin's placement. `bash -n` / `zsh -n` / `fish --no-execute` all pass.
 
 - [ ] **Fish's DCS terminator is the wrong bytes.** `fish.sh:27` sets `\u9c`, which
       emits **c2 9c**; every other emitter and the Rust constant use the single byte
@@ -7156,13 +7158,14 @@ Ordered by severity, not by area.
       avoided this by using `ESC \` in all four shells.
       **VERDICT PARTIAL — consequence refuted (independent verifier, 2026-08-21):** Byte claim confirmed BY OBSERVATION (fish 4.2.1: `\u9c` → `c2 9c`; `\x9c` → `9c`), against `printf '\x9c'` elsewhere. **But the consequence is refuted:** in vte's `DcsPassthrough` table (`table.rs:146-153`) 0xc2 has no entry and neither does `Anywhere`, so it resolves to `Action::None` — the byte is DISCARDED, never `put`, and `hex::decode` at `ansi/mod.rs:907` sees a clean payload. Cosmetic inconsistency, not a dropped hook.
 
-- [ ] **Bash sessions permanently keep the giant HISTSIZE sentinel.**
+- [x] **Bash sessions permanently keep the giant HISTSIZE sentinel.**
       `local_tty/unix.rs:431-436,922-926` exports `HISTSIZE=57265949261`;
       `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair, where the pin unsets
       both. Every bash session runs with unbounded in-memory history and leaks
       `HISTSIZE` + `WARP_INITIAL_HISTSIZE` into every child process. `unix_tests.rs:42-99`
       asserts the sentinels are set, never that they are removed.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `local_tty/unix.rs:432,436` and `:924,926` export both sentinels; `bash_body.sh:1238-1241` unsets only the HISTFILESIZE pair while the pin also unsets `HISTSIZE`/`WARP_INITIAL_HISTSIZE` (`42effe840:bash_body.sh:1230-1233`). Verifier checked the whole fork tree: `HISTSIZE` is never unset anywhere, and inherited-from-environment variables stay exported in bash, so children do inherit. Not in DECLINED.md.
+      **FIXED 2026-08-21:** `bash_body.sh:1252-1266` now unsets `HISTSIZE`/`WARP_INITIAL_HISTSIZE` alongside the HISTFILESIZE pair, matching the pin. `local_tty/unix.rs` needed no change — its exports already match.
 
 - [x] **CDPATH completion is dead code, and #483 plus TODO.md:6498 both say "done".**
       `completer/mod.rs:289` has no `cdpath()`, so the trait default returns `None`
@@ -7192,13 +7195,14 @@ Ordered by severity, not by area.
       structured value with no source to correct it.
       **VERDICT PARTIAL — stale window only (independent verifier, 2026-08-21):** The divergence is real (`current_prompt.rs:1511-1519` clears only `GitDiffStats`; the pin loops over both). But the consequence breaks: `self.git_repo_status.take()` at `:1505` runs FIRST, so `is_updated_externally` (`:1697-1703`) returns false and the shell fallback `builtins::shell_git_branch_status` resumes as the source. A stale window, not a permanently stuck chip.
 
-- [ ] **Chip-change detection compares rendered TEXT, not values.**
+- [x] **Chip-change detection compares rendered TEXT, not values.**
       `context_chips/display.rs:174-180` uses `chip.text() != value.to_string()`; the
       pin compares values. `git push -u` on a 0/0 branch yields an identical string, so
       the chip is never rebuilt and its tooltip still reads "No upstream configured".
       Same file `:185` compares only the FIRST on-click value, so the branch-switcher
       dropdown goes stale.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `display.rs:174-186` compares `chip.text()` vs `value.to_string()` where the pin compares `chip.value()` and the full on-click slice. Verifier confirmed the value→text collapse: `display_chip.rs:526-530` yields the bare branch name for both `upstream=None` and `upstream=Some, ahead=0, behind=0`, while `tooltip_text` (`:586-606`) differs — and the tooltip is captured only at rebuild, so it stays stale.
+      **FIXED 2026-08-21:** The fork's `DisplayChip` keeps only `text` + `first_on_click_value`, so rather than the pin's `chip.value()` the agent added `PromptDisplay::last_chip_results` (`display.rs:60-71`, populated in `reset_chips`); `check_if_chip_values_have_changed` (`:180-190`) now compares `value()`, `kind()` and the FULL `on_click_values()` slice — the pin's semantics via different state. All four `reset_chips` sites feed the cache so it cannot desync.
 
 - [ ] **Tab-completion no longer aborts the in-flight input-detection future.**
       TUI `completions.rs:110-125` dropped the pin's `abort_input_detection`. A
@@ -7220,10 +7224,11 @@ Ordered by severity, not by area.
       `unreachable!("TUI profiles use settings")`.
       **VERDICT PARTIAL — no new defect (independent verifier, 2026-08-21):** `profiles.rs:175` does fold `Tui` into the App arm and `42effe840:profiles.rs:380` is `unreachable!`. But that arm is unreachable AT THE PIN only because `42effe840:profiles.rs:71-73,262-277` routes the TUI through file-backed settings — a subsystem this fork never ported and already tracks (`TODO.md:3781-3784`). Sharing the GUI object store is the fork's stated design (`bin/oss.rs:18-24`).
 
-- [ ] **Unreachable branch from a mis-desugared let-chain.**
+- [x] **Unreachable branch from a mis-desugared let-chain.**
       `current_prompt.rs:822-832`: `if suppress_on_failure { … } else if
       suppress_on_failure { … }`. The pin has one arm.
       **VERDICT CONFIRMED — dead code only (independent verifier, 2026-08-21):** `current_prompt.rs:822` and `:826` are both `if suppress_on_failure`, so the second arm is unreachable; the pin has one arm as a let-chain (`42effe840:...:791-795`). Verifier went further than the original: behaviour still MATCHES the pin, because `timed_out` implies failure. Dead code, no functional divergence.
+      **FIXED 2026-08-21:** `current_prompt.rs:821-825` collapsed to the pin's single let-chain arm.
 
 - [ ] **Unquoted rcfile paths in the bootstrap.** `bash_body.sh:1220-1226` and four
       `${ZDOTDIR:-$HOME}` sites in `zsh_body.sh`; the pin quotes all of them. A `$HOME`
@@ -7296,7 +7301,7 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Verifier walked a concrete case as instructed: editor ranges cover only changed lines, no context (`diff.rs:294-303`); with hunk1 `@@ -1,10 +1,6 @@` (4 deletes) and hunk2 at new line 11, `hunk_end = 1 + lines.len() = 11 >= 11`, so `.find()` (`code_review_view.rs:5897-5904`) returns **hunk1**. Trigger threshold is deletes ≥ gap+3, gap min 1. The pin has the same arithmetic (`:6209`) but FILTERS the lines; the fork returns the whole earlier hunk and stages it (`:5874-5880`).
       **FIXED 2026-08-21:** the extent now counts only lines occupying a new-file line (`Add | Context`), not `lines.len()` which included `Delete`. Re-walked the worked example: hunk1 `@@ -1,10 +1,6 @@` now yields `hunk_end = 7`, so a click at new line 11 skips it and resolves to hunk2. A `.max(1)` guard beyond the pin keeps a zero-new-line hunk (whole-file deletion, `diff.context=0`) clickable — it cannot reintroduce the bug since it fires only when a hunk contributes no `+` lines at all.
 
-- [ ] **`no_trailing_newline` is never set, so the marker `hunk_to_patch` promises is
+- [x] **`no_trailing_newline` is never set, so the marker `hunk_to_patch` promises is
       never emitted.** `diff_state.rs:3034` tests for `"\\No newline at end of file"`;
       git emits `\ No newline at end of file` (backslash SPACE), which is then skipped as
       not starting with `+`/`-`/space. The flag is always false, `:294-297` is dead, and
@@ -7304,18 +7309,21 @@ Ordered by severity, not by area.
       cannot produce. Staging the last hunk of a newline-less file silently appends a
       newline or fails.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `diff_state.rs:3034` tests `"\\No newline..."` without the space, and the marker never reaches it anyway — it starts with `\`, so `:3022-3025`'s else-branch skips it. The flag is unconditionally false and `:295-297` is dead. Verifier added the attribution: the parser line is pin-parity (`42effe840:.../diff_state/local.rs:2676`) where the flag was only SERIALIZED — the fork's `hunk_to_patch` is what made a dead flag load-bearing.
+      **FIXED 2026-08-21:** `diff_state.rs:3021-3042` — git emits `\ No newline at end of file` as its OWN line after the line it describes, so the flag is now set retroactively on the previously-pushed line. The dead `ends_with` test is removed.
 
-- [ ] **Conflicted files get a hunk stage button the file-level path deliberately
+- [x] **Conflicted files get a hunk stage button the file-level path deliberately
       withholds.** `stage_button_appearance` returns `None` for `Conflicted` because "a
       click the backend cannot honour", and `toggle_file_staged` re-checks it — but
       `stage_hunk_direction` and `toggle_hunk_staged` omit the gate, and unmerged entries
       get `staged: Unstaged` (i.e. `Some`), so the button renders.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `code_review_view.rs:340-341` returns `None` for `Conflicted` and `:5809` re-checks it in `toggle_file_staged`, but `stage_hunk_direction` (`:3157-3160,:3260-3263`) and `toggle_hunk_staged` (`:5867-5871`) read `file_diff.staged` only, and `diff_state.rs:2658-2662` gives unmerged entries `Some(Unstaged)` — so the gutter button renders. Consequence is a failing `git apply --cached`, silent per finding 55; not corruption.
+      **FIXED 2026-08-21:** New `hunk_stage_direction()` (`code_review_view.rs:356-368`) mirrors `stage_button_appearance`'s `Conflicted` gate; both gutter sites (`:3160`, `:3253`) and `toggle_hunk_staged` (`:5898`) now go through it.
 
-- [ ] **Stage failures are invisible** — `diff_state.rs:1228-1230` handles `Err` with
+- [x] **Stage failures are invisible** — `diff_state.rs:1228-1230` handles `Err` with
       `log::error!` and no toast, so the acknowledged "partially staged file guesses
       stage" heuristic fails as a silent no-op.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `diff_state.rs:1226-1229` is `Err(err) => log::error!(...)` with no toast and no `ToastStack` reference anywhere in the file; reload runs only on `Ok`, so a rejected patch leaves the UI unchanged — indistinguishable from nothing happening. `code_review_view.rs:5853-5854` acknowledges it. Verifier noted the sibling DISCARD path (`:1183`) behaves identically, so it is a design gap rather than staging-specific.
+      **FIXED 2026-08-21:** New `DiffStateModelEvent::GitWriteFailed { operation, message }` emitted from BOTH the stage (`diff_state.rs:1236`) and discard (`:1183`) error arms — the verifier noted discard had the same gap — rendered as a `DismissibleToast::error` (`code_review_view.rs:2365`). Message is untranslated; adding an `.ftl` key was outside the agent's file list.
 
 - [x] **TODO.md:215 states the opposite of the code.** It lists hunk staging under
       "Confirmed genuinely absent" with evidence "no `stage_hunk`/`checkout_branch`". It
@@ -7334,13 +7342,14 @@ Ordered by severity, not by area.
       agent.**
       **VERDICT PARTIAL — 'blocks unlock' wrong (independent verifier, 2026-08-21):** `context_model.rs:745-749` does include the at-context attachments, gating `should_run_input_autodetection`, and pruning runs only at `input.rs:9779` and `:12923`. But it is NOT a parity gap — `42effe840:context_model.rs:269-271` has no at-context machinery at all — and "blocks unlock" is wrong: Esc reaches `set_input_mode_terminal` (`input.rs:7881`, `:13102-13114`), an unconditional manual override.
 
-- [ ] **The fork dropped the pin's agent-view guard from the boundary-backspace
+- [x] **The fork dropped the pin's agent-view guard from the boundary-backspace
       handler.** `terminal/input.rs:10262-10312` checks only `is_fullscreen()`. With an
       inline agent view active, backspace at buffer start runs the legacy classic-mode
       path, clearing follow-up targeting so the next message silently starts a new
       conversation. The comment at `:10294` claiming this "doesn't get called when
       AgentView is enabled" is now false.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin returns early at `42effe840:terminal/input.rs:11762-11765` before the follow-up/icon logic; the fork's `maybe_backspace_ai_icon` (`input.rs:10262-10311`) has no such guard, and `is_fullscreen()` at `:10271` sits in the OTHER branch. Verifier checked the callers too: `:9697` and `:9703` dispatch both backspace events ungated, so `set_pending_query_state_for_new_conversation` fires with an inline agent view active.
+      **FIXED 2026-08-21:** `input.rs:10286-10294` — the pin's `AgentView.is_enabled() && controller.is_active()` early return added before the follow-up/icon logic, and the `:10302` comment corrected (it is now true).
 
 - [ ] **Daemon sockets are partitioned by a 32-bit unkeyed `DefaultHasher`**
       (`remote_server/setup.rs:298-308`) while its sibling at `:317` states collisions
@@ -7382,13 +7391,14 @@ Ordered by severity, not by area.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `execute/grep.rs:437-455` builds a `HashMap` and consumes it with `into_iter()`; neither `grep.rs` nor `file_glob.rs` contains any `sort` or `mtime` call, and the git-grep/git-ls-files fallbacks yield path order. Contradicts `grep.md:5` and `file_glob.md:3`. **The trailing "no truncation flag" rider is wrong** — `chat_stream.rs:816-821` appends an explicit notice.
       **FIXED 2026-08-21:** Both promises removed from `grep.md` and `file_glob.md` and replaced with an explicit "order is unspecified — do not read anything into it", which is what the HashMap iteration actually gives.
 
-- [ ] **Clearing the global-search query leaves the ripgrep subprocess running.**
+- [x] **Clearing the global-search query leaves the ripgrep subprocess running.**
       `workspace/view/global_search/view.rs:872-878,913-919` reset the id and the
       in-progress flag but never call `abort_search()`; the pin routes both sites through
       `cancel_search`, which does. The handle is never aborted so `kill_on_drop` never
       fires: a full-tree scan runs to completion after the user clears the box, spawning
       batch callbacks onto the UI thread that the stale-id guard then discards.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `global_search/view.rs:872-875` and `:913-916` null the id and flag without touching `find_model`; only `abort_search` (`:844-851`) drains handles, and the pin routes both sites through `cancel_search` (`42effe840:...:852-853,892-893`). Verifier traced the consequence: `model.rs:437` streams from `warp_ripgrep::search::search_streaming`, which spawns a child with `kill_on_drop(true)` — so an un-dropped handle keeps the scan alive.
+      **FIXED 2026-08-21:** `global_search/view.rs:844-863` — `cancel_search` split out; `abort_search`, the empty-query editor event and `rerun_search_from_query` all drop the handles, so `kill_on_drop` fires.
 
 ### Refutation round — fourth wave (de-clouding fallout)
 
@@ -7454,13 +7464,14 @@ Ordered by severity, not by area.
       nowhere.
       **VERDICT PARTIAL — pin-identical, narrower (independent verifier, 2026-08-21):** `presenter.rs:128-215` is byte-identical to the pin and the bounds check matches — upstream behaviour, not fork debt. The "moved element" half is FALSE: `end()` at `presenter.rs:167` does `committed_positions.extend(last.drain())`, overwriting on every re-render. Only a REMOVED, never-cleared element goes stale.
 
-- [ ] **De-clouding turned `report_error()` from a no-op into a duplicate log.**
+- [x] **De-clouding turned `report_error()` from a no-op into a duplicate log.**
       `warp_core/src/errors.rs:218` — every actionable error now logs twice, and the
       extra line carries the module-path target rather than `LOG_TARGET`, so
       `RUST_LOG=errors::report_error=off` cannot suppress it and the `extra:` fields are
       missing. `errors_tests.rs:52` filters on `LOG_TARGET`, so it cannot see the
       duplicate.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `report_error!(@log)` calls `err.report_error()` then `log::log!` (`warp_core/src/errors.rs:81-85`); the fork's impls log (`:218`, `errors/anyhow.rs:27`) where the pin captures to Sentry. Verifier traced the sink: `env_logger` defaults to `LevelFilter::Info` with no `warp_core` filter (`warp_logging/src/native.rs:732-751`), so **both Error lines emit in release**. The duplicate's target is `warp_core::errors[::anyhow]`, invisible to `errors_tests.rs:53`.
+      **FIXED 2026-08-21:** Both impls (`errors.rs:218`, `errors/anyhow.rs:30`) are no-ops again — the pin's shape minus Sentry — since `report_error!(@log)` already emits at `LOG_TARGET` with the `extra:` fields. Verified independently that the only two callers are inside the macro itself (`errors.rs:80`, `:112`), so no direct caller loses logging.
 
 - [x] **`script/check_channel_command_names`'s header contradicts the code it guards** —
       it documents `Channel::Oss` as `zap-oss` for both `cli_command_name()` and
@@ -7666,16 +7677,18 @@ Ordered by severity, not by area.
       returns `NoEmbeddingProvider` until restart. Key rotation is ignored the same way.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `lib.rs:2209` resolves the client once inside `add_singleton_model`; `set_endpoint` has exactly one non-test caller (`remote_server/codebase_index_store.rs:383`) while `embeddings.rs:132-134` claims refreshability. **Correction to the original:** no `AgentProviderSecrets` subscription exists anywhere — the LLM path stays fresh by re-resolving per request (`chat_stream.rs:4292-4308`), not by subscribing.
 
-- [ ] **Index tables grow forever.** No DELETE or TTL for
+- [x] **Index tables grow forever.** No DELETE or TTL for
       `codebase_index_{nodes,embeddings,node_summaries}` anywhere; snapshots get 30 days
       and `ai_queries` gets trimming, these get nothing.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `persistence/sqlite.rs:1910-2008` only upserts the three tables, and every `diesel::delete` in the file targets others; `delete_codebase_index_metadata:1891-1897` removes only the `workspace_metadata` row, leaving that repo's nodes/embeddings/summaries behind. Verifier checked the comparators too: snapshots DO expire at 30 days (`index/full_source_code_embedding/snapshot.rs:26-31`) and `ai_queries` IS capped (`block_list.rs:169-202`).
+      **FIXED 2026-08-21:** **REFUSED, documented instead.** The three `codebase_index_*` tables are keyed `(embedding_space, hash)` where `embedding_space` is the embedding MODEL, not a workspace; there is no repo column and rows are content-addressed, so reachability is shared between repos. Per-workspace deletion is unimplementable without a schema change, and deleting by space would wipe every other repo's index. Documented at `sqlite.rs:1891-1910`, including the absent TTL. Note the only caller of `delete_codebase_index_metadata` is itself `#[allow(dead_code)]`.
 
-- [ ] **File outlines fail instead of degrading.** `file_outline/native.rs:57` uses
+- [x] **File outlines fail instead of degrading.** `file_outline/native.rs:57` uses
       `FailFast` where the pin uses `StopAndLazyLoad`, so over-budget repos now get NO
       outline. The enum's own doc says `FailFast` is for embedding only. Undocumented
       divergence.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `index/file_outline/native.rs:57` passes `BudgetExceededBehavior::FailFast` where `42effe840:...:58` passes `StopAndLazyLoad`, with no comment explaining the change. Chain traced: `entry.rs:279-281,386-388` returns `ExceededMaxFileLimit` under `FailFast`, `build_outline:51-59` propagates with `?`, and the sole caller `ai/outline/native.rs:220` passes `Some(5000)` — so repos over 5,000 files get NO outline instead of a partial one.
+      **FIXED 2026-08-21:** `crates/ai/src/index/file_outline/native.rs:58-64` restored to the pin's `StopAndLazyLoad`, with a comment.
 
 - [ ] **The pin's index consent banner was dropped with no DECLINED.md row**, and
       `codebase_context_enabled`'s default was flipped `true`→`false`
