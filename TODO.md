@@ -7141,6 +7141,8 @@ Ordered by severity, not by area.
       it, `dcs_hooks.rs` never parses it, `session.rs` has no field — the pin has the
       whole chain. The 10 `with_cdpath` tests inject the value into a fake context and
       pass with the feature entirely unwired.
+      **NOT ADJUDICATED (2026-08-21):** Its verifier returned verdicts for the other six findings in its batch and silently omitted this one. Still an unverified lead — the claim that `#483` and TODO.md:6498 both say "done" while the chain is unwired has NOT been independently checked.
+
 - [ ] **Repo detach leaves `GitBranchStatus` stale.** `current_prompt.rs:1511-1517`
       clears only `GitDiffStats`; the pin loops over both. `is_updated_externally` gates
       three chips on the watcher, so on detach the branch-status chip keeps the last
@@ -7354,6 +7356,8 @@ Ordered by severity, not by area.
       `terminal/secret_regex_updater.rs:39` builds the scanner from that list alone. The
       user must find Settings > Privacy and click "Add all recommended" to get any
       redaction at all. Unrecorded and unfiled — a de-clouding casualty nobody noticed.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Chain verified end to end: `privacy.rs:592` is reached only from `:629` ← `:619` ← `:403` inside `initialize_from_fetched_settings_or_update_settings` (`:377`), which repo-wide grep shows has **zero callers**; `fetch_or_update_settings` (`:368`) is an empty stub, also uncalled. The pin calls it at `42effe840:app/src/auth/auth_manager.rs:510`. An empty list makes `secrets.rs:348` compile a match-nothing regex. Not in DECLINED.md. **Verifier also explains why CI never noticed:** the only other caller is `integration_testing/terminal/step.rs:55`, gated on `feature = "integration_tests"` and invoked explicitly by `crates/integration/src/test/secrets.rs` — so the suite seeds the regexes itself and stays green.
+
 - [ ] 🔴 **`agents.warp_agent.is_any_ai_enabled` is a public, schema-emitted setting that
       nothing reads.** Defined at `settings/ai.rs:1850-1857` with `private: false` and the
       description "Controls whether all AI features are enabled", so it appears in
@@ -7361,12 +7365,16 @@ Ordered by severity, not by area.
       `true` and never reads the field. Because the key IS known,
       `settings_file_diagnostics` will not flag it either. **A user who believes they
       disabled AI still ships terminal context to their BYOP provider.**
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `ai.rs:2816-2820` returns `true` unconditionally and the field is read nowhere — all ~40 hits are the getter. The pin's version (`42effe840:app/src/settings/ai.rs:2182-2191`) reads `*self.is_any_ai_enabled`. It is emitted publicly (`ai.rs:1850-1857`, `private: false`, with a `toml_path`). **Verifier added:** no UI writes it either — only `slash_command_model_tests.rs:57,194`, and `:192`'s own comment concedes the value "is now ignored".
+
 - [ ] **`SettingsInitializer::handle_user_fetched` is dead code and its migrations never
       run.** `settings/initializer.rs:35` has zero callers; the pin calls it from
       `auth_manager.rs:430`. The `KeepThinkingExpanded` → `ThinkingDisplayMode` migration
       never fires, so upgraders silently lose that preference and the stale key is never
       cleaned. Comments at `input_mode.rs:9` and `theme.rs:17` still promise an override
       that cannot occur.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `initializer.rs:35` has zero callers tree-wide; `init.rs:127` only registers the singleton, and the pin calls it at `42effe840:app/src/auth/auth_manager.rs:430-431`. So the `KeepThinkingExpanded` → `ThinkingDisplayMode` migration (`initializer.rs:121-170`) and its key cleanup never run, and `disable_default_regex_trigger` never fires for new users. The stale promises at `input_mode.rs:8` and `theme.rs:17` are confirmed.
+
 - [ ] 🔴 **`DOGFOOD_FLAGS` / `PREVIEW_FLAGS` / `LOCAL_FLAGS` have no consumer in any
       buildable binary — six flags gating live code are dark.** Their only
       `with_additional_features` call sites are `crates/warp_tui/src/bin/{dev,local,
@@ -7379,12 +7387,16 @@ Ordered by severity, not by area.
       CI guards. **Three in-tree statements assert the opposite**, including
       `DECLINED.md:161` ("They are not dark") and `warp_features/src/lib.rs:830-834`
       ("this list is the only thing that turns them on").
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warp_tui/Cargo.toml:7` sets `autobins = false` with one `[[bin]]`, so `dev/local/preview/stable.rs` never compile; `app/Cargo.toml:6` likewise builds only `phosphor-oss` and `generate_settings_schema`, and `phosphor_oss.rs:44` adds `DEBUG_FLAGS` in debug only. All six flags appear solely in `DOGFOOD_FLAGS` — none in `RELEASE_FLAGS`, `UNSTABLE_FEATURES` (`lib.rs:3306`), `RUNTIME_FEATURE_FLAGS`, or any cargo feature. Both contradicting statements confirmed (`DECLINED.md:161`, `warp_features/src/lib.rs:830-834`).
+
 - [ ] **Nine drag tests report PASS without executing a step** — independent
       confirmation of the tab-group finding above, and it extends to
       `workspace.rs:187`. `driver.rs:242-248` logs "Skipping test" and exits 0;
       `tests/common/mod.rs:54-58` maps 0 to success, so **a skip is indistinguishable
       from a pass** across all 75 `set_should_run_test` sites — including four
       macOS-only tests on a Linux-only job. No SKIP is ever surfaced.
+      **NOT ADJUDICATED (2026-08-21):** Its verifier returned verdicts for the other five findings in its batch and silently omitted this one. Note the closely-related finding above (all four tab-group drag tests skipped) IS CONFIRMED, and this one extends the same mechanism to `workspace.rs:187` and to the general claim that a skip is indistinguishable from a pass across all 75 `set_should_run_test` sites — that extension is unverified.
+
 - [ ] **Saved-position clicks aim at stale rects.**
       `warpui_core/src/integration/step.rs:700-716` fails only when the id is absent, but
       `PositionCache::committed_positions` persists "until explicitly cleared", so a
@@ -7406,9 +7418,13 @@ Ordered by severity, not by area.
       anyone reading it to decide whether a rename is safe gets the pre-rename answer.
       Related: `crates/warp_tui/Cargo.toml:9,15` still ships the bin as `zap-tui-oss`,
       and `DECLINED.md:216` repeats it as current.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The header says `zap-oss` at `:12`, `:23` (cli name) and `:49` (Display); both are `phosphor-oss` (`warp_core/src/channel/mod.rs:44,:70`). The fragments are derived from Rust (`:38-41`), so the guard still passes while misinforming its reader. `crates/warp_tui/Cargo.toml:9,16` do still ship `zap-tui-oss`, and DECLINED.md:216 repeats it.
+
 - [ ] **`paths_tests.rs:123` is vacuous** — it asserts `secure_state_dir() == None`, but
       on non-macOS that function returns `None` unconditionally, so on Linux CI it passes
       with the `Channel::Oss` guard deleted.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `paths.rs:191-208`: after the `Integration | Oss` early return, the only non-`None` path is inside `#[cfg(target_os = "macos")]`, so on Linux the function returns `None` for every channel. `paths_tests.rs:123-128` asserts only `secure_state_dir() == None` with no channel assertion, so deleting the `Channel::Oss` guard leaves it green on Linux CI.
+
 - [ ] **`step.on_failure_handler.take()`** (`integration/step.rs:846`) discards the
       handler, so a retried step loses its bail-out.
       **VERDICT PARTIAL — miscited and pin-identical (independent verifier, 2026-08-21):** The `.take()` is at `integration/step.rs:901`, not `:846` (`:846` is `idx += 1;`), and it is identical at the pin (`42effe840:...:895`) — not a fork defect. The mechanism was also misstated: `'outer` (`:815`) iterates `step.assertions`, so the loss hits LATER ASSERTIONS IN THE SAME STEP, not a retried step.
@@ -7607,9 +7623,12 @@ Ordered by severity, not by area.
 - [ ] **The pin's index consent banner was dropped with no DECLINED.md row**, and
       `codebase_context_enabled`'s default was flipped `true`→`false`
       (`settings/code.rs:67`) under a comment claiming a faithful restore.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `42effe840:app/src/ai/blocklist/codebase_index_speedbump_banner.rs` is 357 lines implementing an "Index Codebase?" consent with allow / always-allow / don't-show-again, and has no counterpart here — grep for the module or `CodebaseIndexSpeedbump` returns nothing, with no DECLINED.md row. The default flip is confirmed too: pin `:17` is `true`, fork `settings/code.rs:67` is `false`, under a comment disclosing only the `AdminEnablementSetting` omission.
+
 - [ ] **Indexing UI is untested and its test doc is false.** `code_page_tests.rs:68`
       says the flag "is on by default in this fork" — it is not — and both tests force it
       false, so no test ever renders the three widgets.
+      **VERDICT PARTIAL — 'untested' overstated (independent verifier, 2026-08-21):** The doc IS false — `code_page_tests.rs:68` says `FullSourceCodeEmbedding` "is on by default in this fork" when it is `DOGFOOD_FLAGS`-only and unreachable. And no test renders the three widgets: the rendering tests force the flag false (`:104`, `:132`) and the rest never override it. **But "untested" is overstated** — `:221` and `:245` exercise both toggles' write-through via `handle_action`.
 
 > **Coverage gap in this round:** three areas were briefed but never ran, rejected at
 > the 20-agent concurrency cap — **warpui / warpui_core**, **guards + CI**, and
@@ -7659,6 +7678,8 @@ Ordered by severity, not by area.
       `.filter(|s| !s.is_empty())` and the `OpenSettingsArgs::Default` / `?q=` routes,
       both non-cloud. The comment at `:1370-1379` claims parity "minus the two cloud
       branches" — false.
+      **VERDICT PARTIAL — comment claim wrong (independent verifier, 2026-08-21):** Route breakage confirmed: `uri/mod.rs:261-266` drops the pin's `.filter(|s| !s.is_empty())` (`42effe840:app/src/uri/mod.rs:390`), and the fork has no `OpenSettingsArgs` at all — the pin's bare-URL `Default` (`:486`) and `?q=` search (`:448,468`) branches are gone, leaving a `log::warn!` at `:335`. **But the comment at `:1367-1376` is accurate**: it describes `settings_section_for_simple_subpage`, whose pin version really does have four arms, two cloud. The dropped routes are in the caller, not that function.
+
 - [ ] **`external_editor/linux.rs:88` parses a Desktop-Entry `Exec` with
       `shell_words::split`** where the pin uses a purpose-built `tokenize_exec`.
       shell-words adds `SingleQuoted`/`Comment` states the Desktop-Entry spec lacks, so an
