@@ -7105,6 +7105,22 @@ Ordered by severity, not by area.
       site. **The justification was doubly wrong:** `set_before_open_url` runs *after*
       `ctx.open_url`, so the rewriter never needed the own scheme in the notebook
       allow-list at all.
+
+- [ ] **The usage footer is still frozen at open time for everything except credits.**
+      `terminal/view.rs:6438-6448` builds a `ConversationUsageInfo` snapshot when the
+      footer opens and passes it into `new_footer_with_rollup`. The credits headline was
+      moved to a live read on 2026-08-21, but `credits_spent_for_last_block`, `tool_calls`,
+      `models`, `context_window_usage`, the file/line/command stats and `TimingInfo` are
+      all still the snapshot — so they stop updating while the user watches them.
+      **Clean fix:** stop passing a snapshot at all and let the view derive everything from
+      `parent_conversation_id` at render, exactly as the credits now do. Same defect class,
+      wider surface.
+
+- [ ] **Unverified assumption: is the usage-footer rich-content view re-rendered when its**
+      **conversation updates?** If it is not, the live credits read is inert. Note this
+      would be **pre-existing and would affect the rollup limb equally** — `b18a81603`
+      already depends on it — so it is not something the 2026-08-21 change introduced.
+      Needs a run to settle; the build gate was closed when it was found.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
