@@ -6873,6 +6873,8 @@ Ordered by severity, not by area.
       contents, shell output, cwd/git env. Repeated at `:5489`. `warp_logging` exposes
       `write_log_bundle_zip_to`, so this ships in bug reports. Only base64 binaries are
       redacted (`:5078`).
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `chat_stream.rs:5085` is unconditional and only binaries are redacted (`:2753-2768`). Verifier traced the sink past the original: default filter is `LevelFilter::Info` (`warp_logging/native.rs:732`), there is no `release_max_level` feature (`Cargo.toml:200`), file logging is the default off-tty, no scrubbing in the writer, and `write_log_bundle_zip_to:673` zips warp.log. (`:5489` is error-path only.)
+
 - [ ] **`read_skill`'s disk fallback reads outside the skill index with no permission
       check.** `read_skill.rs:140-170`, `should_autoexecute` unconditionally true; the
       path shape test requires no home or workspace prefix.
@@ -6933,6 +6935,8 @@ Ordered by severity, not by area.
       cwd is probed against the local FS, so a same-named local clone wins. The code
       review panel then auto-opens and diffs the WRONG repository. The pin cannot hit
       this — its detection is `LocalOrRemotePath`-typed.
+      **VERDICT PARTIAL — 'never cleared' false (independent verifier, 2026-08-21):** The mechanism holds: `view.rs:11958` assigns before the local bail at `:11982`, and unlike the pin (which routes remote sessions to `RepoDetectionSessionType::Remote`) the fork always probes locally. But "never cleared" is false — each detection reassigns, normally to `None` (`repositories.rs:66` canonicalize fails). Wrong-repo needs an exact remote-path collision, and auto-open is only `view.rs:6809`. Already documented at TODO.md:2432.
+
 - [ ] 🔴 **Pane-group swap corrupts layout and loses a pane on restart.**
       `pane_group/mod.rs:3951` replaces a pane that this fork keeps IN the tree (the pin
       keeps child-agent panes off-tree), so the target becomes a leaf twice and the
@@ -6946,6 +6950,8 @@ Ordered by severity, not by area.
       comment describes the pin's gate; the gate is absent (zero occurrences of the
       pin's `"gh" | "gt"` match). A `gh` subprocess plus a GitHub API call after every
       shell command, per pane.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `view.rs:10302-10307` calls `refresh_pr_info` inside `refresh_warp_prompt` with no command gate, and grep for `"gh" | "gt"` across `app/src/` returns nothing; the pin gates it at `42effe840:...:12393`. Verifier went past the citation: `github_repo_model/local.rs:177-208` has only an in-flight guard, no debounce, and spawns a `gh` subprocess. Callers include `BlockCompleted` (`:11500`) and OSC 7 (`:11512`).
+
 - [x] **TUI: a blocked agent command displays "Command finished".**
       `tui_cli_subagent_view.rs:354-360` reports an unresolved `block_id` as finished,
       and the status text returns before the `is_blocked` branch that carries the only
@@ -6972,18 +6978,26 @@ Ordered by severity, not by area.
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
       `chat_stream.rs:1981` compute the head/tail split with DIFFERENT configs, and both
       hardcode `ModelLimit::FALLBACK` so a 1M-window model is budgeted at 172k.
+      **VERDICT PARTIAL — FALLBACK half inert (independent verifier, 2026-08-21):** The config mismatch is real (`chat_stream.rs:1981` uses `CompactionConfig::default()`, `controller.rs:4096` passes `from_settings`), but it diverges only under NON-default settings. The `ModelLimit::FALLBACK` half is inert: `select` uses it only via `preserve_recent_budget`, clamped to `MAX_PRESERVE_RECENT_TOKENS`=8000 (`config.rs:60-63`) for any usable ≥32k, so 200k and 1M give an identical split.
+
 - [ ] **A truncated stream is indistinguishable from success.**
       `chat_stream.rs:5842-5924` — `end_count` is counted but never checked; a
       connection dropped mid-SSE ends the loop normally and the partial text is
       committed as a complete turn.
+      **VERDICT PARTIAL — narrower cause (independent verifier, 2026-08-21):** `end_count` is genuinely write-only (`:5451,:5740`, logged `:5876`), and a stream ending without `End` does commit partial text. But the stated cause breaks: a DROPPED connection surfaces as `Some(Err)` (`web_stream.rs:180`, `openai/streamer.rs:400`) and `:5486-5515` yields `AIApiError::Other` and returns. Silent only for a clean close missing `[DONE]`.
+
 - [ ] **Vertex token cache is never invalidated on 401.** `vertex_auth.rs:189-195`,
       30-minute TTL with no eviction path; after a revocation every turn 401s for up to
       30 minutes and a successful re-login still returns the stale cached token.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `vertex_auth.rs:188-195` is the only reader and `store_token:198-212` the only writer; no eviction API exists, and grep for `401` in `agent_providers/` finds only comments. Verifier added the decisive detail: the cache key is the settings `credential` string (`:123`), unchanged by re-login, so a re-mint is impossible before the 30-minute TTL.
+
 - [ ] **`agent_id_to_conversation_id` is keyed by a mutable value.**
       `history_model.rs:2682` keys on run_id-or-server-token; the pin keys on run_id
       only. A rebound token resolves to the previous owner, and
       `remove_conversation_from_memory:2219` leaves the old key pointing at a deleted
       conversation.
+      **VERDICT PARTIAL — no production path (independent verifier, 2026-08-21):** The keying divergence is confirmed (`agent_link_id()` = run_id-or-token vs the pin's `orchestration_agent_id()` = run_id only), and `history_model.rs:2218-2220` lacks the equality guard its token sibling has. But the "rebound token" scenario has NO production path: `set_server_conversation_token_for_conversation[_and_persist]` has zero non-test callers.
+
 - [ ] **MCP servers whose sanitised name contains `__` are unroutable.**
       `mcp.rs:42-53` maps non-alnum to `_`; `parse_mcp_tool_call` splits at the FIRST
       `__` (`:168`). Every tool of such a server is advertised and permanently
@@ -7111,18 +7125,24 @@ Ordered by severity, not by area.
       clears only `GitDiffStats`; the pin loops over both. `is_updated_externally` gates
       three chips on the watcher, so on detach the branch-status chip keeps the last
       structured value with no source to correct it.
+      **VERDICT PARTIAL — stale window only (independent verifier, 2026-08-21):** The divergence is real (`current_prompt.rs:1511-1519` clears only `GitDiffStats`; the pin loops over both). But the consequence breaks: `self.git_repo_status.take()` at `:1505` runs FIRST, so `is_updated_externally` (`:1697-1703`) returns false and the shell fallback `builtins::shell_git_branch_status` resumes as the source. A stale window, not a permanently stuck chip.
+
 - [ ] **Chip-change detection compares rendered TEXT, not values.**
       `context_chips/display.rs:174-180` uses `chip.text() != value.to_string()`; the
       pin compares values. `git push -u` on a 0/0 branch yields an identical string, so
       the chip is never rebuilt and its tooltip still reads "No upstream configured".
       Same file `:185` compares only the FIRST on-click value, so the branch-switcher
       dropdown goes stale.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `display.rs:174-186` compares `chip.text()` vs `value.to_string()` where the pin compares `chip.value()` and the full on-click slice. Verifier confirmed the value→text collapse: `display_chip.rs:526-530` yields the bare branch name for both `upstream=None` and `upstream=Some, ahead=0, behind=0`, while `tooltip_text` (`:586-606`) differs — and the tooltip is captured only at rebuild, so it stays stale.
+
 - [ ] **Tab-completion no longer aborts the in-flight input-detection future.**
       TUI `completions.rs:110-125` dropped the pin's `abort_input_detection`. A
       classifier from the previous keystroke lands after Tab and flips input mode,
       closing the popup the user just opened. The same hunk also dropped the
       MCP-install guard, so natural-language detection now runs while the user types
       MCP install answers.
+      **VERDICT PARTIAL — MCP half refuted (independent verifier, 2026-08-21):** Abort half confirmed with the chain the original omitted: the pin's `abort_input_detection` is gone, so a landing classifier hits `ai_input_model`, whose subscription (`terminal_session_view.rs:2155`) calls `handle_completion_editor_changed` → `abort_shell_completion`, killing the pending Tab request. **MCP half REFUTED:** that drop is in `input_detection.rs:112`, not this hunk, and is subsumed by the `inline_menu_owns_input` return at `:102-113`.
+
 - [ ] **The TUI prints a command for a binary that does not exist.**
       `warp_tui/src/session.rs:261` prints `warp --resume {token}`; the bin is
       `zap-tui-oss`. `#[command(name = "warp")]` also puts "warp" in `--help`, which the
@@ -7223,12 +7243,16 @@ Ordered by severity, not by area.
       menu-accept and submit, never on edit. Delete the `@ref` text and the input stays
       stuck in AI mode with an empty buffer — **the next shell command goes to the
       agent.**
+      **VERDICT PARTIAL — 'blocks unlock' wrong (independent verifier, 2026-08-21):** `context_model.rs:745-749` does include the at-context attachments, gating `should_run_input_autodetection`, and pruning runs only at `input.rs:9779` and `:12923`. But it is NOT a parity gap — `42effe840:context_model.rs:269-271` has no at-context machinery at all — and "blocks unlock" is wrong: Esc reaches `set_input_mode_terminal` (`input.rs:7881`, `:13102-13114`), an unconditional manual override.
+
 - [ ] **The fork dropped the pin's agent-view guard from the boundary-backspace
       handler.** `terminal/input.rs:10262-10312` checks only `is_fullscreen()`. With an
       inline agent view active, backspace at buffer start runs the legacy classic-mode
       path, clearing follow-up targeting so the next message silently starts a new
       conversation. The comment at `:10294` claiming this "doesn't get called when
       AgentView is enabled" is now false.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The pin returns early at `42effe840:terminal/input.rs:11762-11765` before the follow-up/icon logic; the fork's `maybe_backspace_ai_icon` (`input.rs:10262-10311`) has no such guard, and `is_fullscreen()` at `:10271` sits in the OTHER branch. Verifier checked the callers too: `:9697` and `:9703` dispatch both backspace events ungated, so `set_pending_query_state_for_new_conversation` fires with an inline agent view active.
+
 - [ ] **Daemon sockets are partitioned by a 32-bit unkeyed `DefaultHasher`**
       (`remote_server/setup.rs:298-308`) while its sibling at `:317` states collisions
       are unacceptable and avoids hashing. Colliding identities share a daemon holding
@@ -7318,6 +7342,8 @@ Ordered by severity, not by area.
       `PositionCache::committed_positions` persists "until explicitly cleared", so a
       moved or removed element still yields old bounds and the click silently lands
       nowhere.
+      **VERDICT PARTIAL — pin-identical, narrower (independent verifier, 2026-08-21):** `presenter.rs:128-215` is byte-identical to the pin and the bounds check matches — upstream behaviour, not fork debt. The "moved element" half is FALSE: `end()` at `presenter.rs:167` does `committed_positions.extend(last.drain())`, overwriting on every re-render. Only a REMOVED, never-cleared element goes stale.
+
 - [ ] **De-clouding turned `report_error()` from a no-op into a duplicate log.**
       `warp_core/src/errors.rs:218` — every actionable error now logs twice, and the
       extra line carries the module-path target rather than `LOG_TARGET`, so
@@ -7337,6 +7363,7 @@ Ordered by severity, not by area.
       with the `Channel::Oss` guard deleted.
 - [ ] **`step.on_failure_handler.take()`** (`integration/step.rs:846`) discards the
       handler, so a retried step loses its bail-out.
+      **VERDICT PARTIAL — miscited and pin-identical (independent verifier, 2026-08-21):** The `.take()` is at `integration/step.rs:901`, not `:846` (`:846` is `idx += 1;`), and it is identical at the pin (`42effe840:...:895`) — not a fork defect. The mechanism was also misstated: `'outer` (`:815`) iterates `step.assertions`, so the loss hits LATER ASSERTIONS IN THE SAME STEP, not a retried step.
 
 ### Refutation round — autoupdate (bears on any release decision)
 
@@ -7352,6 +7379,8 @@ Ordered by severity, not by area.
       exactly this is inert. `get_curr_parsed_version` is `None` for the same reason, so
       `is_incoming_version_past_current` is permanently false, killing all nine
       soft-cutoff / prominent-update gates in `workspace/view.rs`.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Tags are only `v0.1.0`, `v0.1.1`, `v2026.08.14.1-beta`; none match `channel_versions/src/lib.rs:43` (needs `\d{4}` first, `$`-anchored) nor `:34`. The dispatch tag also fails. `mod.rs:403` `if let Ok(true)` swallows the Err and `:477-491` auto-downloads. `make_latest:false` for beta at `:960`; `github.rs:84` fetches `/releases/latest`. `get_curr_parsed_version` → None → `mod.rs:1291` always false.
+
 - [ ] 🔴 **No authenticity check on the downloaded artifact.** `mac.rs:473` deliberately
       skips `verify_code_signature` for Oss, and the only remaining check,
       `verify_oss_asset_sha256` (`mod.rs:53-70`), returns `Ok(())` on THREE separate
@@ -7359,30 +7388,43 @@ Ordered by severity, not by area.
       #1, fails open. The digest also arrives in the same API response as
       `browser_download_url`, so it is corruption detection, not supply-chain integrity:
       no signature, no pinned key. Zero test references to `verify_oss_asset_sha256`.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `mac.rs:471-476` documents skipping `verify_code_signature`; `mod.rs:57,61,65` each `return Ok(())` on absent cached release / asset / digest. `github.rs:32-38` shows `digest` and `browser_download_url` in the SAME response — no independent key. Grep finds zero tests for `verify_oss_asset_sha256`.
+
 - [ ] 🔴 **macOS verifies one file and executes another.** `oss_download_dmg` hashes
       `download_dir/<update_id>/<asset>` (`mac.rs:479`), but `relaunch` runs
       `find_latest_dmg` (`mac.rs:646,667`) — the newest `*.dmg` by mtime ANYWHERE under
       `cache_dir/autoupdate/`. The verified identity is never carried to `open`.
+      **VERDICT PARTIAL — needs local write access (independent verifier, 2026-08-21):** Divergence real: hashed path is `dmg_path()` (`mac.rs:752-761`, used `:471,479`), executed path is `find_latest_dmg` over ALL subdirs by mtime (`:207,231-258`), no re-verification in `oss_open_installer`. But in the normal flow both resolve to the same file — failed downloads are deleted (`:481`) and `cleanup_all_except` runs (`:446`). Exploiting it requires local write access to the cache dir.
+
 - [ ] **`DECLINED.md:172` is factually wrong.** It states "This fork does not ship
       autoupdate… the release workflow publishes no update feed". `script/macos/bundle:351`
       and `script/windows/bundle.ps1:118` both set `autoupdate` for the OSS channel, and
       the workflow publishes the GitHub Releases that `github.rs` consumes as its feed.
       The decision recorded is not the code shipped.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `script/macos/bundle:351` and `bundle.ps1:118` add `autoupdate` to `FEATURES`, consumed by `cargo build --features` (`bundle.ps1:162`), and the workflow's `softprops/action-gh-release` step (`phosphor_release.yml:952-963`) publishes exactly the Release `github.rs:84` polls. Only the "not in Cargo.toml default" half is true.
+
 - [ ] **Linux OSS ships with autoupdate compiled out.** `script/linux/bundle:203` sets
       `FEATURES="release_bundle"` only, so all 523 lines of `autoupdate/linux.rs` are dead
       in shipped AppImages. Linux users receive no updates while mac and Windows do, and
       nothing tells them.
+      **VERDICT PARTIAL — outcome right, mechanism wrong (independent verifier, 2026-08-21):** `autoupdate/linux.rs` is **not** feature-gated — `mod.rs:4-5` gates on `cfg(target_os = "linux")` only, so it compiles. What is off is `FeatureFlag::Autoupdate`: absent from `RELEASE_FLAGS` (`warp_features/src/lib.rs:864`) and added only under `#[cfg(feature = "autoupdate")]` (`lib.rs:2872`), so the runtime guards never fire. Linux gets no updates; the code is dead at runtime, not absent from the binary.
+
 - [ ] **Windows staged-installer reuse regressed against the pin.** `windows.rs:75` uses
       `already_exists = path.is_file()` where the pin requires `m.len() > 0`. With
       `rand_bytes(0)` the path is fully predictable, so a 0-byte or partial leftover is
       adopted as the installer and later spawned elevated (`windows.rs:346`).
+      **VERDICT PARTIAL — not directly spawned (independent verifier, 2026-08-21):** The regression is real: `windows.rs:77` is `path.is_file()` where the pin uses `m.len() > 0` with the comment "Treat a 0-byte file as missing", and `rand_bytes(0)` makes the path predictable. But the reuse branch falls through to the SHA-256 check at `:153-158`, which sits OUTSIDE the `if !already_exists` block — so a partial leftover is rejected unless `verify_oss_asset_sha256` fails open (finding 75).
+
 - [ ] **Version tests are vacuous.** `channel_versions_tests.rs:90-120` asserts only
       synthetic tags (`v2026.05.26.2`) the pipeline never emits — and its own comment
       names the above failure mode as the thing it exists to prevent.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `channel_versions_tests.rs:90-129` exercises only `v2026.05.26.2`, `v2026.05.26`, `2026.05.26.2` — none of which the pipeline emits. Its own header (`:85-89`) says the tests exist so the function does not "keep returning Err, misleading users into upgrading to a rolled-back version" — the exact live failure.
+
 - [ ] **Stale docs in the bundle scripts.** `script/macos/bundle:350` and
       `bundle.ps1:117` name repo `zerx-lab/warp` (the code uses `jwp2987/phosphor`) and
       claim Inno Setup is not invoked — `windows.rs:348-357` invokes it.
       `settings/local_control.rs:8` cites the superseded pin `02b53fcd8`.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `script/macos/bundle:350` and `bundle.ps1:117` name `zerx-lab/warp` while `github.rs:13-14` uses `jwp2987`/`phosphor`. `bundle.ps1:117` claims "without invoking Inno Setup" but `windows.rs:347-357` spawns it with Inno switches. Both also claim downloads land in Downloads; mac uses `cache_dir/autoupdate/`, Windows a tempfile.
 
 ### Refutation round — editor, notebooks, file edits
 
@@ -7460,11 +7502,15 @@ Ordered by severity, not by area.
       and `:439-450` check `is_plaintext_bearer_risk` **inside** `if !api_key.is_empty()`.
       A keyless provider on an `http://` non-loopback endpoint therefore POSTs every
       code fragment unencrypted with no guard at all.
+      **VERDICT PARTIAL — severity overstated (independent verifier, 2026-08-21):** The nesting is confirmed (`embeddings.rs:244/247` and `:439/442` gate `is_plaintext_bearer_risk` inside the key check), so a keyless `http://` non-loopback provider posts fragments unencrypted. But the guard is scoped to CREDENTIAL exfiltration by name and comment (`mod.rs:72`), the chat path behaves identically, and the endpoint is user-configured with no TLS promise anywhere. Not a bypass.
+
 - [ ] 🔴 **`script/check_cloud_boundary` under-enforces — 10+ live violations it cannot
       see.** Its regex misses `use crate::{server::…}` brace form (live at
       `ai/blocklist/controller.rs:75` and several `code/editor/find/view.rs` variants) and
       inline references (`root_view.rs:488`), contradicting its own header. This is one
       of the two guards CLAUDE.md names as enforcing what the compiler cannot.
+      **VERDICT CONFIRMED — 161 sites (independent verifier, 2026-08-21):** `check_cloud_boundary:45` matches only `^\s*use crate::(server|cloud_object)::`. Verifier tested empirically against a scratch file: the brace form does not match. **161** multi-line `use crate::{` + `server::`/`cloud_object::` sites are invisible, plus `ai/blocklist/controller.rs:75` — and the header at `:22` claims to cover exactly that form. One cited example was wrong: `code/editor/find/view.rs:10` is plain-form and allowlisted.
+
 - [ ] **LSP servers are never shut down, and `TODO.md:672` claims the hook is wired.**
       `lib.rs:2360-2392` (`on_will_terminate`) goes straight from `writer.terminate()` to
       `PtySpawner`; the pin calls `lsp::LspManagerModel::terminate(ctx)` there
@@ -7473,12 +7519,16 @@ Ordered by severity, not by area.
       rust-analyzer/gopls children are still resident — exactly what the surrounding
       comment claims to prevent. **Fifth TODO entry found stating the opposite of the
       code.**
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** Fork `lib.rs:2360-2392` goes `PersistenceWriter` → `PtySpawner`; the pin has `lsp::LspManagerModel::handle(ctx).update(...manager.terminate(ctx))` at `42effe840:app/src/lib.rs:2692-2694`. `crates/lsp/src/manager.rs:306` has zero callers repo-wide, and TODO.md:673 lists "terminate hook" under Done. The only residual path is `Drop for LspServerModel` (`model.rs:745-747`), whose terminate merely detaches an async shutdown.
+
 - [ ] **The embedding endpoint is frozen at startup.** `build_store_client` resolves once
       at `lib.rs:2209`; `set_endpoint` is called only by the daemon. Its own doc claims
       refreshability. The sibling LLM path subscribes to both `AISettings` and
       `AgentProviderSecrets`; indexing subscribes to neither, so configuring a provider
       after launch leaves the settings page reporting the model live while indexing
       returns `NoEmbeddingProvider` until restart. Key rotation is ignored the same way.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `lib.rs:2209` resolves the client once inside `add_singleton_model`; `set_endpoint` has exactly one non-test caller (`remote_server/codebase_index_store.rs:383`) while `embeddings.rs:132-134` claims refreshability. **Correction to the original:** no `AgentProviderSecrets` subscription exists anywhere — the LLM path stays fresh by re-resolving per request (`chat_stream.rs:4292-4308`), not by subscribing.
+
 - [ ] **Index tables grow forever.** No DELETE or TTL for
       `codebase_index_{nodes,embeddings,node_summaries}` anywhere; snapshots get 30 days
       and `ai_queries` gets trimming, these get nothing.
@@ -7565,6 +7615,8 @@ Ordered by severity, not by area.
       `02b53fcd8` slips through.
       **This is one of the two guards CLAUDE.md names as enforcing what the compiler
       cannot.** The other, `check_cloud_boundary`, is separately holed (below).
+      **VERDICT CONFIRMED (second verification) (independent verifier, 2026-08-21):** Independently re-verified: `:43` resolves `02b53fcd81ac…` from ORACLE.md:64, CI fetches only the 40-char `**Commit (full)**` row after a depth-1 checkout, and the old pin is unreachable from phosphor history (`merge-base --is-ancestor` fails; only `refs/remotes/warp/master` has it), so `:46` fails and `:47-48` exits 0.
+
 - [ ] 🔴 **`check_cloud_boundary` misses `pub use`, and the tree already launders imports
       through it.** The regex at `:44` requires `^\s*use`. Live and unallowlisted:
       `app/src/lib.rs:300` `pub use crate::server::telemetry::{…}` and
@@ -7573,17 +7625,24 @@ Ordered by severity, not by area.
       `crate::server::` directly (`script/check_cloud_boundary`)" — a **documented
       bypass**, and a crate-root laundering point for any future cloud import. (Separate
       from the brace-form `use crate::{server::…}` hole logged earlier.)
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:45` requires `^\s*use`, which `pub use` never matches. Live and unallowlisted: `lib.rs:300` `pub use crate::server::telemetry::{…}` and `drive/folders/mod.rs:11` — neither is in `script/cloud_boundary_allowlist.txt` (the `lib.rs` entries there are `:118-123` only). `lib.rs:302-303` names the guard as the REASON for the re-export.
+
 - [ ] **Two guards run nowhere.** `script/check_dangling_modules` (3,265 declarations)
       and `script/check_workspace_clean` are referenced by neither `precheck` nor any
       workflow.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `check_dangling_modules` and `check_workspace_clean` both exist and are executable, but grep across `script/` and `.github/` finds zero invocations; `precheck:216-255` enumerates ten guards and neither is among them. **TODO.md:41 asserts `check_workspace_clean` "implements the workspace-clean gate… in daily use"** — nothing runs it.
+
 - [ ] **Guards fail open on missing input, and `precheck` hides it.**
       `check_sweep_ledger:59-62` exits 0 if the ledger is renamed;
       `check_declined_collisions:168-170` only warns when zero markers parse;
       `check_brand_strings:159-161` exits 0 without python3. `precheck:216-247` runs every
       guard `>/dev/null 2>&1`, so all of them read `ok` regardless.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `check_sweep_ledger:60-62`, `check_declined_collisions:167-169` (warning only, `status` untouched) and `check_brand_strings:159-161` all exit 0 or merely warn; `precheck:216-255` runs each with `>/dev/null 2>&1` and reports on exit status, so "skipped" is indistinguishable from "ok". Nuance: CI closes only the brand-strings hole (`pr-check.yml:139-141`).
+
 - [ ] **`check_large_deletions:302` is cleared by one incidental mention.** It does
       `grep -qF 'DECLINED.md'` across all commit messages plus the PR body, so any single
       reference anywhere in the range clears any bulk deletion.
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `:302` greps `$description` — every commit body in `base..HEAD` plus `PR_TITLE` and `PR_BODY` (`:297-298`) — and `:312-317` exits 0 on `cites_declined`. Any single mention anywhere in the range clears any bulk deletion. It IS a designed escape hatch (`:341-345`); the defect is the range-wide, substring-only test.
 
 ### Refutation round — warpui / secure storage (final wave)
 
@@ -7606,6 +7665,8 @@ Ordered by severity, not by area.
       which additionally found that `generate_repin_queue:178` was repaired for this exact
       literal and cites `check_stub_coverage` as the convention it copied. The script the
       others were modelled on was itself never fixed. (Logged in full above.)
+      **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `generate_repin_queue:176-183` names the removed `02b53fcd8` fallback as "the exact shape of the bug those two were repaired for", and `generate_pin_identity_manifest:50` states "same convention as script/check_stub_coverage" while itself reading the `**Commit (full)**` row — as does `script/state:45`. `check_stub_coverage:43-44` is the only guard still carrying the literal.
+
 - [ ] **A rejected key event is resurrected by the layer below.**
       `warpui_core/src/event_loop/mod.rs:1336` dropped the pin's
       `matches!(logical_key, Key::Unidentified(_))` gate
