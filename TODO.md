@@ -7392,10 +7392,12 @@ claim, which was wrong by four.
       host-side temp RC file the container cannot read.
       **VERDICT PARTIAL — zsh half and container half both narrower (independent verifier, 2026-08-21):** Bash half confirmed and empirically checked (`bash_body.sh:1220-1226` unquoted vs pin `:1207-1213` quoted; bash splits, `argc=2`, so `source` fails). **Zsh half has no consequence** — zsh does not word-split unquoted expansions (verified, `argc=1`), so those four sites are cosmetic parity. The container guard IS absent (`bootstrap.rs:56-88`), but without it RC-file bootstrap triggers only for fish/pwsh/Windows-zsh subshells, not docker/podman generally.
 
-- [ ] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
+- [x] **`active_window_index` indexes the wrong vec** (`app_state.rs:362-393` computed
       unfiltered, consumed as an index into the filtered list). **Pin-identical** —
       upstream bug, not fork drift. Record before "fixing".
       **VERDICT CONFIRMED — pin-identical (independent verifier, 2026-08-21):** `app_state.rs:396-400` enumerates ALL `window_ids()` while `:407,:419` skip entries from `windows`; consumers index the filtered vec (`persistence/sqlite.rs:1232`, `root_view.rs:665`). Verifier diffed `get_app_state` against the pin: byte-for-byte identical including the drag-preview skip. Upstream bug — do not "fix" as fork drift.
+
+      **FIXED 2026-08-21 — deliberate divergence ahead of the oracle.** Confirmed pin-identical (`42effe840:app/src/app_state.rs:353-395`, comment included): the index is assigned inside `for (index, window_id) in app.window_ids().enumerate()`, **above** three filters (no workspace / `is_tab_drag_preview()` / empty `tabs`). Every consumer indexes the *filtered* vec — `root_view.rs:665`, `persistence/sqlite.rs:1528`, `launch_configs/launch_config.rs:26`. **The ambiguity resolves cleanly:** the unfiltered list is never serialised, so the filtered reading is the only one a persisted `AppState` can express; that argument is in the code. New private `collect_windows_with_active_index` (`app_state.rs:387-446`) counts at push time, and yields `None` rather than a neighbour's index when the active window is itself filtered out. The restore-side counterpart (`sqlite.rs:3589-3662`) was checked and is a 1:1 map, so it does not share the defect. Five platform-independent tests (`app_state_tests.rs:108-175`) including the distinguishing case (leading window filtered → index must be 0, not 1) and the nothing-filtered control that used to pass either way. **Wants a `DECLINED.md` divergence row** with markers `sym:collect_windows_with_active_index` and `test:test_active_window_index_counts_only_persisted_windows`.
 
 ### Refutation round — third wave (security-weighted)
 
@@ -7663,10 +7665,12 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** The header says `zap-oss` at `:12`, `:23` (cli name) and `:49` (Display); both are `phosphor-oss` (`warp_core/src/channel/mod.rs:44,:70`). The fragments are derived from Rust (`:38-41`), so the guard still passes while misinforming its reader. `crates/warp_tui/Cargo.toml:9,16` do still ship `zap-tui-oss`, and DECLINED.md:216 repeats it.
       **FIXED 2026-08-21:** Header corrected: three `zap-oss` occurrences → `phosphor-oss`, matching `channel/mod.rs:44,:70`. Zero `zap-oss` strings remain in the guard.
 
-- [ ] **`paths_tests.rs:123` is vacuous** — it asserts `secure_state_dir() == None`, but
+- [x] **`paths_tests.rs:123` is vacuous** — it asserts `secure_state_dir() == None`, but
       on non-macOS that function returns `None` unconditionally, so on Linux CI it passes
       with the `Channel::Oss` guard deleted.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `paths.rs:191-208`: after the `Integration | Oss` early return, the only non-`None` path is inside `#[cfg(target_os = "macos")]`, so on Linux the function returns `None` for every channel. `paths_tests.rs:123-128` asserts only `secure_state_dir() == None` with no channel assertion, so deleting the `Channel::Oss` guard leaves it green on Linux CI.
+
+      **FIXED 2026-08-21.** The channel decision is extracted into `channel_may_use_secure_state_dir(Channel) -> bool` (`crates/warp_core/src/paths.rs:186-212`) as an **exhaustive `match`, not a `matches!`**, so a new channel cannot silently default into the container. New `test_secure_state_dir_channel_gate` (`paths_tests.rs:122-148`) asserts `Oss`/`Integration` false and `Stable`/`Preview`/`Dev`/`Local` true — and **it goes red on Linux** if `Oss` moves to the `true` arm, which the old assertion could not. The original `test_oss_secure_state_dir_is_disabled` is kept verbatim but `#[cfg(target_os = "macos")]`-gated, since macOS is the only platform where it distinguishes anything; the name is preserved because this file refers to it in prose. The dependency is real and was confirmed: `persistence/sqlite.rs:152-175` documents that the legacy App-Group migration enumerates historical app ids *because* `secure_state_dir()` has returned `None` for `Channel::Oss` since the commit that added the migration.
 
 - [ ] **`step.on_failure_handler.take()`** (`integration/step.rs:846`) discards the
       handler, so a retried step loses its bail-out.
@@ -7731,10 +7735,12 @@ claim, which was wrong by four.
       adopted as the installer and later spawned elevated (`windows.rs:346`).
       **VERDICT PARTIAL — not directly spawned (independent verifier, 2026-08-21):** The regression is real: `windows.rs:77` is `path.is_file()` where the pin uses `m.len() > 0` with the comment "Treat a 0-byte file as missing", and `rand_bytes(0)` makes the path predictable. But the reuse branch falls through to the SHA-256 check at `:153-158`, which sits OUTSIDE the `if !already_exists` block — so a partial leftover is rejected unless `verify_oss_asset_sha256` fails open (finding 75).
 
-- [ ] **Version tests are vacuous.** `channel_versions_tests.rs:90-120` asserts only
+- [x] **Version tests are vacuous.** `channel_versions_tests.rs:90-120` asserts only
       synthetic tags (`v2026.05.26.2`) the pipeline never emits — and its own comment
       names the above failure mode as the thing it exists to prevent.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `channel_versions_tests.rs:90-129` exercises only `v2026.05.26.2`, `v2026.05.26`, `2026.05.26.2` — none of which the pipeline emits. Its own header (`:85-89`) says the tests exist so the function does not "keep returning Err, misleading users into upgrading to a rolled-back version" — the exact live failure.
+
+      **ALREADY FIXED 2026-08-21 — no further work; this entry was simply never annotated.** The vacuous state no longer exists: `channel_versions_tests.rs` was reworked by `f0b71fe3e` and `7d025574d`, and the synthetic `v2026.05.26.*` shapes are gone from the crate (the only remaining occurrence anywhere is `crates/warp_tui/src/autoupdate_tests.rs:72`). Coverage was cross-checked against `git tag` and `.github/workflows/phosphor_release.yml:122-125` and now exercises the real shapes — semver tags, the beta tag, the dispatch-generated tag, dispatch-vs-numbered ordering, and the four-digit-clock discrimination. **Nothing was un-pinned by the deletion:** each of the three removed synthetic shapes has a real-tag equivalent (date+counter → `v2026.08.14.1-beta`; bare date → `v2026.08.21`; no-`v` prefix → `0.1.1`). The agent assigned this deliberately made no edit rather than duplicate another agent's committed fix.
 
 - [x] **Stale docs in the bundle scripts.** `script/macos/bundle:350` and
       `bundle.ps1:117` name repo `zerx-lab/warp` (the code uses `jwp2987/phosphor`) and

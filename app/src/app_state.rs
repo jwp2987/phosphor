@@ -384,21 +384,78 @@ pub enum SplitDirection {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PaneFlex(pub f32);
 
+/// Collects the window snapshots that survive filtering, together with the
+/// position the active window occupies **in the collected list**.
+///
+/// A candidate whose snapshot slot is `None` was filtered out (no workspace, a
+/// transient tab-drag preview, or no tabs) and therefore never reaches
+/// [`AppState::windows`]. `None` for the returned index means the active window
+/// is one of those: it is not in the persisted list, so no entry in that list
+/// is the active one.
+///
+/// # Why this is separate, and why it counts kept windows
+///
+/// Every consumer of [`AppState::active_window_index`] uses it as an index into
+/// the *filtered* list — `restore_windows` in `root_view.rs` and
+/// `save_app_state` in `persistence/sqlite.rs` both `enumerate()` over
+/// `app_state.windows`, and `LaunchConfig::from_snapshot` copies the index
+/// beside a `windows` vec derived from the same filtered list. Only
+/// `get_app_state` ever produced it, and it counted over the *unfiltered*
+/// `app.window_ids()`. Any filtered-out window ahead of the active one shifted
+/// the index by one, so the session restored with the wrong window focused, or
+/// with none focused at all when the index ran past the end.
+///
+/// The filtered reading is therefore the one that matches every consumer, and
+/// it is also the only reading a persisted `AppState` can express: the
+/// unfiltered list is not serialised, so an index into it is meaningless by the
+/// time it is read back.
+///
+/// # Divergence from the pinned oracle
+///
+/// This is **not** a parity port. `42effe840:app/src/app_state.rs:353-395` has
+/// the identical defect — `for (index, window_id) in
+/// app.window_ids().enumerate()` with the assignment above the filters, its
+/// `windows` vec built by the same three skips — so the oracle shares the bug
+/// and we are fixing it ahead of the oracle deliberately. A re-pin must not
+/// "restore parity" by reverting this.
+///
+/// Generic over the id and snapshot types purely so the ordering rule can be
+/// unit-tested without an `AppContext`; production instantiates it at
+/// `(WindowId, WindowSnapshot)`.
+fn collect_windows_with_active_index<Id, S>(
+    candidates: impl IntoIterator<Item = (Id, Option<S>)>,
+    active_window_id: Option<Id>,
+) -> (Vec<S>, Option<usize>)
+where
+    Id: PartialEq,
+{
+    let mut windows = Vec::new();
+    let mut active_window_index = None;
+
+    for (window_id, snapshot) in candidates {
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        if active_window_id.as_ref() == Some(&window_id) {
+            active_window_index = Some(windows.len());
+        }
+        windows.push(snapshot);
+    }
+
+    (windows, active_window_index)
+}
+
 pub fn get_app_state(app: &AppContext) -> AppState {
     let active_window_id = app.windows().active_window();
     let quake_mode_id = quake_mode_window_id();
 
-    let mut active_window_index = None;
+    // `None` marks a window that is filtered out of the persisted session. The
+    // ids are carried alongside so `collect_windows_with_active_index` can
+    // count only the kept ones; see its doc comment for why.
+    let mut candidates = vec![];
 
-    let mut windows = vec![];
-
-    for (index, window_id) in app.window_ids().enumerate() {
-        // Determine index of active window
-        if let Some(active_window_id) = active_window_id {
-            if active_window_id == window_id {
-                active_window_index = Some(index);
-            }
-        }
+    for window_id in app.window_ids() {
+        let mut snapshot = None;
 
         if let Some(workspace) = WorkspaceRegistry::as_ref(app).get(window_id, app) {
             let ws = workspace.as_ref(app);
@@ -407,19 +464,23 @@ pub fn get_app_state(app: &AppContext) -> AppState {
             // session. (Persistence is also short-circuited entirely while a
             // cross-window drag is active; see `save_app` in
             // `workspace/global_actions.rs`.)
-            if ws.is_tab_drag_preview() {
-                continue;
-            }
-            let snapshot = ws.snapshot(
-                window_id,
-                quake_mode_id.map(|id| id == window_id).unwrap_or(false),
-                app,
-            );
-            if !snapshot.tabs.is_empty() {
-                windows.push(snapshot);
+            if !ws.is_tab_drag_preview() {
+                let ws_snapshot = ws.snapshot(
+                    window_id,
+                    quake_mode_id.map(|id| id == window_id).unwrap_or(false),
+                    app,
+                );
+                if !ws_snapshot.tabs.is_empty() {
+                    snapshot = Some(ws_snapshot);
+                }
             }
         }
+
+        candidates.push((window_id, snapshot));
     }
+
+    let (windows, active_window_index) =
+        collect_windows_with_active_index(candidates, active_window_id);
 
     AppState {
         windows,

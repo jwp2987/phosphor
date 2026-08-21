@@ -119,11 +119,45 @@ fn test_state_dir_path() {
     }
 }
 
+/// The channel gate behind [`secure_state_dir`], tested directly.
+///
+/// This replaces an `assert_eq!(secure_state_dir(), None)` that could not fail
+/// on the platform CI runs. Off macOS `secure_state_dir` has no non-`None`
+/// return path at all — the App Group lookup is inside
+/// `#[cfg(target_os = "macos")]` — so on Linux that assertion held with the
+/// `Channel::Oss` arm deleted, i.e. it advertised coverage of the gate while
+/// testing nothing. The gate itself is platform-independent, so testing it
+/// directly bites everywhere.
+#[test]
+fn test_secure_state_dir_channel_gate() {
+    // Zap must not probe the official Zap App Group from an OSS build, or
+    // macOS treats it as accessing another app's data and pops up a permission
+    // dialog on every launch. `app/src/persistence/sqlite.rs`'s legacy-DB
+    // migration relies on this staying false.
+    assert!(!channel_may_use_secure_state_dir(Channel::Oss));
+    // Integration tests get a temporary home directory and must stay in it.
+    assert!(!channel_may_use_secure_state_dir(Channel::Integration));
+
+    // The first-party channels are the whole reason the directory exists; if
+    // these flipped to false the App Group would go unused rather than
+    // over-used, which is the failure this half catches.
+    assert!(channel_may_use_secure_state_dir(Channel::Stable));
+    assert!(channel_may_use_secure_state_dir(Channel::Preview));
+    assert!(channel_may_use_secure_state_dir(Channel::Dev));
+    assert!(channel_may_use_secure_state_dir(Channel::Local));
+}
+
+/// The end-to-end assertion, kept only where it can actually distinguish
+/// anything.
+///
+/// `ChannelState` defaults to `Channel::Oss`, and macOS is the only platform on
+/// which `secure_state_dir` can return `Some`, so this is the only platform on
+/// which the assertion is a real test of the wiring between the gate and the
+/// App Group lookup. It is `#[cfg]`-gated rather than left unconditional so the
+/// claim of coverage matches where the coverage exists.
+#[cfg(target_os = "macos")]
 #[test]
 fn test_oss_secure_state_dir_is_disabled() {
-    // ChannelState defaults to Channel::Oss. Zap should not probe the official
-    // Zap App Group, otherwise macOS will treat it as accessing another app's
-    // data and pop up a permission dialog on every launch.
     assert_eq!(secure_state_dir(), None);
 }
 

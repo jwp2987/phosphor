@@ -183,14 +183,42 @@ pub fn state_dir() -> PathBuf {
         .to_owned()
 }
 
+/// Whether `channel` is allowed to resolve [`secure_state_dir`] to the macOS
+/// App Group container.
+///
+/// This is deliberately a free function of the channel rather than an inline
+/// `matches!` inside [`secure_state_dir`], because it is the only part of that
+/// decision that is testable off macOS: on every other platform
+/// `secure_state_dir` returns `None` unconditionally, so an end-to-end
+/// assertion there passes whatever this predicate says. CI runs on Linux, so
+/// an inline predicate is effectively untested. See
+/// `test_secure_state_dir_channel_gate` in `paths_tests.rs`.
+///
+/// * `Oss` is excluded because the App Group container belongs to first-party
+///   Warp; probing it from an OSS build makes macOS treat it as reaching into
+///   another application's data and prompt for permission on every launch.
+///   `app/src/persistence/sqlite.rs`'s legacy-database migration depends on
+///   this arm holding: it enumerates the historical app ids precisely because
+///   nothing has been written under the current one since the gate landed.
+/// * `Integration` is excluded because integration tests run against a
+///   temporary home directory and must not reach outside it.
+///
+/// Written as an exhaustive `match` so a new channel cannot silently default
+/// into the container.
+fn channel_may_use_secure_state_dir(channel: Channel) -> bool {
+    match channel {
+        Channel::Stable | Channel::Preview | Channel::Dev | Channel::Local => true,
+        Channel::Oss | Channel::Integration => false,
+    }
+}
+
 /// Returns the path to the secure directory for non-portable application state data.
 ///
 /// Prefer this over [`state_dir`] where possible.
 ///
 /// On macOS, this will use the App Group container directory if available.
 pub fn secure_state_dir() -> Option<PathBuf> {
-    // Do not use the secure state directory in integration tests, which have a temporary home directory instead.
-    if matches!(ChannelState::channel(), Channel::Integration | Channel::Oss) {
+    if !channel_may_use_secure_state_dir(ChannelState::channel()) {
         return None;
     }
 
