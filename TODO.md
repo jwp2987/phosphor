@@ -7040,6 +7040,27 @@ Ordered by severity, not by area.
       body, so this can carry request content. **Deliberately kept** — suppressing it
       leaves a failed turn with no diagnosis at all — and documented in-source as a
       known residual. Recorded here so the trade is visible rather than implicit.
+
+- [ ] 🔴 **Terminal OSC-8 hyperlinks reach the OS handler with no scheme check.**
+      `terminal/view/link_detection.rs:529,565` call `ctx.open_url` on hyperlinks
+      emitted by whatever is running in the terminal — including a remote host over
+      SSH. Same hole as the notebook markdown links fixed 2026-08-21, but the content
+      is arguably *less* trusted. The scheme allow-list now lives in `notebooks::link`
+      (`is_openable_url_scheme`); this call site does not consult it.
+
+- [ ] **`AppContext::set_before_open_url` cannot refuse a URL, only rewrite it.**
+      `warpui_core/src/core/app.rs:599` — `BeforeOpenUrlCallback` is
+      `Fn(&str, &AppContext) -> String`, so the one global pre-open hook cannot enforce
+      a scheme allow-list app-wide and every call site must guard itself. Fix: change it
+      to `-> Option<String>` and treat `None` as "do not open". Would let the ~40
+      `ctx.open_url` call sites be secured in one place instead of individually.
+
+- [ ] **The scheme allow-list exists in three places and they disagree.**
+      `notebooks::link::is_openable_url_scheme` (new, reads `ChannelState::url_scheme()`),
+      `crates/warpui/src/browser.rs:29` (hardcodes `warposs`/`zap` — stale, the OSS channel
+      scheme is now `phosphor`, so the browser build's own deep links fail its check), and
+      the WSL guard in `crates/warpui/src/windowing/winit/delegate.rs:110`. The policy's
+      natural home is `app/src/uri/`; move it there and have all three consume one definition.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
@@ -7680,6 +7701,8 @@ Ordered by severity, not by area.
       rewrites but never validates.
       **VERDICT CONFIRMED — inherited (independent verifier, 2026-08-21):** `notebooks/link.rs:154` returns `LinkTarget::Url` for any parsed scheme and `:276` calls `ctx.open_url`, reaching `Window::open_url` unvalidated (`warpui/src/platform/mac/delegate.rs:220`). `notebooks/editor/view.rs:1993` opens without a modifier in `Selectable`, which AI views set (`block/cli.rs:1265`, `ai_document_view.rs:747`). Pin identical.
 
+      **FIXED 2026-08-21 — inherited from the pin, so this is a fix AHEAD of the oracle** (stated in-source so a re-pin does not revert it): `42effe840:notebooks/link.rs:147` returns `LinkTarget::Url` for any scheme `Url::parse` accepts and `:266` calls `ctx.open_url` unconditionally, and the pin's `view.rs` has the identical direct-open branch. Downstream is real — `AppContext::open_url` (`warpui_core/src/core/app.rs:5323`) → platform delegate → `open::that_detached`/`NSWorkspace.openURL`; **the wasm build already guarded this** (`crates/warpui/src/browser.rs:26`), the desktop build had nothing. **Allow-list:** `http`, `https`, `mailto`, plus `ChannelState::url_scheme()` — the first three reach a browser or mail composer and cannot run a local program with an attacker-chosen argument, and the app's own scheme returns to us where `WebIntent::try_from_url`'s `ALLOWED_ACTIONS` is a second gate; it must stay openable because the `lib.rs` rewriter deliberately produces it. Reading the scheme from `ChannelState` rather than hardcoding avoids the staleness already visible in `browser.rs`, whose list still says `warposs`/`zap`. **Refuse rather than confirm** — a dialog is a weak control against model-authored content and the file already set the precedent of silently downgrading to a safe action; refusal is made *visible* by reusing the existing `LinkState::Broken` affordance (`view.rs:2005-2027`) instead of a click that does nothing. Re-checked in `open()` too (`:410-421`), since `LinkTarget::Url` is publicly constructible without going through `resolve`. **Defect pattern 3 found and fixed en route:** `resolve_and_open` (`:487-500`) did `if let Ok(link) = resolved` and dropped the `Err` entirely, so a refusal — or any broken link — on the direct-open path was completely silent. **Plain click deliberately KEPT in `Selectable` views** (documented `view.rs:1993-2004`): with the allow-list in place a click can only reach a browser, mail composer or this app, the same guarantee every chat UI gives, and requiring a modifier would cost every generated document its one-click links with no affordance advertising it; the comment says to revisit if the allow-list widens. **Honest limitation that could not be fixed in scope:** `BeforeOpenUrlCallback` is `Fn(&str, &AppContext) -> String` and **cannot veto an open**, only rewrite — so `lib.rs:1661-1699` applies the rewrite only if its *output* passes the allow-list (the rewriter cannot launder a link), but a disallowed scheme arriving from elsewhere is logged and passed through. Returning `""`/`about:blank` was rejected as untestable platform-dependent behaviour on a hook that funnels ~40 other call sites.
+
 ### Refutation round — persistence
 
 - [x] 🔴 **Rewound sub-agent tasks are resurrected on restart and re-sent to the
@@ -7814,6 +7837,8 @@ Ordered by severity, not by area.
       whether it does what was claimed. Recorded here rather than quietly edited, because
       it is the same error this round keeps finding in others.)*
       **VERDICT CONFIRMED (the correction is right) (independent verifier, 2026-08-21):** The correction holds and the verifier strengthened it: `settings/mod.rs:31` `mod privacy;` is private BUT `:73` `pub use privacy::*;` re-exports it, and `:17` `pub mod initializer;` exposes `SettingsInitializer` — both publicly reachable via `lib.rs:131`, so `dead_code` cannot fire on either. `lib.rs:4` is confirmed absent from the pin. **Two errors in the ORIGINAL finding also surfaced:** `open_window_with_action` is at `uri/mod.rs:1183`, not :1345, and is a PRIVATE `fn`, not a `pub fn` — so even the one example offered was miscited.
+
+      **SIZING ATTEMPTED 2026-08-21 — CANNOT BE DONE WITHOUT A BUILD; attribute left in place, and the correction above was itself incomplete.** The premise that this covers three private modules is wrong: **84 of the 108 module declarations in `lib.rs` are private** (only 24 are `pub mod`), so the blanket covers the entire private half of the crate, and "replace it with narrower per-module allows" cannot be scoped to three modules. Two modules already carry their own narrower `#[allow(dead_code)]` (`context_chips:24`, `remote_server:69`), which is evidence someone previously found those noisy enough to need it. For scale only, not as a warning count: the three named modules alone are 33 files / ~9,100 lines with ~256 `pub` items, and `dead_code` is **reachability**-based, so no grep can tell you which are live — a `pub fn` referenced only from another dead function is still dead. The one confirmed orphan checks out but at a different line than recorded: `open_window_with_action` is `uri/mod.rs:1183`, not `:1345`. A 7-line comment at `lib.rs:3-10` now records that it is absent from the pin, that it is an 84-module problem, and that the swap must be sized with a build first.
 
 - [ ] 🔴 **A LIVE vacuous test masks the sandbox bypass.**
       `permissions_test.rs:1253-1309` injects `AlwaysAsk` via

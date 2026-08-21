@@ -1992,9 +1992,40 @@ impl RichTextEditorView {
             }
             // In read-only comment chips (Selectable), open the link directly on
             // click instead of showing a tooltip.
+            //
+            // Selectable views render model-authored content (AI blocks, comment chips), so a
+            // plain click here is the path an untrusted link takes -- the editable path needs
+            // the modifier, this one does not. That asymmetry is kept deliberately: requiring a
+            // modifier in read-only surfaces would cost every generated document and comment
+            // its one-click links, and there is no affordance advertising the modifier in a view
+            // the user cannot edit. What makes it safe is the scheme allow-list in
+            // `NotebookLinks` (`is_openable_url_scheme`): a plain click can only ever reach the
+            // browser, the mail composer, or this app. If that allow-list is widened, revisit
+            // this branch and require `cmd` here too.
             if cmd || matches!(self.interaction_state(ctx), InteractionState::Selectable) {
-                self.links
-                    .update(ctx, |links, ctx| links.resolve_and_open(&url, ctx));
+                // Resolution failures used to be discarded on this path (`resolve_and_open`
+                // ignores its `Err`), so a blocked or broken link did nothing at all with no
+                // explanation. Show the same broken-link tooltip the hover path already shows.
+                //
+                // The returned handle is discarded, as it was before: there is no tooltip to
+                // dismiss on this path, so nothing needs to cancel resolution, and dropping the
+                // handle does not abort the future (`SpawnedFutureHandle::abort` is explicit,
+                // which is why `LinkState` needs a `Drop` impl to call it).
+                let url_for_failure = url.clone();
+                ctx.spawn(
+                    self.links.as_ref(ctx).resolve(&url, ctx),
+                    move |me, resolved, ctx| match resolved {
+                        Ok(target) => me.links.update(ctx, |links, ctx| links.open(target, ctx)),
+                        Err(err) => {
+                            me.open_link = Some(LinkToolTipConfig {
+                                url: url_for_failure,
+                                editable,
+                                state: LinkState::Broken(err),
+                            });
+                            ctx.notify();
+                        }
+                    },
+                );
             } else {
                 let resolve_future = ctx.spawn(
                     self.links.as_ref(ctx).resolve(&url, ctx),

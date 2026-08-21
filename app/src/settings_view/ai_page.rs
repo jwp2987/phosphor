@@ -8343,7 +8343,7 @@ mod master_ai_switch_tests {
         );
         assert!(
             subpage_shows_master_ai_switch(Some(AISubpage::WarpAgent)),
-            "the Warp Agent subpage must carry the master switch"
+            "the AISubpage::WarpAgent subpage must carry the master switch"
         );
     }
 

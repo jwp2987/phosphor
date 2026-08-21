@@ -21,6 +21,7 @@ use crate::util::file::external_editor::EditorSettings;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{is_supported_image_file, resolve_file_target, FileTarget};
 use crate::{
+    ChannelState,
     drive::ZapDriveObjectArgs,
     terminal::model::session::Session,
     uri::parse_url_paths::{get_item_data_from_warp_link, WarpWebLink},
@@ -32,6 +33,140 @@ use super::file::is_markdown_file;
 #[cfg(test)]
 #[path = "link_tests.rs"]
 mod tests;
+
+/// Coverage for the URL-scheme policy. These tests are inline rather than in `link_tests.rs`
+/// so the policy, its enforcement and its coverage all land in one file.
+#[cfg(test)]
+mod scheme_policy_tests {
+    use url::Url;
+    use warpui::{App, ModelHandle, WindowId};
+
+    use super::{LinkTarget, NotebookLinks, ResolveError, SessionSource, is_openable_url_scheme};
+    use crate::{ChannelState, workspace::ActiveSession};
+
+    fn parse(url: &str) -> Url {
+        Url::parse(url).expect("test URL should parse")
+    }
+
+    fn init(app: &mut App) -> ModelHandle<NotebookLinks> {
+        let window_id = WindowId::new();
+        // No session is registered for this window, so nothing can resolve as a file path and
+        // every assertion below is about the scheme decision alone.
+        app.add_singleton_model(|_ctx| ActiveSession::default());
+        app.add_model(|ctx| NotebookLinks::new(SessionSource::Active(window_id), ctx))
+    }
+
+    #[test]
+    fn script_and_local_handler_schemes_are_not_openable() {
+        for link in [
+            "javascript:alert(1)",
+            // `Url::parse` lower-cases the scheme, so a mixed-case spelling is the same scheme.
+            "JaVaScRiPt:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "vbscript:msgbox(1)",
+            "ms-msdt:/id%20PCWDiagnostic",
+            "vscode://file/tmp/payload",
+            "smb://attacker.example/share",
+            // A scheme nobody has heard of is exactly the interesting case: whichever program
+            // registered it would receive an attacker-chosen argument.
+            "zapzap://whatever",
+        ] {
+            assert!(
+                !is_openable_url_scheme(&parse(link)),
+                "{link} should not be handed to an OS handler"
+            );
+        }
+    }
+
+    #[test]
+    fn web_mail_and_own_schemes_are_openable() {
+        for link in [
+            "https://example.com/path?q=1",
+            "http://example.com/path",
+            "HTTPS://example.com",
+            "mailto:support@example.com",
+        ] {
+            assert!(
+                is_openable_url_scheme(&parse(link)),
+                "{link} should still open"
+            );
+        }
+
+        let own_scheme_link = format!("{}://action/open-repo", ChannelState::url_scheme());
+        assert!(
+            is_openable_url_scheme(&parse(&own_scheme_link)),
+            "{own_scheme_link} should still open"
+        );
+    }
+
+    /// The predicate above is only worth anything if `resolve` actually consults it, so assert
+    /// on the resolved result rather than on the predicate a second time.
+    #[test]
+    fn resolve_blocks_dangerous_schemes_and_keeps_https() {
+        App::test((), |mut app| async move {
+            let links = init(&mut app);
+
+            for link in [
+                "javascript:alert(1)",
+                "file:///etc/passwd",
+                "vscode://file/tmp/payload",
+            ] {
+                assert_eq!(
+                    links
+                        .read(&app, |links, ctx| links.resolve(link, ctx))
+                        .await,
+                    Err(ResolveError::BlockedScheme),
+                    "{link} should not resolve to an openable target"
+                );
+            }
+
+            assert_eq!(
+                links
+                    .read(&app, |links, ctx| links
+                        .resolve("https://example.com/docs", ctx))
+                    .await,
+                Ok(LinkTarget::Url(parse("https://example.com/docs"))),
+                "a normal web link must still resolve and open"
+            );
+        });
+    }
+}
+
+/// Whether a URL may be handed to the operating system's URL handler.
+///
+/// Notebook content is not trusted. It is authored by the user, but it is also authored by the
+/// model -- AI blocks, comment chips and generated documents all render through this editor --
+/// and a link's *scheme* decides which OS-registered program receives it. The allowed set is:
+///
+/// * `http` / `https` -- the browser. The whole point of a web link.
+/// * `mailto` -- the mail composer. It opens a draft; it does not run anything.
+/// * the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...) -- these come back to
+///   us, and what they are allowed to mean is separately allow-listed in
+///   `uri::web_intent_parser::WebIntent::try_from_url`. It has to stay openable because
+///   `set_before_open_url` in `lib.rs` deliberately rewrites recognised web URLs *into* this
+///   scheme.
+///
+/// Everything else is refused, because everything else can reach a program we know nothing
+/// about: `javascript:` and `data:` execute in whichever handler claims them, `file:` hands a
+/// local path to the system opener (see `open_file` for the matching hardening on the file
+/// path), and a custom scheme (`vscode:`, `smb:`, `ms-msdt:`, anything a third-party installer
+/// registered) resolves to an arbitrary local binary with an attacker-chosen argument.
+///
+/// The browser build already applies exactly this policy in `warpui::browser::safe_browser_open_url`
+/// before calling `window.open`. The desktop build had none: `ctx.open_url` goes straight to
+/// `open::that_detached` / `NSWorkspace.openURL`.
+///
+/// **This is ahead of the oracle, not a parity port.** Pinned Warp `42effe840` returns
+/// `LinkTarget::Url` for any scheme `Url::parse` accepts (`link.rs:147`) and calls
+/// `ctx.open_url` on it unconditionally (`link.rs:266`), so a plain click on a model-authored
+/// `[click me](file:///...)` reached the OS handler. Do not "restore" the pin's behaviour during
+/// a re-pin.
+pub fn is_openable_url_scheme(url: &Url) -> bool {
+    // `Url::parse` lower-cases the scheme, so this comparison needs no normalisation.
+    matches!(url.scheme(), "http" | "https" | "mailto")
+        || url.scheme() == ChannelState::url_scheme()
+}
 
 /// The target of a notebook link.
 #[derive(Debug, Clone)]
@@ -151,6 +286,13 @@ impl NotebookLinks {
                 }
             }
 
+            // A scheme we will not hand to an OS handler is reported as a broken link rather
+            // than resolved, so the tooltip shows why nothing happened instead of the click
+            // being silently swallowed.
+            if !is_openable_url_scheme(&url) {
+                return Either::Right(future::ready(Err(ResolveError::BlockedScheme)));
+            }
+
             return Either::Right(future::ready(Ok(LinkTarget::Url(url))));
         }
 
@@ -260,12 +402,24 @@ impl NotebookLinks {
     }
 
     /// Open a resolved link:
-    /// * URLs are opened in the web browser or system-default application.
+    /// * URLs are opened in the web browser or system-default application, but only if their
+    ///   scheme passes `is_openable_url_scheme`; anything else is refused.
     /// * Markdown files are opened in Zap (if the `FileNotebooks` feature flag is enabled).
     /// * Other files are opened in the configured editor or system-default application.
     pub fn open(&self, link: LinkTarget, ctx: &mut ModelContext<Self>) {
         match link {
             LinkTarget::Url(url) => {
+                // Defence in depth: `LinkTarget::Url` is a public variant, so a caller can build
+                // one without going through `resolve`. Re-check before the URL reaches an OS
+                // handler rather than trusting that it was validated on the way in.
+                if !is_openable_url_scheme(&url) {
+                    log::warn!(
+                        "Refusing to open notebook link with disallowed scheme {:?}",
+                        url.scheme()
+                    );
+                    return;
+                }
+
                 if let Some(WarpWebLink::DriveObject(args)) = get_item_data_from_warp_link(&url) {
                     return ctx.emit(LinkEvent::ZapDriveLink {
                         open_warp_drive_args: *args,
@@ -337,11 +491,16 @@ impl NotebookLinks {
         link: &str,
         ctx: &mut ModelContext<Self>,
     ) -> SpawnedFutureHandle {
-        ctx.spawn(self.resolve(link, ctx), |me, resolved, ctx| {
-            if let Ok(link) = resolved {
-                me.open(link, ctx);
-            }
-        })
+        ctx.spawn(
+            self.resolve(link, ctx),
+            |me, resolved, ctx| match resolved {
+                Ok(link) => me.open(link, ctx),
+                // Callers that want to show the failure use `resolve` directly (the editor view
+                // renders a broken-link tooltip); log it here so a silently-dropped click at
+                // least leaves a trace.
+                Err(err) => log::warn!("Not opening link: {err}"),
+            },
+        )
     }
 
     pub fn set_session_source(&mut self, source: SessionSource, ctx: &mut ModelContext<Self>) {
@@ -431,6 +590,9 @@ pub enum ResolveError {
     FileNotFound,
     /// The context needed to resolve a file is missing.
     MissingContext,
+    /// The link's URL scheme is not one we hand to an OS handler.
+    /// See `is_openable_url_scheme`.
+    BlockedScheme,
     Unknown,
 }
 
@@ -449,6 +611,7 @@ impl fmt::Display for ResolveError {
         match self {
             ResolveError::FileNotFound => f.write_str("File not found"),
             ResolveError::MissingContext => f.write_str("No base directory"),
+            ResolveError::BlockedScheme => f.write_str("Blocked link: unsupported URL scheme"),
             ResolveError::Unknown => f.write_str("Broken file link"),
         }
     }

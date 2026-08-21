@@ -1,6 +1,13 @@
 // Suppress warnings about rustdoc style.
 #![allow(clippy::doc_lazy_continuation)]
-// Orphaned code left over from upstream Zap trimming is temporarily kept; dead_code warnings are suppressed globally.
+// Orphaned code left over from upstream Zap trimming is temporarily kept; dead_code warnings are
+// suppressed globally. Absent from the pin (`42effe840:app/src/lib.rs` has no such attribute).
+//
+// Before removing this: it is not a three-module problem. 84 of the 108 module declarations below
+// are private, so lifting the blanket exposes `dead_code` across the whole private half of the
+// crate, not just `ui_components` / `uri` / `workspaces`. `uri::open_window_with_action`
+// (`uri/mod.rs`) is one confirmed orphan; the total is only knowable from a build, so size it with
+// one before swapping the blanket for per-site `#[allow(dead_code)]`.
 #![allow(dead_code)]
 
 mod ai;
@@ -154,6 +161,7 @@ use crate::ai::aws_credentials::AwsCredentialRefresher as _;
 use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
+use crate::notebooks::link::is_openable_url_scheme;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
 
 use ::ai::project_context::model::ProjectContextModel;
@@ -1652,13 +1660,42 @@ fn initialize_app(
 
     // Rewrite recognized Zap web URLs (sessions, Drive, settings, home) into local
     // intent URLs when possible so they open directly in the desktop app.
+    //
+    // This callback is the last thing to touch a URL before the platform delegate hands it to
+    // the OS, so the rewrite must never *escalate* a link: a rewrite that produced a `file:` or
+    // a custom scheme would launder an otherwise-harmless link straight into an OS handler.
+    // Only a rewrite whose result is still openable is used; anything else is discarded and the
+    // original string passes through.
+    //
+    // Note the asymmetry, which is a real limitation and not an oversight: the callback returns
+    // `String`, so it *cannot veto* an open. A URL that arrives here already carrying a
+    // disallowed scheme is logged and passed through -- blocking has to happen at the call site,
+    // as `NotebookLinks::resolve`/`open` now do for notebook content. Making this a genuine
+    // app-wide chokepoint needs `set_before_open_url` to take a `-> Option<String>` handler,
+    // which is a `warpui_core` change.
     ctx.set_before_open_url(|url_str, _ctx| {
-        if let Ok(url) = Url::parse(url_str) {
-            if let Some(intent) = maybe_rewrite_web_url_to_intent(&url) {
-                return intent.to_string();
-            }
+        let Ok(url) = Url::parse(url_str) else {
+            return url_str.to_owned();
+        };
+
+        if !is_openable_url_scheme(&url) {
+            log::warn!(
+                "Opening a URL whose scheme is outside the openable set: {:?}",
+                url.scheme()
+            );
         }
-        url_str.to_owned()
+
+        match maybe_rewrite_web_url_to_intent(&url) {
+            Some(intent) if is_openable_url_scheme(&intent) => intent.to_string(),
+            Some(intent) => {
+                log::warn!(
+                    "Discarding web-URL rewrite that produced a non-openable scheme: {:?}",
+                    intent.scheme()
+                );
+                url_str.to_owned()
+            }
+            None => url_str.to_owned(),
+        }
     });
 
     ctx.set_a11y_verbosity(*AccessibilitySettings::as_ref(ctx).a11y_verbosity);
