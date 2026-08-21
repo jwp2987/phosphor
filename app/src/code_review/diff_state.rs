@@ -3084,7 +3084,7 @@ impl LocalDiffStateModel {
                 let new_count = header.new_line_count;
 
                 // Collect hunk lines
-                let mut hunk_lines = Vec::new();
+                let mut hunk_lines: Vec<DiffLine> = Vec::new();
                 i += 1;
 
                 let mut old_line = old_start;

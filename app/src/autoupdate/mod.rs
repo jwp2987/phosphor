@@ -18,7 +18,7 @@ use crate::{
     ChannelState,
 };
 use ::channel_versions::{ParsedVersion, VersionInfo};
-use anyhow::{anyhow, Context as _, Result};
+use anyhow::{Context as _, Result};
 use chrono::{DateTime, FixedOffset, NaiveDate};
 use rand::Rng as _;
 use settings::Setting as _;

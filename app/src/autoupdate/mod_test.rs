@@ -11,6 +11,7 @@ use settings::{Setting as _, SettingsManager};
 use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 
 use super::*;
+use anyhow::anyhow;
 
 fn initialize_app(app: &mut App) -> ModelHandle<AutoupdateState> {
     app.add_singleton_model(|_| SettingsManager::default());
