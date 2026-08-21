@@ -108,7 +108,8 @@ fn test_repo_beta_tag_parses() {
         .try_into()
         .expect("the published beta tag should parse");
     // The leading synthetic 0 puts a bare date tag on the same
-    // major.YYYY.MM.DD axis as the dispatch-generated v0.YYYY.MM.DD.HHMM.
+    // major.YYYY.MM.DD axis as the dispatch-generated v0.YYYY.MM.DD.HHMM. The
+    // fourth segment stays where it is: it is the build counter.
     assert_eq!(parsed.components, vec![0, 2026, 8, 14, 1]);
     assert_eq!(parsed.prerelease.as_deref(), Some("beta"));
 }
@@ -119,8 +120,43 @@ fn test_dispatch_generated_tag_parses() {
     let parsed: ParsedVersion = "v0.2026.08.21.1430"
         .try_into()
         .expect("the workflow_dispatch tag should parse");
-    assert_eq!(parsed.components, vec![0, 2026, 8, 21, 1430]);
+    // HHMM is a clock reading, not a build counter, so it gets its own
+    // hour/minute axis below the (absent, hence 0) counter. Leaving it fused
+    // with the counter slot is what made a 09:30 dispatch build outrank the
+    // same day's v2026.08.21.1 -- see the test below.
+    assert_eq!(parsed.components, vec![0, 2026, 8, 21, 0, 14, 30]);
     assert_eq!(parsed.prerelease, None);
+}
+
+#[test]
+fn test_dispatch_build_does_not_outrank_the_days_numbered_release() {
+    // Both shapes come out of the same workflow file: run the workflow_dispatch
+    // branch in the morning, cut the real release later the same day. If the
+    // clock reading and the build counter share a slot, 930 > 1 and everyone on
+    // the dispatch build declines the release for good.
+    let dispatch: ParsedVersion = "v0.2026.08.21.0930".try_into().unwrap();
+    let release: ParsedVersion = "v2026.08.21.1".try_into().unwrap();
+    assert!(
+        release > dispatch,
+        "the numbered release must supersede the same day's dispatch build"
+    );
+    // ...while still ranking above the previous day's dispatch build, and above
+    // an unnumbered tag of its own date.
+    let yesterday: ParsedVersion = "v0.2026.08.20.2359".try_into().unwrap();
+    let unnumbered: ParsedVersion = "v2026.08.21".try_into().unwrap();
+    assert!(dispatch > yesterday);
+    assert!(dispatch > unnumbered);
+}
+
+#[test]
+fn test_four_digit_clock_is_not_confused_with_a_build_counter() {
+    // `date +%H%M` zero-pads, so a dispatch tag's last segment is always four
+    // digits. A hand-cut counter is not, and must keep its own slot.
+    let counter: ParsedVersion = "v0.2026.08.21.3".try_into().unwrap();
+    assert_eq!(counter.components, vec![0, 2026, 8, 21, 3]);
+    let midnight: ParsedVersion = "v0.2026.08.21.0003".try_into().unwrap();
+    assert_eq!(midnight.components, vec![0, 2026, 8, 21, 0, 0, 3]);
+    assert!(counter > midnight);
 }
 
 #[test]
@@ -180,6 +216,60 @@ fn test_prerelease_sorts_before_its_release() {
 }
 
 #[test]
+fn test_prerelease_identifiers_compare_as_semver() {
+    // phosphor_release.yml documents `v2026.08.01-beta.1`, so the label is
+    // dot-separated and its numeric identifiers have to compare as numbers. A
+    // plain string compare put `beta.10` below `beta.2`, turning the tenth beta
+    // of a date into a downgrade.
+    let second: ParsedVersion = "v2026.08.01-beta.2".try_into().unwrap();
+    let tenth: ParsedVersion = "v2026.08.01-beta.10".try_into().unwrap();
+    assert!(tenth > second, "beta.10 must outrank beta.2");
+
+    // "A larger set of pre-release fields has a higher precedence than a
+    // smaller set, if all of the preceding identifiers are equal."
+    let bare: ParsedVersion = "v2026.08.01-beta".try_into().unwrap();
+    assert!(second > bare);
+
+    // "Numeric identifiers always have lower precedence than alphanumeric
+    // identifiers."
+    let alpha: ParsedVersion = "v2026.08.01-beta.rc".try_into().unwrap();
+    assert!(alpha > tenth);
+
+    // A leading zero is not a canonical numeric identifier, so `beta.01` is
+    // compared as text -- otherwise it would tie with `beta.1` while remaining
+    // an unequal value, and `Ord` would contradict `PartialEq`.
+    let padded: ParsedVersion = "v2026.08.01-beta.01".try_into().unwrap();
+    let first: ParsedVersion = "v2026.08.01-beta.1".try_into().unwrap();
+    assert_ne!(padded, first);
+    assert_ne!(padded.cmp(&first), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn test_prerelease_case_is_preserved() {
+    // `-RC1` and `-rc1` are different tags; lower-casing the label made them
+    // compare `Equal`, so an update between them read as "already current".
+    let upper: ParsedVersion = "v2026.08.01-RC1".try_into().unwrap();
+    let lower: ParsedVersion = "v2026.08.01-rc1".try_into().unwrap();
+    assert_eq!(upper.prerelease.as_deref(), Some("RC1"));
+    assert_ne!(upper, lower);
+    assert_ne!(upper.cmp(&lower), std::cmp::Ordering::Equal);
+}
+
+#[test]
+fn test_deserialization_cannot_bypass_the_trailing_zero_invariant() {
+    // The fields are private because `new()` trims trailing zeros, which is
+    // what keeps the zero-padding `Ord` consistent with the derived
+    // `PartialEq`. A derived `Deserialize` would have gone around it.
+    let deserialized: ParsedVersion =
+        serde_json::from_str(r#"{"components": [0, 1, 0, 0], "prerelease": null}"#)
+            .expect("a ParsedVersion should deserialize");
+    let parsed: ParsedVersion = "v0.1".try_into().unwrap();
+    assert_eq!(deserialized.components, vec![0, 1]);
+    assert_eq!(deserialized, parsed);
+    assert_eq!(deserialized.cmp(&parsed), std::cmp::Ordering::Equal);
+}
+
+#[test]
 fn test_trailing_zero_components_do_not_break_equality() {
     // `Ord` zero-pads the shorter component list, so `PartialEq` has to agree.
     let short: ParsedVersion = "v0.1".try_into().unwrap();
@@ -213,7 +303,16 @@ fn test_non_version_strings_are_rejected() {
         "contains space",
         "preview-1",
         "A",
+        // The numeric group used to hand segments back to the label, so all of
+        // these parsed: `v0.1.1-` as `[0, 1]` + label `1-`, `v1.2.3.` as
+        // `[1, 2]` + label `3.`, and the nine-segment string as eight
+        // components plus a label of `9`.
         "v0.1.1-",
+        "v1.2.3.",
+        "v0.1.1.",
+        "v1.2.3.4.5.6.7.8.9",
+        "v1.2.3-beta.",
+        "v1.2.3-beta..1",
     ] {
         assert!(
             ParsedVersion::try_from(invalid).is_err(),

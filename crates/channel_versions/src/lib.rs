@@ -49,17 +49,40 @@ lazy_static! {
     // about it: `ChannelState::app_version()` keeps the prefix, while
     // `github::GithubRelease::version()` trims it.
     //
-    // Deliberately anchored, unlike VERSION_RE: this is also the gate
-    // `warp_tui::autoupdate::parse_safe_version_component` leans on to keep a
-    // server-supplied string from escaping `versions/`, so `preview-1`, `A`,
-    // `trailing.` and `v1..dev` must all still fail to parse.
-    static ref RELEASE_TAG_RE: Regex =
-        Regex::new(r"^[vV]?(\d{1,8}(?:\.\d{1,8}){1,7})(?:[.-]([0-9A-Za-z][0-9A-Za-z.-]*))?$")
-            .unwrap();
+    // The label must begin with a letter. A purely numeric suffix cannot be
+    // told apart from one more numeric component, and because the numeric group
+    // can hand segments back to the suffix, permitting one made the anchors
+    // decorative: with `[0-9A-Za-z][0-9A-Za-z.-]*` the group backtracked, so
+    // `v0.1.1-` matched as `0.1` + `1-`, `v1.2.3.` as `1.2` + `3.`, and
+    // `v1.2.3.4.5.6.7.8.9` as eight components plus a "label" of `9` -- a
+    // numeric component silently reclassified as a prerelease. Requiring a
+    // leading `[A-Za-z]` removes the ambiguity; the cost is semver's
+    // bare-numeric prereleases (`v1.2.3-1`), which nothing here publishes.
+    //
+    // Anchored, unlike VERSION_RE, so a version-shaped substring of a longer
+    // string is not accepted. It is *not*, however, what stops a
+    // server-supplied string escaping `versions/`:
+    // `warp_tui::autoupdate::parse_safe_version_component` is handed
+    // `../v0.2026.07.28.12.00.dev_00`, and `parse_official`'s unanchored
+    // VERSION_RE -- tried first -- parses it happily. The separator check in
+    // that function is the traversal gate; its own test says as much.
+    static ref RELEASE_TAG_RE: Regex = Regex::new(
+        r"^[vV]?(\d{1,8}(?:\.\d{1,8}){1,7})(?:[.-]([A-Za-z][0-9A-Za-z-]*(?:\.[0-9A-Za-z-]+)*))?$"
+    )
+    .unwrap();
 
     // Cached mapping of version strings to semantic versions.
     static ref PARSED_VERSIONS_CACHE: MemoMap<String, ParsedVersion> = Default::default();
 }
+
+/// A leading component this large is a year, not a major version: it is what
+/// marks the bare date tags (`v2026.08.14.1`) that get the synthetic `0` major.
+const MIN_DATE_TAG_YEAR: usize = 1000;
+
+/// The build-counter slot given to a `workflow_dispatch` build, which has no
+/// counter of its own. Zero puts it below the first numbered release of the
+/// same date and above that date's unnumbered tag.
+const DISPATCH_BUILD_COUNTER: usize = 0;
 
 /// A version tag reduced to something orderable.
 ///
@@ -70,15 +93,41 @@ lazy_static! {
 /// resulting `Err` (see `autoupdate::should_update`) silently lost its guard.
 /// The representation is therefore a plain list of numeric components plus an
 /// optional prerelease identifier, which all the shapes above map onto.
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize, Clone)]
+#[derive(Debug, PartialEq, Eq, Serialize, Clone)]
 pub struct ParsedVersion {
     /// Numeric release components, most significant first. Compared
     /// element-wise, zero-padding the shorter of the two.
     components: Vec<usize>,
     /// Trailing non-numeric label -- `beta` in `v2026.08.14.1-beta`, `preview`
     /// in `v2026.05.10.preview`. Compared only after every numeric component
-    /// ties, and an unlabelled tag outranks a labelled one, as in semver.
+    /// ties; an unlabelled tag outranks a labelled one, and two labels are
+    /// compared identifier by identifier, numerically where both are numbers,
+    /// per semver 11.4 -- so `beta.2` precedes `beta.10`. Case is preserved:
+    /// `-RC1` and `-rc1` are different tags and must not compare `Equal`.
     prerelease: Option<String>,
+}
+
+/// Deserialised by hand rather than derived, because the fields are private for
+/// a reason: `new()` maintains an invariant -- no trailing zero components --
+/// that the zero-padding [`Ord`] and the derived [`PartialEq`] both rely on, and
+/// a derived `Deserialize` would build the struct behind `new()`'s back.
+/// Nothing deserialises a `ParsedVersion` today; this keeps the door from being
+/// a way to mint a value whose `a == b` disagrees with `a.cmp(&b)`.
+impl<'de> Deserialize<'de> for ParsedVersion {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Wire {
+            components: Vec<usize>,
+            #[serde(default)]
+            prerelease: Option<String>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(ParsedVersion::new(wire.components, wire.prerelease))
+    }
 }
 
 impl ParsedVersion {
@@ -141,11 +190,29 @@ fn parse_official(value: &str) -> Option<ParsedVersion> {
 
 /// Parses the tag shapes this fork's release pipeline emits.
 ///
-/// Ordering note: a bare date tag (`v2026.08.14.1`) gets a synthetic leading
-/// `0` so that it lands on the same `major.YYYY.MM.DD...` axis as the
-/// dispatch-generated `v0.2026.08.21.1430`. That also preserves the older
-/// invariant that an OSS tag never outranks an official `vM....` tag for
-/// `M >= 1`.
+/// Two of those shapes put different quantities in the same slot, and they have
+/// to be pulled apart here or they order wrongly:
+///
+///   * a tag-triggered date release, `vYYYY.MM.DD.N`, whose fourth segment is a
+///     *build counter* -- the published `v2026.08.14.1-beta` is the example;
+///   * a `workflow_dispatch` build, tagged `v0.$(date +%Y.%m.%d.%H%M)` by
+///     `.github/workflows/phosphor_release.yml`, whose fifth segment is an
+///     `HHMM` *clock reading*.
+///
+/// A bare date tag gets a synthetic leading `0` so that it lands on the same
+/// `major.YYYY.MM.DD...` axis as the dispatch tag, which also preserves the
+/// older invariant that an OSS tag never outranks an official `vM....` tag for
+/// `M >= 1`. Stopping there fused the counter with the clock: dispatch
+/// `v0.2026.08.21.0930` became `[0, 2026, 8, 21, 930]` and outranked the same
+/// day's real release `v2026.08.21.1` -> `[0, 2026, 8, 21, 1]`, so everyone on
+/// a dispatch build would rank the release below what they were running and
+/// never update -- the exact failure the downgrade guard exists to prevent.
+///
+/// So the clock reading is expanded onto its own `hour`/`minute` axis *below*
+/// the counter, with the counter left at [`DISPATCH_BUILD_COUNTER`]: an ad-hoc
+/// build of a date is treated as a pre-release of that date, superseded by the
+/// first numbered release of it and ordered among its own kind by time of day.
+/// [`dispatch_clock_reading`] is how the two shapes are told apart.
 ///
 /// A consequence worth stating plainly: mixing the two schemes this repo has
 /// used means a date tag (`2026....`) always outranks a semver-ish one
@@ -157,17 +224,44 @@ fn parse_official(value: &str) -> Option<ParsedVersion> {
 /// release-channel awareness, not a numeric comparison.
 fn parse_release_tag(value: &str) -> Option<ParsedVersion> {
     let captures = RELEASE_TAG_RE.captures(value.trim())?;
-    let mut components: Vec<usize> = captures
-        .get(1)?
-        .as_str()
-        .split('.')
+    let segments: Vec<&str> = captures.get(1)?.as_str().split('.').collect();
+    let mut components: Vec<usize> = segments
+        .iter()
         .map(|segment| segment.parse::<usize>().ok())
         .collect::<Option<Vec<_>>>()?;
-    if components.first().is_some_and(|first| *first >= 1000) {
+    let clock = dispatch_clock_reading(&segments, &components);
+    if components
+        .first()
+        .is_some_and(|first| *first >= MIN_DATE_TAG_YEAR)
+    {
         components.insert(0, 0);
+    } else if let Some((hour, minute)) = clock {
+        components.truncate(4);
+        components.extend_from_slice(&[DISPATCH_BUILD_COUNTER, hour, minute]);
     }
-    let prerelease = captures.get(2).map(|m| m.as_str().to_ascii_lowercase());
+    // Not lower-cased: `-RC1` and `-rc1` are two different tags, and folding
+    // them together would make them compare `Equal`.
+    let prerelease = captures.get(2).map(|m| m.as_str().to_owned());
     Some(ParsedVersion::new(components, prerelease))
+}
+
+/// Recognises the `workflow_dispatch` tag `v0.$(date +%Y.%m.%d.%H%M)` by its
+/// shape -- a `0` major, a year, a month, a day, and a *four digit* `HHMM` --
+/// returning the `(hour, minute)` it encodes.
+///
+/// The digit count is the discriminator that matters: `date +%H%M` zero-pads,
+/// so 09:30 is written `0930`, which is not how anyone writes a build counter.
+/// Without it, a hand-cut `v0.2026.08.21.3` would be read as 00:03 rather than
+/// as counter 3.
+fn dispatch_clock_reading(segments: &[&str], components: &[usize]) -> Option<(usize, usize)> {
+    if components.len() != 5 || components[0] != 0 || components[1] < MIN_DATE_TAG_YEAR {
+        return None;
+    }
+    if segments.get(4)?.len() != 4 {
+        return None;
+    }
+    let (hour, minute) = (components[4] / 100, components[4] % 100);
+    (hour < 24 && minute < 60).then_some((hour, minute))
 }
 
 impl Ord for ParsedVersion {
@@ -186,7 +280,7 @@ impl Ord for ParsedVersion {
             (None, None) => std::cmp::Ordering::Equal,
             (None, Some(_)) => std::cmp::Ordering::Greater,
             (Some(_), None) => std::cmp::Ordering::Less,
-            (Some(ours), Some(theirs)) => ours.cmp(theirs),
+            (Some(ours), Some(theirs)) => compare_prerelease(ours, theirs),
         }
     }
 }
@@ -195,6 +289,59 @@ impl PartialOrd for ParsedVersion {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
+}
+
+/// Semver 11.4 precedence for two prerelease labels: split on `.` and compare
+/// identifier by identifier; if one label runs out first with everything so far
+/// equal, the longer one wins.
+///
+/// A plain `str::cmp` was wrong for the shape this repo documents
+/// (`v2026.08.01-beta.1`, in `.github/workflows/phosphor_release.yml`): it put
+/// `beta.10` *below* `beta.2`, so the tenth beta of a date read as a downgrade
+/// from the second.
+fn compare_prerelease(ours: &str, theirs: &str) -> std::cmp::Ordering {
+    let mut ours = ours.split('.');
+    let mut theirs = theirs.split('.');
+    loop {
+        match (ours.next(), theirs.next()) {
+            (None, None) => return std::cmp::Ordering::Equal,
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(ours), Some(theirs)) => match compare_identifier(ours, theirs) {
+                std::cmp::Ordering::Equal => {}
+                unequal => return unequal,
+            },
+        }
+    }
+}
+
+/// Compares one prerelease identifier: numerically when both are numbers,
+/// otherwise by ASCII, and a numeric identifier always ranks below an
+/// alphanumeric one.
+fn compare_identifier(ours: &str, theirs: &str) -> std::cmp::Ordering {
+    match (numeric_identifier(ours), numeric_identifier(theirs)) {
+        (Some(ours), Some(theirs)) => ours.cmp(&theirs),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => ours.cmp(theirs),
+    }
+}
+
+/// The numeric value of an identifier, if it is one in the canonical semver
+/// sense: all ASCII digits, and no leading zero.
+///
+/// The leading-zero exclusion is what keeps [`Ord`] consistent with the derived
+/// [`PartialEq`]. Treating `01` as the number 1 would make `beta.01` and
+/// `beta.1` compare `Equal` while remaining unequal values; compared as text
+/// they are simply `Less`, and no two distinct labels can now tie.
+fn numeric_identifier(identifier: &str) -> Option<u64> {
+    if identifier.len() > 1 && identifier.starts_with('0') {
+        return None;
+    }
+    if !identifier.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    identifier.parse::<u64>().ok()
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
