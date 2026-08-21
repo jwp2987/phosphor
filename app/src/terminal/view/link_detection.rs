@@ -1,10 +1,13 @@
 use std::ops::Deref;
 
 use serde::{Serialize, Serializer};
+use url::Url;
+use warp_core::channel::ChannelState;
 
 use warpui::{platform::Cursor, ViewContext};
 
 use crate::{
+    notebooks::link::is_openable_url_scheme,
     send_telemetry_from_ctx,
     server::telemetry::{LinkOpenMethod, TelemetryEvent},
     terminal::{
@@ -263,6 +266,78 @@ impl RichContentLink {
 pub struct RichContentLinkTooltipInfo {
     pub link: RichContentLink,
     pub position_id: String,
+}
+
+/// Why a URI carried by terminal content was not handed to the OS URL handler.
+///
+/// The two cases are kept apart deliberately: "this is not a URL at all" and "this is a URL
+/// whose scheme we refuse" are different facts, and collapsing them is how the original bug
+/// read -- `Url::parse(uri).is_err()` treated *every* parseable URI as safe to open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum BlockedTerminalLink {
+    /// The URI did not parse as a URL.
+    NotAUrl,
+    /// The URI parsed, but its scheme is not one we hand to an OS handler.
+    DisallowedScheme(String),
+}
+
+impl BlockedTerminalLink {
+    /// User-visible explanation. A click that silently does nothing is its own bug, so every
+    /// refusal below is reported through `TerminalView::show_error_toast`.
+    pub(super) fn toast_text(&self) -> String {
+        match self {
+            BlockedTerminalLink::NotAUrl => crate::t!("terminal-toast-link-invalid"),
+            BlockedTerminalLink::DisallowedScheme(scheme) => {
+                crate::t!(
+                    "terminal-toast-link-blocked-scheme",
+                    scheme = scheme.as_str()
+                )
+            }
+        }
+    }
+}
+
+/// Parse a URI that arrived as terminal content and decide whether it may be handed to the
+/// operating system's URL handler.
+///
+/// Everything this guards is *byte stream the terminal was told to render*: an OSC 8 hyperlink
+/// target, a URL smart-selected out of command output, a link in an AI block's rich content. Any
+/// of it can come from a remote host over SSH, from `cat` of an attacker-controlled file, or from
+/// an agent's own tool output, so it is at least as untrusted as notebook markdown -- and must
+/// therefore never be *more* permissive than the notebook policy.
+///
+/// The scheme policy itself is not restated here. It is
+/// [`crate::notebooks::link::is_openable_url_scheme`], the single definition also used by
+/// `NotebookLinks::resolve`/`open` and by `set_before_open_url` in `lib.rs`; this function
+/// narrows it. (Architecturally that predicate wants to live in `app/src/uri/` rather than under
+/// `notebooks/`, since three subsystems now depend on it -- but importing the one definition is
+/// strictly better than adding a fourth copy of the policy, which is already a filed defect.)
+///
+/// The narrowing is the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...), which
+/// notebooks allow and terminal content does not. Our own scheme is not inert: `UriHost::Launch`
+/// starts every tab and command a launch configuration defines, and `UriHost::Action` covers
+/// `NewTab`/`OpenFileEditor` with a URL-supplied path. Terminal output is less trusted than
+/// notebook content, so it does not get to drive those; and unlike the notebook path there is no
+/// reason it would need to, because the `set_before_open_url` rewrite that *produces* this scheme
+/// runs downstream of this check on an already-allowed `https` URL.
+///
+/// **This is ahead of the oracle, not a parity port.** Pinned Warp `42effe840` opens any URI that
+/// `Url::parse` accepts (`app/src/terminal/view.rs:18513` there), i.e. `file:`, `vscode:` and
+/// `ms-msdt:` from an SSH banner all reached the OS handler. Do not "restore" that during a
+/// re-pin.
+pub(super) fn openable_terminal_url(uri: &str) -> Result<Url, BlockedTerminalLink> {
+    let Ok(url) = Url::parse(uri) else {
+        return Err(BlockedTerminalLink::NotAUrl);
+    };
+
+    // `Url::parse` lower-cases the scheme, so neither comparison needs normalisation.
+    if !is_openable_url_scheme(&url) || url.scheme() == ChannelState::url_scheme() {
+        return Err(BlockedTerminalLink::DisallowedScheme(
+            url.scheme().to_owned(),
+        ));
+    }
+
+    Ok(url)
 }
 
 impl HighlightedLinkOption {
@@ -526,10 +601,13 @@ impl super::TerminalView {
                     .model
                     .lock()
                     .link_at_range(url, RespectObfuscatedSecrets::No);
-                ctx.open_url(&uri);
+                // Smart-selected URLs are not limited to `http`/`https`: the scanner's scheme
+                // table includes `file`, `ftp` and friends, so a printed `file:///...` is a
+                // clickable link here.
+                self.open_terminal_content_url(&uri, ctx);
             }
             GridHighlightedLink::Hyperlink { uri, .. } => {
-                self.open_hyperlink_uri(uri, ctx);
+                self.open_terminal_content_url(uri, ctx);
             }
         };
     }
@@ -562,7 +640,9 @@ impl super::TerminalView {
                 }
             }
             RichContentLink::Url(url) => {
-                ctx.open_url(url);
+                // Rich content is rendered from model output, which is no more trusted than the
+                // raw byte stream above.
+                self.open_terminal_content_url(url, ctx);
             }
         };
     }
@@ -1001,3 +1081,92 @@ impl super::TerminalView {
 #[cfg(all(test, feature = "local_fs"))]
 #[path = "link_detection_tests.rs"]
 mod tests;
+
+/// Coverage for the scheme policy applied to terminal content. Inline (rather than in
+/// `link_detection_tests.rs`) so the policy, its enforcement and its coverage stay in one file,
+/// and unconditional on `local_fs` because the hole is reachable on every platform.
+#[cfg(test)]
+mod scheme_policy_tests {
+    use warp_core::channel::ChannelState;
+
+    use super::{openable_terminal_url, BlockedTerminalLink};
+
+    #[track_caller]
+    fn assert_blocked_scheme(uri: &str, scheme: &str) {
+        assert_eq!(
+            openable_terminal_url(uri),
+            Err(BlockedTerminalLink::DisallowedScheme(scheme.to_owned())),
+            "{uri} must not be handed to an OS handler from terminal content"
+        );
+    }
+
+    #[test]
+    fn os_handler_schemes_are_blocked() {
+        // The exact payloads a hostile SSH banner, `cat`ted file or tool output would emit.
+        assert_blocked_scheme("file:///etc/passwd", "file");
+        assert_blocked_scheme("vscode://file/tmp/payload", "vscode");
+        assert_blocked_scheme("ms-msdt:/id%20PCWDiagnostic", "ms-msdt");
+        // `Url::parse` lower-cases the scheme, so a mixed-case spelling is the same scheme and
+        // must not slip past a case-sensitive comparison.
+        assert_blocked_scheme("FILE:///etc/passwd", "file");
+        assert_blocked_scheme("javascript:alert(1)", "javascript");
+        assert_blocked_scheme("data:text/html,<script>alert(1)</script>", "data");
+        assert_blocked_scheme("smb://attacker.example/share", "smb");
+        // The URL scanner in `grid_handler` recognises these schemes, so they really do become
+        // clickable links from plain command output.
+        assert_blocked_scheme("ftp://attacker.example/payload", "ftp");
+    }
+
+    /// Terminal content is less trusted than notebook content, so it must not be more
+    /// permissive: the app's own scheme reaches `UriHost::Launch` / `UriHost::Action`, and is
+    /// refused here even though `is_openable_url_scheme` allows it for notebooks.
+    #[test]
+    fn the_apps_own_scheme_is_blocked() {
+        let scheme = ChannelState::url_scheme();
+        assert_blocked_scheme(&format!("{scheme}://action/new-tab?path=/tmp"), scheme);
+        assert_blocked_scheme(&format!("{scheme}://launch/whatever"), scheme);
+    }
+
+    /// The original check was `Url::parse(uri).is_err()`, which fused "unparseable" with "safe to
+    /// open" in the wrong direction. Unparseable input is still refused -- and refused as its own
+    /// case, not as a blocked scheme.
+    #[test]
+    fn unparseable_uris_are_reported_separately() {
+        for uri in ["", "not a url", "/etc/passwd", "example.com/no-scheme"] {
+            assert_eq!(
+                openable_terminal_url(uri),
+                Err(BlockedTerminalLink::NotAUrl),
+                "{uri:?} is not a URL"
+            );
+        }
+    }
+
+    #[test]
+    fn web_and_mail_links_still_open() {
+        for uri in [
+            "https://example.com/path?q=1",
+            "http://example.com/path",
+            "HTTPS://example.com/",
+            "mailto:support@example.com",
+        ] {
+            let opened = openable_terminal_url(uri)
+                .unwrap_or_else(|err| panic!("{uri} must still open, got {err:?}"));
+            assert!(
+                matches!(opened.scheme(), "http" | "https" | "mailto"),
+                "{uri} resolved to an unexpected scheme {:?}",
+                opened.scheme()
+            );
+        }
+    }
+
+    /// Every refusal has something to say. A blocked click that produced an empty toast would be
+    /// the silent failure this guard exists to avoid.
+    #[test]
+    fn every_refusal_has_a_message() {
+        // `t!` returns the key itself when the loader is not initialised, which is still
+        // non-empty; the assertion that matters is that no arm returns nothing.
+        assert!(!BlockedTerminalLink::NotAUrl.toast_text().is_empty());
+        let blocked_scheme = BlockedTerminalLink::DisallowedScheme("file".to_owned());
+        assert!(!blocked_scheme.toast_text().is_empty());
+    }
+}

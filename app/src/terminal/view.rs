@@ -15204,7 +15204,11 @@ impl TerminalView {
     }
 
     /// Adds ephemeral error toast to toast stack.
-    fn show_error_toast(&mut self, text: String, ctx: &mut ViewContext<Self>) {
+    ///
+    /// Takes `&self` (it only needs `ctx`) so that read-only paths -- notably
+    /// `open_terminal_content_url`, which is called while a highlighted link is borrowed out of
+    /// `self` -- can report a refusal without an exclusive borrow.
+    fn show_error_toast(&self, text: String, ctx: &mut ViewContext<Self>) {
         let window_id = ctx.window_id();
         ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
             let toast = DismissibleToast::error(text);
@@ -17641,11 +17645,12 @@ impl TerminalView {
                     .model
                     .lock()
                     .link_at_range(url, RespectObfuscatedSecrets::No);
-                ctx.notify();
-                ctx.open_url(&uri);
+                // The URL scanner recognises `file:`, `ftp:` and other non-web schemes, so this
+                // arm is as exposed as the OSC 8 one below.
+                self.open_terminal_content_url(&uri, ctx);
             }
             GridHighlightedLink::Hyperlink { link, uri } if link.contains(position) => {
-                self.open_hyperlink_uri(uri, ctx);
+                self.open_terminal_content_url(uri, ctx);
             }
             _ => (),
         }
@@ -17656,14 +17661,32 @@ impl TerminalView {
         }
     }
 
-    /// Open an OSC 8 hyperlink URI. The URI comes from untrusted terminal
-    /// output, so it is only opened if it parses as a URL.
-    fn open_hyperlink_uri(&self, uri: &str, ctx: &mut ViewContext<Self>) {
-        if url::Url::parse(uri).is_err() {
-            return;
+    /// Open a URI that arrived as terminal content: an OSC 8 hyperlink target, a URL
+    /// smart-selected out of command output, or a link in an AI block's rich content.
+    ///
+    /// This is the single point where terminal-sourced URIs reach the OS URL handler. The
+    /// scheme allow-list lives in [`link_detection::openable_terminal_url`], which narrows the
+    /// one shared policy (`crate::notebooks::link::is_openable_url_scheme`) rather than
+    /// restating it; see that function for why the app's own scheme is refused here.
+    ///
+    /// Previously this checked only `Url::parse(uri).is_err()`, so any byte stream the terminal
+    /// rendered -- an SSH banner, a `cat`ted file, an agent's tool output -- could hand
+    /// `file:`, `vscode:` or `ms-msdt:` to the system opener on a single click.
+    /// `set_before_open_url` cannot veto an open (its callback returns `String`), so the guard
+    /// has to be here.
+    fn open_terminal_content_url(&self, uri: &str, ctx: &mut ViewContext<Self>) {
+        match link_detection::openable_terminal_url(uri) {
+            Ok(url) => {
+                ctx.notify();
+                ctx.open_url(url.as_str());
+            }
+            Err(blocked) => {
+                log::warn!("Refusing to open terminal link {uri:?}: {blocked:?}");
+                // A click that silently does nothing is its own bug, so say why.
+                self.show_error_toast(blocked.toast_text(), ctx);
+                ctx.notify();
+            }
         }
-        ctx.notify();
-        ctx.open_url(uri);
     }
 
     fn middle_click_on_grid(
@@ -19675,7 +19698,9 @@ impl TerminalView {
                     // site, so clicking this citation type doesn't navigate for now.
                 }
                 AIAgentCitation::WebPage { url } => {
-                    ctx.open_url(url);
+                    // Citation targets are model-authored, i.e. the same trust level as any
+                    // other terminal content.
+                    self.open_terminal_content_url(url, ctx);
                 }
             },
             AIBlockEvent::OpenAIFactCollection { sync_id } => {
@@ -25968,7 +25993,7 @@ impl TypedActionView for TerminalView {
                 }
             }
             HyperlinkClick(hyperlink) => {
-                self.open_hyperlink_uri(&hyperlink.url, ctx);
+                self.open_terminal_content_url(&hyperlink.url, ctx);
             }
             AttemptLoginGatedFeature => {
                 AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
