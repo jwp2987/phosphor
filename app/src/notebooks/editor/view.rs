@@ -1998,10 +1998,20 @@ impl RichTextEditorView {
             // the modifier, this one does not. That asymmetry is kept deliberately: requiring a
             // modifier in read-only surfaces would cost every generated document and comment
             // its one-click links, and there is no affordance advertising the modifier in a view
-            // the user cannot edit. What makes it safe is the scheme allow-list in
-            // `NotebookLinks` (`is_openable_url_scheme`): a plain click can only ever reach the
-            // browser, the mail composer, or this app. If that allow-list is widened, revisit
-            // this branch and require `cmd` here too.
+            // the user cannot edit.
+            //
+            // What makes that defensible is `NotebookLinks::is_openable_notebook_link`, which
+            // bounds a plain click to: a browser (`http`/`https`), a mail composer (`mailto`),
+            // and a *navigation-only* subset of this app's own scheme -- open a conversation, a
+            // drive object, a settings page, the home view, or the repository picker.
+            //
+            // An earlier version of this comment claimed the bound was "the browser, the mail
+            // composer, or this app", and "this app" was the dangerous third. The guard then
+            // allowed the whole own scheme, so `phosphor://launch/<name>` -- start the tabs and
+            // run the commands that launch config defines -- was reachable from one plain click
+            // on model-authored text. Widening that allow-list re-opens this branch: if a URL
+            // that can name a filesystem path, a command, or a config file ever becomes openable
+            // from notebook content, require `cmd` here too.
             if cmd || matches!(self.interaction_state(ctx), InteractionState::Selectable) {
                 // Resolution failures used to be discarded on this path (`resolve_and_open`
                 // ignores its `Err`), so a blocked or broken link did nothing at all with no

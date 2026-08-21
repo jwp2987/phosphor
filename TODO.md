@@ -7081,6 +7081,30 @@ Ordered by severity, not by area.
       no-op with no log line at all — so they are not crashes and were left out of the
       `.expect` sweep. `settings_view/features/external_editor.rs:245-250` is already
       correct (`report_if_error!` + `unwrap_or`) and is the pattern to copy.
+
+- [ ] **`ai/blocklist/block.rs:274` maps `is_supported_image_file` straight to**
+      **`FileTarget::SystemGeneric`, including `.svg`.** `.svg` is a scripting document
+      whose default handler is normally a browser, so this hands model-referenced SVG to a
+      handler that executes content. Same defect as `notebooks/link.rs:945`, **fixed there
+      on 2026-08-21 but not here.** Proper fix: add `is_supported_raster_image_file` to
+      `util::openable_file_type` (current list minus `svg`) and have both call it —
+      `is_supported_image_file` itself must NOT change, because its four other callers mean
+      "can we display this as an image", which stays true of SVG.
+
+- [ ] **CORRECTION to the 2026-08-21 notebook link-scheme entry — it was wrong twice.**
+      (i) Its claim that `WebIntent::try_from_url`'s `ALLOWED_ACTIONS` acted as "a second
+      gate" on the app's own scheme was **false**. `try_from_url` is reached only from
+      `maybe_rewrite_web_url_to_intent` (web→intent); an own-scheme URL returns through
+      `on_open_urls` → `handle_incoming_uri` → `validate_custom_uri`, which routes on
+      `UriHost` and never calls it. So `phosphor://launch/<name>` — which loads a launch
+      config and starts every tab and command it defines — was **one plain click away in
+      `Selectable` (model-authored) views.** (ii) The same entry's `file:` claim was also
+      wrong: `resolve` handles `file:` *before* the allow-list, and the test that "proved"
+      the refusal ran against a **session-less fixture** whose own comment admitted it.
+      Both closed 2026-08-21 by allow-listing `UriHost` exhaustively at the notebook call
+      site. **The justification was doubly wrong:** `set_before_open_url` runs *after*
+      `ctx.open_url`, so the rewriter never needed the own scheme in the notebook
+      allow-list at all.
 ### Reliability
 
 - [ ] **Compaction can hide messages that were never summarised.** `commit.rs:71` and

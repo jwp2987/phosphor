@@ -5,6 +5,7 @@ use std::{
     future::{self, Future},
     net::IpAddr,
     path::{Path, PathBuf},
+    str::FromStr,
     sync::Arc,
 };
 
@@ -24,6 +25,7 @@ use crate::{
     ChannelState,
     drive::ZapDriveObjectArgs,
     terminal::model::session::Session,
+    uri::UriHost,
     uri::parse_url_paths::{get_item_data_from_warp_link, WarpWebLink},
     workspace::ActiveSession,
 };
@@ -34,28 +36,97 @@ use super::file::is_markdown_file;
 #[path = "link_tests.rs"]
 mod tests;
 
-/// Coverage for the URL-scheme policy. These tests are inline rather than in `link_tests.rs`
-/// so the policy, its enforcement and its coverage all land in one file.
+/// Coverage for the link policy. These tests are inline rather than in `link_tests.rs` so the
+/// policy, its enforcement and its coverage all land in one file.
 #[cfg(test)]
-mod scheme_policy_tests {
-    use url::Url;
-    use warpui::{App, ModelHandle, WindowId};
+mod link_policy_tests {
+    use std::{path::Path, sync::Arc};
 
-    use super::{LinkTarget, NotebookLinks, ResolveError, SessionSource, is_openable_url_scheme};
-    use crate::{ChannelState, workspace::ActiveSession};
+    use parking_lot::Mutex;
+    use tempfile::tempdir;
+    use url::Url;
+    use warpui::{App, ModelHandle};
+
+    use super::{
+        LinkEvent, LinkTarget, NotebookLinks, ResolveError, SessionSource, file_url_is_local,
+        is_openable_notebook_link,
+    };
+    use crate::{
+        ChannelState, terminal::model::session::Session, util::openable_file_type::FileTarget,
+        workspace::ActiveSession,
+    };
 
     fn parse(url: &str) -> Url {
         Url::parse(url).expect("test URL should parse")
     }
 
-    fn init(app: &mut App) -> ModelHandle<NotebookLinks> {
-        let window_id = WindowId::new();
-        // No session is registered for this window, so nothing can resolve as a file path and
-        // every assertion below is about the scheme decision alone.
-        app.add_singleton_model(|_ctx| ActiveSession::default());
-        app.add_model(|ctx| NotebookLinks::new(SessionSource::Active(window_id), ctx))
+    fn own(path: &str) -> Url {
+        parse(&format!("{}://{path}", ChannelState::url_scheme()))
     }
 
+    /// A resolver that **has a session and a working directory**, which is what a real notebook
+    /// has.
+    ///
+    /// The fixture this replaces registered no session, and said so in its own comment ("No
+    /// session is registered for this window, so nothing can resolve as a file path"). That made
+    /// the `file:///etc/passwd -> Err(Blocked)` assertion it carried vacuous: `resolve`
+    /// handles `file:` *before* the allow-list and only falls through to it when there is no
+    /// session, so the test proved a refusal production never performs. `SessionSource::Target`
+    /// is used here precisely because it cannot be session-less -- it holds a strong `Arc`, so
+    /// the session also outlives the weak reference `ActiveSession` keeps.
+    fn init(app: &mut App, base_directory: &Path) -> ModelHandle<NotebookLinks> {
+        let session = Arc::new(Session::test());
+        // `NotebookLinks::new` observes the `ActiveSession` singleton, so it has to exist even
+        // though `Target` never reads it.
+        app.add_singleton_model(|_ctx| ActiveSession::default());
+        // `open` reads `EditorSettings` through production code, so the settings stack has to
+        // exist or the read panics before any assertion runs.
+        crate::test_util::settings::initialize_settings_for_tests(app);
+        let base_directory = base_directory.to_owned();
+        app.add_model(|ctx| {
+            NotebookLinks::new(
+                SessionSource::Target {
+                    session,
+                    base_directory,
+                },
+                ctx,
+            )
+        })
+    }
+
+    /// Ensure a file exists, creating its parents if necessary.
+    async fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            async_fs::create_dir_all(parent)
+                .await
+                .expect("creating parent directory failed");
+        }
+        async_fs::File::create(path)
+            .await
+            .expect("creating test file failed")
+            .sync_all()
+            .await
+            .expect("syncing test file failed");
+    }
+
+    fn capture_events(
+        app: &mut App,
+        links: &ModelHandle<NotebookLinks>,
+    ) -> Arc<Mutex<Vec<LinkEvent>>> {
+        let events = Arc::new(Mutex::new(vec![]));
+        let sink = events.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_model(links, move |_, event, _| {
+                sink.lock().push(event.clone());
+            })
+        });
+        events
+    }
+
+    /// Note what this does and does not prove: it is about the predicate only. `file:` in
+    /// particular is listed here because the predicate rejects it, but `resolve` never asks the
+    /// predicate about a `file:` URL -- see `resolve_keeps_local_file_urls_working` below for
+    /// what actually happens to one.
     #[test]
     fn script_and_local_handler_schemes_are_not_openable() {
         for link in [
@@ -73,14 +144,14 @@ mod scheme_policy_tests {
             "zapzap://whatever",
         ] {
             assert!(
-                !is_openable_url_scheme(&parse(link)),
+                !is_openable_notebook_link(&parse(link)),
                 "{link} should not be handed to an OS handler"
             );
         }
     }
 
     #[test]
-    fn web_mail_and_own_schemes_are_openable() {
+    fn web_and_mail_schemes_are_openable() {
         for link in [
             "https://example.com/path?q=1",
             "http://example.com/path",
@@ -88,35 +159,75 @@ mod scheme_policy_tests {
             "mailto:support@example.com",
         ] {
             assert!(
-                is_openable_url_scheme(&parse(link)),
+                is_openable_notebook_link(&parse(link)),
                 "{link} should still open"
             );
         }
-
-        let own_scheme_link = format!("{}://action/open-repo", ChannelState::url_scheme());
-        assert!(
-            is_openable_url_scheme(&parse(&own_scheme_link)),
-            "{own_scheme_link} should still open"
-        );
     }
 
-    /// The predicate above is only worth anything if `resolve` actually consults it, so assert
-    /// on the resolved result rather than on the predicate a second time.
+    /// The own scheme is not a blanket allow. This is the regression test for the hole the
+    /// first version of this guard opened: it allowed the whole scheme, so
+    /// `phosphor://launch/<name>` -- run whatever that launch config defines -- was one plain
+    /// click away in a `Selectable` (model-authored) view.
     #[test]
-    fn resolve_blocks_dangerous_schemes_and_keeps_https() {
+    fn own_scheme_is_allowed_only_for_navigation_intents() {
+        for link in [
+            "launch/my-config",
+            "launch/../../etc/passwd",
+            "action/new_tab?path=/etc",
+            "action/new_window?path=/etc",
+            "action/open_file_editor?path=/etc/passwd",
+            "action/docker/open_subshell",
+            "action/new_agent_conversation",
+            "tab_config/anything",
+            "mcp/oauth_callback?code=stolen",
+            "linear/work_on_issue?issue=1",
+            "codex/anything",
+            "session/00000000-0000-0000-0000-000000000000",
+            "auth/desktop_redirect",
+        ] {
+            let url = own(link);
+            assert!(
+                !is_openable_notebook_link(&url),
+                "{url} must not be reachable from notebook content"
+            );
+        }
+
+        for link in [
+            "action/open-repo",
+            "conversation/abc123",
+            "drive/folder/name-id",
+            "settings/appearance?theme=dark",
+            "home",
+        ] {
+            let url = own(link);
+            assert!(
+                is_openable_notebook_link(&url),
+                "{url} is navigation-only and should still open"
+            );
+        }
+    }
+
+    /// The predicate is only worth anything if `resolve` consults it, so assert on the resolved
+    /// result rather than on the predicate a second time. Unlike the fixture this replaces,
+    /// a session is present, so nothing here passes for want of one.
+    #[test]
+    fn resolve_blocks_dangerous_links_and_keeps_https() {
         App::test((), |mut app| async move {
-            let links = init(&mut app);
+            let base = tempdir().unwrap();
+            let links = init(&mut app, base.path());
 
             for link in [
-                "javascript:alert(1)",
-                "file:///etc/passwd",
-                "vscode://file/tmp/payload",
+                "javascript:alert(1)".to_owned(),
+                "vscode://file/tmp/payload".to_owned(),
+                own("launch/my-config").to_string(),
+                own("action/open_file_editor?path=/etc/passwd").to_string(),
             ] {
                 assert_eq!(
                     links
-                        .read(&app, |links, ctx| links.resolve(link, ctx))
+                        .read(&app, |links, ctx| links.resolve(&link, ctx))
                         .await,
-                    Err(ResolveError::BlockedScheme),
+                    Err(ResolveError::Blocked),
                     "{link} should not resolve to an openable target"
                 );
             }
@@ -131,27 +242,169 @@ mod scheme_policy_tests {
             );
         });
     }
+
+    /// A `file:` URL with a remote authority must be refused *before* anything touches the
+    /// filesystem, because on Windows `to_file_path` turns it into a UNC path and the
+    /// `metadata` call in `resolve_file` would open an SMB connection to the attacker's host
+    /// during resolution -- on hover, with no user decision.
+    ///
+    /// This one is a genuine unit test on every platform: the resolve-level assertion further
+    /// down is only load-bearing on Windows (elsewhere `to_file_path` rejects a non-empty
+    /// authority anyway), which is exactly why the check is also tested directly here.
+    #[test]
+    fn file_url_authority_decides_local_versus_remote() {
+        for local in [
+            "file:///etc/passwd",
+            "file://localhost/etc/passwd",
+            "file://LOCALHOST/x",
+        ] {
+            assert!(file_url_is_local(&parse(local)), "{local} is a local path");
+        }
+        for remote in [
+            "file://attacker.example/share/payload.txt",
+            "file://192.0.2.1/share/x",
+        ] {
+            assert!(
+                !file_url_is_local(&parse(remote)),
+                "{remote} names another machine and must never be stat-ed"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_refuses_a_remote_file_url() {
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let links = init(&mut app, base.path());
+
+            assert_eq!(
+                links
+                    .read(&app, |links, ctx| links
+                        .resolve("file://attacker.example/share/payload.txt", ctx))
+                    .await,
+                Err(ResolveError::Blocked),
+                "a file: URL naming another host must not resolve"
+            );
+        });
+    }
+
+    /// The honest statement of what `file:` does in production, replacing the assertion that
+    /// only held because the old fixture had no session: with a session, a local `file:` URL
+    /// **does** resolve, to a `LocalFile`. What keeps it safe is `open_file`, not the scheme
+    /// allow-list.
+    #[test]
+    fn resolve_keeps_local_file_urls_working() {
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let file = base.path().join("notes.txt");
+            touch(&file).await;
+            let links = init(&mut app, base.path());
+
+            let url = Url::from_file_path(&file).expect("temp path should convert to a file URL");
+            let resolved = links
+                .read(&app, |links, ctx| links.resolve(url.as_str(), ctx))
+                .await;
+
+            match resolved {
+                Ok(LinkTarget::LocalFile { path, .. }) => assert_eq!(path, file),
+                other => panic!("expected a local file target for {url}, got {other:?}"),
+            }
+        });
+    }
+
+    /// `.svg` must not take `open_file`'s image early return, which forced
+    /// `FileTarget::SystemGeneric` -- the OS default handler, normally a browser, on a document
+    /// that can script.
+    #[test]
+    fn svg_is_not_handed_to_the_system_handler() {
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let svg = base.path().join("payload.svg");
+            touch(&svg).await;
+            let links = init(&mut app, base.path());
+            let events = capture_events(&mut app, &links);
+
+            let url = Url::from_file_path(&svg).expect("temp path should convert to a file URL");
+            links
+                .update(&mut app, |links, ctx| {
+                    let future = links.resolve_and_open(url.as_str(), ctx);
+                    ctx.await_spawned_future(future.future_id())
+                })
+                .await;
+
+            let events = events.lock();
+            match events.first() {
+                // Whatever it resolved to, it must not be a target the OS default handler owns.
+                Some(LinkEvent::OpenFileWithTarget { target, .. }) => assert!(
+                    !matches!(
+                        target,
+                        FileTarget::SystemGeneric | FileTarget::SystemDefault
+                    ),
+                    "an .svg must not be handed to the OS default handler, got {target:?}"
+                ),
+                // No event means `open_file` took the dangerous-target arm and revealed the file
+                // in Finder / Explorer instead. Also not an OS handler, so also acceptable.
+                None => (),
+                other => panic!("unexpected LinkEvent for an .svg link: {other:?}"),
+            }
+        });
+    }
+
+    /// The companion to the test above: the early return is narrowed, not deleted. Raster
+    /// images still open in the system viewer, which is the pin's behaviour and what
+    /// `link_tests.rs::test_open_local_image_uses_system_generic_target` also asserts. If that
+    /// trade is ever revisited, both tests should move together.
+    #[test]
+    fn raster_images_still_use_the_system_viewer() {
+        App::test((), |mut app| async move {
+            let base = tempdir().unwrap();
+            let png = base.path().join("photo.png");
+            touch(&png).await;
+            let links = init(&mut app, base.path());
+            let events = capture_events(&mut app, &links);
+
+            let url = Url::from_file_path(&png).expect("temp path should convert to a file URL");
+            links
+                .update(&mut app, |links, ctx| {
+                    let future = links.resolve_and_open(url.as_str(), ctx);
+                    ctx.await_spawned_future(future.future_id())
+                })
+                .await;
+
+            let events = events.lock();
+            match events.first() {
+                Some(LinkEvent::OpenFileWithTarget { target, .. }) => {
+                    assert_eq!(target, &FileTarget::SystemGeneric)
+                }
+                other => panic!("expected OpenFileWithTarget for a .png link, got {other:?}"),
+            }
+        });
+    }
 }
 
-/// Whether a URL may be handed to the operating system's URL handler.
+/// Whether a URL's *scheme* is one we are willing to hand outside the process at all.
 ///
-/// Notebook content is not trusted. It is authored by the user, but it is also authored by the
-/// model -- AI blocks, comment chips and generated documents all render through this editor --
-/// and a link's *scheme* decides which OS-registered program receives it. The allowed set is:
+/// This is the scheme-level half of the policy and deliberately says nothing about what a URL
+/// is allowed to *mean*. The allowed set is:
 ///
 /// * `http` / `https` -- the browser. The whole point of a web link.
 /// * `mailto` -- the mail composer. It opens a draft; it does not run anything.
-/// * the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...) -- these come back to
-///   us, and what they are allowed to mean is separately allow-listed in
-///   `uri::web_intent_parser::WebIntent::try_from_url`. It has to stay openable because
+/// * the app's own channel scheme (`warp`, `warppreview`, `phosphor`, ...) -- it comes back to
+///   us through `uri::handle_incoming_uri`. It has to pass at this level because
 ///   `set_before_open_url` in `lib.rs` deliberately rewrites recognised web URLs *into* this
-///   scheme.
+///   scheme, and that rewrite must not be discarded as an escalation.
 ///
 /// Everything else is refused, because everything else can reach a program we know nothing
 /// about: `javascript:` and `data:` execute in whichever handler claims them, `file:` hands a
-/// local path to the system opener (see `open_file` for the matching hardening on the file
-/// path), and a custom scheme (`vscode:`, `smb:`, `ms-msdt:`, anything a third-party installer
-/// registered) resolves to an arbitrary local binary with an attacker-chosen argument.
+/// path to the system opener, and a custom scheme (`vscode:`, `smb:`, `ms-msdt:`, anything a
+/// third-party installer registered) resolves to an arbitrary local binary with an
+/// attacker-chosen argument.
+///
+/// **This predicate is NOT sufficient for untrusted content, and it is not what guards `file:`.**
+/// Passing it only means the URL may leave the process. For a link that came out of a notebook
+/// use [`is_openable_notebook_link`], which additionally constrains what an own-scheme URL may
+/// mean; and note that `resolve` handles `file:` on its own path *before* consulting either
+/// predicate, so "`file` is absent from the list above" is not what stops a `file:` link.
 ///
 /// The browser build already applies exactly this policy in `warpui::browser::safe_browser_open_url`
 /// before calling `window.open`. The desktop build had none: `ctx.open_url` goes straight to
@@ -166,6 +419,93 @@ pub fn is_openable_url_scheme(url: &Url) -> bool {
     // `Url::parse` lower-cases the scheme, so this comparison needs no normalisation.
     matches!(url.scheme(), "http" | "https" | "mailto")
         || url.scheme() == ChannelState::url_scheme()
+}
+
+/// Whether a URL that came out of *notebook content* may be opened.
+///
+/// Notebook content is not trusted. It is authored by the user, but it is also authored by the
+/// model -- AI blocks, comment chips and generated documents all render through this editor --
+/// and in `InteractionState::Selectable` views a single plain click opens the link with no
+/// modifier (`editor/view.rs`). So this predicate is what decides what one click on
+/// model-authored text is allowed to do.
+///
+/// `http` / `https` / `mailto` pass unchanged: they leave for a browser or a mail composer,
+/// neither of which can be handed a local program with an attacker-chosen argument.
+///
+/// The app's own scheme does **not** pass unchanged, and the first version of this guard was
+/// wrong about exactly that. It allowed the whole scheme on the stated grounds that
+/// `uri::web_intent_parser::WebIntent::try_from_url`'s `ALLOWED_ACTIONS` was a second gate.
+/// **That gate is not on this path.** `try_from_url` is reached only from
+/// `maybe_rewrite_web_url_to_intent`, which converts *web* URLs into intent URLs. An own-scheme
+/// URL handed to `ctx.open_url` goes to the OS and returns through `lib.rs`'s `on_open_urls`
+/// -> `uri::handle_incoming_uri` -> `validate_custom_uri`, which routes on [`UriHost`] and never
+/// consults `WebIntent`. That left `phosphor://launch/<name>` -- "load a launch configuration
+/// from the user's config directory and dispatch `root_view:open_launch_config`", i.e. start the
+/// tabs and run the commands that config defines -- one plain click away from a model.
+///
+/// So the *meaning* is allow-listed here, against the enum that actually routes the URL. The
+/// `match` below is exhaustive on purpose: adding a `UriHost` variant will fail to compile until
+/// somebody decides whether untrusted content may reach it. Allow-listing by pointing at a
+/// policy in another module is what produced the hole this replaces.
+pub fn is_openable_notebook_link(url: &Url) -> bool {
+    if !is_openable_url_scheme(url) {
+        return false;
+    }
+
+    if url.scheme() != ChannelState::url_scheme() {
+        // http / https / mailto: there is nothing further to constrain.
+        return true;
+    }
+
+    // `validate_custom_uri` routes on the host, so route on the host here too rather than
+    // pattern-matching the string form.
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let Ok(host) = UriHost::from_str(host) else {
+        return false;
+    };
+
+    match host {
+        // Navigation only: each of these opens an in-app view. None of them takes a filesystem
+        // path, a command, a launch configuration or a credential from the URL.
+        UriHost::Conversation | UriHost::Drive | UriHost::Settings | UriHost::Home => true,
+        // `action` is mixed, so the host cannot be allowed wholesale: `new_tab` / `new_window`
+        // and `open_file_editor` take a `path` from the URL and `docker/open_subshell` starts a
+        // shell. `/open-repo` opens the repository picker and takes no argument from the URL
+        // (`uri/mod.rs` calls `WorkspaceAction::OpenRepository { path: None }`), and it is also
+        // the one action `WebIntent`'s `ALLOWED_ACTIONS` reaches -- mirrored here rather than
+        // deferred to, since deferring to it was the bug.
+        UriHost::Action => url.path() == "/open-repo",
+        // `launch` loads a launch config and runs what it defines; `tab_config` is the same
+        // problem in a different file. Neither may ever be reachable from a link a model wrote.
+        UriHost::Launch
+        | UriHost::TabConfig
+        // `mcp` feeds the URL straight into an OAuth callback handler.
+        | UriHost::Mcp
+        // `linear` builds an agent task out of the URL's parameters.
+        | UriHost::Linear
+        // `codex` starts an AI session, `session` focuses a terminal pane by UUID, and `auth` is
+        // inert in this fork. Refused for want of a reason to allow them rather than for a
+        // demonstrated exploit -- an allow-list only works if that is the default answer.
+        | UriHost::Codex
+        | UriHost::Session
+        | UriHost::Auth => false,
+    }
+}
+
+/// Whether a `file:` URL names a path on *this* machine.
+///
+/// A `file:` URL may carry an authority component, and `Url::to_file_path` honours it: on
+/// Windows `file://host/share/x` becomes the UNC path `\\host\share\x`. `resolve` then calls
+/// `async_fs::metadata` on it, which opens an SMB connection to an attacker-named host -- during
+/// *resolution*, i.e. on hover or on the first click, before the user has agreed to open
+/// anything. So the host is checked before any filesystem call sees the path.
+///
+/// An empty authority and `localhost` are the two spellings of "this machine" (RFC 8089); the
+/// `url` crate lower-cases the host, so `LOCALHOST` needs no separate case.
+fn file_url_is_local(url: &Url) -> bool {
+    matches!(url.host_str(), None | Some("") | Some("localhost"))
 }
 
 /// The target of a notebook link.
@@ -273,9 +613,26 @@ impl NotebookLinks {
         ctx: &AppContext,
     ) -> impl Future<Output = Result<LinkTarget, ResolveError>> + use<> {
         if let Ok(url) = Url::parse(link) {
+            // `file:` is handled here and NOT by the allow-list below, which is the trap this
+            // branch used to set. A `file:` link that resolves is turned into a
+            // `LinkTarget::LocalFile`, so it never reaches `is_openable_notebook_link` at all;
+            // what keeps it safe is `open_file`, which refuses to hand a path to the OS default
+            // handler. Do not read "`file` is not in the allow-list" as "`file:` links are
+            // refused" -- with a session present, which is what a real notebook has, they are
+            // not, and a test that asserted otherwise was passing only because its fixture had
+            // no session.
+            //
             // The `url` crate only provides `to_file_path` on certain platforms.
             #[cfg(feature = "local_fs")]
             if url.scheme() == "file" {
+                // Refuse a remote authority before anything touches the filesystem: see
+                // `file_url_is_local`. This must stay ahead of `to_file_path`/`metadata`,
+                // because the connection attempt *is* the leak -- it happens during resolution,
+                // which runs on hover as well as on click.
+                if !file_url_is_local(&url) {
+                    return Either::Right(future::ready(Err(ResolveError::Blocked)));
+                }
+
                 // Unlike below, if there's missing information, we can still fall back to the
                 // system for file:// URL handling.
                 if let Some(session) = self.session_source.session(ctx) {
@@ -286,11 +643,10 @@ impl NotebookLinks {
                 }
             }
 
-            // A scheme we will not hand to an OS handler is reported as a broken link rather
-            // than resolved, so the tooltip shows why nothing happened instead of the click
-            // being silently swallowed.
-            if !is_openable_url_scheme(&url) {
-                return Either::Right(future::ready(Err(ResolveError::BlockedScheme)));
+            // A link we will not act on is reported as broken rather than resolved, so the
+            // tooltip shows why nothing happened instead of the click being silently swallowed.
+            if !is_openable_notebook_link(&url) {
+                return Either::Right(future::ready(Err(ResolveError::Blocked)));
             }
 
             return Either::Right(future::ready(Ok(LinkTarget::Url(url))));
@@ -387,6 +743,20 @@ impl NotebookLinks {
         session: Arc<Session>,
         line_and_column: Option<LineAndColumnArg>,
     ) -> Result<LinkTarget, ResolveError> {
+        // Every notebook link that reaches an `async_fs::metadata` call funnels through here, so
+        // this is the one place a remote path can be stopped before the stat opens a network
+        // connection to a host the link named. `file:` URLs are already screened by
+        // `file_url_is_local`, but a link can also spell a UNC path *directly*
+        // (`\\attacker.example\share\x`), which fails `Url::parse` and so arrives through
+        // `resolve`'s plain-path branches instead -- and two of those three branches never pass
+        // through `util::file::is_path_valid`, which makes exactly this check for exactly this
+        // reason (it notes the stat takes ~15s and hangs the UI, which is the same fact from the
+        // performance side). `is_network_resource` deliberately treats WSL's UNC hosts as local.
+        #[cfg(windows)]
+        if warp_util::path::is_network_resource(&path) {
+            return Err(ResolveError::Blocked);
+        }
+
         let metadata = async_fs::metadata(&path).await?;
         Ok(if metadata.is_dir() {
             // Discard line/column information, which doesn't make sense for a directory.
@@ -402,8 +772,8 @@ impl NotebookLinks {
     }
 
     /// Open a resolved link:
-    /// * URLs are opened in the web browser or system-default application, but only if their
-    ///   scheme passes `is_openable_url_scheme`; anything else is refused.
+    /// * URLs are opened in the web browser or system-default application, but only if they
+    ///   pass `is_openable_notebook_link`; anything else is refused.
     /// * Markdown files are opened in Zap (if the `FileNotebooks` feature flag is enabled).
     /// * Other files are opened in the configured editor or system-default application.
     pub fn open(&self, link: LinkTarget, ctx: &mut ModelContext<Self>) {
@@ -412,10 +782,19 @@ impl NotebookLinks {
                 // Defence in depth: `LinkTarget::Url` is a public variant, so a caller can build
                 // one without going through `resolve`. Re-check before the URL reaches an OS
                 // handler rather than trusting that it was validated on the way in.
-                if !is_openable_url_scheme(&url) {
+                //
+                // This re-check is safe to apply twice because it is a pure predicate over the
+                // *original* URL -- nothing here canonicalises the URL between `resolve` and
+                // `open`. That is deliberate: `WebIntent`'s canonical form is not idempotent
+                // (a `drive` intent is rebuilt with three path segments collapsed into two plus
+                // a query, which no longer parses as a `drive` intent), so validating a rewritten
+                // form here would reject links `resolve` had just accepted.
+                if !is_openable_notebook_link(&url) {
                     log::warn!(
-                        "Refusing to open notebook link with disallowed scheme {:?}",
-                        url.scheme()
+                        "Refusing to open notebook link: scheme {:?} host {:?} is not reachable \
+                         from notebook content",
+                        url.scheme(),
+                        url.host_str()
                     );
                     return;
                 }
@@ -522,6 +901,19 @@ impl NotebookLinks {
     }
 }
 
+/// Whether `path` is an image format that can carry executable content, and so must never be
+/// handed to the OS default handler.
+///
+/// SVG is the only such format in `is_supported_image_file`'s list: it is XML, it can embed
+/// `<script>` and external references, and its registered handler on a normal desktop is a
+/// browser. `jpg`/`jpeg`/`png`/`gif`/`webp` are raster formats that the handler decodes.
+#[cfg(feature = "local_fs")]
+fn is_scripting_image_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
+}
+
 /// Open a file respecting user's editor settings.
 ///
 /// For targets that would be handed to the OS default handler (`SystemGeneric` /
@@ -537,8 +929,20 @@ fn open_file(
 ) {
     #[cfg(feature = "local_fs")]
     {
-        // Images are safe to open with the system default viewer.
-        if is_supported_image_file(&path) {
+        // Raster images are safe to open with the system default viewer. SVG is not, even though
+        // `is_supported_image_file` accepts it: an SVG is a scripting document whose default
+        // handler is normally a browser, so this early return handed `[x](file:///tmp/x.svg)` to
+        // a handler that executes the file's contents -- and it returns *before* the
+        // dangerous-target arm below that exists to stop exactly that. Letting SVG fall through
+        // routes it to `FileTarget::ImageViewer` (the in-app viewer, which decodes rather than
+        // executes) or to the code editor, both of which are already treated as safe targets.
+        //
+        // The exclusion lives here rather than in `is_supported_image_file` because that
+        // predicate has four other callers that mean "can we display this as an image", which is
+        // still true of SVG. The right shape is a separate `is_supported_raster_image_file` in
+        // `util::openable_file_type`; that file is outside this change and the split is recorded
+        // as a follow-up instead.
+        if is_supported_image_file(&path) && !is_scripting_image_file(&path) {
             ctx.emit(LinkEvent::OpenFileWithTarget {
                 path,
                 target: FileTarget::SystemGeneric,
@@ -590,9 +994,14 @@ pub enum ResolveError {
     FileNotFound,
     /// The context needed to resolve a file is missing.
     MissingContext,
-    /// The link's URL scheme is not one we hand to an OS handler.
-    /// See `is_openable_url_scheme`.
-    BlockedScheme,
+    /// The link is one we refuse to act on from notebook content: a scheme we will not hand to
+    /// an OS handler, an own-scheme intent that is not navigation-only, or a `file:` URL naming
+    /// another host. See `is_openable_notebook_link` and `file_url_is_local`.
+    ///
+    /// Named for the decision, not for the scheme. The first spelling was `BlockedScheme`, which
+    /// stopped being true as soon as the guard started refusing links on something other than
+    /// their scheme.
+    Blocked,
     Unknown,
 }
 
@@ -611,7 +1020,9 @@ impl fmt::Display for ResolveError {
         match self {
             ResolveError::FileNotFound => f.write_str("File not found"),
             ResolveError::MissingContext => f.write_str("No base directory"),
-            ResolveError::BlockedScheme => f.write_str("Blocked link: unsupported URL scheme"),
+            ResolveError::Blocked => {
+                f.write_str("Blocked link: this link cannot be opened from a document")
+            }
             ResolveError::Unknown => f.write_str("Broken file link"),
         }
     }
