@@ -31,6 +31,53 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### TEST-PORT WAVE — 3 launched, 1 landed, 1 refused, 1 pending refutation
+
+**`port/tests-orphan-icon` (`a9552f503`) — landed, under refutation.** The one cluster
+needing no production port. Rather than copy the pin's predicate into a new file (no
+caller, `check_stub_coverage` bait), the porter **extracted the decision out of the live
+`action_icon`** in `block/view_impl/output.rs` and tested the shipped path. It landed
+**five tests from the pin's four**: the pin's card predicate is `Cancelled | Failed`
+while `action_icon` keys off `!is_streaming()`, so `Complete` orphans here too — and it
+established the pin's own `action_icon` is byte-identical to the fork's, making that a
+divergence between **the pin's two predicates**, not pin-vs-fork. It split the test
+rather than weaken it. Under refutation, including a claim that
+`block/model/debug_model_impl.rs` is dead code that would not compile.
+
+**`port/tests-exit-commit` (`d24a50d84`) — the agent REFUSED to port, and was right.**
+
+#### SIXTH COORDINATOR ERROR — and this one contradicted my own ledger row
+
+My brief asserted "nothing in this repo currently tracks this work — `exit_commit_handle`
+has zero hits in `TODO.md`." **The symbol has zero hits; the work has a row.**
+`TODO.md:1280` carries `60d602df6` marked "**BLOCKED, not schedulable yet**", naming the
+same missing host function — **a row I wrote earlier in this same session.** I searched by
+symbol name; the ledger tracks by upstream sha.
+
+**Lesson, and it generalises:** grep the ledger by **sha**, not by symbol. A symbol that
+does not exist in the fork cannot appear in a row describing why it does not exist.
+
+The agent then established the deeper reason the work is not schedulable:
+**`OrchestrationEventService` is an island.** Coordinator-verified: **zero** registrations
+in `app/src/lib.rs` (the pin registers it), and it appears in exactly two files — itself
+and its tests. `enqueue_event_batch`, `drain_events_for_request`, `requeue_awaiting_events`
+have no production caller anywhere. **So the race these tests guard cannot occur here**,
+and 5 of the 7 tests are not even writable (they need `emit_*_for_test`,
+`skip_initial_turn`, `run_conversation_id` — all absent).
+
+It committed a ledger correction instead, widening the BLOCKED row from the 2 pieces it
+named to **8 measured**, and recording two traps for whoever unblocks it:
+- The fork's `conversation_id_cell` (`driver.rs:1511`) holds the **server conversation
+  token string**, not the `AIConversationId` that `on_commit` must seed. Silent
+  wrong-value trap.
+- The pin's `IdleTimeoutSender` grew `on_commit`/`IdleWait` **alongside** the
+  failure-side `arm_refreshable`/`refresh`/`idle_window_for_terminal_status`. Taking the
+  struct wholesale **re-imports the declined half**.
+
+**Standing decision: `60d602df6` stays BLOCKED.** It unblocks with the
+orchestration-consumer increment, not before. Cluster A and shard E's
+`drop_pending_events_...` are the **same work item** as `60d602df6` — not three.
+
 ### ACCOUNTING CORRECTION — the test debt and the port queue are mostly THE SAME WORK
 
 An earlier revision of this file reported "52 commits **plus** 60 tests of real work."
