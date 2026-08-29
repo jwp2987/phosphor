@@ -44,11 +44,64 @@ to describe a quarter of its commit, and the partial-hunt premise refuted outrig
 
 | worktree / branch | scope | state |
 |---|---|---|
-| `port/grep-parse` | `fbbfc41f3` grep NUL-delimiting | **written, coordinator-verified, under refutation** |
-| `port/leaks-logs` | `27f8ee6c` 2 data leaks + `8ba01aa1a`/`b1731dde0`/`8936686f2` log throttles | in flight |
-| `port/shell-bugs` | `e722ebed` panic + fish kill + DCS payload + pwsh chord | in flight |
-| `port/cursor` | `ee95ac0fd` double cursor | in flight |
-| `port/completer-cache` | `213c9b32` cache bound + `98b1f5af8` font fallback | in flight |
+**All 5 written and coordinator-verified. All 5 under adversarial refutation by a
+different agent than wrote each.** No agent compiled anything.
+
+| worktree / branch | commit(s) | scope |
+|---|---|---|
+| `port/grep-parse` | `f79030afc` | `fbbfc41f3` grep NUL-delimiting |
+| `port/leaks-logs` | `2f643f703` | `27f8ee6c` 2 data leaks + 3 log throttles |
+| `port/shell-bugs` | `d08e3e951`, `b255dae5f`, `4ca52cd38` | `e722ebed` panic + fish kill + DCS + pwsh chord |
+| `port/cursor` | `e8c05ac66` | `ee95ac0fd` double cursor |
+| `port/completer-cache` | `f083b185a`, `0e12bae4e` | `213c9b32` cache bound + `98b1f5af8` font fallback |
+
+**THE COORDINATOR'S BRIEFS WERE WRONG TWICE, AND BOTH TIMES AN AGENT CAUGHT IT.**
+Recorded because it is the strongest argument in this round for refuting the
+coordinator as well as the ports:
+
+1. **grep brief** told the porter the 25 new tests in `grep_tests.rs` were "a
+   separate work item -- do not port them here." They are in `fbbfc41f3` itself;
+   the Phase 2 queue mis-attributed them. Following the brief would have shipped
+   `build_grep_content_scan_command`'s two-layer shell quoting with **zero test
+   coverage**.
+2. **leaks-logs brief** stated "the only adaptation needed is the import path:
+   `warp_errors::` becomes `warp_core::errors::`". **That is a hard build failure**
+   for `warpui_core` and `warpui`: `warp_core/Cargo.toml:50` depends on `warpui`,
+   and `warpui/Cargo.toml:57` depends on `warpui_core`, so adding `warp_core` to
+   either closes a Cargo cycle. Coordinator-verified. The porter instead wrote a
+   local shim following the in-tree precedent `crates/warp_tui/src/report_error.rs`.
+
+**Second defects found by porters while porting** (neither was in the brief):
+- `register_signature` was a **silent no-op** for any name that had previously
+  missed, because the `Option`-valued `MemoMap` cached the miss in an append-only
+  structure. Fixed as part of the cache split.
+- Upstream's fish preexec fix, ported literally, **would have inverted the bug**:
+  `in_band_command_executor.rs:373` prepends a leading space to fish generator
+  commands and `string match` is start-anchored, so without a `string trim` the
+  "fixed" branch kills generator jobs *while a generator is running*. The porter
+  added the trim and documented the Rust-side coupling in the script.
+
+**Deliberate restraint worth keeping** — the cursor porter found real collateral in
+`grid_renderer.rs` (`hide_cursor_cell && visible_cursor_shape.is_none()` now also
+true for finished blocks, so a CLI agent's open rich input skips the cursor cell on
+every scrollback block), was two lines from "fixing" it, checked
+`ee95ac0fd:app/src/terminal/grid_renderer.rs` first, found **upstream ships the
+identical condition and comment**, and left it alone rather than manufacture a
+parity divergence. Flagged for separate decision, not folded into a port.
+
+**Known gaps the porters declared rather than hid:**
+- Fixes 2 and 3 of `e722ebed` (fish preexec, DCS encoders) have **no in-tree
+  regression test** -- this repo has no shell harness, and `bootstrap_test.rs:9`
+  stubs `fish.sh` entirely. Verified behaviourally under real `bash`/`fish` instead.
+- The 4 soft-keyboard redaction tests are `#[cfg(target_family = "wasm")]`-gated and
+  **will not run in the coordinator's native suite**.
+- The font-fallback mapping generator was not run end-to-end (`fontTools` absent,
+  fonts live in a Warp GCS bucket); its two changed paths were exercised with a
+  stubbed harness that was deliberately not committed.
+
+**Coordinator TODO at merge:** tick `TODO.md`'s `ee95ac0fd` row (unblocks
+`f42c4ab6c`, which depends on it); take the round branch's `TODO.md` over the
+grep worktree's copy and re-apply its row closure here.
 
 **`port/grep-parse` (commit `f79030afc`) — coordinator verification record.**
 Checked without compiling: the three pinned command-string tests preserve every
