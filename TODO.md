@@ -346,6 +346,65 @@ Adjudication for the managed-MCP and `ephemeral_installation_id` families is now
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
 
+#### Results — S3 (6 of 9 in). 7 of 7 ported, both production commits with them.
+
+The only shard so far to land everything it was given, and it did it by **fixing the fork
+rather than weakening the test** — including the one I briefed as DIVERGENT and
+un-portable.
+
+**Cluster 1 — the `#` trigger defect is confirmed live and now fixed.**
+`app/src/terminal/input.rs:8982` gated only on `is_any_ai_enabled` + trigger + `UserTyped`,
+with no setting check, so a user could not type a literal `#` at line start without the AI
+panel opening. Ported upstream `94daf47f3` whole: the setting (default `true`), the
+open-on-type gate, the zero-state-hint gate, an `InputSettingsChangedEvent` arm, the keymap
+flag, and the GUI toggle **re-homed** from upstream's `warp_agent_page.rs` into this fork's
+`ai_page.rs`/`AIInputWidget`, plus two `en/warp.ftl` keys.
+
+**`TODO.md:1365` is WRONG, and following it would have dropped a real hunk.** That row says
+the `set_zero_state_hint_text` hunk has "no fork counterpart — the fork rewrote that
+function and deleted `AI_COMMAND_SEARCH_HINT_TEXT` … the fork advertises nothing. Drop it."
+**Coordinator-verified false:** the fork *renamed* the constant to
+`AI_COMMAND_SEARCH_HINT_KEY` (`terminal/input.rs:407`), the string is live at
+`app/i18n/en/warp.ftl:422` ("Type '#' for AI command suggestions") and is set at
+`input.rs:5731`. The fork does advertise the shorthand — so without the gate it was
+advertising a shortcut the user could not turn off. Hunk ported. **That is the fourth
+ledger row this round found to state the opposite of the code (cf. #148).**
+
+**Cluster 2 — the fourth test was portable after all.** I briefed it as DIVERGENT and
+would-fail. The agent ported upstream `63a17a50a` in full (production diff the same shape
+as upstream's, across the same six files), caching `is_passive` on `AIBlock` at construction
+and refreshing it on reassignment.
+**It did not take upstream's word for reachability** — it traced the
+`drop_hidden_passive_ai_blocks` leak to two routes and reported honestly that Route A
+(stale `hidden_exchanges` after `remove_exchange`) is **not observable**, because the only
+production caller re-appends inside the same model update, and Route B (AgentView, where
+`is_hidden` needs no history lookup) is **reachable in principle but it could not construct
+a confirmed end-to-end sequence, and does not claim one**. It fixed it anyway on a
+different ground, which is the right one: in that state the fork is **provably
+self-contradictory** — `is_hidden` and `is_passive_conversation` read the same failed
+lookup and answer differently.
+**It checked the inverse risk I flagged**: none of the call sites depends on re-derivation.
+The passive bit is a function of the exchange's `input` variant, fixed at creation; the one
+mutable input is itself guarded by `has_passive_request()`, so it can only refine `Passive`
+into `Passive`, never flip `Active` to `Passive`.
+
+**`TODO.md:1253`'s "7 call sites" is also wrong** — 8 literal calls plus the predicate
+open-coded once inside `AIBlock::is_hidden`. My brief's "9" was right only by counting that
+one.
+
+**Coordinator verification (the risky parts, none of which an agent could compile).**
+`is_passive_conversation` **changed signature** — it no longer takes `&AppContext` — so every
+caller had to move: all 8 verified updated, none left passing an argument. `AIInputWidget`
+is built via `::default()` at two sites and does `#[derive(Default)]`, so the new
+`SwitchStateHandle` field initialises. Both new `t!` keys exist in `en/warp.ftl`;
+`AI_COMMAND_SEARCH_HASH_TRIGGER_FLAG` is defined at `settings_view/mod.rs:589` and used in
+both places that need it. All seven `script/check_*` guards green in the worktree.
+
+**Two more of my claims corrected:** `script/check_settings_registry` guards settings
+*group* parity, not individual settings, so it was a non-issue (`ok (50 groups)`); and my
+file paths were upstream's plural names — the fork uses `input_test.rs`/`view_test.rs`,
+attached by `#[path]`.
+
 #### S8 re-adjudication — my mid-flight correction paid off
 
 I warned S8 that its `ambient_agent_task_deserializes_orchestration_source` verdict looked
