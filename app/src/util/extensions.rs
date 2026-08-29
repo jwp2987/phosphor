@@ -52,3 +52,7 @@ impl TrimStringExt for String {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "extensions_test.rs"]
+mod tests;
