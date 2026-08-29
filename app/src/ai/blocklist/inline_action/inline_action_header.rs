@@ -330,7 +330,7 @@ impl HeaderConfig {
             // Wrap in EventHandler to allow right-click event propagation
             match expansion_config.on_right_click.clone() { Some(right_click_callback) => {
                 return EventHandler::new(element)
-                    .on_right_mouse_down(move |ctx, _, _| {
+                    .on_right_mouse_down(move |ctx, _, _, _| {
                         right_click_callback(ctx);
                         DispatchEventResult::PropagateToParent
                     })
@@ -346,7 +346,7 @@ impl HeaderConfig {
 
             let hoverable = Hoverable::new(header_mouse_state, |_| container).finish();
             return EventHandler::new(hoverable)
-                .on_right_mouse_down(move |ctx, _, _| {
+                .on_right_mouse_down(move |ctx, _, _, _| {
                     right_click_callback(ctx);
                     DispatchEventResult::PropagateToParent
                 })

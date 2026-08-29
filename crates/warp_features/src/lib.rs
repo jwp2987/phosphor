@@ -774,6 +774,15 @@ pub enum FeatureFlag {
     /// misclassification-bug fixes (pin PR #12586) -- so this is not added to
     /// `DOGFOOD_FLAGS`/`PREVIEW_FLAGS`/`RELEASE_FLAGS` here either.
     NldPromptHistoryMatch,
+
+    /// Observes Ctrl-C (`0x03`) written on the viewer input path to a terminal
+    /// with a working, rich-status-capable CLI agent session (e.g. Claude
+    /// Code). Arms a short grace window; if no further plugin activity is
+    /// seen, the session (and its ambient task) resolves to `Cancelled`.
+    /// Purely client-side status synthesis: the keystroke is always forwarded
+    /// unchanged and the harness process/sandbox are never signaled or torn
+    /// down.
+    CtrlCCancelsThirdPartyHarness,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =
@@ -870,6 +879,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::RestorePromptOnInlineModelSelectorSearch,
     FeatureFlag::WarpControlCli,
     FeatureFlag::JupyterNotebookRendering,
+    FeatureFlag::CtrlCCancelsThirdPartyHarness,
 ];
 
 /// Features enabled for feature preview build users (e.g.: Friends of Zap).

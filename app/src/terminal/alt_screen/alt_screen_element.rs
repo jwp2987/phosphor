@@ -22,7 +22,7 @@ use crate::terminal::shared_session::presence_manager::{
 use crate::terminal::view::{
     ActiveSessionState, TerminalAction, TerminalEditor, TerminalViewRenderContext,
 };
-use crate::terminal::{grid_renderer, SizeInfo};
+use crate::terminal::{grid_renderer, should_right_click_paste, SizeInfo};
 use crate::terminal::{heights_approx_eq, TerminalModel};
 use num_traits::Float as _;
 use parking_lot::FairMutex;
@@ -301,11 +301,16 @@ impl AltScreenElement {
         }
 
         let point = self.coord_to_point(local_position);
+        let shift = mouse_state.modifiers().shift;
 
-        if should_intercept_mouse(&self.model.lock(), mouse_state.modifiers().shift, app) {
-            ctx.dispatch_typed_action(TerminalAction::AltScreenContextMenu {
-                position: local_position,
-            });
+        if should_intercept_mouse(&self.model.lock(), shift, app) {
+            if should_right_click_paste(shift, app) {
+                ctx.dispatch_typed_action(TerminalAction::Paste);
+            } else {
+                ctx.dispatch_typed_action(TerminalAction::AltScreenContextMenu {
+                    position: local_position,
+                });
+            }
         } else {
             ctx.dispatch_typed_action(TerminalAction::AltMouseAction(mouse_state.set_point(point)));
         }

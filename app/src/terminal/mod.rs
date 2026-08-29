@@ -15,6 +15,7 @@ pub use warp_terminal::shell::{self, ShellLaunchData};
 use warpui::geometry::vector::Vector2F;
 use warpui::units::{IntoPixels, Lines, Pixels};
 use warpui::AppContext;
+use warpui::SingletonEntity;
 use warpui::WindowId;
 pub use {history::History, history::HistoryEntry, history::HistoryEvent, history::ShellHost};
 mod block_list_settings;
@@ -106,6 +107,8 @@ pub use view::{
 
 pub use shell_launch_state::ShellLaunchState;
 
+use crate::settings::SelectionSettings;
+
 /// Minimum number of visible lines.
 const MIN_ROWS: usize = 1;
 
@@ -127,6 +130,15 @@ pub const PTY_READS_BROADCAST_CHANNEL_SIZE: usize = 1024;
 pub fn init(app: &mut AppContext) {
     // Zap: removed share_block_modal::init
     view::init(app);
+}
+
+/// Whether this right-click should paste from the clipboard instead of opening
+/// the context menu.
+///
+/// Shift always wins: Shift+right-click reveals the context menu even when the
+/// setting is on, which is the only way to reach the menu in that mode.
+pub fn should_right_click_paste(shift: bool, ctx: &AppContext) -> bool {
+    !shift && SelectionSettings::as_ref(ctx).right_click_pastes()
 }
 
 /// Treat rounding errors for heights within this amount as equal.
