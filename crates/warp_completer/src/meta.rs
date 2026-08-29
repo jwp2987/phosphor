@@ -94,12 +94,43 @@ impl Span {
         self.end
     }
 
+    /// Clamping here makes `slice` itself panic-free for any offsets, but it does NOT by itself
+    /// close out a "completer panics on a multi-byte command line" report. Two callers still
+    /// raw-index and are unfixed (pre-existing, tracked separately -- do not assume this clamp
+    /// covers them):
+    ///
+    /// - `completer/suggest/alias.rs:270-271` slices `&input[..span.start()]` /
+    ///   `&input[span.end()..]` two lines after calling this method, with no clamp.
+    /// - `parsers/v2.rs:106-124` increments `offset` once per **char** inside
+    ///   `.chars().skip_while(..)` and then uses it as a **byte** offset, at both `Span::new`
+    ///   and `item[offset..]`. The two diverge as soon as a multi-byte char precedes the `=`,
+    ///   so it builds a mid-char `Span` and panics at `item[offset..]` before ever reaching
+    ///   this method. Verified reproducer: the flag token `--中=x` yields `offset == 4`, which
+    ///   is the third byte of `中` (bytes 2..=4), so `item[4..]` panics.
     pub fn slice<'a>(&self, source: &'a str) -> &'a str {
-        let start = self.start;
-        let end = self.end;
+        let len = source.len();
+        let start = floor_char_boundary(source, self.start.min(len));
+        let end = floor_char_boundary(source, self.end.min(len)).max(start);
 
         &source[start..end]
     }
+}
+
+/// Returns the largest byte index `<= index` that lies on a UTF-8 char boundary in `source`.
+/// `index` may exceed `source.len()`, in which case this returns `source.len()`. Equivalent to
+/// the standard library's still-unstable `str::floor_char_boundary`.
+///
+/// TODO: replace with `str::floor_char_boundary` once it's not on nightly anymore.
+pub(crate) fn floor_char_boundary(source: &str, index: usize) -> usize {
+    if index >= source.len() {
+        return source.len();
+    }
+    let mut index = index;
+    // Stop at zero since it's always a char boundary.
+    while index > 0 && !source.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
 }
 
 impl PartialOrd<usize> for Span {
