@@ -141,7 +141,71 @@ generator defect split other commits in this round.**
 close its ledger row. The coordinator owns `TODO.md` centrally; take the round
 branch's version at merge and re-apply the row closure here.
 
-### FIX ROUNDS — 3 of 4 complete. Every fix went beyond what was asked.
+### `port/completer-cache` REFUTATION — the sharpest finding of the round
+
+**D1 (blocking, being fixed): both new font tests are dead code, and the commit
+message's justification for adding them is factually false.** The porter wrote that
+upstream's reviewer objections do not apply "because `mod font_fallback` is already
+unconditional at `app/src/lib.rs:48`". It cited line 48 correctly and **did not read
+line 47**, which is `#[cfg(target_family = "wasm")]`. The module is wasm-gated —
+identically upstream, and since the fork's initial commit — which is exactly the
+"per-target compilation" concern upstream's reviewer raised.
+
+Three consequences: neither test appears in the coordinator's run at all, as pass or
+failure; there is **no wasm build in `pr-check.yml` or `script/precheck` either**, so
+`app/src/font_fallback.rs` is compiled by nothing in this repo and that module has
+never been type-checked; and the claimed guard — "a regeneration that loses the
+exclusion fails here rather than silently" — **does not exist**.
+
+**This is the same error class the coordinator committed three times this round:
+citing a real file:line while missing the attribute on the line above it.** Worth a
+standing rule: when a claim rests on a module or item being reachable, read the two
+lines above the citation.
+
+- **D2 (being fixed): `test_neighbouring_arrows_stay_on_hack_nerd_font` passes
+  pre-fix.** All eight code points it asserts were already on the Hack Nerd Font arm.
+  Cannot distinguish fixed from unfixed code — fake coverage twice over, since per D1
+  it also never runs.
+- **D3 (being fixed): a residual leak the port did not close.** `SignatureCache::insert`
+  (`registry.rs:92`) applies **no** length cap, and `register_signature` is reachable at
+  runtime over plugin IPC (`app/src/plugin/app/service_impl/completions.rs:39-41`). A
+  plugin sending many long names still grows the append-only `MemoMap` without bound, so
+  the message's "bounded by the embedded corpus plus registered names" has a
+  plugin-controlled second term.
+- **D4/D5 (minor):** `MissCache::new(0)` has an effective capacity of 1; the cap is
+  measured pre-lowercase, so a 255-byte token can be stored as a ~765-byte key.
+
+**Concurrency: clean, and the port is an improvement.** No deadlock, no guard held
+across `lookup_fn`, no escaping reference, and the `contains`/`insert` TOCTOU is benign
+because `insert` re-checks under the write lock. Notably the **pre-fix** code was the
+risky shape — it ran `lookup_fn` inside `MemoMap`'s creator closure — so the port
+removes a re-entrancy hazard rather than adding one.
+
+**Corrections to that porter's claims:** `test_evicts_in_fifo_order_regardless_of_lookups`
+is verbatim upstream, not a fork addition "beyond upstream". Its corpus test *was*
+verified to recurse properly — the refuter independently walked the 492 pinned signature
+JSONs and found the longest name is 59 bytes (`dig.json`), 4x headroom to the cap.
+
+### FIX ROUNDS — 4 of 5 complete. Every fix went beyond what was asked.
+
+**`port/leaks-logs` — SHA CHANGED, `2f643f703` -> `cdd57dd28`.** The porter amended
+rather than stacking, because the original message claimed "three per-frame error logs"
+and described a test that did not test what it said. Correct call on an unpushed branch;
+recorded here because anything referencing the old sha is now stale.
+
+Its tautological test is **replaced, not deleted**: `report_error_throttles_per_callsite_not_globally`
+installs a capture logger (following the precedent in `warp_core/src/errors_tests.rs`),
+drives two distinct `report_error!` invocations in separate functions so each expands its
+own `static`, and asserts `logged("second callsite") == 1` — which reads 0 under a shared
+global flag. It also runs a sanity call-site first, so if another test in the binary wins
+`set_logger` the test fails loudly on that specific message instead of every later
+assertion reading a vacuous zero. Deliberately one test, not several, because
+`OncePerRun` latches per process and parallel `#[test]`s would race the buffer.
+
+It also **fixed rather than documented** the fourth log site: `flex/mod.rs:220`, the
+`MainAxisSize::Max` sibling, is now throttled too. Verified: both sites use `OncePerRun`
+and zero bare `log::error!` remain in that file. Marked in-code and in the message as a
+deliberate step beyond upstream `8936686f2`, which scoped itself to one site.
 
 **`port/shell-bugs`** (`47799b7af`, `2970bbdb2`): D1 fixed with `string match -v --`.
 The porter then found a **second half of the same root cause on its own**: the seed
