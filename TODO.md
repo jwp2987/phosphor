@@ -105,6 +105,109 @@ its rows say `7 / 7` (both sum to 18). The counts above were obtained by
 enumerating bucket labels row by row. Any future round should do the same and
 should not re-derive these from the reports' summaries.
 
+### REFUTATION PASS 2026-08-29 — corrections to the scope above
+
+**2 of 6 refuters reported so far. The scope was wrong in both directions.**
+Everything in this subsection is verified by the coordinator, not taken on the
+refuter's word. Nothing was compiled.
+
+#### P0 — two live data-leak defects, found by refuting an ALREADY-PRESENT verdict
+
+`27f8ee6c` was bucketed ALREADY-PRESENT because its GEAP file is absent. Two of
+its other files ship here **at the pre-fix state**:
+
+- [ ] **`crates/ai/src/index/file_outline/native.rs:88` — dumps the entire
+      repository's parsed outline into the log.** The code is
+      `if let Err(e) = sender.send(result) { log::error!("... {e:?}") }`. The
+      channel is a `futures::oneshot` (`:67`), and `oneshot::Sender::send`
+      returns the **value** on failure — so `e` IS the
+      `HashMap<FileId, Outline>`, i.e. every symbol name from every indexed file
+      in the repo, Debug-formatted into the log file. Coordinator-verified by
+      reading both the channel construction and the call site.
+      Fix: `if sender.send(result).is_err() { log::error!("<static message>") }`.
+- [ ] **`crates/warpui/src/windowing/winit/event_loop/mod.rs:2007` — logs the
+      user's typed keystrokes.** `{:?}` on `EventLoopClosed<CustomEvent>` includes
+      the wrapped `SoftKeyboardInput` payload. Fix: format with `Display`
+      (`anyhow::Error::new(e)` or `{e}`), not `{:?}`.
+      **ADDITIONAL, NOT IN UPSTREAM'S FIX — found by the coordinator while
+      verifying:** line **`:2005`** is
+      `log::debug!("Soft keyboard callback received input: {:?}", input)`, which
+      logs the same payload unconditionally on the success path at debug level.
+      Upstream's commit does not touch it. Porting `27f8ee6c` alone leaves the
+      larger hole open. Fix both lines or neither.
+
+#### Newly added to the port queue by refutation (9)
+
+- [ ] `6696954c` — **fully refuted as CLOUD.** `CtrlCCancelsThirdPartyHarness` is
+      "purely client-side status synthesis; the harness process/sandbox are never
+      signaled" (its own doc), and its consumer `CLIAgentSessionsModel` is live
+      here. **Sequence with `9921300b7`** (already queued) — it is that commit's
+      stable-promotion, not a standalone change.
+- [ ] `b1731dde0` + `8936686f2` — **refuted as N/A.** Both touch
+      `crates/warpui_core/`, which the fork ships, at the pre-fix state:
+      unthrottled per-frame `log::error!` at `runtime/mod.rs:667`, `:895` and
+      `elements/flex/mod.rs:277`. `8936686f2` read as absent only because the fork
+      flattened `elements/gui/*` -> `elements/*` — a rename. **Same shape as the
+      already-queued P0 `8ba01aa1a`; land all three together**, same
+      `warp_errors::` -> `warp_core::errors::` adaptation.
+- [ ] `98b1f5af8` — **refuted as N/A.** Fork ships both touched files at the exact
+      pre-fix state; the U+21E7 fallback mismatch is live. 3-line port plus the
+      generator hunk so it is not regenerated away.
+- [ ] `d2cb17abb` — **refuted as ALREADY-PRESENT.** The throttle is absent; the
+      fork's call site is a fork-local split (`oauth.rs:638`, not `native.rs`) on
+      the spawn-failure/reconnect path — the hot path that produced upstream's
+      4.4M events.
+- [ ] `d13a30f4` (part) — the `TuiLink::render` signature refactor only. Honest
+      caveat from the refuter: no behaviour change, no new coverage; value is
+      purely reduced re-pin conflict surface. Droppable on triage — but not CLOUD.
+- [ ] `b870d25d7` (part) — `script/windows/prepare_bundled_resources.ps1:51`
+      `Split-Path` argument-binding fix, byte-identical to the pin's pre-image. The
+      commit message never mentions it, which is why the bucketer missed it.
+- [ ] `da434eb6e` (part) — the `archive_for_platform()` / `archive_sha256()` hunks
+      of `script/install_cargo_binstall` only. On native Windows arm64 `uname -m`
+      returns `unknown` -> empty SHA -> hard exit; under WOW64 it silently
+      installs the x86_64 build. Only bites an arm64 Windows dev box.
+
+#### Not ports — ledger entries the refutation produced
+
+- [ ] `e054075b8` — **refuted as N/A, but do NOT port the commit.**
+      `code_editor_line_number_mode` is registered (`app/src/settings/editor.rs:231`)
+      and honoured by the editor (`app/src/code/editor/view.rs:1279`) but has **no
+      settings UI anywhere** in the fork — and the old pin HAD one
+      (`42effe840:app/src/settings_view/features_page.rs:1386`). Unfiled in both
+      TODO.md and DECLINED.md. Destination if wanted is the fork's `code_page.rs`.
+- [ ] `8cbb01d45` (partial) — the split itself is pure, but the pin-side path
+      `app/src/workspaces/user_workspaces.rs` ceases to exist at `4111d08f9` and
+      fork tooling keys on it (`docs/SWEEP-INVENTORY.md:944`). Confirm
+      `generate_repin_queue` / `generate_pin_identity_manifest` follow the rename
+      rather than reading delete+add.
+
+#### Verdicts that survived but whose STATED REASON was wrong
+
+Recorded because a wrong reason invites the next round to re-derive it wrongly:
+`7feb88b5e` and `a9c0a1eb` (ALREADY-PRESENT -> correct label is DECLINED);
+`a1cc3a3d`, `b277c0eb0`, `532667498`, `b0a638117`, `0209de56e`, `d511e17e5`
+(N/A "file absent" -> the fork ships the file; right conclusion, wrong reason).
+**The N/A rationale was factually wrong for 11 of 29** — the fork ships the
+touched file in every one of those cases.
+
+#### Data-integrity finding: shard I's report is unreliable in three ways
+
+1. Its totals line was wrong (SCOPE-DECISION 10 / N/A 21 vs rows 8 / 23).
+2. Its `ime_marked_text` verdict ("NO ACTION, nothing is dark") contradicted its
+   own cited evidence; adjudicated against it.
+3. **Three shas in its commit table do not resolve** — `3535362d2`,
+   `e83d07d8d`, `1704db4c3`. The correct values (`3535362d7`, `e83d07d8b`,
+   `1704db4cf`) are present in the git-generated commit map, so the corruption was
+   introduced in the report, not upstream of it. `git show` on the printed strings
+   would have errored, so those three were classified without inspection or
+   mistyped after it. All three do check out as N/A once corrected.
+
+**Consequence: shard I carried the two highest-value sweeps (Phase 3.5 dependency
+drift, Phase 6.7 feature drift). Its dependency table was independently verified
+correct by the coordinator; its feature table has NOT been.** Re-verify Phase 6.7
+before acting on it.
+
 ### PORT QUEUE — PARTIAL first (4). Highest value; invisible to every gate.
 
 Phase 6.5's whole point: a partially-ported commit passes review, passes CI, and
