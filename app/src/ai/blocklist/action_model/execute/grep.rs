@@ -869,7 +869,11 @@ fn build_select_string_command(queries: &[String], target_path: &str) -> String 
 /// `build_select_string_command`'s formatter) or a `:` (as emitted by
 /// GNU/BSD `grep`'s `--null`, which only replaces the path separator).
 /// Everything from `sep` to the next `\n` is the matched line's content and
-/// is discarded, since callers only need the file path and line number.
+/// is discarded, since callers only need the file path and line number. A
+/// record may also carry no content and no trailing newline at all -- see
+/// `take_null_delimited_record`, which is what makes
+/// `build_select_string_command`'s `{path}\0{line}\0` shape parse past its
+/// first record.
 ///
 /// Because the path ends at a NUL byte -- which can never appear in a file
 /// name on any platform this runs on -- this format stays unambiguous even
@@ -884,7 +888,21 @@ fn parse_null_delimited_grep_output(
 ) -> anyhow::Result<Vec<GrepFileMatch>> {
     let mut matched_files: HashMap<&str, Vec<GrepLineMatch>> = HashMap::new();
     let mut unparseable_record_count = 0usize;
-    let mut remaining = output;
+    // Strip transport noise ahead of the first record -- a leading blank
+    // line, or a stray CR from a PTY. A real `grep` never emits whitespace
+    // before a path, so anything sitting here belongs to the transport, not
+    // to a file name. Without this, `split_once('\0')` folds that noise into
+    // the first record's path and reports a corrupted path that parses
+    // *successfully*, which means neither the skip-and-warn path nor the
+    // all-unparseable guard below can catch it.
+    //
+    // Deliberately only the head of the buffer, and only once: every later
+    // record boundary is either a `\n` this parser consumed itself or a
+    // record start it identified exactly, so a path's own leading bytes stay
+    // significant there. In particular an interior newline belonging to the
+    // path is preserved (see
+    // `parse_null_delimited_grep_output_handles_newline_embedded_in_path`).
+    let mut remaining = output.trim_start();
 
     while !remaining.is_empty() {
         match take_null_delimited_record(remaining) {
@@ -935,6 +953,11 @@ fn parse_null_delimited_grep_output(
 /// `input`, returning the path, the line number, and the remainder of
 /// `input` after the record. Returns `None` if `input` doesn't start with a
 /// well-formed record.
+///
+/// Both the trailing `\n` and the content before it are optional: a record
+/// whose content is empty ends at its separator, and the last record of a
+/// stream may have lost its newline. See the comment on `rest` below for how
+/// the two are told apart without ambiguity.
 fn take_null_delimited_record(input: &str) -> Option<(&str, usize, &str)> {
     let (path, after_path) = input.split_once('\0')?;
     if path.is_empty() {
@@ -956,9 +979,28 @@ fn take_null_delimited_record(input: &str) -> Option<(&str, usize, &str)> {
         _ => return None,
     };
 
+    // Where the record ends. The content field is a single line of a text
+    // file, so it can hold neither a `\n` (it is one line) nor a `\0`
+    // (binary files are excluded by `-I`, and `git grep -z` emits NUL only
+    // as a field separator). A NUL before the record's newline is therefore
+    // impossible *inside* content, and means this record carried no content
+    // at all and the next record starts right here.
+    //
+    // That is exactly what `build_select_string_command` emits:
+    // `{path}\0{line}\0` with no content and no terminator of its own.
+    // Treating those bytes as content and then skipping to the next `\n` --
+    // of which there is none -- silently discarded every match after the
+    // first, with no warning and no `Err`, since the first record still
+    // parsed. Handling it here means the emitter/parser contract no longer
+    // rests on PowerShell's implicit per-object newline: both shapes parse.
     let rest = match after_separator.find('\n') {
-        Some(index) => &after_separator[index + 1..],
-        None => "",
+        // Content runs to the newline that terminates this record.
+        Some(index) if !after_separator[..index].contains('\0') => &after_separator[index + 1..],
+        // No newline anywhere and no NUL either: a final record whose
+        // trailing newline was stripped. Content runs to end of input.
+        None if !after_separator.contains('\0') => "",
+        // Empty content: the next record begins at `after_separator`.
+        _ => after_separator,
     };
     Some((path, line_number, rest))
 }

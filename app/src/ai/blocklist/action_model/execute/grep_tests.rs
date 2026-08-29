@@ -112,8 +112,21 @@ fn build_grep_command_uses_long_null_option_not_short_z() {
 
     let command = build_grep_command(&queries, "/tmp/repo", ShellType::Bash);
 
-    assert!(command.contains("--null"));
-    assert!(!command.split_whitespace().any(|arg| arg == "-Z"));
+    assert!(
+        command.split_whitespace().any(|arg| arg == "--null"),
+        "expected a standalone `--null` argument in: {command}"
+    );
+    // Not just `arg == "-Z"`: short options cluster, so a `-Z` folded into
+    // the existing short group (`-nrIHEZ`) is the same BSD/macOS
+    // `--decompress` bug wearing a different spelling. Reject a `Z` in any
+    // short-option token.
+    let short_z_arg = command
+        .split_whitespace()
+        .find(|arg| arg.starts_with('-') && !arg.starts_with("--") && arg.contains('Z'));
+    assert!(
+        short_z_arg.is_none(),
+        "short-option `Z` means --decompress on BSD/macOS grep, found in: {short_z_arg:?}"
+    );
 }
 
 #[test]
@@ -275,6 +288,183 @@ fn parse_null_delimited_grep_output_handles_newline_embedded_in_path() {
     assert_eq!(
         matched_files[0].matched_lines,
         vec![GrepLineMatch { line_number: 42 }]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_ignores_a_blank_line_before_the_first_record() {
+    // Regression: the parser used to start at byte 0 of the raw buffer, so a
+    // leading newline from the transport was swallowed by
+    // `split_once('\0')` and became part of the first path. That corrupted
+    // path then parsed *successfully* -- the record was well-formed once the
+    // noise was glued on -- so it was reported to the model as a real file
+    // and neither the skip-and-warn path nor the all-unparseable guard could
+    // notice.
+    let output = "\nsrc/a.rs\x0010\0x\n";
+
+    let matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+
+    assert_eq!(
+        matched_files,
+        vec![GrepFileMatch {
+            file_path: "src/a.rs".to_string(),
+            matched_lines: vec![GrepLineMatch { line_number: 10 }],
+        }]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_ignores_leading_spaces_before_the_first_record() {
+    // Same defect, whitespace rather than a newline: a real `grep` never
+    // emits spaces before a path, so leading spaces are transport noise.
+    let output = "   src/a.rs\x0010\0x\n";
+
+    let matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+
+    assert_eq!(
+        matched_files,
+        vec![GrepFileMatch {
+            file_path: "src/a.rs".to_string(),
+            matched_lines: vec![GrepLineMatch { line_number: 10 }],
+        }]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_keeps_every_record_of_the_select_string_shape() {
+    // The EXACT bytes `build_select_string_command`'s `ForEach-Object`
+    // formatter produces -- `"$($_.Path)`0$($_.LineNumber)`0"`, i.e.
+    // `{path}\0{line}\0` with no content and no terminator of its own (see
+    // `build_select_string_command_single_quotes_powershell_substitution`,
+    // which pins the emitter side of this contract).
+    //
+    // Regression: the parser required a trailing `\n` to end a record, so on
+    // this shape it consumed the first record, found no newline, set the
+    // remainder to "" and dropped EVERY later match -- silently, with no
+    // warning and no `Err`, because the first record had parsed fine. The
+    // only thing that had ever hidden this was PowerShell's implicit
+    // per-object newline, which is not part of the emitted format and was
+    // covered by no test. Colon-bearing Windows paths here because that is
+    // the case this whole change exists for.
+    let output = "C:\\repo\\a.rs\x001\0C:\\repo\\b.rs\x002\0";
+
+    let mut matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+    assert_eq!(
+        matched_files,
+        vec![
+            GrepFileMatch {
+                file_path: r#"C:\repo\a.rs"#.to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 1 }],
+            },
+            GrepFileMatch {
+                file_path: r#"C:\repo\b.rs"#.to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 2 }],
+            },
+        ]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_keeps_select_string_records_with_implicit_newlines() {
+    // The same emitted shape as above, but as PowerShell's pipeline actually
+    // tends to hand it over: one implicit newline appended per object. Both
+    // must parse identically, so that the contract does not depend on an
+    // undocumented host behavior in either direction.
+    let output = "a.rs\x001\0\nb.rs\x002\0\n";
+
+    let mut matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+    assert_eq!(
+        matched_files,
+        vec![
+            GrepFileMatch {
+                file_path: "a.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 1 }],
+            },
+            GrepFileMatch {
+                file_path: "b.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 2 }],
+            },
+        ]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_keeps_select_string_records_over_crlf() {
+    // And over a CRLF transport, which is the realistic case for a remote
+    // Windows PowerShell session.
+    let output = "a.rs\x001\0\r\nb.rs\x002\0\r\n";
+
+    let mut matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+    assert_eq!(
+        matched_files,
+        vec![
+            GrepFileMatch {
+                file_path: "a.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 1 }],
+            },
+            GrepFileMatch {
+                file_path: "b.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 2 }],
+            },
+        ]
+    );
+}
+
+#[test]
+fn parse_null_delimited_grep_output_keeps_a_final_record_with_no_trailing_newline() {
+    // A `git grep -z` stream whose last newline was stripped in transit
+    // still yields its last match; content simply runs to end of input.
+    let output = "a.rs\x001\0first\nb.rs\x002\0no trailing newline";
+
+    let mut matched_files =
+        parse_null_delimited_grep_output(output, None, None).expect("Should parse successfully");
+    matched_files.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+
+    assert_eq!(
+        matched_files,
+        vec![
+            GrepFileMatch {
+                file_path: "a.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 1 }],
+            },
+            GrepFileMatch {
+                file_path: "b.rs".to_string(),
+                matched_lines: vec![GrepLineMatch { line_number: 2 }],
+            },
+        ]
+    );
+}
+
+#[test]
+fn take_null_delimited_record_ends_at_the_next_record_when_content_is_empty() {
+    // The primitive itself: a NUL before the record's newline cannot be
+    // inside content, so the record ends at its separator and the remainder
+    // starts at the next record rather than being skipped to a newline that
+    // does not exist.
+    assert_eq!(
+        take_null_delimited_record("a.rs\x001\0b.rs\x002\0"),
+        Some(("a.rs", 1, "b.rs\x002\0"))
+    );
+}
+
+#[test]
+fn take_null_delimited_record_keeps_content_that_contains_no_nul() {
+    // The converse: ordinary `git grep -z` content is still treated as
+    // content and skipped to the newline, not mistaken for a next record.
+    assert_eq!(
+        take_null_delimited_record("a.rs\x001\0some content\nb.rs\x002\0x\n"),
+        Some(("a.rs", 1, "b.rs\x002\0x\n"))
     );
 }
 
