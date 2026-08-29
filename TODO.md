@@ -31,6 +31,47 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### ROUND STATUS — live, updated as the round runs
+
+Round branch `repin-2026-08-29-4111d08f9`, pushed. `main` untouched.
+
+**Refutation of scope: COMPLETE (6/6).** Results folded into the sections below.
+Net effect: 9 commits moved into the port queue, 2 live data leaks found, 2 broken
+tripwires found, 5 non-resolving shas corrected, 1 ledger entry (`cff5f778c`) found
+to describe a quarter of its commit, and the partial-hunt premise refuted outright.
+
+**Port wave 1: 5 agents, isolated worktrees off the round branch, none building.**
+
+| worktree / branch | scope | state |
+|---|---|---|
+| `port/grep-parse` | `fbbfc41f3` grep NUL-delimiting | **written, coordinator-verified, under refutation** |
+| `port/leaks-logs` | `27f8ee6c` 2 data leaks + `8ba01aa1a`/`b1731dde0`/`8936686f2` log throttles | in flight |
+| `port/shell-bugs` | `e722ebed` panic + fish kill + DCS payload + pwsh chord | in flight |
+| `port/cursor` | `ee95ac0fd` double cursor | in flight |
+| `port/completer-cache` | `213c9b32` cache bound + `98b1f5af8` font fallback | in flight |
+
+**`port/grep-parse` (commit `f79030afc`) — coordinator verification record.**
+Checked without compiling: the three pinned command-string tests preserve every
+adversarial payload character-for-character (`$(touch /tmp/warp-poc); ` + backtick +
+`id` + backtick, `owner'"'"'s code`, `$(New-Item C:\pwn); ''literal'''`) with only
+the option list changed — legitimately updated, not weakened; `GrepFileMatch` /
+`GrepLineMatch` both derive `Debug + PartialEq + Eq`, so the new `assert_eq!`s
+compile; all 8 new functions defined exactly once, no dangling test references; old
+`parse_grep_output` fully removed (0 occurrences, no dead code); the parser now
+errors only when EVERY record is unparseable, which is the actual defect fix.
+
+**The porter corrected the coordinator, with evidence.** The brief told it the 25 new
+tests in `grep_tests.rs` were "a separate work item — do not port them here." That was
+wrong: `git show fbbfc41f3` adds exactly those 25 test fns, including the six named in
+the brief. The Phase 2 queue's ACTIONABLE row mis-attributed them to a separate item.
+Porting `build_grep_content_scan_command` without its own quoting tests would have
+shipped a shell-injection surface with zero coverage. **Check whether the same
+generator defect split other commits in this round.**
+
+**Known merge conflict:** the grep porter also edited `TODO.md` in its worktree to
+close its ledger row. The coordinator owns `TODO.md` centrally; take the round
+branch's version at merge and re-apply the row closure here.
+
 ### ROUND PROTOCOL — standing orders, 2026-08-29 (maintainer)
 
 **In force for the whole round. Do not infer exceptions.**
