@@ -31,7 +31,95 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
-### TEST ADJUDICATION — Phase 2.6, in progress (1 of 5 shards reported)
+### TEST ADJUDICATION — Phase 2.6, 4 of 5 shards reported (159 of 235 tests)
+
+Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
+the round scratchpad; they are NOT yet appended to `docs/sweep-verdict-ledger.tsv`.
+
+| shard | tests | ledger rows | no applicable verdict |
+|---|---|---|---|
+| A — agent_sdk / retry | 46 | 33 | **13** |
+| B — cost / local models | 27 | 26 | 1 |
+| D — settings / CLI | 35 | 26 | **8** (+1 not-a-test) |
+| E — verify NOT-PORTABLE | 51 | — | **12 REFUTED, 2 partial** |
+| C — terminal / TUI | 76 | outstanding | outstanding |
+
+#### The "not portable" calls were wrong 27% of the time
+
+Shard E attacked 51 calls that would have permanently deleted work and **broke 12**,
+plus 2 partial. All trace to one root error: the earlier pass matched a **file name**
+(`run_agents_card_view_tests.rs`, `orchestration_event_streamer_tests.rs`) or a
+**symbol name** (`AgentRunEvent`) against a declined family, without reading the body
+or checking whether the fork defines the symbol under a different path.
+
+- **7 `classify_family_event` tests.** The premise that `AgentRunEvent` is a deleted
+  `server_api` type is **false** — the fork defines it itself at
+  `app/src/ai/agent_events/mod.rs:49` and feeds it from a **BYOP provider SSE stream**
+  (`claude_code/parent_bridge.rs`), not from Warp. The fork already open-codes one arm
+  of the routing table by hand. Port cost ~60 lines, no `AIClient`, no `warp_graphql`.
+- **4 `is_orphaned_by_finished_output` tests.** They import nothing from RunAgents. The
+  predicate's own doc says it mirrors `block/view_impl/output.rs`'s `action_icon` — and
+  the fork has that mirror **live at `output.rs:3175`, with zero coverage**
+  (coordinator-verified: 0 hits in `output_tests.rs`). DECLINED #290 over-applied.
+- **`drop_pending_events_for_exiting_conversation`.** Pure local queue; everything it
+  needs exists in `orchestration_events.rs` except a 12-line `HashMap::remove`. Local
+  orchestration was explicitly **reversed back into scope** by `DECLINED.md:213`.
+
+**Coordinator error while verifying this:** I grepped `pub struct AgentRunEvent`, found
+nothing, and nearly discounted a correct refutation. It is `pub(crate) struct`. Too
+narrow a pattern — the same failure mode as citing a line without reading the attribute
+above it.
+
+#### Real portable debt found: 34 tests, none of which had a verdict to sit in
+
+- **Cluster A (6) — QUALITY-1801 exit-commit ordering.** Once an ambient run commits to
+  exiting, a buffered child message must not restart MAA and flip a terminal
+  conversation back to `InProgress`. Fully local. The adjudicator checked it against the
+  two decisions that *look* like they cover it and showed neither does: the 2026-08-17
+  idle-window decline named only failure-side/refreshable APIs (`idle_on_complete` is
+  live), and `DECLINED.md:213` reversed the orchestration decline for the local half.
+  **Overlaps shard E's `drop_pending_events_...` — port together.**
+- **Cluster B (6) — REMOTE-2269 shared recovery budget.** Retries and resumes must draw
+  from one counter. The fork still has the pre-fix 5-bool `recovery_action`, and its own
+  test comment states the exact behaviour the fix removes. **This is the same defect as
+  the `1a29f680d` PARTIAL already in the port queue** — the tests and the commit are one
+  work item.
+- **Settings empty-category guard (2).** One is the cheapest item found all round —
+  **zero production change**, the fork already behaves correctly. The other names a live
+  defect: a category whose only widget cannot render draws a bare header until the user
+  types.
+- **`ADD_MCP` GUI-only registration (1)** — live and untested.
+- **12 refuted above.**
+
+#### Maintainer decisions surfaced
+
+- **The slug migration is not portable as tests.** Adopting `from_slug` means adopting
+  upstream's page split — it asserts `"AI"→WarpAgent`, `"Code"→CodeIndexing`,
+  `"MCP Servers"→AgentMCPServers`, and all three are **live, distinct, shipping sections
+  here**. And `slugs_were_seeded_from_the_display_labels_they_replaced` would be an
+  outright regression: it welds the stored key to the `Display` label, which upstream can
+  afford because its labels are English literals and the fork cannot because its are i18n
+  keys. The fork's deliberate inverse is `persistence_keys_are_unique_and_not_localized`.
+- **`WARP_*` env aliases.** Mechanism is plainly portable; the question is whether a
+  de-Warped fork advertises `WARP_*` names to third-party agents. `DECLINED.md:182`
+  covers not *renaming* existing wire tokens — a different question from adding aliases.
+- **`crates/build_cache`'s absence is undocumented.** Coordinator-verified: zero mentions
+  in `DECLINED.md`, `TODO.md`, or `docs/STATE.md`. Nothing records whether it was a
+  decision.
+
+#### COORDINATOR TOOLING DEFECT — the 235-vs-228 overcount is mine
+
+My extraction script matched `fn <name>(` **without requiring a preceding `#[test]` and
+without tracking nesting depth**, so it collected helpers declared inside test bodies.
+Confirmed: `is_listed` at `4111d08f9:app/src/settings_view/mod_tests.rs:161` is a nested
+helper inside `#[test] fn all_sections_list_is_exhaustive()`. **Do not insert it into the
+ledger.** Pin `mod_tests.rs` has six more such helpers; pin `lib_tests.rs` has 148
+top-level `fn` against 144 `#[test]`.
+
+**Re-run the extraction with an attribute + depth check before trusting any queue count**,
+including the 228 and the 1,100 tree-wide figure.
+
+### TEST ADJUDICATION — shard detail
 
 235 tests across 42 files, sharded 5 ways. **Every verdict is read from the test
 BODY at `4111d08f9`**, not from its name — the characterisation pass that preceded
