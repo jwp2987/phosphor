@@ -389,7 +389,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       (note `zsh_body.sh:577` already does this correctly — the fork is
       inconsistent across its own three shells, not divergent); PowerShell
       kill-buffer chord written in the same read as command text.
-- [ ] `fbbfc41f3` **P0 — grep tool `ParseIntError` discards ALL matches.**
+- [x] `fbbfc41f3` **P0 — grep tool `ParseIntError` discards ALL matches.** PORTED
+      (branch `port/grep-parse`): `--null`/`-z` + `parse_null_delimited_grep_output`
+      + BusyBox `run_grep_per_file_fallback`, and all 25 of the commit's new tests.
+      The Phase 2 queue attributed the six
+      `build_grep_content_scan_command_*_quoting_layers` tests to a separate work
+      item; they are in `fbbfc41f3` itself, so they landed here.
       `parse_grep_output` (`grep.rs:650`) splits on `:` and parses field 2 as a line
       number, so a Windows drive path over the remote-server extension or a Go
       vendor path (`vendor/example.com/foo:v1/x.go`) makes it `return Err` on the
