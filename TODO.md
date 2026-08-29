@@ -295,6 +295,57 @@ hand: `Artifact` does derive `PartialEq`, `NotebookId::from(String)` is already 
 is in scope at S1's insertion point. **My `BRIEF-COMMON.md` named the wrong rustfmt edition** —
 `.rustfmt.toml` pins `edition = "2024"`, not 2021 (caught by S1).
 
+#### Results — S6 (4 of 9 in)
+
+**2 ported, 6 BLOCKED, 12 not portable.** The two ports closed a real production
+capability gap rather than just adding coverage: the fork's `with_bounded_retry`
+hardcoded both `MAX_ATTEMPTS` and `is_transient_http_error`. It now delegates to a new
+`with_bounded_retry_using(operation, max_attempts, is_transient, attempt_fn)`
+(`app/src/util/retry_strategies.rs:151`), plus `backoff_after_attempts` with a
+`BACKOFF_MAX_EXPONENT` cap so a budget larger than `MAX_ATTEMPTS` cannot grow the
+interval without bound. **Not a dead leaf** — every existing caller and all four existing
+`with_bounded_retry` tests now run through the new path.
+**Coordinator-verified behaviourally equivalent for existing callers:** the old loop's
+cumulative `delay` after attempt *n* was `INITIAL_BACKOFF * 2^(n-1)`, which is exactly what
+`backoff_after_attempts(n)` computes; `Duration` is already imported at `:2`.
+
+**`60d602df6` re-verified independently and stays BLOCKED**, with counts rather than
+assertions: `OrchestrationEventService` registered **0** times in `app/src/lib.rs`;
+`EventsReady` emitted 3× and subscribed nowhere; `conversation_ready_for_pending_events`
+is a *comment*, not code; `exit_commit_handle`, `run_conversation_id` and three
+`*_for_test` seams are **0 hits each**; four test scaffolding helpers absent entirely; the
+fork's `IdleTimeoutSender` has no `on_commit` and no `IdleWait`. The agent explicitly
+declined to port `with_on_commit` standalone to rescue one test, because it would have no
+production caller — the unreachable-surface shape the ledger reserves for the unblocking
+increment. Nothing re-filed as untracked.
+
+**Five more brief claims refuted, and two invert my reasoning:**
+- I said the `ephemeral_installation_id_*` four were "likely local — MCP identity, not Warp
+  cloud". Wrong: upstream's inline `MCPSpec::Json` arm leaves ids **random**, exactly as the
+  fork already does; the deterministic id is reached *only* from the managed-MCP arms and
+  exists only so a **rebuilt cloud sandbox** re-resolves to an id already in history.
+- I said `well_known_resolution_*` was "public-spec discovery, not Warp-specific". Wrong:
+  `MCPSpec::WellKnown("linear")` is a bare id whose meaning is owned by Warp's server, and
+  `mcp_config.rs:40-48` already carries a standing "do not port the well-known variant".
+- I said the two `sandbox_deadline`/`terminated_by_signal` siblings were "plain error
+  classification, probably portable" — **the file-level-verdict trap running the other way.**
+  All three need `classify_driver_error`, whose signature takes `warp_graphql::ai` and
+  `server_api::ai` types; `SCOPE-AI.md:128` already had this right at verdict C.
+- I pointed at `agent_sdk/retry.rs`; at the pin that is a 17-line re-export shim and the
+  implementation lives in `server/retry_strategies.rs`. Creating the shim here would be
+  dead surface — the fork's `agent_sdk` has no retry call sites.
+
+**A correction to my own mid-flight correction.** I told S6 that `0e075a072`'s consumers
+were "harness plugins already removed under #595". Imprecise: #595 removed the *Oz platform
+plugin* install methods; the **notification** plugins were kept and still work
+(`DECLINED.md:182`). The decline holds on a stronger fact — nothing in this fork consumes
+those vars at all, and the notification plugins reach the terminal over OSC 777 /
+`WARP_CLI_AGENT_PROTOCOL_VERSION`, not task env vars. That rationale row should be amended.
+
+Adjudication for the managed-MCP and `ephemeral_installation_id` families is now recorded
+as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
+rather than re-deriving it.
+
 ### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
