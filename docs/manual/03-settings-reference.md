@@ -410,7 +410,7 @@ Cursor, Vim mode, and input-editing behaviour.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `updates.automatic_updates_enabled` | boolean | `true` | Whether Phosphor checks for and downloads updates in the background. |
+| `updates.automatic_updates_enabled` | boolean | `true` | Whether Phosphor checks for and downloads updates in the background. **Live on macOS and Windows** (both release bundlers compile the `autoupdate` feature in). **Inert on Linux**, where the bundler does not, so the `true` default gates a check that never runs. |
 
 **Caveat.** This is the *GUI* updater, and in a stock build it has nothing to
 drive: the `autoupdate` Cargo feature is not in Phosphor's default feature set,
@@ -780,7 +780,7 @@ works is the most likely way to waste an afternoon.
 | `account.is_settings_sync_enabled` | No cloud, no syncer. Only draws a "local only" icon. |
 | `privacy.telemetry_enabled` | Telemetry channel physically removed; toggle never rendered. |
 | `cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok` | There are no credits. The value is computed and never read. |
-| `updates.automatic_updates_enabled` | The GUI updater is not compiled into a stock build. Real if you build with `--features autoupdate`. |
+| ~~`updates.automatic_updates_enabled`~~ | **Removed from this table — the claim was wrong.** The feature is not a Cargo *default*, but both release bundlers add it explicitly (`script/macos/bundle:358`, `script/windows/bundle.ps1:125`), and `FeatureFlag::Autoupdate` **is** in `RELEASE_FLAGS`. So this setting is live on macOS and Windows. It is inert only on **Linux**, whose bundler ships `release_bundle,crash_reporting` with no `autoupdate`. See §Autoupdate. |
 | `general.autoupdate_enabled` | The shipped TUI configures no update endpoint. |
 | `agents.voice.voice_input_enabled`, `agents.voice.voice_input_toggle_key` | Audio capture works; transcription is disabled because the BYOP protocol cannot carry audio. Recording always ends in a transcription failure. |
 | `general.default_session_mode = "ambient_agent"` | Ambient (cloud) agents do not exist here. |
@@ -919,7 +919,7 @@ Group declarations (all defaults/paths/platforms above are read from these):
 Inertness claims:
   app/src/settings_view/features_page.rs:6469 and app/src/settings_view/keybindings.rs:1158 and app/src/settings_view/settings_page.rs:522 (settings_sync_enabled only drives a "local only" icon); no CloudPreferencesSyncer exists in the tree
   app/src/ai/agent/api.rs:512-513,642 + grep: allow_use_of_warp_credits_with_byok is never read after being set
-  crates/warp_features/src/lib.rs RELEASE_FLAGS block (FeatureFlag::Autoupdate deliberately absent; comment explains) + app/Cargo.toml:449 ("autoupdate = []" not in default) + app/src/lib.rs:2928 (#[cfg(feature = "autoupdate")])
+  app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle:358 and script/windows/bundle.ps1:125 (both ADD the feature) + script/linux/bundle:24 (does not) + crates/warp_features/src/lib.rs RELEASE_FLAGS (FeatureFlag::Autoupdate IS present -- an earlier draft claimed it was absent, which was wrong) + app/src/lib.rs:2928
   app/src/autoupdate/mod.rs:273-274,313-317 (both autoupdate paths gated on FeatureFlag::Autoupdate / can_autoupdate)
   app/src/autoupdate/github.rs:1-6 (Oss autoupdate source is GitHub Releases)
   DECLINED.md "TUI autoupdate" row (crates/warp_tui/src/bin/oss.rs:42 hardcodes autoupdate_config: None; server_root_url is a 192.0.2.0:9 sentinel)

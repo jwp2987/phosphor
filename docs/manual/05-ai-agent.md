@@ -35,24 +35,24 @@ A provider is: a **name**, an **API protocol**, a **base URL**, an optional
 metadata lives in plain text in `settings.toml`; the API key does not — it goes
 into your OS secure storage.
 
-| API type | Settings dropdown label | Default base URL |
+| Settings dropdown label | `api_type` in `settings.toml` | Default base URL |
 |---|---|---|
-| `OpenAi` (default) | OpenAI | `https://api.openai.com/v1/` |
-| `OpenAiResp` | OpenAI-Response | `https://api.openai.com/v1/` |
-| `Anthropic` | Anthropic | `https://api.anthropic.com/v1/` |
-| `Gemini` | Gemini | `https://generativelanguage.googleapis.com/v1beta/` |
-| `DeepSeek` | DeepSeek | `https://api.deepseek.com/v1/` |
-| `Ollama` | Ollama | `http://localhost:11434/` |
-| `Vertex` | Vertex AI | none — built from project + location |
+| OpenAI (default) | `open_ai` | `https://api.openai.com/v1/` |
+| OpenAI-Response | `open_ai_resp` | `https://api.openai.com/v1/` |
+| Anthropic | `anthropic` | `https://api.anthropic.com/v1/` |
+| Gemini | `gemini` | `https://generativelanguage.googleapis.com/v1beta/` |
+| DeepSeek | `deep_seek` | `https://api.deepseek.com/v1/` |
+| Ollama | `ollama` | `http://localhost:11434/` |
+| Vertex AI | `vertex` | none — built from `vertex_project` + `vertex_location` |
 
-The `OpenAi` type is the catch-all for anything speaking OpenAI Chat
+The OpenAI type is the catch-all for anything speaking OpenAI Chat
 Completions: OpenRouter, DeepInfra, Groq, SiliconFlow, Moonshot, Zhipu GLM,
 DashScope's OpenAI-compatible endpoint, a local vLLM or llama.cpp server, and so
-on. `OpenAiResp` is the newer `/v1/responses` API. Pick `DeepSeek` rather than
-`OpenAi` if you use a DeepSeek *thinking* model (`deepseek-reasoner` and
+on. OpenAI-Response is the newer `/v1/responses` API. Pick DeepSeek rather than
+OpenAI if you use a DeepSeek *thinking* model (`deepseek-reasoner` and
 friends) — the plain OpenAI adapter drops the `reasoning_content` field those
 models require on multi-turn requests and the provider returns a 400.
-`Vertex` is the one type with no static key: it mints a short-lived GCP bearer
+Vertex AI is the one type with no static key: it mints a short-lived GCP bearer
 token from your `gcloud` credentials, and its endpoint is built from a GCP
 project ID and location instead of a base URL.
 
@@ -221,7 +221,7 @@ Type `/` in the agent input. The ones that matter for the agent itself:
 | `/init` | Generate or update an `AGENTS.md` |
 | `/add-rule`, `/open-rules`, `/open-project-rules` | Manage agent rules |
 | `/mcp`, `/add-mcp`, `/open-mcp-servers` | MCP servers |
-| `/index` | Index this codebase |
+| `/index` | Index this codebase — only listed when codebase indexing is on, which it cannot be in a stock build; see [Codebase search](#codebase-search--read-this-before-expecting-it) |
 | `/status` | Session status |
 | `/export-to-file`, `/export-to-clipboard` | Export the conversation |
 | `/open-settings-file` | Open `settings.toml` |
@@ -357,7 +357,8 @@ to open the context menu. Available categories:
 | Skills | rewrites the `@` into `/skill-name` | — |
 
 Mentioning a file inserts its **path**, not its contents; the agent then reads
-it with its own file tools, subject to the read permissions above. (Warp's
+it with its own file tools, subject to the read permissions described in
+[Permissions and safety](#permissions-and-safety). (Warp's
 "Commands" category exists in the source but is not compiled into this build.)
 
 ### Skills
@@ -493,24 +494,26 @@ The built-in **allowlist** — used when "Execute commands" is *Always ask* — 
 
 For each command the agent wants to run, in this order:
 
-1. The command string is split into its sub-commands, and each sub-command is
-   expanded into every shell-equivalent spelling (quotes removed, leading
-   environment assignments stripped, line continuations folded, embedded
-   newlines flattened). **If any spelling of any sub-command matches the
-   denylist, the command is refused** and you are asked.
-2. If **auto-approve** is on for this conversation, the command runs.
-3. Otherwise the profile's "Execute commands" setting decides:
+1. **Denylist.** The command string is split into its sub-commands, and each
+   sub-command is expanded into every shell-equivalent spelling (quotes removed,
+   leading environment assignments stripped, line continuations folded, embedded
+   newlines flattened). If any spelling of any sub-command matches the denylist,
+   the command is refused and you are asked. *(Exception: when auto-approve is on
+   and `auto_approve_bypasses_command_denylist` is left at its default `true`,
+   your denylist is skipped at this step. See below.)*
+2. **Auto-approve.** If auto-approve is on for this conversation, the command
+   runs.
+3. **The profile's "Execute commands" setting** decides the rest:
    - **Always allow** → runs.
    - **Always ask** → runs only if *every* sub-command matches the allowlist;
      otherwise you are asked.
-   - **Agent decides** (the default when set) → if the model marked the command
-     non-risky, it runs. Otherwise: a command containing a redirection is
-     refused; a command where every sub-command matches the allowlist runs; a
-     command the model marked read-only runs; anything else is refused and you
-     are asked.
+   - **Agent decides** → if the model marked the command non-risky, it runs.
+     Otherwise: a command containing a redirection is refused; a command where
+     every sub-command matches the allowlist runs; a command the model marked
+     read-only runs; anything else is refused and you are asked.
 
-The denylist therefore takes precedence over the allowlist and over "Always
-allow" — with one deliberate exception, described next.
+So the denylist outranks both the allowlist and "Always allow" — with the one
+deliberate exception noted in step 1, described next.
 
 ### Auto-approve
 
@@ -619,6 +622,12 @@ at *Settings → AI → Third party CLI agents* and under `agents.third_party.*`
 | `submit_on_ctrl_enter` | `false` | Rich Input submits on Ctrl+Enter, Enter inserts a newline |
 | `cli_agent_toolbar_enabled_commands` | empty | map custom command regexes to a CLI agent |
 | `per_agent` | empty | per-agent `toolbar` / `tabmenu` / `titlebar` visibility |
+
+These surfaces are deliberately **not** gated on
+`agents.warp_agent.is_any_ai_enabled`. That switch governs Phosphor's own AI;
+Claude Code and Codex are programs you installed yourself, and hiding a
+quick-launch button for a command you can type anyway would withhold nothing.
+Their visibility is controlled only by the per-agent settings above.
 
 Richer status (a working indicator that tracks the agent's turn) needs the
 vendor's Phosphor notification plugin: `warpdotdev/claude-code-warp` ≥ 2.0.0 for
@@ -745,3 +754,356 @@ neutral stop rather than an error. Whether the published Claude Code and Codex
 plugins actually send it on user interrupt is a property of those plugins, not
 of Phosphor, and is not verifiable from this repository.)
 
+---
+
+## Reference
+
+### Settings
+
+All paths are keys in `settings.toml`. Open it with `/open-settings-file`.
+
+#### Master switches
+
+| TOML path | type | default | what it does |
+|---|---|---|---|
+| `agents.warp_agent.is_any_ai_enabled` | bool | `true` | Turns every *Phosphor* AI feature on or off. When `false`, the AI settings page greys out and AI slash commands disappear. It deliberately does **not** disable the third-party CLI agent surfaces — see [Third-party CLI agents](#third-party-cli-agents). |
+| `agents.warp_agent.active_ai.enabled` | bool | `true` | Active AI (proactive suggestions) as a group |
+
+#### Providers and models
+
+| TOML path | type | default | what it does |
+|---|---|---|---|
+| `agents.warp_agent.providers` | list of providers | empty | Your BYOP providers. Keys are **not** stored here. |
+| `agents.warp_agent.catalog_provider_visibility_overrides` | list of strings | empty | Which models.dev quick-add chips are shown or hidden |
+| `agents.byop.last_used_model_id` | string | empty | Remembers the model you last picked |
+| `agents.byop.last_used_reasoning` | table | empty | Remembers reasoning effort per (API type, model) |
+| `agents.warp_agent.prompt_template_dir` | string | empty | Directory of overriding system-prompt templates; empty uses the built-ins. Overridden by the `ZAP_PROMPT_DIR` environment variable. Suggested location `~/.phosphor/prompts`. |
+
+Per-provider fields: `name`, `api_type`, `base_url`, `models`, `extra_headers`,
+`vertex_project`, `vertex_location`, `disabled`, `token_price`.
+Per-model fields: `name`, `id`, `context_window` (0 = unknown),
+`max_output_tokens` (0 = unspecified), `reasoning` (default `false`),
+`tool_call` (default `true`), `image`/`pdf`/`audio` (unset = auto-detect),
+`disabled`, `token_price`.
+`token_price` fields: `input_usd_per_million_tokens`,
+`output_usd_per_million_tokens`, `cache_read_usd_per_million_tokens`,
+`cache_write_usd_per_million_tokens`.
+
+#### Automatic compaction
+
+| TOML path | type | default |
+|---|---|---|
+| `agents.byop_compaction.auto` | bool | `true` |
+| `agents.byop_compaction.prune` | bool | `true` |
+| `agents.byop_compaction.tail_turns` | u32 | `2` |
+| `agents.byop_compaction.preserve_recent_tokens` | u32 | `0` (auto) |
+| `agents.byop_compaction.reserved` | u32 | `0` (auto) |
+| `agents.byop_compaction.model.provider_id` | string | empty |
+| `agents.byop_compaction.model.model_id` | string | empty |
+
+#### Permissions (seed values for the Default profile only)
+
+| TOML path | type | default |
+|---|---|---|
+| `agents.profiles.agent_mode_command_execution_allowlist` | list of regexes | `cat`, `echo`, `find`, `grep`, `ls`, `which` |
+| `agents.profiles.agent_mode_command_execution_denylist` | list of regexes | the shell/network/`rm` list above |
+| `agents.profiles.agent_mode_execute_readonly_commands` | bool | `false` |
+| `agents.profiles.agent_mode_coding_permissions` | enum | `AlwaysAskBeforeReading` |
+| `agents.profiles.agent_mode_coding_file_read_allowlist` | list of paths | empty |
+| `agents.warp_agent.other.auto_approve_bypasses_command_denylist` | bool | `true` |
+
+#### Input and active AI
+
+| TOML path | type | default |
+|---|---|---|
+| `agents.warp_agent.input.ai_auto_detection_enabled` | bool | `false` |
+| `agents.warp_agent.input.nld_in_terminal_enabled` | bool | `true` |
+| `agents.warp_agent.input.ai_command_denylist` | string | empty |
+| `agents.warp_agent.input.include_agent_commands_in_history` | bool | `false` |
+| `agents.warp_agent.active_ai.intelligent_autosuggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.agent_mode_query_suggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.code_suggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.natural_language_autosuggestions_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.git_operations_autogen_enabled` | bool | `true` |
+| `agents.warp_agent.active_ai.rule_suggestions_enabled` | bool | `true` |
+
+#### Presentation and knowledge
+
+| TOML path | type | default |
+|---|---|---|
+| `agents.warp_agent.other.show_conversation_history` | bool | `true` |
+| `agents.warp_agent.other.show_agent_notifications` | bool | `true` |
+| `agents.warp_agent.other.should_render_use_agent_toolbar_for_user_commands` | bool | `true` |
+| `agents.warp_agent.appearance.hide_completed_tool_cards` | bool | `false` |
+| `agents.knowledge.rules_enabled` | bool | `true` |
+| `agents.knowledge.warp_drive_context_enabled` | bool | `true` |
+| `agents.mcp_servers.file_based_mcp_enabled` | bool | `false` |
+| `agents.statusline` | table | default statusline |
+
+#### Third-party CLI agents
+
+| TOML path | type | default |
+|---|---|---|
+| `agents.third_party.should_render_cli_agent_toolbar` | bool | `true` |
+| `agents.third_party.auto_toggle_composer` | bool | `true` |
+| `agents.third_party.auto_open_composer_on_cli_agent_start` | bool | `false` |
+| `agents.third_party.auto_dismiss_composer_after_submit` | bool | `false` |
+| `agents.third_party.submit_on_ctrl_enter` | bool | `false` |
+| `agents.third_party.cli_agent_toolbar_enabled_commands` | table | empty |
+| `agents.third_party.per_agent` | table | empty |
+
+#### Context sources living outside the `agents.` tree
+
+| TOML path | type | default |
+|---|---|---|
+| `terminal.input.outline_codebase_symbols_for_at_context_menu` | bool | `true` |
+| `code.indexing.agent_mode_codebase_context` | bool | `false` (and the UI is hidden without `ZAP_UNSTABLE_FEATURES=full_source_code_embedding`) |
+| `code.indexing.agent_mode_codebase_context_auto_indexing` | bool | `false` (same gate) |
+
+### Environment variables
+
+| variable | read by | effect |
+|---|---|---|
+| `EXA_API_KEY` | Phosphor's `websearch` tool | Uses your Exa account instead of the anonymous public endpoint |
+| `ZAP_PROMPT_DIR` | prompt renderer | Overrides `agents.warp_agent.prompt_template_dir` |
+| `ZAP_BYOP_LOG_FULL_REQUEST` | BYOP request logging | Logs full request bodies rather than counts and digests |
+| `ZAP_UNSTABLE_FEATURES` | startup | Comma-separated opt-in feature list, or `all` |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` | the Claude Code / Codex **harnesses only** | Not read by Phosphor's own agent |
+
+### Command-line
+
+`phosphor-oss` accepts the agent CLI subcommands. The examples in `--help` use
+the real binary name, but the usage lines still say `oz` (the internal parser
+name) and one flag's help text still says `warp` — type `phosphor-oss`.
+
+| command | what it does |
+|---|---|
+| `phosphor-oss agent run -p "<prompt>"` | Run a task with Phosphor's own agent |
+| `phosphor-oss agent run --harness claude -p "…"` | Run it under Claude Code instead (hidden flag; also `gemini`, `codex`) |
+| `phosphor-oss agent list` | List available agents |
+| `phosphor-oss agent profile …` | Manage agent profiles |
+| `phosphor-oss agent message send/list` | Local on-disk mailbox used by `/orchestrate` children |
+| `phosphor-oss model list` | Print every model ID the picker offers (BYOP entries look like `byop:<provider-uuid>:<model-id>`) |
+
+There is a `provider` subcommand in the parser, but it is **not** about AI
+providers — it is a Linear/Slack integration stub. It is hidden from `--help`
+and disabled in shipped builds, so `phosphor-oss provider …` exits with
+`error: unrecognized subcommand 'provider'`. Provider setup happens in the
+settings page or via `/api-keys`, never here.
+
+`phosphor-tui` accepts `--resume <id>`, `--auto-approve`, `--api-key`
+(`WARP_API_KEY`; the app's own auth flag, not a provider key), and `--set-provider-api-key` / `--clear-provider-api-key`.
+Note the last two write a **legacy four-provider key store** (`openai`,
+`anthropic`, `google`, `grok`) that the BYOP send path does not read. To store a
+key the agent will actually use, use `/api-keys` or the Providers settings page.
+
+---
+
+## Not available in Phosphor
+
+Each of these exists in Warp and is deliberately absent here. Where a decision
+was recorded, `DECLINED.md` has the reasoning.
+
+- **Cloud agents and hosted runners.** There is no server to run an agent on.
+  The "RunAgents"/host-picker orchestration UI needs Warp's GraphQL runner API
+  and the `CloudAgentRunners` flag; it was not ported. Local child agents via
+  `/orchestrate` are the substitute, and they run as ordinary processes on your
+  machine.
+- **Ambient agents.** The spawn API is present but returns
+  `Agent spawning is disabled in Phosphor` on every call. Ambient agents needed
+  a server to host the run and a shared session to watch it.
+- **Agent session sharing.** `--share` still parses (hidden, so old scripts do
+  not break) and does nothing; sharing needed Warp's backend to host the session
+  and resolve `team:` / `public:` / `user@host` recipients.
+- **Teams, organisations and org policy.** `has_teams()` is permanently `false`
+  and `current_team()` always returns `None`. The workspace-level agent denylist,
+  sandboxed-agent policy and agent attribution settings therefore have nothing
+  to enforce and no UI.
+- **Anything `warp-server`.** No account, no login, no sync, no cloud
+  preferences, no hosted transcript or artifact upload, no Warp Drive
+  (the local Library remains).
+- **Credits, billing, spend limits and usage quotas.** There is no billing
+  relationship to report on. The credits widget in the AI settings page is
+  compiled but never rendered. `/usage` reports context-window occupancy and
+  `/cost` reports an estimate from rates you supply — see
+  [Cost and usage](#cost-and-usage). The provider-cost baseline that Warp
+  restores with a conversation, and its OpenAI long-context pricing warning, are
+  both declined for the same reason.
+- **Agent commit/PR attribution** (`Co-Authored-By`). The toggle was removed
+  because the decision was made server-side; nothing local ever emitted the
+  line.
+- **`/logout`.** BYOP has no account to log out of, so the command is not
+  registered rather than registered as a no-op.
+- **`/voice` and voice input for the agent.** Audio capture works; the
+  transcription backend was Warp's cloud Wispr service and is disabled. The BYOP
+  protocol cannot carry audio.
+- **xAI / Grok subscription OAuth.** Phosphor takes API-key credentials only. An
+  xAI API key works — add it as an ordinary provider.
+- **Multi-agent orchestration beyond local children.** Cloud-runner children,
+  credit rollup, the orchestration topology view and the child-agent cycling
+  keybindings are out. `/orchestrate` with local Claude Code children is in.
+- **Screen recording and computer-use session recording.** Not cloud — just not
+  shipped. Computer *use* itself works and is off by default.
+- **The `InitProject` first-run wizard.** Superseded by `/init`, which generates
+  or updates an `AGENTS.md` and works in both the GUI and the TUI.
+- **A GUI harness picker.** Choosing Claude Code or Codex as the agent harness
+  is CLI-only (`agent run --harness`) or `/orchestrate` (Claude only).
+- **A working Ctrl-C cancel for third-party harnesses.** See
+  [Interrupting the agent](#interrupting-the-agent) — the keystroke reaches the
+  harness, but Phosphor synthesises no cancellation of its own, and the code
+  that would has no reachable entry point in any shipped build.
+
+Two more that are *not* declined but are unreachable in a stock build, so do not
+plan around them: embedding-based **codebase indexing** (needs
+`ZAP_UNSTABLE_FEATURES=full_source_code_embedding`) and the **`search_codebase`
+tool** (per-profile flag with no way to set it).
+
+### Names you may notice are stale
+
+- The TUI's cargo target is `zap-tui-oss`; the binary you download and run is
+  `phosphor-tui`.
+- `phosphor-oss --help` prints `oz` in its usage lines, and `--model`'s help
+  text refers to `warp model list`.
+- Project skills are still read from `.warp/skills`, and files an agent-SDK
+  session downloads land in `<working dir>/.warp/attachments`. The home skills
+  directory, by contrast, is `~/.phosphor/skills`.
+
+<!-- SOURCES
+Orientation / binaries / identity
+- app/Cargo.toml:25-28 (bin phosphor-oss), crates/warp_tui/Cargo.toml:9,14-16 (bin zap-tui-oss, autobins=false)
+- .github/workflows/phosphor_release.yml:408-434,808-832,890-911 (zap-tui-oss renamed to phosphor-tui on release)
+- crates/warp_tui/src/bin/oss.rs:16-45 (Channel::Oss, AppId dev.phosphor.Phosphor, shared config/secrets with GUI)
+- app/src/bin/phosphor_oss.rs:30,38 (same app id; phosphor.log)
+- crates/warp_core/src/paths.rs:37-46 (.phosphor for Oss channel), :146-158 (config_local_dir), :298-342 (project_dirs, linux name "phosphor"), :71-73 (warp_home_skills_dir), :75-86 (warp_home_prompts_dir), :174-184 (state_dir)
+- app/src/settings/mod.rs:648-654 (settings.toml = config_local_dir()/settings.toml)
+- README.md:210-216 (app id / binary / config path rename table), :227 (API keys cannot be copied)
+
+Providers / BYOP
+- app/src/settings/ai.rs:1012-1040 (AgentProviderApiType variants + docs), :1112-1122 (dropdown labels), :1151-1164 (default_base_url), :1010 (serde snake_case), :992-996 (AgentProviderKind)
+- app/src/settings/ai.rs:1184-1246 (AgentProvider fields), :1483-1543 (AgentProviderModel), :1266-1286 + :1259-1265 (TokenPrice + TOML example), :1359-1375 (resolved_base_url / has_endpoint), :1415-1428 (is_usable / effectively_disabled), :1437-1463 (vertex endpoint + model family), :1560-1565 (model id trimmed)
+- app/src/settings/ai.rs:2599-2607 (agents.warp_agent.providers, SyncToCloud::Never), :2598 (api_key not persisted here)
+- app/src/ai/agent_providers/secrets.rs:1-13 (keyring key "AgentProviderSecrets"), :98-116 (JSON map provider_id -> key)
+- app/src/lib.rs:1317-1330 (secure storage registration per platform)
+- crates/warp_core/src/channel/state.rs:128-133 + crates/warp_core/src/app_id.rs:78-86 (keyring service = app id)
+- app/src/ai/agent_providers/mod.rs:57-77 (bearer stripped on non-loopback http://), :159-163 and :303-310 (empty key = no auth header), :207-208 (picker label), :234-253 (empty-picker fallback), :289-312 (lookup_byop), :320-331 (active_context_window)
+- app/src/ai/agent_providers/openai_compatible.rs:81-94 (normalize_base_url), :102+ (GET {base}/models), :172+ (Ollama /api/tags), :53-68,:111-120,:184-187 (strip-and-continue)
+- app/src/ai/agent_providers/models_dev.rs:33-36 (URL, cache file, 24h TTL, 15s timeout), :385-410 (into_agent_provider_model; token_price never filled), :431-443 (infer_api_type), :365-376 (quick-add visibility)
+- app/src/ai/agent_providers/vertex_auth.rs:24-52 (token TTL, gcloud auth login hint, debounce), :14-16 (no service-account path)
+- app/i18n/en/warp.ftl:1622-1717 (provider page strings incl. empty state, api-key placeholder, Fetch from API, Sync from models.dev, Quick add, Saved toast, vertex login)
+- app/src/ai/agent_providers/wire_inspector.rs:1-7 and wire_log.rs:10-20 (inspector arms only when opened; needs non-zero context window)
+- app/src/ai/llms.rs:697-728 (model precedence: per-view override, byop_last_used_model_id, profile base_model, default)
+- DECLINED.md:96 (xAI/Grok subscription OAuth declined; API keys only)
+- crates/ai/src/llm_provider.rs:29-47 (LLMProvider; Xai excluded from pasted-key support)
+- crates/warp_tui/src/session.rs:50 (CLI_NAME "phosphor-tui"), :55-92 (TuiArgs), :169-215 (set/clear-provider-api-key writes ApiKeyManager)
+- crates/ai/src/api_keys.rs:7,21-26 (keyring key "AiApiKeys"; fixed four providers), :121-181 (api_keys_for_request)
+- app/src/ai/agent_providers/chat_stream.rs (no api_keys reference; BYOP path never reads ApiKeyManager) and app/src/ai/agent/api.rs:508-511 (only consumer)
+
+Slash commands / keybindings
+- app/src/search/slash_command_menu/static_commands/commands.rs:12-625 (all commands), :304-311 (/model), :313-324 (/api-keys, fork-native, AI_ENABLED), :326-333 (/profile), :379-388 (/queue), :599-625 (/usage, /cost with rationale)
+- app/src/search/slash_command_menu/static_commands/mod.rs:27-47 (Availability bits)
+- app/i18n/en/warp.ftl:2642-2705 (slash-command descriptions)
+- app/src/terminal/view/init.rs:1126-1170 (cmd-enter / ctrl-shift-enter StartNewAgentConversation + SetInputModeAgent; cmd-i/ctrl-i pair), :385-395 (terminal:cancel_command = ctrl-c), :999-1006 (terminal:toggle_autoexecute_mode = cmdorctrl-shift-I, gated on FastForwardAutoexecuteButton), :45-49 (binding name constants)
+- app/Cargo.toml:480-661 (default features; includes agent_mode, agent_view, agent_harness, fast_forward_autoexecute_button, agent_decides_command_execution, codex_plugin, list_skills, bundled_skills, agent_view_block_context, ai_context_menu_code, drive_objects_as_context, diff_set_as_context, conversations_as_context)
+- app/src/lib.rs:2926-3350 (cargo-feature -> FeatureFlag mapping), :3366-3439 (UNSTABLE_FEATURES / ZAP_UNSTABLE_FEATURES)
+
+Conversations / blocks
+- crates/warp_tui/src/agent_block.rs:1-6 (one exchange per block), agent_block_sections.rs:28-35 ("> " input prefix, section renderers)
+- crates/ai/src/agent/action/mod.rs:41-166 (agent action types)
+- app/src/ai/agent_providers/tools/*.rs (tool names: shell.rs:120 run_shell_command, files.rs:153 read_files, edit.rs:259 apply_file_diffs, search.rs:83 grep, :238 file_glob, ask.rs:256 ask_user_question, skill.rs:88 read_skill, long_shell.rs:149,236, markers.rs:49,126, documents.rs:127,216,323, websearch.rs:21, webfetch.rs)
+- app/src/ai/agent/conversation.rs:1297-1330 (is_entirely_passive / is_single_passive_exchange), :1352-1367 (should_exclude_from_navigation)
+- app/src/ai/blocklist/history_model.rs:1072-1076 (is_entirely_passive_conversation)
+- app/src/ai/agent_providers/active_ai/mod.rs:1-22 (what Active AI does; silently no-ops without a BYOP model)
+- app/src/ai/blocklist/queued_query.rs:25-50 (queued prompt origins, FIFO)
+- app/src/ai/byop_compaction/mod.rs:1-33 (compaction entry points and constants), overflow.rs:1-40 (is_overflow needs a non-zero context window)
+- app/src/settings/ai.rs:2628-2715 (agents.byop_compaction.* defaults)
+
+Permissions
+- app/src/ai/blocklist/permissions.rs:886-1010 (can_autoexecute_command decision order), :676-770 (can_read_files / can_write_files), :1263-1310 (protected write paths = MCP configs), :1389-1560 (denylist_match_candidates: handled and explicitly-not-handled bypasses), :341-456 (profile/workspace resolution; workspace denylist merges, never replaces), :236-247 (workspace_autonomy_settings)
+- app/src/ai/execution_profiles/mod.rs:341-398 (AIExecutionProfile fields), :400-430 (defaults incl. execute_commands AlwaysAsk, computer_use Never, web_search true, codebase_context false), :33-146 (ActionPermission / WriteToPtyPermission / ComputerUsePermission / AskUserQuestionPermission variants + descriptions), :463-484 (create_default_from_legacy_settings: settings.toml seeds the Default profile), :519-570 (create_default_cli_profile is fully permissive)
+- app/src/settings/ai.rs:935-978 (DEFAULT_COMMAND_EXECUTION_ALLOWLIST / DENYLIST contents), :824-835 (AgentModeCodingPermissionsType), :838-853 (anchored-regex predicate), :2048-2113 (agents.profiles.* seeds), :2508-2516 (auto_approve_bypasses_command_denylist default true)
+- app/src/ai/agent/conversation.rs:4771-4778 (AIConversationAutoexecuteMode RunToCompletion = auto-approve)
+- app/src/ai/execution_profiles/profiles.rs:116-146 (profiles live in the local object store, not settings.toml)
+- app/src/workspaces/user_workspaces.rs:376-378 (is_byo_api_key_enabled always true), :428-460 (org autonomy settings come from current_team), :533 (has_teams false)
+- DECLINED.md:81-84 (cloud teams / org policy inert; UserWorkspaces::current_team() returns None)
+
+Cost / usage
+- crates/warp_tui/src/usage.rs:1-36 (BYOP substitution rationale; "{pct}% context"; informational only)
+- app/src/ai/usage_cost.rs:1-31 (module rationale), :133-190 (/usage report + the two "nothing reported yet" hints), :202-300 (/cost: provider rates, unpriced-model call-out, cache caveat)
+- app/src/settings_view/ai_page.rs:1667,1684,1758 (UsageWidget only when !is_byo_api_key_enabled, i.e. never), :4828-4870 (the credits widget it would have rendered)
+- DECLINED.md:215 (provider-cost baselines declined; cites crates/warp_tui/src/usage.rs:1-12), :216 (OpenAI long-context pricing warning declined)
+
+Context
+- crates/ai/src/project_context/model.rs:12-25 (RULES_FILE_PATTERN order WARP.md > AGENTS.md > CLAUDE.md), :41-42,:62-63,:1009-1060 (search depth/budget), :947-955 (global rules layered)
+- crates/ai/src/project_context/global_rules.rs:1-58 (~/.agents/AGENTS.md)
+- app/src/ai/blocklist/controller/input_context.rs:60-76 (per-SSH-host global rules), :83-120 (system prompt: shell/platform + skills listing)
+- app/src/ai/agent_providers/prompts/partials/project_rules.j2, env.j2, skills.j2
+- app/src/ai/project_rules_persister.rs:1-92 (project_rules table, repo scan)
+- app/src/search/ai_context_menu/view.rs:98-144 (categories), :386-520 (availability), search.rs:1-17 (menu close rules)
+- app/src/terminal/input.rs:9810-9840 (a file mention inserts its path), :9915-9918 (skill mention rewrites to /name), :10649-10705 (@ trigger rules)
+- app/Cargo.toml:852 (ai_context_menu_commands exists but is not in default)
+- crates/ai/src/skills/read_skills.rs:54-58,110-111 (<root>/<name>/SKILL.md, direct children only)
+- crates/ai/src/skills/skill_provider.rs:100-169 (roots and precedence; Phosphor root = warp_home_skills_dir)
+- app/src/ai/skills/skill_manager.rs:126-160 (project + home scope)
+- app/src/ai/skills/bundled.rs:38-68,390-396 (bundled skills + activation conditions); resources/bundled/skills/ (the 11 directories)
+- app/src/skill_manager/panel.rs:47-70 and app/src/workspace/view/left_panel.rs:245-255 (Skills panel)
+- app/src/util/image.rs:14,41-59 (image MIME list, 3.75 MB cap, downscale thresholds), :47 (20 per query)
+- app/src/editor/view/mod.rs:147 (200 images per conversation), :5076-5117 (picker, vision check), :5090-5102 (image/non-image split), :8163-8168 (attach button)
+- app/src/terminal/input.rs:9926-9950 (drag and drop), :9969-10015 (paste), :10216-10262 (over-limit toast)
+- app/src/ai/blocklist/context_model.rs:70-80,241,272,296 (256 KB text inline, 10 MB binary), :467-541,:894-901,:961-972 (auto-attached user blocks; directory context always sent), :487-491 (truncation and redaction)
+- app/src/ai/agent_providers/attachment_caps.rs:26-90 (image/pdf/audio capability resolution)
+- app/src/ai/block_context.rs:12-58 (what an attached block carries)
+- app/src/ai/agent_providers/user_context.rs:206-259 and chat_stream.rs:2621-2682 (environment block)
+- app/src/settings/input.rs:145-153 (terminal.input.outline_codebase_symbols_for_at_context_menu default true)
+- app/src/settings/code.rs:85-105 (code.indexing.* defaults false)
+- app/src/settings_view/code_page.rs:1504-1591 (all indexing rows gated on FeatureFlag::FullSourceCodeEmbedding)
+- app/src/ai/codebase_auto_indexing.rs:7-21,53-82 (same flag gates indexing; the false default is the consent mechanism)
+- crates/warp_features/src/lib.rs:861-866 (FullSourceCodeEmbedding / CodebaseIndexPersistence enable path is ZAP_UNSTABLE_FEATURES)
+- app/src/lib.rs:3420-3428 (those two entries in UNSTABLE_FEATURES)
+- app/src/ai/agent_providers/embeddings.rs:1-31,73-80 (embeddings are POST {base}/embeddings against a BYOP provider)
+- app/src/ai/codebase_embeddings.rs:1-16 (index stored in the app SQLite DB), :698 (SSH host receives the endpoint + key)
+- app/src/ai/agent_providers/tools/codebase.rs:21-60 and codebase_runtime.rs:24-26,85-252 (search_codebase is local symbol-name fuzzy search)
+- app/src/ai/execution_profiles/mod.rs:388-393,427 (codebase_context_enabled default false); no set_codebase_context_enabled anywhere; app/src/ai/execution_profiles/editor/ contains no codebase control (contrast web_search at editor/ui_helpers.rs:877, editor/mod.rs:1656)
+- app/src/ai/agent_providers/tools/web_runtime.rs:18 and chat_stream.rs:7721 (Exa anonymous endpoint; EXA_API_KEY)
+- app/src/ai/attachment_utils.rs:1-11 (<cwd>/.warp/attachments, agent-SDK downloads only)
+
+Third-party CLI agents (terminal detection)
+- app/src/terminal/cli_agent.rs:174-250 (CLIAgent variants and command prefixes; PhosphorTui prefixes list zap-tui-oss, not phosphor-tui)
+- app/src/settings/ai.rs:2322-2400 (agents.third_party.* toolbar/composer settings), :1803-1830 (PerAgentSettings), :2774-2784 (agents.third_party.per_agent)
+- app/src/terminal/cli_agent_sessions/plugin_manager/claude.rs:21-26,61-63; .../codex.rs:17-26,86-88; .../gemini.rs:21,56-58 (plugin repos, minimum versions, auto-install)
+- app/i18n/en/warp.ftl:613,952 (Settings > AI > Third party CLI agents)
+
+Harness driver
+- app/src/ai/agent_sdk/driver/harness/mod.rs:48-158 (ThirdPartyHarness, HarnessKind, harness_kind dispatch), :162-177 (validate_cli_installed), :210-313 (OZ_* and model env vars)
+- app/src/ai/agent_sdk/driver/harness/claude_code.rs:63-91 (docs URL, error patterns), :157-182 (launch command), :530-568 (.claude.json + settings.json trust pre-writes), :621-651 (ANTHROPIC_API_KEY)
+- app/src/ai/agent_sdk/driver/harness/codex.rs:91-152 (flags, error patterns), :237-249 (launch command), :432-434 (transcript export skipped), :441-476,:548-556 (auth.json seeded from OPENAI_API_KEY), :667-692 (trust_level trusted for cwd and child repos)
+- app/src/ai/agent_sdk/driver/harness/gemini.rs:44-49 (docs URL; MCP ignored), :91-93 (launch command), :201-241 (settings.json auth type + trustedFolders)
+- app/src/ai/harness_display.rs:16-25 (user-visible harness names)
+- crates/warp_cli/src/agent.rs:122-145 (Harness value names/aliases), :301-398 (RunAgentArgs incl. --harness hide=true), :53-70 (--prompt/-p)
+- crates/warp_cli/src/lib.rs:88-100 (clap name "oz", display_name "Phosphor"), :353-373 (CliCommand: Agent/MCP/Model/Whoami/Provider), :229-246 (AgentCommand)
+- crates/warp_cli/src/model.rs (ModelCommand::List only; its own help text says "warp model list"), crates/warp_cli/src/provider.rs:4-58 (ProviderCommand is Linear/Slack)
+- crates/warp_cli/src/lib.rs:168-175 (provider subcommand rejected when FeatureFlag::ProviderCommand is off), :217-220 (hidden from help), :224-238 (examples use the real binary name; usage still says "oz"); app/src/ai/agent_sdk/mod.rs:98-103 (same gate at dispatch); crates/warp_features/src/lib.rs:847 (ProviderCommand only in DOGFOOD_FLAGS, i.e. dark)
+- crates/warp_core/src/channel/mod.rs:38-47 (cli_command_name: Oss -> "phosphor-oss")
+- app/src/ai/agent_sdk/mod.rs:94-98 (dispatch), :151-157 (AgentHarness gate; opencode rejected), :512 (secrets empty on the agent-run path), :530-536 (task_id None so OZ_RUN_ID is not set)
+- app/src/ai/agent_sdk/provider.rs:1,60,72-98 ("Provider OAuth setup ... is disabled in Phosphor")
+- app/src/ai/agent_sdk/driver.rs:401-404 (NotLoggedIn gate) with app/src/auth/mod.rs:294-296 (is_logged_in always true, so the gate never fires), :1109-1134 (setup/prepare/run harness), :1266-1275 (MCP translated per harness), :1330-1440 (error-pattern output monitor)
+- app/src/ai/agent_sdk/driver/terminal.rs:102-118,308-353 (harness runs as an ordinary command in a real terminal session)
+- app/src/ai/local_harness_launch.rs:103-128 (/orchestrate argument syntax), :111 (ORCHESTRATE_DEFAULT_HARNESS = "claude"), :150-162 (bash/zsh/fish only), :203-221 (child launch commands), :301,:372 (oz and gemini rejected), :313-317 (children inherit local harness auth)
+- app/src/ai/local_harness_setup.rs:50-51,83-95 (Codex child gated on LocalClaudeCodexChildHarnesses), :74-109 (dead selectable/product-enabled helpers)
+- crates/warp_features/src/lib.rs:806-828 (LOCAL_FLAGS / DOGFOOD_FLAGS enable nothing in this fork), :926 (RUNTIME_FEATURE_FLAGS)
+- app/src/terminal/view/ambient_agent/harness_selector.rs (exists), app/src/terminal/input.rs:2251-2257,1652,3327 (constructed and stored but never rendered as a child view)
+
+Interrupt
+- app/src/terminal/view.rs:8435-8454 (write_viewer_bytes_to_pty + CtrlCCancelsThirdPartyHarness observation) with only test callers at app/src/terminal/view_test.rs:6742,6802
+- app/src/terminal/cli_agent_sessions/mod.rs:22,46,597-712 (2s window, force_cancel, Cancelled status), :66-72 (OSC 777 "cancelled" error type maps to Cancelled)
+- crates/warp_features/src/lib.rs:778-785 (flag doc: purely client-side status synthesis; keystroke always forwarded, process never signaled), :882 (only in DOGFOOD_FLAGS)
+- TODO.md:571-582 (the audit: "no production caller ... a path that cannot execute")
+- app/src/terminal/view.rs:7812-7851 (handle_ctrl_c_input_event), :7996-8048 (ctrl_c_to_active_block: takeover, stop, raw 0x03), :8105-8141 (route to the agent status bar), :7748-7806 (stop_local_agent_conversation)
+- app/src/ai/blocklist/block/status_bar.rs:405-429 (handle_ctrl_c incl. summarization confirm), :567-623 (cancel request/action/conversation), :268,278,844-848 (Stop button shows the terminal:cancel_command keystroke)
+- crates/warp_tui/src/terminal_session_view.rs:3179-3285 (TUI ctrl-c priority order), :3303-3325 (cancel_active_conversation), :175 (CTRL_C_EXIT_HINT) and crates/warp_tui/src/exit_confirmation.rs:14 (1s window)
+- app/src/terminal/model/block.rs:79 (LONG_RUNNING_COMMAND_DURATION_MS = 50)
+
+Not available
+- app/src/ai/ambient_agents/spawn.rs:68-73 ("Agent spawning is disabled in Phosphor")
+- DECLINED.md:80 (agent attribution), :81 (Warp Environments), :82 (RunAgents / cloud runners), :83-84 (teams/org policy), :85 (account-first onboarding, billing, paid tiers), :86 (/logout), :87 (/voice), :88 (skills global-spec filtering), :215 (provider-cost baselines; cites usage.rs:1-12), :216 (OpenAI long-context pricing warning), :227 (agent session sharing --share hidden), :206 (screen recording), :214 (InitProject wizard), :213 (multi-agent orchestration: local back in scope, cloud half declined), :168 (master AI switch does not gate third-party CLI agents), :170 (indexing consent = the false default), :96 (xAI/Grok OAuth)
+- crates/warp_features/src/lib.rs:949-966 (FORCE_DISABLED_FLAGS: ForceLogin, AvatarInTabBar, HOARemoteControl)
+-->

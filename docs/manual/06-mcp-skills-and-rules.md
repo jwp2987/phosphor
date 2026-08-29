@@ -16,6 +16,11 @@ All four are local files. Phosphor is bring-your-own-provider: there is no
 account, no server-side registry, and nothing here syncs anywhere. If a file is
 not on your disk, Phosphor cannot see it.
 
+Two more sections follow: **§6.2** covers what Markdown and Mermaid actually
+render and where (an honest answer, including the parts that are off by default),
+and **§6.6** covers replacing the agent's own system prompt templates — the
+escape hatch when none of the four mechanisms above is enough.
+
 Throughout this chapter the binary is written `phosphor-oss`. That is the real
 command name for the open-source build — `Channel::Oss` maps to the CLI name
 `phosphor-oss` and the URL scheme `phosphor://`. The application's config
@@ -159,13 +164,15 @@ default `false`.
 
 ### How do I add a server through the UI?
 
-**GUI:** type `/add-mcp` in the input, or `/open-mcp-servers`, or Settings → AI
-→ MCP Servers → *Manage MCP servers*. There is also a rebindable action,
-`workspace:open_mcp_servers`, which ships with **no default keystroke** — assign
-one in the keybinding editor if you want it. `/add-mcp` opens a JSON editor pane; paste exactly the
-same JSON shape shown above and save. Servers added this way are stored in
-Phosphor's local object store, not in a file you can edit directly (use *Edit*
-on the server's card).
+**GUI:** type `/add-mcp` in the input, or `/open-mcp-servers`, or go to
+Settings → AI → MCP Servers → *Manage MCP servers*. There is also a rebindable
+action, `workspace:open_mcp_servers`, which ships with **no default keystroke** —
+assign one in the keybinding editor if you want it.
+
+`/add-mcp` opens a JSON editor pane; paste exactly the same JSON shape shown
+above and save. Servers added this way are stored in Phosphor's local object
+store, not in a file you can edit directly — use *Edit* on the server's card to
+change one later.
 
 `/add-mcp` and `/open-mcp-servers` are **GUI-only**. Neither has a TUI
 implementation; they are filtered out of the TUI's slash-command menu on
@@ -194,11 +201,13 @@ Each server writes its own log file:
 <state dir>/mcp/<server-uuid>.log
 ```
 
-where `<state dir>` is `~/.local/state/phosphor` on Linux,
-`~/Library/Application Support/dev.phosphor.Phosphor` on macOS, and
-`%LOCALAPPDATA%\phosphor\Phosphor\data\logs\mcp\` on Windows (Windows inserts a
-`logs` component). Logs rotate at 10 MiB with 5 rotations kept, so a
-misbehaving server is capped at 60 MiB.
+`<state dir>` is `~/.local/state/phosphor` on Linux and
+`~/Library/Application Support/dev.phosphor.Phosphor` on macOS. On Windows the
+path gains a `logs` component:
+`%LOCALAPPDATA%\phosphor\Phosphor\data\logs\mcp\<server-uuid>.log`.
+
+Logs rotate at 10 MiB with 5 rotations kept, so one misbehaving server is capped
+at about 60 MiB.
 
 - **GUI:** the server's card on the MCP Servers page has a **View logs** button
   and a *Show logs* tooltip icon.
@@ -210,12 +219,15 @@ misbehaving server is capped at 60 MiB.
 
 Troubleshooting order:
 
-1. Is the config file where Phosphor looks? (Global is `~/.phosphor/.mcp.json`,
-   **not** `~/.warp/.mcp.json` — see the known-issue note below.)
+1. Is the config file where Phosphor looks? The global one is
+   `~/.phosphor/.mcp.json`, **not** `~/.warp/.mcp.json`. This trips people up
+   because Phosphor's own bundled `agent-add-mcp` skill still tells the agent to
+   write `~/.warp/.mcp.json` — a leftover from upstream. If you asked the agent
+   to add a server for you and nothing appeared, look there and move the file.
 2. Does every `${VAR}` in it resolve in the environment Phosphor was launched
    from? An unset variable stops the server before it spawns.
 3. Is it a project config? Those never auto-start; start it from the "Detected
-   from …" section.
+   from …" section of the MCP Servers page.
 4. Read `<state dir>/mcp/<uuid>.log`.
 
 ### Remote servers and OAuth
@@ -440,12 +452,14 @@ Global skills are always in scope. Project skills are in scope when your working
 directory is at or below the directory holding them, and inside the detected
 repository root.
 
-**One skill per name.** If the same skill name appears under two providers in the
-same directory, Phosphor keeps only the higher-priority one — an `.agents/skills/deploy`
-hides a `.claude/skills/deploy` even if their bodies differ. This is a
-deliberate divergence from upstream (which would list both) made to keep the
-system prompt byte-stable for prompt caching; see `DECLINED.md`. The Skills
-inventory panel still shows you the shadowed copy so you can tell it is there.
+**One skill per name, per root.** If the same skill name appears under two
+providers of the same root — the same repository, or your home directory —
+Phosphor offers only the higher-priority one to the agent. A
+`<repo>/.agents/skills/deploy` hides a `<repo>/.claude/skills/deploy` **even if
+their bodies differ**. This is a deliberate divergence from upstream, which would
+list both; it exists to keep the system prompt byte-stable for prompt caching
+(`DECLINED.md`). The Skills inventory panel groups skills by name and lists every
+copy it found, so you can see which one is winning.
 
 **Extra directories via environment.** `WARP_SKILL_DIRS` takes a comma-separated
 list of additional skills roots; `~` is expanded and relative entries resolve
@@ -556,7 +570,8 @@ paths are rejected.
 
 > The help text for `--skill` points at `oz schedule create --skill …`. **There is
 > no `schedule` subcommand in Phosphor** — the CLI has `agent`, `mcp`, `model`,
-> `provider` and `whoami`. Ignore that line.
+> `whoami`, and a `provider` subcommand that is hidden from `--help`. Ignore that
+> line.
 
 ### Bundled skills
 
@@ -673,9 +688,11 @@ Two independent mechanisms:
 
 **A file.** `~/.agents/AGENTS.md` — and only that path. There is no
 `~/.phosphor/AGENTS.md`, no `~/.warp/rules/`, no `.cursorrules`, no
-`.github/copilot-instructions.md`. It is watched live, so edits apply to the
-next request. Note that this file does **not** appear in Phosphor's Rules pane,
-even though it is in effect.
+`.github/copilot-instructions.md`. It is watched live, so edits apply to the next
+request. Two things to know about it: it is prepended to the *project* rules
+block in the prompt (so it appears under `# Project rules`, named by its path,
+not under `# User rules`), and it does **not** appear anywhere in Phosphor's Rules
+pane even though it is in effect.
 
 **Saved rules.** Short named rules stored in Phosphor's local object store, added
 with `/add-rule` or from Settings → Agents → Knowledge → *Manage rules*. These are
@@ -764,6 +781,12 @@ There is no `/rules` command.
 |---|---|---|---|
 | Rules | `agents.knowledge.rules_enabled` | `true` | Settings → Agents → Knowledge → *Rules* |
 | Suggested Rules | `agents.warp_agent.active_ai.rule_suggestions_enabled` | `true` | Settings → Agents → Knowledge → *Suggested Rules* |
+
+**The *Rules* toggle only controls saved rules.** Turning it off stops the
+object-store rules from being collected; it does not stop project rule files or
+`~/.agents/AGENTS.md` from being sent. Those are included unconditionally
+whenever they are found. To stop a project rule file taking effect, rename or
+delete it.
 
 There is **no setting for a rules path** — the filenames and `~/.agents/AGENTS.md`
 are fixed constants.
@@ -903,8 +926,9 @@ disabled cloud suggestion channel as suggested rules, so it would still not fire
 
 ## 6.6 Overriding the agent's own prompts
 
-A fork-native surface with no upstream equivalent: you can replace the system
-prompt templates and tool descriptions Phosphor compiles in, without rebuilding.
+One more extensibility surface, worth knowing about because it is the escape
+hatch for everything above: you can replace the system prompt templates and tool
+descriptions Phosphor compiles in, without rebuilding.
 
 Set **Settings → AI → System prompt template directory**
 (`agents.warp_agent.prompt_template_dir` in `settings.toml`, default empty), then
@@ -940,3 +964,353 @@ Behaviour worth knowing:
 - Not everything is overridable. Prompts hardcoded in Rust — the compaction
   prompt, for one — are not exported and cannot be replaced this way.
 
+---
+
+## 6.7 Not available in Phosphor
+
+Things a Warp user would go looking for in this part of the product and not find.
+Each is a decision, not an oversight; `DECLINED.md` is the register.
+
+| What | Why it is absent |
+|---|---|
+| **The MCP gallery / hosted server catalogue** | Warp's gallery is fetched from its cloud. `MCPGalleryManager` here is a deliberately gutted stub that always returns an empty list, so the catalogue has three local sources (config files, installations, saved templates) instead of four. `DECLINED.md`, "MCP gallery in the TUI `/mcp` catalog". |
+| **Named "well-known" MCP servers** (`--mcp linear`, `--mcp notion`) | The set of recognised ids is owned by Warp's server. `MCPSpec::WellKnown` is deliberately not ported rather than shipped as a spec that parses and can never resolve. Define servers by JSON instead. |
+| **Warp-managed MCP servers (`warp_id`)** | Same reason. The field validates but nothing here can resolve it; an entry using it is malformed by construction. Latent, not usable. |
+| **Team- or org-shared MCP servers** ("Available from Phosphor and *team*") | `UserWorkspaces::has_teams()` is permanently `false`; there is no team backend. `DECLINED.md`, "Teams stay stubbed". |
+| **Pre-registered OAuth clients for MCP servers** | The static client-id table ships empty, so a remote server whose authorization server does not support dynamic client registration cannot be authorized. |
+| **Team- or org-administered skill policy** (`global_skills`) | Warp delivers a `SkillSpec` allowlist over its cloud auth channel; that mechanism was cut. Every skill comes from your own disk. `DECLINED.md`, "AI skills — global-spec filtering". |
+| **The Oz platform plugins and their skills** (`oz-report-pr`, `oz-report-artifact`, `oz-report-plan`, `oz-notify-user`, `oz-finish-task`) | They shell out to `oz harness-support …` against warp-server. Removed with their installers; keeping them would make Codex launches demand a plugin whose commands this fork does not implement. `DECLINED.md`, "Oz platform plugins". |
+| **`tui-migrate-setup` bundled skill** | It reconciles a separate GUI and TUI settings file. Phosphor shares one app id and one config directory between the two, so both halves of every path pair would render identically. The `tui-settings` skill answers the same question for this architecture instead. |
+| **Warp's channel-gated skills** | They ship only on internal channels; the OSS channel matches none of them. |
+| **Team workflows** ("Create a New Team Workflow", "Create a New Team Folder") | No team backend. Restoring the menu entries would give you rows that do nothing when clicked. `DECLINED.md`, "Teams stay stubbed" (re-affirmed). |
+| **Cloud workflow / notebook / Drive sharing and sync** | Warp Drive here is backed by local SQLite only. Sharing and export are file-based. Nothing syncs to a server, because there is no server. |
+| **Warp Packs** | The flag is on but its only behaviour is a folder icon swap, and no code path ever marks a folder as a pack. There is no pack format, installer, or registry. Treat packs as absent. |
+| **Suggested rules and suggested workflows (the chips)** | Suggestions arrive only through a cloud protocol action that BYOP cannot synthesise; the producing path is explicitly disabled. The *Suggested Rules* setting still exists and still defaults on — it just has no effect. |
+| **`/logout`** | There is no account to log out of; the dispatch target is a documented no-op, so the command is not registered rather than shown as a dead menu row. `DECLINED.md`. |
+| **`/voice`** | The transcription backend is cloud and was dropped. `DECLINED.md`. |
+| **Agent commit/PR attribution setting** | The client never read it even upstream — Warp's *server* decided whether attribution instructions entered the prompt. `DECLINED.md`. |
+
+---
+
+## 6.8 Reference: every setting, flag and file in this chapter
+
+### Settings (`settings.toml`)
+
+| TOML path | What it does | Default | UI location |
+|---|---|---|---|
+| `agents.mcp_servers.file_based_mcp_enabled` | Auto-spawn globally-scoped MCP servers found in third-party agents' config files. Phosphor's own global config always spawns regardless. | `false` | Settings → AI → MCP Servers, and the MCP Servers page |
+| `agents.knowledge.rules_enabled` | Whether **saved** rules are used during requests. Does not affect project rule files or `~/.agents/AGENTS.md`. | `true` | Settings → Agents → Knowledge → *Rules* |
+| `agents.warp_agent.active_ai.rule_suggestions_enabled` | Whether the agent suggests rules after responses. **Inert in this fork.** | `true` | Settings → Agents → Knowledge → *Suggested Rules* |
+| `agents.warp_agent.prompt_template_dir` | Directory to hot-load system prompt templates and tool descriptions from. Empty uses the built-ins. | `""` | Settings → AI → *System prompt template directory* |
+| `appearance.zero_state.show_mcp` | Whether the TUI zero state shows the MCP section. | `true` | `settings.toml` |
+| `appearance.zero_state.show_project_info` | Whether the TUI zero state shows the project path and its discovered rules and skills. | `true` | `settings.toml` |
+
+### Environment variables
+
+| Variable | Effect |
+|---|---|
+| `WARP_SKILL_DIRS` | Comma-separated extra skills roots, treated as global. **CLI agent runs only.** |
+| `ZAP_PROMPT_DIR` | Overrides `agents.warp_agent.prompt_template_dir`. |
+| `ZAP_UNSTABLE_FEATURES` | Comma/whitespace-separated list of unstable feature names, or `all` / `*`. The only runtime enable path for the flags below. |
+| `WARP_AGENT_CONFIG_FILE` | Default value for `phosphor-oss agent run -f`. |
+| `WARP_OUTPUT_FORMAT` | Default value for `--output-format`. |
+| `WARP_API_KEY` | Default value for `--api-key`. |
+
+### Feature flags relevant to this chapter
+
+| Flag | Default | How to change it |
+|---|---|---|
+| `FileBasedMcp` | **on** (`file_based_mcp` in `default`) | rebuild without the cargo feature |
+| `McpServer`, `McpOauth`, `MCPGroupedServerContext` | **on** | rebuild |
+| `ListSkills`, `BundledSkills`, `SkillArguments`, `OzPlatformSkills` | **on** | rebuild |
+| `AIRules` | **on** (`ai_rules`) | rebuild |
+| `SuggestedRules` | **on**, but inert | — |
+| `AgentModeWorkflows`, `WorkflowAliases`, `DynamicWorkflowEnums`, `BlockToolbeltSaveAsWorkflow` | **on** | rebuild |
+| `MarkdownTables`, `BlocklistMarkdownTableRendering`, `MarkdownMermaid`, `BlocklistMarkdownImages` | **on** | rebuild |
+| `WarpControlCli` (the `warpctrl` bundled skill) | **off** | `ZAP_UNSTABLE_FEATURES=warp_control_cli` |
+| `JupyterNotebookRendering` (`.ipynb` viewer) | **off** | `ZAP_UNSTABLE_FEATURES=jupyter_notebook_rendering` |
+| `EditableMarkdownMermaid` | **off** | rebuild with `--features editable_markdown_mermaid`; no runtime path |
+| `SuggestedAgentModeWorkflows` | **off** | rebuild with `--features suggested_agent_mode_workflows`; no runtime path, and still inert |
+| `MarkdownImages` | **off**, and has no consumer in this tree | nothing to change |
+| `WarpPacks` | on, inert | — |
+
+**`DOGFOOD_FLAGS` membership enables nothing at runtime in this fork.** Upstream's
+channel binaries pass that list to `with_additional_features`; none of this
+repository's binaries do. A flag needs a cargo feature in `app/Cargo.toml`'s
+`default`, membership in `RELEASE_FLAGS`, or an entry in `UNSTABLE_FEATURES`
+(reachable via `ZAP_UNSTABLE_FEATURES`) to be on.
+
+### Files and directories
+
+| Path | What |
+|---|---|
+| `~/.phosphor/.mcp.json` | Global MCP server config. |
+| `<repo>/.warp/.mcp.json` | Project MCP server config. |
+| `~/.claude.json`, `<repo>/.mcp.json` | Claude's MCP configs, also read. |
+| `~/.codex/config.toml`, `<repo>/.codex/config.toml` | Codex's MCP config, also read. |
+| `~/.agents/.mcp.json`, `<repo>/.agents/.mcp.json` | "Other Agents" MCP config, also read. |
+| `~/.phosphor/skills/` | Global Phosphor skills. |
+| `<repo>/.warp/skills/` | Project Phosphor skills. |
+| `~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`, `~/.cursor/skills/`, `~/.gemini/skills/`, `~/.copilot/skills/`, `~/.factory/skills/`, `~/.github/skills/`, `~/.opencode/skills/` | Other providers' global skills, and the same names under a repo for project scope. |
+| `~/.agents/AGENTS.md` | The only global rules **file**. |
+| `<any dir>/WARP.md`, `AGENTS.md`, `CLAUDE.md` | Project rules, one per directory, in that priority order. |
+| `~/.local/share/phosphor/workflows/` (Linux) · `~/.phosphor/workflows/` (macOS) · `%APPDATA%\phosphor\Phosphor\data\workflows\` (Windows) | Personal workflows. |
+| `<repo>/.warp/workflows/` | Repository workflows. |
+| `~/.phosphor/prompts/` | Suggested location for system prompt template overrides. |
+| `~/.config/phosphor/settings.toml` (Linux) · `~/.phosphor/settings.toml` (macOS) · `%LOCALAPPDATA%\phosphor\Phosphor\config\settings.toml` (Windows) | The settings file. |
+| `~/.local/state/phosphor/mcp/<uuid>.log` (Linux) · `~/Library/Application Support/dev.phosphor.Phosphor/mcp/<uuid>.log` (macOS) · `%LOCALAPPDATA%\phosphor\Phosphor\data\logs\mcp\<uuid>.log` (Windows) | Per-MCP-server logs. |
+
+### Slash commands in this chapter
+
+| Command | Surface | What it does |
+|---|---|---|
+| `/add-mcp` | GUI only | Open the pane for adding an MCP server. |
+| `/open-mcp-servers` | GUI only | Open the MCP Servers settings page. |
+| `/mcp` | TUI only | View and manage MCP servers. |
+| `/view-logs` | TUI only | Bundle the app's logs into a zip. |
+| `/skills` | GUI + TUI | Pick a skill; inserts `/<name> ` into the input. |
+| `/open-skill` | GUI | Open a skill's `SKILL.md` in the editor. |
+| `/<skill-name> [args]` | GUI + TUI | Invoke that skill. (`$<skill-name>` in a Codex session.) |
+| `/init` | GUI + TUI | Generate or update an `AGENTS.md`. |
+| `/add-rule` | GUI | Add a saved global rule. |
+| `/open-rules` | GUI | Open the Rules pane. |
+| `/open-project-rules` | GUI | Open the project rules file (opens `WARP.md`, see the note in §6.4). |
+| `/prompts` | GUI + TUI | Search saved agent-mode workflows. |
+
+### CLI
+
+| Command | What it does |
+|---|---|
+| `phosphor-oss mcp list` | List installed MCP servers (UUID, name). |
+| `phosphor-oss agent run --mcp <SPEC>` | Start MCP servers for this run. `<SPEC>` is a JSON file path or inline JSON; repeatable. |
+| `phosphor-oss agent run --mcp-server <UUID>` | Legacy, hidden, and unresolvable here. Do not use. |
+| `phosphor-oss agent run --skill <SPEC>` | Use a skill as the run's base prompt. |
+| `phosphor-oss agent run -f <PATH>` | Load `name`, `model_id`, `base_prompt`, `mcp_servers`, `host`, `computer_use_enabled` from JSON or YAML. |
+| `phosphor-oss --output-format {pretty,json,ndjson,text}` | Global output format; default `pretty`. |
+
+There is no `skill`, `rules`, `workflow` or `schedule` subcommand. `provider` is
+hidden from `--help` (its feature flag is off) but still parses.
+
+<!-- SOURCES
+
+## Binary / channel / paths
+crates/warp_core/src/channel/mod.rs:38-47   Channel::cli_command_name; Oss => "phosphor-oss"
+crates/warp_core/src/channel/state.rs:38-57 ChannelState::init: Channel::Oss, app id dev.phosphor.Phosphor
+crates/warp_core/src/channel/state.rs:261-276 url_scheme: Oss => "phosphor"
+app/Cargo.toml:25-28                        [[bin]] name = "phosphor-oss"
+app/src/bin/phosphor_oss.rs:26-42           Channel::Oss, logfile "phosphor.log", mcp_static_config: None
+app/src/workspace/cli_install.rs:11-13      CLI symlink /usr/local/bin/<cli_command_name>
+crates/warp_core/src/paths.rs:37-47         base_warp_config_dir_name: Oss => ".phosphor"
+crates/warp_core/src/paths.rs:62-90         warp_home_config_dir / warp_home_skills_dir / warp_home_prompts_dir / warp_home_mcp_config_file_path
+crates/warp_core/src/paths.rs:132-158       data_dir / config_local_dir
+crates/warp_core/src/paths.rs:174-184       state_dir
+crates/warp_core/src/paths_tests.rs:5-116   concrete per-platform paths for data/config/cache/state, ~/.phosphor/skills, ~/.phosphor/.mcp.json
+app/src/settings/mod.rs:648-654             user_preferences_toml_file_path = config_local_dir()/settings.toml
+crates/warp_core/src/paths.rs:30            WARP_CONFIG_DIR = ".warp"
+
+## MCP
+crates/warp_cli/src/mcp.rs:8-11             MCPCommand::List is the only subcommand
+crates/warp_cli/src/mcp.rs:17-24            MCPSpec has only Uuid and Json
+crates/warp_cli/src/mcp.rs:47-77            UUID, then file path, then inline JSON
+crates/warp_cli/src/lib.rs:353-373          CliCommand: Agent, MCP, Model, Whoami, Provider
+crates/warp_cli/src/lib.rs:225-238          "Examples: <bin> mcp list"
+crates/warp_cli/src/agent.rs:11-25          OutputFormat json/ndjson/pretty/text, default Pretty
+crates/warp_cli/src/lib.rs:265-285          GlobalOptions --api-key / --output-format, env vars
+crates/warp_cli/src/agent.rs:335-347        --mcp (repeatable), --mcp-server (legacy, hidden)
+crates/warp_cli/src/config_file.rs:5-15     -f/--file, env WARP_AGENT_CONFIG_FILE
+app/src/ai/agent_sdk/mcp.rs:16-45           `mcp list` prints UUID + Name from get_all_runnable_mcp_servers
+app/src/ai/agent_sdk/mcp_config.rs:26-60    warp_id TRAP comment; WellKnown deliberately not ported (lines 40-48)
+app/src/ai/agent_sdk/mcp_config.rs:136-215  validate_server_config: exactly one of warp_id/command/url; args/env/headers rules
+app/src/ai/agent_sdk/mcp_config.rs:84-90    duplicate server name is an error
+app/src/ai/agent_sdk/mcp_config.rs:92-102   optional outer braces
+app/src/ai/agent_sdk/config_file.rs:8-30    AgentConfigSnapshotFile, deny_unknown_fields
+app/src/ai/agent_sdk/config_file.rs:91-93   supported keys list
+app/src/ai/agent_sdk/config_file.rs:139-141 precedence CLI > file > default
+app/src/ai/mcp/mod.rs:69-115                MCPProvider, display_name "Phosphor", home/project config paths
+app/src/ai/mcp/mod.rs:53-58                 home_config_file_path: Zap => warp_home_mcp_config_file_path()
+app/src/ai/mcp/mod.rs:191-209               JSONTransportType: command/args/env/working_directory | url (alias serverUrl)/headers
+app/src/ai/mcp/templatable.rs:66-108        wrapper keys /mcp/servers,/servers,/mcpServers,/mcp_servers; strict vs permissive
+app/src/ai/mcp/parsing.rs:238-255           from_config_file_json uses the strict form
+app/src/ai/mcp/parsing.rs:264-280           from_user_json uses the permissive form
+app/src/settings_view/mcp_servers/edit_page.rs:504,773 GUI editor uses from_user_json
+app/src/ai/mcp/parsing.rs:51-95             Codex TOML schema translated to Phosphor JSON
+app/src/ai/mcp/file_mcp_watcher.rs:29-49    ${VAR} regex; home_subdir_to_watch
+app/src/ai/mcp/file_mcp_watcher.rs:176-213  Zap config watched via warp_managed_mcp_config_path, other providers via home dirs
+app/src/ai/mcp/file_mcp_watcher.rs:600-640  project roots check both home_config_path and project_config_path; substitute_env_vars errors on missing var
+app/src/warp_managed_paths_watcher.rs:75-80 warp_managed_mcp_config_path root = home, config = ~/.phosphor/.mcp.json
+app/src/ai/mcp/file_based_manager.rs:381-421 is_global_warp_server / scope_for_source
+app/src/ai/mcp/file_based_manager.rs:424-465 spawn rules: global Zap always; global third-party per toggle; project never; TUI never
+app/src/settings/ai.rs:2466-2476            file_based_mcp_enabled default false, toml agents.mcp_servers.file_based_mcp_enabled
+app/src/ai/mcp/logs.rs:1-38                 log path <state>/mcp/<uuid>.log, 10 MiB x 5 rotations
+crates/simple_logger/src/manager.rs:33-47   resolve_log_path; Windows inserts WARP_LOGS_DIR ("logs")
+app/src/ai/mcp/gallery.rs:97-124            MCPGalleryManager gutted, gallery always empty
+DECLINED.md:90                              MCP gallery declined; three local catalogue sources only
+app/src/tui/mcp.rs:94-119                   TuiMcpServerSource labels: CLI local / saved template / "<provider> global" / "<provider> · <root>"
+app/src/tui/mcp.rs:131-161                  TuiMcpServerStatus; can_log_out
+app/src/tui/mcp.rs:208-215                  TuiMcpAction: Enable/Start/Stop/Retry/LogOut/ReopenAuthorization
+crates/warp_tui/src/mcp_menu.rs:1-8         Enter = primary action, Ctrl+R = log out; one row per server
+crates/warp_tui/src/mcp_install_flow.rs:1-33 free-text template variables are all masked
+app/src/ai/mcp/file_based_manager.rs:79-96  config_diagnostics: one row per unhealthy config file
+app/src/ai/mcp/templatable_manager/oauth.rs:245-249 redirect uri <scheme>://mcp/oauth2callback
+app/src/ai/mcp/templatable_manager/oauth.rs:370-388 dynamic registration first; static client-id table is the fallback
+app/src/search/slash_command_menu/static_commands/commands.rs:21-27  ADD_MCP "/add-mcp"
+app/src/search/slash_command_menu/static_commands/commands.rs:250-257 OPEN_MCP_SERVERS
+app/src/search/slash_command_menu/static_commands/commands.rs:511-521 MCP "/mcp", documented TUI-only
+app/src/search/slash_command_menu/static_commands/commands.rs:1125-1139 test: /add-mcp is GUI-only
+app/src/search/slash_command_menu/static_commands/mod.rs:344-357     is_tui_only set
+app/src/search/slash_command_menu/static_commands/mod.rs:360-400     supports_tui set (no /add-mcp, no /open-mcp-servers)
+app/src/terminal/input/slash_commands/mod.rs:509-511 /add-mcp -> OpenAddMCPPane
+app/src/workspace/mod.rs:1421-1435          editable binding workspace:open_mcp_servers, no default keystroke
+app/src/util/bindings.rs                    grep: no default keystroke entry for OpenMCPServerCollection
+app/i18n/en/warp.ftl:671-752                MCP settings strings, "Detected from { $provider }", View logs, Auto-spawn toggle
+app/src/settings_view/mcp_servers/list_page.rs:1116-1131 "Learn more." hyperlink has an EMPTY href
+app/src/settings_view/ai_page.rs:6386-6400  file-based MCP toggle in Settings > AI
+
+## Markdown / Mermaid / notebooks
+app/Cargo.toml:480-662                      the `default` feature list
+app/Cargo.toml:616-619                      markdown_tables, markdown_mermaid, blocklist_markdown_images, blocklist_markdown_table_rendering all in default
+app/Cargo.toml:667                          editable_markdown_mermaid declared but NOT in default
+app/src/lib.rs:3048-3058                    cfg mapping of the markdown flags
+crates/warp_features/src/lib.rs:464-482     MarkdownImages / MarkdownMermaid / EditableMarkdownMermaid / MarkdownTables / JupyterNotebookRendering / Blocklist*
+crates/warp_features/src/lib.rs:848         MarkdownImages in DOGFOOD_FLAGS only
+crates/warp_features/src/lib.rs:868         EditableMarkdownMermaid in DOGFOOD_FLAGS only
+crates/warp_features/src/lib.rs:881         JupyterNotebookRendering in DOGFOOD_FLAGS
+crates/warp_features/src/lib.rs:806-828     DOGFOOD_FLAGS enables nothing at runtime in this fork
+crates/warp_features/src/lib.rs:886-891     PREVIEW_FLAGS (MarkdownTables)
+crates/warp_features/src/lib.rs:894-924     RELEASE_FLAGS (BlocklistMarkdownTableRendering)
+app/src/lib.rs:3326-3352                    ZAP_UNSTABLE_FEATURES parsing, "all"/"*"
+app/src/lib.rs:3355-3439                    UNSTABLE_FEATURES table (7 tokens)
+grep MarkdownImages across the tree         only warp_features declares it; zero consumers
+app/src/ai/agent/util.rs:268-290            ```mermaid fence -> AIAgentTextSection::MermaidDiagram
+app/src/ai/blocklist/block/view_impl/common.rs:2122-2140 mermaid section requires BlocklistMarkdownImages + MarkdownMermaid, falls back to raw markdown
+app/src/ai/blocklist/block/view_impl/common.rs:1501-1520 mermaid lightbox
+app/src/ai/blocklist/block/view_impl/common.rs:1818-1832 blocklist image loading gated on BlocklistMarkdownImages
+app/src/ai/agent/mod.rs:1501-1516           agent replies parsed with GFM tables when MarkdownTables is on
+app/src/ai/agent/util.rs:40-56              BlocklistMarkdownTableRendering picks structured vs legacy table
+crates/editor/src/content/text.rs:730-737   mermaid code-block type gated on MarkdownMermaid
+Cargo.toml:201                              mermaid_to_svg = git warpdotdev/mermaid-to-svg
+<cargo git checkout>/src/lib.rs:1-30,36-150 native Rust renderer, diagram families
+<cargo git checkout>/src/lib.rs:156-159     is_mermaid_diagram: "mermaid" or "mermaid <params>"
+<cargo git checkout>/src/parser.rs:11-12,142-154 graph / flowchart supported
+app/src/notebooks/file/mod.rs:79-84         MarkdownDisplayMode {Rendered, Raw}
+app/src/notebooks/file/mod.rs:268-272       default_mermaid_display_mode = Rendered
+app/src/notebooks/file/mod.rs:296-318       markdown_display_mode defaults to Rendered
+app/src/notebooks/editor/notebook_command.rs:632-660 per-block Raw/Rendered buttons on mermaid
+app/src/util/openable_file_type.rs:77-83    renders_in_warp_notebook_viewer: markdown always, ipynb behind the flag
+crates/warp_util/src/file_type.rs:14-20,132-150 md/markdown + README/CHANGELOG/LICENSE; .ipynb
+app/src/notebooks/mod.rs:28-50              notebooks are object-store backed
+
+## Skills
+crates/ai/src/skills/skill_provider.rs:104-149 SKILL_PROVIDER_DEFINITIONS, order = precedence
+crates/ai/src/skills/skill_provider.rs:152-169 provider_rank; home_skills_path (Zap -> warp_home_skills_dir)
+crates/ai/src/skills/read_skills.rs:89-122     only direct children, only SKILL.md
+crates/ai/src/skills/read_skills.rs:7-80       WARP_SKILL_DIRS: comma separated, ~ expanded, forced SkillScope::Home
+app/src/ai/agent_sdk/driver.rs:973-993         WARP_SKILL_DIRS consumed by the CLI driver only
+crates/ai/src/skills/parser.rs:23-82           frontmatter regex; flat string->string map only
+crates/ai/src/skills/parse_skill.rs:14,34-55   name/description optional; 512-char cap on DERIVED descriptions only
+crates/ai/src/skills/parse_skill.rs:149-221    directory-name default; first-paragraph default
+grep allowed-tools / allowed_tools             no handling anywhere
+app/src/ai/skills/skill_manager.rs:121-190     home always in scope; project dirs must be ancestors of cwd within the repo
+app/src/ai/skills/skill_utils.rs:39-86         dedup key (name, dir), provider-rank tie-break, sorted for cache stability
+DECLINED.md:178                                the (name, dir) dedup decision
+app/src/ai/blocklist/controller/input_context.rs:104-120 skills list pushed every round when ListSkills is on
+app/src/ai/agent_providers/prompts/partials/skills.j2    the <available_skills> block; read_skill instruction
+app/src/ai/agent_providers/tools/skill.rs:31-48          read_skill tool takes {name}
+app/src/ai/blocklist/action_model/execute/read_skill.rs:41-48 read_skill always autoexecutes
+app/src/ai/agent_providers/chat_stream.rs:2531-2542       the InvokeSkill user message format
+app/src/terminal/input/slash_command_model.rs:518-541     "/<name> <args>" split on the first space
+app/src/terminal/cli_agent.rs:388-393                     "$" prefix in Codex sessions
+app/src/search/slash_command_menu/static_commands/commands.rs:59-75 EDIT_SKILL "/open-skill", INVOKE_SKILL "/skills"
+app/src/search/slash_command_menu/static_commands/commands.rs:774-777 both gated on ListSkills
+app/src/search/slash_command_menu/static_commands/commands.rs:779-783 /pr-comments NOT registered when PRCommentsSkill is on
+app/src/terminal/input.rs:3962-3971                       /skills inserts "/<name> "
+app/src/ai/blocklist/controller/slash_command.rs:263-281  SkillArguments gate; args dropped when off
+crates/warp_features/src/lib.rs:593                       flag doc claims $ARGUMENTS substitution; no such code exists
+app/Cargo.toml:456,580,582,592,606,732,913,917            list_skills / bundled_skills / oz_platform_skills / skill_arguments in default
+resources/bundled/skills/*/SKILL.md                       the 11 bundled skills' frontmatter
+resources/bundled/mcp_skills/figma/*                      8 Figma skills
+app/src/ai/skills/bundled.rs:39-67,607-618                activation: Always / RequiresFile / RequiresFeature(WarpControlCli) / RequiresMcp(Figma)
+app/src/ai/skills/bundled.rs:223-228,397,420-423          read in place from bundled_resources_dir; never copied to $HOME
+app/src/ai/skills/bundled.rs:495-565                      template variables
+app/src/ai/skills/bundled.rs:584-600                      why tui-migrate-setup is not ported
+app/src/ai/skills/skill_manager.rs:388-409,459-482        file-backed skills win by name; inventory lists only file-backed
+script/copy_conditional_skills:45-52                      oss channel matches no gated skill
+app/src/lib.rs:3429                                       ZAP_UNSTABLE_FEATURES=warp_control_cli
+crates/warp_cli/src/agent.rs:311-323                      --skill <SPEC>
+crates/warp_cli/src/skill.rs:33-49,79-98                  SPEC grammar
+crates/warp_cli/src/agent.rs:321                          stale reference to `oz schedule create --skill`
+app/src/ai/agent_sdk/mod.rs:147-150                       --skill rejected unless OzPlatformSkills
+DECLINED.md:88                                            global-spec skill filtering removed
+DECLINED.md:195-199                                       Oz platform plugins removed
+DECLINED.md:212                                           remote_server bundled skills SHIPPED (row reversed)
+crates/remote_server/src/setup.rs:434,462,471             remote bundled resources
+app/src/ai/skills/mod.rs:70-81                            explicit refusal when the remote bundle is absent
+
+## Rules
+crates/ai/src/project_context/model.rs:12-25     RULES_FILE_PATTERN = WARP.md, AGENTS.md, CLAUDE.md; order = priority
+crates/ai/src/project_context/model.rs:145-155   respected_rule(): one file per directory
+crates/ai/src/project_context/model.rs:41-42     MAX_SCAN_DEPTH 3, MAX_FILES_TO_SCAN 5000
+crates/ai/src/project_context/model.rs:64-65     MAX_WALK_DEPTH 6, FAST_PATH_BUDGET 20ms
+crates/ai/src/project_context/model.rs:249-266   active = target path starts_with the rule file's dir; accumulate
+crates/ai/src/project_context/model.rs:952-981   layer_global_rules: global first, project appended, no override
+crates/ai/src/project_context/model.rs:1017-1083 synchronous findUp fast path
+crates/ai/src/project_context/global_rules.rs:30-58 the only global source is ~/.agents/AGENTS.md
+app/src/lib.rs:2305-2307                         global rules indexed at startup
+app/src/ai/project_rules_persister.rs:80-87      project index fires on git repo detection
+app/src/ai/agent_providers/prompts/partials/project_rules.j2 the "# Project rules" block
+app/src/ai/agent_providers/prompts/partials/user_rules.j2    the "# User rules" block
+app/src/ai/agent_providers/prompts/partials/footer.j2        includes both, plus skills/env/plan_mode
+app/src/ai/agent_providers/prompts/system/local.j2           includes ONLY partials/env.j2 - no footer
+app/src/ai/agent_providers/prompt_renderer.rs:600-604        pick_template: any Ollama provider -> system/local.j2
+app/src/ai/agent_providers/prompt_renderer.rs:803-822        additional_rule_paths discarded before rendering
+app/src/ai/agent/api.rs:257-269                  saved rules from AIFact::Memory, sorted for cache stability
+app/src/settings/ai.rs:2226-2234                 memory_enabled -> agents.knowledge.rules_enabled, default true
+app/src/settings/ai.rs:1975-1984                 rule_suggestions_enabled -> agents.warp_agent.active_ai.rule_suggestions_enabled, default true
+app/src/settings_view/ai_page.rs:1655-1663,6462-6603 Knowledge section: Rules / Suggested Rules / Manage rules
+app/src/ai/blocklist/passive_suggestions/maa.rs:389-400 ShowSuggestions cannot be synthesized under BYOP
+app/src/ai/blocklist/suggested_agent_mode_workflow_modal.rs:236-240 same, for workflow suggestions
+app/src/search/slash_command_menu/static_commands/commands.rs:230-248,287-294 /init, /open-project-rules, /open-rules
+app/src/search/slash_command_menu/static_commands/commands.rs:90-97 /add-rule
+app/src/terminal/view.rs:722                     WARP_MD_PATH = "WARP.md"
+app/src/terminal/view.rs:26265-26277             OpenProjectRulesPane always opens <cwd>/WARP.md
+app/i18n/en/warp.ftl:2653,2666,2667,2672         the four command descriptions
+app/src/ai/agent_providers/prompts/commands/init_project.j2 the /init prompt
+app/src/ai/facts/view/rule.rs:135,189-210,613-650 Rules pane tabs; global file not listed
+
+## Workflows
+app/src/workflows/workflow.rs:9-43               Workflow enum: AgentMode (tagged) / Command (untagged)
+app/src/workflows/workflow.rs:285-293,344-386    Argument: name, type, description, default_value
+app/src/workflows/command_parser.rs:18-21        {{arg}} and {{{escaped}}}
+app/src/workflows/local_workflows.rs:19-21       workflows_dir(base) = base/workflows
+app/src/workflows/local_workflows.rs:181-191     project workflows = <repo>/.warp/workflows
+app/src/user_config/mod.rs:167-180               base_dir() = data_dir()
+app/src/user_config/util.rs:17,70-107,191-212    .yaml/.yml, multi-doc, recursive walk, parse failures skipped
+app/src/user_config/native.rs:94-98,178-183      live reload
+app/src/util/bindings.rs:291                     CustomAction::Workflows = ctrl-shift-R
+app/src/terminal/view/init.rs:479-489            terminal:toggle_workflows_modal = cmd/ctrl-shift-S, requires a selected block
+app/src/terminal/input.rs:6629-6660              selecting a workflow replaces the buffer; AI vs Shell input type
+app/src/terminal/input.rs:12153-12180            workflow aliases expand on Enter
+app/src/workflows/aliases.rs:21-30               aliases stored as a private setting, no TOML path
+app/src/search/data_source.rs:239-243,320-324    palette filters "workflows" and "prompts"
+crates/warp_tui/src/prompts_menu.rs:1-9          TUI inserts raw query text, no argument box
+app/src/tui_export.rs:420-434                    tui_list_prompts returns agent-mode workflows only
+app/Cargo.toml:486,494,496,499,503               workflow cargo features in default
+app/Cargo.toml:673                               suggested_agent_mode_workflows declared, NOT in default
+app/src/lib.rs:2964-2995,3022-3035               cfg mapping for the workflow/rules flags
+crates/warp_features/src/lib.rs:833              AgentModeWorkflows also in DOGFOOD_FLAGS (inert)
+DECLINED.md:84,186                               team workflows / has_teams() permanently false
+app/src/drive/items/folder.rs:48-55              WarpPacks only swaps a folder icon
+app/src/cloud_object/update_manager.rs:1017-1018 is_warp_pack is never set true (TODO INT-789)
+
+## Prompt template overrides
+app/src/ai/agent_providers/prompt_renderer.rs:56          PROMPT_DIR_ENV = "ZAP_PROMPT_DIR"
+app/src/ai/agent_providers/prompt_renderer.rs:64-230      EMBEDDED and EMBEDDED_RAW tables
+app/src/ai/agent_providers/prompt_renderer.rs:333-362     seed_dir never overwrites
+app/src/ai/agent_providers/prompt_renderer.rs:364-400     default_prompts_dir, OverrideStatus, env takes priority
+app/src/settings/ai.rs:2736-2744                          prompt_template_dir, toml agents.warp_agent.prompt_template_dir, default ""
+app/i18n/en/warp.ftl:1054-1060                            settings strings and status lines
+
+## TUI zero state
+app/src/settings/tui_zero_state.rs:189-206                show_project_info, show_mcp; both default true
+
+-->

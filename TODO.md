@@ -352,6 +352,94 @@ rather than re-deriving it.
 
 ### USER-FACING DEFECTS FOUND WHILE WRITING THE USAGE MANUAL — 2026-08-29
 
+#### Systemic: every "new user" code path is dead
+
+**Coordinator-verified.** `User::test()` hardcodes `is_onboarded: true`
+(`app/src/auth/mod.rs:213`) and `is_logged_in()` returns `true` unconditionally (`:292-295`,
+its own doc says "Always `true` under Zap"). **Two sections found this independently**, from
+opposite ends — the installation writer found the onboarding slide deck unreachable, the
+terminal writer found two startup defaults that never apply. Consequences confirmed so far:
+
+- `SettingsInitializer::apply_startup_settings_migrations` puts the Universal-input default
+  and the Windows 16px font default inside `is_onboarded() == Some(false)`, so the real
+  defaults are `InputBoxType::Classic` and 13px **everywhere, including Windows**. The file's
+  own doc comment already admits the block is unreachable.
+- `pane_group/pane/view/header/mod.rs:413` gates a tooltip on
+  `!is_onboarded().unwrap_or_default()` with the comment "We only want to show the tooltip
+  for new users" — it can never show.
+- The onboarding deck is reachable only via `root_view:enter_onboarding_state`, which refuses
+  unless `enable_debug_features()`. First run opens a Welcome tab instead.
+
+This is one root cause, not three bugs. Fixing it is a product decision (should a de-Warped
+fork have a first-run experience at all?), but the dead branches and their stale comments
+should not be left implying otherwise.
+
+#### Settings-layer defects (coordinator-verified)
+
+- [ ] **`enable_legacy_ssh_wrapper` is declared TWICE** — `app/src/settings/ssh.rs:7-14` and
+      `app/src/terminal/warpify/settings.rs:80-81` — with the **same `toml_path`** *and* the
+      **same `storage_key`** (`EnableSSHWrapper`), differing only in `sync_to_cloud`.
+      **`script/check_settings_registry` does not catch this**: it validates settings *group*
+      registration parity, not key uniqueness. That is the second guard gap this session
+      (cf. the unreachable-code gap `check_stub_coverage` cannot see).
+      It sits on a trapdoor: setting it `false` triggers a one-time migration that disables
+      SSH Phosphorization entirely.
+
+#### Agent-reported, plausible, NOT fully traced
+
+- [ ] **Downloadable fallback fonts may be dead.** `url_for_font`
+      (`app/src/font_fallback.rs:8-15`) builds `{scheme}://assets/fallback-fonts/…` and
+      **coordinator-verified the Oss scheme is `phosphor`** (`channel/state.rs:274`), so the
+      URLs are `phosphor://…`. Whether that actually fails depends on how
+      `assets/asset_cache.rs` dispatches non-HTTP schemes — it carries *both* a bundled
+      provider and a URL provider, and I did not finish tracing which handles this.
+      **Recorded at the confidence it has:** the reporting agent's own words were "a static
+      read of the call chain, not an observed failure." Do not quote this as confirmed.
+
+#### Inert settings and dead surfaces (agent-reported)
+
+- [ ] `SameLinePromptBlockSettings` — registered, read and written by nothing.
+- [ ] `experimental.async_find_enabled` — `async_find` is in `default` and the check ORs the
+      flag, so the toggle can never matter.
+- [ ] `FeatureFlag::DefaultWaterfallMode` has **no reader anywhere**, yet
+      `settings/input_mode.rs:9-11` still claims new users get `Waterfall`.
+- [ ] `CustomAction::CreateBlockPermalink` survives with a `cmd-shift-S` default keystroke,
+      registered to no binding and dispatching nowhere — leftover from the removed cloud
+      share-block feature, with orphaned i18n strings alongside it.
+- [ ] **Only macOS has a menu bar** (`set_menu_bar_builder` is inside the macOS `cfg`), so
+      menu-driven toggles are unreachable on this fork's primary platform.
+- [ ] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` is
+      `OR(WINDOWS, MAC)` and the read early-returns on Linux, so the only way to disable it
+      there is `system.linux_selection_clipboard = false`, which also kills copy-to-primary.
+      Separately, `maybe_copy_on_select` writes the primary selection *before* checking
+      `copy_on_select`, so disabling that setting does not stop primary-selection writes.
+- [ ] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
+      Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
+      empty. Worth a UX look **specifically because this release ships the setting that
+      exists to address that complaint**.
+- [ ] **Empty "Learn more" links** — `SSH_DOCS_URL` and `SUBSHELL_DOCS_URL` are empty
+      strings; clicking does nothing.
+- [ ] **`accessibility.accessibility_verbosity` schema/parser mismatch** — the parser honours
+      `VERBOSE`/`CONCISE` (serde rename) while the generated schema advertises
+      `verbose`/`concise`. Also inert on Linux: announcements are gated on
+      `is_screen_reader_enabled()`, and the winit delegate returns `None`.
+
+#### More brand leaks in user-visible surfaces (agent-reported)
+
+Remote tmux installs to **`~/.warp/tmux/`**; the SSH bug-report link points at
+**`github.com/zerx-lab/warp`** (the dead ancestor — same class as the issue-template links
+fixed by #624); the Windows private-settings store is **`HKCU\Software\Zap\Phosphor`**
+(`WARP_REGISTRY_BASE_PATH` was never renamed). `TERM_PROGRAM=WarpTerminal` is **deliberate**
+for plugin compatibility and should stay.
+
+#### Terminology, settled
+
+The fork's own UI calls shell integration **"Phosphorize"**
+(`settings-warpify-page-title = Phosphorize`), not "warpify". The manual uses the term users
+actually see.
+
+#### Earlier findings, same exercise
+
 Writing a manual forces someone to check whether each claim is *true*, which surfaced a
 class of defect the 8235-test suite cannot see: things that compile, pass, and are wrong
 in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
