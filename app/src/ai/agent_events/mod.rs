@@ -4,6 +4,7 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 
 mod driver;
+mod family;
 mod message_hydrator;
 
 #[cfg(test)]
@@ -15,6 +16,11 @@ pub(crate) use driver::{
 pub(crate) use driver::{
     run_agent_event_driver, AgentEventConsumer, AgentEventConsumerControlFlow,
     AgentEventDriverConfig, AgentEventSource, AgentEventSourceItem,
+};
+pub(crate) use family::{classify_family_event, FamilyEvent, EVENT_NEW_MESSAGE};
+#[cfg(test)]
+pub(crate) use family::{
+    lifecycle_event_type_from_wire, EVENT_CHILD_AGENT_STARTED, EVENT_RUN_SESSION_LINKED,
 };
 pub(crate) use message_hydrator::MessageHydrator;
 
@@ -45,7 +51,9 @@ impl AgentEventStreamClient for DisabledAgentEventStreamClient {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// `PartialEq`/`Eq` are load-bearing: `family::FamilyEvent::ParentSelf`
+/// carries an `AgentRunEvent` by value and derives `PartialEq`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AgentRunEvent {
     pub event_type: String,
     pub run_id: String,
@@ -57,5 +65,7 @@ pub(crate) struct AgentRunEvent {
 
 #[cfg(test)]
 mod driver_tests;
+#[cfg(test)]
+mod family_tests;
 #[cfg(test)]
 mod message_hydrator_tests;
