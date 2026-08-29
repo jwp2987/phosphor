@@ -1170,13 +1170,45 @@ what was dropped.
       marked text "on macOS and Windows", so deleting the two cfgs needs runtime
       verification that winit delivers preedit on X11/Wayland at this fork's rev.
       Do NOT ship a cfg deletion on upstream's say-so.
-- [ ] **`1a29f680d` — shared recovery budget across MAA retries and resumes.**
+- [x] **`1a29f680d` — shared recovery budget across MAA retries and resumes.
+      PORTED 2026-08-29 (branch `port/t-S7-blocklist`), with its 6 tests.**
       Backoff already landed here independently by a *different* mechanism
       (`response_stream.rs:544`), so a naive port installs a second backoff on top.
       The `RecoveryBudget` unification did not land. `controller.rs:3961` carries a
       comment claiming `can_attempt_resume_on_error=false` "prevents an infinite
       loop" — that is the conflation upstream identifies; it does not bound
       recovery, it closes it. Provider-agnostic, not Warp-specific.
+
+      **What landed.** `RecoveryBudget { attempts_used, resume_allowed }` +
+      `MAX_RECOVERY_ATTEMPTS` + `FailReason` + `PendingResume` in
+      `response_stream.rs`; `ResponseStream` carries the budget and hands it to the
+      scheduled resume; `resume_conversation` keeps its public "fresh request"
+      meaning and automatic resumes go through the new private
+      `resume_conversation_with_recovery_budget`; passive requests get
+      `without_resume()` once in `send_request_input` instead of per call site.
+      The 5 external `resume_conversation` call sites all passed `true`, so the
+      bool was dropped rather than threaded.
+
+      **The second-backoff trap was real and was avoided**: the fork's existing
+      inline `500ms << (n-1)` schedule was *hoisted* into `backoff_after_attempts`,
+      not replaced by upstream's `server::retry_strategies` version (that module is
+      part of the dropped warp-server client and does not exist here; it also
+      jitters, which this fork has no shared server to need). The resume path,
+      which had **no** backoff at all, now waits that same schedule.
+
+      **The brief's line citation was off by one concern.** `controller.rs:3961`'s
+      comment governs the fork-specific BYOP *bad-arguments* resend, not recovery;
+      the recovery conflation lived in `schedule_auto_resume_after_error` itself,
+      which hard-passed `can_attempt_resume_on_error: false`. Both comments were
+      corrected: the bad-args loop was never bounded by that flag (the flag
+      governed the *next* request's recovery, not that path's re-entry) — the
+      newly-added-message-ids check is what bounds it, and the resend now gets a
+      full budget via `PendingResume::immediate`.
+
+      Collateral: `AUTO_RESUME_TIMEOUT` (`agent_sdk/driver.rs:87`) widened to
+      `pub(crate)` for the backoff-fits-the-window test, and
+      `cancelling_conversation_aborts_pending_auto_resume`
+      (`controller_tests.rs`) updated for the new helper signature.
 - [ ] **`e1bcf5d07` — AI-page split. One hunk MUST NOT be ported.**
       Two halves already present independently, and the fork's version is stronger
       (`persistence_key()`/`from_stable_key()` vs upstream's `slug()`). **Do not**

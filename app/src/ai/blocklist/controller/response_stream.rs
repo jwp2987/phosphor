@@ -854,8 +854,11 @@ impl ResponseStream {
                 ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(event)));
             }
             Err(e) => {
-                // Store original error if this is the first error
-                if self.recovery.attempts_used() == 0 {
+                // Store original error if this is the first error on this stream.
+                // Keyed off `retries_sent`, not the shared budget: a resumed request
+                // inherits a charged budget, so `attempts_used() == 0` would be false on
+                // its very first failure and the original error would never be captured.
+                if self.retries_sent == 0 {
                     self.original_error = Some(format!("{e:?}"));
                 }
 
@@ -917,17 +920,17 @@ impl ResponseStream {
                             backoff,
                         });
                     }
-                    RecoveryAction::Fail(reason) => {
-                        log::warn!(
-                            "MultiAgent request failed; not recovering: reason={} attempt={}/{MAX_RECOVERY_ATTEMPTS} - Error: {e:?}",
-                            reason.log_label(),
-                            self.recovery.attempts_used(),
-                        );
-                    }
+                    RecoveryAction::Fail(_) => {}
                 }
 
+                let fail_reason = match action {
+                    RecoveryAction::Fail(reason) => reason.log_label(),
+                    _ => "recovering",
+                };
                 log::warn!(
-                    "MultiAgent request failed after {} recovery attempts: has_received_client_actions={}, is_retryable={}, is_online={is_online}",
+                    "MultiAgent request failed after {}/{MAX_RECOVERY_ATTEMPTS} recovery attempts: \
+                     reason={fail_reason}, has_received_client_actions={}, is_retryable={}, \
+                     is_online={is_online}",
                     self.recovery.attempts_used(),
                     self.has_received_client_actions,
                     is_retryable

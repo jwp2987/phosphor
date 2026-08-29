@@ -296,11 +296,16 @@ fn fail_conversation_due_to_shell_exit_reports_error_and_survives_manual_cancel(
 }
 
 /// Ported from the pin (`42effe840:app/src/ai/blocklist/controller_tests.rs::
-/// cancelling_conversation_aborts_pending_auto_resume`) verbatim; every symbol
-/// it drives exists unchanged in this fork
-/// (`schedule_auto_resume_after_error` at `controller.rs:1813`,
-/// `pending_auto_resume_handles` at `:432`, and the `remove(..).abort()` arm of
-/// `cancel_conversation_progress` at `:3403`).
+/// cancelling_conversation_aborts_pending_auto_resume`); every symbol it drives
+/// exists in this fork (`schedule_auto_resume_after_error` at
+/// `controller.rs:1866`, `pending_auto_resume_handles` at `:444`, and the
+/// `remove(..).abort()` arm of `cancel_conversation_progress` at `:3468`).
+///
+/// Adapted 2026-08-29 for the shared recovery budget (upstream `1a29f680d`):
+/// `schedule_auto_resume_after_error` now takes the `PendingResume` the failed
+/// request scheduled. `PendingResume::immediate(RecoveryBudget::fresh())` is
+/// the zero-backoff form, so the future this test aborts is still the bare
+/// `wait_until_online()` the original drove.
 ///
 /// The interaction matters because the scheduled resume is a
 /// `wait_until_online()` future that can outlive the user's decision to stop:
