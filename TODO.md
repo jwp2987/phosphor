@@ -31,6 +31,48 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### ACCOUNTING CORRECTION — the test debt and the port queue are mostly THE SAME WORK
+
+An earlier revision of this file reported "52 commits **plus** 60 tests of real work."
+**That double-counted.** Coordinator-verified: **all nine blocked test clusters map to
+commits already in the port queue** —
+
+| test cluster | tests | queue commit |
+|---|---|---|
+| TUI disconnect resilience | 5 | `ee351a0e7` |
+| shared recovery budget | 6 | `1a29f680d` (PARTIAL) |
+| right-click paste | 6 | `c25ac4070` |
+| `#` AI-search trigger | 3 | `94daf47f3` |
+| TUI focus ownership | 7 | `69254d73` |
+| Ctrl-C cancel window | 2 | `9921300b7` + `6696954c` |
+| tab shortcut hints | 1 | `8b88df98` |
+| settings empty-category | 2 | `3a7a4a5b3` |
+| `is_passive_conversation` | 3 | `63a17a50a` |
+
+These tests are not blocked by something else — they are blocked by **the exact commits
+already counted**. Porting a queued commit **includes porting its tests**; that is what a
+complete port is. This round already proved the cost of the opposite: the coordinator
+told the grep porter that `fbbfc41f3`'s own 25 tests were "a separate work item", and
+following that would have shipped a two-layer shell-quoting surface with zero coverage.
+
+**Rule for this and every future round: a port-queue row is not done until its tests
+land with it. Do not schedule the tests as separate work.**
+
+#### Genuinely additional work — ~18 tests, no queue commit covers them
+
+- **`classify_family_event` (7 tests)** — the parent/child demultiplexer for the agent
+  event stream. Needs ~60 lines of production (`classify_family_event`, `enum FamilyEvent`,
+  `lifecycle_event_type_from_wire`, two constants). The fork already defines
+  `AgentRunEvent` and open-codes one arm by hand.
+- **exit-commit ordering (6 tests)** — `exit_commit_handle` has **0 hits in TODO.md**;
+  nothing tracks it. Needs `IdleTimeoutSender::with_on_commit` plus three
+  `OrchestrationEventService` methods.
+- **`drop_pending_events_for_exiting_conversation` (1)** — a 12-line `HashMap::remove`.
+  Overlaps the exit-commit cluster; port together.
+- **4 `is_orphaned_by_finished_output` tests** — the only cluster needing **no production
+  port at all**: the `action_icon` mirror is already live at
+  `block/view_impl/output.rs:3175` with zero coverage.
+
 ### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
