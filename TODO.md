@@ -125,6 +125,96 @@ generator defect split other commits in this round.**
 close its ledger row. The coordinator owns `TODO.md` centrally; take the round
 branch's version at merge and re-apply the row closure here.
 
+### PORT REFUTATION RESULTS — 3 of 5 in. Every port had findings.
+
+Each port was attacked by an agent that did not write it. **No port survived
+unchanged.** Two refuters went beyond reading and executed reconstructed
+artifacts against real tools (BusyBox 1.37, GNU grep 3.12, git 2.53, fish 4.2.1
+under a pty), which is where the sharpest findings came from.
+
+#### `port/shell-bugs` — the port ARMS a latent trap it does not fix. Blocking.
+
+- **D1 (blocking, being fixed).** `fish.sh:135` removes a finished generator PID
+  with `string replace $command_pid '' $_warp_generator_pids` — a **substring**
+  replacement over every element, not element removal. Observed in real fish:
+  `['', '40213', '213']` with `213` exiting becomes `['', '40', '']`. The next
+  preexec then runs `kill -9 40` — **SIGKILL to a process that was never a
+  generator**, stderr suppressed. **This was inert before the port**, because
+  `kill -9 $pids` referenced an undefined variable and always failed. Fixing the
+  loop variable made the corrupted list live. Correct removal is
+  `string match -v -- $command_pid $_warp_generator_pids`.
+- **D2 (being fixed).** Verified under a real pty: fish fires `fish_preexec` for a
+  whitespace-only line, so **a bare Enter now SIGKILLs in-flight generators**. Old
+  behaviour never killed. bash is unaffected (`$BASH_COMMAND` is unset for an empty
+  line), so this is a fish-only divergence.
+- **D3 (recorded, NOT fixed, and it questions the port's premise).** The clamp may
+  not close the bug TODO.md:384 reports. Two adjacent raw-index sites survive:
+  `completer/suggest/alias.rs:270` indexes `&input[..span.start()]` two lines after
+  the now-clamped call, and `parsers/v2.rs:105-124` increments `offset` once per
+  **char** inside `.chars().skip_while(..)` then uses it as a **byte** offset at both
+  `Span::new(..)` and `item[offset..]`. A non-ASCII flag name (`--flag<non-ascii>=x`)
+  builds a mid-char Span *and* panics at `item[offset..]` before `slice` is reached.
+  **HYPOTHESIS: that, not `Span::slice`, may be the real reproducer.** File separately.
+
+#### `port/grep-parse` — two regressions the port introduced, two inherited.
+
+- **D3 (being fixed).** The new parser dropped the old `.trim()`. On `"\nsrc/a.rs\0..."`
+  the path becomes `"\nsrc/a.rs"` — non-empty, so the emptiness guard passes, the
+  digits parse, and **a corrupted path is reported to the model as a real file**.
+  Unreachable by the skip-and-warn path *because it parses*.
+- **D4 (being fixed).** `build_select_string_command` emits ``{path}`0{line}`0`` — no
+  content, no newline. Byte-traced: on two such records the second is **silently
+  dropped** (`find('\n')` returns `None` -> `rest = ""` -> loop ends), with no warning
+  and no `Err`, because `matched_files` is non-empty. Only PowerShell's implicit
+  per-object newline prevents "PowerShell always returns exactly one match" — stated
+  nowhere, covered by zero tests.
+- **D1 (upstream-inherited, NOT fixed).** **The BusyBox fallback cannot rescue
+  BusyBox.** Proven by execution: BusyBox grep rejects `--devices=skip`, which sits
+  *before* `--null` in argv, and both commands inside the fallback carry it. Status 2
+  -> the fallback returns the original error. ~130 lines, 5 tests and a doubled
+  traversal, inert on the only platform they exist for. Upstream has the same hole.
+- **D2 (upstream-inherited, NOT fixed).** The fallback fires on *any* error (bad
+  regex, timeout, exec failure), and `GREP_TIMEOUT` wraps the whole of `run_grep`
+  once — so the strictly more expensive second scan eats the remaining budget and
+  replaces the real diagnostic with "timed out".
+- **§5.6 verdict: legitimately updated, not weakened.** Function-name diff shows
+  additions only, 25 new, zero removals; all three adversarial payloads identical
+  character-for-character; every full-string `assert_eq!` retained (none softened to
+  `contains`). **Faithfulness: no unexplained drift** — the only diffs vs upstream are
+  the two declared fork divergences.
+
+#### `port/cursor` — correct and faithful; one prose defect, one inherited consequence.
+
+- **Both tests confirmed NON-VACUOUS** by mutation analysis: deleting the
+  `is_active_and_long_running()` / `is_command_grid_active()` conjuncts makes each
+  fail, and the `set_was_long_running` latch does not bypass the transition under
+  test because the `match self.state` early-returns first.
+- **D1 (upstream-inherited, accepted, now documented).** The porter's restraint was
+  right but its analysis stopped one step short: **this commit changes which side of
+  the `hide_cursor_cell` condition the code lands on.** `visible_cursor_shape` used to
+  be `Some` for finished blocks, so the cell-skip at `grid_renderer.rs:638` fired only
+  when an agent had turned `SHOW_CURSOR` off. It is now `None` for every
+  `DoneWith*`/`Static`/finished-`Background` block, and `hide_cursor_cell` is
+  **element-wide, not per-block** (`view.rs:22940`), so while a CLI agent's rich input
+  is open every finished block in the viewport skips rendering one cell. Upstream ships
+  the identical condition — recorded, deliberately not fixed here.
+- **D2 (being fixed).** The doc comment on `is_output_cursor_visible` argues the
+  opposite of what the code does — it names `BeforeExecution` as the exception and then
+  treats it as none. Fork-added prose; upstream shipped no doc comment.
+- **Coverage gap worth knowing.** Both tests exercise the *predicates*, not the *call
+  sites*. Reverting `block_list_element.rs` while keeping the methods leaves both green
+  — the same shape as the `01778efe` lesson.
+
+#### One refuter's best attack failed, and it said so
+
+The shell refuter expected `(string trim -- $argv[1])` to yield **zero** arguments on
+whitespace-only input, leaving `string match -q PAT --` reading stdin and eating the
+user's keystrokes — and confirmed that failure mode is real in isolation. It is
+unreachable: `string trim` emits one line per input, so the substitution yields exactly
+one empty-string argument (`count (string trim -- '  ')` = 1, versus
+`count (echo -n '')` = 0). Reported as an attack that failed rather than padded into a
+finding.
+
 ### ROUND PROTOCOL — standing orders, 2026-08-29 (maintainer)
 
 **In force for the whole round. Do not infer exceptions.**
