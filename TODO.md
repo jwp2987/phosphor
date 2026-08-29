@@ -31,6 +31,64 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### BUILD VERIFICATION — 2026-08-29, coordinator, the ONLY compilation this round saw
+
+Merge commit `83b6f8fab` on `repin-2026-08-29-4111d08f9`, all five ports merged.
+No agent compiled anything at any point; every result below is the coordinator's.
+
+| gate | result |
+|---|---|
+| `cargo check -p warp --features gui --lib --tests` | **ok**, 0 errors |
+| `cargo check` feature-unified, multi-package | **ok** |
+| new warnings introduced by the round | **0** (3 pre-existing, in untouched files) |
+| `cargo nextest -p warp` | **6207 passed**, 29 skipped |
+| `cargo nextest -p warp_tui` | **947 passed**, 0 skipped |
+| `cargo nextest -p warpui_core --features tui` | **608 passed**, 7 skipped |
+| `cargo nextest -p warp_completer` | **183 passed**, 4 skipped |
+| 8 fork-boundary guards | **all ok** |
+| `known_test_failures.txt` baseline | empty; 0 failures observed, so no drift |
+
+**Total 7945 passed, 40 skipped, 0 failed.**
+
+#### The build caught one thing five reviewers could not
+
+`warpui_core report_error::tests::report_error_throttles_per_callsite_not_globally`
+FAILED on first run — the replacement written after the coordinator rejected its
+tautological predecessor. Its own sanity guard fired, which is the only reason it
+failed loudly instead of passing while testing nothing.
+
+**Root cause, traced by the coordinator:** `crates/warpui_core/src/test.rs` uses
+`#[ctor]` to install `simplelog::SimpleLogger` **before `main`**, unconditionally, in
+every test process of that crate. `log::set_logger` can therefore never succeed in
+`warpui_core` — `[ERROR] sanity` reached stderr from simplelog while the test's own
+capture saw nothing. Not a race: nextest already gives each test its own process. The
+porter had modelled it on `warp_core/src/errors_tests.rs`, which uses the identical
+pattern and works there **only because `warp_core` has no such `#[ctor]`**.
+
+Resolved by deleting the test and documenting the property at the macro — including
+*why* no test is possible in this crate, naming the `#[ctor]`, so it is not attempted a
+third time. `take_once_fires_exactly_once` is kept and passes. **No testability seam was
+added and the sanity check was not weakened**; an honest documented gap beats either.
+
+#### What the build did NOT verify — unchanged, and not to be read as passing
+
+- **The wasm keystroke-leak fix.** `crates/warpui/src/platform/mod.rs` is
+  `#[cfg(target_family = "wasm")]` and neither `pr-check.yml` nor `script/precheck`
+  builds a wasm target, so `log_shape()` and both changed `event_loop/mod.rs` lines are
+  compiled by **nothing** on this fork. The highest-value leak fix has no compile and no
+  test coverage anywhere.
+- **The fish/DCS bootstrap fixes.** No shell harness exists in this repo
+  (`bootstrap_test.rs` stubs `fish.sh` entirely). Verified behaviourally under real
+  `bash`/`fish` instead, including old-vs-new tables.
+- **The font-fallback exclusion.** Its only guard was deleted as dead code, by design.
+
+#### Operational note for the next round
+
+`script/precheck` was killed three times at the `warp` **test-binary** compile — a
+background-task duration limit, not memory (15G free each time, no OOM record). The
+compile takes ~5m48s and completes fine in the foreground. Split it: build first, then
+run nextest against the cached binary.
+
 ### ROUND STATUS — live, updated as the round runs
 
 Round branch `repin-2026-08-29-4111d08f9`, pushed. `main` untouched.
@@ -748,7 +806,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Shell integration / completion (7)**
 
-- [ ] `e722ebed` **P0 — four independent bugs, one is a PANIC.**
+- [x] `e722ebed` **P0 — four independent bugs, one is a PANIC.**
       `crates/warp_completer/src/meta.rs:97` slices `&source[start..end]` with no
       char-boundary clamp -> panics on a multi-byte command line (the fork already
       has a `floor_char_boundary` helper in two places, so the fix is a call).
@@ -780,7 +838,7 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
       `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
       Do not "fix" this by relocating the existing call.
-- [ ] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
+- [x] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
       the lowercased first token, retaining every **miss** forever with no length
       cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
 - [ ] `79a9cb72` — completer resolves an option's argument by value position; needs
@@ -793,11 +851,11 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Terminal / rendering (6)**
 
-- [ ] `ee95ac0fd` **P0 — double cursor in finished background blocks.** Fork
+- [x] `ee95ac0fd` **P0 — double cursor in finished background blocks.** Fork
       computes one `cursor_visible` from `SHOW_CURSOR` alone
       (`block_list_element.rs:2586`) and feeds both grids, while gating `draw_cursor`
       differently. ~30 lines, 2 files; every helper already exists. Clean lift.
-- [ ] `8ba01aa1a` **P0 — `grid_renderer` OOB logs EVERY FRAME** in the ligature path
+- [x] `8ba01aa1a` **P0 — `grid_renderer` OOB logs EVERY FRAME** in the ligature path
       (`:1137`), ungated and unthrottled; the non-ligature path (`:627`) is
       debug-only. Fork already has the macro surface (`ReportErrorLogMode::OncePerRun`);
       only adaptation is `warp_errors::` -> `warp_core::errors::`.
