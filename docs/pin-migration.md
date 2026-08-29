@@ -187,7 +187,22 @@ ledger:
 | **ALREADY-PRESENT** | fork already has it (independently, or via an earlier round) |
 | **CLOUD** | needs dropped cloud infrastructure — out of scope by policy |
 | **N/A** | upstream-only: CI config, release tooling, vendored assets the fork lacks |
+| **NOT-PORTED** | a real, portable gap: no cloud coupling, no product question, simply never ported |
 | **SCOPE-DECISION** | a real gap, but closing it is a product call, not a port |
+
+**`NOT-PORTED` and `SCOPE-DECISION` are not interchangeable, and the round is
+unreadable if they get merged.** `NOT-PORTED` is work: someone ports it and it
+is done. `SCOPE-DECISION` is a question: nobody may port it until a maintainer
+answers. Filing port debt as a product question stalls it behind a decision that
+was never needed; filing a product question as port debt invites an agent to
+invent scope.
+
+This row was added after the `42effe840 -> 4111d08f9` round, where the table
+above lacked it and **all ten shards independently invented the same bucket and
+flagged the omission**. It is not a corner case: 49 of 171 commits (29%) landed
+there, more than every other non-cloud bucket combined. Phase 6.5 step 4 already
+names the outcome ("None present = never ported"); this row is what lets Phase
+2.5 record it.
 
 `SCOPE-DECISION` is what makes the gap loop terminate. Without it, agents
 either loop forever on gaps they have no authority to close, or quietly
@@ -295,8 +310,20 @@ and saying which it is takes one extra command.
 At the first re-pin the split was 17 identical, 2 drift
 (`warp-command-signatures`, `notify-debouncer-full`), 1 divergence (`rmcp` — the
 fork pins a git fork, upstream moved to crates.io `1.6`), 1 deliberate (`winit`,
-carrying an unmerged Windows dark-mode fix), and 3 correctly absent (`tink-*`,
-which back cloud-coupled envelope encryption).
+carrying an unmerged Windows dark-mode fix), and 3 **divergent** (`tink-*`).
+
+**Corrected 2026-08-29 — this row previously read "3 correctly absent (`tink-*`,
+which back cloud-coupled envelope encryption)". That is false**, and it is false
+in the direction that stops you looking: `tink-core`, `tink-proto` and
+`tink-hybrid` are pinned at `Cargo.toml:593-595` under `[patch.crates-io]` and
+consumed by `crates/managed_secrets/{Cargo.toml,src/envelope.rs,src/envelope/hpke_impl.rs}`.
+The real finding is the opposite of absence: the fork pins them to a floating
+**`branch = "warpdotdev/main"`** where both pins use an exact
+`rev = "54b9ac9af93b0c08b446a7bc0582836c9403a71b"`. A branch pin is a
+non-reproducible build input — `cargo update` moves it silently, and no gate
+sees it — and no comment says why, which is exactly the case the "if the reason
+is not written down, that is the bug" rule below exists to catch. Either pin it
+back to the rev or write the reason at the pin.
 
 ### Two traps
 
@@ -501,10 +528,17 @@ normal GUI build via exactly three paths, and you must check all of them:
 
 1. membership in `RELEASE_FLAGS`;
 2. a `#[cfg(feature = "x")] FeatureFlag::Y` entry **where `x` is in `default`**;
-3. an `UNSTABLE_FEATURES` name (two entries exist:
-   `windows_high_performance_gpu_default` and `gemini_notifications`), reachable
-   only when `ZAP_UNSTABLE_FEATURES` names it — a debug build does **not** imply
-   it.
+3. an `UNSTABLE_FEATURES` name (`app/src/lib.rs`), reachable only when
+   `ZAP_UNSTABLE_FEATURES` names it — a debug build does **not** imply it.
+   **Count it, do not quote a number from here.** This line said "two entries"
+   until 2026-08-29, when there were eight
+   (`codebase_index_persistence`, `full_source_code_embedding`,
+   `gemini_notifications`, `jupyter_notebook_rendering`, `local_docker_sandbox`,
+   `multi_level_orchestration`, `warp_control_cli`,
+   `windows_high_performance_gpu_default`) — six flags that a reader working from
+   the stale figure would have misclassified as dark when they are
+   env-reachable. The list grows every time a dark flag is adjudicated, so it is
+   stale by construction.
 
 ### Four traps in this check specifically
 
