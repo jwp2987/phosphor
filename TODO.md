@@ -196,8 +196,8 @@ touched file in every one of those cases.
 1. Its totals line was wrong (SCOPE-DECISION 10 / N/A 21 vs rows 8 / 23).
 2. Its `ime_marked_text` verdict ("NO ACTION, nothing is dark") contradicted its
    own cited evidence; adjudicated against it.
-3. **Three shas in its commit table do not resolve** — `3535362d2`,
-   `e83d07d8d`, `1704db4c3`. The correct values (`3535362d7`, `e83d07d8b`,
+3. **Three shas in its commit table do not resolve** — `3535362d7`,
+   `e83d07d8b`, `1704db4cf`. The correct values (`3535362d7`, `e83d07d8b`,
    `1704db4cf`) are present in the git-generated commit map, so the corruption was
    introduced in the report, not upstream of it. `git show` on the printed strings
    would have errored, so those three were classified without inspection or
@@ -263,6 +263,42 @@ this round has no build.
 - [ ] Give every `keep:` row on a fork-original symbol a SECOND marker keyed on the
       pin-side symbol or path it diverges from.
 - [ ] Audit `DECLINED.md` for other inert `keep:` markers.
+
+### DATA-INTEGRITY: five shas in the shard reports did not resolve
+
+Found by two independent refuters and then swept exhaustively by the coordinator:
+every sha cited in this section was validated with `git cat-file -t`. **7 of 109
+did not resolve; 5 were real typos, 2 were false alarms.**
+
+Corrected (each verified against the target commit's subject line before replacing):
+
+| as reported | correct | commit |
+|---|---|---|
+| `1c925e330` | **`1c925e333`** | Bound rayon fan-out in `EditDelta::layout_delta` (APP-5392) — **was in the PORT QUEUE** |
+| `cff5f778e` | **`cff5f778c`** | `lint_powershell`: report findings from every source — **was an ACCEPTED scope decision** |
+| `1704db4c3` | **`1704db4cf`** | Update common skills lock |
+| `3535362d2` | **`3535362d7`** | Bump command-signatures to 32a7fd56 |
+| `e83d07d8d` | **`e83d07d8b`** | Bump command-signatures to d3725aa |
+
+Not typos, correctly non-resolving: `b0886a952` and `fe3526693` are revs in
+*other* repositories (`warp-proto-apis`, `warp-command-signatures`) and will never
+resolve against this one.
+
+**Why this mattered:** two of the five sat in actionable entries. A port agent
+handed `1c925e330` gets "unknown revision", and the plausible failure is a report
+of "nothing to port" rather than an error — silently dropping the work.
+
+**The typos came from at least two different shards** (I and C), so this is a
+systemic reporting-quality problem, not one bad agent. **Any future round must
+validate shas against `git cat-file -t` before briefing anyone**, and a
+coordinator must never pass an agent a sha it has not resolved itself.
+
+**Coordinator error worth recording too:** the first sweep reported 184 of 282
+non-resolving, which was nonsense — it sliced TODO.md to end-of-file (catching
+every unrelated sha in the older sections) and validated against the 171-commit
+range map instead of the repository, so it flagged the pins themselves. The
+lesson is the same one this round keeps relearning: check the checker before
+believing an alarming number.
 
 ### QUEUE GENERATOR DEFECTS — fix before the next round
 
@@ -409,9 +445,9 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       Also adds an `ErrorKind::Interrupted` retry — today an `EINTR` kills the reader
       loop permanently. `thiserror` and `libc` are already deps. **Port this instead
       of `b1731dde0`, which it rewrites.**
-- [ ] `d89e78385` **(land before `1c925e330`)** — `Arc` the layout delta; upstream
+- [ ] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
       measured multi-GB transient allocation when two editors share one `Buffer`.
-- [ ] `1c925e330` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
+- [ ] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
       `truncate_text_for_layout` silently drops text before shaping, and upstream's
       safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
       fork's frame-offset clamping and `BlockMarker` 1-indexing first. The chunking
@@ -581,7 +617,7 @@ separately rather than inflating the queue count.
       a missing binstall bootstrap to the wasm deps script.
 - [ ] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
       `curl` has no `--retry` at all, so a CDN brownout fails bootstrap outright.
-- [ ] **`cff5f778e`** — `script/lint_powershell` throws on the first source with
+- [ ] **`cff5f778c`** — `script/lint_powershell` throws on the first source with
       findings, hiding every later source. A gate that under-reports.
 - [ ] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
@@ -633,8 +669,8 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
 - [ ] `warp-command-signatures` `fe3526693` -> **`d3725aa42375cc229699c87be2b38f9d9f07080f`**.
       This is the completion-spec data compiled into the binary — the same dep that was
       found two pins stale last round. **One bump; do NOT replay the 7 intermediate bump
-      commits** (`2861a6e43`, `3535362d2`, `59bda8db0`, `5bd9b8e15`, `33bb01256`,
-      `e326a774a`, `e83d07d8d`) — data-repo revs do not apply as diffs.
+      commits** (`2861a6e43`, `3535362d7`, `59bda8db0`, `5bd9b8e15`, `33bb01256`,
+      `e326a774a`, `e83d07d8b`) — data-repo revs do not apply as diffs.
 - [ ] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
       See `def3fd0e3` above. Compile-surface change; sequence with the code shards.
 - [ ] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
