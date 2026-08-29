@@ -31,7 +31,7 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
-### TEST ADJUDICATION — Phase 2.6, 4 of 5 shards reported (159 of 235 tests)
+### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
 the round scratchpad; they are NOT yet appended to `docs/sweep-verdict-ledger.tsv`.
@@ -42,7 +42,45 @@ the round scratchpad; they are NOT yet appended to `docs/sweep-verdict-ledger.ts
 | B — cost / local models | 27 | 26 | 1 |
 | D — settings / CLI | 35 | 26 | **8** (+1 not-a-test) |
 | E — verify NOT-PORTABLE | 51 | — | **12 REFUTED, 2 partial** |
-| C — terminal / TUI | 76 | outstanding | outstanding |
+| C — terminal / TUI | 69 (not 76) | 43 | **26** |
+
+**Totals: 128 ledger-ready rows, 48 tests of portable debt with no applicable verdict,
+plus 12 more freed by shard E's refutations = 60 tests of real work.** Rows are staged
+in the round scratchpad and are NOT yet appended to `docs/sweep-verdict-ledger.tsv`.
+
+#### Shard C — the largest, and where the value was expected to be
+
+39 DECLINED, 3 CLOUD, 1 DIVERGENT, **26 portable debt**. Ranked:
+
+1. **TUI driver disconnect resilience (5).** Highest value in the round. `is_terminal_disconnect`,
+   `TuiDriverStartupError`, `fail_tui_driver` all absent; the fork's
+   `draw_and_schedule_repaint` logs once and **reschedules the timer anyway**, so a
+   dropped SSH connection leaves it drawing forever into a dead terminal. Pure
+   `std::io`/errno/crossterm. **This is the test coverage for `ee351a0e7`, already in the
+   port queue** — one work item, not two.
+2. **TUI focus ownership (7).** One coherent cluster across four files. Would guard that
+   clicking the input focuses it, a background session cannot steal focus, and focus
+   survives a redraw. Note `empty_background_attachment_update_*` is a **near-miss, not
+   COVERED-ELSEWHERE** — the fork guards the same invariant via a different door
+   (`update_process_input_focus`), leaving the attachment-bar path unguarded.
+3. **Right-click paste (6)** and **`#` AI-search trigger (3)** — both settings that are
+   new at this pin. The `#` one matters: the fork's trigger is **ungated**, so a user
+   cannot type a literal `#` at line start without the AI panel opening.
+4. **Ctrl-C cancel window (2)** — viewer side, in scope; the fork has the write path but
+   as a bare delegate.
+5. **`is_passive_conversation` (3 of 4).** The earlier claim was independently
+   re-verified and holds — live at **9** fork call sites, named by **no** fork test. But
+   the fourth, `does_not_re_derive_from_history_after_construction`, is **DIVERGENT and
+   would FAIL here**: the pin caches `is_passive`; the fork re-derives every call, so a
+   stripped exchange falls back to `Active`. **Possible fork-only defect the adjudicator
+   did not file:** `drop_hidden_passive_ai_blocks` (`view.rs:13989`) uses this in a
+   `retain`, so a hidden passive block whose exchange left history stops classifying as
+   passive and leaks into `rich_content_views`.
+
+**The `is_ai_allowed_in_remote_sessions` trap fired as briefed, and worsened:** the pin's
+version now takes a `&TeamContext` scope, and `org_command_patterns_*` additionally needs
+`remote_session_regex_list`, which the fork reads off a hard-`None` `current_team()`.
+Three tests correctly DECLINED. No SSH-tmux-deprecation test appeared in this shard.
 
 #### The "not portable" calls were wrong 27% of the time
 
@@ -107,7 +145,28 @@ above it.
   in `DECLINED.md`, `TODO.md`, or `docs/STATE.md`. Nothing records whether it was a
   decision.
 
-#### COORDINATOR TOOLING DEFECT — the 235-vs-228 overcount is mine
+#### TWO SEPARATE EXTRACTION DEFECTS — corrected 2026-08-29
+
+An earlier revision of this section blamed both on the coordinator. **That was wrong**;
+they are distinct and only one is mine.
+
+**Mine — the 235-vs-228 overcount.** My `awk` range extraction leaked 7 lines of the
+queue's own reconciliation prose into shard C's file, where they read as test names.
+Coordinator-verified: `235 - 7 = 228`, matching the queue exactly. Shard C caught it and
+adjudicated 69 real tests rather than the 76 it was handed.
+
+**The generator's — nested helpers counted as tests.** `generate_repin_queue` collects
+`fn <name>(` without requiring a preceding `#[test]` or tracking nesting depth, so it
+lists helpers declared inside test bodies. Confirmed: the queue lists `is_listed`, which
+at `4111d08f9:app/src/settings_view/mod_tests.rs:161` is a nested helper inside
+`#[test] fn all_sections_list_is_exhaustive()`. **So the 228 is itself inflated.** Pin
+`mod_tests.rs` has six more such helpers; pin `lib_tests.rs` has 148 top-level `fn`
+against 144 `#[test]`.
+
+**Consequence: every queue count needs re-deriving with an attribute + depth check** —
+the 228, and the 1,100 tree-wide figure. Fix the generator before the next round.
+
+#### (superseded heading kept for diff clarity)
 
 My extraction script matched `fn <name>(` **without requiring a preceding `#[test]` and
 without tracking nesting depth**, so it collected helpers declared inside test bodies.
