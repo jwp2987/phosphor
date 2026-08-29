@@ -1667,6 +1667,8 @@ impl<V: warpui::View> PageType<V> {
                 highlighted_widget_id,
                 ..
             } => {
+                let categories = categories_with_visible_content(categories, app);
+
                 let mut page = Flex::column();
                 if let Some(title) = title {
                     page.add_child(render_page_title(title, appearance));
@@ -1849,6 +1851,31 @@ pub(super) struct FilteredCategory<'a, V: warpui::View> {
     pub(super) title: &'static str,
     pub(super) subtitle: Option<&'static str>,
     pub(super) widgets: Vec<&'a dyn SettingsWidget<View = V>>,
+}
+
+/// Drops any category with no widget whose `should_render` currently returns `true`.
+///
+/// Ported from upstream `3a7a4a5b3` (present at pin 4111d08f9).
+/// `new_categorized` seeds every category's filter with every widget index, so a page that
+/// has never been searched reports every category as non-empty regardless of
+/// `should_render`; `update_filter` is the only place `should_render` is consulted, and it
+/// runs only once a query (even an empty one) is applied. Without this, an untouched page
+/// draws a category header over a body that `render_page`'s own per-widget
+/// `should_render` check then renders as nothing, and the header disappears as soon as the
+/// user types anything -- the untouched page and the empty-query page disagree.
+pub(super) fn categories_with_visible_content<'a, V: warpui::View>(
+    categories: Vec<FilteredCategory<'a, V>>,
+    app: &AppContext,
+) -> Vec<FilteredCategory<'a, V>> {
+    categories
+        .into_iter()
+        .filter(|category| {
+            category
+                .widgets
+                .iter()
+                .any(|widget| widget.should_render(app))
+        })
+        .collect()
 }
 
 /// Widgets are pieces of renderable settings modal content which can be associated with search
