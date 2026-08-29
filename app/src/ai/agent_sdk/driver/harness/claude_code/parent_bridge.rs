@@ -25,9 +25,9 @@ use warpui::r#async::SpawnedFutureHandle;
 use warpui::ModelSpawner;
 
 use crate::ai::agent_events::{
-    run_agent_event_driver, AgentEventConsumer, AgentEventConsumerControlFlow,
-    AgentEventDriverConfig, AgentEventSource, AgentEventSourceItem, AgentEventStreamClient,
-    AgentRunEvent, MessageHydrator,
+    classify_family_event, run_agent_event_driver, AgentEventConsumer,
+    AgentEventConsumerControlFlow, AgentEventDriverConfig, AgentEventSource, AgentEventSourceItem,
+    AgentEventStreamClient, AgentRunEvent, FamilyEvent, MessageHydrator, EVENT_NEW_MESSAGE,
 };
 use crate::ai::agent_sdk::driver::{AgentDriver, OZ_MESSAGE_LISTENER_STATE_ROOT_ENV};
 
@@ -147,7 +147,16 @@ impl AgentEventConsumer for MessageBridgeEventConsumer {
         &mut self,
         event: AgentRunEvent,
     ) -> anyhow::Result<AgentEventConsumerControlFlow> {
-        if event.event_type != "new_message" || event.run_id != self.run_id {
+        // This bridge stages lead-agent messages addressed to its own run and
+        // nothing else. `ParentSelf` is the family classifier's self-addressed
+        // bucket, which is deliberately wider -- it also covers this run's own
+        // lifecycle events -- so the message-type check narrows it back to
+        // exactly the guard this replaced. Do not drop that check: staging a
+        // lifecycle event as a lead-agent message would be a defect.
+        let FamilyEvent::ParentSelf(event) = classify_family_event(&event, &self.run_id) else {
+            return Ok(AgentEventConsumerControlFlow::Continue);
+        };
+        if event.event_type != EVENT_NEW_MESSAGE {
             return Ok(AgentEventConsumerControlFlow::Continue);
         }
 
