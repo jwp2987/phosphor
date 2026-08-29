@@ -227,7 +227,7 @@ round and every one was caught by the agent, not by me.
 |---|---|---|---|---|
 | S1 settings-cli (12) | **3** (+1 prod fix) | 1 | 8 | — |
 | S5 sdk-environment (20) | **2** (adapted) | 1 | 17 | — |
-| S8 misc (17) | **1** (adapted) | 3 | 12 | 1 |
+| S8 misc (17) | **2** (adapted) | 3 | 11 | 1 |
 
 **The briefs were wrong again — 9 claims across 3 shards, every one caught by the agent.**
 The pattern is now unmistakable: my shard lists were generated from an adjudication pass
@@ -345,6 +345,43 @@ those vars at all, and the notification plugins reach the terminal over OSC 777 
 Adjudication for the managed-MCP and `ephemeral_installation_id` families is now recorded
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
+
+#### S8 re-adjudication — my mid-flight correction paid off
+
+I warned S8 that its `ambient_agent_task_deserializes_orchestration_source` verdict looked
+like the collapse-to-the-bucket error. It re-adjudicated **from the sha** and the warning
+was right, but for a sharper reason than I gave:
+
+**`Orchestration` is not one of `d019ddfe9`'s five declined variants at all.** That row
+covers `Jira`, `GitLabWebhook`, `RunScorer`, `Autofix`, `BenchmarkTrial`. The test actually
+arrives with **`d15645c77`** ("Add ORCHESTRATION variant to client AgentSource", APP-5412),
+which is **recorded in neither `TODO.md` nor `DECLINED.md`**. So the original verdict cited
+a decline that does not reach the test.
+
+Split verdict, and a third port for the round: the `Orchestration` variant and
+`blocks_cloud_followups` are both genuinely absent (warp-server run source; **every**
+`AmbientAgentTask` value in this fork is built inside a test, so `DECLINED.md:213`'s local
+reversal does not make it reachable — local children never round-trip through this JSON).
+But the property upstream's defect was *about* — quoting its own root-cause analysis, "the
+task still loads but its source is lost" — is **live here and had zero coverage**:
+`deserialize_ambient_agent_source` (`task.rs:242-266`) was entirely untested, `source`
+appearing in that test file only as a struct-literal field.
+`task_with_unrecognized_source_still_deserializes_with_no_source` now covers it, and
+**guards the queued portable half of `d019ddfe9`** (`report_error!` → `log::warn!` on this
+same arm): that port must change the log macro without changing the deserialize outcome.
+**Coordinator-verified:** `GITHUB_ACTION` → `AgentSource::GitHubAction` at `task.rs:258`,
+the `_` arm returns `None` without failing the record, and five existing
+`from_str::<AmbientAgentTask>` tests establish the JSON shape. The recognised-source case
+is asserted alongside the unknown one specifically so the test cannot pass against a
+degenerate always-`None` deserializer.
+
+**Five more unrecorded shas surfaced by grepping the ledger by sha rather than by symbol:**
+`9e8ba7341` and `1c6708dde` (the cost tests — covered only by `DECLINED.md:215` prose, no
+sha row), `bbec37f3d` and `a45466be8` (Factory skills), `a9c0a1ebd` (project-context
+refresh — the NOT-PORTABLE call rests on in-code evidence at
+`crates/ai/src/project_context/model.rs:355-372`, which records that the fork
+*deliberately did not adopt* the pin's generation-counter design, rather than on any ledger
+row). `19dc50535` is recorded only partially, for its `script/presubmit` hunk.
 
 #### Results — S9, the refutation shard (5 of 9 in)
 
