@@ -221,6 +221,80 @@ is the sole builder), no test is ever weakened to go green, no PRs, and every ag
 told to **refute its own brief** — coordinator briefs have been wrong seven times this
 round and every one was caught by the agent, not by me.
 
+#### Results — S1, S5, S8 (3 of 9 in)
+
+| shard | ported | covered-elsewhere | not-portable | blocked |
+|---|---|---|---|---|
+| S1 settings-cli (12) | **3** (+1 prod fix) | 1 | 8 | — |
+| S5 sdk-environment (20) | **2** (adapted) | 1 | 17 | — |
+| S8 misc (17) | **1** (adapted) | 3 | 12 | 1 |
+
+**The briefs were wrong again — 9 claims across 3 shards, every one caught by the agent.**
+The pattern is now unmistakable: my shard lists were generated from an adjudication pass
+that **pre-dates the maintainer's 2026-08-29 decline block**, so I briefed agents to port
+work that had been declined the previous day.
+
+- **`a18026275` (trailing-element infra) was declined** — I called its 5 tests "the real
+  work here". They do not even compile against this fork: there is no `CategoryHeader`, no
+  `PageTitle`, no `TrailingElementRenderer`, and `PageType`'s title is `Option<&'static str>`,
+  not `Option<PageTitle<V>>`.
+- **`0e075a072` (`WARP_*` env aliases) was declined** — I briefed *two* shards (S1, S6) to
+  treat it as an open maintainer decision and prepare a decision package. Wasted work;
+  S6 was corrected mid-flight.
+- **`d019ddfe9` was declined only in part** — S8 was corrected mid-flight to split the
+  declined variants from the still-queued `log::warn!` half rather than collapse the test.
+
+**Process defect, filed against myself:** a shard list must be regenerated against
+`TODO.md` and `DECLINED.md` at the moment of launch, not inherited from an adjudication
+pass of unknown age. Add to `docs/pin-migration.md` Phase 2.6.
+
+**S1 — one real fork defect, found and fixed.** `PageType::new_categorized` seeds every
+category's filter with every widget index, and `update_filter` is the only place
+`SettingsWidget::should_render` is consulted. So a categorized page that has never been
+searched draws a category sub-header whose every widget is gated off, and the header
+vanishes the moment the user types. Fixed by porting `categories_with_visible_content`
+(upstream `3a7a4a5b3`) into `render_page`'s `Categorized` branch.
+**Latent, not user-visible today** — every sole-widget category in the tree uses the
+default `should_render`. `TODO.md`'s "do not sell this as a live bug" was right, and the
+agent verified it rather than repeating it. Ledger row `3a7a4a5b3` can be ticked.
+
+**S5 — the security half survived where the pipeline did not.** All 3 attachment tests and
+all 17 environment tests are cloud (`cloud_object_models` deleted; `server_api` absent;
+`DECLINED.md:81` #211 names `environment.rs` explicitly). But the *property* the traversal
+tests exist for is enforced by this fork's `sanitized_basename`, byte-identical to the
+pin's — and it had **no traversal case and no no-basename case**. Both now ported against
+the real guard. The agent then swept the tree for a remote-supplied name reaching a
+`Path::join` and found none unguarded; it also correctly declined to port 3 "pure" helpers
+whose subjects have no caller here, on the grounds that inventing production code so a test
+can exercise it is not debt repayment.
+**It also refuted my "asserts the shape of the git command" claim:**
+`blobless_clone_walks_path_limited_history_without_network` calls **no product code at all** —
+it seeds a real repo and characterises the `git` binary. Ported here it would pass no matter
+what this fork does.
+
+**S8 — 12 of 17 not portable, and the refutations mattered more than the port.** The 4
+`filter_skills_by_spec_*` are declined outright (`DECLINED.md:88` #487 deleted
+`global_skills.rs` on 2026-08-10) — I had briefed "verify the fork has it under some name".
+The cost trio is governed by `DECLINED.md:215`, which names
+`app/src/ai/agent/conversation_tests.rs` *verbatim*; my hedge that BYOP usage might make it
+live does not hold. One test ported: `artifact_round_trips_all_variants`, adapted to the
+fork's 4 variants, and it is **not** redundant with the per-variant tests — none of them
+covers `Artifact::Screenshot`, which shares the hand-written `Deserialize`. Artifacts are
+persisted locally, so a dropped field corrupts stored screenshots silently.
+
+**Two findings recorded, neither fixed, both correctly:** the fork's
+`credits_spent_for_last_block` reset sits inside `if let Some(request_cost)`, which is the
+pin's exact bug — but `request_cost` is `None` at every production construction site, so
+fixing it is a no-op behind a dead branch and testing it would be stub coverage. And the
+`pending_updates`/`drain_pending_updates` coalescing invariant is genuinely untested, with
+no seam to drive it from a unit test.
+
+**Coordinator verification (I compile; agents do not).** All three commits reviewed by
+hand: `Artifact` does derive `PartialEq`, `NotebookId::from(String)` is already used at
+`mod_tests.rs:203`, `mod_tests` already imports from `settings_page`, and `app: &AppContext`
+is in scope at S1's insertion point. **My `BRIEF-COMMON.md` named the wrong rustfmt edition** —
+`.rustfmt.toml` pins `edition = "2024"`, not 2021 (caught by S1).
+
 ### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
