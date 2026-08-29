@@ -839,6 +839,11 @@ pub(crate) fn received_message_collapsible_id(message_id: &str) -> MessageId {
 
 pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
+
+    /// Cached result of `model.request_type(app).is_passive()`. Safe to cache because whether a
+    /// conversation is passive or active is fixed at exchange creation and never changes for the
+    /// lifetime of the block (see `is_passive_conversation`).
+    is_passive: bool,
     terminal_model: Arc<FairMutex<TerminalModel>>,
     client_ids: ClientIdentifiers,
     profile_image_path: Option<String>,
@@ -1314,8 +1319,11 @@ impl AIBlock {
             comment_states.insert(id, state);
         }
 
+        let is_passive = model.request_type(ctx).is_passive();
+
         let mut me = Self {
             model,
+            is_passive,
             terminal_model,
             client_ids,
             profile_image_path: auth_state.user_photo_url(),
@@ -1674,6 +1682,7 @@ impl AIBlock {
 
         self.client_ids.conversation_id = new_conversation_id;
         self.model = new_model;
+        self.is_passive = self.model.request_type(ctx).is_passive();
         self.run_secret_redaction_on_user_query(new_conversation_id, ctx);
 
         // Re-detect all links for the new conversation.
@@ -2644,12 +2653,14 @@ impl AIBlock {
             // exchange is hidden already above) exchanges are rendered.
             // These correspond to AI blocks with a successfully received suggested code diff or
             // unit test suggestion.
-            !self.model.request_type(app).is_passive()
+            !self.is_passive
         }
     }
 
-    pub fn is_passive_conversation(&self, app: &AppContext) -> bool {
-        self.model.request_type(app).is_passive()
+    /// Returns `true` if this block's conversation was started from a passive entrypoint (e.g. a
+    /// suggested code diff or unit test suggestion), as opposed to a directly-issued user query.
+    pub fn is_passive_conversation(&self) -> bool {
+        self.is_passive
     }
 
     fn handle_code_section_stream_update(

@@ -8972,3 +8972,140 @@ fn test_open_slash_command_does_not_autofill_single_file_completion() {
         });
     });
 }
+
+// ---------------------------------------------------------------------------
+// '#' AI Command Search trigger setting (upstream 94daf47f3, read at 4111d08f9)
+// ---------------------------------------------------------------------------
+
+/// Ported from the pin's `hash_trigger_disabled_keeps_hash_literal_and_does_not_open_ai_command_search`
+/// (upstream 4111d08f9). Adapted only in the subscription closure, which needs this
+/// file's explicit `&super::Event` annotation.
+///
+/// With the '#' AI Command Search trigger disabled, typing '#' at the start of the
+/// buffer must leave it (and any text typed after it) as literal input, and must not
+/// open AI Command Search — this is what lets the text be finished and submitted as a
+/// shell comment instead of trapping the user in the panel.
+#[test]
+fn hash_trigger_disabled_keeps_hash_literal_and_does_not_open_ai_command_search() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        InputSettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .enable_ai_command_search_hash_trigger
+                .set_value(false, ctx)
+                .expect("setting value must succeed");
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let open_count = Rc::new(RefCell::new(0));
+        let open_count_for_subscription = open_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if matches!(event, super::Event::ShowCommandSearch(_)) {
+                    *open_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("#", ctx);
+            input.user_insert(" this is a test comment", ctx);
+        });
+
+        input.read(&app, |input, ctx| {
+            assert_eq!(
+                input.buffer_text(ctx),
+                "# this is a test comment",
+                "the '#' and the text typed after it must remain literal input"
+            );
+        });
+        assert_eq!(
+            *open_count.borrow(),
+            0,
+            "AI Command Search must not open when the '#' trigger setting is disabled"
+        );
+    });
+}
+
+/// Ported from the pin's `hash_trigger_enabled_by_default_opens_ai_command_search`
+/// (upstream 4111d08f9). Adapted only in the subscription closure, which needs this
+/// file's explicit `&super::Event` annotation.
+///
+/// With the '#' trigger left at its default (enabled), typing '#' at the start of the
+/// buffer must still open AI Command Search, preserving pre-existing behavior.
+#[test]
+fn hash_trigger_enabled_by_default_opens_ai_command_search() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let open_count = Rc::new(RefCell::new(0));
+        let open_count_for_subscription = open_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if matches!(event, super::Event::ShowCommandSearch(_)) {
+                    *open_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("#", ctx);
+        });
+
+        assert_eq!(
+            *open_count.borrow(),
+            1,
+            "AI Command Search must open on typing '#' when the trigger setting defaults to enabled"
+        );
+    });
+}
+
+/// Ported from the pin's `hotkey_opens_ai_command_search_even_when_hash_trigger_disabled`
+/// (upstream 4111d08f9). Adapted only in the subscription closure, which needs this
+/// file's explicit `&super::Event` annotation.
+///
+/// The `input:toggle_natural_language_command_search` hotkey action must still open AI
+/// Command Search even when the '#' character trigger has been disabled — only the
+/// typed-character shortcut is gated by the setting.
+#[test]
+fn hotkey_opens_ai_command_search_even_when_hash_trigger_disabled() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        InputSettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .enable_ai_command_search_hash_trigger
+                .set_value(false, ctx)
+                .expect("setting value must succeed");
+        });
+
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        let open_count = Rc::new(RefCell::new(0));
+        let open_count_for_subscription = open_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&input, move |_, event: &super::Event, _| {
+                if matches!(event, super::Event::ShowCommandSearch(_)) {
+                    *open_count_for_subscription.borrow_mut() += 1;
+                }
+            });
+        });
+
+        input.update(&mut app, |input, ctx| {
+            input.handle_action(&InputAction::ShowAiCommandSearch, ctx);
+        });
+
+        assert_eq!(
+            *open_count.borrow(),
+            1,
+            "the AI Command Search hotkey must still open the panel when the '#' trigger is disabled"
+        );
+    });
+}

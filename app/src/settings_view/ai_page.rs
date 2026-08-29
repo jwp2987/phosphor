@@ -25,7 +25,7 @@ use crate::settings::{
     AgentModeCodingPermissionsType, AgentModeCommandExecutionDenylist,
     AgentModeCommandExecutionPredicate, AgentModeQuerySuggestionsEnabled,
     AutoApproveBypassesCommandDenylist, AwsBedrockAutoLogin, AwsBedrockCredentialsEnabled,
-    FileBasedMcpEnabled, GitOperationsAutogenEnabled,
+    EnableAiCommandSearchHashTrigger, FileBasedMcpEnabled, GitOperationsAutogenEnabled,
     IncludeAgentCommandsInHistory, IntelligentAutosuggestionsEnabled, MemoryEnabled,
     NLDInTerminalEnabled, NaturalLanguageAutosuggestionsEnabled, RuleSuggestionsEnabled,
     ShouldRenderCLIAgentToolbar, ShouldRenderUseAgentToolbarForUserCommands, ShowAgentTips,
@@ -363,6 +363,18 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
                 & id!(flags::IS_ACTIVE_AI_ENABLED)
                 & id!(flags::PROMPT_SUGGESTIONS_FLAG)),
             flags::CODE_SUGGESTIONS_FLAG,
+        )
+        .with_group(bindings::BindingGroup::WarpAi)],
+        app,
+    );
+    ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
+        vec![ToggleSettingActionPair::new(
+            &crate::t!("toggle-suffix-ai-command-search-hash-trigger"),
+            builder(SettingsAction::AI(
+                AISettingsPageAction::ToggleAiCommandSearchHashTrigger,
+            )),
+            &(context.clone() & id!(flags::IS_ANY_AI_ENABLED)),
+            flags::AI_COMMAND_SEARCH_HASH_TRIGGER_FLAG,
         )
         .with_group(bindings::BindingGroup::WarpAi)],
         app,
@@ -2615,6 +2627,8 @@ pub enum AISettingsPageAction {
     ToggleCanUseWarpCreditsWithByok,
     HyperlinkClick(HyperlinkUrl),
     ToggleShowInputHintText,
+    /// Toggles whether typing '#' at the start of terminal input opens AI Command Search.
+    ToggleAiCommandSearchHashTrigger,
     ToggleShowAgentTips,
     /// Toggles the "Show Agent shortcut hints" setting (the zero-state trio + the 4
     /// hints at the bottom of the message bar).
@@ -3166,6 +3180,23 @@ impl TypedActionView for AISettingsPageView {
                         TelemetryEvent::FeaturesPageAction {
                             action: "ToggleShowInputHintText".to_string(),
                             value: format!("{}", *input_settings.show_hint_text),
+                        },
+                        ctx
+                    );
+                });
+            }
+            AISettingsPageAction::ToggleAiCommandSearchHashTrigger => {
+                InputSettings::handle(ctx).update(ctx, |input_settings, ctx| {
+                    report_if_error!(input_settings
+                        .enable_ai_command_search_hash_trigger
+                        .toggle_and_save_value(ctx));
+                    send_telemetry_from_ctx!(
+                        TelemetryEvent::FeaturesPageAction {
+                            action: "ToggleAiCommandSearchHashTrigger".to_string(),
+                            value: format!(
+                                "{}",
+                                *input_settings.enable_ai_command_search_hash_trigger
+                            ),
                         },
                         ctx
                     );
@@ -5991,6 +6022,7 @@ struct AIInputWidget {
     autodetection_toggle: SwitchStateHandle,
     nld_in_terminal_toggle: SwitchStateHandle,
     show_input_hint_toggle: SwitchStateHandle,
+    hash_trigger_toggle: SwitchStateHandle,
     show_agent_tips_toggle: SwitchStateHandle,
     // The switch state handle for the "Show Agent shortcut hints" toggle.
     show_agent_zero_state_hints_toggle: SwitchStateHandle,
@@ -6002,7 +6034,7 @@ impl SettingsWidget for AIInputWidget {
     type View = AISettingsPageView;
 
     fn search_terms(&self) -> &str {
-        "oz agent ai input natural language detection autodetection prompt terminal command commands history shell executed execution auto-approve fast forward denylist permissions"
+        "oz agent ai input natural language detection autodetection prompt terminal command commands history shell executed execution auto-approve fast forward denylist permissions # hash pound trigger ai command search shorthand shell comment"
     }
 
     fn render(
@@ -6042,11 +6074,22 @@ impl SettingsWidget for AIInputWidget {
             app,
         );
 
+        let hash_trigger_toggle = render_ai_setting_toggle::<EnableAiCommandSearchHashTrigger>(
+            crate::t!("settings-ai-enable-ai-command-search-hash-trigger"),
+            AISettingsPageAction::ToggleAiCommandSearchHashTrigger,
+            *InputSettings::as_ref(app).enable_ai_command_search_hash_trigger,
+            is_any_ai_enabled,
+            self.hash_trigger_toggle.clone(),
+            &view.local_only_icon_tooltip_states,
+            app,
+        );
+
         let mut widget_children = vec![
             render_separator(appearance),
             input_header,
             natural_language_detection_section,
             show_input_hint_text,
+            hash_trigger_toggle,
         ];
 
         if FeatureFlag::AgentTips.is_enabled() {

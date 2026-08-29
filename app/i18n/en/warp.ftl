@@ -1012,6 +1012,7 @@ settings-ai-unlimited = Unlimited
 
 # AI Input section
 settings-ai-show-input-hint-text = Show input hint text
+settings-ai-enable-ai-command-search-hash-trigger = Enable '#' trigger for AI Command Search
 settings-ai-show-agent-tips = Show agent tips
 settings-ai-show-agent-zero-state-hints = Show Agent shortcut hints
 settings-ai-include-agent-commands-in-history = Include agent-executed commands in history
@@ -2432,6 +2433,7 @@ toggle-disable-auto-approve-bypasses-command-denylist = Require approval for den
 toggle-suffix-next-command = Next Command
 toggle-suffix-prompt-suggestions = prompt suggestions
 toggle-suffix-code-suggestions = code suggestions
+toggle-suffix-ai-command-search-hash-trigger = the '#' trigger for AI command search
 toggle-suffix-nl-autosuggestions = natural language autosuggestions
 toggle-suffix-voice-input = voice input
 toggle-suffix-codebase-index = codebase index
