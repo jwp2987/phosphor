@@ -1021,6 +1021,7 @@ settings-features-prefer-low-power-gpu = 新規ウィンドウは内蔵 GPU (低
 settings-features-use-wayland = ウィンドウ管理に Wayland を使用
 settings-features-use-wayland-tooltip = Wayland の使用を有効化します
 settings-features-ctrl-tab-behavior-label = Ctrl+Tab の動作:
+settings-features-right-click-behavior-label = 右クリックの動作:
 settings-features-extra-meta-key-left-mac = 左 Option キーを Meta にする
 settings-features-extra-meta-key-right-mac = 右 Option キーを Meta にする
 settings-features-extra-meta-key-left-other = 左 Alt キーを Meta にする

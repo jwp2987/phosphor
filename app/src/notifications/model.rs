@@ -207,6 +207,24 @@ impl NotificationsModel {
                         ctx,
                     );
                 }
+                // A Ctrl-C cancellation is a completion, not a failure: the
+                // turn is over and the terminal is back at the user's
+                // disposal, so it gets `Complete`, not `Error`.
+                CLIAgentSessionStatus::Cancelled => {
+                    let title = session_context
+                        .display_title()
+                        .unwrap_or_else(|| format!("{} cancelled", agent.display_name()));
+                    self.add_notification(
+                        title,
+                        "Cancelled by user.".to_owned(),
+                        NotificationCategory::Complete,
+                        NotificationSourceAgent::CLI(*agent),
+                        NotificationOrigin::CLISession(*terminal_view_id),
+                        *terminal_view_id,
+                        vec![],
+                        ctx,
+                    );
+                }
             },
         }
     }

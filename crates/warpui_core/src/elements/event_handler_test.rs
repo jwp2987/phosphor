@@ -20,17 +20,65 @@ enum ElementIdentifier {
     Overlay,
 }
 
+/// Ported from the pin's `test_right_mouse_down_with_shift_reports_modifier`
+/// (upstream 4111d08f9, commit `c25ac4070`). Adapted only in that
+/// `EntityIdSet::default()` becomes `HashSet::new()`, matching this fork's
+/// `WindowInvalidation::updated`, and the sibling tests in this file.
+#[test]
+fn test_right_mouse_down_with_shift_reports_modifier() {
+    App::test((), |mut app| async move {
+        app.update(init);
+        let (window_id, view) = app.add_window(WindowStyle::NotStealFocus, |_| View::default());
+
+        let mut presenter = Presenter::new(window_id);
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).unwrap());
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+
+        app.update(move |ctx| {
+            presenter.invalidate(invalidation, ctx);
+            presenter.build_scene(vec2f(100., 100.), 1., None, ctx);
+            let presenter = Rc::new(RefCell::new(presenter));
+
+            for shift in [false, true] {
+                ctx.simulate_window_event(
+                    Event::RightMouseDown {
+                        position: vec2f(10., 10.),
+                        cmd: false,
+                        shift,
+                        click_count: 1,
+                    },
+                    window_id,
+                    presenter.clone(),
+                );
+            }
+        });
+
+        view.read(&app, |view, _| {
+            assert_eq!(view.right_click_shifts, vec![false, true]);
+        });
+    });
+}
+
 #[derive(Default)]
 struct View {
     // Maps identifier to number of mouse down events
     mouse_downs: HashMap<ElementIdentifier, usize>,
     mouse_ins: HashMap<ElementIdentifier, usize>,
+    right_click_shifts: Vec<bool>,
     mouse_in_behavior: MouseInBehavior,
 }
 
 pub fn init(app: &mut AppContext) {
     app.add_action("event_handler_test:mouse_down", View::mouse_down);
     app.add_action("event_handler_test:mouse_in", View::mouse_in);
+    app.add_action(
+        "event_handler_test:right_click_shift",
+        View::record_right_click_shift,
+    );
 }
 
 impl View {
@@ -43,6 +91,11 @@ impl View {
     fn mouse_in(&mut self, identifier: &ElementIdentifier, _: &mut ViewContext<Self>) -> bool {
         let entry = self.mouse_ins.entry(*identifier).or_insert(0);
         *entry += 1;
+        true
+    }
+
+    fn record_right_click_shift(&mut self, shift: &bool, _: &mut ViewContext<Self>) -> bool {
+        self.right_click_shifts.push(*shift);
         true
     }
 }
@@ -105,6 +158,10 @@ impl crate::core::View for View {
             EventHandler::new(inner_stack.finish())
                 .on_left_mouse_down(|evt, _, _| {
                     evt.dispatch_action("event_handler_test:mouse_down", ElementIdentifier::Base);
+                    DispatchEventResult::StopPropagation
+                })
+                .on_right_mouse_down(|evt, _, _, modifiers| {
+                    evt.dispatch_action("event_handler_test:right_click_shift", modifiers.shift);
                     DispatchEventResult::StopPropagation
                 })
                 .on_mouse_in(

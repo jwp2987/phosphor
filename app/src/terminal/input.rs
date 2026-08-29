@@ -336,7 +336,8 @@ use super::{
         PADDING_LEFT as TERMINAL_VIEW_PADDING_LEFT,
     },
     warpify::SubshellSource,
-    History, HistoryEntry, SizeInfo, TerminalModel, UpArrowHistoryConfig,
+    should_right_click_paste, History, HistoryEntry, SizeInfo, TerminalModel,
+    UpArrowHistoryConfig,
 };
 use crate::ai::blocklist::agent_view::{
     AgentInputFooter, AgentInputFooterEvent, AgentViewController,
@@ -13925,7 +13926,14 @@ impl Input {
         let input_editor_save_position_id = self.editor_save_position_id();
         SavePosition::new(
             EventHandler::new(input_box)
-                .on_right_mouse_down(move |ctx, _, position| {
+                .on_right_mouse_down(move |ctx, app, position, modifiers| {
+                    if should_right_click_paste(modifiers.shift, app) {
+                        // Same path as the `terminal:paste` keybinding, so escaped-path
+                        // processing and CLI-agent image handling behave identically.
+                        ctx.dispatch_typed_action(TerminalAction::Paste);
+                        return DispatchEventResult::StopPropagation;
+                    }
+
                     let input_rect = ctx
                         .element_position_by_id(input_editor_save_position_id.clone())
                         .expect("input editor position id should be saved");
