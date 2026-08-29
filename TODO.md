@@ -31,6 +31,58 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### ROUND PROTOCOL — standing orders, 2026-08-29 (maintainer)
+
+**In force for the whole round. Do not infer exceptions.**
+
+1. **NO AGENT MAY BUILD.** No `cargo` in any form — check, build, test, nextest,
+   clippy, fmt — and no `script/precheck` or `script/agent-cargo`. This is not a
+   style rule: a parallel cargo exhausts this laptop (12c/22GB) and crashes the
+   machine. **The coordinator is the only one who may build**, and only once the
+   port agents are completely finished.
+2. **Every unit of work is refuted before it counts as done.** Scope was refuted
+   before porting began; each port is refuted after it is written. "Done" means
+   done AND refuted, never done alone.
+3. **Bugs are traced and fixed at the cause. Never by changing a test.**
+   AGENTS.md §5.6. If a port makes an existing fork test look wrong, that is the
+   signal to STOP and investigate, never to edit the test. Extending a test to a
+   widened signature is not weakening it; changing what it asserts is.
+4. **The coordinator verifies all code that is written.** No agent's diff lands
+   unread.
+5. **TODO.md is kept current as the round runs**, not written up at the end.
+
+Round branch: `repin-2026-08-29-4111d08f9`, based on `main` at `52e94ae9b` with
+the three in-flight fix branches merged (#621 autosuggestion remote-path
+validation, #623 issue-template links, #625 runbook + this ledger). Work does not
+touch `main`.
+
+### Phase 2 was skipped and has now been run — the queue finds work the commit walk cannot
+
+**The scoping round did Phase 2.5 (the commit walk) but never generated the Phase
+2 queue.** `docs/pin-migration.md` is explicit that these are *two* inputs, and the
+queue sees a class the walk structurally cannot: stale ledger verdicts, and tests
+that exist at the new pin in files the ledger already covers.
+
+Generated 2026-08-29 with `script/generate_repin_queue 4111d08f9 42effe840`
+(pure shell, no cargo):
+
+| queue bucket | count | meaning |
+|---|---|---|
+| **LEDGER COVERAGE GAP** | **228 tests / 42 files** | pin test in a ledger-covered file with NO row of its own — each is a FIRST adjudication |
+| **LEDGER RE-EXAMINE** (rule 1) | 68 | pin file changed; recorded verdicts stale |
+| LEDGER RE-EXAMINE (rules 2, 3) | 0 / 0 | clean — no struck DECLINED rows, no revived MISSING-SUBSYSTEM symbols |
+| DECLINED COLLISIONS | 11 | read the DECLINED.md row FIRST; a collision means read the decision, not port the test |
+| UNCLASSIFIED | 15 | never judged at all |
+| ACTIONABLE (SCOPE A/D/MIXED) | 15 | verdict A is known overstated — trace, do not trust the letter |
+| LOW-PRIORITY (SCOPE B/C) | 18 | |
+| REMOVED AT NEW PIN | 3 | retire the ledger rows |
+| CLOUD-DROPPED | 13 | counted, not listed; no action |
+
+**Consequence for the numbers above: the 52-commit port queue was only the CODE
+debt.** This is TEST debt on top of it, and the 228 in particular were invisible
+to every check the round ran until the queue was generated. The previous re-pin's
+equivalent figure was 284 tests across 63 files.
+
 ### Tally — counted from shard tables, NOT from their totals lines
 
 | bucket | count |
