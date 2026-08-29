@@ -177,6 +177,50 @@ land with it. Do not schedule the tests as separate work.**
   port at all**: the `action_icon` mirror is already live at
   `block/view_impl/output.rs:3175` with zero coverage.
 
+### TEST PORT ROUND — 9 shards launched 2026-08-29
+
+**The work-list was re-derived mechanically rather than taken from the prose.** Every
+one of the 228 queue entries was joined against the set of every `fn` defined in the
+tree today, then filtered by staged verdict:
+
+| | count |
+|---|---|
+| queue entries | 228 |
+| already present in the fork by exact name | 10 |
+| absent, and carrying a disposition that means do-not-port (DECLINED 42 / CLOUD 15 / COVERED-ELSEWHERE 7 / NOT-A-TEST 1) | 65 |
+| **candidate port set** | **153** |
+
+**114 of the 153 carry NO staged verdict.** Shards A, B and E reported inline and never
+wrote their TSVs, so only C (69) and D (35) staged rows — 104 of the 128 the prose
+claims. For those 114 this round is the *first adjudication of record*, not a re-check.
+That is the real reason the number is larger than "60 tests of real work": the 60 counted
+only what had already been adjudicated as portable.
+
+Shards, each with its own worktree and branch `port/t-<shard>`, none over 29 tests:
+
+| shard | n | content |
+|---|---|---|
+| S1 settings-cli | 12 | empty-category guard (7), slug migration (3, decision), ADD_MCP half, `WARP_*` aliases |
+| S2 rightclick-ctrlc | 8 | right-click-paste setting (new at this pin) + ctrl-C cancel window |
+| S3 passive | 7 | `#` trigger gate (live defect) + `is_passive_conversation` |
+| S4 tui-disconnect-focus | 12 | **highest-value**: driver disconnect resilience + focus ownership |
+| S5 sdk-environment | 20 | repo head overrides / blobless clone + 3 path-traversal guards |
+| S6 sdk-driver-retry | 20 | exit-commit (BLOCKED, confirm), installation id, retry classifier |
+| S7 blocklist | 28 | shared recovery budget (REMOTE-2269), streamer drain, autoexecute denylist |
+| S8 misc | 17 | artifacts, skills filtering, cost accounting, project-context coalescing |
+| S9 cloud-confirm | 29 | **refutation shard** — assume portable, prove otherwise |
+
+**S9 is a refutation shard, not a porting shard.** The previous not-portable pass was
+wrong 27% of the time (12 of 51 overturned), every failure tracing to a file-name or
+symbol-name match against a declined family without reading the body. S9 re-attacks the
+29 that still look cloud-shaped on exactly that suspicion.
+
+Standing orders unchanged and restated in `BRIEF-COMMON.md`, which every agent reads
+before its shard brief: **no agent compiles anything** (12c/22GB laptop; the coordinator
+is the sole builder), no test is ever weakened to go green, no PRs, and every agent is
+told to **refute its own brief** — coordinator briefs have been wrong seven times this
+round and every one was caught by the agent, not by me.
+
 ### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
