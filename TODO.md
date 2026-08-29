@@ -208,6 +208,96 @@ drift, Phase 6.7 feature drift). Its dependency table was independently verified
 correct by the coordinator; its feature table has NOT been.** Re-verify Phase 6.7
 before acting on it.
 
+### TWO BROKEN TRIPWIRES — coordinator-verified 2026-08-29. Fix before porting `workspaces/` or `permissions.rs`.
+
+#### T1 — DECLINED.md:173's guard cannot fire at the new pin, and its citation is dead
+
+`DECLINED.md:173` keeps `is_ai_allowed_in_remote_sessions` hard-`true` and cites
+`42effe840:app/src/workspaces/user_workspaces.rs:1753`. **Verified: that file
+exists at `42effe840` and is GONE at `4111d08f9`** — upstream split it into
+`user_workspaces/{mod,team_workspace_settings,billing_workspace_settings}.rs`.
+The function is now
+`4111d08f9:app/src/workspaces/user_workspaces/team_workspace_settings.rs:474`,
+generic over `TeamScope`, reading the team setting first and **defaulting an
+unresolvable team to `false` (deny)**.
+
+Three consequences, in order of danger:
+
+1. **The fork's stub lives in a file upstream deleted.** It is
+   `app/src/workspaces/user_workspaces.rs:751`. A structural port that adopts the
+   new directory layout carries the new body in wholesale and removes the stub
+   *with the file it lived in* — **no merge conflict, no test failure at the port
+   site.**
+2. **The named tripwire would not fire.** The stub's own doc comment says
+   "`is_ai_allowed_in_remote_sessions_ignores_workspace_settings` is the test that
+   fails if this is ever undone." That test builds a **workspace**-side setting;
+   at the new pin the primary read is **team**-side. A team-scoped restoration
+   passes it. **The guard needs a team-side arm added before `workspaces/` is
+   touched.**
+3. The pin's default moved toward denying, so the decision is more necessary than
+   when it was written, not less.
+
+- [ ] Re-anchor `DECLINED.md:173`'s evidence to the new path.
+- [ ] Add a team-side arm to `is_ai_allowed_in_remote_sessions_ignores_workspace_settings`.
+- [ ] Record the file split as a re-pin hazard (same family as `8cbb01d45`).
+
+#### T2 — `keep:` markers on FORK-ORIGINAL symbols can never fire
+
+Collision detection matches `DECLINED.md` markers against the **upstream** diff. A
+`keep:` marker naming a symbol that exists only in this fork therefore can never
+match, silently exempting the entire "we are ahead of the pin" class of
+divergence — the class most dangerous to revert.
+
+**Coordinator-verified at `4111d08f9`:** `denylist_match_candidates` and
+`unquoted_command_parts` have **zero** hits upstream, so their markers are inert.
+**The refuter's third example is wrong**: `hide_env_values` DOES exist upstream
+(`4111d08f9:crates/warp_cli/src/lib.rs`), so that marker can fire. The hole is
+real but narrower than reported — it affects fork-original symbols only.
+
+Live exposure: `app/src/ai/blocklist/permissions.rs:1524`'s denylist unquoting fix
+is guarded only by `keep:denylist_match_candidates` / `keep:unquoted_command_parts`,
+both inert, while upstream restructured `get_execute_commands_denylist`'s
+signature in this range. The intended backstop is a red test at build time — and
+this round has no build.
+
+- [ ] Give every `keep:` row on a fork-original symbol a SECOND marker keyed on the
+      pin-side symbol or path it diverges from.
+- [ ] Audit `DECLINED.md` for other inert `keep:` markers.
+
+### QUEUE GENERATOR DEFECTS — fix before the next round
+
+- [ ] **Renames are reported as removals.** All three "REMOVED AT NEW PIN" entries
+      are moves: `user_workspaces_tests.rs` -> `user_workspaces/user_workspaces_tests.rs`;
+      `app/src/bin/generate_settings_schema_tests.rs` -> `app/src/settings/schema_generation_tests.rs`;
+      `app/src/util/path_tests.rs` -> `crates/warp_util/src/path_tests.rs`. The last two
+      are then **re-reported at their destinations**, so the same tests are both
+      retired and double-counted.
+- [ ] **`sym:` markers match substrings.** `sym:SettingsMode` fired on
+      `OpenWarpNewSettingsModes` in **3 of 11** DECLINED collisions (27% false
+      positives), every one on a line upstream deleted. Anchor to identifier
+      boundaries.
+
+### THE UNADJUDICATED TOTAL IS 1,100 TESTS, NOT 228 — and a third blind spot is open
+
+The queue's own reconciliation block: 3,123 pin tests have no same-named fork
+test; 2,023 carry a ledger row; **1,100 do not**, splitting into the 228 reported
+here (42 files the ledger covers) and **872 across 101 files the ledger does not
+cover**. The 872 reach the queue "only if the file changed between the two pins"
+— so any of those 101 files upstream did NOT touch this round appears in **no
+section of the queue at all**. That is a third blind spot, roughly **4x the size
+of the one #592 closed**, and it is live.
+
+Sizing this round off 228 understates standing test debt by ~5x.
+
+**#603 is getting worse, not stable:** STATE.md's smaller figure now cancels **500
+rows** (387 naming tests the fork has, 113 naming tests not at this pin), up from
+277 at `42effe840`. Do not reconcile against STATE.md.
+
+Of the 228: **72 portable, 136 not portable** (declined/cloud/crate absent), **20
+need a decision**, **3 are false positives** — already ported under deliberately
+different names with "Ported from the pin's ..." doc comments, which also means
+the bucket cries wolf as well as under-reporting.
+
 ### PORT QUEUE — PARTIAL first (4). Highest value; invisible to every gate.
 
 Phase 6.5's whole point: a partially-ported commit passes review, passes CI, and
