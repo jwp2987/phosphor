@@ -202,3 +202,180 @@ fn parsed_skill_for_common_locations_does_not_mix_remote_hosts() {
         }));
     });
 }
+
+mod is_orphaned_by_finished_output_tests {
+    //! Ported from the **re-pin candidate** `4111d08f9`
+    //! (`4111d08f9:app/src/ai/blocklist/inline_action/run_agents_card_view_tests.rs`,
+    //! `mod is_orphaned_by_finished_output_tests`). `4111d08f9` is this round's
+    //! candidate, *not* the pin -- `ORACLE.md` still pins `42effe840`, where
+    //! neither this predicate nor these tests exist (zero `is_orphaned` and
+    //! zero `statusless` hits in `42effe840:.../run_agents_card_view.rs` and
+    //! its test file).
+    //!
+    //! Retargeted from the candidate's RunAgents orchestration card -- which
+    //! this fork declines (`DECLINED.md` #290 for `run_agents_card_view`, #325
+    //! for the `RunAgents` action) -- onto the equivalent decision inside
+    //! `action_icon`, which the candidate's own predicate doc comment names as
+    //! its mirror. The behaviour was live here with zero coverage: nothing in
+    //! this file mentioned `is_orphaned` or `statusless` before this module.
+    //! Retargeting, rather than porting the candidate's predicate into a file
+    //! nothing calls, is deliberate: an uncalled helper plus tests is exactly
+    //! what `script/check_stub_coverage` exists to catch.
+    //!
+    //! **Scope limit, read before trusting these.** Every test here calls
+    //! `is_orphaned_by_finished_output` directly. None of them execute
+    //! `action_icon`, so none of them constrain how `action_icon` *uses* the
+    //! predicate: moving the early return, inverting the argument at the call
+    //! site, or deleting the call outright leaves this whole module green. What
+    //! is guarded is the predicate's value over its input space; the call-site
+    //! wiring is unguarded, and testing it would need an `AppContext`, a
+    //! `ModelHandle<BlocklistAIActionModel>`, an `AIBlockModel` impl and
+    //! equality over `warpui::elements::Icon` -- deliberately not built.
+
+    use std::cell::Cell;
+
+    use super::super::is_orphaned_by_finished_output;
+    use crate::ai::agent::{AIAgentOutput, CancellationReason, RenderableAIError, Shared};
+    use crate::ai::blocklist::action_model::AIActionStatus;
+    use crate::ai::blocklist::block::model::AIBlockOutputStatus;
+
+    fn partial_output() -> Shared<AIAgentOutput> {
+        Shared::new(AIAgentOutput::default())
+    }
+
+    fn cancelled_block() -> AIBlockOutputStatus {
+        AIBlockOutputStatus::Cancelled {
+            partial_output: Some(partial_output()),
+            reason: CancellationReason::ManuallyCancelled,
+        }
+    }
+
+    fn failed_block() -> AIBlockOutputStatus {
+        AIBlockOutputStatus::Failed {
+            partial_output: Some(partial_output()),
+            // This fork's `RenderableAIError` has no `other()` constructor and
+            // no `is_user_error` field; `Other` with both resume flags false is
+            // the same value the candidate's `RenderableAIError::other("boom",
+            // false)` builds.
+            error: RenderableAIError::Other {
+                error_message: "boom".to_string(),
+                will_attempt_resume: false,
+                waiting_for_network: false,
+            },
+        }
+    }
+
+    /// The user stopped the response mid-tool-call, so the call never reached
+    /// the action queue and never will. `action_icon` reads this as its cue to
+    /// paint the cancelled icon instead of leaving the row running forever --
+    /// but that reading is the call site's, not this test's.
+    #[test]
+    fn statusless_action_on_cancelled_block_is_orphaned() {
+        assert!(is_orphaned_by_finished_output(None, cancelled_block));
+    }
+
+    /// The other terminal block status: the stream died with an error before
+    /// the call was queued. Same verdict.
+    #[test]
+    fn statusless_action_on_failed_block_is_orphaned() {
+        assert!(is_orphaned_by_finished_output(None, failed_block));
+    }
+
+    /// While the block is still streaming, a statusless action is one the model
+    /// is writing out right now, so it must not be declared dead.
+    #[test]
+    fn statusless_action_on_unfinished_block_is_not_orphaned() {
+        for block_status in [
+            AIBlockOutputStatus::Pending,
+            AIBlockOutputStatus::PartiallyReceived {
+                output: partial_output(),
+            },
+        ] {
+            let label = format!("{block_status:?}");
+            assert!(
+                !is_orphaned_by_finished_output(None, move || block_status),
+                "{label} should not orphan the row"
+            );
+        }
+    }
+
+    /// Deliberate divergence from the re-pin candidate, documented on the
+    /// predicate itself. The candidate's RunAgents-card version orphans only on
+    /// `Cancelled`/`Failed`, leaving a statusless action on a `Complete` block
+    /// un-orphaned. What this fork ships in `action_icon` -- and what the
+    /// candidate's own doc comment names as the mirror -- keys off
+    /// `is_streaming()`, so `Complete` orphans too: a block whose output
+    /// finished cleanly without ever queuing the call is never going to queue
+    /// it.
+    #[test]
+    fn statusless_action_on_successful_block_is_orphaned() {
+        assert!(is_orphaned_by_finished_output(None, || {
+            AIBlockOutputStatus::Complete {
+                output: partial_output(),
+            }
+        }));
+    }
+
+    /// An action that reached the queue gets a real result even when the
+    /// conversation is cancelled, so a live status must not be overridden by
+    /// the block's. (That the *icon* then follows the action's status is
+    /// `action_icon`'s ordering, which nothing here executes.)
+    #[test]
+    fn action_with_status_on_cancelled_block_is_not_orphaned() {
+        for action_status in [
+            AIActionStatus::Preprocessing,
+            AIActionStatus::Queued,
+            AIActionStatus::Blocked,
+            AIActionStatus::RunningAsync,
+        ] {
+            assert!(
+                !is_orphaned_by_finished_output(Some(&action_status), cancelled_block),
+                "{action_status:?} should not orphan the row"
+            );
+        }
+    }
+
+    /// The laziness of `block_status` is a performance contract, not a
+    /// courtesy: `AIBlockModel::status` walks every task and every exchange in
+    /// the conversation, and `action_icon` reaches this predicate once per
+    /// action row per render.
+    ///
+    /// This exists because the obvious "restore parity" edit -- widening the
+    /// parameter to `&AIBlockOutputStatus`, which is literally the re-pin
+    /// candidate's signature (`4111d08f9:.../run_agents_card_view.rs:1670`,
+    /// called eagerly at `:1264`) -- passes every other test in this module
+    /// while adding that scan to every row of every frame. Counting the
+    /// closure's invocations is the only thing that catches it.
+    #[test]
+    fn block_status_is_not_computed_when_the_action_has_a_status() {
+        let calls = Cell::new(0usize);
+        let action_status = AIActionStatus::RunningAsync;
+        assert!(!is_orphaned_by_finished_output(
+            Some(&action_status),
+            || {
+                calls.set(calls.get() + 1);
+                cancelled_block()
+            }
+        ));
+        assert_eq!(
+            calls.get(),
+            0,
+            "an action with a status must short-circuit before the block status \
+             is computed; taking it by value or reference instead of lazily \
+             reintroduces a per-row, per-frame conversation scan"
+        );
+
+        // The counterpart, so the assertion above cannot pass vacuously by the
+        // closure having become unreachable in every case.
+        let calls = Cell::new(0usize);
+        assert!(is_orphaned_by_finished_output(None, || {
+            calls.set(calls.get() + 1);
+            cancelled_block()
+        }));
+        assert_eq!(
+            calls.get(),
+            1,
+            "a statusless action must consult the block status exactly once"
+        );
+    }
+}

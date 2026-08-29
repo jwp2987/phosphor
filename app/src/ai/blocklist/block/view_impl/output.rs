@@ -3139,6 +3139,45 @@ fn render_request_computer_use(
     renderable_action.render(app).finish()
 }
 
+/// Whether a tool-call row can no longer reach an outcome and must render as
+/// cancelled: the call never entered the action queue (so it has no
+/// [`AIActionStatus`] and will never produce a result), and the block that was
+/// streaming it has already stopped streaming. Without this the row would keep
+/// its in-progress icon forever.
+///
+/// `block_status` is taken lazily because [`AIBlockModel::status`] walks every
+/// task and every exchange in the conversation to find the block's exchange
+/// (`AIConversation::exchange_with_id` is a nested linear scan), and this is
+/// reached once per action row per render. An action that *has* a status never
+/// needs the block status, so the `&&` short-circuit below is load-bearing, not
+/// incidental. **Do not widen this parameter to `&AIBlockOutputStatus`.** That
+/// is exactly the signature the re-pin candidate uses (see below), it passes
+/// every test in `is_orphaned_by_finished_output_tests`, and it silently adds
+/// that nested scan to every row of every frame. The guard against it is
+/// `block_status_is_not_computed_when_the_action_has_a_status`, which counts
+/// closure invocations; keep it alongside any signature change here.
+///
+/// Deliberately diverges from the function of the same name in the **re-pin
+/// candidate** `4111d08f9`
+/// (`4111d08f9:app/src/ai/blocklist/inline_action/run_agents_card_view.rs:1670`,
+/// called eagerly at `:1264`). `4111d08f9` is this round's candidate, not the
+/// pin: `ORACLE.md` still pins `42effe840`, where this predicate and its tests
+/// do not exist at all. The candidate's version orphans only on
+/// `Cancelled`/`Failed` and so leaves a statusless action on a `Complete` block
+/// un-orphaned. It guards the RunAgents orchestration card, which this fork
+/// does not and will not have (`DECLINED.md` #290 declines
+/// `run_agents_card_view`, #325 declines the `RunAgents` action itself). The
+/// rule encoded here is instead the one this fork actually ships -- and the one
+/// the candidate's own doc comment names as its mirror: a statusless action on
+/// any *finished* block, `Complete` included, will never run, so it renders as
+/// cancelled.
+fn is_orphaned_by_finished_output(
+    action_status: Option<&AIActionStatus>,
+    block_status: impl FnOnce() -> AIBlockOutputStatus,
+) -> bool {
+    action_status.is_none() && !block_status().is_streaming()
+}
+
 pub fn action_icon<V: View>(
     action_id: &AIAgentActionId,
     action_model: &ModelHandle<BlocklistAIActionModel>,
@@ -3147,6 +3186,9 @@ pub fn action_icon<V: View>(
 ) -> warpui::elements::Icon {
     let appearance = Appearance::as_ref(app);
     let status = action_model.as_ref(app).get_action_status(action_id);
+    if is_orphaned_by_finished_output(status.as_ref(), || ai_block_model.status(app)) {
+        return inline_action_icons::cancelled_icon(appearance);
+    }
     match status {
         Some(status) => match status {
             AIActionStatus::Preprocessing => icons::gray_circle_icon(appearance),
@@ -3172,15 +3214,14 @@ pub fn action_icon<V: View>(
                 }
             }
         },
+        // Statusless and not orphaned, so the block is still streaming this
+        // action in: the first one is the one being written right now, the
+        // rest are still to come.
         None => {
-            if ai_block_model.status(app).is_streaming() {
-                if ai_block_model.is_first_action_in_output(action_id, app) {
-                    icons::yellow_running_icon(appearance)
-                } else {
-                    icons::gray_circle_icon(appearance)
-                }
+            if ai_block_model.is_first_action_in_output(action_id, app) {
+                icons::yellow_running_icon(appearance)
             } else {
-                inline_action_icons::cancelled_icon(appearance)
+                icons::gray_circle_icon(appearance)
             }
         }
     }
