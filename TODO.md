@@ -31,6 +31,63 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### FILE MOVE `21f413b7` — PARTIAL. The full boundary is blocked BY THE TMUX DIVERGENCE.
+
+Three safe, independent commits landed (22 files, +429/-394): `completions`/`iterm_image`/
+`kitty` into `warp_terminal::model`, `Side`/`Direction` into `warp_terminal::model::indexing`,
+and executable-path resolution into `warp_util`. The agent then **stopped rather than
+reshape a divergence**, which is what it was told to do and the right call.
+
+#### The blocker — coordinator-verified
+
+`app/src/terminal/model/ansi/mod.rs` IS in the move set, and in this fork it does
+`use crate::terminal::model::tmux::{…}` (`:33`) and `::ControlModeEvent` (`:39`).
+**Upstream has zero `terminal/model/tmux` files** — that directory is fork-only, retained
+under `DECLINED.md:218` (#322) because this fork keeps the SSH tmux wrapper that the pin
+deleted.
+
+So moving `ansi` into `warp_terminal` forces a choice: relocate fork-only `model/tmux` into
+`warp_terminal` (a layout upstream does not have, i.e. **inventing** a divergence rather
+than adopting parity — and it drags `terminal::event` and `util::{AsciiDebug, parse_ascii_u32}`
+with it), or leave `ansi` in `app` and strand everything above it.
+
+**The terminal crate boundary cannot be fully adopted while the tmux wrapper is kept,
+without first deciding where fork-only tmux code lives in the new layout.** That is a
+maintainer decision and it was not visible before this attempt.
+
+Everything in `model/**` is one atomic unit gated on that, plus the `SizeInfo`/`Vector2F`
+extraction, the `event`/`event_listener` split, and `secrets`/`session`/`block_filter`.
+Separately, `model/grid`'s internals are private/`pub(super)` with consumers that cannot
+move — moving them alone would mean widening visibility past upstream, a deviation.
+
+**Also newly known: this fork's `warp_terminal` is behind upstream's PARENT commit.**
+Upstream's pre-move `Cargo.toml` already had `warp_errors`, `warpui_core` and
+`session-sharing-protocol`; the fork has none (no `crates/warp_errors` exists; it deps
+`warpui`, not `warpui_core`) and its `lib.rs` lacks `mod shared_session`. Full adoption
+must close that gap first.
+
+#### SEVENTH COORDINATOR ERROR — three wrong facts in one brief
+
+- **"`local_tty/terminal_manager.rs` IS in the move set"** — false. It is **`M`**, modified
+  in place, never renamed. It does not move, and the `use_ssh_tmux_wrapper` call site I
+  warned about was never at risk. All six call sites are untouched by this commit.
+- **"49 removed / 43 exist here / 6 fork-only"** — false. Reality: **73 deletions**, 72 of
+  which exist here, **0 fork-only**; the single absentee is
+  `model/ansi/dcs_hooks_tests.rs`. So there was no fork-only decision to make.
+- **"96 files added under `crates/`"** — false, it is **83**.
+
+Cause: I measured with `git show --name-only`, which lists every path in the commit
+including modifications, then filtered by prefix — conflating deletes with modifies. The
+agent used `--name-status --no-renames`. **Use `--name-status` when the question is what
+moved.**
+
+#### Open risk for the build
+
+`Cargo.lock` was **not** regenerated (agents cannot run cargo). A `--locked` CI job fails
+until it is. The agent's own least-confident list is led by
+`crates/warp_util/src/path/windows.rs` — **`cfg(windows)`-only, so a Linux build cannot
+check it at all**; it will pass here and break Windows CI if wrong.
+
 ### TEST-PORT WAVE — 3 launched, 1 landed, 1 refused, 1 pending refutation
 
 **`port/tests-orphan-icon` (`a9552f503`) — landed, under refutation.** The one cluster
