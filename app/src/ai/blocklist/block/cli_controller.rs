@@ -703,7 +703,6 @@ impl CLISubagentController {
                 self.controller.update(ctx, |controller, ctx| {
                     controller.resume_conversation(
                         conversation_id,
-                        /*can_attempt_resume_on_error*/ true,
                         /*is_auto_resume_after_error*/ false,
                         resume_context,
                         ctx,

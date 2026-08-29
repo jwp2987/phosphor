@@ -1,5 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
+use super::response_stream::RecoveryBudget;
 use warp_core::features::FeatureFlag;
 use warpui::{AppContext, ModelContext, SingletonEntity};
 
@@ -179,7 +180,7 @@ impl SlashCommandRequest {
                 is_auto_resume_after_error: false,
             }),
             /*default_to_follow_up_on_success*/ true,
-            /*can_attempt_resume_on_error*/ true,
+            RecoveryBudget::fresh(),
             is_queued_prompt,
             ctx,
         ) {

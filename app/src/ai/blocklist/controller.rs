@@ -13,7 +13,9 @@ use input_context::{
 };
 pub use slash_command::*;
 
-use self::response_stream::{PendingTitleGeneration, ResponseStream, ResponseStreamEvent};
+use self::response_stream::{
+    PendingResume, PendingTitleGeneration, RecoveryBudget, ResponseStream, ResponseStreamEvent,
+};
 use super::agent_view::AgentViewEntryOrigin;
 use super::ResponseStreamId;
 use super::{
@@ -466,7 +468,7 @@ struct PendingByopRequest {
     request_input: RequestInput,
     query_metadata: Option<RequestMetadata>,
     default_to_follow_up_on_success: bool,
-    can_attempt_resume_on_error: bool,
+    recovery: RecoveryBudget,
     is_queued_prompt: bool,
 }
 
@@ -889,7 +891,7 @@ impl BlocklistAIController {
                 is_auto_resume_after_error: false,
             }),
             /*default_to_follow_up_on_success*/ true,
-            /*can_attempt_resume_on_error*/ true,
+            RecoveryBudget::fresh(),
             is_queued_prompt,
             ctx,
         ) {
@@ -1667,7 +1669,7 @@ impl BlocklistAIController {
             request_input,
             None,
             /*default_to_follow_up_on_success*/ false,
-            /*can_attempt_resume_on_error*/ true,
+            RecoveryBudget::fresh(),
             /*is_queued_prompt*/ false,
             ctx,
         );
@@ -1694,7 +1696,7 @@ impl BlocklistAIController {
             mut request_input,
             query_metadata,
             default_to_follow_up_on_success,
-            can_attempt_resume_on_error,
+            recovery,
             is_queued_prompt,
         } = pending;
 
@@ -1730,7 +1732,7 @@ impl BlocklistAIController {
             request_input,
             query_metadata,
             default_to_follow_up_on_success,
-            can_attempt_resume_on_error,
+            recovery,
             is_queued_prompt,
             ctx,
         ) {
@@ -1745,10 +1747,35 @@ impl BlocklistAIController {
         true
     }
 
+    /// Resumes the conversation as a new, independent request: it starts with a full
+    /// recovery budget. Automatic resumes scheduled for a failed request go through
+    /// [`Self::resume_conversation_with_recovery_budget`] instead, so they inherit the
+    /// failed request's remaining budget rather than restarting recovery from scratch.
     pub fn resume_conversation(
         &mut self,
         conversation_id: AIConversationId,
-        can_attempt_resume_on_error: bool,
+        is_auto_resume_after_error: bool,
+        additional_context: Vec<AIAgentContext>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.resume_conversation_with_recovery_budget(
+            conversation_id,
+            RecoveryBudget::fresh(),
+            is_auto_resume_after_error,
+            additional_context,
+            ctx,
+        );
+    }
+
+    /// Resumes the conversation with `recovery` as the new request's shared retry/resume
+    /// budget.
+    ///
+    /// An automatic resume passes the failed request's remaining budget so the recovery
+    /// chain stays bounded; see [`RecoveryBudget`].
+    fn resume_conversation_with_recovery_budget(
+        &mut self,
+        conversation_id: AIConversationId,
+        recovery: RecoveryBudget,
         is_auto_resume_after_error: bool,
         additional_context: Vec<AIAgentContext>,
         ctx: &mut ModelContext<Self>,
@@ -1808,7 +1835,7 @@ impl BlocklistAIController {
             ),
             metadata,
             /*default_to_follow_up_on_success*/ true,
-            can_attempt_resume_on_error,
+            recovery,
             /*is_queued_prompt*/ false,
             ctx,
         );
@@ -1827,20 +1854,34 @@ impl BlocklistAIController {
     /// here (see `SCOPE-AI.md`'s `blocklist/handoff/*` entries; `ActiveAgentViewsModel`, on which
     /// that subsystem depends, is permanently removed per `DECLINED.md`). Without cloud handoff
     /// there is no modal to race, so omitting the wait is a correct no-op, not a trim.
+    /// `resume` carries the failed request's budget with this resume already charged
+    /// against it, so the resumed request continues the same bounded chain instead of
+    /// getting a fresh budget -- and instead of running with resumes switched off entirely,
+    /// which is what this used to do. Switching them off did not *bound* recovery, it
+    /// *closed* it: the effective post-action budget was exactly one attempt, and a
+    /// provider that just dropped a connection is very likely to drop the immediate retry
+    /// too. The backoff matters as much as the extra attempts, which is why `resume`
+    /// carries one: firing the resume the instant the stream finishes lands it back in the
+    /// same failure window that killed the original request.
     fn schedule_auto_resume_after_error(
         &mut self,
         conversation_id: AIConversationId,
+        resume: PendingResume,
         ctx: &mut ModelContext<Self>,
     ) {
+        let backoff = resume.backoff();
+        let recovery = resume.recovery();
         let wait_for_online = NetworkStatus::as_ref(ctx).wait_until_online();
-        let handle = ctx.spawn(wait_for_online, move |me, _, ctx| {
+        let wait = async move {
+            warpui::r#async::Timer::after(backoff).await;
+            wait_for_online.await;
+        };
+        let handle = ctx.spawn(wait, move |me, _, ctx| {
             // Clean up the pending handle now that the resume is executing.
             me.pending_auto_resume_handles.remove(&conversation_id);
-            me.resume_conversation(
+            me.resume_conversation_with_recovery_budget(
                 conversation_id,
-                // Don't allow a second resume-on-error to prevent a persistent loop.
-                /*can_attempt_resume_on_error*/
-                false,
+                recovery,
                 /*is_auto_resume_after_error*/ true,
                 vec![],
                 ctx,
@@ -1892,7 +1933,7 @@ impl BlocklistAIController {
                 is_auto_resume_after_error: false,
             }),
             /*default_to_follow_up_on_success=*/ false,
-            /*can_attempt_resume_on_error*/ true,
+            RecoveryBudget::fresh(),
             /*is_queued_prompt*/ false,
             ctx,
         )
@@ -2058,7 +2099,7 @@ impl BlocklistAIController {
                 is_auto_resume_after_error: false,
             }),
             /*default_to_follow_up_on_success*/ false,
-            /*can_attempt_resume_on_error*/ true,
+            RecoveryBudget::fresh(),
             /*is_queued_prompt*/ false,
             ctx,
         )
@@ -3079,7 +3120,7 @@ impl BlocklistAIController {
         mut request_input: RequestInput,
         query_metadata: Option<RequestMetadata>,
         default_to_follow_up_on_success: bool,
-        can_attempt_resume_on_error: bool,
+        recovery: RecoveryBudget,
         is_queued_prompt: bool,
         ctx: &mut ModelContext<Self>,
     ) -> anyhow::Result<(AIConversationId, ResponseStreamId)> {
@@ -3096,6 +3137,18 @@ impl BlocklistAIController {
         {
             handle.abort();
         }
+
+        // Passive background requests never auto-resume: a resume would issue a fresh turn
+        // on a conversation the user never asked for and never sees. They keep the retry
+        // half of the budget, which is invisible to the user.
+        let is_passive_request = request_input
+            .all_inputs()
+            .any(|input| input.is_passive_request());
+        let recovery = if is_passive_request {
+            recovery.without_resume()
+        } else {
+            recovery
+        };
         // At the start of a new request round, first drop any old request stashed
         // earlier due to readiness Pending; if this preflight hits
         // PendingToolResults again, it'll be written back below.
@@ -3174,7 +3227,7 @@ impl BlocklistAIController {
                         request_input,
                         query_metadata,
                         default_to_follow_up_on_success,
-                        can_attempt_resume_on_error,
+                        recovery,
                         is_queued_prompt,
                     },
                 );
@@ -3252,12 +3305,7 @@ impl BlocklistAIController {
                 client_exchange_id: None,
                 model_id: Some(request_params.model.clone()),
             };
-            ResponseStream::new(
-                request_params.clone(),
-                ai_identifiers,
-                can_attempt_resume_on_error,
-                ctx,
-            )
+            ResponseStream::new(request_params.clone(), ai_identifiers, recovery, ctx)
         });
         let response_stream_id = response_stream.as_ref(ctx).id().clone();
         let response_stream_clone = response_stream.clone();
@@ -3958,11 +4006,13 @@ impl BlocklistAIController {
                     // error marker; if so, reuses the auto-resume path around line
                     // 2695+ to trigger a resend, letting the model immediately fix
                     // its arguments and retry based on the error tool_result.
-                    // `can_attempt_resume_on_error=false` prevents an infinite loop
-                    // from the LLM repeatedly emitting bad args.
                     // Only looks for the synthetic error marker in messages newly
-                    // added this round, to avoid an infinite loop from repeatedly
-                    // matching the same marker once it's persisted in history.
+                    // added this round: that -- and only that -- is what bounds an
+                    // infinite loop from the LLM repeatedly emitting bad args. This
+                    // comment used to also claim the loop was bounded by running the
+                    // resend with `can_attempt_resume_on_error=false`, which was never
+                    // true: that flag governed the *next* request's error recovery, not
+                    // this path's re-entry. The resend gets a full recovery budget.
                     // Zap BYOP: a synthetic ToolCallResult that never entered the
                     // AIAgentAction queue needs auto-resume, otherwise the exchange
                     // ends silently and the model hangs waiting for a result.
@@ -3995,7 +4045,11 @@ impl BlocklistAIController {
                              or _byop_intercepted) without queued action → schedule auto-resume. \
                              conversation_id={conversation_id:?}"
                         );
-                        self.schedule_auto_resume_after_error(conversation_id, ctx);
+                        self.schedule_auto_resume_after_error(
+                            conversation_id,
+                            PendingResume::immediate(RecoveryBudget::fresh()),
+                            ctx,
+                        );
                     }
                 }
 
@@ -4004,12 +4058,11 @@ impl BlocklistAIController {
                     self.in_flight_response_streams.cleanup_stream(&stream_id);
                 }
 
-                // Before cleaning up the response stream, check if we should attempt to resume.
-                if response_stream
-                    .as_ref(ctx)
-                    .should_resume_conversation_after_stream_finished()
-                {
-                    self.schedule_auto_resume_after_error(conversation_id, ctx);
+                // Before cleaning up the response stream, check if we should attempt to
+                // resume. The resume inherits the failed request's remaining recovery
+                // budget, so the chain stays bounded by MAX_RECOVERY_ATTEMPTS in total.
+                if let Some(resume) = response_stream.as_ref(ctx).pending_resume() {
+                    self.schedule_auto_resume_after_error(conversation_id, resume, ctx);
                 }
 
                 // Clean up the response stream tracking entry now that the stream is complete.
