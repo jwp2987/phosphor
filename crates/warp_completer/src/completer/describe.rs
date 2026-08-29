@@ -4,7 +4,7 @@ use warpui::platform::OperatingSystem;
 
 use crate::{
     completer::suggest::MatchRequirement,
-    meta::{HasSpan, Span, Spanned},
+    meta::{floor_char_boundary, HasSpan, Span, Spanned},
 };
 use crate::{meta::SpannedItem, parsers::simple::command_at_cursor_position};
 
@@ -240,20 +240,6 @@ fn split_flag_eq_token_at_cursor(token: Spanned<String>, pos: ByteOffset) -> Spa
         token.item[eq_pos + 1..]
             .to_string()
             .spanned(Span::new(eq_byte_pos + 1, token.span.end()))
-    }
-}
-
-/// TODO: replace with str::floor_char_boundary once it's not on nightly anymore.
-fn floor_char_boundary(original_string: &str, idx: usize) -> usize {
-    if idx >= original_string.len() {
-        original_string.len()
-    } else {
-        let mut curr = idx;
-        // Stop at zero since it's always a char boundary.
-        while curr > 0 && !original_string.is_char_boundary(curr) {
-            curr -= 1;
-        }
-        curr
     }
 }
 
