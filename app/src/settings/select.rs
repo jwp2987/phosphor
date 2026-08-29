@@ -72,6 +72,10 @@ define_settings_group!(SelectionSettings, settings: [
         toml_path: "terminal.input.middle_click_paste_enabled",
         description: "Whether middle-click pastes from the clipboard.",
     },
+    // Ported from the pin's `RightClickBehaviorSetting` (upstream 4111d08f9,
+    // introduced by c25ac4070). The pin's version also carries
+    // `surface: SettingSurfaces::GUI`; this fork dropped `SettingSurfaces`
+    // (see `DECLINED.md`), so that key is omitted.
     right_click_behavior: RightClickBehaviorSetting {
         type: RightClickBehavior,
         default: RightClickBehavior::ContextMenu,

@@ -840,9 +840,15 @@ pub(crate) fn received_message_collapsible_id(message_id: &str) -> MessageId {
 pub struct AIBlock {
     model: Rc<dyn AIBlockModel<View = AIBlock>>,
 
-    /// Cached result of `model.request_type(app).is_passive()`. Safe to cache because whether a
-    /// conversation is passive or active is fixed at exchange creation and never changes for the
-    /// lifetime of the block (see `is_passive_conversation`).
+    /// Cached result of `model.request_type(app).is_passive()`, refreshed in
+    /// `reset_conversation_id` (the only place `model` is reassigned).
+    ///
+    /// Cached because the passive bit is a function of the exchange's `input` variants, which
+    /// are set when the exchange is created. **It is not strictly immutable:**
+    /// `update_exchange_from_messages` can append an `AutoCodeDiffQuery` input to an existing
+    /// exchange on a shared-session viewer, which would flip `request_type` to Passive without
+    /// refreshing this. That window is upstream's as well (`63a17a50a`), and no confirmed
+    /// end-to-end sequence reaches it, but do not read this field as a proof of immutability.
     is_passive: bool,
     terminal_model: Arc<FairMutex<TerminalModel>>,
     client_ids: ClientIdentifiers,

@@ -303,8 +303,12 @@ hardcoded both `MAX_ATTEMPTS` and `is_transient_http_error`. It now delegates to
 `with_bounded_retry_using(operation, max_attempts, is_transient, attempt_fn)`
 (`app/src/util/retry_strategies.rs:151`), plus `backoff_after_attempts` with a
 `BACKOFF_MAX_EXPONENT` cap so a budget larger than `MAX_ATTEMPTS` cannot grow the
-interval without bound. **Not a dead leaf** — every existing caller and all four existing
-`with_bounded_retry` tests now run through the new path.
+interval without bound. ~~**Not a dead leaf** — every existing caller and all four existing
+`with_bounded_retry` tests now run through the new path.~~ **Overstated, corrected by the
+refutation pass:** `with_bounded_retry` has **no production callers** repo-wide — the only
+non-doc hits are in `retry_strategies_test.rs`. That is pre-existing (it was already
+test-only before this round), so the port did not create dead code, but "every existing
+caller" meant "every existing test".
 **Coordinator-verified behaviourally equivalent for existing callers:** the old loop's
 cumulative `delay` after attempt *n* was `INITIAL_BACKOFF * 2^(n-1)`, which is exactly what
 `backoff_after_attempts(n)` computes; `Duration` is already imported at `:2`.
@@ -409,8 +413,10 @@ The defect is **worse than briefed**. A post-action failure scheduled a resume w
 `can_attempt_resume_on_error: false` hard-coded, so the effective post-action budget was
 **exactly one attempt** — fired with **no backoff at all**, landing straight back in the
 failure window a dropped provider connection is most likely to reproduce.
-Ported `RecoveryBudget`/`MAX_RECOVERY_ATTEMPTS`/`FailReason`/`PendingResume`; all 5 external
-`resume_conversation` callers passed `true`, so the bool was dropped rather than threaded.
+Ported `RecoveryBudget`/`MAX_RECOVERY_ATTEMPTS`/`FailReason`/`PendingResume`. **Correction
+(refutation pass): there are 4 external `resume_conversation` callers, not 5, and they all
+passed `true`; the 5th is the internal `schedule_auto_resume_after_error`, which passed
+`false` — the flag whose falseness IS the defect.** The bool was dropped, not threaded.
 **The second-backoff trap I flagged was real and was avoided** — the fork's existing inline
 `500ms << (n-1)` was *hoisted*, not replaced by upstream's jittered
 `server::retry_strategies` version (dropped cloud transport, and a BYOP fork has no shared
@@ -444,6 +450,119 @@ local terminal and no `SharedSession*` type appears in either body — in scope,
 NOT-PORTABLE. It also correctly declined `0a0fd3ae1`, which `TODO.md` lists as a
 prerequisite: it only supplies a `paste_menu_item` helper for the context-menu restructure,
 which these tests do not exercise.
+
+#### Refutation pass, S4 — three CONFIRMED defects, all fixed
+
+The TUI shard was the only one where refutation found defects rather than claim errors.
+
+1. **The emission removal broke rendering, and its justifying comment was false.** The port
+   removed the attachment bar's `ReturnFocus` emission on `Updated`, justified as
+   "`notify()` already invalidates the parent that conditionally renders this bar".
+   **That is not true in this fork:** `ViewContext::notify` inserts only that view's id into
+   `window_invalidations.updated` with **no ancestor propagation**, and `TuiPresenter::invalidate`
+   re-renders only the listed views. The conditional lives in the *parent's* render, the
+   session view subscribes to the bar's **events** not its model, and `pending_attachments`
+   is a plain `Vec`, not `Tracked`. So that emission was the only path reaching
+   `handle_attachment_bar_event` and its trailing `ctx.notify()`.
+   Concrete consequence: `remove_selected` on the processing branch leaves the bar row
+   **still painting after its last attachment is gone** — and the presented-tree focus repair
+   cannot rescue it, because the bar is still embedded in the cached parent element.
+   **Fixed by restoring the emission.** The focus theft it was removed for is already fully
+   closed by the *other* half of the same commit: `ReturnFocus` is answered with
+   `reconcile_focus`, which is `is_focused_session`-guarded. This is a faithful port of
+   upstream `69254d73` — but upstream's rationale was not the claim written here, and this
+   fork's presenter makes the consequence real.
+2. **The test that supposedly pinned that removal did not.** Its comment said "restoring that
+   emission fails this test"; it does not — the counterfactual dies on the
+   `is_focused_session` guard, so the assertion still holds. **Verified empirically:** the
+   test still passes now that the emission is restored. Comment corrected to say what it
+   actually pins (the handler guard), which is the thing that closes the hole.
+3. **The headline P0 had ZERO regression coverage.** Both disconnect tests asserted only
+   `termination_result().is_none()` — but the test delegate's `terminate_app` is a **no-op**
+   and this branch deliberately passes `None`, so `is_none()` is equally true when
+   `terminate_app` is never called at all. **Deleting the `ctx.terminate_app(...)` line from
+   `fail_tui_driver`'s disconnect branch left the entire 8225-test suite green.**
+   Fixed by adding a `termination_requests` counter to `AppContext` — the only observable for
+   a termination carrying no `TerminationResult` — and asserting it is exactly `1` in both
+   tests, which also pins the latch's once-only property.
+
+**Attacked and refuted (the code is sound here):** the `assert_eq!(attempts.get(), 1)`
+assumption holds (crossterm's `BeginSynchronizedUpdate` is a single `write_str` and the
+adapter aborts on first error); the `failed` latch covers every terminal-touching path and is
+set *before* the timer is dropped, so a re-entrant drop cannot re-arm; fixing the spin did
+**not** introduce a hang (the channel is unbounded, and a reader thread dying drops the
+sender so `recv()` errors and the loop exits); no `RefCell` double borrow from the focus
+repair, at either entry point; `presented_views` is transitive, so the repair does not
+misfire on nesting; and `reconcile_focus` is an exact match for upstream's, not a divergence.
+
+**Lower-severity, recorded not fixed:** the `EINTR` retry is likely dead code on unix
+(crossterm 0.29 already retries internally, so `Err(Interrupted)` cannot surface) — harmless,
+but claim #2 of that commit describes a bug that was not reachable; `ENOTTY`/`EBADF` are not
+classified as disconnects, so a non-tty stdin still reports to Sentry; the focus repair burns
+~3× the presents on a transient; and the reader thread's probe write is the one
+terminal-touching path outside the latch (result discarded, cannot loop).
+
+#### Refutation pass — 5 agents, 2026-08-29. One shard had real defects; four had claim defects.
+
+Every ported shard was re-attacked adversarially. **The S1 index-shift, S6 off-by-one/cap/
+panic, and S5 traversal-bypass hypotheses all failed under direct attack**, and the S3 caching
+change was confirmed byte-faithful with `self.model` assigned in exactly one place. What the
+pass did find was **claim defects — code and ledger text asserting things that are not true**:
+
+- **The Ctrl-C feature S2 ported is unreachable.** `write_viewer_bytes_to_pty`
+  (`terminal/view.rs:8445`) has **no production caller** — only two test sites — and
+  `observe_ctrl_c_write`'s only call site is *inside* it. Upstream's sole caller is
+  `local_tty/terminal_view_adaptor.rs`, dropped by this fork (already noted at `TODO.md`'s
+  `9921300b7` row). The code is correct and becomes live if the shared-session viewer path
+  returns; as it stands it is 17 tests over a path that cannot execute.
+  **`script/check_stub_coverage` correctly did not fire** — it catches functions *gutted* to
+  no-op stubs (empty here, substantial at the pin), and this code is real, merely unreachable.
+  **That is a missing guard, not a broken one.** Maintainer decision: keep as staged parity,
+  or revert.
+  **My brief caused this.** I asked S2 to check whether the *tests* needed shared-session
+  infrastructure. They do not — and that was the wrong question. The *production caller* does.
+- **`sanitized_basename`'s docstring asserted a contract its only caller violates** — it said
+  callers must treat `None` as a refusal, while `convert_from.rs:458` does
+  `.unwrap_or_else(|| file.filepath.clone())`. Not exploitable (the value reaches only
+  `Display`/`JsonArtifact`, never a `Path::join`; upstream's joining consumer was removed by
+  `2ebdda694`) — but the docstring is what the next porter reads. Corrected in place.
+  No traversal bypass was found: Windows separators, absolute paths, `..` chains, trailing
+  slashes, embedded NUL and unicode were all attacked.
+- **A comment asserted the non-existence of a function that now exists.**
+  `response_stream.rs` said upstream's `backoff_after_attempts` "is part of the dropped
+  Warp-server client and does not exist here" — S6 created exactly that, in the same tree, the
+  same day. Both comments corrected, and **the response-stream copy renamed to
+  `recovery_backoff_after_attempts`** so that widening the other's visibility cannot silently
+  swap a jittered 32s-cap schedule for an unjittered 8s-cap one.
+- **A vacuous test, now non-vacuous.** `a_scheduled_resume_inherits_a_charged_budget` asserted
+  arithmetic on `RecoveryBudget` directly and never touched `PendingResume` — gutting
+  `PendingResume::recovery()` to return `fresh()`, which restores the exact per-path budget
+  REMOTE-2269 removed, left all 8225 tests green. Added
+  `pending_resume_carries_its_budget_and_backoff_verbatim`. The remaining gap (threading
+  through `schedule_auto_resume_after_error`) needs an integration seam and is recorded here
+  rather than faked.
+- **`original_error` now matches the pin.** The fork keyed capture off `retries_sent == 0`;
+  the pin uses `original_error.is_none()`, which is strictly better — it also refuses to
+  overwrite the first error when a stream takes a second without an intervening retry.
+
+**Two behaviour facts that were documented as no-ops and are not:**
+- **Passive requests lost auto-resume.** Described as moving `without_resume()` "rather than
+  special-casing at each call site" — but there *was* no per-call-site special-casing here;
+  both passive sites passed `true`. This restores upstream parity (upstream has clamped since
+  `f104047b52`; the fork's port of that commit dropped it), but it is a real restriction.
+- **The connectivity wait is snapshotted before the backoff, not after.**
+  `wait_until_online()` captures state at call time, so going offline *during* the 0.5–2s
+  backoff still lets the resume fire offline. Inherited from the pin verbatim, but the backoff
+  widened the window from ~0. The doc comment claiming an online guarantee has been corrected
+  to say what the code actually does.
+
+**Three ledger citations corrected:** the six `usage/rollup_tests.rs` declines cite
+`DECLINED.md:215`, which governs *provider-cost baselines on restored conversations* and names
+`conversation_tests.rs` verbatim — the governing row is **`:213`**, whose "still declined: the
+cloud-runner half and credit rollup" clause actually decides them. Same outcome, wrong
+authority. And **the two *token* rollup tests are declined as *cost* tests** although the fork
+has live BYOP token data (`total_token_usage_by_model`); the honest reason is that no
+tree-level token rollup surface exists — a feature decision, not absent data.
 
 #### Coordinator errors this round: 31 refuted claims across 9 shards
 
@@ -608,10 +727,24 @@ the body:
   carry hand-rolled clamped two-option arrow navigation (`intention_slide.rs:575/584`,
   `third_party_slide.rs:392/402`, `agent_slide.rs:1081/1106`, `theme_picker_slide.rs:598/614`,
   `customize_slide.rs:689/699`). That is precisely the bug class the declined
-  `arrow_keys_move_through_both_options` guards — on live fork code, uncovered. **Correctly
-  not written:** `crates/onboarding/Cargo.toml` has **no `[dev-dependencies]` section at
-  all**, so the crate cannot host a test today; adding one is a manifest change no agent can
-  compile-verify. Follow-up ticket, not a port.
+  `arrow_keys_move_through_both_options` guards — on live fork code, uncovered.
+  **~~Correctly not written: the crate has no `[dev-dependencies]` section, so it cannot host
+  a test today.~~ THAT BLOCKER IS FALSE — overturned by the refutation pass 2026-08-29.**
+  A crate does not need a `[dev-dependencies]` section to host `#[cfg(test)]` tests, only to
+  add test-only *extra* deps. And `App::test` is **not** feature-gated
+  (`warpui_core/src/core/app.rs:104` carries no `#[cfg]`; `platform/mod.rs:6` is a bare
+  `pub mod test;`), while `crates/onboarding` already depends on `warpui`, which re-exports
+  `warpui_core` — so `warpui::App::test` is reachable from that crate **today, with no
+  manifest change**.
+  The real blockers are narrower and both one-liners: `Appearance::mock()` IS gated
+  (`#[cfg(feature = "test-util")]`, `warp_core/src/ui/appearance.rs:142`), needing
+  `[dev-dependencies] warp_core = { workspace = true, features = ["test-util"] }`; and
+  `MockTelemetryContextProvider` has zero occurrences repo-wide, so the pin's harness must be
+  adapted rather than reused.
+  **Reclassified: portable debt behind a one-line manifest change, NOT a decline.** The
+  offer slide itself stays declined (`DECLINED.md:85`, #11 — it is paid-tier offer UI), but
+  the *navigation property* belongs in the port queue against the five live slides. Recording
+  it as NOT-PORTABLE is how live untested code quietly disappears.
 - **`crates/onboarding/src/telemetry_tests.rs`** is unported and unmentioned anywhere.
 - **An entire upstream module is absent and untracked:**
   `app/src/pane_group/child_agent/{mod,hydration,materialization,materialization_tests,restoration}.rs`,
@@ -1638,8 +1771,10 @@ what was dropped.
       meaning and automatic resumes go through the new private
       `resume_conversation_with_recovery_budget`; passive requests get
       `without_resume()` once in `send_request_input` instead of per call site.
-      The 5 external `resume_conversation` call sites all passed `true`, so the
-      bool was dropped rather than threaded.
+      **Corrected by the refutation pass:** there are **4** external
+      `resume_conversation` call sites and all passed `true`; the 5th is the internal
+      `schedule_auto_resume_after_error`, which passed **`false`** — the flag whose
+      falseness is the whole defect. The bool was dropped rather than threaded.
 
       **The second-backoff trap was real and was avoided**: the fork's existing
       inline `500ms << (n-1)` schedule was *hoisted* into `backoff_after_attempts`,
@@ -1734,8 +1869,19 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       (`:1137`), ungated and unthrottled; the non-ligature path (`:627`) is
       debug-only. Fork already has the macro surface (`ReportErrorLogMode::OncePerRun`);
       only adaptation is `warp_errors::` -> `warp_core::errors::`.
-- [ ] `63a17a50a` — denormalize `is_passive` onto `AIBlock`; 7 call sites still
-      re-derive from history.
+- [x] `63a17a50a` — denormalize `is_passive` onto `AIBlock`. **PORTED 2026-08-29**
+      (`8c6960b63`), with its 4 tests, including the one earlier adjudicated DIVERGENT.
+      **This row's "7 call sites" was wrong** — 8 method calls plus one open-coded use
+      inside `AIBlock::is_hidden`, all 9 migrated. `is_passive_conversation` no longer
+      takes `&AppContext`.
+      **Two residual facts a reader should not have to re-derive.** (a) `block.rs:3042`
+      still re-derives `request_type(ctx).is_passive()`, so the self-contradiction is
+      closed for `is_hidden`/`is_passive_conversation` but not for the block as a whole —
+      upstream leaves the same site alone, so this is parity, not debt. (b) The cache's
+      doc comment originally claimed the value "never changes for the lifetime of the
+      block"; that is stronger than the code guarantees, since `AIAgentExchange.input` can
+      grow via `update_exchange_from_messages` on a shared-session viewer. Comment
+      softened; the window is upstream's too.
 - [ ] `f42c4ab6c` — `Lazy` field deferral (22 files, ~987 insertions). Adds
       `crates/warp_util/src/lazy.rs`. **Depends on `ee95ac0fd` landing first.**
       One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork.
@@ -1846,11 +1992,18 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `starts_with` change; the fork also lacks 4 icon variants from out-of-range commits.
 - [ ] `996babee` — two doc-comment URLs. Zero risk.
 - [ ] `69254d73` — TUI focus-ownership hardening (13 files).
-- [ ] `94daf47f3` — **two adaptations required, one hunk must be DROPPED.** Re-home the
-      settings half from `warp_agent_page.rs` to `ai_page.rs`. The
-      `set_zero_state_hint_text` hunk has **no fork counterpart** — the fork rewrote
-      that function and deleted `AI_COMMAND_SEARCH_HINT_TEXT`; upstream's change is
-      "don't advertise `#` when disabled" and the fork advertises nothing. Drop it.
+- [x] `94daf47f3` — **PORTED 2026-08-29** (`56a86a7d7`), with its 3 tests.
+      **~~one hunk must be DROPPED~~ — THAT INSTRUCTION WAS FALSE, and the port proved
+      it.** This row said the `set_zero_state_hint_text` hunk "has no fork counterpart —
+      the fork rewrote that function and deleted `AI_COMMAND_SEARCH_HINT_TEXT` … the fork
+      advertises nothing. Drop it." The fork **renamed** the constant to
+      `AI_COMMAND_SEARCH_HINT_KEY` (`terminal/input.rs:407`) and the string is live at
+      `app/i18n/en/warp.ftl:422` — "Type '#' for AI command suggestions" — set at
+      `input.rs:5732`. The fork advertised the shorthand while offering no way to disable
+      it, so dropping the hunk would have left exactly the bug the commit fixes. Hunk
+      ported; the hint is now suppressed when the setting is off.
+      Re-homing the settings half from `warp_agent_page.rs` to `ai_page.rs` was correct.
+      **Fifth ledger row this round found to state the opposite of the code (cf. #148).**
 - [ ] `fa2d43ce2` — widens `assert_eventually!` 20->100 ticks on two tests that exist
       here verbatim. **Not a §5.6 weakening** (condition byte-identical, only the wait
       grows) but it is upstream compensating for UPSTREAM's CI. **Do not port

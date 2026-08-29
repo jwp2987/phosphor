@@ -71,9 +71,18 @@ mod tests {
     /// Adapted for the same reason as the sibling above: the pinned test asserts
     /// that a name with no basename fails the guard *before* any request is sent
     /// (its mock is registered with `.expect(0)`). This fork has no download
-    /// pipeline to short-circuit, so the assertion is made against the guard's
-    /// own contract — `None`, which every call site must treat as a refusal
-    /// rather than a path.
+    /// pipeline to short-circuit, so the assertion is made against the guard's own
+    /// contract: `None` means "this name has no safe basename".
+    ///
+    /// **Do not read `None` as a refusal that callers honour — today's only caller
+    /// does the opposite.** `ai/agent/api/convert_from.rs:458` does
+    /// `sanitized_basename(&file.filepath).unwrap_or_else(|| file.filepath.clone())`,
+    /// turning the refusal back into the attacker-supplied string. That is upstream's
+    /// code verbatim and is **not exploitable here**, because the resulting `filename`
+    /// only ever reaches `Display` and `JsonArtifact` — never a `Path::join`; upstream's
+    /// joining consumer was removed from this fork by `2ebdda694` ("Disable cloud
+    /// artifact downloads"). If a future change ever joins this value onto a directory,
+    /// that `unwrap_or_else` becomes a traversal and must be fixed first.
     #[test]
     fn sanitized_basename_rejects_names_without_a_basename() {
         assert_eq!(sanitized_basename(".."), None);

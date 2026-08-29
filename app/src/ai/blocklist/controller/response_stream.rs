@@ -33,14 +33,20 @@ pub(crate) const MAX_RECOVERY_ATTEMPTS: usize = 3;
 
 /// How long to wait before the `attempts_made`-th recovery attempt (1-based).
 ///
-/// Exponential backoff: 0.5s / 1s / 2s. This is the schedule that was already inline in
-/// [`ResponseStream::retry`] — hoisted, not replaced, so unifying retries and resumes
-/// does not stack a second backoff on top of the one the fork already had. Upstream sources
-/// the same numbers from `server::retry_strategies::backoff_after_attempts`, which is part
-/// of the dropped Warp-server client and does not exist here; that version also jitters,
-/// which this one deliberately does not, because the fork has no shared server to
-/// thundering-herd against.
-pub(crate) fn backoff_after_attempts(attempts_made: usize) -> Duration {
+/// Exponential backoff: 0.5s / 1s / 2s, capped at shift 4 (8s). This is the schedule that
+/// was already inline in [`ResponseStream::retry`] — hoisted, not replaced, so unifying
+/// retries and resumes does not stack a second backoff on top of the one the fork already
+/// had.
+///
+/// Upstream sources the same numbers from `server::retry_strategies::backoff_after_attempts`.
+/// **That module is dropped-cloud transport, but an equivalent DOES now exist in this tree**
+/// — `crate::util::retry_strategies::backoff_after_attempts`, ported the same day by
+/// `947e07e52`. It is deliberately NOT reused here and the two are not interchangeable: it
+/// jitters by 30% and caps at exponent 6 (~32s), whereas this one does neither, because the
+/// fork has no shared server to thundering-herd against and this schedule must stay inside
+/// the driver's `AUTO_RESUME_TIMEOUT` window. The names differ (`recovery_` prefix) so that
+/// widening the other one's visibility cannot silently swap the schedule.
+pub(crate) fn recovery_backoff_after_attempts(attempts_made: usize) -> Duration {
     Duration::from_millis(500u64 << attempts_made.saturating_sub(1).min(4))
 }
 
@@ -716,8 +722,8 @@ impl ResponseStream {
         // all, so retrying the same payload three times in a row within seconds was
         // pure waste for deterministic failures (like exceeding a request limit),
         // and it also worsened queueing on a single-machine LLM. The schedule now lives in
-        // `backoff_after_attempts` so the resume path can wait the same amount.
-        let backoff = backoff_after_attempts(self.recovery.attempts_used());
+        // `recovery_backoff_after_attempts` so the resume path can wait the same amount.
+        let backoff = recovery_backoff_after_attempts(self.recovery.attempts_used());
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(backoff).await;
@@ -855,10 +861,15 @@ impl ResponseStream {
             }
             Err(e) => {
                 // Store original error if this is the first error on this stream.
-                // Keyed off `retries_sent`, not the shared budget: a resumed request
-                // inherits a charged budget, so `attempts_used() == 0` would be false on
-                // its very first failure and the original error would never be captured.
-                if self.retries_sent == 0 {
+                //
+                // Keyed off `original_error` itself, as the pin does, NOT off the shared
+                // budget: a resumed request inherits a charged budget, so
+                // `attempts_used() == 0` is false on its very first failure and the
+                // original error would never be captured. `original_error` is per-stream
+                // (`None` at both constructors), so this is correct for a resumed stream
+                // too -- and unlike `retries_sent == 0` it does not overwrite the first
+                // error when a stream takes a second one without an intervening retry.
+                if self.original_error.is_none() {
                     self.original_error = Some(format!("{e:?}"));
                 }
 
@@ -882,7 +893,7 @@ impl ResponseStream {
                             "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait={:?} - Error: {e:?}",
                             action.log_label(),
                             self.recovery.attempts_used() + 1,
-                            backoff_after_attempts(self.recovery.attempts_used() + 1),
+                            recovery_backoff_after_attempts(self.recovery.attempts_used() + 1),
                         );
                         // Only emit error telemetry here if we're retrying.
                         // Final errors that aren't being retried are emitted elsewhere.
@@ -909,7 +920,7 @@ impl ResponseStream {
                         // budget and waits the same backoff a retry would have, so a
                         // chain of post-action failures is bounded by
                         // MAX_RECOVERY_ATTEMPTS sends in total.
-                        let backoff = backoff_after_attempts(self.recovery.attempts_used() + 1);
+                        let backoff = recovery_backoff_after_attempts(self.recovery.attempts_used() + 1);
                         log::warn!(
                             "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait=after_stream_finished+{backoff:?} - Error: {e:?}",
                             action.log_label(),

@@ -2,8 +2,9 @@
 use std::time::Duration;
 
 use super::{
-    FailReason, MAX_RECOVERY_ATTEMPTS, RecoveryAction, RecoveryBudget, ResponseStream,
-    ResponseStreamId, backoff_after_attempts, lrc_tag_in_lacks_confirmation_ui, recovery_action,
+    FailReason, MAX_RECOVERY_ATTEMPTS, PendingResume, RecoveryAction, RecoveryBudget,
+    ResponseStream, ResponseStreamId, lrc_tag_in_lacks_confirmation_ui, recovery_action,
+    recovery_backoff_after_attempts,
 };
 // `agent_sdk` (and so the driver's recovery deadline) is native-only here.
 #[cfg(not(target_family = "wasm"))]
@@ -135,6 +136,48 @@ fn a_scheduled_resume_inherits_a_charged_budget() {
     );
 }
 
+/// Fork-authored, added after a refutation pass found the coverage above insufficient.
+///
+/// `a_scheduled_resume_inherits_a_charged_budget` asserts arithmetic on `RecoveryBudget`
+/// directly and never touches `PendingResume`, so gutting `PendingResume::recovery()` to
+/// return `RecoveryBudget::fresh()` -- which would restore the exact per-path budget
+/// REMOTE-2269 removed -- left the whole suite green. This pins the accessors against that.
+///
+/// What this does NOT cover, deliberately rather than by oversight: the threading from
+/// `retry()`'s `pending_resume` assignment through `schedule_auto_resume_after_error` to
+/// `ResponseStream::new`. That path needs a live stream and a `ModelContext`, so it wants
+/// an integration seam this module does not have. Recorded in `TODO.md` rather than faked.
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn pending_resume_carries_its_budget_and_backoff_verbatim() {
+    // Built exactly as the `RecoveryAction::Resume` arm builds it: the stream's budget
+    // charged one more attempt, and the backoff for that attempt number.
+    let stream_budget = RecoveryBudget::fresh().next_attempt();
+    let backoff = recovery_backoff_after_attempts(stream_budget.attempts_used() + 1);
+    let pending = PendingResume {
+        recovery: stream_budget.next_attempt(),
+        backoff,
+    };
+
+    assert_eq!(
+        pending.recovery().attempts_used(),
+        2,
+        "the resume must run with the stream's budget charged, not a fresh one"
+    );
+    assert_ne!(
+        pending.recovery(),
+        RecoveryBudget::fresh(),
+        "a fresh budget here restores the per-path budget REMOTE-2269 removed"
+    );
+    assert_eq!(pending.backoff(), backoff, "the resume must wait the charged backoff");
+
+    // The immediate (BYOP bad-arguments) constructor is the one deliberate exception: a
+    // fresh budget and no wait, bounded by its call site instead of by the budget.
+    let immediate = PendingResume::immediate(RecoveryBudget::fresh());
+    assert_eq!(immediate.backoff(), Duration::ZERO);
+    assert_eq!(immediate.recovery().attempts_used(), 0);
+}
+
 /// Ported from the pin's `non_recoverable_post_action_failure_is_terminal`
 /// (upstream 4111d08f9).
 #[test]
@@ -255,14 +298,14 @@ fn the_recovery_backoff_fits_inside_the_driver_run_recovery_window() {
     // the budget or the backoff schedule ever grows enough to approach the deadline, a run
     // would start dying on the deadline instead of on the failure it was recovering from.
     let total: Duration = (1..=MAX_RECOVERY_ATTEMPTS)
-        .map(backoff_after_attempts)
+        .map(recovery_backoff_after_attempts)
         .sum();
     assert!(
         total * 2 < AUTO_RESUME_TIMEOUT,
         "total recovery backoff {total:?} is too close to AUTO_RESUME_TIMEOUT {AUTO_RESUME_TIMEOUT:?}"
     );
     for attempt in 1..=MAX_RECOVERY_ATTEMPTS {
-        assert!(backoff_after_attempts(attempt) * 4 < AUTO_RESUME_TIMEOUT);
+        assert!(recovery_backoff_after_attempts(attempt) * 4 < AUTO_RESUME_TIMEOUT);
     }
 }
 

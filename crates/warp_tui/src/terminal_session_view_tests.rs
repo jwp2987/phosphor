@@ -3438,10 +3438,17 @@ fn background_focus_reconciliation_does_not_steal_foreground_focus() {
 ///
 /// This is the attachment-bar door into the same invariant that
 /// `background_focus_reconciliation_does_not_steal_foreground_focus` guards
-/// through `update_process_input_focus`. That door was open: the bar's
-/// `Updated` subscription emitted `ReturnFocus` whenever it stopped rendering,
-/// and the session view answered by focusing its input unconditionally.
-/// Restoring that emission fails this test.
+/// through `update_process_input_focus`. That door was open: the bar's `Updated`
+/// subscription emitted `ReturnFocus` whenever it stopped rendering, and the session view
+/// answered by focusing its input unconditionally.
+///
+/// **What this pins is the HANDLER guard, not the emission.** An earlier revision of this
+/// comment claimed "restoring that emission fails this test"; a refutation pass showed it
+/// does not, and the emission has since been restored deliberately (it is the only path
+/// that re-renders the parent -- see `attachment_bar/view.rs`). The guard is what closes
+/// the hole: `ReturnFocus` is answered with `reconcile_focus`, which is
+/// `is_focused_session`-guarded, so a background session's emission is a no-op.
+/// Replace that with an unconditional `ctx.focus(&self.input_view)` and this test fails.
 #[test]
 fn empty_background_attachment_update_does_not_steal_foreground_focus() {
     App::test((), |mut app| async move {

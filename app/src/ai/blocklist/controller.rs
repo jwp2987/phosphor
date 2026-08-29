@@ -1841,8 +1841,16 @@ impl BlocklistAIController {
         );
     }
 
-    /// Schedules an auto-resume-after-error for the conversation once the network is online,
-    /// so the resume doesn't fire while offline and immediately fail again.
+    /// Schedules an auto-resume-after-error for the conversation, after the recovery
+    /// backoff and then a wait for connectivity.
+    ///
+    /// **The connectivity wait is snapshotted at schedule time, not after the backoff.**
+    /// `wait_until_online()` captures `pending_reconnect` when it is called, so if the app
+    /// is online now and drops offline during the 0.5-2s backoff, the wait resolves
+    /// immediately and the resume fires offline anyway. This ordering is the pin's
+    /// (`1a29f680d`) and is inherited, but the backoff widened the window from ~0 to the
+    /// full backoff. Do not read this function as guaranteeing an online resume; see the
+    /// `1a29f680d` row in `TODO.md`.
     ///
     /// Adapted from the pin (`app/src/ai/blocklist/controller.rs:2058`, `02b53fcd8`) for #341.
     /// Extracted from two identical inline call sites in this file (BYOP local-resume-on-bad-args

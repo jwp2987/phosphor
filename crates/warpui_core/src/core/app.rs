@@ -457,6 +457,12 @@ impl App {
     pub fn termination_result(self) -> Option<TerminationResult> {
         self.0.borrow_mut().termination_result.take()
     }
+
+    /// How many times the app has been asked to terminate. See the field's comment: this is
+    /// the only observable for a termination that carries no `TerminationResult`.
+    pub fn termination_requests(&self) -> usize {
+        self.0.borrow().termination_requests
+    }
 }
 
 impl ModelAsRef for App {
@@ -705,6 +711,14 @@ pub struct AppContext {
 
     termination_result: OnceLock<TerminationResult>,
 
+    /// How many times `terminate_app` has been called. The platform delegate's
+    /// `terminate_app` is a no-op under test, and `termination_result` is only set when a
+    /// caller passes `Some`, so without this a code path that terminates with `None` is
+    /// completely unobservable -- which left the TUI host-disconnect P0 (`ee351a0e7`) with
+    /// zero regression coverage. Counted rather than stored because `TerminationMode` is
+    /// not `Copy`; the count also pins "exactly once", which is the latch's property.
+    termination_requests: usize,
+
     /// The current zoom (magnification) factor of the application.
     zoom_factor: ZoomFactor,
 
@@ -836,6 +850,7 @@ impl AppContext {
             cursor_updated_for_view: None,
             is_unit_test,
             termination_result: Default::default(),
+            termination_requests: 0,
             zoom_factor: ZoomFactor::default(),
             view_to_window: Default::default(),
             structural_child_to_parent: Default::default(),
@@ -4804,6 +4819,7 @@ impl AppContext {
             #[cfg(not(debug_assertions))]
             let _ = self.termination_result.set(termination_result);
         }
+        self.termination_requests += 1;
         self.platform_delegate.terminate_app(termination_mode);
     }
 

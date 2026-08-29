@@ -163,7 +163,19 @@ fn terminal_disconnect_during_driver_startup_exits_without_error() {
             );
         });
 
-        assert!(app.termination_result().is_none());
+        // `termination_result` alone cannot distinguish "exited quietly" from "never
+        // exited": the test platform delegate's `terminate_app` is a no-op and this branch
+        // deliberately passes `None`. Assert the termination itself, or deleting the
+        // `terminate_app` call leaves this green.
+        assert_eq!(
+            app.termination_requests(),
+            1,
+            "a startup disconnect must still terminate the app"
+        );
+        assert!(
+            app.termination_result().is_none(),
+            "and must do so without a non-zero exit status"
+        );
     });
 }
 

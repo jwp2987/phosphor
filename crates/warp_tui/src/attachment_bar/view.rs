@@ -135,12 +135,27 @@ impl TuiAttachmentBar {
     pub(crate) fn new(model: ModelHandle<TuiAttachmentModel>, ctx: &mut ViewContext<Self>) -> Self {
         ctx.subscribe_to_model(&model, move |_, _, event, ctx| match event {
             TuiAttachmentModelEvent::Updated => {
-                // Deliberately does NOT emit `ReturnFocus` when the bar stops
-                // rendering. It used to, to avoid holding a stale frame, but
-                // `notify()` already invalidates the parent that conditionally
-                // renders this bar -- and the focus half of that fix fired for
-                // *every* session's model, including hidden background ones,
-                // handing keyboard focus to an input the user cannot see.
+                // Emits `ReturnFocus` so the parent re-renders. Upstream `69254d73`
+                // removed this emission and justified it with "`notify()` already
+                // invalidates the parent that conditionally renders this bar" -- **that is
+                // false in this fork**, and a refutation pass caught it: `ViewContext::notify`
+                // inserts only THIS view's id into `window_invalidations.updated`
+                // (`warpui_core/src/core/app.rs`), with no ancestor propagation, and
+                // `TuiPresenter::invalidate` re-renders only the listed views. The
+                // conditional lives in the parent's render
+                // (`terminal_session_view.rs`, `if self.attachment_bar...should_render(ctx)`),
+                // the session view subscribes to this bar's *events* rather than to the
+                // model, and `pending_attachments` is a plain `Vec`, not `Tracked` -- so
+                // this emission is the only thing that reaches `handle_attachment_bar_event`
+                // and its trailing `ctx.notify()`. Without it, `remove_selected` on the
+                // processing branch leaves the bar row painting after its last attachment
+                // is gone.
+                //
+                // The focus theft this removal was meant to fix is already fully closed by
+                // the OTHER half of the same commit: the handler answers `ReturnFocus` with
+                // `reconcile_focus`, which is `is_focused_session`-guarded, so a background
+                // session's emission is a no-op.
+                ctx.emit(TuiAttachmentBarEvent::ReturnFocus);
                 ctx.notify();
             }
             TuiAttachmentModelEvent::AbortInputDetection => {

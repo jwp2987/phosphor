@@ -580,6 +580,11 @@ fn disconnected_driver_cancels_repaints_and_stops_drawing() {
             1,
             "a latched failure should stop the driver from touching the terminal again"
         );
+        assert_eq!(
+            app.termination_requests(),
+            1,
+            "a vanished terminal must actually terminate the app, exactly once"
+        );
         assert!(
             app.termination_result().is_none(),
             "a vanished terminal is not a failure of this program"
