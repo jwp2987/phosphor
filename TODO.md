@@ -350,6 +350,84 @@ Adjudication for the managed-MCP and `ephemeral_installation_id` families is now
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
 
+### USER-FACING DEFECTS FOUND WHILE WRITING THE USAGE MANUAL — 2026-08-29
+
+Writing a manual forces someone to check whether each claim is *true*, which surfaced a
+class of defect the 8235-test suite cannot see: things that compile, pass, and are wrong
+in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
+
+**Coordinator-verified (I read the code myself):**
+
+- [x] **`completions` PowerShell help was uncopyable — FIXED.** `crates/warp_cli/src/lib.rs:398`
+      read `path\to\warp | Out-String | Invoke-Expression`, omitting `completions powershell`
+      entirely, so pasting it could not work. The sibling at `local_control/mod.rs:207` has it
+      right. Now correct, and uses the real binary name.
+- [ ] **`/api-keys` is offered in the GUI palette and silently does nothing.** It is in
+      `supports_tui()` (`static_commands/mod.rs:386`) and absent from `is_tui_only()`
+      (`:344-361`), so `supports_gui()` is true — but `app/src/terminal/input/slash_commands/mod.rs`
+      has **no `ApiKeys` arm**, so it falls to the catch-all at `:1224`: `debug_assert!(false)`
+      in debug, `return false` (silent no-op) in release.
+      **This refines an earlier finding rather than contradicting it.** The port round's S1
+      established the *registration* facts correctly and read them as deliberate; it did not
+      check whether a handler existed. Both readings were right about what each looked at.
+      Fix is a product call: either add it to `is_tui_only()` (GUI users set keys in Settings)
+      or give it a GUI arm that opens that settings page. `/vim-mode` has the identical shape,
+      but there the GUI equivalent is deliberately in Settings.
+- [ ] **Warp/Zap mark on the first-run screen.** `app/src/pane_group/pane/welcome_view.rs:247`
+      and `get_started_view.rs:223` render `bundled/svg/warp-logo-neutral.svg`; About uses
+      `phosphor-logo.svg`. `welcome_tab` is default-on, so this is the first thing a user sees.
+      **Mitigating, and checked rather than assumed:** that asset's internal `id` is `"zap"` and
+      it is plain skewed rectangles — it is the *Zap* mark, not Warp's trademark.
+      **The fix is not a path swap:** `phosphor-logo.svg` carries four linear gradients and must
+      go through `Image`; routed through `Icon` as those two call sites do, it renders as a white
+      silhouette (the reason is already written at `ui_components/icon_with_status.rs:56`).
+- [ ] **`installer.sh` in the repo root is an AnythingLLM AppImage installer.** Tracked,
+      referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
+      API" work for Ollama. Accidental `git add`. Deletion left for the maintainer.
+
+**Agent-reported, not yet coordinator-verified** (recorded so they are not lost; verify
+before acting):
+
+- [ ] **Autoupdate is in a broken half-state.** `SHOW_AUTOUPDATE_UI = false` with a stale
+      rationale claiming there is no Phosphor feed — HEAD polls `jwp2987/phosphor` and the
+      release workflow publishes it. So macOS/Windows get a **working background updater with
+      no UI to disable it** short of editing `settings.toml`. The update-ready red dot is
+      gated only on `AutoupdateUIRevamp` (default-on) while the "Update and relaunch" menu
+      item is *additionally* gated on `show_autoupdate_menu_items()`, false for oss — a badge
+      with nothing behind it, and no banner either. **Linux ships no autoupdate at all**
+      (the feature is never added by `script/linux/bundle`) yet the setting still defaults
+      `true` there.
+- [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
+      the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
+- [ ] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,
+      `TEST_USER_UID = "test_user_uid"` (`app/src/auth/mod.rs:31-32`) with no indication it is
+      not a real identity. (Constants verified; the print path was not traced.)
+- [ ] **`agent list` exists only to fail** — parses fully, including `--repo`, then always
+      errors "Agent skill listing is disabled in Phosphor".
+- [ ] **`--profile <ID>` is unusable.** `agent profile list` prints `Unsynced` for any locally
+      created profile, but the flag requires a 22-character `ServerId`. The command that lists
+      profiles cannot emit an ID the flag accepts.
+- [ ] **`--output-format json` emits NDJSON for `agent run`**, not a JSON document; list
+      commands under it emit no trailing newline.
+- [ ] **Stale help strings** — `--model` says "Use `warp model list`"; `--skill` points at
+      `oz schedule create`, a subcommand this fork removed.
+- [ ] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
+      (`crates/warp_tui/src/terminal_session_view/state.rs:586-592` and `:598-604`, byte-identical).
+      The test only asserts `contains`, so it cannot catch a duplicate.
+
+**Two of my own brief claims were wrong and are worth recording**, because both would have
+put falsehoods in a user manual: `provider` is **not** the BYOP surface (it is a Linear/Slack
+linker gated on a flag with no enable path in any shipped build, so `phosphor-oss provider
+list` exits 2 — the real surface is `AgentProviderSecrets` via GUI settings or the TUI's
+`/api-keys`), and the `WARP_*`/`OZ_*` environment split is **inverted** from what I briefed:
+`WARP_API_KEY`/`WARP_OUTPUT_FORMAT`/`WARP_AGENT_CONFIG_FILE`/`WARP_CLI_MODE` are the literal
+`env =` attributes and the only names that work, while `OZ_*` is run-identity and mailbox only.
+
+**Binary names, settled:** the GUI CLI is **`phosphor-oss`** (with `/usr/bin/phosphor`
+symlinked to it by the deb); the TUI is **`phosphor-tui`**, renamed from the cargo name
+`zap-tui-oss` at packaging. `oz` survives only as clap's internal `name` and nothing installed
+is called that.
+
 ### RE-PIN COMPLETE — oracle moved to `4111d08f9`, 2026-08-29
 
 The port round ported *toward* the new pin without ever moving it. `ORACLE.md` still said

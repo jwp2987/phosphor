@@ -161,8 +161,9 @@ fn is_terminal_disconnect(error: &io::Error) -> bool {
         return true;
     }
 
-    // `ERROR_BROKEN_PIPE`, which Windows reports for a console handle whose
-    // other end has closed.
+    // `ERROR_PIPE_NOT_CONNECTED` (233), which Windows reports for a console handle
+    // whose other end has closed. Note this is NOT `ERROR_BROKEN_PIPE` (109) --
+    // Rust already maps that one to `io::ErrorKind::BrokenPipe`, caught above.
     #[cfg(windows)]
     if error.raw_os_error() == Some(233) {
         return true;

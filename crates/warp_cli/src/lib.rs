@@ -395,7 +395,7 @@ pub enum Command {
     ///     path/to/warp completions fish | source
     ///
     /// For Powershell, add the following to $PROFILE:
-    ///     path\to\warp | Out-String | Invoke-Expression
+    ///     path\to\phosphor-oss completions powershell | Out-String | Invoke-Expression
     ///
     /// If no shell is provided, this defaults to the shell that Zap was run from.
     #[command(verbatim_doc_comment)]
