@@ -31,6 +31,59 @@ Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
 commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
 partition it exactly: every commit assigned once, none orphaned.
 
+### TEST ADJUDICATION — Phase 2.6, in progress (1 of 5 shards reported)
+
+235 tests across 42 files, sharded 5 ways. **Every verdict is read from the test
+BODY at `4111d08f9`**, not from its name — the characterisation pass that preceded
+this read no bodies and said so.
+
+**Shard B (cost / local models) — 27 of 27 adjudicated.** 26 ledger-ready rows
+(6 DECLINED, 8 CLOUD, 3 COVERED-ELSEWHERE, 1 DIVERGENT, 1 MIXED, plus siblings) and
+1 test with **no applicable verdict**.
+
+- **Real portable debt found:** `reveals_shortcut_hints_requires_overlap_with_binding_modifiers`
+  (`app/src/workspace/view/vertical_tabs_tests.rs`). Pure local UI logic, zero cloud
+  surface; `reveals_shortcut_hints` / `TabShortcutModifierState` are absent fork-wide.
+  **It is already tracked** as `8b88df98` in the port queue above — filing it DECLINED
+  would have retired a commit the ledger is still following.
+- **Two slivers inside otherwise-retired rows**, flagged so they are not lost:
+  `Artifact::Screenshot` has no round-trip test though the variant exists here (~12
+  lines against existing code; artifacts are persisted locally, so a serde change
+  silently corrupts stored screenshots); and the orchestration **token** rollup shape
+  is expressible here — the fork has real provider token counts
+  (`total_token_usage_by_model`) and a priced model (`usage_cost.rs`) — but the pin
+  sources tokens *exclusively* from warp-server `RequestCharges`, so porting means
+  building a feature on a different pipe. **Reopen as a feature request, not as pin
+  parity.**
+
+#### FIFTH COORDINATOR ERROR — on the call flagged as the shard's highest-stakes
+
+The brief told the adjudicator that `DECLINED.md`'s "credits round to 1dp" row pins
+only the rounding and "does not decline the cost dimension", and that provider-reported
+cost "is arguably exactly what a BYOP fork wants."
+
+**Half right, and wrong where it counts.** A *different* row governs:
+**`DECLINED.md:215` "Provider-cost baselines on restored conversations" (DECIDED
+2026-08-17)**, which names `usage_totals()` and the `restored_*_provider_cost_baseline`
+family, records that **seven ledger rows already rest on it**, and closes: *"Do not port
+them, and do not re-derive a BYOP equivalent."* Coordinator-verified.
+
+And the premise was wrong about the data: `ChargedUsageTotals`
+(`4111d08f9:crates/persistence/src/model.rs:1622`) is documented as a client-side mirror
+of **warp-server's Go `SumChargedUsage`**, carrying `platform_cost_in_cents` (Warp's
+platform fee) and `web_search_cost_in_cents` (Warp's hosted search). It is billing, not
+provider cost. The fork already built the honest version of that goal —
+`app/src/ai/usage_cost.rs` with a user-stated `TokenPrice` — and hard-sets
+`cost_in_cents: 0.0` at `chat_stream.rs:7255` because "a BYOP provider reports tokens,
+never money."
+
+**That is five wrong coordinator briefs this round, every one caught.** The pattern
+holds: each was confident, specific, and cited a real artifact — this one cited the
+wrong DECLINED row while the governing one sat 40 lines away.
+
+*(Minor: the adjudicator cited `chat_stream.rs:7239` for the zero-cost line; it is at
+`:7255`. Line drift, not a substantive error.)*
+
 ### BUILD VERIFICATION — 2026-08-29, coordinator, the ONLY compilation this round saw
 
 Merge commit `83b6f8fab` on `repin-2026-08-29-4111d08f9`, all five ports merged.
