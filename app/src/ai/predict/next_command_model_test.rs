@@ -1,7 +1,7 @@
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, SessionInfo,
+    command_executor::testing::TestCommandExecutor, BootstrapSessionType, SessionInfo,
 };
 use typed_path::TypedPathBuf;
 use warp_completer::signatures::CommandRegistry;
@@ -203,11 +203,81 @@ fn test_find_autosuggestion_from_history_with_no_pwd_and_no_working_directory() 
 }
 
 fn test_session_context(cwd: TypedPathBuf, app: &App) -> SessionContext {
+    session_context_of_type(BootstrapSessionType::Local, cwd, app)
+}
+
+fn session_context_of_type(
+    session_type: BootstrapSessionType,
+    cwd: TypedPathBuf,
+    app: &App,
+) -> SessionContext {
     let session = Session::new(
-        SessionInfo::new_for_test(),
+        SessionInfo::new_for_test().with_session_type(session_type),
         Arc::new(TestCommandExecutor::default()),
     );
     app.read(|ctx| SessionContext::new(session, CommandRegistry::default().into(), cwd, ctx))
+}
+
+/// A `Folder` arg naming a path that does not exist on THIS machine, resolved against a
+/// working directory that does not exist here either -- i.e. exactly what a warpified
+/// remote session produces: the cwd is the remote host's.
+fn nonexistent_relative_folder_arg() -> Spanned<ParsedExpression> {
+    ParsedExpression::new(
+        Expression::ValidatableArgument(vec![ArgType::Folder]),
+        ParsedToken::new("Documents".to_string()),
+    )
+    .spanned((3, 12))
+}
+
+/// The remote cwd. Deliberately a macOS-shaped path that does not exist on the machine
+/// running the test, so a local `is_dir` on `<cwd>/Documents` is guaranteed to be false.
+const REMOTE_CWD: &str = "/Users/definitely-not-a-real-user-621/src";
+
+#[test]
+fn test_relative_path_arg_is_invalid_on_a_local_session_when_it_does_not_exist() {
+    App::test((), |app| async move {
+        let _flag = FeatureFlag::ValidateAutosuggestions.override_enabled(true);
+        let ctx = session_context_of_type(
+            BootstrapSessionType::Local,
+            TypedPathBuf::from(REMOTE_CWD),
+            &app,
+        );
+
+        // A local session's filesystem IS the one being stat'd, so a path that isn't there
+        // really is evidence of a bad suggestion. This half must keep working.
+        let is_valid = is_arg_valid(
+            "cd Documents",
+            &nonexistent_relative_folder_arg(),
+            &ctx,
+            None,
+        )
+        .await;
+        assert!(!is_valid);
+    });
+}
+
+#[test]
+fn test_relative_path_arg_is_valid_on_a_warpified_remote_session() {
+    App::test((), |app| async move {
+        let _flag = FeatureFlag::ValidateAutosuggestions.override_enabled(true);
+        let ctx = session_context_of_type(
+            BootstrapSessionType::WarpifiedRemote,
+            TypedPathBuf::from(REMOTE_CWD),
+            &app,
+        );
+
+        // Same arg, same cwd, same (local) filesystem -- only the session type differs.
+        // Before #621 this stat'd the client's disk, found nothing, and dropped the
+        // suggestion, which is why no relative-path autosuggestion ever appeared over SSH.
+        let is_valid = is_arg_valid(
+            "cd Documents",
+            &nonexistent_relative_folder_arg(),
+            &ctx,
+            None,
+        )
+        .await;
+        assert!(is_valid);
+    });
 }
 
 #[test]

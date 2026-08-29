@@ -735,9 +735,30 @@ async fn is_arg_valid(
             // If the argument has one or more generators, validate these last because they're more expensive
             // and we can check all generators together using completions suggestions.
             let mut has_generator_arg_type = false;
+            // `ArgType::File`/`ArgType::Folder` below decide "does this path exist?" with
+            // `Path::is_file`/`Path::is_dir`, which stat the LOCAL filesystem. That is only the
+            // right question when the session's filesystem IS the local one. On a warpified
+            // remote the arg names a path on the remote host, so a local stat answers a
+            // different question: an absolute path that happens to exist on both hosts validates
+            // by luck, while anything resolved against the remote cwd fails outright -- which
+            // silently dropped every relative-path autosuggestion over SSH (#621).
+            //
+            // Fail open there instead of validating against the wrong machine. That matches how
+            // every other uncertainty in this function is already handled -- a parse error, an
+            // unclassified command, and a generator timeout all return `true` -- and a stale
+            // suggestion beats suppressing every suggestion.
+            //
+            // Generators are deliberately NOT covered by this: `completer::suggestions` already
+            // branches on session type and runs the generator on the remote, so it stays exact.
+            let can_validate_paths_locally = ctx.session.is_local();
+            let mut skipped_remote_path_validation = false;
             for arg_type in arg_types_to_validate {
                 match arg_type {
                     ArgType::File => {
+                        if !can_validate_paths_locally {
+                            skipped_remote_path_validation = true;
+                            continue;
+                        }
                         let mut path_arg = PathBuf::from(arg.value().as_str());
                         if path_arg.is_relative() {
                             if let Ok(working_dir) = PathBuf::try_from(ctx.current_working_directory.clone()) {
@@ -749,6 +770,10 @@ async fn is_arg_valid(
                         }
                     }
                     ArgType::Folder => {
+                        if !can_validate_paths_locally {
+                            skipped_remote_path_validation = true;
+                            continue;
+                        }
                         let mut path_arg = PathBuf::from(arg.value().as_str());
                         if path_arg.is_relative() {
                             if let Ok(working_dir) = PathBuf::try_from(ctx.current_working_directory.clone()) {
@@ -804,6 +829,11 @@ async fn is_arg_valid(
                         return true;
                     }
                 }
+            }
+            // A path arg we could not check because the session's filesystem is remote is not
+            // evidence of an invalid arg -- see the note above the loop.
+            if skipped_remote_path_validation {
+                return true;
             }
             // If we didn't pass validation for any of the possible arg types, this arg is invalid.
             log::debug!("arg `{}` in command `{}` failed validation", arg.value().as_str(), full_command);
