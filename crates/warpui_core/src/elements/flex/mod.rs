@@ -2,6 +2,7 @@ mod wrap;
 
 pub use wrap::*;
 
+use crate::report_error::{report_error, ReportErrorLogMode};
 use crate::{
     event::DispatchedEvent,
     text::{word_boundaries::WordBoundariesPolicy, IsRect, SelectionDirection, SelectionType},
@@ -210,7 +211,18 @@ impl Element for Flex {
 See https://www.notion.so/warpdev/Debugging-Flex-acc03383be5644a8af29d9c52b1142bd?pvs=4#fff43263616d8008b3e3efe280686886 for troubleshooting steps"
             );
             if constraint.max_along(self.axis).is_infinite() {
-                log::error!("A flex that should expand to a max space can't be rendered in an infinite max constraint\n{location_info}");
+                // A step beyond upstream `8936686f2`, which throttled only the
+                // flexible-children site below. This is the `MainAxisSize::Max` sibling
+                // in the same `layout()`, with the same infinite-constraint trigger and
+                // the same once-per-layout-pass flood; throttling one and not the other
+                // would leave a mislaid `MainAxisSize::Max` flex spamming exactly as
+                // before, so the reported defect would only be half fixed.
+                report_error!(
+                    anyhow::anyhow!(
+                        "A flex that should expand to a max space can't be rendered in an infinite max constraint\n{location_info}"
+                    ),
+                    ReportErrorLogMode::OncePerRun
+                );
             }
         }
 
@@ -274,7 +286,18 @@ See https://www.notion.so/warpdev/Debugging-Flex-acc03383be5644a8af29d9c52b1142b
 See https://www.notion.so/warpdev/Debugging-Flex-acc03383be5644a8af29d9c52b1142bd?pvs=4#057b1e4ba7b844f7ad2e69433b295363 for troubleshooting steps"
             );
             if constraint.max_along(self.axis).is_infinite() {
-                log::error!("flex contains flexible children but has an infinite constraint along the flex axis{location_info}");
+                // Layout runs every frame, so a single mislaid flex container emitted
+                // this line at error level on every repaint for as long as it stayed on
+                // screen. In debug the `debug_assert!` above has already fired; in
+                // release this is the only signal, and one copy of it is enough to act
+                // on. Throttled rather than gated on `debug_assertions` so release
+                // builds keep the diagnostic.
+                report_error!(
+                    anyhow::anyhow!(
+                        "flex contains flexible children but has an infinite constraint along the flex axis{location_info}"
+                    ),
+                    ReportErrorLogMode::OncePerRun
+                );
             }
 
             let mut remaining_space = (constraint.max_along(self.axis) - fixed_space).max(0.);

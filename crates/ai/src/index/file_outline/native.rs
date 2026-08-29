@@ -16,6 +16,7 @@ use crate::index::file_outline::{FileOutline, Outline, Symbol};
 use crate::index::THREADPOOL;
 use crate::index::{Entry, FileId, FileMetadata};
 use repo_metadata::entry::IgnoredPathStrategy;
+use warp_core::errors::{ReportErrorLogMode, report_error};
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
@@ -85,8 +86,17 @@ pub async fn build_outline(
                 .collect::<HashMap<_, _>>()
         });
 
-        if let Err(e) = sender.send(result) {
-            log::error!("Could not send result of outline generation to background thread. {e:?}")
+        // `oneshot::Sender::send` hands the *value* back on failure, so binding the
+        // `Err` here bound the whole `HashMap<FileId, Outline>` -- every symbol name
+        // and doc comment parsed out of the repository -- and `{e:?}` wrote all of it
+        // to the log. Test with `is_err()` so the payload is never named, and report a
+        // static message. Throttled because a dropped receiver recurs once per outline
+        // build, and the message carries no per-instance information worth repeating.
+        if sender.send(result).is_err() {
+            report_error!(
+                anyhow!("Could not send result of outline generation to background thread"),
+                ReportErrorLogMode::OncePerRun
+            );
         }
     });
 
