@@ -1,4 +1,7 @@
-use settings_page::{FilteredPageType, MatchData, PageType, SettingsWidget, search_terms_match};
+use settings_page::{
+    Category, FilteredPageType, MatchData, PageType, SettingsWidget,
+    categories_with_visible_content, search_terms_match,
+};
 use warpui::elements::Empty;
 use warpui::{App, AppContext, Element, Entity, View};
 
@@ -1459,4 +1462,97 @@ fn query_preserving_navigation_reapplies_the_subpage_filter() {
          (handle_search_editor_event auto-select, cycle_pages, \
          SelectAndRefresh); found {preserving_sites:?}"
     );
+}
+
+// ── Empty category headers before any search pass (upstream 3a7a4a5b3) ──────
+// `PageType::new_categorized` seeds every category with every widget index, so
+// a page that has never been searched reports its categories as non-empty
+// whatever `should_render` says. `update_filter` is the only place
+// `should_render` is consulted. The two tests below pin both ends of that
+// asymmetry: the untouched page and the empty-query page must agree on what is
+// visible.
+
+/// A widget that never renders, whatever the query. Mirrors the real gates on
+/// this fork's settings widgets (feature flags, `local_fs`, provider state),
+/// which are decided by `AppContext` rather than by the search string.
+struct NeverRendersWidget {
+    terms: &'static str,
+}
+
+impl SettingsWidget for NeverRendersWidget {
+    type View = TestSettingsView;
+
+    fn search_terms(&self) -> &str {
+        self.terms
+    }
+
+    fn should_render(&self, _: &AppContext) -> bool {
+        false
+    }
+
+    fn render(&self, _: &Self::View, _: &Appearance, _: &AppContext) -> Box<dyn Element> {
+        Empty::new().finish()
+    }
+}
+
+/// Ported from the pin's
+/// `category_whose_sole_widget_cannot_render_has_no_visible_content_before_any_filter_pass`
+/// (upstream 4111d08f9, introduced by `3a7a4a5b3`). Adapted only in the
+/// category title, which is a `&'static str` here as upstream, but named for a
+/// gate this fork actually has rather than upstream's cloud-handoff one.
+#[test]
+fn category_whose_sole_widget_cannot_render_has_no_visible_content_before_any_filter_pass() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let children: Vec<Box<dyn SettingsWidget<View = TestSettingsView>>> =
+                vec![Box::new(NeverRendersWidget {
+                    terms: "codebase indexing",
+                })];
+            let page =
+                PageType::new_categorized(vec![Category::new("Codebase Indexing", children)], None);
+
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected Categorized page");
+            };
+            assert_eq!(
+                categories.len(),
+                1,
+                "the untouched filter includes every widget index, so the category is still present here"
+            );
+            assert!(
+                categories_with_visible_content(categories, ctx).is_empty(),
+                "the category's sole widget can't render right now, so it has nothing visible to show"
+            );
+        });
+    });
+}
+
+/// Ported from the pin's
+/// `category_whose_sole_widget_cannot_render_has_no_visible_content_after_an_empty_query`
+/// (upstream 4111d08f9, introduced by `3a7a4a5b3`). This half already held in
+/// this fork before the fix -- `update_filter` consults `should_render` even
+/// for an empty query -- and is kept so a future short-circuit of the empty
+/// query (an obvious "optimization", and exactly what would resurrect the
+/// header) is caught rather than silently restoring the asymmetry.
+#[test]
+fn category_whose_sole_widget_cannot_render_has_no_visible_content_after_an_empty_query() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            let children: Vec<Box<dyn SettingsWidget<View = TestSettingsView>>> =
+                vec![Box::new(NeverRendersWidget {
+                    terms: "codebase indexing",
+                })];
+            let mut page =
+                PageType::new_categorized(vec![Category::new("Codebase Indexing", children)], None);
+            page.update_filter("", ctx);
+
+            let FilteredPageType::Categorized { categories, .. } = page.get_filtered() else {
+                panic!("expected Categorized page");
+            };
+            assert!(
+                categories.is_empty(),
+                "an empty-query filter pass already drops a category with no should_render widgets"
+            );
+        });
+    });
 }

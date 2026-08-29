@@ -1102,6 +1102,46 @@ mod tests {
         }
     }
 
+    /// Ported from the pin's `commands_tests.rs::command_registry_contains_commands_for_both_surfaces`
+    /// (upstream 4111d08f9) -- **the `ADD_MCP` half only**.
+    ///
+    /// Two adaptations, both forced by fork divergence:
+    /// - The pin's other half asserts `UPGRADE` is `SlashCommandSurfaces::TuiOnly`. There is no
+    ///   `/upgrade` command in this fork at all (zero occurrences repo-wide); upgrade flows are
+    ///   declined with account-first onboarding and paid tiers (`DECLINED.md` #11). Asserting it
+    ///   here is not possible, and the pin's point -- that one registry serves both surfaces --
+    ///   is carried entirely by the `ADD_MCP` half plus the TUI-only test above.
+    /// - The pin carries surfaces as a `supported_surfaces` field and matches
+    ///   `SlashCommandSurfaces::GuiOnly { .. }`; this fork derives surfaces from the command
+    ///   name (`StaticCommand::supports_gui`/`supports_tui`), so "GuiOnly" is spelled as the
+    ///   conjunction below -- the same shape `index_command_is_registered_with_the_pin_gate`
+    ///   already uses.
+    ///
+    /// This fails if `/add-mcp` is dropped from `all_commands`, if it is added to
+    /// `supports_tui`'s or `is_tui_only`'s match arms (either would make the GUI menu and the
+    /// TUI disagree about a command whose only handler opens a GUI pane), or if its
+    /// name-to-`SlashCommandKind` mapping is broken.
+    #[test]
+    fn add_mcp_command_is_registered_and_gui_only() {
+        use crate::search::slash_command_menu::static_commands::SlashCommandKind;
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(ADD_MCP.name)
+            .expect("expected /add-mcp to be registered");
+        assert_eq!(command.kind(), SlashCommandKind::AddMcp);
+        assert!(
+            command.supports_gui(),
+            "/add-mcp opens the MCP-server GUI pane, so it must be executable in the GUI"
+        );
+        assert!(
+            !command.supports_tui(),
+            "/add-mcp has no TUI implementation; offering it there would dead-end"
+        );
+        assert!(command.argument.is_none());
+        assert!(!command.auto_enter_ai_mode);
+        assert_eq!(command.availability, Availability::AI_ENABLED);
+    }
+
     /// Ported from the pinned oracle's `commands_tests.rs::auto_approve_command_is_local_agent_action_without_arguments`.
     /// The oracle also asserts `NOT_CLOUD_AGENT`/`CLOUD_AGENT` bits the fork's `Availability`
     /// does not carry (the fork has no cloud-agent mode at all, so every command is implicitly
