@@ -346,6 +346,131 @@ Adjudication for the managed-MCP and `ephemeral_installation_id` families is now
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
 
+### TEST PORT ROUND COMPLETE — all 9 shards, 2026-08-29
+
+**35 tests ported, 15 fork defects fixed, 8225 tests green, 0 failures.**
+
+| shard | ported | covered | not-portable | blocked |
+|---|---|---|---|---|
+| S1 settings-cli (12) | 3 | 1 | 8 | — |
+| S2 rightclick-ctrlc (8) | **8** (+17 bonus) | — | — | — |
+| S3 passive (7) | **7** | — | — | — |
+| S4 tui-disconnect-focus (12) | **12** | — | — | — |
+| S5 sdk-environment (20) | 2 | 1 | 17 | — |
+| S6 sdk-driver-retry (20) | 2 | — | 12 | 6 |
+| S7 blocklist (28) | 6 | 2 | 19 | 1 |
+| S8 misc (17) | 2 | 3 | 11 | 1 |
+| S9 cloud-confirm (29) | 0 | — | 29 | — |
+| **total (153)** | **42** | **7** | **96** | **8** |
+
+**Final verification — the coordinator compiles; no agent ever did.**
+`cargo check` and `cargo build -p warp --lib --tests --features gui` → **RC=0, 6m10s**,
+**3 warnings, all pre-existing** (unused imports in files this round never touched).
+
+| package | before | after |
+|---|---|---|
+| `warp` | 6218 | **6266** |
+| `warp_tui` | 947 | **953** |
+| `warpui_core` | 608 | **615** |
+| `warp_completer` | 183 | 183 |
+| `warp_terminal` | 125 | 125 |
+| `warp_util` | 83 | 83 |
+| **total** | 8164 | **8225** (0 failed) |
+
+**All 10 fork-boundary guards green.** New tests confirmed to *execute*, not merely to
+exist — 23 in `warp`, 6 in `warpui_core`, 6 in `warp_tui` run under name filters and all
+passed. This round found dead and vacuous tests repeatedly, so presence is checked
+separately from passing.
+
+#### S4 — the highest-value shard, 12/12, every one a PORTED+FIX
+
+**Six fork defects, four of them unbriefed.** The P0 (`ee351a0e7`) is real but **not by the
+mechanism I briefed**: I said `draw_and_schedule_repaint` "reschedules the timer anyway"; it
+does not — `screen.draw(ctx)?` returns *before* the timer slot is written, leaving the slot
+holding the previous task. The actual leak was the **invalidation callback**, which logged
+`OncePerRun` and returned, so every later `notify()` attempted another frame against a dead
+terminal forever and nothing called `terminate_app`. Fixed with a `failed` latch,
+`fail_tui_driver`, and a typed `TuiDriverEvent` channel so reader failures reach the
+foreground half instead of being logged on the reader thread.
+Also found without prompting: **`EINTR` permanently killed TUI input** (the reader loop's
+`Err` arm had no `Interrupted` retry, so a signal ended input for the session), **a startup
+disconnect exited non-zero**, **the attachment bar let a background session steal foreground
+focus** (passive `Updated` on *any* session emitted `ReturnFocus`, answered by an unguarded
+`ctx.focus`), **clicking the visible prompt moved the caret without reclaiming focus**, and
+**a hidden view could hold framework focus indefinitely**.
+The near-miss call in my brief was **confirmed**: the fork's existing guard covers
+`update_process_input_focus` but not the attachment-bar door. It also declined an
+out-of-scope 20-site rename, adding `reconcile_focus` and using it only where this commit
+touches.
+
+#### S7 — recovery was closed, not merely unbounded
+
+The defect is **worse than briefed**. A post-action failure scheduled a resume with
+`can_attempt_resume_on_error: false` hard-coded, so the effective post-action budget was
+**exactly one attempt** — fired with **no backoff at all**, landing straight back in the
+failure window a dropped provider connection is most likely to reproduce.
+Ported `RecoveryBudget`/`MAX_RECOVERY_ATTEMPTS`/`FailReason`/`PendingResume`; all 5 external
+`resume_conversation` callers passed `true`, so the bool was dropped rather than threaded.
+**The second-backoff trap I flagged was real and was avoided** — the fork's existing inline
+`500ms << (n-1)` was *hoisted*, not replaced by upstream's jittered
+`server::retry_strategies` version (dropped cloud transport, and a BYOP fork has no shared
+server to jitter for).
+**A second defect found while porting:** `original_error` capture was keyed off the shared
+budget, so a resumed request — which inherits a charged budget — could never record its
+first error. Re-keyed to the per-stream counter.
+**My `controller.rs:3961` citation was wrong twice over:** that comment governs the BYOP
+bad-arguments resend, not recovery; and it was independently false, since
+`can_attempt_resume_on_error` governed the *next* request's recovery and never that path's
+re-entry, so it never bounded the bad-args loop at all.
+**My brief covered only 22 of its 28 tests** — `usage/rollup_tests.rs` (6) went unmentioned.
+The agent caught it by reading the shard file rather than my prose. `TODO.md:373` records a
+*previous* coordinator brief making the same mistake on the same file.
+
+#### S2 — 8/8, plus 17 bonus tests for code it had to write
+
+Right-click-paste did not exist here at all: the setting is new at this pin (`c25ac4070`).
+**My "probably more than one place" guess undercounted** — upstream honours the gate in
+**7** places, not 4 (block list, alt screen, classic input, CLI-agent input, *both*
+prompt-render paths, waterfall background). All 7 ported.
+**Three fork defects:** `write_user_bytes_to_pty` returned `()` while silently dropping the
+write when the active block is agent-controlled, so callers could not distinguish a
+forwarded write from a dropped one (now `bool`, 28 call sites checked);
+**right-click over an app that owns the mouse opened Warp's menu instead of forwarding the
+raw click** (upstream's unadvertised fix inside `c25ac4070`, already flagged at
+`TODO.md:1262`); and `EventHandler::on_right_mouse_down` could not see modifiers (now takes
+`&ModifiersState`, 18 call sites).
+**My shared-session worry was refuted:** despite the names, both ctrl-C tests use a plain
+local terminal and no `SharedSession*` type appears in either body — in scope, PORTED, not
+NOT-PORTABLE. It also correctly declined `0a0fd3ae1`, which `TODO.md` lists as a
+prerequisite: it only supplies a `paste_menu_item` helper for the context-menu restructure,
+which these tests do not exercise.
+
+#### Coordinator errors this round: 31 refuted claims across 9 shards
+
+Every one caught by an agent, none by me. The dominant cause is now diagnosed and is a
+**process defect, not bad luck**: the shard lists were generated from an adjudication pass
+that **pre-dates the maintainer's 2026-08-29 decline block**, so agents were briefed to port
+work declined the day before. Two were corrected mid-flight; one of those corrections turned
+into a port, because S8 found `ORCHESTRATION` was never in that decline at all.
+I also had to correct **my own ledger entry** (`build_cache` is documented at
+`SCOPE-REST.md:214,328`; checking three files is not checking the docs) and **my own
+mid-flight correction** (#595 removed the Oz platform plugin methods, not the notification
+plugins).
+**`BRIEF-COMMON.md` named the wrong rustfmt edition** — `.rustfmt.toml` pins 2024, and
+`rustfmt --edition 2021` cannot parse this tree's let-chains. Three separate agents caught
+it independently.
+
+**Two ledger rows found to state the opposite of the code** (cf. #148, now six such):
+`TODO.md:1365` claimed the `#` hint text no longer exists and told the porter to drop the
+hunk — the constant was *renamed*, and the string is live at `warp.ftl:422`, so the fork was
+advertising a shortcut with no way to disable it. `TODO.md:1253` says 7 `is_passive`
+call sites; there are 8 literal plus one open-coded.
+
+**Naming collision to clean up later:** S6 and S7 independently created functions both named
+`backoff_after_attempts`, in different modules with different semantics — `util`'s is private
+and jittered, `response_stream`'s is `pub(crate)` and a plain `500ms << n`. No compile
+conflict; confusable.
+
 #### Results — S3 (6 of 9 in). 7 of 7 ported, both production commits with them.
 
 The only shard so far to land everything it was given, and it did it by **fixing the fork
