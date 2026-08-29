@@ -5320,6 +5320,12 @@ impl Input {
                 self.check_and_update_ai_context_menu_disabled_state(ctx);
                 ctx.notify();
             }
+            InputSettingsChangedEvent::EnableAiCommandSearchHashTrigger { .. } => {
+                // Refresh the zero-state hint so the "Type '#' ..." advertisement appears
+                // and disappears with the setting.
+                self.set_zero_state_hint_text(ctx);
+                ctx.notify();
+            }
             InputSettingsChangedEvent::CompletionsMenuWidth { .. } => {
                 let new_value = *input_settings.as_ref(ctx).completions_menu_width.value();
                 if let Ok(mut guard) = self.completions_menu_resizable_width.lock() {
@@ -5719,10 +5725,17 @@ impl Input {
                 self.editor.update(ctx, |editor, ctx| {
                     editor.set_placeholder_text(&hint_text, ctx);
                 });
-            } else {
+            } else if *InputSettings::as_ref(ctx).enable_ai_command_search_hash_trigger {
                 self.editor.update(ctx, |editor, ctx| {
                     editor
                         .set_placeholder_text(translate_input_key(AI_COMMAND_SEARCH_HINT_KEY), ctx);
+                });
+            } else {
+                // Don't advertise the '#' shorthand when the user has disabled it;
+                // AI Command Search remains reachable via its keybinding.
+                self.editor.update(ctx, |editor, ctx| {
+                    editor.clear_placeholder_text(ctx);
+                    ctx.notify();
                 });
             }
         } else {
@@ -8980,6 +8993,7 @@ impl Input {
                 }
 
                 if AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
+                    && *InputSettings::as_ref(ctx).enable_ai_command_search_hash_trigger
                     && self.editor_starts_with_command_search_trigger(ctx)
                     && *edit_origin == EditOrigin::UserTyped
                     && !self.ai_input_model.as_ref(ctx).is_ai_input_enabled()

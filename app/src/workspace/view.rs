@@ -21111,6 +21111,12 @@ impl Workspace {
             context.set.insert(flags::SLASH_COMMANDS_IN_TERMINAL_FLAG);
         }
 
+        if *input_settings.enable_ai_command_search_hash_trigger.value() {
+            context
+                .set
+                .insert(flags::AI_COMMAND_SEARCH_HASH_TRIGGER_FLAG);
+        }
+
         if ChannelState::enable_debug_features() {
             let block_visibility_settings = BlockVisibilitySettings::as_ref(app);
             if *block_visibility_settings

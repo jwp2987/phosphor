@@ -130,6 +130,18 @@ define_settings_group!(InputSettings,
             toml_path: "terminal.input.enable_slash_commands_in_terminal",
             description: "Whether slash commands are available in the terminal input.",
         },
+        // Ported from the pin's `EnableAiCommandSearchHashTrigger` (upstream 4111d08f9,
+        // introduced by 94daf47f3). Adapted: `surface:` is omitted because this fork
+        // deliberately dropped `SettingSurfaces` (see DECLINED.md).
+        enable_ai_command_search_hash_trigger: EnableAiCommandSearchHashTrigger {
+            type: bool,
+            default: true,
+            supported_platforms: SupportedPlatforms::ALL,
+            sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+            private: false,
+            toml_path: "terminal.input.enable_ai_command_search_hash_trigger",
+            description: "Whether typing '#' at the start of terminal input opens AI Command Search.",
+        },
         outline_codebase_symbols_for_at_context_menu: OutlineCodebaseSymbolsForAtContextMenu {
             type: bool,
             default: true,
