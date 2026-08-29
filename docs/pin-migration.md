@@ -65,7 +65,25 @@ pinned, and the test count at the new pin.
 > makes deliberately: a weekly step you can measure beats a daily drift you
 > cannot. Do not report the growth as a regression.
 
-## Phase 2 — generate the work queue
+## Phase 2 — generate the work queue. NOT OPTIONAL.
+
+**A round that has not run this is not a round.** In the `42effe840 -> 4111d08f9`
+round the coordinator did the Phase 2.5 commit walk, skipped Phase 2 entirely, and
+nothing noticed: the code walk produced 171 classified commits, a port queue, and a
+tally, all of which *looked* like a completed scoping pass. Running the queue
+afterwards showed the scope had been measured at roughly one fifth of its real size.
+
+The two inputs answer different questions and neither substitutes for the other:
+
+| | sees | blind to |
+|---|---|---|
+| Phase 2 queue | test debt, stale ledger verdicts, DECLINED collisions | bug fixes with no test file |
+| Phase 2.5 walk | code changes, bug fixes, partial ports | tests added to files it never lists |
+
+**Record in the round's ledger that both were run, with their counts.** A round
+report that names one and not the other is incomplete, not concise.
+
+
 
 ```bash
 script/generate_repin_queue <new-pin>          # <old-pin> defaults to ORACLE.md's
@@ -93,6 +111,25 @@ cloud-dropped. Of 1,843 ledger rows, ~1,025–1,066 carried forward untouched an
 ~62 files' worth (~813–818 tests) flagged RE-EXAMINE. **A pin move is mostly
 carry-forward.** If your queue says otherwise, suspect the queue before
 suspecting the ledger.
+
+### Three generator defects found 2026-08-29 — fix before trusting its output
+
+- **Renames are reported as removals, then double-counted.** All three
+  `REMOVED AT NEW PIN` entries that round were moves
+  (`user_workspaces_tests.rs` -> `user_workspaces/user_workspaces_tests.rs`;
+  `app/src/bin/generate_settings_schema_tests.rs` -> `app/src/settings/schema_generation_tests.rs`;
+  `app/src/util/path_tests.rs` -> `crates/warp_util/src/path_tests.rs`). The last two
+  were then re-reported at their destinations, so the same tests were simultaneously
+  proposed for retirement and counted as new.
+- **`sym:` markers match substrings.** `sym:SettingsMode` fired on
+  `OpenWarpNewSettingsModes` in **3 of 11** DECLINED collisions — 27% false positives,
+  every one on a line upstream had deleted. Anchor to identifier boundaries.
+- **`keep:` markers on FORK-ORIGINAL symbols can never fire.** They are matched against
+  the upstream diff, in which those symbols do not exist. That silently exempts the
+  entire "we are ahead of the pin" class — the class most dangerous to revert — from
+  collision detection. Verified inert for `denylist_match_candidates` and
+  `unquoted_command_parts`. Give every such row a second marker keyed on the *pin-side*
+  symbol or path it diverges from.
 
 ### The three invalidation rules
 
@@ -250,6 +287,60 @@ row naming a test that is not in the absent set silently cancels a genuinely
 unadjudicated one. At `42effe840`: 273 rows name a test the fork now has and 4
 name a test that no longer exists at the pin, which is why STATE.md said 435
 where the set difference is 715 names / 716 pairs.
+
+## Phase 2.6 — adjudicate the test debt, and refute the adjudication
+
+**Every round must adjudicate `LEDGER COVERAGE GAP`, not merely count it.** These are
+FIRST adjudications — there is no recorded verdict to re-read — so leaving them
+uncounted is how the same tests get rediscovered, and re-characterised from scratch,
+at every subsequent pin. The `42effe840` round found 228 in that bucket and a
+tree-wide unadjudicated total of **1,100 tests across 143 files**.
+
+### Adjudicate from the BODY, never from the name
+
+`CLAUDE.md` already says a shared test *name* is not a shared *assertion*. Phase 2.6
+is where that stops being a caveat and becomes a rule: **read the test's body at the
+new pin** (`git show <new-pin>:<pin_file>`) before assigning any verdict.
+
+In the `42effe840` round the first characterisation pass judged 228 tests by name plus
+fork-side symbol presence, said so honestly, and was still wrong in both directions —
+it declared 136 "not portable" without reading one body, and separately reported three
+tests as gaps that were **already ported under deliberately different names**, each
+carrying a `/// Ported from the pin's <name>` doc comment. Name-level matching both
+under-reports and cries wolf.
+
+### The ledger has no verdict for "portable debt not yet ported"
+
+The verdicts in use are `CLOUD`, `DECLINED`, `PORTED`, `COVERED-ELSEWHERE`,
+`DIVERGENT`, `DEFECT-FIXED`, `MIXED`. None of them means "this is real work we should
+do and have not done." That is the same structural hole Phase 2.5's bucket table had
+before `NOT-PORTED` was added, and it has the same consequence: an adjudicator with no
+correct box either invents one or files real work under `DECLINED`, which silently
+retires it.
+
+**Do not force the fit.** Until a verdict exists for it, an adjudicator must list such
+tests separately and the coordinator must carry them into `TODO.md` as work. Adding a
+`NOT-PORTED` verdict to the ledger is the obvious fix and should be done.
+
+### Refute the test verdicts, not just the code
+
+A wrong `CLOUD`/`DECLINED` on a test is worse than a wrong one on a commit: nobody
+looks again, and unlike a bad port it leaves no trace. Every round must run a
+refutation pass over the not-portable calls with the same adversarial framing Phase 6.5
+uses for code — default to assuming the call is wrong.
+
+The specific ways these calls fail, all observed:
+
+- **The fixture is cloud, the assertion is not.** A test whose *setup* mentions a
+  dropped type but whose *assertion* is about local logic is portable with an adapted
+  fixture. The most common error.
+- **The module is renamed, not absent.** `_tests.rs` -> `_test.rs` is fork-wide;
+  whole layers have moved (`warpui_core/src/elements/gui/*` -> `elements/*`,
+  `app/src/server/retry_strategies.rs` -> `app/src/util/retry_strategies.rs`).
+- **A DECLINED row over-applied.** A decline covers a surface, not every test that
+  touches a declined type. Some rows carry explicit caveats naming exceptions.
+- **"It's cloud" with no named subsystem.** If the verdict cannot name the exact
+  dropped crate or module, it is unsupported.
 
 ## Phase 3 — fast-forward what is free
 
@@ -451,6 +542,24 @@ Mechanical; script it, do not eyeball hundreds of commits:
    moved, or it diverged on purpose. **Check `DECLINED.md` and `git log` for a
    deliberate decision before "fixing" anything.**
 
+### Filter step 4 before you hand-investigate anything
+
+Measured on `42effe840 -> 4111d08f9`: step 4's unfiltered "some present = PARTIAL"
+rule flagged **67 commits and every single one was a false positive** — precision 0/67.
+Three systematic classes account for all of them:
+
+1. **Commits that move code within a file** — the moved lines grep as added and are
+   already present.
+2. **Commits adding a second instance of existing boilerplate** — the new impl matches
+   the existing one line for line.
+3. **Generic identifiers** — `render`, `Event`, `Action`, `should_render`, `Cache`,
+   `insert`, `floor_char_boundary`.
+
+Two cheap filters cut 67 -> 45 -> ~8: restrict to identifiers **introduced by the
+commit and absent from its own pre-image**, then additionally require absence from the
+fork's pre-existing vocabulary. Apply both before investigating by hand. Unfiltered,
+this step invites an agent to work through 67 dead ends and quietly stop early.
+
 Prioritise security fixes, then correctness/panic/race/leak fixes. The
 highest-value thirty done properly beats six hundred done badly — and say in the
 round report where you stopped, because an unfinished sweep that reads as
@@ -592,6 +701,31 @@ Each of these has actually cost time here.
   upstream commit and is usually written against the *behaviour*, not the
   mechanism — so it passes whether or not the mechanism landed. Phase 6.5 exists
   because of this; `01778efe` is the worked example.
+
+## Operational rules learned 2026-08-29
+
+- **Validate every sha with `git cat-file -t` before briefing anyone.** Five shas in
+  that round's shard reports did not resolve, from two different shards, and two of them
+  sat in actionable entries. An agent handed an unresolvable sha most plausibly reports
+  "nothing to port" rather than failing loudly — silently dropping the work.
+- **Count rows, never trust a totals line.** Two of ten shards reported wrong tallies,
+  and a sum check catches neither: in both cases the errors cancelled within the shard,
+  so the totals still matched the commit count. The only reliable reconciliation is
+  enumerating the bucket labels.
+- **Refute the coordinator's briefs too, not only the agents' output.** In that round
+  four coordinator instructions were wrong — each confident, specific, and citing a real
+  `file:line`. One would have caused a hard build failure (it prescribed a dependency
+  that closes a Cargo cycle); another would have shipped two-layer shell quoting with
+  zero test coverage. Every one was caught by an agent that checked instead of complying.
+- **When a claim rests on an item being reachable, read the two lines above the
+  citation.** The round's sharpest finding was a test module justified as reachable by
+  citing `lib.rs:48` without reading `lib.rs:47`, which is
+  `#[cfg(target_family = "wasm")]`. The coordinator made the same class of error three
+  times. This is cheap to check and expensive to miss.
+- **Split the build from the test run.** `script/precheck` was killed three times at the
+  `warp` test-binary compile under a background-task duration limit — not memory. That
+  compile takes ~6 minutes; run `cargo build -p <pkg> --lib --tests` first, then
+  `cargo nextest run` against the cached binary.
 
 ## What this does not cover
 
