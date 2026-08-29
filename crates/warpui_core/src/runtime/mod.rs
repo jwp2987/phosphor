@@ -44,6 +44,7 @@ use crate::r#async::{Timer, block_on};
 use crate::elements::tui::{TuiEvent, TuiEventContext, TuiPoint, TuiRect, TuiSize};
 use crate::event::ModifiersState;
 use crate::presenter::tui::TuiPresenter;
+use crate::report_error::{report_error, ReportErrorLogMode};
 use crate::{App, AppContext, TuiView, ViewHandle, WindowId};
 
 mod event_conversion;
@@ -664,9 +665,13 @@ pub fn spawn_tui_driver<T: TuiView>(
                 &freeze_repaints_when_unfocused,
                 ctx,
             ) {
-                log::error!(
-                    "{:#}",
-                    anyhow::Error::new(error).context("failed to draw a TUI frame")
+                // Throttled: this is the per-frame repaint callback, so a persistent
+                // draw failure (a closed stdout, a terminal that stopped accepting
+                // writes) re-fires on every invalidation and floods the log with an
+                // identical line. The first one is the one that carries information.
+                report_error!(
+                    anyhow::Error::new(error).context("failed to draw a TUI frame"),
+                    ReportErrorLogMode::OncePerRun
                 );
             }
         });
@@ -892,7 +897,13 @@ fn draw_and_schedule_repaint<T: TuiView, R: TuiTerminal + 'static>(
                         &freeze_repaints_when_unfocused,
                         ctx,
                     ) {
-                        log::error!("failed to draw a TUI frame: {error}");
+                        // Same per-frame flood as the invalidation callback above, and
+                        // the same throttle. Also switched to the `anyhow` context form
+                        // so both sites emit an identical message for the same failure.
+                        report_error!(
+                            anyhow::Error::new(error).context("failed to draw a TUI frame"),
+                            ReportErrorLogMode::OncePerRun
+                        );
                     }
                 });
             })

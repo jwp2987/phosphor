@@ -70,6 +70,29 @@ pub enum SoftKeyboardInput {
     KeyDown(String),
 }
 
+impl SoftKeyboardInput {
+    /// A payload-free description of this input, for logging.
+    ///
+    /// The derived `Debug` on this type prints the user's typed text verbatim --
+    /// `TextInserted` carries exactly what was entered, passwords included -- so it
+    /// must never reach a log line or an error report. This renders the variant name
+    /// plus the length of any string payload, which is enough to follow the input
+    /// path without recording what was typed.
+    ///
+    /// `KeyDown`'s key name is redacted too, even though the only producer today
+    /// (`hidden_input.rs`) filters it to exactly `"Enter"`. That filter is a property
+    /// of one caller, not of this public type; a future producer forwarding character
+    /// keys would silently turn the key name back into typed content.
+    pub fn log_shape(&self) -> String {
+        match self {
+            Self::TextInserted(text) => format!("TextInserted({} chars)", text.chars().count()),
+            Self::Backspace => "Backspace".to_owned(),
+            Self::KeyboardDismissed => "KeyboardDismissed".to_owned(),
+            Self::KeyDown(key) => format!("KeyDown({} chars)", key.chars().count()),
+        }
+    }
+}
+
 /// Manages the soft keyboard for mobile WASM.
 ///
 /// This struct coordinates:

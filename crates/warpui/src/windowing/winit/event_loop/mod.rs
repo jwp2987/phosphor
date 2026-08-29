@@ -2002,9 +2002,25 @@ impl EventLoop {
         // will be dispatched to the active window as TypedCharacters/IME events.
         let proxy = self.proxy.clone();
         let on_input = Box::new(move |input: SoftKeyboardInput| {
-            log::debug!("Soft keyboard callback received input: {:?}", input);
-            if let Err(e) = proxy.send_event(CustomEvent::SoftKeyboardInput(input)) {
-                log::error!("Failed to send SoftKeyboardInput event: {:?}", e);
+            // Never `{:?}` the input here: `SoftKeyboardInput::TextInserted` holds the
+            // user's typed text verbatim, and this line runs on the *success* path, so
+            // `{:?}` published every keystroke on a mobile WASM session at debug level.
+            // `log_shape()` keeps the variant and the payload length, which is what the
+            // diagnostic was actually for.
+            log::debug!(
+                "Soft keyboard callback received input: {}",
+                input.log_shape()
+            );
+            if proxy
+                .send_event(CustomEvent::SoftKeyboardInput(input))
+                .is_err()
+            {
+                // `EventLoopClosed<T>`'s `Debug` is derived over the undelivered event,
+                // so `{:?}` on it re-published the same typed text at error level. Its
+                // `Display` is the static "Tried to wake up a closed `EventLoop`" -- the
+                // failure carries no information beyond that, so state it directly and
+                // never name the payload at all.
+                log::error!("Failed to send SoftKeyboardInput event: the event loop is closed");
             }
         });
 
