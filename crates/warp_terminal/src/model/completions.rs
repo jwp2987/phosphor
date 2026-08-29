@@ -37,7 +37,7 @@ impl ShellCompletion {
         }
     }
 
-    pub(super) fn update(&mut self, completion_update: ShellCompletionUpdate) {
+    pub fn update(&mut self, completion_update: ShellCompletionUpdate) {
         match completion_update {
             ShellCompletionUpdate::Description { value } => {
                 if !value.is_empty() {

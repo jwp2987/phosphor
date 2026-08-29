@@ -23,7 +23,7 @@ use crate::{
 };
 
 #[cfg(windows)]
-use crate::util::windows::{powershell_5_path, powershell_7_path, wsl_path};
+use warp_util::path::windows::{powershell_5_path, powershell_7_path, wsl_path};
 
 pub const ZSH_SHELL_PATH: &str = "/bin/zsh";
 pub const BASH_SHELL_PATH: &str = "/bin/bash";

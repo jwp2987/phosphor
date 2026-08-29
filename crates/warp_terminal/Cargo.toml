@@ -7,17 +7,21 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+base64.workspace = true
 bitflags.workspace = true
 bitflags-serde-legacy.workspace = true
 cfg-if.workspace = true
 channel_versions.workspace = true
 command-corrections.workspace = true
 enum-iterator.workspace = true
+flate2 = "1.0.17"
 get-size.workspace = true
 itertools.workspace = true
 lazy_static.workspace = true
 log.workspace = true
 pathfinder_color.workspace = true
+pathfinder_geometry.workspace = true
+rand.workspace = true
 regex.workspace = true
 serde.workspace = true
 smol_str.workspace = true
@@ -38,4 +42,5 @@ warpui.workspace = true
 unicode-segmentation = "1.11.0"
 
 [features]
+local_fs = ["warp_core/local_fs"]
 test-util = []

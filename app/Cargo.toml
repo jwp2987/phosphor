@@ -84,7 +84,6 @@ enclose = "1.1.8"
 enum-iterator.workspace = true
 event-listener = "5.4.0"
 field_mask.workspace = true
-flate2 = "1.0.17"
 float-cmp.workspace = true
 futures-lite.workspace = true
 futures-util.workspace = true
@@ -746,6 +745,7 @@ local_fs = [
     "persistence/local_fs",
     "repo_metadata/local_fs",
     "warp_core/local_fs",
+    "warp_terminal/local_fs",
 ]
 markdown_tables = []
 markdown_mermaid = []

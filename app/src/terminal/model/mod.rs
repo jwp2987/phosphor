@@ -19,7 +19,6 @@ pub mod block;
 pub mod blockgrid;
 pub mod blocks;
 pub mod bootstrap;
-pub mod completions;
 pub mod header_grid;
 pub mod rich_content;
 pub mod tmux;
@@ -31,8 +30,6 @@ pub mod image_map;
 pub mod index;
 // Ported from Warp: the block-lifecycle transition coordinator. See `lifecycle/mod.rs`.
 pub(in crate::terminal) mod lifecycle;
-pub mod iterm_image;
-pub mod kitty;
 pub mod secrets;
 pub mod selection;
 pub mod session;
@@ -44,4 +41,6 @@ pub use secrets::{
     set_user_and_enterprise_secret_regexes, ObfuscateSecrets, RespectObfuscatedSecrets, Secret,
     SecretHandle,
 };
-pub use warp_terminal::model::{char_or_str, escape_sequences, grid::cell, mouse, BlockId};
+pub use warp_terminal::model::{
+    char_or_str, completions, escape_sequences, grid::cell, iterm_image, kitty, mouse, BlockId,
+};
