@@ -5,6 +5,9 @@ pub mod char_or_str;
 pub mod escape_sequences;
 pub mod grid;
 mod indexing;
+pub mod index {
+    pub use super::indexing::*;
+}
 mod mode;
 pub mod mouse;
 
