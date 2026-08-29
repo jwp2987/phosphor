@@ -1790,6 +1790,25 @@ impl Block {
         self.was_long_running = was_long_running;
     }
 
+    /// Whether the command grid should paint a cursor — both the overlay cursor
+    /// (`BlockGrid::draw_cursor`) and the in-grid cursor-cell contrast styling.
+    ///
+    /// `TermMode::SHOW_CURSOR` alone is not enough: `finish()` never clears it, so a
+    /// finished block would keep painting a cursor forever. Gating on
+    /// `is_active_and_long_running()` is what makes the two painting paths agree.
+    pub fn is_command_cursor_visible(&self) -> bool {
+        self.is_active_and_long_running()
+            && self.is_command_grid_active()
+            && self.is_mode_set(TermMode::SHOW_CURSOR)
+    }
+
+    /// Whether the output grid should paint a cursor. See
+    /// [`Block::is_command_cursor_visible`]; the output grid has no grid-active gate
+    /// because it is the active grid in every state except `BeforeExecution`.
+    pub fn is_output_cursor_visible(&self) -> bool {
+        self.is_active_and_long_running() && self.is_mode_set(TermMode::SHOW_CURSOR)
+    }
+
     pub fn command_with_secrets_obfuscated(&self, include_escape_sequences: bool) -> String {
         self.header_grid
             .command_with_secrets_obfuscated(include_escape_sequences)

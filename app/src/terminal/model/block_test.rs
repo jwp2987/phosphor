@@ -1841,3 +1841,75 @@ pub fn test_image_completion_drops_in_warp_input_stage() {
     );
     assert_eq!(block.output_grid().len(), 0);
 }
+
+// Ported from the oracle `ee95ac0fd` ("Fix double cursor in finished background
+// blocks", CORE-3798). Upstream shipped the fix without a test because the two
+// painting paths meet in the renderer, which has no automated coverage; the model-level
+// predicates the fix introduces are testable here, and they are what the two paths now
+// share.
+
+/// A finished background block must paint no cursor at all.
+///
+/// `Block::finish()` leaves a background block in `BlockState::Background` and never
+/// clears `TermMode::SHOW_CURSOR`. The old gate for the in-grid cursor-cell contrast
+/// styling was `is_mode_set(SHOW_CURSOR)` alone, so it kept handing a cursor shape to
+/// the output-grid renderer forever, while the overlay cursor (`draw_cursor`) had
+/// already correctly stopped — and the user saw two cursors.
+#[test]
+pub fn test_finished_background_block_paints_no_cursor() {
+    let mut block = TestBlockBuilder::new().build();
+
+    block.start_background(None);
+    assert_eq!(block.state(), BlockState::Background);
+
+    for c in "background output".chars() {
+        block.input(c);
+    }
+
+    // While the background block is still running, the output grid paints a cursor. The
+    // command grid does not: a background block is never `BeforeExecution`.
+    assert!(block.is_output_cursor_visible());
+    assert!(!block.is_command_cursor_visible());
+
+    block.finish(0);
+
+    // `finish()` keeps the block in `Background` and leaves `SHOW_CURSOR` set, so
+    // `SHOW_CURSOR` on its own must not be what decides whether a cursor is painted.
+    assert_eq!(block.state(), BlockState::Background);
+    assert!(block.is_mode_set(TermMode::SHOW_CURSOR));
+    assert!(!block.is_output_cursor_visible());
+    assert!(!block.is_command_cursor_visible());
+}
+
+/// The command-grid cursor keeps its own `is_command_grid_active()` gate, so the cursor
+/// moves from the command grid to the output grid at `preexec` and neither paints once
+/// the block is done.
+#[test]
+pub fn test_command_and_output_cursor_visibility_follow_block_state() {
+    let mut block = TestBlockBuilder::new().build();
+    block.start();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.input('x');
+    assert_eq!(block.state(), BlockState::BeforeExecution);
+
+    // Pin the long-running latch rather than sleeping past
+    // `LONG_RUNNING_COMMAND_DURATION_MS`, so the assertions below are not timing
+    // dependent.
+    block.set_was_long_running(AtomicBool::new(true));
+
+    assert!(block.is_command_cursor_visible());
+    // The output helper deliberately has no grid-active gate — it mirrors the overlay
+    // cursor's pre-existing condition exactly.
+    assert!(block.is_output_cursor_visible());
+
+    block.preexec(Default::default());
+    assert_eq!(block.state(), BlockState::Executing);
+    assert!(!block.is_command_cursor_visible());
+    assert!(block.is_output_cursor_visible());
+
+    block.finish(0);
+    assert_eq!(block.state(), BlockState::DoneWithExecution);
+    assert!(block.is_mode_set(TermMode::SHOW_CURSOR));
+    assert!(!block.is_command_cursor_visible());
+    assert!(!block.is_output_cursor_visible());
+}
