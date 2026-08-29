@@ -5,6 +5,437 @@ Added 2026-08-10 after a status report listed four in-flight items as unstarted:
 the assignment lived in the operator's head and not in this file. **Record the
 assignment here when you start work, not when you finish it.**
 
+## RE-PIN SCOPING ROUND 2026-08-29 — `42effe840` -> `4111d08f9` (CANDIDATE pin)
+
+**This is scope, not work done. Nothing here was compiled.** A 10-agent fleet
+classified all 171 commits in the range by reading diffs and grepping the fork;
+no `cargo` of any kind was run, so every verdict below is a reading, not a
+verified result. Treat each as a hypothesis strong enough to plan against and
+weak enough to re-check before you act on it.
+
+**Pin identity** (both verified `git cat-file -t` = `commit`):
+
+| | commit | date |
+|---|---|---|
+| old (current oracle) | `42effe840` | 2026-08-11 17:51 -0700 |
+| new (candidate) | `4111d08f9` | 2026-08-26 04:48 +0000 |
+
+`4111d08f9` is the **dated** cut for the `2026.08.26` stable, not a tag — tag
+publication stopped after 2026-06-09, so this is Phase 1's documented
+approximation. Confirm it against the real release build's version string
+before recording it in `ORACLE.md`. The intervening `2026.08.19` stable sits
+inside the range at commit 73, so nothing is skipped by pinning straight to
+`08.26`.
+
+Range is a clean linear ancestry (`merge-base --is-ancestor` = yes), 0 merge
+commits, 0 empty commits, `--first-parent` count == full count == 171. Shards
+partition it exactly: every commit assigned once, none orphaned.
+
+### Tally — counted from shard tables, NOT from their totals lines
+
+| bucket | count |
+|---|---|
+| CLOUD | 64 |
+| N/A | 29 |
+| **NOT-PORTED** | **48** |
+| SCOPE-DECISION | 20 |
+| ALREADY-PRESENT | 6 |
+| PARTIAL | 4 |
+| PORTED | 0 |
+
+**93 of 171 (54%) are out of scope.** Port queue = 48 NOT-PORTED + 4 PARTIAL = **52**.
+
+**Do not trust an agent's own totals line.** Two of ten were wrong, and the
+error is invisible to a sum check because in both cases the mistakes cancelled
+within the shard: shard I reported `SCOPE-DECISION 10 / N/A 21` where its rows
+say `8 / 23` (both sum to 36); shard G reported `NOT-PORTED 8 / CLOUD 6` where
+its rows say `7 / 7` (both sum to 18). The counts above were obtained by
+enumerating bucket labels row by row. Any future round should do the same and
+should not re-derive these from the reports' summaries.
+
+### PORT QUEUE — PARTIAL first (4). Highest value; invisible to every gate.
+
+Phase 6.5's whole point: a partially-ported commit passes review, passes CI, and
+passes its own upstream test, because the test came across too and cannot detect
+what was dropped.
+
+- [ ] **`146684ee` — IME marked text is dark on Linux, the fork's own platform.**
+      The Windows half landed independently (with its own rationale comment); the
+      Linux half never did. Every path is closed on Linux: `RELEASE_FLAGS`
+      (`crates/warp_features/src/lib.rs:907`) is `cfg(any(macos, windows))`, so is
+      `app/src/bin/phosphor_oss.rs:51`, `ime_marked_text` is not in `default`, and
+      `DOGFOOD_FLAGS` is inert here. Upstream added it to `default` in this range.
+      **Two shards disagreed on this; adjudicated by hand 2026-08-29 — the fact is
+      confirmed, the remedy is not.** The fork's own comment asserts winit supports
+      marked text "on macOS and Windows", so deleting the two cfgs needs runtime
+      verification that winit delivers preedit on X11/Wayland at this fork's rev.
+      Do NOT ship a cfg deletion on upstream's say-so.
+- [ ] **`1a29f680d` — shared recovery budget across MAA retries and resumes.**
+      Backoff already landed here independently by a *different* mechanism
+      (`response_stream.rs:544`), so a naive port installs a second backoff on top.
+      The `RecoveryBudget` unification did not land. `controller.rs:3961` carries a
+      comment claiming `can_attempt_resume_on_error=false` "prevents an infinite
+      loop" — that is the conflation upstream identifies; it does not bound
+      recovery, it closes it. Provider-agnostic, not Warp-specific.
+- [ ] **`e1bcf5d07` — AI-page split. One hunk MUST NOT be ported.**
+      Two halves already present independently, and the fork's version is stronger
+      (`persistence_key()`/`from_stable_key()` vs upstream's `slug()`). **Do not**
+      port the `app/src/local_control/handlers/app_state.rs` switch to `from_slug`:
+      the fork's `from_str` there is deliberate and documented, backing the
+      `surface.settings.open` scripting contract, and must stay locale-independent.
+- [ ] **`0a7d5380e` — wasm/web guards. Port 2 of 6 hunk groups.**
+      Portable: the wasm early-return in `insert_notifications_discovery_banner`
+      and the `ConversationView` arm of the `WasmNUXDialog::should_display` guard.
+      Not applicable: `maybe_add_buy_credits_banner`,
+      `check_and_trigger_free_ai_removal_modal`,
+      `open_prompt_suggestions_unavailable_modal` — none exists here (credits/billing
+      declined) — plus the five `&model` threading hunks that exist only to feed them.
+
+### PORT QUEUE — NOT-PORTED (48)
+
+Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
+
+**Shell integration / completion (7)**
+
+- [ ] `e722ebed` **P0 — four independent bugs, one is a PANIC.**
+      `crates/warp_completer/src/meta.rs:97` slices `&source[start..end]` with no
+      char-boundary clamp -> panics on a multi-byte command line (the fork already
+      has a `floor_char_boundary` helper in two places, so the fix is a call).
+      Plus: `fish.sh:181,185` generator jobs are **never** killed in either
+      direction (empty command substitution makes `test` always false, AND
+      `kill -9 $pids` where the loop binds `$pid`); `bash_body.sh:768` /
+      `fish.sh:73` use `echo|od` instead of `printf '%s'`, corrupting DCS JSON
+      (note `zsh_body.sh:577` already does this correctly — the fork is
+      inconsistent across its own three shells, not divergent); PowerShell
+      kill-buffer chord written in the same read as command text.
+- [ ] `fbbfc41f3` **P0 — grep tool `ParseIntError` discards ALL matches.**
+      `parse_grep_output` (`grep.rs:650`) splits on `:` and parses field 2 as a line
+      number, so a Windows drive path over the remote-server extension or a Go
+      vendor path (`vendor/example.com/foo:v1/x.go`) makes it `return Err` on the
+      FIRST bad line and drop every other match. All three backends route through
+      it. **Three fork tests pin the exact emitted command strings and will need
+      updating — that is a real behaviour change to the command, NOT a §5.6 test
+      weakening, and the PR must say so.** Keep upstream's `--null` long option:
+      on BSD/macOS grep `-Z` silently means `--decompress`.
+- [ ] `294033bb` **P0 (pairs with `748b635c`)** — zsh `^P` bound to bare
+      `kill-buffer` on `main` only; a user rc switching to vi mode makes the
+      buffer-clear a no-op, leaking bootstrap residue into the next command.
+- [ ] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
+      **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
+      `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
+      Do not "fix" this by relocating the existing call.
+- [ ] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
+      the lowercased first token, retaining every **miss** forever with no length
+      cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
+- [ ] `79a9cb72` — completer resolves an option's argument by value position; needs
+      a `name_span` field on `NamedArgument`.
+- [ ] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
+      refactor + truncation/malformed-output guard: cross-platform, applies to every
+      legacy-SSH listing, 8 new unit tests. (b) WSL guest enumeration: Windows-only.
+      Land (a) alone if you want the low-risk half. The `-L` already present here
+      came from `1b65a8b9`, not this commit — not a partial land.
+
+**Terminal / rendering (6)**
+
+- [ ] `ee95ac0fd` **P0 — double cursor in finished background blocks.** Fork
+      computes one `cursor_visible` from `SHOW_CURSOR` alone
+      (`block_list_element.rs:2586`) and feeds both grids, while gating `draw_cursor`
+      differently. ~30 lines, 2 files; every helper already exists. Clean lift.
+- [ ] `8ba01aa1a` **P0 — `grid_renderer` OOB logs EVERY FRAME** in the ligature path
+      (`:1137`), ungated and unthrottled; the non-ligature path (`:627`) is
+      debug-only. Fork already has the macro surface (`ReportErrorLogMode::OncePerRun`);
+      only adaptation is `warp_errors::` -> `warp_core::errors::`.
+- [ ] `63a17a50a` — denormalize `is_passive` onto `AIBlock`; 7 call sites still
+      re-derive from history.
+- [ ] `f42c4ab6c` — `Lazy` field deferral (22 files, ~987 insertions). Adds
+      `crates/warp_util/src/lazy.rs`. **Depends on `ee95ac0fd` landing first.**
+      One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork.
+- [ ] `0a0fd3ae1` **(ordered pair, land before `c25ac4070`)** — Paste entry in the
+      block-list context menu; introduces the `paste_menu_item` helper the other needs.
+- [ ] `c25ac4070` — right-click behavior setting. **Costs 21 call sites across 14
+      files** (`on_right_mouse_down` gains `&ModifiersState`), two of which upstream
+      does not touch. Carries an unadvertised fix: right-click over an app that owns
+      the mouse forwards a raw event instead of opening Warp's menu.
+
+**Editor / UI framework (5)**
+
+- [ ] `ee351a0e7` **P0 — TUI never terminates on host-terminal disconnect.** Reader
+      thread logs (`runtime/mod.rs:842`) and breaks; nothing calls `terminate_app`.
+      Also adds an `ErrorKind::Interrupted` retry — today an `EINTR` kills the reader
+      loop permanently. `thiserror` and `libc` are already deps. **Port this instead
+      of `b1731dde0`, which it rewrites.**
+- [ ] `d89e78385` **(land before `1c925e330`)** — `Arc` the layout delta; upstream
+      measured multi-GB transient allocation when two editors share one `Buffer`.
+- [ ] `1c925e330` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
+      `truncate_text_for_layout` silently drops text before shaping, and upstream's
+      safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
+      fork's frame-offset clamping and `BlockMarker` 1-indexing first. The chunking
+      half is coordinate-free and can be ported alone.
+- [ ] `12e455c56` — macOS Core Text style-run coalescing (~36 lines + 3 tests).
+      Upstream attributes an ~11.98 GB spike to it. **Upstream never built or ran
+      this** (no macOS CI) — needs a real macOS build here, not a rubber stamp.
+- [ ] `dc1077845` — monomorphization bloat in `warpui_core` spawn/update. Compile-time
+      only. Preserve the `pending_flushes` reorder if ported.
+
+**Search / workspace / system (10)**
+
+- [ ] `36dd2cc2` **P0 — unbounded search channel.** `async_channel::unbounded()`
+      (`app/src/search/searcher.rs:1249`) with all three consumers doing
+      clear-then-rebuild per event. ~300 lines + ~500 test lines; relocate from
+      `crates/warp_search_core/`. **Upstream's revision 1 design was wrong** — a naive
+      side-slot coalescer reorders an insert issued between two rebuilds; ship the
+      sequence-number + per-commit-chunking design.
+- [ ] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
+      DIFFERENT keystroke.** Fork's `CustomAction::ToggleProjectExplorer` is
+      `ctrl-2`/`ctrl-shift-2` (`util/bindings.rs:419`) where upstream is `ctrl-1`/`alt-1`.
+      The 11-line deletion is keystroke-independent. **Upstream never built or tested
+      this revision, and its "editable beats fixed" claim was code-inspection only** —
+      re-derive against `warpui_core/src/keymap/matcher.rs` before landing.
+- [ ] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
+      Fork is behind even upstream's pre-fix state: `native.rs:741` hard-requires
+      `mcp_execution_path`, whose only writer is the GUI bootstrap.
+- [ ] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
+      **Port requires EXTENDING a fork test, not weakening it**: add
+      `scroll_fraction: None` to the exhaustive literal at `notebooks/file/mod_tests.rs:530`.
+      Fork uses `BufferLocation` where upstream uses `LocalOrRemotePath`.
+- [ ] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
+- [ ] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact
+      insertion point but parses the diff first.
+- [ ] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
+      `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
+      `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
+      compile-only no-op here.
+- [ ] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
+- [ ] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
+      it edits is introduced by `8b88df98`.
+- [ ] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.
+
+**Agent / AI (8)**
+
+- [ ] `dff0d13fe` **P0 — skills are invisible to Claude Code and Codex.** The fork
+      ships both harnesses and supports `WARP_SKILL_DIRS`, but carries the pre-fix
+      gate at `driver.rs:1083` ("Skill loading is Oz-only"). Upstream publishes them
+      as symlinks into `.claude/skills` and `.agents/skills`. All deps present.
+- [ ] `9921300b7` **P0 — Ctrl-C on a third-party harness reports nothing.**
+      `CLIAgentSessionStatus` has no `Cancelled` variant. ~1000 lines incl. tests;
+      fully local (PTY byte observation), the harness is never signaled.
+- [ ] `bc0f17ce` — structured per-block diff-match failures for agent retry.
+      **Preserve** the `RemoteFileOperationsUnsupported` arm's deliberate-divergence
+      comment; the commit does not touch it. Its message over-describes the diff.
+- [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
+- [ ] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
+      is already a workspace dep; `app/Cargo.toml` needs both added.
+- [ ] `216d0efe7` — **port the tooltip half only.** `dismiss_ai_tooltips` currently
+      fires an unconditional `ctx.notify()` on every focus change. The recording-span
+      cache is dead on arrival (session recording declined, #350) and
+      `output.rs:2964` documents why. The `search_codebase.rs` sub-hunk has no target.
+- [ ] `d68a638ef` — **5 of 26 sites apply**; the rest already differ because the fork
+      never took upstream's earlier `log::error!`->`report_error!` migration.
+      `hex_color.rs` (`HexColorError` -> `thiserror::Error`) is the cleanest and is
+      entirely local.
+- [ ] `9d3f3e1ec` — clone-reduction micro-refactor. **Not mechanical**: relies on
+      `Revision` being `Copy`, and it is not here (`cloud_object/server_types.rs:177`).
+      No behavioural delta. Lowest value in this group.
+
+**Repo metadata / settings / misc (12)**
+
+- [ ] `6e192572` **(land before `c6609ef2`)** — outer `Arc` on `FileTreeState.gitignores`,
+      deep-cloned per event today.
+- [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
+      **Strictly ordered after `6e192572`**; taken out of order the type changes fight
+      each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
+- [ ] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
+      Higher value here than upstream: the fork's gate is
+      `!is_byo_api_key_enabled()`, so the single-widget branch is the DEFAULT path in
+      a BYOP fork, not an edge case. Reshape onto `ai_page.rs` and **keep the fork's
+      gate** — a byte-faithful port reintroduces `UsageBasedPricing`. The Code
+      Indexing half does not apply (fork's `code_page.rs` builds 11 discrete widgets).
+- [ ] `3a7a4a5b3` — suppress empty category headers. Cheap hardening; the fork already
+      filters empty index lists, so **do not sell this as a live bug** — no
+      configuration was found where it is user-visible today.
+- [ ] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
+      `starts_with` change; the fork also lacks 4 icon variants from out-of-range commits.
+- [ ] `996babee` — two doc-comment URLs. Zero risk.
+- [ ] `69254d73` — TUI focus-ownership hardening (13 files).
+- [ ] `94daf47f3` — **two adaptations required, one hunk must be DROPPED.** Re-home the
+      settings half from `warp_agent_page.rs` to `ai_page.rs`. The
+      `set_zero_state_hint_text` hunk has **no fork counterpart** — the fork rewrote
+      that function and deleted `AI_COMMAND_SEARCH_HINT_TEXT`; upstream's change is
+      "don't advertise `#` when disabled" and the fork advertises nothing. Drop it.
+- [ ] `fa2d43ce2` — widens `assert_eventually!` 20->100 ticks on two tests that exist
+      here verbatim. **Not a §5.6 weakening** (condition byte-identical, only the wait
+      grows) but it is upstream compensating for UPSTREAM's CI. **Do not port
+      speculatively** — only if these go flaky here.
+- [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
+      fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
+      unmeasured build-speed win. Lowest value in the queue.
+- [ ] `5fb3144db` — vim keybindings in the rule content editor
+      (`ai/facts/view/rule_editor.rs:112`, `supports_vim_mode: false`). One line.
+- [ ] `7795e6728` — vim-mode sweep across 6 multi-line editors; all 6 sites are at the
+      pre-fix state here. Six lines.
+
+### Port tasks NOT counted in the 48 (2)
+
+These are real work but do not belong to the NOT-PORTED bucket, so they are listed
+separately rather than inflating the queue count.
+
+- [ ] `d019ddfe9` **(portable half of a DECLINED commit)** — `report_error!` ->
+      `log::warn!` at `ambient_agents/task.rs:260`. The commit as a whole is declined
+      below; this half is unconditionally correct, because the fork's `AgentSource` enum
+      is MORE trimmed than upstream's pre-fix one (8 variants vs 13) and so hits the
+      unknown-source branch strictly more often. Defensive only — no live wire producer
+      of `AmbientAgentTask` JSON exists in the fork today.
+- [ ] `98b1f5af8` **(bucketed N/A; optional)** — U+21E7 font fallback. `fallback_font_fn`
+      is registered only under `cfg(target_family = "wasm")` and the fork ships no web
+      build, so this is cheap consistency, **not** a user-visible fix.
+
+### Scope decisions — ACCEPTED 2026-08-29 (maintainer)
+
+- [ ] **`21f413b7` — adopt the terminal crate boundary** (147 files,
+      `app/src/terminal/**` -> `crates/warp_terminal/**`, `app/src/util/path.rs` ->
+      `crates/warp_util/src/path.rs`). Pure code motion; the decision is about every
+      FUTURE re-pin, not this commit. `fb594d2c` (sentry dep) is inert until this lands.
+      **`8cbb01d45` poses the identical question for `app/src/workspaces/user_workspaces.rs`
+      -> a directory split; four commits in this range already touch the new paths.**
+      Until both are settled, Phase 6.5's "drop files absent from this fork" step will
+      silently discard real work.
+- [ ] **`c5e4a02e3` — both halves.** (a) Delete the unreachable project onboarding step
+      (-2587 lines; will need `script/check_large_deletions`). Reachability
+      independently verified here: `OnboardingStep::Project` is only constructed in the
+      `!ZapNewSettingsModes` branch (`crates/onboarding/src/model.rs:660`) and that
+      feature IS in the fork's `default`. (b) Retire `ZapNewSettingsModes` — 10 fork
+      files branch on it. **Verify first:** two fork tests
+      (`code_page_tests.rs:237,261`) pin the legacy branch with `override_enabled(false)`;
+      they assert action dispatch, not the widget list, so flipping them to `true`
+      preserves what they assert — confirm that before deleting anything.
+- [ ] **`c9e5622943` — the settings-nav/search integration harness half only.** The
+      Code-page IA split is declined below with the rest of that program. The harness is
+      independently valuable: the fork has 5 helpers in
+      `integration_testing/settings/step.rs` against 20 at the pin, and no
+      `crates/integration/src/test/settings_navigation.rs` at all. Its position-id scheme
+      is keyed on `SettingsSection` variants rather than display labels, which suits this
+      fork better than upstream since the fork's `Display` is localized.
+- [ ] **`18179177a` + its prerequisite `c25ac4070`** — right-click behavior setting and
+      its follow-up copy. `c25ac4070` is in the port queue above with its 21-call-site cost.
+- [ ] **`def3fd0e3` — bump `warp_multi_agent_api`.** Real target is the pin's
+      `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` (this commit is an intermediate).
+      Compile-surface change; **sequence it BEFORE any port using new API types**, and
+      sweep the queue for proto-dependent commits when ordering.
+- [ ] **`60d602df6` — MAA teardown race guard. BLOCKED, not schedulable yet.** Its host
+      function `conversation_ready_for_pending_events` does not exist here, and
+      `OrchestrationEventServiceEvent::EventsReady` is emitted 3x and subscribed nowhere.
+      Porting now adds an unreachable flag plus tests that can only pass — the shape
+      `script/check_stub_coverage` exists to catch. **Attach as a prerequisite to the
+      deferred orchestration-consumer increment** (`blocklist/mod.rs:21-24`, TODO #310),
+      so the race closes the day the consumer lands.
+- [ ] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
+      restore metadata without the binary).
+- [ ] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
+      `cargo-bins/cargo-binstall` action (`prepare_environment/action.yml:87`,
+      `pr-check.yml:249`) while the fork's own SHA-verified script sits unused. Also adds
+      a missing binstall bootstrap to the wasm deps script.
+- [ ] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
+      `curl` has no `--retry` at all, so a CDN brownout fails bootstrap outright.
+- [ ] **`cff5f778e`** — `script/lint_powershell` throws on the first source with
+      findings, hiding every later source. A gate that under-reports.
+- [ ] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
+      **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
+      completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
+      `zsh_body.sh:1330-1332`.
+- [ ] **`83b4c101e`** — move settings-schema generation out of a separate `[[bin]]` into
+      the main binary, removing a whole extra compile from the release path. The fork's
+      own release workflow already documents a `SKIP_SETTINGS_SCHEMA=1` escape hatch,
+      i.e. it is already paying and working around this. Touches the three diverged
+      `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
+- [ ] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
+- [ ] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
+      profile's build time for ~4% larger stripped binaries. The fork does use
+      `release-cli` for the macOS and musl TUI builds.
+
+### Scope decisions — DECLINED 2026-08-29 (maintainer). Do not re-derive.
+
+Each wants a `DECLINED.md` row so the next re-pin does not re-propose it.
+
+- **`3f79221d1`** — make the AI page categorized + per-setting searchable. Declined with
+  the rest of the settings-IA program below.
+- **`a18026275`** — `PageTitle` / trailing-element infra. Upstream shipped it WITH
+  `#[allow(dead_code)]`; porting it alone adds dead code with no consumer here, which is
+  precisely what `script/check_stub_coverage` targets. Only meaningful as part of the
+  APP-5559 program, which is declined.
+- **`d019ddfe9`** — adding 5 server-only `AmbientAgentSource` variants (`Jira`,
+  `GitLabWebhook`, `RunScorer`, `Autofix`, `BenchmarkTrial`). No local producer exists;
+  every `serde_json::from_str::<AmbientAgentTask>` in the fork is in `task_tests.rs`.
+  **Its portable half is still queued above** — declining the variants does not decline
+  the `log::warn!` fix.
+- **`0e075a072`** — mirroring `OZ_*` -> `WARP_*` env aliases. Consumers are the
+  Warp-published harness plugins already removed under #595; this injects Warp branding
+  into a fork whose point is not being Warp, for zero local consumer. **TRAP: do not sweep
+  up `WARP_CLI_AGENT_PROTOCOL_VERSION` while declining — it IS load-bearing wire
+  (`DECLINED.md:182`).**
+- **`efbf553ed`** — the `crates/ai_types` split. Upstream's whole design is old-path
+  re-exports, so never adopting it carries zero parity risk.
+- **`4b894db80`** — hand-written `Deserialize` replacing derives, identical wire format.
+  The fork's `dcs_hooks.rs` has already diverged (`HookSessionId`,
+  `trim_null_byte_deserializer`, its own `RawPrecmdField`/`PrecmdHookValue`), so this is
+  an adaptation rather than an apply — wire-format regression risk in the shell-bootstrap
+  path for a compile-time payoff.
+
+### Phase 3.5 — dependency drift introduced by this move
+
+Both were byte-identical to the OLD pin, i.e. the fork was correctly aligned and this
+move re-opens them. Invisible to the queue, the identity manifest, and every CI gate.
+
+- [ ] `warp-command-signatures` `fe3526693` -> **`d3725aa42375cc229699c87be2b38f9d9f07080f`**.
+      This is the completion-spec data compiled into the binary — the same dep that was
+      found two pins stale last round. **One bump; do NOT replay the 7 intermediate bump
+      commits** (`2861a6e43`, `3535362d2`, `59bda8db0`, `5bd9b8e15`, `33bb01256`,
+      `e326a774a`, `e83d07d8d`) — data-repo revs do not apply as diffs.
+- [ ] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
+      See `def3fd0e3` above. Compile-surface change; sequence with the code shards.
+- [ ] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
+      move, and worse than drift.** The fork pins them to a floating
+      `branch = "warpdotdev/main"` (`Cargo.toml:593-595`) where both pins use
+      `rev = "54b9ac9af93b0c08b446a7bc0582836c9403a71b"`. A branch pin is a
+      non-reproducible build input — `cargo update` moves it silently and no gate sees
+      it — and no comment says why. They are consumed by `crates/managed_secrets/`.
+      Either pin back to the rev or write the reason at the pin line.
+      **`docs/pin-migration.md` recorded these as "3 correctly absent (cloud-coupled)",
+      which is false; corrected under #625.**
+- `winit` — **deliberate, leave alone.** Reason IS written at `Cargo.toml:432-437`
+  (carries `rust-windowing/winit#4453`, Windows dark-mode registry detection). Upstream's
+  own winit rev did not move between the two pins. *Unverified:* whether
+  `jwp2987/winit@9a0788c3a` is still a descendant of `warpdotdev/winit@a4e0ecb5f` — needs
+  a fetch nobody has run.
+- `session-sharing-protocol` — correctly absent; declined, and the rev did not move.
+- 15 deps byte-identical: no action.
+
+### Phase 6.7 — feature-default drift
+
+New pin `default` = 202 entries, old pin = 197, fork = 160. **Only 7 differences are drift
+this move introduces**; the other 49 "on at pin, off here" are pre-existing cloud/account-gated
+flags already covered by `DECLINED.md`. **Do not touch the 49.**
+
+- `ime_marked_text` — see the PARTIAL entry above; the one that matters.
+- `open_warp_new_settings_modes` — **upstream DELETED both the `default` entry and the
+  `[features]` declaration in this range**, i.e. graduated the gate away. The fork still
+  ships it. Same decision as `c5e4a02e3` (b), arriving from the feature-list side.
+- `factory_mcp`, `well_known_mcp_ids`, `orchestration_unified_stack`,
+  `ctrl_c_cancels_third_party_harness`, `wait_for_events_parent_registration` — these are
+  **unported features, not feature-default drift**; the cargo features do not exist here
+  at all. Their commits are bucketed CLOUD in shards G/H.
+
+### Round hygiene — findings about the process, not the code
+
+- **`docs/pin-migration.md` Phase 2.5's bucket table had no row for NOT-PORTED**, the
+  largest actionable class (48 of 171). All ten shards independently invented the bucket
+  and flagged the omission. Fixed under #625.
+- **Two of ten shards reported wrong totals lines**, and a sum check cannot catch it
+  because the errors cancelled within the shard in both cases. Count rows, not summaries.
+- **`SCOPE-*.md` verdicts are now path-stale as well as count-stale** for terminal and
+  workspaces, pending decision on `21f413b7` / `8cbb01d45`.
+- **`docs/STATE.md`'s "N are not adjudicated" is still #603** — a subtraction of totals
+  rather than a set difference, so it under-reports.
+
 ## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
 
 **No builds. Nothing that compiles.** Maintainer instruction, 2026-08-11:
