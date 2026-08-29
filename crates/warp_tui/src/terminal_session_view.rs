@@ -1002,6 +1002,17 @@ impl TuiTerminalSessionView {
         }
     }
 
+    /// Hands focus to whatever currently owns this session's input, but only
+    /// when this session is the selected one.
+    ///
+    /// The `is_focused_session` guard inside `focus_current_owner_if_active` is
+    /// what stops a background session from pulling focus off the visible one;
+    /// the `notify` is what repaints the caret/indicator that moved with it.
+    fn reconcile_focus(&mut self, ctx: &mut ViewContext<Self>) {
+        self.focus_current_owner_if_active(ctx);
+        ctx.notify();
+    }
+
     fn focus_input_if_active(&self, ctx: &mut ViewContext<Self>) {
         if self.is_focused_session(ctx) {
             ctx.focus(&self.input_view);
@@ -2087,6 +2098,7 @@ impl TuiTerminalSessionView {
         });
 
         ctx.subscribe_to_view(&input_view, |view, _, event, ctx| match event {
+            TuiInputViewEvent::FocusRequested => view.reconcile_focus(ctx),
             TuiInputViewEvent::Submitted(text) => view.handle_submitted(text.clone(), ctx),
             TuiInputViewEvent::Pasted(text) => view.handle_pasted(text.clone(), ctx),
             TuiInputViewEvent::BackspaceAtEmptyInput => {
@@ -3107,7 +3119,7 @@ impl TuiTerminalSessionView {
             TuiAttachmentBarEvent::ShowHint(text) => {
                 self.show_transient_hint(text.clone(), ctx);
             }
-            TuiAttachmentBarEvent::ReturnFocus => ctx.focus(&self.input_view),
+            TuiAttachmentBarEvent::ReturnFocus => self.reconcile_focus(ctx),
         }
         ctx.notify();
     }

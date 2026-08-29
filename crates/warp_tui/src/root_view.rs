@@ -6,7 +6,9 @@ use warpui_core::elements::tui::{TuiChildView, TuiElement};
 use warpui_core::keymap::FixedBinding;
 use warpui_core::keymap::macros::*;
 use warpui_core::platform::TerminationMode;
-use warpui_core::{AppContext, Entity, EntityId, TuiView, TypedActionView, ViewContext, keymap};
+use warpui_core::{
+    AppContext, Entity, EntityId, FocusContext, TuiView, TypedActionView, ViewContext, keymap,
+};
 
 use crate::keybindings::TUI_BINDING_GROUP;
 use crate::session_registry::{TuiSessionView, TuiSessions};
@@ -88,6 +90,22 @@ impl TuiView for RootTuiView {
                 .focused_session_view(ctx)
                 .map(|view| vec![view.id()])
                 .unwrap_or_default(),
+        }
+    }
+
+    /// Hands focus straight through to the session the registry has selected.
+    ///
+    /// The root itself renders nothing focusable in the terminal state, so
+    /// stopping here would leave keystrokes with a view that only delegates.
+    /// This is also the landing point for the driver's presented-tree focus
+    /// repair, which parks focus on the root when it finds it outside the
+    /// frame -- without this, that repair would strand input at the root.
+    fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
+        if focus_ctx.is_self_focused()
+            && matches!(self.state, RootTuiState::Terminal)
+            && let Some(view) = self.focused_session_view(ctx)
+        {
+            view.activate(ctx);
         }
     }
 

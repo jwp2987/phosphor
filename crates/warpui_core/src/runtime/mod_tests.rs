@@ -112,6 +112,7 @@ fn invalidation_driver_does_not_schedule_repaints_while_unfocused() {
         let timer = Rc::new(RefCell::new(None));
         let focused = Rc::new(Cell::new(true));
         let freeze_repaints_when_unfocused = Rc::new(Cell::new(true));
+        let failed = Rc::new(Cell::new(false));
 
         app.update(|ctx| {
             draw_and_schedule_repaint(
@@ -119,6 +120,7 @@ fn invalidation_driver_does_not_schedule_repaints_while_unfocused() {
                 &timer,
                 &focused,
                 &freeze_repaints_when_unfocused,
+                &failed,
                 ctx,
             )
         })
@@ -132,6 +134,7 @@ fn invalidation_driver_does_not_schedule_repaints_while_unfocused() {
                 &timer,
                 &focused,
                 &freeze_repaints_when_unfocused,
+                &failed,
                 ctx,
             )
         })
@@ -145,6 +148,7 @@ fn invalidation_driver_does_not_schedule_repaints_while_unfocused() {
                 &timer,
                 &focused,
                 &freeze_repaints_when_unfocused,
+                &failed,
                 ctx,
             )
         })
@@ -218,6 +222,103 @@ impl TuiView for TextView {
 
 impl TypedActionView for TextView {
     type Action = ();
+}
+
+/// A root that embeds exactly one child view, so a second view can be focused
+/// while provably outside the presented tree.
+struct PresentedFocusRoot {
+    visible: ViewHandle<TextView>,
+}
+
+impl Entity for PresentedFocusRoot {
+    type Event = ();
+}
+
+impl TuiView for PresentedFocusRoot {
+    fn ui_name() -> &'static str {
+        "PresentedFocusRoot"
+    }
+
+    fn child_view_ids(&self, _app: &AppContext) -> Vec<crate::EntityId> {
+        vec![self.visible.id()]
+    }
+
+    fn render(&self, _: &AppContext) -> Box<dyn TuiElement> {
+        TuiChildView::new(&self.visible).finish()
+    }
+}
+
+impl TypedActionView for PresentedFocusRoot {
+    type Action = ();
+}
+
+/// Ported from the pin's `draw_preserves_focus_outside_the_presented_tree_by_default`
+/// (upstream 4111d08f9). Adapted only for this fork's `TuiScreen::new`, which
+/// takes the shared stdout write lock the reader thread's background probe
+/// contends for; upstream has no probe and so no fourth argument.
+///
+/// The control for the opt-in test below: with the default policy a focused but
+/// unpresented view keeps focus. Making `repair_focus_outside_presented_tree`
+/// unconditional fails this.
+#[test]
+fn draw_preserves_focus_outside_the_presented_tree_by_default() {
+    App::test((), |mut app| async move {
+        let (window_id, _) = app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
+        let visible = app.update(|ctx| ctx.add_tui_view(window_id, |_| TextView));
+        let hidden = app.update(|ctx| ctx.add_tui_view(window_id, |_| TextView));
+        let visible_for_root = visible.clone();
+        let root = app.update(|ctx| {
+            ctx.add_tui_view(window_id, move |_| PresentedFocusRoot {
+                visible: visible_for_root,
+            })
+        });
+        let terminal = TestTerminal::new(TuiSize::new(20, 3));
+        let mut screen = TuiScreen::new(window_id, root, terminal, Arc::new(Mutex::new(())));
+
+        visible.update(&mut app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| screen.draw(ctx)).unwrap();
+        hidden.update(&mut app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| screen.draw(ctx)).unwrap();
+
+        assert!(app.read(|ctx| hidden.is_focused(ctx)));
+    });
+}
+
+/// Ported from the pin's
+/// `opt_in_draw_repairs_focus_owned_by_a_view_outside_the_presented_tree`
+/// (upstream 4111d08f9). Adapted only for this fork's `TuiScreen::new` fourth
+/// argument, as above.
+///
+/// Dropping the `repair_focus_outside_presented_tree` call from `draw`, or
+/// letting `presented_views` go stale, fails the final assertion.
+#[test]
+fn opt_in_draw_repairs_focus_owned_by_a_view_outside_the_presented_tree() {
+    App::test((), |mut app| async move {
+        let (window_id, _) = app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
+        let visible = app.update(|ctx| ctx.add_tui_view(window_id, |_| TextView));
+        let hidden = app.update(|ctx| ctx.add_tui_view(window_id, |_| TextView));
+        let visible_for_root = visible.clone();
+        let root = app.update(|ctx| {
+            ctx.add_tui_view(window_id, move |_| PresentedFocusRoot {
+                visible: visible_for_root,
+            })
+        });
+        let terminal = TestTerminal::new(TuiSize::new(20, 3));
+        let mut screen =
+            TuiScreen::new(window_id, root.clone(), terminal, Arc::new(Mutex::new(())))
+                .with_focus_policy(TuiFocusPolicy::PresentedTree);
+
+        visible.update(&mut app, |_, ctx| ctx.focus_self());
+        app.update(|ctx| screen.draw(ctx)).unwrap();
+        assert!(screen.presenter.presented_views.contains(&root.id()));
+        assert!(screen.presenter.presented_views.contains(&visible.id()));
+        assert!(!screen.presenter.presented_views.contains(&hidden.id()));
+
+        hidden.update(&mut app, |_, ctx| ctx.focus_self());
+        assert!(app.read(|ctx| hidden.is_focused(ctx)));
+        app.update(|ctx| screen.draw(ctx)).unwrap();
+        assert!(app.read(|ctx| root.is_focused(ctx)));
+    });
 }
 
 struct RepaintingElement {
@@ -309,11 +410,218 @@ impl TuiTerminal for TestTerminal {
     }
 }
 
+/// A writer that fails every attempt with a disconnect-shaped error and counts
+/// how many times it was reached, so a test can prove a later draw never got as
+/// far as touching the terminal.
+struct FailingWriter {
+    attempts: Rc<Cell<usize>>,
+}
+
+impl Write for FailingWriter {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        self.attempts.set(self.attempts.get() + 1);
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "terminal disconnected",
+        ))
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.attempts.set(self.attempts.get() + 1);
+        Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "terminal disconnected",
+        ))
+    }
+}
+
+/// A [`TuiTerminal`] that reports a usable size but whose writer is gone --
+/// the shape of a host terminal that disappeared mid-session.
+struct FailingTerminal {
+    size: TuiSize,
+    writer: FailingWriter,
+}
+
+impl TuiTerminal for FailingTerminal {
+    fn size(&self) -> io::Result<TuiSize> {
+        Ok(self.size)
+    }
+
+    fn poll_event(&mut self, _timeout: Duration) -> io::Result<Option<CrosstermEvent>> {
+        Ok(None)
+    }
+
+    fn writer(&mut self) -> &mut dyn Write {
+        &mut self.writer
+    }
+}
+
 fn window_options() -> AddWindowOptions {
     AddWindowOptions {
         window_style: WindowStyle::NotStealFocus,
         ..Default::default()
     }
+}
+
+/// Ported from the pin's `terminal_disconnects_include_pipe_and_tty_errors`
+/// (upstream 4111d08f9), unchanged.
+#[test]
+fn terminal_disconnects_include_pipe_and_tty_errors() {
+    assert!(is_terminal_disconnect(&io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "closed pipe"
+    )));
+
+    #[cfg(unix)]
+    {
+        assert!(is_terminal_disconnect(&io::Error::from_raw_os_error(
+            libc::EIO
+        )));
+        assert!(is_terminal_disconnect(&io::Error::from_raw_os_error(
+            libc::ENXIO
+        )));
+    }
+
+    #[cfg(windows)]
+    assert!(is_terminal_disconnect(&io::Error::from_raw_os_error(233)));
+
+    assert!(!is_terminal_disconnect(&io::Error::other(
+        "unexpected failure"
+    )));
+}
+
+/// Ported from the pin's `startup_errors_classify_terminal_disconnects`
+/// (upstream 4111d08f9), unchanged.
+#[test]
+fn startup_errors_classify_terminal_disconnects() {
+    let disconnect = TuiDriverStartupError::from(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        "terminal disconnected",
+    ));
+    assert!(matches!(
+        disconnect,
+        TuiDriverStartupError::TerminalDisconnected(_)
+    ));
+
+    let unexpected = TuiDriverStartupError::from(io::Error::other("unexpected failure"));
+    assert!(matches!(unexpected, TuiDriverStartupError::Unexpected(_)));
+}
+
+/// Ported from the pin's `disconnected_driver_cancels_repaints_and_stops_drawing`
+/// (upstream 4111d08f9). Adapted only for this fork's `TuiScreen::new`, which
+/// takes the shared stdout write lock the reader thread's background probe
+/// contends for; upstream has no probe and so no fourth argument.
+#[test]
+fn disconnected_driver_cancels_repaints_and_stops_drawing() {
+    App::test((), |mut app| async move {
+        let (window_id, root) =
+            app.update(|ctx| ctx.add_tui_window(window_options(), |_| TextView));
+        let attempts = Rc::new(Cell::new(0));
+        let screen = Rc::new(RefCell::new(TuiScreen::new(
+            window_id,
+            root,
+            FailingTerminal {
+                size: TuiSize::new(20, 3),
+                writer: FailingWriter {
+                    attempts: attempts.clone(),
+                },
+            },
+            Arc::new(Mutex::new(())),
+        )));
+        // A never-completing task stands in for a scheduled repaint, so the
+        // assertion below distinguishes "the slot was cleared" from "the timer
+        // happened to finish".
+        let timer = Rc::new(RefCell::new(Some(app.update(|ctx| {
+            ctx.foreground_executor().spawn(async {
+                std::future::pending::<()>().await;
+            })
+        }))));
+        let focused = Rc::new(Cell::new(true));
+        let freeze_repaints_when_unfocused = Rc::new(Cell::new(false));
+        let failed = Rc::new(Cell::new(false));
+
+        let error = app
+            .update(|ctx| {
+                draw_and_schedule_repaint(
+                    &screen,
+                    &timer,
+                    &focused,
+                    &freeze_repaints_when_unfocused,
+                    &failed,
+                    ctx,
+                )
+            })
+            .unwrap_err();
+        app.update(|ctx| {
+            fail_tui_driver(error, TuiDriverIoOperation::DrawFrame, &failed, &timer, ctx);
+        });
+
+        assert!(failed.get());
+        assert!(
+            timer.borrow().is_none(),
+            "the pending repaint should be cancelled by the failure"
+        );
+        assert_eq!(attempts.get(), 1);
+
+        app.update(|ctx| {
+            draw_and_schedule_repaint(
+                &screen,
+                &timer,
+                &focused,
+                &freeze_repaints_when_unfocused,
+                &failed,
+                ctx,
+            )
+        })
+        .unwrap();
+
+        assert_eq!(
+            attempts.get(),
+            1,
+            "a latched failure should stop the driver from touching the terminal again"
+        );
+        assert!(
+            app.termination_result().is_none(),
+            "a vanished terminal is not a failure of this program"
+        );
+    });
+}
+
+/// Ported from the pin's `unexpected_driver_failure_terminates_with_one_error`
+/// (upstream 4111d08f9), unchanged.
+#[test]
+fn unexpected_driver_failure_terminates_with_one_error() {
+    App::test((), |mut app| async move {
+        let timer: Rc<RefCell<Option<ForegroundTask>>> = Rc::default();
+        let failed = Rc::new(Cell::new(false));
+
+        app.update(|ctx| {
+            fail_tui_driver(
+                io::Error::other("first failure"),
+                TuiDriverIoOperation::ReadEvent,
+                &failed,
+                &timer,
+                ctx,
+            );
+            fail_tui_driver(
+                io::Error::other("second failure"),
+                TuiDriverIoOperation::DrawFrame,
+                &failed,
+                &timer,
+                ctx,
+            );
+        });
+
+        let error = app
+            .termination_result()
+            .expect("unexpected I/O should set a termination result")
+            .expect_err("unexpected I/O should terminate with an error");
+        assert_eq!(
+            error.to_string(),
+            "failed to read a terminal event",
+            "the first failure should win"
+        );
+    });
 }
 
 #[test]
