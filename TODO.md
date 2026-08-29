@@ -300,6 +300,67 @@ range map instead of the repository, so it flagged the pins themselves. The
 lesson is the same one this round keeps relearning: check the checker before
 believing an alarming number.
 
+### PARTIAL-HUNT RESULT — the premise was wrong, and that is the finding
+
+A dedicated refuter swept **167 of 167** commits for missed partial ports, on the
+premise that 4-of-171 was implausibly low against Phase 6.5's history. **It found
+none, and explained why convincingly: in this range the fork has ported essentially
+nothing** (PORTED = 0 across all 171), so the `01778efe` failure mode — which
+requires the fork to have taken *part* of a commit — has almost no surface to occur
+on. The premise is refuted, not merely unconfirmed.
+
+**Phase 6.5 step 4's precision in this range was 0 of 67.** Its mechanical
+"some present = PARTIAL" rule flagged 67 commits and every one was a false positive,
+in three systematic classes: commits that MOVE code within a file (moved lines grep
+as added and are already present); commits that add a second instance of existing
+boilerplate; and generic identifiers (`render`, `Event`, `Action`, `should_render`,
+`Cache`, `insert`, `floor_char_boundary`). Two cheap filters would have cut 67 -> 45
+-> ~8: restrict to identifiers introduced by the commit and absent from its own
+pre-image, then require absence from the fork's pre-existing vocabulary. **Worth
+writing into `docs/pin-migration.md` Phase 6.5**, because the current phrasing
+invites an agent to hand-investigate 67 dead ends and quietly stop early.
+
+**The real risk this round is the adjacent shape:** ledger entries that describe
+less than their commit does. `cff5f778c` above is the worked example, found by this
+sweep.
+
+### ADJUDICATED: do NOT port `391dd76ad` standalone
+
+Two refuters conflicted. One called `with_bounded_retry_using` "the only substantive
+salvage" in its territory; the other said porting it would trip
+`script/check_stub_coverage`. **Coordinator ruling: do not port it standalone.**
+
+Both agree on the fact — the first raised the same caveat itself. Verified here:
+`create_managed_mcp_client_config` and `ManagedMcpResolutionFailed` have **zero hits**
+in `app/src` or `crates`, so the generalised helper would land with **no caller**.
+`script/check_stub_coverage`'s own header states the principle: *"A test ported
+against a stub COMPILES AND PASSES while asserting nothing. That is worse than a
+missing test: it is fake coverage that looks like progress."* A callerless helper
+plus its tests is that shape.
+
+Port it only if and when a fork consumer exists. The commit stays out of scope — but
+note its *stated* reason was wrong: the fork DOES ship the touched file, at
+`app/src/util/retry_strategies.rs` (the `server/` -> `util/` relocation), so "file
+absent" was never the reason.
+
+### Two more corrections from the partial hunt
+
+- **`b870d25d7` — the recorded port is NARROWER than written.** Upstream fixes two
+  `Split-Path` sites; only `script/windows/prepare_bundled_resources.ps1:51` exists
+  here. The fork's `script/windows/bootstrap.ps1` is a diverged, shorter script with
+  no `gitUsrBinDir` block. Separately, `script/windows/rebuild_icon.ps1:8` carries
+  three more positional `Split-Path -Parent` calls of the identical shape that
+  upstream never touched — cover them or say why not.
+- **`04a7f8342` was unrecorded entirely.** Correct verdict ALREADY-PRESENT:
+  `crates/warpui_core/src/core/app.rs:1937,1984` are already at the state upstream
+  reverts *to*, because the fork never took the earlier
+  `log::error!` -> `report_error!` migration. One residue worth a one-character port:
+  upstream's post-fix form is `{error:#}` (full anyhow cause chain), the fork's is
+  `{error}` (top frame only).
+- **`19dc50535`** has a hunk in a fork-present file (`script/presubmit`) adding
+  `./script/test_factory_files_skill.py`, which does not exist here. Recorded so the
+  next round does not rediscover it as an unexplained gap.
+
 ### QUEUE GENERATOR DEFECTS — fix before the next round
 
 - [ ] **Renames are reported as removals.** All three "REMOVED AT NEW PIN" entries
@@ -617,8 +678,15 @@ separately rather than inflating the queue count.
       a missing binstall bootstrap to the wasm deps script.
 - [ ] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
       `curl` has no `--retry` at all, so a CDN brownout fails bootstrap outright.
-- [ ] **`cff5f778c`** — `script/lint_powershell` throws on the first source with
-      findings, hiding every later source. A gate that under-reports.
+- [ ] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
+      only the first and would itself have caused a partial port.**
+      (a) `script/lint_powershell` throws on the first source with findings, hiding
+      every later source — a gate that under-reports. (b) **`app/assets/bundled/bootstrap/pwsh.ps1`
+      lines 433, 510, 515, 579** — `(Get-Location).Path` -> `$PWD.Path` in SHIPPED
+      shell integration. (c) `script/windows/bundle.ps1:62`. (d)
+      `script/windows/install_build_deps.ps1:6,9`. All four fork sites
+      coordinator-verified at the pre-fix state. Cosmetic/lint-driven, but a porter
+      following the old entry lands one file of four and the commit reads as done.
 - [ ] **`0140af045`** — zsh `compadd` override drops descriptions whenever `-d` arrives
       **clustered** (`-ld`), which is exactly what `_describe` emits — i.e. most zsh
       completions that have descriptions. Fork still has the pre-fix `(I)-d` code at
