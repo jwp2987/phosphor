@@ -333,3 +333,66 @@ fn display_name_trims_whitespace_at_each_layer() {
     let task = make_display_name_task(None, "  Long descriptive title  ");
     assert_eq!(task.display_name(), "Long descriptive title");
 }
+
+/// Ported from the pin's `ambient_agent_task_deserializes_orchestration_source`
+/// (upstream `4111d08f9`; the test arrived with `d15645c77`, "Add ORCHESTRATION
+/// variant to client AgentSource (APP-5412)").
+///
+/// Adapted, because the fork has neither half of what the pin asserts:
+/// `AgentSource` here has 8 variants and no `Orchestration` (`task.rs:184`),
+/// and `blocks_cloud_followups` does not exist tree-wide. Both are correct
+/// absences rather than debt — `ORCHESTRATION` is a **warp-server** run source
+/// (upstream's own commit message: "warp-server added the `ORCHESTRATION`
+/// ambient-agent source (REMOTE-2647)"), and every `AmbientAgentTask` value in
+/// this fork is built inside a test: there is no wire producer to emit one.
+/// Note this is NOT the `d019ddfe9` decline (`TODO.md:1527`) — that row covers
+/// five *other* variants (`Jira`, `GitLabWebhook`, `RunScorer`, `Autofix`,
+/// `BenchmarkTrial`) and does not reach this one. Nor is it declined by #290:
+/// local orchestration is back in scope (`DECLINED.md:213`), but the fork's
+/// local orchestration children are local processes that never round-trip
+/// through `AmbientAgentTask` JSON at all.
+///
+/// What survives the adaptation is the property the upstream defect was really
+/// about, quoting its root-cause analysis: when the source string is one the
+/// client does not know, "the task still loads but its source is lost". That
+/// arm is live here — `ORCHESTRATION` is exactly such a string for this fork —
+/// and it had no coverage: `deserialize_ambient_agent_source` (`task.rs:242`)
+/// was entirely untested, `source` appearing in this file only as a struct
+/// literal field. It also guards the queued portable half of `d019ddfe9`
+/// (`TODO.md:1387`, `report_error!` -> `log::warn!` on this same arm): that
+/// port must change the log macro without changing the deserialize outcome.
+///
+/// The recognised-source case is asserted alongside deliberately: without it,
+/// the `None` assertion would still pass if the deserializer degenerated to
+/// always yielding `None`.
+#[test]
+fn task_with_unrecognized_source_still_deserializes_with_no_source() {
+    let task_json = |source: &str| {
+        format!(
+            r#"{{
+                "task_id": "550e8400-e29b-41d4-a716-446655440003",
+                "title": "Test Task",
+                "state": "SUCCEEDED",
+                "prompt": "test prompt",
+                "created_at": "2024-01-15T10:00:00Z",
+                "updated_at": "2024-01-15T10:30:00Z",
+                "is_sandbox_running": false,
+                "source": "{source}",
+                "artifacts": []
+            }}"#
+        )
+    };
+
+    let recognized: AmbientAgentTask = serde_json::from_str(&task_json("GITHUB_ACTION"))
+        .expect("a task with a recognized source should deserialize");
+    assert_eq!(recognized.source, Some(AgentSource::GitHubAction));
+
+    // `ORCHESTRATION` is a warp-server run source this fork has no variant for.
+    let unrecognized: AmbientAgentTask = serde_json::from_str(&task_json("ORCHESTRATION"))
+        .expect("an unrecognized source must not fail the whole task record");
+    assert_eq!(
+        unrecognized.source, None,
+        "an unrecognized source is dropped to None; the task itself still loads"
+    );
+    assert_eq!(unrecognized.title, "Test Task");
+}
