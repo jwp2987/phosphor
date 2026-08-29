@@ -52,10 +52,11 @@ different agent than wrote each.** No agent compiled anything.
 | `port/grep-parse` | `f79030afc` | `fbbfc41f3` grep NUL-delimiting |
 | `port/leaks-logs` | `2f643f703` | `27f8ee6c` 2 data leaks + 3 log throttles |
 | `port/shell-bugs` | `d08e3e951`, `b255dae5f`, `4ca52cd38` | `e722ebed` panic + fish kill + DCS + pwsh chord |
-| `port/cursor` | `e8c05ac66` | `ee95ac0fd` double cursor |
+| `port/cursor` | `e8c05ac66`, `0f2877a52` | `ee95ac0fd` double cursor (+ refutation fixes) |
 | `port/completer-cache` | `f083b185a`, `0e12bae4e` | `213c9b32` cache bound + `98b1f5af8` font fallback |
 
-**THE COORDINATOR'S BRIEFS WERE WRONG TWICE, AND BOTH TIMES AN AGENT CAUGHT IT.**
+**THE COORDINATOR'S BRIEFS WERE WRONG THREE TIMES, AND AN AGENT CAUGHT IT EVERY
+TIME.**
 Recorded because it is the strongest argument in this round for refuting the
 coordinator as well as the ports:
 
@@ -70,6 +71,21 @@ coordinator as well as the ports:
    and `warpui/Cargo.toml:57` depends on `warpui_core`, so adding `warp_core` to
    either closes a Cargo cycle. Coordinator-verified. The porter instead wrote a
    local shim following the in-tree precedent `crates/warp_tui/src/report_error.rs`.
+3. **cursor doc-fix instruction** told the porter to justify the `BeforeExecution`
+   exception with "the output grid is empty there -- `grid_renderer.rs:1150-1157`
+   short-circuits an all-empty row." **Coordinator-verified wrong:** that
+   short-circuit lives only in `render_grid_with_ligatures` (fn starts `:973`);
+   `render_grid_without_ligatures` (`:464-972`) has no equivalent, so the reason
+   holds on one render path only and the corrected comment would have been
+   half-wrong again. The porter found the path-independent reason one level up --
+   `BlockGrid::draw` derives `end_row` from `len_displayed()`
+   (`blockgrid_renderer.rs:81`), which is 0 before `preexec`, so the row range is
+   empty on both paths -- and used that instead.
+
+**Pattern worth acting on: all three coordinator errors were confident, specific,
+and cited a real file:line.** None would have been caught by an agent that trusted
+the brief. The round's refute-everything rule has to include the coordinator's own
+instructions, not just the ports.
 
 **Second defects found by porters while porting** (neither was in the brief):
 - `register_signature` was a **silent no-op** for any name that had previously
