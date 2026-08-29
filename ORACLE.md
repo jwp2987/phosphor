@@ -33,13 +33,13 @@ the treadmill.
 
 | | |
 |---|---|
-| **Release** | `2026.08.12` stable |
-| **Commit** | `42effe840` (2026-08-11 20:51 -0400) |
-| **Commit (full)** | `42effe84055f891405b32914af333f14127ec381` |
-| **Pinned on** | 2026-08-15 |
-| **Tests at pin** | 10,860 |
+| **Release** | `2026.08.26` stable |
+| **Commit** | `4111d08f9` (2026-08-26 04:48:15 +0000) |
+| **Commit (full)** | `4111d08f932e0eda34fe57e62ee32df7d0f398d9` |
+| **Pinned on** | 2026-08-29 |
+| **Tests at pin** | 11,655 |
 
-Compare against it with `git ... 42effe840` in place of `warp/master`.
+Compare against it with `git ... 4111d08f9` in place of `warp/master`.
 
 **On the release string.** `2026-08-12` is a Wednesday and the pin is the tip of
 the preceding evening (Tuesday 20:51 -0400 = Wednesday 00:51 UTC), which is
@@ -49,7 +49,12 @@ tag publication stopped 2026-06-09, so there is no artifact to read it from, and
 inventing one would put a number in this table that no one can verify. The
 commit is the authoritative identifier; the release string is the human label.
 
-**On the test count.** 10,860 is `script/state`'s measure — unique test-fn names
+**On the test count.** 11,655 is `script/state`'s measure at this pin, so the step from
+`42effe840` is **+795**. It was briefly recorded here as 11,228 — a number taken from a
+`TODO.md` note produced by a *different* extractor. Always take this figure from a fresh
+`script/state` run, for exactly the reason the paragraph below already gives.
+
+**On the previous pin's count.** 10,860 is `script/state`'s measure — unique test-fn names
 under `#[test]` / `#[tokio::test]` / `#[async_std::test]`. The same measure gives
 **10,026** at the old pin, so the step is **+834**. The previous row in this
 table read 10,123, which was produced by a different, unrecorded method and never
@@ -60,6 +65,7 @@ step; the two numbers are not the same measurement.
 
 | release | commit | pinned on | tests at pin |
 |---|---|---|---|
+| `2026.08.26` stable | `4111d08f932e0eda34fe57e62ee32df7d0f398d9` | 2026-08-29 | 11,655 |
 | `2026.08.12` stable | `42effe84055f891405b32914af333f14127ec381` | 2026-08-15 | 10,860 |
 | `2026.07.29.09.05` stable | `02b53fcd81ac49adffe5288201e4387abe48f23c` | 2026-08-06 | 10,026 (10,123 as originally recorded, see above) |
 

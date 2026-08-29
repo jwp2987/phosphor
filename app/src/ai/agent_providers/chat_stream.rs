@@ -7215,10 +7215,19 @@ pub async fn generate_byop_output(
                 // billing concept, custom-endpoint usage is keyed by a server-side config
                 // key, and the context-window segment breakdown is computed server-side.
                 // See #11.
+                // Deprecated upstream by the same bump that added `total_charges` below,
+                // which is its replacement. Kept because prost still requires the field.
+                #[allow(deprecated)]
                 platform_credits_spent: 0.0,
                 custom_endpoint_token_usage: std::collections::HashMap::new(),
                 context_window_segments: Vec::new(),
                 total_input_tokens: 0,
+                // Added by the 4111d08f9 re-pin's proto bump (warp-proto-apis
+                // b0886a952 -> f0028fa6d): "the usage costs charged to the user so far in
+                // the conversation". Same reason as `platform_credits_spent` above -- a
+                // charge is a Warp billing concept and BYOP has no source for one. See #11
+                // and DECLINED.md:215.
+                total_charges: None,
             })
         });
 
@@ -8427,7 +8436,15 @@ fn make_finished_done(
                 conversation_usage_metadata: usage_metadata,
                 token_usage,
                 should_refresh_model_config: false,
+                // Deprecated upstream by the same bump that added `request_charges`
+                // below, which is its replacement. Both are `None` here regardless.
+                #[allow(deprecated)]
                 request_cost: None,
+                // Added by the 4111d08f9 re-pin's proto bump: "the platform and inference
+                // usage cost charged to the user for this AM request". `None` for the same
+                // reason `request_cost` beside it is `None` -- there is no charge to report
+                // without Warp's billing backend. See #11.
+                request_charges: None,
             },
         )),
     }

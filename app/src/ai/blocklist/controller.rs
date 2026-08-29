@@ -4146,6 +4146,13 @@ impl BlocklistAIController {
         history_model.update(ctx, |history_model, _| {
             // Update conversation cost and usage information before updating and
             // persisting the conversation.
+            //
+            // `request_cost` was deprecated upstream by the 4111d08f9 proto bump in favour
+            // of `request_charges`. This fork deliberately does not migrate to the
+            // replacement: a charge is a Warp billing concept with no BYOP source (#11,
+            // DECLINED.md:215), and the fork sets `request_cost` to `None` at every
+            // production construction site anyway, so this read is already always `None`.
+            #[allow(deprecated)]
             history_model.update_conversation_cost_and_usage_for_request(
                 conversation_id,
                 finished_event
