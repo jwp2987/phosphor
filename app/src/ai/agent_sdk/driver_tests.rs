@@ -22,6 +22,40 @@
 //!
 //! The two `warp_skill_dirs_env_*` tests at the end were added later, from
 //! upstream `c7ab9c028` — see that section's comment.
+//!
+//! **Re-verified at pin `4111d08f9` (2026-08-29).** The managed-MCP family has grown
+//! since round 5 and every addition lands in the same cloud bucket; recorded here so the
+//! next sweep does not re-derive it:
+//!
+//! - `managed_resolution_retries_transient_error_then_succeeds`,
+//!   `managed_resolution_exhausts_retry_budget_on_persistent_transient_error`,
+//!   `managed_resolution_does_not_retry_permanent_typed_http_error` and
+//!   `well_known_resolution_retries_transient_error_then_succeeds` (retry budget around
+//!   managed-MCP resolution). All four call
+//!   `AgentDriver::resolve_mcp_specs_with_local_uuids` with a `MockManagedMcpClient` and
+//!   assert on `AgentDriverError::ManagedMcpResolutionFailed` — none of which exist here
+//!   — and construct their transient failure as `GraphQLError::HttpError`, classified by
+//!   `is_transient_graphql_or_http_error`. This fork has no `warp_graphql`, so that
+//!   classifier is not portable either; only the generic combinator underneath it is, and
+//!   that was ported instead (`app/src/util/retry_strategies.rs`,
+//!   `with_bounded_retry_using`). The well-known half is additionally a standing decision:
+//!   see the "Do not port the well-known variant" note at
+//!   `app/src/ai/agent_sdk/mcp_config.rs` and `crates/warp_cli/src/mcp_tests.rs`.
+//! - The four `ephemeral_installation_id_*` tests. Despite the name these are **not**
+//!   about inline `--mcp` specs: upstream's `MCPSpec::Json` arm goes through
+//!   `installations_from_user_mcp_json`, which leaves ids random exactly as this fork's
+//!   `ParsedTemplatableMCPServerResult::parse_result` does. The deterministic
+//!   `ephemeral_mcp_installation_id` (`4111d08f9:driver.rs:247`) is reached only from
+//!   `installations_from_managed_client_config_json`, i.e. only on the two managed-MCP
+//!   arms, and exists only so a **rebuilt cloud sandbox** re-resolves a server to the id
+//!   already recorded in conversation history. No rebuild, no managed client, nothing to
+//!   pin: cloud.
+//!
+//! The six QUALITY-1801 exit-commit tests (`ambient_driver_*`,
+//! `exit_commit_handle_blocks_injection_before_model_side_cleanup_runs`,
+//! `idle_timeout_sender_on_commit_runs_before_value_is_delivered`) are a different case
+//! again — portable in principle, blocked in practice on upstream `60d602df6`. See that
+//! sha's row in `TODO.md`; do not re-file them as untracked.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
