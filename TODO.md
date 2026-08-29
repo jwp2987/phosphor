@@ -108,10 +108,10 @@ different agent than wrote each.** No agent compiled anything.
 | worktree / branch | commit(s) | scope |
 |---|---|---|
 | `port/grep-parse` | `f79030afc` | `fbbfc41f3` grep NUL-delimiting |
-| `port/leaks-logs` | `2f643f703` | `27f8ee6c` 2 data leaks + 3 log throttles |
+| `port/leaks-logs` | `3c5f7c620` | `27f8ee6c` 2 data leaks + 3 log throttles |
 | `port/shell-bugs` | `d08e3e951`, `b255dae5f`, `4ca52cd38` | `e722ebed` panic + fish kill + DCS + pwsh chord |
 | `port/cursor` | `e8c05ac66`, `0f2877a52` | `ee95ac0fd` double cursor (+ refutation fixes) |
-| `port/completer-cache` | `f083b185a`, `0e12bae4e` | `213c9b32` cache bound + `98b1f5af8` font fallback |
+| `port/completer-cache` | `4ca8de96d`, `a9c000c19` | `213c9b32` cache bound + `98b1f5af8` font fallback |
 
 **THE COORDINATOR'S BRIEFS WERE WRONG THREE TIMES, AND AN AGENT CAUGHT IT EVERY
 TIME.**
@@ -517,7 +517,7 @@ its other files ship here **at the pre-fix state**:
       flattened `elements/gui/*` -> `elements/*` — a rename. **Same shape as the
       already-queued P0 `8ba01aa1a`; land all three together**, same
       `warp_errors::` -> `warp_core::errors::` adaptation.
-- [ ] `98b1f5af8` — **refuted as N/A.** Fork ships both touched files at the exact
+- [x] `98b1f5af8` — **refuted as N/A.** Fork ships both touched files at the exact
       pre-fix state; the U+21E7 fallback mismatch is live. 3-line port plus the
       generator hunk so it is not regenerated away.
 - [ ] `d2cb17abb` — **refuted as ALREADY-PRESENT.** The throttle is absent; the
@@ -999,7 +999,7 @@ separately rather than inflating the queue count.
       is MORE trimmed than upstream's pre-fix one (8 variants vs 13) and so hits the
       unknown-source branch strictly more often. Defensive only — no live wire producer
       of `AmbientAgentTask` JSON exists in the fork today.
-- [ ] `98b1f5af8` **(bucketed N/A; optional)** — U+21E7 font fallback. `fallback_font_fn`
+- [x] `98b1f5af8` **(bucketed N/A; optional)** — U+21E7 font fallback. `fallback_font_fn`
       is registered only under `cfg(target_family = "wasm")` and the fork ships no web
       build, so this is cheap consistency, **not** a user-visible fix.
 
