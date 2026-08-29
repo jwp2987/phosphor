@@ -127,6 +127,8 @@ pub fn init(app: &mut AppContext) {
 /// Events emitted by [`TuiInputView`].
 #[derive(Debug, Clone)]
 pub enum TuiInputViewEvent {
+    /// Pointer interaction requested focus for the session's current input owner.
+    FocusRequested,
     /// The user pressed Enter to submit the current input. Contains the final text.
     Submitted(String),
     /// The terminal delivered one complete bracketed-paste payload.
@@ -708,6 +710,22 @@ impl TypedActionView for TuiInputView {
     type Action = TuiInputAction;
 
     fn handle_action(&mut self, action: &TuiInputAction, ctx: &mut ViewContext<Self>) {
+        // A click or drag inside the prompt is the user pointing at where they
+        // want to type. Moving the caret without also asking the session to
+        // reclaim focus leaves the cursor visibly moved while the keystrokes go
+        // somewhere else -- which is what happens whenever a background session
+        // is holding framework focus.
+        if matches!(
+            action,
+            TuiInputAction::Editor(
+                TuiEditorAction::SelectionStartAt { .. }
+                    | TuiEditorAction::SelectionExtendTo { .. }
+                    | TuiEditorAction::SelectWordAt { .. }
+                    | TuiEditorAction::SelectLineAt { .. }
+            ) | TuiInputAction::SetCursor { .. }
+        ) {
+            ctx.emit(TuiInputViewEvent::FocusRequested);
+        }
         if self.handle_inline_menu_action(action, ctx) {
             return;
         }

@@ -1,6 +1,6 @@
 use warp::tui_export::register_tui_session_view_test_singletons;
 use warpui::platform::WindowStyle;
-use warpui::{AddWindowOptions, UpdateModel};
+use warpui::{AddWindowOptions, SingletonEntity as _, UpdateModel};
 use warpui_core::{App, TuiView as _, WindowId};
 
 use super::RootTuiView;
@@ -84,5 +84,53 @@ fn root_projects_only_the_focused_retained_session_view() {
             assert!(root.as_ref(ctx).child_view_ids(ctx).is_empty());
             assert!(ctx.check_view_or_child_focused(window_id, &root.id()));
         });
+    });
+}
+
+/// Ported from the pin's `terminal_root_focus_delegates_to_the_selected_session`
+/// (upstream 4111d08f9), unchanged.
+///
+/// Deleting `RootTuiView::on_focus` leaves framework focus parked on the root
+/// after `focus_self`, so the final assertion fails.
+#[test]
+fn terminal_root_focus_delegates_to_the_selected_session() {
+    App::test((), |mut app| async move {
+        register_tui_session_view_test_singletons(&mut app);
+        app.update(|ctx| add_test_semantic_selection(ctx));
+        app.update(crate::autoupdate::TuiAutoupdater::register);
+        let (window_id, root) = add_root(&mut app);
+        let sessions = app.add_singleton_model(|_| TuiSessions::new_for_test());
+        let (foreground, foreground_manager) = add_test_terminal_session(&mut app, window_id);
+        let foreground_id = app.update(|ctx| {
+            TuiSessions::register_session(
+                &sessions,
+                foreground.clone(),
+                foreground_manager,
+                true,
+                ctx,
+            )
+        });
+        let (background, background_manager) = add_test_terminal_session(&mut app, window_id);
+        app.update(|ctx| {
+            TuiSessions::register_session(
+                &sessions,
+                background.clone(),
+                background_manager,
+                false,
+                ctx,
+            );
+        });
+        root.update(&mut app, |root, ctx| root.show_terminal(ctx));
+
+        background.update(&mut app, |background, ctx| background.activate(ctx));
+        assert!(app.read(|ctx| { ctx.check_view_or_child_focused(window_id, &background.id()) }));
+        assert_eq!(
+            app.read(|ctx| TuiSessions::as_ref(ctx).focused_session_id()),
+            Some(foreground_id)
+        );
+
+        root.update(&mut app, |_, ctx| ctx.focus_self());
+
+        assert!(app.read(|ctx| { ctx.check_view_or_child_focused(window_id, &foreground.id()) }));
     });
 }

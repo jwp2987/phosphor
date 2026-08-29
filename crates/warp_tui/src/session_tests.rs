@@ -5,14 +5,20 @@
 // shape adaptation was needed even though the backing store
 // (`ai::api_keys::ApiKeyManager`'s per-provider setters, not Warp's
 // `persist_provider_key`) differs. See issues #392 / #225.
+use std::io;
+
 use ai::LLMProvider;
 use clap::Parser;
 use warp::tui_export::register_tui_session_view_test_singletons;
 use warpui::platform::WindowStyle;
 use warpui::{AddWindowOptions, SingletonEntity};
 use warpui_core::App;
+use warpui_core::runtime::TuiDriverStartupError;
 
-use super::{TuiArgs, create_terminal_session_after_login, parse_resume_token};
+use super::{
+    TuiArgs, create_terminal_session_after_login, handle_tui_driver_startup_error,
+    parse_resume_token,
+};
 use crate::root_view::RootTuiView;
 use crate::session_registry::TuiSessions;
 use crate::test_fixtures::{add_test_semantic_selection, add_test_terminal_session};
@@ -134,6 +140,30 @@ fn terminal_bootstrap_is_idempotent_after_background_terminal_exists() {
         });
 
         app.read(|ctx| assert_eq!(TuiSessions::as_ref(ctx).len(), 1));
+    });
+}
+
+/// Ported from the pin's `terminal_disconnect_during_driver_startup_exits_without_error`
+/// (upstream 4111d08f9), unchanged.
+///
+/// The assertion is that no termination result is recorded: a host terminal
+/// that went away before the first frame must not turn into a non-zero exit
+/// status. Reverting `handle_tui_driver_startup_error` to the single arm it
+/// replaced -- which always passed `Some(Err(error))` -- fails this.
+#[test]
+fn terminal_disconnect_during_driver_startup_exits_without_error() {
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            handle_tui_driver_startup_error(
+                TuiDriverStartupError::TerminalDisconnected(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "terminal disconnected",
+                )),
+                ctx,
+            );
+        });
+
+        assert!(app.termination_result().is_none());
     });
 }
 

@@ -1243,6 +1243,7 @@ fn multiline_paste_emits_once_and_fallback_inserts_without_submitting() {
                 | TuiInputViewEvent::AcceptedPrompt(_)
                 | TuiInputViewEvent::AcceptedExchange(..)
                 | TuiInputViewEvent::BackspaceAtEmptyInput
+                | TuiInputViewEvent::FocusRequested
                 | TuiInputViewEvent::MoveFocusUp
                 | TuiInputViewEvent::ClipboardCopySucceeded
                 | TuiInputViewEvent::ClipboardCopyFailed
@@ -2315,6 +2316,35 @@ fn printable_input_is_accepted_only_while_focused() {
 
         view.update(&mut app, |_, ctx| ctx.focus_self());
         assert!(app.read(|ctx| dispatch_element_event(&view, ctx, &printable_key('c'))));
+    });
+}
+
+/// Ported from the pin's `mouse_selection_requests_focus` (upstream 4111d08f9),
+/// unchanged.
+///
+/// Removing the `FocusRequested` emission from `TuiInputView::handle_action`
+/// fails this; so does narrowing the action pattern so a plain left-click's
+/// `SelectionStartAt` no longer matches.
+#[test]
+fn mouse_selection_requests_focus() {
+    App::test((), |mut app| async move {
+        let focus_requests = Rc::new(Cell::new(0));
+        let focus_requests_for_subscription = focus_requests.clone();
+        let view = app.update(|ctx| {
+            let view = build_view(ctx);
+            ctx.subscribe_to_view(&view, move |_, event, _| {
+                if matches!(event, TuiInputViewEvent::FocusRequested) {
+                    focus_requests_for_subscription.set(focus_requests_for_subscription.get() + 1);
+                }
+            });
+            view
+        });
+
+        app.update(|ctx| {
+            assert!(mouse(&view, ctx, &left_down(0, 0, 1, false)));
+        });
+
+        assert_eq!(focus_requests.get(), 1);
     });
 }
 

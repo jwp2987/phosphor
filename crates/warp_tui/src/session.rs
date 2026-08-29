@@ -19,7 +19,7 @@ use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
 use warp_core::settings::Setting as _;
 use warpui::SingletonEntity as _;
 use warpui_core::platform::{TerminationMode, WindowStyle};
-use warpui_core::runtime::spawn_tui_driver;
+use warpui_core::runtime::{TuiDriverStartupError, TuiFocusPolicy, spawn_tui_driver};
 use warpui_core::{AddWindowOptions, AppContext, ModelHandle, ViewHandle};
 
 use crate::orchestration_model::TuiOrchestrationModel;
@@ -331,6 +331,7 @@ fn init(
         ctx,
         window_id,
         root.clone(),
+        TuiFocusPolicy::PresentedTree,
         Some(probe),
         REPORT_MODIFIER_KEY_LIFECYCLE,
         freeze_repaints_when_unfocused,
@@ -383,7 +384,23 @@ fn init(
                 create_terminal_session_after_login(&sessions, &root, ctx);
             }
         }
-        Err(error) => {
+        Err(error) => handle_tui_driver_startup_error(error, ctx),
+    }
+}
+
+/// Ends the process after the TUI driver failed to start.
+///
+/// A host terminal that disappeared before the first frame is not a fault of
+/// this program: log it and exit cleanly, with no termination result, so the
+/// exit status stays zero. Anything else is a real startup failure and is both
+/// reported and surfaced as a non-zero exit.
+fn handle_tui_driver_startup_error(error: TuiDriverStartupError, ctx: &mut AppContext) {
+    match error {
+        TuiDriverStartupError::TerminalDisconnected(error) => {
+            log::error!("failed to start the TUI driver: {error}");
+            ctx.terminate_app(TerminationMode::ForceTerminate, None);
+        }
+        TuiDriverStartupError::Unexpected(error) => {
             let error = anyhow::Error::new(error);
             report_error!(&error);
             ctx.terminate_app(TerminationMode::ForceTerminate, Some(Err(error)));

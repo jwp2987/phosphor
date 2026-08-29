@@ -3432,6 +3432,111 @@ fn background_focus_reconciliation_does_not_steal_foreground_focus() {
     });
 }
 
+/// Ported from the pin's
+/// `empty_background_attachment_update_does_not_steal_foreground_focus`
+/// (upstream 4111d08f9), unchanged.
+///
+/// This is the attachment-bar door into the same invariant that
+/// `background_focus_reconciliation_does_not_steal_foreground_focus` guards
+/// through `update_process_input_focus`. That door was open: the bar's
+/// `Updated` subscription emitted `ReturnFocus` whenever it stopped rendering,
+/// and the session view answered by focusing its input unconditionally.
+/// Restoring that emission fails this test.
+#[test]
+fn empty_background_attachment_update_does_not_steal_foreground_focus() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (foreground, _) = add_focus_test_session(&mut app, &fixture, true);
+        let (background, _) = add_focus_test_session(&mut app, &fixture, false);
+        let foreground_input_id = foreground.read(&app, |view, _| view.input_view.id());
+
+        background.update(&mut app, |view, ctx| {
+            assert!(!view.attachment_bar.as_ref(ctx).should_render(ctx));
+            view.attachment_bar
+                .update(ctx, |bar, ctx| bar.emit_model_updated_for_test(ctx));
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                ctx.focused_view_id(fixture.window_id),
+                Some(foreground_input_id),
+                "an empty background context update must not focus its hidden input"
+            );
+        });
+    });
+}
+
+/// Ported from the pin's
+/// `foreground_input_pointer_action_recovers_focus_from_background_session`
+/// (upstream 4111d08f9). Adapted only in spelling: this fork's tests reach the
+/// action enums by full path rather than importing them.
+///
+/// Removing the `FocusRequested` emission, or its `reconcile_focus` handler in
+/// the session view, leaves focus on the hidden background input and fails this.
+#[test]
+fn foreground_input_pointer_action_recovers_focus_from_background_session() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (foreground, _) = add_focus_test_session(&mut app, &fixture, true);
+        let (background, _) = add_focus_test_session(&mut app, &fixture, false);
+        let foreground_input = foreground.read(&app, |view, _| view.input_view.clone());
+        let background_input = background.read(&app, |view, _| view.input_view.clone());
+
+        background_input.update(&mut app, |_, ctx| ctx.focus_self());
+        foreground_input.update(&mut app, |input, ctx| {
+            input.handle_action(
+                &crate::input::view::TuiInputAction::Editor(
+                    crate::editor_element::TuiEditorAction::SelectionStartAt {
+                        offset: string_offset::CharOffset::from(1),
+                    },
+                ),
+                ctx,
+            );
+        });
+
+        assert!(app.read(|ctx| foreground_input.is_focused(ctx)));
+    });
+}
+
+/// Ported from the pin's
+/// `stale_foreground_input_pointer_action_preserves_new_pty_owner`
+/// (upstream 4111d08f9). Adapted only in spelling, as above.
+///
+/// The control for the test above: recovery must route through the session's
+/// *current* input owner, so when the PTY has taken input the session view --
+/// not the now-stale composer -- ends up focused. Replacing `reconcile_focus`
+/// with a direct `ctx.focus(&self.input_view)` fails this.
+#[test]
+fn stale_foreground_input_pointer_action_preserves_new_pty_owner() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (foreground, _) = add_focus_test_session(&mut app, &fixture, true);
+        let (background, _) = add_focus_test_session(&mut app, &fixture, false);
+        let foreground_input = foreground.read(&app, |view, _| view.input_view.clone());
+        let background_input = background.read(&app, |view, _| view.input_view.clone());
+
+        foreground.update(&mut app, |view, _| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("cat", "");
+            assert!(view.input_target().pty_owns_input());
+        });
+        background_input.update(&mut app, |_, ctx| ctx.focus_self());
+        foreground_input.update(&mut app, |input, ctx| {
+            input.handle_action(
+                &crate::input::view::TuiInputAction::Editor(
+                    crate::editor_element::TuiEditorAction::SelectionStartAt {
+                        offset: string_offset::CharOffset::from(1),
+                    },
+                ),
+                ctx,
+            );
+        });
+
+        assert!(app.read(|ctx| foreground.is_focused(ctx)));
+    });
+}
+
 /// A block model whose output is supplied directly, for exercising a block
 /// that is materialized *after* its action already blocked. The production
 /// path builds its model with `AIBlockModelImpl::new`, which needs a persisted

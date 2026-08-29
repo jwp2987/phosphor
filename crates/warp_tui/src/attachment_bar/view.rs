@@ -133,16 +133,14 @@ pub(crate) fn init(app: &mut AppContext) {
 
 impl TuiAttachmentBar {
     pub(crate) fn new(model: ModelHandle<TuiAttachmentModel>, ctx: &mut ViewContext<Self>) -> Self {
-        let model_for_subscription = model.clone();
         ctx.subscribe_to_model(&model, move |_, _, event, ctx| match event {
             TuiAttachmentModelEvent::Updated => {
-                // TUI notifications invalidate the whole window, including the
-                // parent that conditionally renders this attachment bar.
-                // Emit ReturnFocus to prevent holding a stale frame
-                // (ex. showing the image chip after it's removed).
-                if !model_for_subscription.as_ref(ctx).should_render(ctx) {
-                    ctx.emit(TuiAttachmentBarEvent::ReturnFocus);
-                }
+                // Deliberately does NOT emit `ReturnFocus` when the bar stops
+                // rendering. It used to, to avoid holding a stale frame, but
+                // `notify()` already invalidates the parent that conditionally
+                // renders this bar -- and the focus half of that fix fired for
+                // *every* session's model, including hidden background ones,
+                // handing keyboard focus to an input the user cannot see.
                 ctx.notify();
             }
             TuiAttachmentModelEvent::AbortInputDetection => {
@@ -183,6 +181,15 @@ impl TuiAttachmentBar {
     pub(crate) fn paste_from_clipboard(&mut self, ctx: &mut ViewContext<Self>) {
         self.model
             .update(ctx, |model, ctx| model.paste_from_clipboard(ctx));
+    }
+
+    /// Drives the model's `Updated` event without going through a real
+    /// attachment mutation, so a test can assert what that event does (and does
+    /// not) do to focus.
+    #[cfg(test)]
+    pub(crate) fn emit_model_updated_for_test(&self, ctx: &mut ViewContext<Self>) {
+        self.model
+            .update(ctx, |_, ctx| ctx.emit(TuiAttachmentModelEvent::Updated));
     }
 
     pub(crate) fn remove_selected(&mut self, ctx: &mut ViewContext<Self>) {
