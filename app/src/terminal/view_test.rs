@@ -11,8 +11,8 @@ use warpui::{notification::UserNotification, Presenter, WindowInvalidation};
 use crate::ai::agent::conversation::{AIConversation, AIConversationId};
 use crate::ai::agent::task::TaskId;
 use crate::ai::agent::{
-    AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus,
-    UserQueryMode,
+    AIAgentActionId, AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutput,
+    AIAgentOutputStatus, UserQueryMode,
 };
 use crate::ai::llms::LLMId;
 #[cfg(windows)]
@@ -40,7 +40,7 @@ use crate::ai::blocklist::agent_view::toolbar_item::AgentToolbarItemKind;
 use crate::ai::blocklist::controller::response_stream::{ResponseStream, ResponseStreamId};
 use crate::ai::blocklist::{
     agent_view::AgentViewEntryOrigin, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    InputConfig, InputType,
+    FakeAIBlockModel, InputConfig, InputType,
 };
 use crate::ai::blocklist::agent_view::AgentViewState;
 use crate::features::FeatureFlag;
@@ -9377,4 +9377,163 @@ fn git_status_chips_are_not_just_git_diff_stats() {
         ContextChipKind::Time24,
     ]));
     assert!(!TerminalView::uses_git_status_chips(vec![]));
+}
+
+// ---------------------------------------------------------------------------
+// `AIBlock::is_passive_conversation` (upstream 63a17a50a, read at 4111d08f9)
+// ---------------------------------------------------------------------------
+
+fn auto_code_diff_query_input(query: &str) -> AIAgentInput {
+    AIAgentInput::AutoCodeDiffQuery {
+        query: query.to_owned(),
+        context: Default::default(),
+    }
+}
+
+/// Ported from the pin's `is_passive_conversation_reflects_request_type_at_construction`
+/// (upstream 4111d08f9).
+#[test]
+fn is_passive_conversation_reflects_request_type_at_construction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(view, auto_code_diff_query_input("diff"), ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            assert!(ai_block.as_ref(ctx).is_passive_conversation());
+        });
+    })
+}
+
+/// Ported from the pin's `is_passive_conversation_is_false_for_a_directly_issued_user_query`
+/// (upstream 4111d08f9). Adapted: the pin's `agent_view_user_query_input` helper already
+/// exists in this file under the name `agent_jump_user_query` with an identical body, so
+/// that one is reused instead of adding a duplicate.
+#[test]
+fn is_passive_conversation_is_false_for_a_directly_issued_user_query() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            append_exchange_and_handle_event(view, agent_jump_user_query("hi"), ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            assert!(!ai_block.as_ref(ctx).is_passive_conversation());
+        });
+    })
+}
+
+/// Ported from the pin's `is_passive_conversation_is_recomputed_on_conversation_reassignment`
+/// (upstream 4111d08f9). Adapted: this fork's `start_new_conversation` takes three
+/// arguments before `ctx` rather than the pin's four, and `agent_jump_user_query` stands in
+/// for the pin's identical `agent_view_user_query_input`.
+#[test]
+fn is_passive_conversation_is_recomputed_on_conversation_reassignment() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (old_conversation_id, _task_id, exchange_id, _stream_id) =
+            terminal.update(&mut app, |view, ctx| {
+                append_exchange_and_handle_event(view, auto_code_diff_query_input("diff"), ctx)
+            });
+
+        terminal.read(&app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            assert!(ai_block.as_ref(ctx).is_passive_conversation());
+        });
+
+        // Move the exchange to a new conversation, as happens on a conversation split. This is
+        // a separate app update from the manual reset below so the `ReassignedExchange` event
+        // emitted by `append_reassigned_exchange` (which would rebuild a real, still-passive
+        // `AIBlockModelImpl` and reassert the cache) is fully processed first.
+        let new_conversation_id = terminal.update(&mut app, |view, ctx| {
+            let history_model = BlocklistAIHistoryModel::handle(ctx);
+            history_model.update(ctx, |history_model, ctx| {
+                let new_conversation_id =
+                    history_model.start_new_conversation(view.view_id, false, false, ctx);
+                let exchange = history_model
+                    .conversation_mut(&old_conversation_id)
+                    .expect("old conversation should exist")
+                    .remove_exchange(exchange_id)
+                    .expect("exchange should exist");
+                let response_stream_id = ResponseStreamId::new_for_test();
+                history_model
+                    .conversation_mut(&new_conversation_id)
+                    .expect("new conversation should exist")
+                    .append_reassigned_exchange(&response_stream_id, exchange, view.view_id, ctx)
+                    .expect("exchange should reassign");
+                new_conversation_id
+            })
+        });
+
+        // Now reset the block directly onto a model that classifies as `Active` — the opposite
+        // of what's currently cached. A `reset_conversation_id` that forgot to refresh
+        // `is_passive` would keep reporting the stale, now-incorrect cached value instead of the
+        // new model's.
+        terminal.update(&mut app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            let active_model = Rc::new(FakeAIBlockModel::new(
+                vec![agent_jump_user_query("hi")],
+                AIAgentOutput::default(),
+            ));
+            ai_block.update(ctx, |block, ctx| {
+                block.reset_conversation_id(new_conversation_id, active_model, ctx);
+            });
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            assert!(!ai_block.as_ref(ctx).is_passive_conversation());
+            assert_eq!(
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(&new_conversation_id)
+                    .and_then(|c| c.exchange_with_id(exchange_id))
+                    .map(|e| e.id),
+                Some(exchange_id)
+            );
+        });
+    })
+}
+
+/// Ported from the pin's
+/// `is_passive_conversation_does_not_re_derive_from_history_after_construction`
+/// (upstream 4111d08f9).
+#[test]
+fn is_passive_conversation_does_not_re_derive_from_history_after_construction() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let (conversation_id, _task_id, exchange_id, _stream_id) =
+            terminal.update(&mut app, |view, ctx| {
+                append_exchange_and_handle_event(view, auto_code_diff_query_input("diff"), ctx)
+            });
+
+        // Strip the backing exchange out of history after construction. A live re-derivation
+        // (`AIBlockModelImpl::request_type` failing to find the exchange) falls back to
+        // `AIRequestType::Active`, so this only keeps returning `true` if the value was cached
+        // at construction time rather than looked up on every call.
+        terminal.update(&mut app, |_view, ctx| {
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _ctx| {
+                history_model
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation should exist")
+                    .remove_exchange(exchange_id)
+                    .expect("exchange should exist");
+            });
+        });
+
+        terminal.read(&app, |view, ctx| {
+            let ai_block = view.last_ai_block().expect("AI block should exist");
+            assert!(ai_block.as_ref(ctx).is_passive_conversation());
+        });
+    })
 }
