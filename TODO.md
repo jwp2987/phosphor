@@ -256,13 +256,30 @@ above it.
 
 #### Real portable debt found: 34 tests, none of which had a verdict to sit in
 
-- **Cluster A (6) — QUALITY-1801 exit-commit ordering.** Once an ambient run commits to
-  exiting, a buffered child message must not restart MAA and flip a terminal
-  conversation back to `InProgress`. Fully local. The adjudicator checked it against the
-  two decisions that *look* like they cover it and showed neither does: the 2026-08-17
-  idle-window decline named only failure-side/refreshable APIs (`idle_on_complete` is
-  live), and `DECLINED.md:213` reversed the orchestration decline for the local half.
-  **Overlaps shard E's `drop_pending_events_...` — port together.**
+- **~~Cluster A (6) — QUALITY-1801 exit-commit ordering.~~ NOT PORTABLE YET —
+  re-verified 2026-08-29 by the port agent assigned to it, which ported nothing.**
+  Once an ambient run commits to exiting, a buffered child message must not restart MAA
+  and flip a terminal conversation back to `InProgress`. Fully local, and the two
+  decisions that *look* like they cover it genuinely do not (both re-confirmed
+  independently — see below). **But the defect cannot occur in this fork, because the
+  code path it guards does not exist here.** The upstream commit is `60d602df6`, which is
+  ALREADY in the port queue at `TODO.md:1297` marked **BLOCKED**; that row is correct and
+  under-states the blocker. Cluster A and that row are one work item. Full missing-piece
+  inventory now recorded there. **Do not schedule Cluster A independently, and do not
+  re-file it as untracked** — the adjudication note that `exit_commit_handle` has "0 hits
+  in TODO.md" was true of the *symbol* and false of the *work*; the ledger tracks this by
+  upstream sha, not by symbol name.
+  - **Both look-alike decisions re-verified and neither applies, as the adjudicator
+    said.** (1) The 2026-08-17 idle-window decline is `TODO.md:6267-6296`, not a
+    `DECLINED.md` row; it removed the *failure-side* `SETUP_FAILED_IDLE_TIMEOUT` deferral
+    and says in its own text "the surviving `idle_on_complete` branch". `idle_on_complete`
+    is live: `--idle-on-complete` at `crates/warp_cli/src/agent.rs:353`, plumbed at
+    `agent_sdk/mod.rs:511`, consumed at `driver.rs:1669` and `:1807` via
+    `complete_with_optional_idle`. (2) `DECLINED.md:213` does reverse the orchestration
+    decline for the local half (#304/#309/#310/#325/#329), leaving only the cloud-runner
+    half (#290) declined. Nothing in `60d602df6` touches `server_api`,
+    `ServerApiProvider`, `MockAIClient` or `warp_graphql`.
+  - **Overlaps shard E's `drop_pending_events_...`** — same commit, blocked with it.
 - **Cluster B (6) — REMOTE-2269 shared recovery budget.** Retries and resumes must draw
   from one counter. The fork still has the pre-fix 5-bool `recovery_action`, and its own
   test comment states the exact behaviour the fix removes. **This is the same defect as
@@ -1381,13 +1398,63 @@ separately rather than inflating the queue count.
       `f0028fa6d05db1ba63726eaf6f8d33ab17abe37b` (this commit is an intermediate).
       Compile-surface change; **sequence it BEFORE any port using new API types**, and
       sweep the queue for proto-dependent commits when ordering.
-- [ ] **`60d602df6` — MAA teardown race guard. BLOCKED, not schedulable yet.** Its host
-      function `conversation_ready_for_pending_events` does not exist here, and
+- [ ] **`60d602df6` — MAA teardown race guard (QUALITY-1801). BLOCKED, not schedulable
+      yet. Re-verified 2026-08-29; the blocker is real and WIDER than this row said.**
+      Its host function `conversation_ready_for_pending_events` does not exist here, and
       `OrchestrationEventServiceEvent::EventsReady` is emitted 3x and subscribed nowhere.
       Porting now adds an unreachable flag plus tests that can only pass — the shape
       `script/check_stub_coverage` exists to catch. **Attach as a prerequisite to the
       deferred orchestration-consumer increment** (`blocklist/mod.rs:21-24`, TODO #310),
       so the race closes the day the consumer lands.
+
+      **This row is also the home of test-adjudication "Cluster A" (6 driver tests) and
+      shard E's `drop_pending_events_for_exiting_conversation` (1 controller test).** They
+      are not separate work items and must not be scheduled as such; see the corrected
+      Cluster A note above. A 2026-08-29 port agent was dispatched to land all 7 and
+      correctly declined to write any of them.
+
+      **Root cause, measured — `orchestration_events.rs` is an island.**
+      `git grep -l OrchestrationEventService -- app crates` returns exactly two files: the
+      module itself and `orchestration_events_tests.rs`. It is **never registered as a
+      singleton** (`app/src/lib.rs` has zero hits; the pin registers it at
+      `4111d08f9:app/src/lib.rs:2247`), so `OrchestrationEventService::handle(ctx)` in a
+      test would lazily hit the `Default` impl and come up with **no history subscription
+      at all**. `enqueue_event_batch`, `drain_events_for_request`, `requeue_awaiting_events`
+      and `PendingEvent`/`PendingEventDetail` have **no production caller anywhere**. So
+      nothing in this fork can drain a buffered child event into a new MAA request, which
+      is the only way the defect manifests. The guard would have nothing to guard, and the
+      6 driver tests would be asserting against a pipeline that is absent, not broken.
+      This is invisible to a symbol-presence check: every symbol the porting brief listed
+      as "already present in the fork" **is** present — and unconsumed. Check
+      *consumers*, not symbols, before calling this unblocked.
+
+      **Missing-piece inventory (8, not the 2 this row originally named).** Production:
+      (1) `OrchestrationEventService` singleton registration in `app/src/lib.rs`;
+      (2) `conversation_ready_for_pending_events` + its 3 call sites
+      (`4111d08f9:controller.rs:1680/1754/1912/1968`); (3) the async dormant-Claude-wake
+      step `maybe_prepare_local_claude_wake` (pin `controller.rs`); (4) an `EventsReady`
+      subscriber; (5) `AgentDriver::run_conversation_id: Option<AIConversationId>` — the
+      fork's `execute_run` instead keeps `conversation_id_cell: Arc<Mutex<Option<String>>>`
+      (`driver.rs:1511`), the server conversation *token string*, populated from
+      `UpdatedStreamingExchange`, which is a different value and cannot seed `on_commit`;
+      (6) `AgentDriver::skip_initial_turn`. Test-only: (7)
+      `BlocklistAIHistoryModel::update_conversation_for_new_request_input_for_test`
+      (`4111d08f9:history_model.rs:1154`; the fork has only the non-test
+      `update_conversation_for_new_request_input` at `history_model.rs:1090`);
+      (8) `ResponseStream::emit_response_event_for_test` /
+      `emit_after_stream_finished_for_test` (`4111d08f9:controller/response_stream.rs:309`
+      and `:324`) — the cheapest item here, ~10 lines, and both
+      `ResponseStreamEvent` variants they emit already exist in the fork
+      (`controller/response_stream.rs:810-814`).
+
+      **Note for whoever unblocks this: port `with_on_commit` but NOT its neighbours.**
+      The pin's `IdleTimeoutSender` at `4111d08f9:driver.rs:289` grew four things at once
+      — `on_commit` (wanted), the `IdleWait` trait (wanted, it is how the pin's tests stay
+      off wall-clock time), and `pending`/`arm_refreshable`/`refresh` plus
+      `idle_window_for_terminal_status` (**declined**, failure-side only, see
+      `TODO.md:6267-6296`). Taking the struct wholesale re-imports the declined half.
+      Also note the pin's bodies use let-chains (`if let … && let …`); the fork's copy at
+      `driver.rs:120-185` uses nested `if let` and should stay that way.
 - [ ] **`c6266ee19`** — verify the installed binary, not binstall's metadata (CI caches
       restore metadata without the binary).
 - [ ] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
