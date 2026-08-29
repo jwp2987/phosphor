@@ -309,3 +309,63 @@ fn pull_request_artifact_serializes_to_expected_wire_format() {
         })
     );
 }
+
+/// Ported from the pin's `artifact_round_trips_all_variants` (upstream 4111d08f9).
+///
+/// Adapted: the pin's list covers five variants, including
+/// `Artifact::ExternalReference { reference_type, url, title, metadata }`
+/// (Linear/Jira issue links). This fork's `Artifact` has four variants — `Plan`,
+/// `PullRequest`, `Screenshot`, `File` — and no `ExternalReference`, so that
+/// element is dropped rather than asserted against a variant that does not
+/// exist. Everything else is the pin's list verbatim.
+///
+/// This is not redundant with the per-variant round-trip tests above: none of
+/// them covers `Artifact::Screenshot`, whose fields go through the same
+/// hand-written `Deserialize` impl (via `ArtifactHelper`) as every other
+/// variant. Artifacts are persisted for local conversations, so a field
+/// dropped from `ArtifactHelper::Screenshot` silently corrupts stored
+/// screenshots rather than failing loudly.
+#[test]
+fn artifact_round_trips_all_variants() {
+    let artifacts = vec![
+        Artifact::Plan {
+            document_uid: "doc-1".to_string(),
+            notebook_uid: Some(NotebookId::from("0123456789abcdefABCDEF".to_string())),
+            title: Some("My plan".to_string()),
+        },
+        Artifact::Plan {
+            document_uid: "doc-2".to_string(),
+            notebook_uid: None,
+            title: None,
+        },
+        Artifact::PullRequest {
+            url: "https://github.com/org/repo/pull/123".to_string(),
+            branch: "feature-branch".to_string(),
+            repo: Some("repo".to_string()),
+            number: Some(123),
+        },
+        Artifact::Screenshot {
+            artifact_uid: "shot-1".to_string(),
+            mime_type: "image/png".to_string(),
+            description: Some("A screenshot".to_string()),
+        },
+        Artifact::Screenshot {
+            artifact_uid: "shot-2".to_string(),
+            mime_type: "image/png".to_string(),
+            description: None,
+        },
+        Artifact::File {
+            artifact_uid: "file-1".to_string(),
+            filepath: "outputs/report.txt".to_string(),
+            filename: "report.txt".to_string(),
+            mime_type: "text/plain".to_string(),
+            description: Some("Daily summary".to_string()),
+            size_bytes: Some(42),
+        },
+    ];
+    for artifact in artifacts {
+        let json = serde_json::to_value(&artifact).unwrap();
+        let deserialized: Artifact = serde_json::from_value(json).unwrap();
+        assert_eq!(deserialized, artifact);
+    }
+}
