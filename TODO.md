@@ -346,6 +346,59 @@ Adjudication for the managed-MCP and `ephemeral_installation_id` families is now
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
 
+#### Results — S9, the refutation shard (5 of 9 in)
+
+**0 refutations. All 29 confirmed NOT-PORTABLE, nothing committed, branch clean.**
+
+This is the honest negative result the shard was for. Last round's equivalent pass
+overturned 12 of 51; this one overturned none, and said so rather than manufacturing a
+port. The three families that looked most refutable on paper each dissolved on reading
+the body:
+
+- **Local pane bookkeeping.** The fork *does* have `child_agent_panes` and
+  `restore_missing_child_agent_panes_for_parent` — so the name-grep looks promising. But
+  that path is **synchronous and disk-backed**: it reads `child_conversation_ids_of`
+  directly, with no fetch, no in-flight state and no completion callback. There is
+  therefore no dispatch to coalesce and no staleness window, so the bug class the 7 seed
+  tests guard **cannot occur here**.
+- **Shared onboarding widget navigation.** `move_selection` is a **private inherent method
+  of `OfferSlide`**, not trait-provided; `OnboardingSlide::on_up/on_down` are bare hooks
+  that default to `{}` and every fork slide implements its own. Nothing is shared.
+- **The pure staleness predicate.** `is_stale_ancestor_list_completion` takes no `App` and
+  no network and is portable *in mechanism* — but nothing in the fork would ever construct
+  a `PendingParentChildSeed`, because it exists only to track an ancestor-list fetch the
+  fork never makes. Porting it is the exact unreachable-code-guarded-by-a-test-that-can-
+  only-pass shape `script/check_stub_coverage` forbids.
+
+**Four of my brief's claims were wrong; all four verified by the coordinator:**
+1. `build_cache` is documented after all — see the corrected bullet above.
+2. **Wrong `DECLINED.md` row for onboarding.** I cited `:215` (provider-cost baselines on
+   restored conversations); the row that governs the offer slide is **`:85` — account-first
+   onboarding, billing, paid tiers (#11)**, which is what both in-code decline comments
+   already cite. (`:215` *was* the right row for S8's cost trio, and S8 cited it correctly.)
+3. **Wrong struct for the billing tests.** I named `TeamMember` (`team.rs:28`); the upstream
+   test uses **`WorkspaceMember`** (`workspace.rs:115-120`). Both lack `is_disabled` so the
+   verdict survives, but my cited evidence would not have supported it.
+4. My shard brief was written against the **old** pin `42effe840` while `BRIEF-COMMON.md`
+   names `4111d08f9`. The agent used the new pin throughout; no verdict turned on it.
+
+**Three new findings, none of them in the 29:**
+- **`crates/onboarding` has zero tests** (`grep -c '#[test]'` = 0) while **five live slides**
+  carry hand-rolled clamped two-option arrow navigation (`intention_slide.rs:575/584`,
+  `third_party_slide.rs:392/402`, `agent_slide.rs:1081/1106`, `theme_picker_slide.rs:598/614`,
+  `customize_slide.rs:689/699`). That is precisely the bug class the declined
+  `arrow_keys_move_through_both_options` guards — on live fork code, uncovered. **Correctly
+  not written:** `crates/onboarding/Cargo.toml` has **no `[dev-dependencies]` section at
+  all**, so the crate cannot host a test today; adding one is a manifest change no agent can
+  compile-verify. Follow-up ticket, not a port.
+- **`crates/onboarding/src/telemetry_tests.rs`** is unported and unmentioned anywhere.
+- **An entire upstream module is absent and untracked:**
+  `app/src/pane_group/child_agent/{mod,hydration,materialization,materialization_tests,restoration}.rs`,
+  from `8eb52216f` (QUALITY-928 orchestration unified stack) and `73bd01431`.
+  **Coordinator-verified: neither sha appears in `TODO.md`, `DECLINED.md`, `docs/`, or any
+  `SCOPE-*.md`.** Correctly unported (cloud), but nothing records the decision — the same
+  shape as the `build_cache` gap, and this one is real.
+
 ### TEST ADJUDICATION — Phase 2.6 COMPLETE (all 5 shards, 228 queue entries)
 
 Every verdict read from the test BODY at `4111d08f9`. Ledger-ready TSV rows are in
@@ -473,9 +526,18 @@ above it.
 - **`WARP_*` env aliases.** Mechanism is plainly portable; the question is whether a
   de-Warped fork advertises `WARP_*` names to third-party agents. `DECLINED.md:182`
   covers not *renaming* existing wire tokens — a different question from adding aliases.
-- **`crates/build_cache`'s absence is undocumented.** Coordinator-verified: zero mentions
-  in `DECLINED.md`, `TODO.md`, or `docs/STATE.md`. Nothing records whether it was a
-  decision.
+- **~~`crates/build_cache`'s absence is undocumented.~~ WRONG — corrected 2026-08-29.**
+  The claim checked only `DECLINED.md`, `TODO.md` and `docs/STATE.md` (0/0/0, accurate as
+  far as it went) and concluded "nothing records whether it was a decision". It is in fact
+  documented with a rationale at **`SCOPE-REST.md:214,328`** (verdict `C`, cloud) and
+  `docs/SWEEP-SUMMARY.md:299`: sole consumer at the pin is
+  `app/src/ai/agent_sdk/driver/cache_setup.rs`, whose imports open with
+  `use build_cache::...; use cloud_object_models::SourceRepo;` — and `cloud_object_models`
+  is declined outright at `DECLINED.md:81` (#211). So the absence is a documented,
+  defensible consequence of an existing decline. What is genuinely missing is only a
+  `DECLINED.md` row of its own — a much weaker gap than "undocumented".
+  **Lesson: three files is not "the docs".** `SCOPE-*.md` carries per-file verdicts and was
+  not consulted.
 
 #### TWO SEPARATE EXTRACTION DEFECTS — corrected 2026-08-29
 
