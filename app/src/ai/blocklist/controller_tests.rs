@@ -12,7 +12,9 @@ use crate::ai::agent::{
     UserQueryMode,
 };
 use crate::ai::ambient_agents::AmbientAgentTaskId;
-use crate::ai::blocklist::controller::response_stream::{ResponseStream, ResponseStreamId};
+use crate::ai::blocklist::controller::response_stream::{
+    PendingResume, RecoveryBudget, ResponseStream, ResponseStreamId,
+};
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PendingAttachment, PendingFile};
 use crate::ai::llms::LLMId;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
@@ -318,7 +320,11 @@ fn cancelling_conversation_aborts_pending_auto_resume() {
 
         terminal.update(&mut app, |terminal, ctx| {
             terminal.ai_controller().update(ctx, |controller, ctx| {
-                controller.schedule_auto_resume_after_error(conversation_id, ctx);
+                controller.schedule_auto_resume_after_error(
+                    conversation_id,
+                    PendingResume::immediate(RecoveryBudget::fresh()),
+                    ctx,
+                );
                 assert!(
                     controller
                         .pending_auto_resume_handles

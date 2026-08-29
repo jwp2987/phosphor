@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 use crate::ai::api_error::AIApiError;
 use anyhow::anyhow;
@@ -22,42 +22,199 @@ use crate::{
 };
 use warpui::SingletonEntity;
 
+/// Maximum number of recovery attempts spent on one request before the failure is
+/// surfaced.
+///
+/// Retries (the same request re-sent) and resumes (a fresh `ResumeConversation` request)
+/// draw from this single budget. Giving resumes their own one-shot allowance, as this code
+/// used to, left the effective post-action budget at exactly one attempt — and a provider
+/// that is dropping connections is very likely to drop that one too.
+pub(crate) const MAX_RECOVERY_ATTEMPTS: usize = 3;
+
+/// How long to wait before the `attempts_made`-th recovery attempt (1-based).
+///
+/// Exponential backoff: 0.5s / 1s / 2s. This is the schedule that was already inline in
+/// [`ResponseStream::retry`] — hoisted, not replaced, so unifying retries and resumes
+/// does not stack a second backoff on top of the one the fork already had. Upstream sources
+/// the same numbers from `server::retry_strategies::backoff_after_attempts`, which is part
+/// of the dropped Warp-server client and does not exist here; that version also jitters,
+/// which this one deliberately does not, because the fork has no shared server to
+/// thundering-herd against.
+pub(crate) fn backoff_after_attempts(attempts_made: usize) -> Duration {
+    Duration::from_millis(500u64 << attempts_made.saturating_sub(1).min(4))
+}
+
+/// The recovery budget for one request and the retries and resumes that recover it,
+/// carried forward across each of those attempts.
+///
+/// A retry keeps the budget inside the same [`ResponseStream`]; a resume hands it to the
+/// `ResumeConversation` request the controller sends next. So the two share one counter
+/// rather than getting a budget each, and a failure can no longer exhaust recovery in a
+/// single attempt.
+///
+/// The scope is one request, not one agent turn: a turn spans many requests (every
+/// tool-result round trip is its own), and each starts with a [`Self::fresh`] budget, as it
+/// did before retries and resumes were unified.
+///
+/// `pub` only to match [`ResponseStream::new`], which takes one; every constructor and
+/// accessor is crate-internal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryBudget {
+    attempts_used: usize,
+    resume_allowed: bool,
+}
+
+impl RecoveryBudget {
+    /// A full budget, for a request that is not itself recovering another.
+    pub(crate) fn fresh() -> Self {
+        Self {
+            attempts_used: 0,
+            resume_allowed: true,
+        }
+    }
+
+    /// The same budget with resumes disallowed, for requests whose failures must stay
+    /// silent and terminal (passive background requests).
+    pub(crate) fn without_resume(self) -> Self {
+        Self {
+            resume_allowed: false,
+            ..self
+        }
+    }
+
+    /// Recovery attempts — retries and resumes — already spent recovering this request.
+    pub(crate) fn attempts_used(self) -> usize {
+        self.attempts_used
+    }
+
+    /// The budget for the next recovery attempt, with that attempt charged against it.
+    pub(crate) fn next_attempt(self) -> Self {
+        Self {
+            attempts_used: self.attempts_used + 1,
+            ..self
+        }
+    }
+
+    fn has_remaining(self) -> bool {
+        self.attempts_used < MAX_RECOVERY_ATTEMPTS
+    }
+}
+
+/// A conversation resume scheduled for a failed request: the budget the resumed request
+/// runs with, and how long to wait before sending it.
+///
+/// The wait is decided here, where the recovery decision is made, rather than recomputed at
+/// send time, so the duration that is logged is the duration that is waited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingResume {
+    recovery: RecoveryBudget,
+    backoff: Duration,
+}
+
+impl PendingResume {
+    /// A resume that is not recovering a transport failure and so waits no backoff: the
+    /// fork's BYOP bad-arguments path, which resends so the model can see its own error
+    /// tool-result and correct itself. It is a fresh request, not a recovery attempt, so it
+    /// carries a full budget; the loop it could otherwise cause is bounded by the
+    /// newly-added-message-ids check at its call site, not by the recovery budget.
+    pub(crate) fn immediate(recovery: RecoveryBudget) -> Self {
+        Self {
+            recovery,
+            backoff: Duration::ZERO,
+        }
+    }
+
+    /// The budget the resumed request runs with, already charged for this resume.
+    pub(crate) fn recovery(self) -> RecoveryBudget {
+        self.recovery
+    }
+
+    /// How long to wait before sending the resume.
+    pub(crate) fn backoff(self) -> Duration {
+        self.backoff
+    }
+}
+
 /// What to do about a failed or truncated MAA response attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecoveryAction {
-    /// Re-send the same request immediately.
-    RetryNow,
+    /// Re-send the same request after a backoff.
+    Retry,
     /// Re-send the same request once connectivity returns.
     RetryWhenOnline,
     /// Resume the conversation with a fresh request after the stream completes.
     Resume,
     /// Surface the error; the conversation ends in error.
-    Fail,
+    Fail(FailReason),
+}
+
+impl RecoveryAction {
+    /// Which kind of recovery this is, for the recovery logs. Both retry variants share
+    /// one label; the logged wait distinguishes a backed-off retry from a parked one.
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::Retry | Self::RetryWhenOnline => "retry",
+            Self::Resume => "resume",
+            Self::Fail(_) => "none",
+        }
+    }
+}
+
+/// Why a failed attempt is surfaced instead of recovered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FailReason {
+    /// The error is not transient, so a fresh attempt would fail identically.
+    NotRecoverable,
+    /// The shared retry/resume budget is spent.
+    BudgetExhausted,
+    /// Only a resume could recover this failure, and this request may not resume.
+    ResumeNotAllowed,
+}
+
+impl FailReason {
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::NotRecoverable => "not_recoverable",
+            Self::BudgetExhausted => "budget_exhausted",
+            Self::ResumeNotAllowed => "resume_not_allowed",
+        }
+    }
 }
 
 /// Decides how to recover from a failed response-stream attempt.
 ///
-/// Before any client actions have been received, the request can be re-sent
-/// verbatim (immediately, or once connectivity returns). After actions have
-/// streamed, re-sending is unsafe, so recovery uses a fresh resume request.
+/// Before any client actions have been received, the request can be re-sent verbatim
+/// (after a backoff, or once connectivity returns). After actions have streamed,
+/// re-sending is unsafe, so recovery uses a fresh `ResumeConversation` request. Both draw
+/// from `recovery`, so the kind of recovery available can change mid-chain without handing
+/// the request a second budget.
 fn recovery_action(
     has_received_client_actions: bool,
     is_recoverable: bool,
-    has_retry_budget: bool,
-    can_attempt_resume_on_error: bool,
+    recovery: RecoveryBudget,
     is_online: bool,
 ) -> RecoveryAction {
-    if !has_received_client_actions && is_recoverable && has_retry_budget {
-        if is_online {
-            RecoveryAction::RetryNow
+    if !is_recoverable {
+        return RecoveryAction::Fail(FailReason::NotRecoverable);
+    }
+    // Checked ahead of the budget so a request that could never have resumed reports that,
+    // rather than whichever constraint happens to bind first: a passive request that spent
+    // its budget on pre-action retries and then fails post-action is blocked by both, and
+    // the ineligibility is the one worth knowing.
+    if has_received_client_actions && !recovery.resume_allowed {
+        return RecoveryAction::Fail(FailReason::ResumeNotAllowed);
+    }
+    if !recovery.has_remaining() {
+        return RecoveryAction::Fail(FailReason::BudgetExhausted);
+    }
+    if !has_received_client_actions {
+        return if is_online {
+            RecoveryAction::Retry
         } else {
             RecoveryAction::RetryWhenOnline
-        }
-    } else if has_received_client_actions && is_recoverable && can_attempt_resume_on_error {
-        RecoveryAction::Resume
-    } else {
-        RecoveryAction::Fail
+        };
     }
+    RecoveryAction::Resume
 }
 
 /// Request-routing parameters for the BYOP path. Extracted from LLMId, settings, and
@@ -309,7 +466,15 @@ impl ResponseStreamId {
 pub struct ResponseStream {
     id: ResponseStreamId,
     params: api::RequestParams,
-    retry_count: usize,
+    /// The shared retry/resume budget for this request, inherited from the request this one
+    /// recovers (if any) and charged for each retry sent from this stream.
+    recovery: RecoveryBudget,
+    /// In-request retries sent from this stream.
+    ///
+    /// Deliberately not derived from [`Self::recovery`]: that budget is inherited across a
+    /// resume, so it counts attempts made before this request existed and would overstate
+    /// the retries this request actually needed. Telemetry reports this one.
+    retries_sent: usize,
     start_time: DateTime<Local>,
     time_to_latest_event: TimeDelta,
     cancellation_tx: Option<oneshot::Sender<()>>,
@@ -321,18 +486,14 @@ pub struct ResponseStream {
     /// AI identifiers for telemetry emission
     ai_identifiers: AIIdentifiers,
 
-    /// Whether this request can attempt to resume the conversation on error.
-    /// This is true for all requests except those that are themselves the result of a resume
-    /// triggered by a previous error.
-    can_attempt_resume_on_error: bool,
-
     pending_title_generation: Option<PendingTitleGeneration>,
 
-    /// Whether we should attempt to resume the conversation after the stream finishes.
+    /// The resume to send once the stream finishes, if one was scheduled.
     ///
-    /// This is set when we receive a retryable error after client actions have been received
-    /// and `can_attempt_resume_on_error` is true.
-    should_resume_conversation_after_stream_finished: bool,
+    /// This is set when a retryable error arrives after client actions have been received
+    /// (so an in-request retry is unsafe) and the shared recovery budget still permits a
+    /// resume. It carries the budget the resumed request must run with.
+    pending_resume: Option<PendingResume>,
 
     /// Unique, internal id for the current request.
     ///
@@ -355,16 +516,16 @@ impl ResponseStream {
         Self {
             id,
             params: api::RequestParams::new_for_test(vec![], vec![]),
-            retry_count: 0,
+            recovery: RecoveryBudget::fresh().without_resume(),
+            retries_sent: 0,
             start_time: Local::now(),
             time_to_latest_event: TimeDelta::seconds(0),
             cancellation_tx: Some(cancellation_tx),
             original_error: None,
             has_received_client_actions: false,
             ai_identifiers: AIIdentifiers::default(),
-            can_attempt_resume_on_error: false,
             pending_title_generation: None,
-            should_resume_conversation_after_stream_finished: false,
+            pending_resume: None,
             current_request_id: Some(Uuid::new_v4()),
         }
     }
@@ -372,7 +533,7 @@ impl ResponseStream {
     pub fn new(
         params: api::RequestParams,
         ai_identifiers: AIIdentifiers,
-        can_attempt_resume_on_error: bool,
+        recovery: RecoveryBudget,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let (cancellation_tx, cancellation_rx) = oneshot::channel();
@@ -427,13 +588,13 @@ impl ResponseStream {
             start_time,
             time_to_latest_event: TimeDelta::seconds(0),
             cancellation_tx: Some(cancellation_tx),
-            retry_count: 0,
+            recovery,
+            retries_sent: 0,
             original_error: None,
             has_received_client_actions: false,
             ai_identifiers,
-            can_attempt_resume_on_error,
             pending_title_generation,
-            should_resume_conversation_after_stream_finished: false,
+            pending_resume: None,
             current_request_id: Some(request_id),
         }
     }
@@ -487,7 +648,14 @@ impl ResponseStream {
 
     /// Returns true if we should attempt to resume the conversation after the stream finishes.
     pub fn should_resume_conversation_after_stream_finished(&self) -> bool {
-        self.should_resume_conversation_after_stream_finished
+        self.pending_resume.is_some()
+    }
+
+    /// The resume to send once the stream finishes, if one was scheduled. It carries this
+    /// request's budget with the resume already charged against it, so the resumed request
+    /// can't restart recovery from scratch.
+    pub(super) fn pending_resume(&self) -> Option<PendingResume> {
+        self.pending_resume
     }
 
     /// Helper function to emit AgentModeError telemetry for error that is retryable (not user visible).
@@ -524,8 +692,15 @@ impl ResponseStream {
     }
 
     fn retry(&mut self, ctx: &mut ModelContext<Self>) {
-        self.retry_count += 1;
-        self.has_received_client_actions = false; // Reset for the new attempt
+        // Charge the shared budget, not a retry-only counter: the next failure of this
+        // request may have to recover by resuming instead, and it must see the attempts
+        // already spent here.
+        self.recovery = self.recovery.next_attempt();
+        self.retries_sent += 1;
+        // Reset for the new attempt.
+        self.has_received_client_actions = false;
+        // A retry supersedes any resume this stream had scheduled.
+        self.pending_resume = None;
 
         let (cancellation_tx, cancellation_rx) = oneshot::channel();
         if let Some(old_cancellation_tx) = self.cancellation_tx.take() {
@@ -540,8 +715,9 @@ impl ResponseStream {
         // Exponential backoff: 0.5s / 1s / 2s. Previously there was no interval at
         // all, so retrying the same payload three times in a row within seconds was
         // pure waste for deterministic failures (like exceeding a request limit),
-        // and it also worsened queueing on a single-machine LLM.
-        let backoff = std::time::Duration::from_millis(500u64 << (self.retry_count - 1).min(4));
+        // and it also worsened queueing on a single-machine LLM. The schedule now lives in
+        // `backoff_after_attempts` so the resume path can wait the same amount.
+        let backoff = backoff_after_attempts(self.recovery.attempts_used());
         let _ = ctx.spawn(
             async move {
                 warpui::r#async::Timer::after(backoff).await;
@@ -659,12 +835,12 @@ impl ResponseStream {
                                 Some(warp_multi_agent_api::response_event::stream_finished::Reason::Done(_)) | None
                             ) {
                                 // Emit retry success telemetry if this was a successful completion after retries
-                                if self.retry_count > 0 {
+                                if self.retries_sent > 0 {
                                     if let Some(original_error) = &self.original_error {
                                         send_telemetry_from_ctx!(
                                             crate::TelemetryEvent::AgentModeRequestRetrySucceeded {
                                                 identifiers: self.ai_identifiers.clone(),
-                                                retry_count: self.retry_count,
+                                                retry_count: self.retries_sent,
                                                 original_error: original_error.clone(),
                                             },
                                             ctx
@@ -679,30 +855,31 @@ impl ResponseStream {
             }
             Err(e) => {
                 // Store original error if this is the first error
-                if self.retry_count == 0 {
+                if self.recovery.attempts_used() == 0 {
                     self.original_error = Some(format!("{e:?}"));
                 }
 
-                // Decide what to do about the failure: retry now, retry once
+                // Decide what to do about the failure: retry after a backoff, retry once
                 // connectivity returns, resume the conversation (if actions have
-                // already executed, a verbatim retry would be unsafe), or fail.
-                const MAX_RETRIES: usize = 3;
+                // already executed, a verbatim retry would be unsafe), or fail. Retries and
+                // resumes draw from the one `self.recovery` budget.
                 let network_status = NetworkStatus::as_ref(ctx);
                 let is_online = network_status.is_online();
                 let is_retryable = e.is_retryable();
 
-                match recovery_action(
+                let action = recovery_action(
                     self.has_received_client_actions,
                     is_retryable,
-                    self.retry_count < MAX_RETRIES,
-                    self.can_attempt_resume_on_error,
+                    self.recovery,
                     is_online,
-                ) {
-                    RecoveryAction::RetryNow => {
+                );
+                match action {
+                    RecoveryAction::Retry => {
                         log::warn!(
-                            "MultiAgent request failed, retrying (attempt {}/{}) - Error: {e:?}",
-                            self.retry_count + 1,
-                            MAX_RETRIES
+                            "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait={:?} - Error: {e:?}",
+                            action.log_label(),
+                            self.recovery.attempts_used() + 1,
+                            backoff_after_attempts(self.recovery.attempts_used() + 1),
                         );
                         // Only emit error telemetry here if we're retrying.
                         // Final errors that aren't being retried are emitted elsewhere.
@@ -714,9 +891,9 @@ impl ResponseStream {
                     }
                     RecoveryAction::RetryWhenOnline => {
                         log::warn!(
-                            "MultiAgent request failed while offline; retrying (attempt {}/{}) once connectivity returns - Error: {e:?}",
-                            self.retry_count + 1,
-                            MAX_RETRIES
+                            "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait=connectivity - Error: {e:?}",
+                            action.log_label(),
+                            self.recovery.attempts_used() + 1,
                         );
                         self.emit_retryable_agent_mode_error_telemetry(format!("{e:?}"), ctx);
                         self.defer_retry_until_online(ctx);
@@ -725,21 +902,39 @@ impl ResponseStream {
                     RecoveryAction::Resume => {
                         // Recoverable failure after client actions: resume the
                         // conversation once the stream finishes rather than
-                        // surface the error.
-                        self.should_resume_conversation_after_stream_finished = true;
+                        // surface the error. The resume is charged against the shared
+                        // budget and waits the same backoff a retry would have, so a
+                        // chain of post-action failures is bounded by
+                        // MAX_RECOVERY_ATTEMPTS sends in total.
+                        let backoff = backoff_after_attempts(self.recovery.attempts_used() + 1);
+                        log::warn!(
+                            "MultiAgent request failed; recovering: recovery={} attempt={}/{MAX_RECOVERY_ATTEMPTS} wait=after_stream_finished+{backoff:?} - Error: {e:?}",
+                            action.log_label(),
+                            self.recovery.attempts_used() + 1,
+                        );
+                        self.pending_resume = Some(PendingResume {
+                            recovery: self.recovery.next_attempt(),
+                            backoff,
+                        });
                     }
-                    RecoveryAction::Fail => {}
+                    RecoveryAction::Fail(reason) => {
+                        log::warn!(
+                            "MultiAgent request failed; not recovering: reason={} attempt={}/{MAX_RECOVERY_ATTEMPTS} - Error: {e:?}",
+                            reason.log_label(),
+                            self.recovery.attempts_used(),
+                        );
+                    }
                 }
 
                 log::warn!(
-                    "MultiAgent request failed after {} retries: has_received_client_actions={}, is_retryable={}, is_online={is_online}",
-                    self.retry_count,
+                    "MultiAgent request failed after {} recovery attempts: has_received_client_actions={}, is_retryable={}, is_online={is_online}",
+                    self.recovery.attempts_used(),
                     self.has_received_client_actions,
                     is_retryable
                 );
                 report_error!(anyhow!(e.clone()).context(format!(
-                    "MultiAgent request failed after {} retries",
-                    self.retry_count
+                    "MultiAgent request failed after {} recovery attempts",
+                    self.recovery.attempts_used()
                 )));
 
                 ctx.emit(ResponseStreamEvent::ReceivedEvent(Consumable::new(event)));

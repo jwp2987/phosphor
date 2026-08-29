@@ -84,7 +84,7 @@ pub(crate) const WARP_DRIVE_SYNC_TIMEOUT: Duration = Duration::from_secs(60);
 /// Maximum time to wait for an automatic error resume before propagating the error.
 /// If no follow-up status arrives within this window, the driver terminates with the
 /// original error so the CLI does not hang indefinitely.
-const AUTO_RESUME_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const AUTO_RESUME_TIMEOUT: Duration = Duration::from_secs(120);
 /// Signals to Claude child-harness hooks that Zap already owns the background
 /// message-listener lifecycle, so the plugin should reuse the shared state
 /// files instead of spawning and cleaning up its own listener.
