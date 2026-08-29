@@ -350,6 +350,65 @@ Adjudication for the managed-MCP and `ephemeral_installation_id` families is now
 as a module doc comment in `driver_tests.rs` itself, so the next sweep reads it in-tree
 rather than re-deriving it.
 
+### RE-PIN COMPLETE — oracle moved to `4111d08f9`, 2026-08-29
+
+The port round ported *toward* the new pin without ever moving it. `ORACLE.md` still said
+`42effe840` and `docs/STATE.md` was 85 commits stale. Both now corrected.
+
+**Phase 3.5 — dependency drift. Two git-pinned deps were still at the old pin, both
+compiled into the binary:**
+- **`warp-command-signatures` `fe3526693` → `d3725aa42`.** This is the completion-spec data
+  pulled with `embed-signatures` — *the exact dep whose staleness the runbook's cautionary
+  story is about.* Every command whose flags moved upstream had been completing against old
+  data.
+- **`warp_multi_agent_api` `b0886a952` → `f0028fa6d`.**
+- `winit` is deliberately divergent (`TODO.md:2203`, `Cargo.toml:435` — carries a Windows
+  dark-mode fix); `tink-*` already differed at the old pin, so neither is this move's debt.
+
+**The bump broke the build, which is the point of doing it.** The new proto requires
+`total_charges` on `ConversationUsageMetadata` and `request_charges` on `StreamFinished`.
+Both are billing concepts with no BYOP source, so both are `None`, following the block of
+"fields upstream added that BYOP has no source for" already there. The bump also
+**deprecated `platform_credits_spent` and `request_cost`** in favour of exactly those new
+fields; the fork keeps the deprecated ones (`None`/`0.0` regardless) with `#[allow(deprecated)]`
+and deliberately does not migrate to the replacements (#11, `DECLINED.md:215`).
+
+**Phase 6.7 — feature-default drift: NO LOSSES.** Pin `default` has 202 entries, fork 160;
+56 are on at the pin and off here. Of those, **only 2 are features the fork actually
+declares** — the other 54 gate code that is simply absent:
+- `ime_marked_text` — the tracked `146684ee` PARTIAL; needs runtime verification that winit
+  delivers preedit on X11/Wayland before the cfgs come off.
+- `solo_user_byok` — deliberately declined, with the rationale in code at
+  `app/src/workspaces/user_workspaces.rs:369-372`: this fork makes BYOK unconditional
+  instead of gating it.
+That is a much better result than the last run of this check, which found **15** flags
+gating real, present, compiled implementation.
+**Two parse traps hit while running it**, both of the kind the runbook warns about: `comm`
+under a UTF-8 locale reported a flag in *both* difference sets (needs `LC_ALL=C`), and
+`awk '/^\[features\]/,/^\[/'` terminates on its own opening line, yielding 0 declared
+features — which reads exactly like "nothing is declared" rather than like a failure.
+
+**Verification, all on this tree:**
+| gate | result |
+|---|---|
+| `script/precheck` | **ok** — first fully green run in 85 commits |
+| `cargo build -p warp --features gui` | RC=0, 3 warnings, all pre-existing |
+| `warp` suite | 6267 passed, 0 failed |
+| `script/state` | regenerated; `docs/STATE.md` current |
+| **`script/usage-test --surface both`** | **18 passed, 0 failed, 1 skipped** (GUI on Wayland + TUI) |
+| `--include-flaky` | same 19; the real-shell scenarios were already in the default set |
+
+**`ORACLE.md`'s test count is 11,655 (+795), from a fresh `script/state` run.** It was
+briefly recorded as 11,228 — a figure taken from a `TODO.md` note produced by a *different*
+extractor, which is precisely the mistake `ORACLE.md`'s own "do not read X − Y as the step"
+paragraph exists to prevent.
+
+**What the smoke suite does NOT cover.** It exercises launch, settings, palette, tabs,
+theme, agent-block render, block navigation, find, run-command, exit codes, secret
+redaction, font/resize, and six TUI renders. It does **not** touch the surfaces this round
+changed most: right-click paste (7 sites), the `#` trigger, host-terminal disconnect, or
+retry/resume recovery. Those remain unexercised outside unit tests.
+
 ### TEST PORT ROUND COMPLETE — all 9 shards, 2026-08-29
 
 **35 tests ported, 15 fork defects fixed, 8225 tests green, 0 failures.**
