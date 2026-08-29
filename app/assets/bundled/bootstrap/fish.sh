@@ -76,7 +76,11 @@ end
 # A list of PIDs for running in-band command(s). This is used to kill running
 # in-band commands in preexec for a user command, so they do not interfere with
 # user command output.
-set -g _warp_generator_pids ''
+#
+# Seeded as an empty list, NOT as `''`: `''` is a list holding one empty string, which
+# survives every removal below and makes the preexec loop run `kill -9 ''` (a parse error,
+# silenced by the redirect) once per user command forever.
+set -g _warp_generator_pids
 
 # Runs the given command in the background, records its PID in
 # _WARP_GENERATOR_PIDS_STARTED_TMP_FILE, and adds its PID from the file when
@@ -132,7 +136,13 @@ function  _warp_run_generator_command_internal
 
     # Remove the command's PID from _warp_generator_pids when the command exits.
     function on_command_{$command_pid}_finish --on-process-exit $command_pid --inherit-variable command_pid
-        set -g _warp_generator_pids (string replace $command_pid '' $_warp_generator_pids)
+        # `string match -v` removes the ELEMENT equal to $command_pid. `string replace` was
+        # wrong here: it edits every element in place, so a completed generator PID that is a
+        # decimal substring of a live one rewrites that one -- observed in fish, ['', '40213',
+        # '213'] minus 213 becomes ['', '40', ''] -- and the preexec below then sends SIGKILL
+        # to PID 40, an unrelated user-owned process, with stderr discarded. Needs a pid_max
+        # wrap to happen, but the failure is silent and unbounded in what it can kill.
+        set -g _warp_generator_pids (string match -v -- $command_pid $_warp_generator_pids)
 
         # Erase this function after the pids list is updated above so we don't create an infinite number of
         # functions that could pollute the user's context (nested functions are still existing in the global
@@ -182,14 +192,20 @@ function warp_preexec --on-event fish_preexec
     # commands to keep them out of fish history (see POSIX_GENERATOR_WRAPPER in
     # in_band_command_executor.rs); `string match`'s glob is anchored at the start, so
     # without the trim no generator command would ever match its own name.
-    if not string match -q "warp_run_generator_command*" -- (string trim -- $argv[1])
+    #
+    # The `test -n` is not redundant: unlike bash and zsh, fish fires fish_preexec for a
+    # whitespace-only command line (verified under a pty: argv[1]=[   ], count=1), where bash's
+    # equivalent guard at bash_body.sh:307 simply sees an unset $BASH_COMMAND and does nothing.
+    # Such a line runs no user command, so it must not cancel in-flight generators.
+    set -l trimmed_command (string trim -- $argv[1])
+    if test -n "$trimmed_command"; and not string match -q "warp_run_generator_command*" -- $trimmed_command
         for pid in $_warp_generator_pids
             # Suppress stderr output; kill writes to stderr if the given PID is not running
             # (which might rarely be the case due to race conditions in checking which PIDs to
             # cancel and this kill command).
             kill -9 $pid >/dev/null 2>/dev/null
         end
-        set -g _warp_generator_pids ''
+        set -g _warp_generator_pids
     end
 end
 
