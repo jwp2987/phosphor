@@ -1790,6 +1790,22 @@ impl Block {
         self.was_long_running = was_long_running;
     }
 
+    // Collateral of these two predicates, inherited from upstream `ee95ac0fd` and
+    // deliberately NOT fixed here. Both narrow `visible_cursor_shape` (the argument
+    // `BlockGrid::draw` takes for in-grid cursor-cell contrast styling) from `Some` to
+    // `None` for every `DoneWithExecution` / `DoneWithNoExecution` / `Static` /
+    // finished-`Background` block. `grid_renderer.rs:638` and `:1171` skip rendering
+    // the cell at `cursor_render_point()` when `hide_cursor_cell` is set and
+    // `visible_cursor_shape.is_none()`, using `is_none()` as a proxy for "the agent
+    // draws its own cursor (SHOW_CURSOR is off)" — which is what the comment there
+    // says it means. Before these predicates existed that proxy held; now it does not,
+    // so while a CLI agent's rich input is open (`hide_cursor_cell` is element-wide,
+    // set once at `view.rs:22940` and threaded through the shared render params, not
+    // per block) EVERY finished block in the viewport skips that one cell. It is blank
+    // in almost every case, but not provably always. Upstream carries the identical
+    // condition and the identical comment at `ee95ac0fd`, so changing it here would be
+    // a parity divergence in a hot renderer, not a port. Left alone on purpose.
+
     /// Whether the command grid should paint a cursor — both the overlay cursor
     /// (`BlockGrid::draw_cursor`) and the in-grid cursor-cell contrast styling.
     ///
@@ -1802,9 +1818,16 @@ impl Block {
             && self.is_mode_set(TermMode::SHOW_CURSOR)
     }
 
-    /// Whether the output grid should paint a cursor. See
-    /// [`Block::is_command_cursor_visible`]; the output grid has no grid-active gate
-    /// because it is the active grid in every state except `BeforeExecution`.
+    /// Whether the output grid should paint a cursor — the same two paths as
+    /// [`Block::is_command_cursor_visible`].
+    ///
+    /// This deliberately has **no** grid-active gate, so it is an exact refactor of the
+    /// condition that already guarded the output grid's `draw_cursor` call.
+    /// `BeforeExecution` is a real exception, not a case this covers: `active_grid_type`
+    /// returns `GridType::PromptAndCommand` there, so this returns `true` for a grid
+    /// that is not the active one. That is harmless because the output grid has no rows
+    /// before `preexec` — `BlockGrid::draw` derives `end_row` from `len_displayed()`,
+    /// which is 0, so the row range is empty and no cell is rendered to style.
     pub fn is_output_cursor_visible(&self) -> bool {
         self.is_active_and_long_running() && self.is_mode_set(TermMode::SHOW_CURSOR)
     }

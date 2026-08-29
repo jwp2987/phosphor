@@ -1898,8 +1898,11 @@ pub fn test_command_and_output_cursor_visibility_follow_block_state() {
     block.set_was_long_running(AtomicBool::new(true));
 
     assert!(block.is_command_cursor_visible());
-    // The output helper deliberately has no grid-active gate — it mirrors the overlay
-    // cursor's pre-existing condition exactly.
+    // `BeforeExecution` is the one state where the output predicate returns true for a
+    // grid that is not the active one (`active_grid_type()` is `PromptAndCommand` here).
+    // That is deliberate: the predicate is an exact refactor of the overlay cursor's
+    // pre-existing condition, and it is harmless because the output grid has no rows to
+    // render before `preexec`.
     assert!(block.is_output_cursor_visible());
 
     block.preexec(Default::default());
