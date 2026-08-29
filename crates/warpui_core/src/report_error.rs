@@ -54,9 +54,37 @@ pub(crate) fn take_once(flag: &AtomicBool) -> bool {
 /// - `report_error!(err)` -- log every time.
 /// - `report_error!(err, ReportErrorLogMode::OncePerRun)` -- log only the first time
 ///   this callsite is reached during the run.
+///
+/// # Per-callsite throttling
+///
+/// `OncePerRun` throttles each *invocation site* separately, never the macro as a
+/// whole. The property rests on one detail of the expansion below: the
+/// `HAS_LOGGED_REPORT_ERROR` `static` is declared **inside** the `{{ .. }}` block the
+/// arm expands to, so every `report_error!` call site gets its own distinct static.
+/// Hoisting that static out of the expansion -- to module scope, or into `take_once`
+/// -- would make one shared flag serve every call site, and the first per-frame error
+/// to fire anywhere in the crate would permanently silence all the others. That is
+/// strictly worse than the unthrottled logging this macro replaced, because the lost
+/// errors would be unrelated to the one that latched.
+///
+/// **This is verified by reading, not by a test, and no test in this crate can cover
+/// it.** Throttling is only observable through what reaches a logger, and
+/// `warpui_core` cannot install a capture logger: `src/test.rs` carries a `#[ctor]`
+/// that calls `simplelog::SimpleLogger::init(..).unwrap()` before `main` in every
+/// test process of this crate, so `log::set_logger` has already been claimed by the
+/// time any test body runs and can never succeed. Under nextest each test gets its
+/// own process, so this is unconditional -- not a race, and not avoidable by test
+/// ordering. (`warp_core/src/errors_tests.rs` does test its equivalent macro with a
+/// capture logger; that works only because `warp_core` has no such `#[ctor]`, so it
+/// is not a precedent that transfers here.)
+///
+/// Do not add a testability seam to the macro to make this observable -- an honest
+/// gap is preferable. `take_once` above is unit-tested on its own contract.
 macro_rules! report_error {
     ($err:expr, $log_mode:expr) => {{
-        // One flag per macro invocation, matching `warp_core`'s semantics.
+        // Declared inside the expansion on purpose: one flag per macro invocation,
+        // matching `warp_core`'s semantics. See "Per-callsite throttling" above before
+        // moving it.
         static HAS_LOGGED_REPORT_ERROR: ::std::sync::atomic::AtomicBool =
             ::std::sync::atomic::AtomicBool::new(false);
         match $log_mode {
