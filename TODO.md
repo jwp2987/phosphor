@@ -141,6 +141,51 @@ generator defect split other commits in this round.**
 close its ledger row. The coordinator owns `TODO.md` centrally; take the round
 branch's version at merge and re-apply the row closure here.
 
+### FIX ROUNDS — 3 of 4 complete. Every fix went beyond what was asked.
+
+**`port/shell-bugs`** (`47799b7af`, `2970bbdb2`): D1 fixed with `string match -v --`.
+The porter then found a **second half of the same root cause on its own**: the seed
+and reset at `:83`/`:208` were `set -g _warp_generator_pids ''`, a one-element list
+holding the empty string, which `string match -v` does not remove — so the correct
+removal alone would still have run `kill -9 ''` once per user command forever
+(verified non-inert: `kill: failed to parse argument: ''`). Both seeds are now bare,
+and the list provably drains to zero. D2 fixed with a `test -n` guard; the fish-only
+divergence from `bash_body.sh:307` is now stated in both the code and the message.
+
+**`port/grep-parse`** (`019776d50`): D3 fixed with `trim_start()` applied **once
+before the first record** — not a blanket `.trim()`, and not per-record — on the
+reasoning that real `grep` never emits whitespace ahead of a path, so bytes there are
+transport, while every later boundary is one the parser identified itself. The
+interior-newline test (`weird\nname.rs`) still passes, confirmed.
+
+D4 was fixed **better than the brief asked**. Instead of special-casing the missing
+newline, the porter derived a format invariant: content is one line of a text file, so
+it can contain neither `\n` (single line) nor `\0` (`-I` excludes binary, and
+`git grep -z` emits NUL only as a separator). A NUL before the record's newline is
+therefore impossible inside content and proves the record carried none. Three shapes,
+one rule — which **removes the dependency on undocumented PowerShell behaviour in both
+directions**, and additionally fixes a `git grep -z` stream whose trailing newline was
+stripped in transit and had been silently losing its last match. Tests 29 -> 37.
+
+**Coordinator correction to that porter's report:** it suggested field reports of thin
+PowerShell results might trace to D4. They cannot — D4 was introduced by `f79030afc`
+in this round and has never shipped.
+
+**`port/cursor`** (`0f2877a52`): doc comment corrected, collateral recorded on the
+predicates rather than at the renderer (the porter's reasoning: `grid_renderer.rs` is
+byte-identical to upstream there, and two comment-only hunks would become two new
+divergences to reconcile at a re-pin that already has `8ba01aa1a` queued for that
+file). Verified comments-only: zero non-comment lines changed.
+
+**A fourth coordinator error, and an unresolved disagreement.** The brief offered
+`--flag<u-umlaut>=x` as the `parsers/v2.rs` panic reproducer. The porter reported that
+one does not fire (offset lands on the `=`) and substituted a 3-byte character,
+`--<CJK>=x`, which it verified does. The coordinator's own model makes **both** land
+mid-char, so the two disagree on how the offset counts. **Unresolved, and deliberately
+left that way** — it does not change the outcome, because the recorded comment uses the
+3-byte case, which panics under either model. Whoever files that issue should settle it
+first.
+
 ### PORT REFUTATION RESULTS — 3 of 5 in. Every port had findings.
 
 Each port was attacked by an agent that did not write it. **No port survived
