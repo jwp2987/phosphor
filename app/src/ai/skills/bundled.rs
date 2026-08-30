@@ -501,6 +501,8 @@ fn display_optional_path(path: Option<PathBuf>) -> String {
 /// - `{{settings_schema_path}}` - Path to the bundled JSON settings schema
 /// - `{{settings_file_path}}` - Path to the user's settings TOML file
 /// - `{{keybindings_file_path}}` - Path to the user's `keybindings.yaml`
+/// - `{{tab_configs_dir}}` - Directory the user's tab configs are read from
+/// - `{{worktrees_dir}}` - Base directory app-generated worktrees default into
 ///
 /// The pin's GUI/TUI-split variables (`gui_settings_file_path`,
 /// `tui_settings_file_path`, `gui_mcp_config_file_path`,
@@ -544,6 +546,23 @@ pub(crate) fn build_bundled_skill_context() -> HashMap<String, String> {
         (
             "keybindings_file_path".to_owned(),
             crate::keyboard::keybinding_file_path()
+                .display()
+                .to_string(),
+        ),
+        // Both of these resolve under `warp_core::paths::data_dir()`, which is a
+        // channel-specific home directory on macOS but the XDG data directory on Linux.
+        // The tab-config skills used to spell them as `~/.warp/...`, which is a path this
+        // fork reads on no platform (#631), so they are rendered rather than described.
+        (
+            "tab_configs_dir".to_owned(),
+            crate::user_config::tab_configs_dir().display().to_string(),
+        ),
+        (
+            // Keep in sync with `tab_configs::tab_config::generated_worktree_repo_dir`,
+            // which appends the repo name to this.
+            "worktrees_dir".to_owned(),
+            warp_core::paths::data_dir()
+                .join("worktrees")
                 .display()
                 .to_string(),
         ),

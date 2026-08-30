@@ -5,7 +5,7 @@ description: Create new Phosphor tab config TOML files from natural-language req
 
 # create-tab-config
 
-Create a new Warp tab config based on what the user wants.
+Create a new Phosphor tab config based on what the user wants.
 
 ## Required context
 
@@ -20,10 +20,9 @@ Create a new Warp tab config based on what the user wants.
 1. Understand what the user wants to create.
 2. If important details are missing, use the `ask_user_question` tool to clarify them before writing anything. Do not guess about layout, commands, directories, parameters, or close-time behavior.
 3. Generate valid TOML that matches the `tab-configs` schema.
-4. Determine the correct tab config directory for the user's Warp build.
-   Tab configs live under `~/.warp/tab_configs/` for standard builds. Non-stable builds use a channel-specific variant (e.g. `~/.warp-<channel>/tab_configs/`).
-   To find the correct directory, run `ls -d ~/.warp*/` to list the available Warp data directories and pick the one that corresponds to the running build. When in doubt, ask the user which build they are using.
-   Create the `tab_configs/` subdirectory if it does not exist.
+4. Write the config into `{{tab_configs_dir}}`.
+   That is the tab config directory this running build actually reads, resolved for its channel and platform — use it verbatim. Do not derive it by globbing `$HOME` for a `.warp*` directory and do not use `~/Library/Application Support/`; on Linux the directory is the XDG data directory, so no `$HOME` dotfile glob will find it. If the path above is blank, Phosphor could not resolve it — ask the user where their tab configs live instead of guessing.
+   Create the directory if it does not exist.
    Write the file using a descriptive snake_case filename ending in `.toml`.
 5. If the intended filename might conflict with an existing config and it is unclear whether to overwrite or create a new file, use the `ask_user_question` tool.
 6. Briefly explain what you created, including the layout and any commands or parameters.

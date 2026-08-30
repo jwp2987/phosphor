@@ -251,6 +251,83 @@ fn add_mcp_skill_documents_the_global_config_path_phosphor_actually_reads() {
     );
 }
 
+// ============================================================================
+// Tab config locations (issue #631, same class as the MCP path above)
+//
+// `tab_configs_dir()` is `warp_core::paths::data_dir()/tab_configs`, and
+// `data_dir()` is a channel-specific dotfile directory in `$HOME` only on
+// macOS -- on Linux it is the XDG data directory. The three tab-config skills
+// used to send the agent to `~/.warp/tab_configs/` and to discover it with
+// `ls -d ~/.warp*/`, which is wrong on every platform for this fork and finds
+// nothing at all on Linux. They now render the resolved directory instead.
+// ============================================================================
+
+#[test]
+fn tab_config_skills_name_the_directory_the_app_actually_reads() {
+    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
+    let tab_configs_dir = crate::user_config::tab_configs_dir().display().to_string();
+
+    for id in ["tab-configs", "create-tab-config", "update-tab-config"] {
+        let skill = skills
+            .get(id)
+            .unwrap_or_else(|| panic!("the {id} skill is bundled with the app"));
+        assert!(
+            skill.content.contains(&tab_configs_dir),
+            "`{id}` must name the tab config directory this build reads ({tab_configs_dir}): {}",
+            skill.content
+        );
+        // `handlebars::render_template` leaves an unknown variable verbatim, so a typo'd or
+        // unregistered name ships as visibly broken skill text rather than failing the build.
+        for variable in ["{{tab_configs_dir}}", "{{worktrees_dir}}"] {
+            assert!(
+                !skill.content.contains(variable),
+                "`{id}` still contains an unrendered {variable}: {}",
+                skill.content
+            );
+        }
+    }
+
+    // The worktree example writes a shell command the user's config will run, so it must not
+    // point outside the directory `generated_worktree_repo_dir` uses either.
+    let worktrees_dir = warp_core::paths::data_dir()
+        .join("worktrees")
+        .display()
+        .to_string();
+    let tab_configs = &skills["tab-configs"].content;
+    assert!(
+        tab_configs.contains(&worktrees_dir),
+        "the worktree example must use the generated-worktree base directory ({worktrees_dir}): {tab_configs}"
+    );
+}
+
+/// No bundled skill may send the agent to a literal `~/.warp/<something>`: every home-anchored
+/// directory this fork reads is resolved through `warp_core::paths` and is `.phosphor` on the
+/// shipped OSS channel, so a hardcoded `~/.warp/` path is read by nothing (#631).
+///
+/// Two things this deliberately does NOT forbid, because both are correct:
+///
+/// - `{repo_root}/.warp/.mcp.json` in `add-mcp-server`. `MCPProvider::project_config_path()` is
+///   a literal `.warp/.mcp.json` on every channel, so the project-scoped path really is that.
+///   It is not home-anchored, so the `~/` and `$HOME/` prefixes below already exclude it.
+/// - The `ls -d ~/.phosphor* ~/.warp*` discovery step in the same skill. For the MCP *home*
+///   config the `.warp*` family genuinely is the answer on the non-OSS channels
+///   (`base_warp_config_dir_name`), so enumerating it is the fix, not the bug. The glob has no
+///   trailing slash and so does not match a `~/.warp/` path either.
+#[test]
+fn bundled_skills_do_not_hardcode_a_home_warp_directory() {
+    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
+    assert!(!skills.is_empty(), "no bundled skills were read");
+    for (id, skill) in &skills {
+        for spelling in ["~/.warp/", "$HOME/.warp/"] {
+            assert!(
+                !skill.content.contains(spelling),
+                "bundled skill `{id}` hardcodes `{spelling}`, which nothing reads on the shipped build: {}",
+                skill.content
+            );
+        }
+    }
+}
+
 /// A bundled skill's `description:` is user-visible -- it is what the skills picker and the
 /// system prompt's `<available_skills>` block show. `script/check_brand_strings` does not read
 /// Markdown, so this is where issue #631's rebranding is held in place.

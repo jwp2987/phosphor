@@ -5,7 +5,7 @@ description: Update existing Phosphor tab config TOML files from natural-languag
 
 # update-tab-config
 
-Update an existing Warp tab config in place.
+Update an existing Phosphor tab config in place.
 
 ## Required context
 
@@ -20,6 +20,6 @@ Update an existing Warp tab config in place.
 1. Read the existing tab config file before making changes.
 2. Understand the requested edit.
 3. If important details are missing or ambiguous, use the `ask_user_question` tool before editing. Do not guess about layout changes, command changes, parameters, or `on_close` behavior.
-4. Make sure you are editing the tab config that belongs to the user's current Warp build/channel rather than assuming a single hardcoded base directory, then update it so it remains valid according to the `tab-configs` schema.
+4. Make sure you are editing a config in `{{tab_configs_dir}}` — the tab config directory this running build actually reads, resolved for its channel and platform — rather than assuming a hardcoded base directory or globbing `$HOME` for a `.warp*` directory. (A config the user has open in the editor may live elsewhere; edit the file they pointed at.) Then update it so it remains valid according to the `tab-configs` schema.
 5. Preserve the user's existing structure and naming where possible unless the requested change requires restructuring.
 6. Briefly explain what changed.
