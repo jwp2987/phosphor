@@ -121,6 +121,10 @@ builds), and profiling artifacts.
 | GUI | **Settings → About → Export logs…**. Same contents, but you pick the destination with a native save dialog. It defaults to your Downloads folder. |
 | TUI | `/view-logs`. Builds the zip and reveals it. TUI-only — the GUI refuses this command. |
 
+**The TUI's bundle omits `manifest.txt` and the MCP logs** — it passes no extras.
+If you are reporting an MCP problem, use the GUI's route, or attach the MCP log
+file yourself.
+
 Neither route uploads anything; both produce a file you choose whether to share.
 
 ---
@@ -180,19 +184,21 @@ window.
 **Nothing is ever uploaded.** `ChannelState::is_crash_reporting_available()` is
 hard-coded `false`, and there is no crash-reporting endpoint in the build.
 
-What the **Settings → Privacy → Send crash reports** toggle actually does is
-install a panic hook. With it on, a Rust panic writes the thread name, source
-location, message and a full backtrace into the local log before the default
-handler runs. That is a genuinely useful thing to turn on before reproducing a
-crash — and it is why the toggle is shown even though the upstream
-"can this build ship crash reports" gate says no.
+**Panics are logged anyway, and you do not have to do anything to get them.**
+Whenever Phosphor logs to a file — which is always, for both the GUI and the TUI
+— a panic hook is installed that writes the panic message, its source location
+and a full backtrace into the log. So the log you already have is the crash
+report.
 
-The toggle defaults to **off**. Warp defaults its equivalents on, because Warp is
-an opt-out commercial product; Phosphor defaults them off, because leaving them
-on would display "ON" while nothing goes anywhere.
-
-The toggle only appears in builds compiled with the `crash_reporting` cargo
-feature. Official release bundles are built with it; a plain `cargo run` is not.
+The **Settings → Privacy → Send crash reports** toggle is a second, redundant
+hook that would do the same thing. It defaults to **off** (Warp defaults its
+equivalents on, because Warp is an opt-out commercial product; leaving them on
+here would display "ON" while nothing goes anywhere), and in the shipped builds
+turning it on has **no observable effect**: the toggle renders because the
+crash-reporting *feature flag* is on for release builds, but the *cargo feature*
+that runs the crash-reporting initializer is not enabled by any of the three OSS
+bundlers, so the hook it would install is never installed. Leave it wherever you
+like; the backtrace reaches the log either way.
 
 ### The `minidump-server` subcommand
 
@@ -235,6 +241,9 @@ things you asked for:
   tool while you are watching it.
 - **CLI-agent notification plugin installs**, which run the third-party agent's
   own CLI against GitHub or npm.
+- **Update checks on macOS and Windows**, which read the project's public GitHub
+  Releases feed. Nothing about you is sent; it is an unauthenticated GET. You can
+  turn it off — see [Updates](#updates). On Linux this does not happen at all.
 
 And that is the list. The specifics:
 
@@ -245,7 +254,7 @@ And that is the list. The specifics:
 | **Crash reports** | Never uploaded. See above. |
 | **Settings sync** | `account.is_settings_sync_enabled` exists and defaults to `false`, but it has **no production consumer**: it only decides whether a "local only" badge is drawn next to a setting. Nothing syncs anywhere regardless of its value. |
 | **Account / identity** | There is no account. `AuthState` is a local placeholder that always reports "logged in"; the placeholder id no longer appears in any outgoing header. |
-| **Update checks** | The shipped build has no update channel at all — see [Updates](#updates). |
+| **Update checks** | On macOS and Windows, an unauthenticated GET against the project's public GitHub Releases feed, controlled by `updates.automatic_updates_enabled`. Nothing identifying is sent. Absent on Linux. |
 
 The `IsTelemetryEnabled` setting and its widget are kept in the tree
 deliberately, so that the control would reappear on its own if a telemetry
@@ -351,23 +360,45 @@ Work through these in order.
 
 ### Updates
 
-There is nothing to troubleshoot, because the shipped build does not
-auto-update. The update UI is hidden by a constant (`SHOW_AUTOUPDATE_UI =
-false`), the `autoupdate` cargo feature is not in the default set and is not
-enabled by the release bundle scripts, and with it off the
-`workspace:check_for_updates` and `workspace:update_and_relaunch` commands are
-never registered. The `updates.automatic_updates_enabled` setting exists and
-defaults to `true`, but has no UI and no channel to check.
+**Updating behaves differently on each platform**, because the three release
+bundlers do not compile the same feature set.
 
-**To update, download the new release yourself** from the project's GitHub
-releases page and install it the way you installed the current one.
+| Platform | Auto-update |
+|---|---|
+| macOS | **On.** Polls the GitHub Releases API for the project repository. |
+| Windows | **On.** Same source. |
+| Linux | **Off entirely.** The Linux bundler does not compile the autoupdate feature in, so nothing polls, and the update commands are not registered. |
+| TUI (all platforms) | **Off.** Its release base URL is empty, so the update path returns immediately. |
 
-The TUI's auto-updater is likewise not shipped: its release base URL is empty, so
-the update path returns immediately. `WARP_TUI_DISABLE_AUTOUPDATE` and the
-`general.autoupdate_enabled` setting are the switches that would disable it if it
-were.
+On macOS and Windows, background checking is gated by
+`updates.automatic_updates_enabled` (default `true`). **There is no UI for that
+setting** — the About page's update section is deliberately hidden — so if you
+want to turn background checks off, edit `settings.toml`:
 
-If a *previous* Windows install left a failed updater behind, its log
+```toml
+[updates]
+automatic_updates_enabled = false
+```
+
+Two command-palette entries do exist on those platforms: **Check for updates**
+and, once one is downloaded, **Update and relaunch**. If an update is found but
+cannot be applied you get an error banner.
+
+Nothing is silently replaced under you:
+
+- **macOS** downloads the `.dmg` into the cache directory (not `~/Downloads`) and
+  never overwrites the installed app — the build is not Developer ID signed, so
+  Phosphor simply opens the DMG after exiting and you drag the app into
+  `/Applications` yourself.
+- **Windows** downloads the installer to a temporary file and runs it with the
+  standard Inno Setup UI visible, so you can cancel.
+
+**On Linux, update by hand.** Download the new release and install it the way you
+installed the current one. (The code path that would apply an AppImage update in
+place exists but is not compiled into the shipped build; a package-manager
+install would in any case be told to update through the package manager.)
+
+If a previous Windows install left a failed updater behind, its log
 (`warp_update.log`) is collected into the log bundle when present.
 
 ### Graphics and rendering
@@ -629,10 +660,12 @@ name that was not renamed.
 
 1. **Third-party configs are off by default.** Reading Claude's, Codex's and
    other agents' config files requires
-   `agents.mcp_servers.file_based_mcp_enabled = true` (default `false`;
-   Settings → AI → *Auto-spawn servers from third-party agents*).
-2. **Project-scoped servers never auto-spawn**, for any provider. You start them
-   from the server card, every time.
+   `agents.mcp_servers.file_based_mcp_enabled = true` — **Settings → MCP
+   Servers → *Auto-spawn servers from third-party agents***, default `false`. It
+   covers globally-scoped config files only.
+2. **Servers found inside a repository never auto-spawn**, for any provider.
+   Enable each one individually from its card in the *Detected from* section of
+   the MCP Servers page.
 3. **`PATH`.** stdio servers are launched with a `PATH` Phosphor captured from a
    terminal session, not the one your login shell builds. A server that runs fine
    when you type the command yourself but fails to launch here is almost always
@@ -641,13 +674,17 @@ name that was not renamed.
 **From the CLI**, the entire MCP surface is one read-only command:
 
 ```sh
-oz mcp list          # UUID and name for every runnable server
+phosphor-oss mcp list        # UUID and name for every runnable server
 ```
 
 `--output-format json` (or `ndjson`, `text`) applies. There is no
-`oz mcp add`/`remove`/`start`/`stop`/`logs`. To attach servers to a single agent
-run, `oz agent run --mcp <spec>` takes a JSON file path or inline JSON, and may
-be repeated.
+`mcp add`/`remove`/`start`/`stop`/`logs`. To attach servers to a single agent
+run, `phosphor-oss agent run --mcp <spec>` takes a JSON file path or inline
+JSON, and may be repeated.
+
+> **The CLI calls itself `oz` in its own help text.** The executable you actually
+> run is `phosphor-oss`; the name baked into the argument parser was not renamed,
+> so usage lines and error messages say `oz`. Type `phosphor-oss`.
 
 > **Do not pass a bare UUID to `--mcp`.** It is accepted and written into the
 > merged config as a Warp-managed server reference, which nothing in this fork
@@ -679,7 +716,7 @@ These are private settings: they have no TOML path and are stored in
 | Setting | What it does | Default | Where |
 |---|---|---|---|
 | `privacy.telemetry_enabled` | Retained for a telemetry channel that does not exist. The toggle never renders and the setting is never read. | `false` | `settings.toml`; no UI |
-| `privacy.crash_reporting_enabled` | Installs the local panic hook that writes a full backtrace to the log. Uploads nothing. | `false` | Settings → Privacy → Send crash reports |
+| `privacy.crash_reporting_enabled` | Would install a second local panic hook. Uploads nothing, and has no observable effect in the shipped builds — panics already reach the log with a backtrace. | `false` | Settings → Privacy → Send crash reports |
 | `privacy.custom_secret_regex_list` | Extra regexes for secret redaction. | empty | Settings → Privacy → Custom secret redaction |
 | `network.proxy_mode` | `off` / `system` / `custom`. `off` ignores proxy environment variables too. | `off` | Settings → Network |
 | `network.proxy_url` | Proxy URL for `custom` mode, e.g. `http://proxy.corp:8080`. | empty | Settings → Network |
@@ -698,9 +735,9 @@ These are private settings: they have no TOML path and are stored in
 | `warpify.ssh.ssh_hosts_denylist` | Hosts never to offer phosphorization for. | empty | Settings → Phosphorize |
 | `warpify.subshells.added_subshell_commands` | Extra commands to treat as subshells. | empty | Settings → Phosphorize |
 | `warpify.subshells.subshell_commands_denylist` | Commands never to offer phosphorization for. | empty | Settings → Phosphorize |
-| `agents.mcp_servers.file_based_mcp_enabled` | Auto-detect MCP servers from third-party agents' config files. | `false` | Settings → AI → MCP servers |
-| `updates.automatic_updates_enabled` | Would enable background update checks. Inert: this build has no update channel and no UI for it. | `true` | `settings.toml` only |
-| `general.autoupdate_enabled` | TUI auto-updater. Inert for the same reason. | `true` | `settings.toml` only |
+| `agents.mcp_servers.file_based_mcp_enabled` | Auto-spawn MCP servers found in third-party agents' *global* config files. | `false` | Settings → MCP Servers |
+| `updates.automatic_updates_enabled` | Background update checks. Live on macOS and Windows; inert on Linux, where autoupdate is not compiled in. | `true` | `settings.toml` only — the About page's update UI is hidden |
+| `general.autoupdate_enabled` | TUI auto-updater. Inert: the TUI has no release channel. | `true` | `settings.toml` only |
 | `account.is_settings_sync_enabled` | Only controls whether a "local only" badge is drawn. Nothing syncs. | `false` | `settings.toml` |
 | `DebugSettings.is_shell_debug_mode_enabled` | Sets `WARP_SHELL_DEBUG_MODE` in new sessions. | `false` | Private setting (`user_preferences.json`); App → Debug menu, debug builds |
 | `DebugSettings.recording_mode` | Record raw PTY bytes to disk. | off unless built with the `recording_mode` feature | Private setting; App → Debug menu, debug builds |
@@ -730,6 +767,8 @@ These are private settings: they have no TOML path and are stored in
 | Command | Surface | What it does |
 |---|---|---|
 | `phosphor-oss --dump-debug-info` | shell | Print the graphics/environment report and exit. |
+| `phosphor-oss mcp list` | shell | List runnable MCP servers. The whole `mcp` CLI surface. |
+| `phosphor-oss whoami` | shell | Prints the local placeholder identity. There is no account. |
 | `phosphor-oss minidump-server <socket>` | worker | Hidden. Writes local minidumps. Never started by this build. |
 | `phosphor-oss completions [shell]` | shell | Print shell completions to stdout. |
 | **View Phosphor logs** | GUI palette | Build a log bundle and reveal it. |
@@ -754,7 +793,7 @@ the part you actually want.
 
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
-| **Warp account / login / logout** | Signed you in to Warp's backend; gated everything else. | **Absent.** There is no account and nothing to sign in to. The `/logout` slash command is deliberately not registered — its handler is a documented no-op, and a menu row that does nothing when selected is worse than no row. `oz whoami` still runs but prints a fixed local placeholder identity, not a real account. |
+| **Warp account / login / logout** | Signed you in to Warp's backend; gated everything else. | **Absent.** There is no account and nothing to sign in to. The `/logout` slash command is deliberately not registered — its handler is a documented no-op, and a menu row that does nothing when selected is worse than no row. `phosphor-oss whoami` still runs, but prints a fixed local placeholder identity rather than a real account. |
 | **Credits, billing, paid tiers, upgrade flows** | Metered agent usage against a subscription. | **Absent.** You pay your provider directly, so there is no balance to show. **Replacement: `/usage` and `/cost`.** `/usage` reports the one budget a BYOP conversation actually spends against — the percentage of the model's context window used and remaining. `/cost` multiplies the token counts the provider reported by the per-model rates *you* configured. Where a rate is not configured it says so in words rather than rendering a plausible-looking `$0.00`. |
 | **Teams and workspaces** | Shared folders, workflows, org policy, admin panels. | **Absent, permanently.** `UserWorkspaces::has_teams()` and `current_team()` are hard-coded to "none". The consequence to know about: org-level command denylists, workspace AI-autonomy policy and enterprise secret-redaction rules are inert, because there is no server to deliver them. |
 | **Agent commit/PR attribution toggle** | A user preference uploaded to Warp's server, where the *server* decided whether to add a `Co-Authored-By` line. | **Absent.** The client never implemented the behaviour even upstream; there is no local attribution emitter to toggle. |
@@ -765,7 +804,7 @@ the part you actually want.
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
 | **Session / block sharing, shareable links** | Published a session to Warp's servers for someone else to open. | **Absent.** Requires a backend to host the session and resolve recipients. |
-| **`oz agent run --share`** | Shared an agent session with `team:` / `public:` / `user@…` recipients. | **Parses, does nothing, and is hidden from `--help`.** Kept parseable so an existing script does not break at the argument parser; the code hard-codes "not shared". |
+| **`agent run --share`** | Shared an agent session with `team:` / `public:` / `user@…` recipients. | **Parses, does nothing, and is hidden from `--help`.** Kept parseable so an existing script does not break at the argument parser; the code hard-codes "not shared". |
 | **Warp Drive cloud sync** | Cloud-stored, synced workflows, notebooks and prompts. | **The Library is local only.** Objects live in the local database and on disk; nothing syncs and nothing is fetched. `warp.dev/drive/...` links still parse but resolve to nothing. |
 | **Shared-session heartbeat** | Kept a shared session alive against the server. | **Absent** — it served a layer that no longer exists. |
 | **Cloud conversation storage / history** | Conversations stored server-side and available on any machine. | **Absent.** Conversations are local. The Privacy page's cloud-storage toggle was not ported because there is nothing local for it to control. |
@@ -776,9 +815,9 @@ the part you actually want.
 |---|---|---|
 | **Warp AI as a hosted service** | Warp ran the models and billed you for them. | **Replaced by BYOP.** You configure providers and keys; requests go straight from your machine to the endpoint you named. |
 | **Cloud agents / RunAgents / hosted runners** | Ran agents on Warp's infrastructure, with a host picker and orchestration controls. | **Absent.** **Replacement: `/orchestrate`,** which runs child agents as local processes. Agent-*invoked* agent spawning is declined too: orchestration here is user-invoked. |
-| **Agent-to-agent messaging via `oz run message`** | Routed messages between agents through Warp's server. | **Replaced by an on-disk mailbox.** `oz agent message send` / `oz agent message list` read and write a plain filesystem mailbox under `<state dir>/oz/`, overridable with `OZ_AGENT_MAILBOX_ROOT`. |
+| **Agent-to-agent messaging via `oz run message`** | Routed messages between agents through Warp's server. | **Replaced by an on-disk mailbox.** `phosphor-oss agent message send` / `… list` read and write a plain filesystem mailbox under `<state dir>/oz/`, overridable with `OZ_AGENT_MAILBOX_ROOT`. |
 | **Warp Environments** | Cloud-defined dev environments tied to source repos and code forges. | **Absent.** The whole types layer lived in a crate this fork deleted. |
-| **Cloud codebase indexing / codebase search** | Server-side index of your repository. | **Absent** from the TUI's command set by design. |
+| **Cloud codebase indexing** | Warp indexed your repository on its servers, on your Warp account. | **Absent as a hosted service.** Phosphor has a local codebase-context path instead, but it is **off by default** (`code.indexing.agent_mode_codebase_context`, default `false`) precisely because here it spends *your* embedding-provider quota and, on the remote-daemon surface, would send your provider key to the host you installed the daemon on. The TUI offers no codebase search. |
 | **Warp's team-scoped "global skills" policy** | An admin-delivered list of skill specs filtered onto your machine. | **Absent.** Local skills work normally: per-directory skills and `~/.phosphor/skills/`. |
 | **The InitProject wizard** | First-run onboarding for cloud agent mode. | **Absent.** |
 | **"Oz updates" zero-state feed, feature-intro popovers, the Warp Agent CLI promo modal** | Warp-branded in-product content. | **Absent.** |
@@ -811,8 +850,8 @@ the part you actually want.
 | Warp feature | What it did | In Phosphor |
 |---|---|---|
 | **Usage telemetry / app analytics** | Opt-out collection of usage events and some console interactions. | **Channel physically removed**, and the toggle never renders. See [What leaves the machine](#what-leaves-the-machine). |
-| **Uploaded crash reports** | Crashes sent to a crash service. | **Local only.** The toggle installs a panic hook that writes a backtrace to your log. |
-| **Auto-update** | Background updates from Warp's release channel. | **Not shipped in this build.** Download new releases yourself. |
+| **Uploaded crash reports** | Crashes sent to a crash service. | **Local only.** Panics are written to your log with a backtrace; nothing is sent. |
+| **Auto-update from Warp's channel** | Warp's own release feed. | **Replaced by GitHub Releases** on macOS and Windows; **absent on Linux**, where you install new releases yourself. |
 
 <!-- SOURCES
 
@@ -875,7 +914,10 @@ the part you actually want.
 - init_local_crash_reporting installs only a panic hook writing a backtrace to the log: app/src/crash_reporting/mod.rs:259-296
 - set_user_id is a no-op: app/src/crash_reporting/mod.rs:311
 - privacy toggle gated on FeatureFlag::CrashReporting rather than the availability check, with rationale: app/src/settings_view/privacy_page.rs:24-31, :1538-1545
-- CrashReporting is in RELEASE_FLAGS: crates/warp_features/src/lib.rs:912; crash_reporting cargo feature not in `default` (app/Cargo.toml:474-479, :480+) but set by the release bundler (script/linux/bundle:24)
+- CrashReporting is in RELEASE_FLAGS and RELEASE_FLAGS apply to any release-profile build: crates/warp_features/src/lib.rs:912, app/src/lib.rs:2906-2908
+- the `crash_reporting` cargo feature is NOT in `default` (app/Cargo.toml:474-479) and NOT set by any OSS bundler: script/linux/bundle sets `FEATURES="release_bundle"` for the oss channel at :198-203 (overwriting the `release_bundle,crash_reporting` default at :24), and script/windows/bundle.ps1 sets `$FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'` at :125 (overwriting the default at :17); script/macos/bundle sets `FEATURES="release_bundle,extern_plist,autoupdate"` at :358
+- consequence: `crash_reporting::init` is behind `#[cfg(feature = "crash_reporting")]` (app/src/lib.rs:1551-1557) so it never runs in a shipped OSS build, while `CrashReportsWidget::should_render` gates only on the feature *flag* (app/src/settings_view/privacy_page.rs:1538-1551) and therefore renders
+- panics reach the log regardless, via log_panics with `with-backtrace`, installed whenever logging goes to a file: crates/warp_logging/src/native.rs:805-808, crates/warp_logging/Cargo.toml:18
 - MinidumpServer subcommand, hidden: crates/warp_cli/src/lib.rs:298-303; dispatch app/src/lib.rs:832-838
 - dump path `<state_dir>/logs/crash-dumps/zap-minidump-<uuid>.dmp`: app/src/crash_reporting/local_minidump.rs:119-131
 - minidump server log path `<state_dir>/logs/warp-minidump.log`: app/src/crash_reporting/local_minidump.rs:98-102
@@ -922,10 +964,13 @@ the part you actually want.
 - WARP_USE_DIRECT_COMPOSITION: crates/warpui/src/rendering/wgpu/mod.rs:35-41
 
 ## Updates
-- SHOW_AUTOUPDATE_UI = false, with the reason: app/src/settings_view/about_page/mod.rs:62-66
-- FeatureFlag::Autoupdate deliberately not in RELEASE_FLAGS: crates/warp_features/src/lib.rs:895-907
-- `autoupdate` cargo feature exists but is not in `default`: app/Cargo.toml:449; release bundler features are `release_bundle,crash_reporting`: script/linux/bundle:24
+- SHOW_AUTOUPDATE_UI = false hides the About-page update row and toggle: app/src/settings_view/about_page/mod.rs:62-66
+- FeatureFlag::Autoupdate deliberately not in RELEASE_FLAGS; it comes only from the cargo feature via `extra_flags`: crates/warp_features/src/lib.rs:895-907, app/src/lib.rs:2927-2929
+- `autoupdate` cargo feature declared at app/Cargo.toml:449 and not in `default`; per-platform OSS bundler settings: macOS ON (script/macos/bundle:340-358), Windows ON (script/windows/bundle.ps1:112-125), Linux OFF (script/linux/bundle:198-203, :218-222)
 - update keybindings registered only under FeatureFlag::Autoupdate: app/src/workspace/mod.rs:1169-1188
+- background polling gated on FeatureFlag::Autoupdate + can_autoupdate, then on `updates.automatic_updates_enabled`: app/src/autoupdate/mod.rs:269-291, :303-325; startup hook app/src/lib.rs:1577
+- "unable to update" banner needs only FeatureFlag::Autoupdate: app/src/workspace/view.rs:20113-20135
+- macOS DMG-to-cache, no in-place replacement, `open` after exit: script/macos/bundle:350-357; Windows tempfile + visible Inno Setup UI: script/windows/bundle.ps1:117-124
 - AutoupdateSettings default true, toml path `updates.automatic_updates_enabled`: app/src/settings/autoupdate.rs:3-13
 - TuiAutoupdateSettings default true, toml path `general.autoupdate_enabled`, WARP_TUI_DISABLE_AUTOUPDATE: app/src/settings/tui_autoupdate.rs:8-21
 - TUI updater exits when releases_base_url is empty: crates/warp_tui/src/autoupdate.rs:660-663; releases_base_url is empty because autoupdate_config is None: crates/warp_core/src/channel/state.rs:177-185, app/src/bin/phosphor_oss.rs:39
@@ -1009,6 +1054,11 @@ the part you actually want.
 - a bare UUID spec becomes an unresolvable `warp_id` entry: app/src/ai/agent_sdk/mcp_config.rs:25-48 (issue #279)
 - MCPGalleryManager is a permanently empty stub: app/src/ai/mcp/gallery.rs:97-123
 
+## CLI naming
+- clap command name is `oz`, display name "Phosphor": crates/warp_cli/src/lib.rs:88-100
+- the executable users run on the Oss channel is `phosphor-oss`: crates/warp_core/src/channel/mod.rs:45, app/Cargo.toml:25-27, script/linux/bundle:199-200 and :206-215 (the oss channel keeps `phosphor-oss` for the CLI artifact too), script/windows/bundle.ps1:113-114; macOS symlink target app/src/workspace/cli_install.rs:12
+- guard that keeps the two in sync: script/check_channel_command_names
+
 ## /usage and /cost
 - rationale and BYOP semantics: app/src/ai/usage_cost.rs:1-31
 - context-window report text: app/src/ai/usage_cost.rs:131-190
@@ -1029,6 +1079,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - agent mailbox replacement: crates/warp_cli/src/agent_mailbox.rs:42, :63-72; app/src/ai/agent_sdk/agent_message.rs:1-14
 - Warp Environments: DECLINED.md "Warp Environments" (#211)
 - global skills policy filtering: DECLINED.md "AI skills - global-spec filtering" (#487)
+- codebase context defaults to false here and true at the pin, with the credential-transmission rationale: app/src/settings/code.rs:67-90; gate app/src/ai/codebase_embeddings.rs:818-832
 - InitProject wizard: DECLINED.md "InitProject wizard"; "`InitProject` wizard, and `lsp_server_selector.rs` with it" (#11)
 - Oz updates zero-state / FEATURE_INTROS / Warp Agent CLI promo modal: DECLINED.md "Oz updates zero-state section" (#321), "FEATURE_INTROS content" (#404), "Warp Agent CLI promotional launch modal"
 - MCP gallery, well-known ids, warp_id, shared templates: DECLINED.md "MCP gallery in the TUI /mcp catalog"; app/src/ai/agent_sdk/mcp_config.rs:26-48

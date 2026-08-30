@@ -1029,7 +1029,7 @@ Permissions
 Cost / usage
 - crates/warp_tui/src/usage.rs:1-36 (BYOP substitution rationale; "{pct}% context"; informational only)
 - app/src/ai/usage_cost.rs:1-31 (module rationale), :133-190 (/usage report + the two "nothing reported yet" hints), :202-300 (/cost: provider rates, unpriced-model call-out, cache caveat)
-- app/src/settings_view/ai_page.rs:1667,1684,1758 (UsageWidget only when !is_byo_api_key_enabled, i.e. never), :4828-4870 (the credits widget it would have rendered)
+- app/src/settings_view/ai_page.rs:1667,1685,1759 (UsageWidget only when !is_byo_api_key_enabled, i.e. never), :4828-4870 (the credits widget it would have rendered)
 - DECLINED.md:215 (provider-cost baselines declined; cites crates/warp_tui/src/usage.rs:1-12), :216 (OpenAI long-context pricing warning declined)
 
 Context
