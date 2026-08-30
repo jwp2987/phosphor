@@ -894,10 +894,16 @@ mod tests {
 
     /// Ported from Warp's `api_keys_command_is_tui_only_and_has_no_arguments`. Unlike Warp,
     /// `/api-keys` is Zap-native (see the doc comment on `API_KEYS`) and is not restricted to
-    /// the TUI surface, so this only checks what still applies: registration, metadata, and TUI
-    /// support.
+    /// the TUI surface, so this checks registration, metadata, and *both* surfaces.
+    ///
+    /// The `supports_gui()` assertion is load-bearing (#628): being on the GUI surface is what
+    /// obliges `execute_slash_command` to carry an `API_KEYS` arm, and for a while it did not
+    /// — the command sat in the GUI palette and fell through to the no-handler catch-all.
+    /// Whichever half is changed, the other has to move with it, so assert the half that is
+    /// cheap to assert here and keep the handler covered by
+    /// `input_test::api_keys_slash_command_opens_agent_provider_settings_in_the_gui`.
     #[test]
-    fn api_keys_command_has_no_arguments_and_supports_tui() {
+    fn api_keys_command_has_no_arguments_and_supports_both_surfaces() {
         crate::i18n::init(Some("en"));
 
         let command = COMMAND_REGISTRY
@@ -911,6 +917,8 @@ mod tests {
             "Add, view, or clear a provider's API key"
         );
         assert!(command.supports_tui());
+        assert!(command.supports_gui());
+        assert!(!command.is_tui_only());
     }
 
     /// Ported from Warp OSS `commands_tests.rs::version_command_is_not_registered`.

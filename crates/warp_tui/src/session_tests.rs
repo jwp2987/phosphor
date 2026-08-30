@@ -2,9 +2,10 @@
 // are ported from the pinned oracle's `crates/warp_tui/src/session_tests.rs`
 // (`02b53fcd8`, release `2026.07.29.09.05` stable — see `ORACLE.md`)
 // unchanged: all six are pure `TuiArgs`/`clap` parsing assertions, so no
-// shape adaptation was needed even though the backing store
-// (`ai::api_keys::ApiKeyManager`'s per-provider setters, not Warp's
-// `persist_provider_key`) differs. See issues #392 / #225.
+// shape adaptation was needed even though what happens after parsing differs
+// -- upstream persists via `persist_provider_key`, and this fork refuses both
+// flags outright (`reject_provider_api_key_flags`, #629). See issues #392 /
+// #225.
 use std::io;
 
 use ai::LLMProvider;
@@ -17,7 +18,7 @@ use warpui_core::runtime::TuiDriverStartupError;
 
 use super::{
     TuiArgs, create_terminal_session_after_login, handle_tui_driver_startup_error,
-    parse_resume_token,
+    parse_resume_token, reject_provider_api_key_flags,
 };
 use crate::root_view::RootTuiView;
 use crate::session_registry::TuiSessions;
@@ -37,6 +38,65 @@ fn parses_provider_api_key_clear_flag() {
         .expect("provider API-key clear arguments should parse");
 
     assert_eq!(args.clear_provider_api_key, Some(LLMProvider::Google));
+}
+
+/// Fork-authored (AGENTS §5.10), regression for #629. Both key flags used to
+/// write `ai::api_keys::ApiKeyManager` (secure-storage `AiApiKeys`) and print
+/// "<provider> API key saved" -- a store nothing in this fork reads, so the
+/// agent still had no usable key. They are now refused for every provider, and
+/// the refusal must name the surface that does serve the agent.
+///
+/// Restoring the `ApiKeyManager` write path (or dropping the
+/// `reject_provider_api_key_flags` call from `run`) fails this: the parsed args
+/// would no longer produce an error. Trimming the message down to a bare
+/// "not supported" fails it too -- a refusal that does not say where to go
+/// leaves the user exactly where #629 found them.
+#[test]
+fn provider_api_key_flags_are_refused_for_every_provider() {
+    for (flag, slug, provider) in [
+        ("--set-provider-api-key", "anthropic", "Anthropic"),
+        ("--set-provider-api-key", "openai", "OpenAI"),
+        ("--set-provider-api-key", "google", "Google"),
+        ("--set-provider-api-key", "grok", "xAI"),
+        ("--clear-provider-api-key", "anthropic", "Anthropic"),
+        ("--clear-provider-api-key", "openai", "OpenAI"),
+        ("--clear-provider-api-key", "google", "Google"),
+        ("--clear-provider-api-key", "grok", "xAI"),
+    ] {
+        let args = TuiArgs::try_parse_from(["warp", flag, slug])
+            .expect("the flags still parse; they are refused after parsing, not by clap");
+        let error = reject_provider_api_key_flags(&args)
+            .expect_err("no provider has a store these flags can usefully write");
+        let message = error.to_string();
+
+        assert!(
+            message.contains(flag),
+            "the refusal must name the flag the user typed: {message}"
+        );
+        assert!(
+            message.contains(provider),
+            "the refusal must name the provider the user asked for: {message}"
+        );
+        assert!(
+            message.contains("Settings > AI > Agent providers"),
+            "the refusal must point at the GUI surface that stores usable keys: {message}"
+        );
+        assert!(
+            message.contains("/api-keys"),
+            "the refusal must point at the TUI surface that stores usable keys: {message}"
+        );
+    }
+}
+
+/// The refusal is scoped to the two key flags: an ordinary launch must still
+/// reach the TUI. Without this, widening the guard to any provider-shaped
+/// argument would go unnoticed.
+#[test]
+fn a_launch_without_the_key_flags_is_not_refused() {
+    let args = TuiArgs::try_parse_from(["warp", "--auto-approve"])
+        .expect("a plain launch should parse");
+
+    assert!(reject_provider_api_key_flags(&args).is_ok());
 }
 
 #[test]

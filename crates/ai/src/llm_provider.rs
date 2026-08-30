@@ -25,6 +25,14 @@
 //! port (`DECLINED.md`, xAI / Grok subscription OAuth, #319 -- a product
 //! decision, not a cloud drop). `ApiKeyManager` has no field for it either;
 //! callers reject `Xai` before it ever reaches the store.
+//!
+//! **As of #629 no provider reaches the store.** Nothing in this fork reads a
+//! key back out of `AiApiKeys`, so both flags are now refused for every
+//! provider and point the user at the arbitrary-provider `AgentProviderSecrets`
+//! store instead (`session::reject_provider_api_key_flags`). This type is still
+//! what parses and validates the slug -- the flags still accept exactly this
+//! closed set before refusing it -- so the grammar above is unchanged, but
+//! `supports_pasted_api_key` no longer has a production caller, only its test.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LLMProvider {

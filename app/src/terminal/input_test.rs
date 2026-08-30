@@ -3234,6 +3234,57 @@ fn test_create_docker_sandbox_slash_command_executes_and_clears_buffer() {
     });
 }
 
+/// Fork-authored (AGENTS §5.10), regression for #628. `/api-keys` is offered in
+/// the GUI palette (`supports_gui()` is true: it is in `supports_tui()` and not
+/// in `is_tui_only()`), but had no dispatch arm, so it fell through to
+/// `execute_slash_command`'s no-handler catch-all -- `debug_assert!(false)` in
+/// debug, a silent `return false` in release. It now opens Settings > AI >
+/// Agent providers, the GUI surface over the same `AgentProviderSecrets` store
+/// the TUI's inline `/api-keys` picker edits.
+///
+/// Deleting the `commands::API_KEYS` arm fails this two ways: the catch-all's
+/// `debug_assert!(false)` panics under `cargo test`, and (were assertions off)
+/// the early `return false` leaves the draft text in the buffer, because the
+/// buffer is only cleared after a handled arm falls through. The buffer
+/// assertion also separates a real handler from the AI-disabled safety net at
+/// the top of `execute_slash_command`, which likewise returns `true` early.
+#[test]
+fn api_keys_slash_command_opens_agent_provider_settings_in_the_gui() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let terminal = add_window_with_bootstrapped_terminal(
+            &mut app, None, /* history_file_commands */
+            None,
+        )
+        .await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        assert!(
+            commands::API_KEYS.supports_gui(),
+            "the GUI arm exists because the palette offers this command"
+        );
+
+        input.update(&mut app, |input, ctx| {
+            input.user_insert("draft text", ctx);
+            let handled = input.execute_slash_command(
+                &commands::API_KEYS,
+                None,
+                SlashCommandTrigger::input(),
+                /*is_queued_prompt*/ false,
+                /*queued_conversation_id*/ None,
+                /*queued_query_id*/ None,
+                ctx,
+            );
+            assert!(handled);
+        });
+
+        input.read(&app, |input, ctx| {
+            assert!(input.buffer_text(ctx).is_empty());
+        });
+    });
+}
+
 #[test]
 fn test_agent_mode_set_when_block_attached() {
     App::test((), |mut app| async move {
