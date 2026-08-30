@@ -220,7 +220,7 @@ documents them, it is named.
 | `TerminalSettings` | `app/src/terminal/settings.rs` | `terminal.use_audible_bell`, `terminal.maximum_grid_size`, `terminal.show_terminal_zero_state_block`, `terminal.osc52_clipboard_access`, `appearance.spacing`, `appearance.full_screen_apps.alt_screen_padding`, `experimental.async_find_enabled` | §2 |
 | `UndoCloseSettings` | `app/src/undo_close/settings.rs` | `general.undo_close.enabled`, `general.undo_close.grace_period` | §2, *Tabs* |
 | `WarpDriveSettings` | `app/src/drive/settings.rs` | `warp_drive.enabled`, `warp_drive.sorting_choice` | **nowhere** |
-| `WarpifySettings` | `app/src/terminal/warpify/settings.rs` | `warpify.subshells.*`, `warpify.ssh.ssh_hosts_denylist`, `warpify.ssh.enable_ssh_warpification`, `warpify.ssh.use_ssh_tmux_wrapper`, `warpify.ssh.ssh_extension_install_mode` | **nowhere** (`SshSettings` below is a different group) |
+| `WarpifySettings` | `app/src/terminal/warpify/settings.rs` | `warpify.subshells.*`, `warpify.ssh.ssh_hosts_denylist`, `warpify.ssh.enable_ssh_warpification`, `warpify.ssh.enable_legacy_ssh_wrapper`, `warpify.ssh.use_ssh_tmux_wrapper`, `warpify.ssh.ssh_extension_install_mode` | §8 (`SshSettings` below is a different group) |
 | `WindowSettings` | `app/src/window_settings.rs` | `appearance.window.override_opacity`, `appearance.window.override_blur`, `appearance.window.zoom_level`, `appearance.window.open_windows_at_custom_size`, `appearance.window.new_windows_num_columns` / `_rows`, `appearance.window.left_panel_visibility_across_tabs` | §8 (partly) |
 | `WorkflowAliases` | `app/src/workflows/aliases.rs` | **private** — no TOML key. The `WorkflowAliases` list of Library workflow aliases, stored in the native store | **nowhere** |
 
@@ -725,8 +725,13 @@ Selecting and pasting with the mouse.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `warpify.ssh.enable_legacy_ssh_wrapper` | boolean | `true` | Whether the legacy SSH wrapper is used for SSH sessions. Phosphor deliberately keeps this wrapper; upstream's deprecation of it was not adopted. |
 | `warpify.ssh.reuse_existing_control_master` | boolean | `false` | Whether the wrapper attaches to an existing SSH `ControlMaster` for the destination host instead of always opening its own connection. |
+
+`warpify.ssh.enable_legacy_ssh_wrapper` used to be listed here too. It was
+declared twice — once here and once in `WarpifySettings` — against the same TOML
+path *and* the same storage key, which is one setting with two declarations, not
+two settings (#635). The `SshSettings` copy is gone; the key is declared only in
+`WarpifySettings` and documented in §8.
 
 ## ThemeSettings
 

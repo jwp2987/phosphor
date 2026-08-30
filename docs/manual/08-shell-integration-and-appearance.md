@@ -208,9 +208,11 @@ Phosphorize → SSH → *Denylisted hosts*) writes a regex to
 
 #### The `enable_legacy_ssh_wrapper` trap
 
-`warpify.ssh.enable_legacy_ssh_wrapper` is **deprecated and overloaded**. It is
-declared twice in the tree against the same TOML path and the same storage key
-`EnableSSHWrapper`. On startup, if you have explicitly set it to `false`,
+`warpify.ssh.enable_legacy_ssh_wrapper` is **deprecated and overloaded**. Until
+#635 it was declared twice in the tree against the same TOML path and the same
+storage key `EnableSSHWrapper`; it is now declared once, in `WarpifySettings`,
+but the trapdoor below is unchanged. On startup, if you have explicitly set it to
+`false`,
 Phosphor runs a one-time migration that sets `warpify.ssh.enable_ssh_warpification = false`
 — i.e. it turns off SSH integration entirely, not just the legacy wrapper — and
 then resets itself to `true` so the migration cannot re-fire.
@@ -695,13 +697,13 @@ app/src/terminal/local_tty/unix.rs:372-381 (WARP_USE_SSH_WRAPPER, WARP_SSH_REUSE
 Warpify settings and detection:
 app/src/terminal/warpify/settings.rs:18-46 (added_subshell_commands, subshell_commands_denylist, ssh_hosts_denylist TOML paths + defaults)
 app/src/terminal/warpify/settings.rs:48-56 (enable_ssh_warpification default true)
-app/src/terminal/warpify/settings.rs:58-83 (EnableSshWrapper deprecated, same toml_path/storage_key, SyncToCloud::Never)
+app/src/terminal/warpify/settings.rs:58-108 (EnableSshWrapper deprecated, the sole declaration of warpify.ssh.enable_legacy_ssh_wrapper / EnableSSHWrapper, SyncToCloud::Never)
 app/src/terminal/warpify/settings.rs:85-94 (use_ssh_tmux_wrapper default false, MAC|LINUX only)
 app/src/terminal/warpify/settings.rs:96-130 (SshExtensionInstallMode: AlwaysAsk default)
 app/src/terminal/warpify/settings.rs:300-330 (one-time migration disabling enable_ssh_warpification)
 app/src/terminal/warpify/settings.rs:390-420 (SUBSHELL_COMMAND_REGEXES: shells, docker run/exec, poetry, pipenv, aws-vault, flox; WSL_SUBSHELL_REGEX windows-only)
 app/src/terminal/warpify/settings.rs:~470-500 (is_compatible_subshell_command: ssh-like when !use_ssh_tmux_wrapper; PowerShell hard-coded ssh banner)
-app/src/settings/ssh.rs:5-30 (SshSettings::enable_legacy_ssh_wrapper default true; reuse_existing_control_master default false)
+app/src/settings/ssh.rs:28-44 (SshSettings::reuse_existing_control_master default false)
 app/src/terminal/ssh/ssh_detection.rs:24-51 (evaluate_warpify_ssh_host gating)
 app/src/terminal/ssh/util.rs:155-215 (SshWarpifyCommand: ssh, gcloud compute ssh, eb ssh, doctl compute ssh; -T/-W non-interactive)
 app/src/terminal/local_tty/terminal_manager.rs:688-716 (tmux wrapper supersedes ControlMaster; computed at PTY creation)

@@ -45,8 +45,7 @@ use crate::settings::{
     AliasExpansionEnabled, AliasExpansionSettings, AppEditorSettings, AtContextMenuInTerminalMode,
     AutocompleteSymbols, AutosuggestionKeybindingHint, CodeSettings, CommandCorrections,
     CompletionsOpenWhileTyping, CopyOnSelect, CtrlTabBehavior, DefaultSessionMode,
-    EnableSlashCommandsInTerminal, EnableSshWrapper,
-    ErrorUnderliningEnabled, ExtraMetaKeys,
+    EnableSlashCommandsInTerminal, ErrorUnderliningEnabled, ExtraMetaKeys,
     GPUSettings, GlobalHotkeyMode, InputSettings, InputSettingsChangedEvent,
     LinuxSelectionClipboard, MiddleClickPasteEnabled, MouseScrollMultiplier, PreferLowPowerGPU,
     PreferencesSettings, PreferredGraphicsBackend, QuakeModeSettings, RightClickBehavior,
@@ -75,6 +74,7 @@ use crate::terminal::settings::{
     MaximumGridSize, Osc52ClipboardAccess, Osc52ClipboardAccessSetting, ShowTerminalZeroStateBlock,
     TerminalSettings, UseAudibleBell,
 };
+use crate::terminal::warpify::settings::{EnableSshWrapper, WarpifySettings};
 use crate::terminal::{BlockListSettings, SnackbarEnabled};
 use crate::undo_close::UndoCloseSettings;
 use crate::user_config::{WarpConfig, WarpConfigUpdateEvent};
@@ -843,7 +843,7 @@ impl FeaturesPageAction {
             #[allow(deprecated)]
             Self::ToggleSshWrapper => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleSshWrapper".to_string(),
-                value: to_string(*ssh_settings.enable_legacy_ssh_wrapper.value()),
+                value: to_string(*WarpifySettings::as_ref(ctx).enable_ssh_wrapper.value()),
             },
             Self::ToggleSshReuseControlMaster => TelemetryEvent::FeaturesPageAction {
                 action: "ToggleSshReuseControlMaster".to_string(),
@@ -1431,9 +1431,9 @@ impl TypedActionView for FeaturesPageView {
             #[allow(deprecated)]
             ToggleSshWrapper => {
                 self.ssh_wrapper_toggled = true;
-                SshSettings::handle(ctx).update(ctx, |ssh_settings, ctx| {
-                    report_if_error!(ssh_settings
-                        .enable_legacy_ssh_wrapper
+                WarpifySettings::handle(ctx).update(ctx, |warpify_settings, ctx| {
+                    report_if_error!(warpify_settings
+                        .enable_ssh_wrapper
                         .toggle_and_save_value(ctx));
                 });
             }
@@ -2030,6 +2030,13 @@ impl FeaturesPageView {
 
         // TODO(CORE-3029): Remove when we launch the new SSH Warpification.
         ctx.subscribe_to_model(&SshSettings::handle(ctx), |_, _, _, ctx| ctx.notify());
+        // `enable_ssh_wrapper` is declared in `WarpifySettings` since the #635
+        // de-duplication, so the SSH-wrapper switch reads that group. The switch only
+        // exists when `FeatureFlag::SSHTmuxWrapper` is off (see `SSHWrapperWidget`'s
+        // push below), which is not a default build -- so in a default build this
+        // subscription drives nothing on this page. Keep it: without it, the switch
+        // would not repaint in exactly the builds where it is shown.
+        ctx.subscribe_to_model(&WarpifySettings::handle(ctx), |_, _, _, ctx| ctx.notify());
         ctx.subscribe_to_model(&AltScreenReporting::handle(ctx), |_, _, _, ctx| {
             ctx.notify()
         });
@@ -2629,8 +2636,8 @@ impl FeaturesPageView {
         session_widgets.push(Box::new(BlockLimitWidget::default()));
 
         if !FeatureFlag::SSHTmuxWrapper.is_enabled()
-            && SshSettings::as_ref(ctx)
-                .enable_legacy_ssh_wrapper
+            && WarpifySettings::as_ref(ctx)
+                .enable_ssh_wrapper
                 .is_supported_on_current_platform()
         {
             session_widgets.push(Box::new(SSHWrapperWidget::default()));
@@ -5066,6 +5073,12 @@ impl SettingsWidget for SSHWrapperWidget {
                 },
                 tooltip_override_text: None,
             }),
+            // `EnableSshWrapper` is `WarpifySettings`' declaration since #635; the
+            // deleted `SshSettings` one was `SyncToCloud::Globally(Yes)`. Because
+            // `for_setting` shows the local-only icon iff `sync_to_cloud == Never`,
+            // this row now shows that icon when settings sync is on, where it
+            // previously showed none. That is correct -- the setting really is
+            // local-only -- and it is the only user-visible change from #635.
             LocalOnlyIconState::for_setting(
                 EnableSshWrapper::storage_key(),
                 EnableSshWrapper::sync_to_cloud(),
@@ -5079,7 +5092,7 @@ impl SettingsWidget for SSHWrapperWidget {
             appearance,
             ui_builder
                 .switch(self.switch_state.clone())
-                .check(*SshSettings::as_ref(app).enable_legacy_ssh_wrapper.value())
+                .check(*WarpifySettings::as_ref(app).enable_ssh_wrapper.value())
                 .build()
                 .on_click(move |ctx, _, _| {
                     #[allow(deprecated)]

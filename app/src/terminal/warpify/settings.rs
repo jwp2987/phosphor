@@ -55,22 +55,47 @@ maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
     description: "Whether to enable Phosphor features in SSH sessions.",
 });
 
-// NOTE: This setting has been unified into `enable_ssh_warpification` and is no
-// longer surfaced in the UI or used to gate any behavior. It is retained only
-// so the one-time migration (see `register`) can read a user's previous value
-// and forward it to `enable_ssh_warpification`. It can be deleted in a future
-// release once the migration has shipped to all users.
-// The storage key and TOML path are intentionally kept identical to the old
-// `SshSettings::enable_ssh_wrapper` field for backward compatibility.
+// NOTE: Upstream unified this setting into `enable_ssh_warpification` and retains
+// it only so the one-time migration (see `register`) can read a user's previous
+// value and forward it. This fork still reaches for it directly, because it keeps
+// the pre-unification code path that `FeatureFlag::SSHTmuxWrapper` selects between:
+// with that flag off, the legacy ControlMaster wrapper is the only mechanism and
+// this is its switch. Which readers are live depends on the flag, which is on in
+// every default build (`ssh_tmux_wrapper` is in `app/Cargo.toml`'s `default`):
 //
-// It is deliberately NOT cloud-synced (`SyncToCloud::Never`) — this is the fix for
-// https://github.com/warpdotdev/Warp/issues/13228. The migration below reads this
-// value and forwards an opt-out to `enable_ssh_warpification`. When it was synced,
-// a stale cloud value (from a user's pre-extension flow) was restored on every
-// launch, re-arming the "one-time" migration and repeatedly disabling
-// `enable_ssh_warpification` even after the user turned it back on. Keeping it
-// local means the migration's reset to the default (`true`) persists and serves as
-// the one-time, per-device marker so the migration cannot re-fire.
+//   - `workspace/view.rs`'s `LEGACY_SSH_WRAPPER_CONTEXT_FLAG` -- ALWAYS live.
+//     `add_toggle_setting_context_flags` is called unconditionally and inserts the
+//     flag whenever this value is true, in every build. (What the flag then gates,
+//     the command-palette toggle, is registered only when `SSHTmuxWrapper` is off.)
+//   - `terminal/local_tty/terminal_manager.rs`'s `else` arm and
+//     `settings_view/features_page.rs`'s `SSHWrapperWidget` -- live only when
+//     `SSHTmuxWrapper` is off, so inert in a default build.
+//
+// So in a shipped build the migration below and the context flag are what run.
+//
+// This is the ONLY declaration of the key. `SshSettings` used to carry a second one
+// with the same `toml_path` and the same `storage_key` (#635); because
+// `SettingsManager::register_setting` keys its maps by storage key with
+// `HashMap::insert`, that duplicate did not create a second setting -- it evicted
+// this one's registry entry, so the callbacks a TOML reload dispatches were bound
+// to the other group's model, `inventory` emitted the key twice to the schema
+// generators, and the registered `SyncToCloud` became `Globally(Yes)`. That last
+// one would defeat the #13228 guard below in upstream's design; in this fork it is
+// inert, because nothing consumes `sync_to_cloud` for syncing (no
+// `CloudPreferencesSyncer` -- see `DECLINED.md`) beyond the settings UI's
+// local-only icon. Adding another declaration of this key would do all of that
+// again; the storage key and TOML path are load-bearing, so
+// `script/check_settings_registry` now fails on a duplicate of either.
+//
+// It is deliberately NOT cloud-synced (`SyncToCloud::Never`) — this is upstream's
+// fix for https://github.com/warpdotdev/Warp/issues/13228, kept here for parity
+// even though this fork has no syncer to re-arm the migration. The migration below
+// reads this value and forwards an opt-out to `enable_ssh_warpification`. Upstream,
+// when it was synced, a stale cloud value (from a user's pre-extension flow) was
+// restored on every launch, re-arming the "one-time" migration and repeatedly
+// disabling `enable_ssh_warpification` even after the user turned it back on.
+// Keeping it local means the migration's reset to the default (`true`) persists and
+// serves as the one-time, per-device marker so the migration cannot re-fire.
 maybe_define_setting!(EnableSshWrapper, group: WarpifySettings, {
     type: bool,
     default: true,

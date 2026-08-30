@@ -575,3 +575,63 @@ fn test_migration_not_needed_when_settings_file_exists() {
         });
     });
 }
+
+/// `warpify.ssh.enable_legacy_ssh_wrapper` was declared TWICE (#635) -- once in
+/// `SshSettings` (`settings/ssh.rs`) and once in `WarpifySettings`
+/// (`terminal/warpify/settings.rs`) -- against the same `toml_path` *and* the same
+/// `storage_key` (`EnableSSHWrapper`). That is not two settings.
+/// `SettingsManager::register_setting` keys every one of its maps by storage key
+/// with `HashMap::insert`, so the group registered second (`SshSettings`, per
+/// `register_all_settings`'s order) silently evicted the other's entry. The
+/// `update_fns`/`load_fns`/`clear_fns` a TOML reload dispatches were therefore bound
+/// to the losing group's model, and `inventory` still held both declarations, so the
+/// schema and default-settings generators emitted the key twice.
+///
+/// The eviction also swapped the registered `SyncToCloud` (`Never` ->
+/// `Globally(Yes)`), which in upstream's design would defeat the
+/// warpdotdev/Warp#13228 guard against re-arming the one-time SSH-wrapper migration.
+/// It could not do so here: this fork has no `CloudPreferencesSyncer`, so nothing
+/// consumes `sync_to_cloud` for syncing. That makes the harm the two bullets above,
+/// not a sync loop.
+///
+/// Nothing caught it: it compiles, both declarations read and write the same
+/// underlying value, and `script/check_settings_registry` only validated settings
+/// *group* registration parity.
+///
+/// `inventory` is where a duplicate is still visible, because it holds one
+/// `SettingSchemaEntry` per *declaration* -- unlike the `SettingsManager` maps that
+/// consume it, which dedupe silently. `hierarchy` + `storage_key` here reconstruct
+/// the `toml_path` (`SettingSchemaEntry::storage_key` is its last segment).
+///
+/// `script/check_settings_registry` makes the same assertion on the source text as
+/// a pre-push gate, and also covers explicit `storage_key:` collisions, which the
+/// schema entry does not carry. This test asserts it on what actually linked.
+#[test]
+fn no_two_settings_declare_the_same_toml_path() {
+    use settings::schema::SettingSchemaEntry;
+    use std::collections::HashMap;
+
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    for entry in inventory::iter::<SettingSchemaEntry> {
+        let toml_path = match entry.hierarchy {
+            Some(hierarchy) => format!("{hierarchy}.{}", entry.storage_key),
+            None => entry.storage_key.to_string(),
+        };
+        *seen.entry(toml_path).or_default() += 1;
+    }
+
+    let mut duplicates: Vec<_> = seen
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(path, count)| format!("{path} ({count} declarations)"))
+        .collect();
+    duplicates.sort();
+
+    assert!(
+        duplicates.is_empty(),
+        "settings declared more than once. A second declaration of a key does not \
+         create a second setting -- it overwrites the first's SettingsManager entry, \
+         sync_to_cloud included:\n  {}",
+        duplicates.join("\n  ")
+    );
+}
