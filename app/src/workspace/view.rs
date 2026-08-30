@@ -20853,7 +20853,9 @@ impl Workspace {
             context.set.insert(flags::WARP_SAME_LINE_PROMPT_FLAG);
         }
 
-        if *ssh_settings.enable_legacy_ssh_wrapper.value() {
+        // Declared once, in `WarpifySettings` (#635); `SshSettings` used to carry a
+        // second declaration of the same storage key.
+        if *warpify_settings.enable_ssh_wrapper.value() {
             #[allow(deprecated)]
             context.set.insert(flags::LEGACY_SSH_WRAPPER_CONTEXT_FLAG);
         }

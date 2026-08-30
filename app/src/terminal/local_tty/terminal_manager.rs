@@ -692,7 +692,10 @@ impl<S> TerminalManager<S> {
                 .value()
                 && !*WarpifySettings::as_ref(ctx).use_ssh_tmux_wrapper.value()
         } else {
-            *SshSettings::as_ref(ctx).enable_legacy_ssh_wrapper.value()
+            // The legacy ControlMaster wrapper's own switch. Declared once, in
+            // `WarpifySettings` (#635) -- `SshSettings::enable_legacy_ssh_wrapper` was a
+            // second declaration of the same storage key, not a second setting.
+            *WarpifySettings::as_ref(ctx).enable_ssh_wrapper.value()
         };
 
         // Only meaningful when the legacy ControlMaster wrapper is active.

@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
-# Fail if a settings group is registered in production but not in the test
-# harness that is supposed to mirror it.
+# Two checks over the settings registry:
 #
-# WHY THIS EXISTS
-# ----------------
+#   1. Fail if a settings group is registered in production but not in the test
+#      harness that is supposed to mirror it.
+#   2. Fail if two settings declare the same `toml_path` or the same
+#      `storage_key`.
+#
+# WHY THIS EXISTS (check 1)
+# --------------------------
 # PR #480 went red on nextest with:
 #
 #     Cannot get singleton model of type
@@ -31,6 +35,36 @@
 # That is exactly the "compiles fine, blows up on whoever touches it next"
 # shape the stub-coverage guard exists for, one function over.
 #
+# WHY THIS EXISTS (check 2)
+# --------------------------
+# Issue #635: `warpify.ssh.enable_legacy_ssh_wrapper` was declared TWICE --
+# in `SshSettings` (`app/src/settings/ssh.rs`) and in `WarpifySettings`
+# (`app/src/terminal/warpify/settings.rs`) -- against the same `toml_path`
+# AND the same `storage_key` ("EnableSSHWrapper"). That is not two settings.
+# `SettingsManager::register_setting` (`crates/settings/src/manager.rs`)
+# keys all six of its maps by storage key with `HashMap::insert`, so the
+# group registered second in `register_all_settings` silently evicted the
+# first's entry. Two things follow. The `update_fns`/`load_fns`/`clear_fns`
+# a TOML reload or settings-file load dispatches were bound to the losing
+# group's model, which therefore never saw an update; and `inventory` still
+# held BOTH declarations, so the schema and default-settings generators
+# emitted the key twice.
+#
+# The eviction also swapped the registered `SyncToCloud` (`Never` ->
+# `Globally(Yes)`), which in upstream's design would defeat the
+# warpdotdev/Warp#13228 guard on that migration -- and the test asserting
+# `EnableSshWrapper::sync_to_cloud() == Never` would not have noticed, since
+# it asks the *type*, not the registry. State that conditionally: it could
+# not happen in this fork, which has no `CloudPreferencesSyncer` (see
+# `DECLINED.md`) and so consumes `sync_to_cloud` nowhere but the settings
+# UI's local-only icon. The defect is real on the two grounds above; the
+# sync loop is upstream's.
+#
+# This is the same shape as check 1 one level down: a registry keyed by
+# something the compiler does not police, populated by `insert`, where the
+# loser is not an error but an absence. Check 1 catches a group that never
+# registers; check 2 catches a setting whose registration is thrown away.
+#
 # HOW IT WORKS
 # ------------
 # Extract the brace-balanced body of `register_all_settings` in
@@ -43,6 +77,45 @@
 # `#[cfg(feature = "local_fs")]` in both files still counts as present in
 # both, same approximation the other two guards make deliberately (see their
 # header comments).
+#
+# Check 2 walks every non-test `.rs` file under `app/src` and `crates/*/src`
+# with a small awk state machine: `define_settings_group!` entries,
+# `maybe_define_setting!` and `implement_setting_for_enum!` each name a
+# setting, and the `toml_path:` / `storage_key:` string literals that follow
+# belong to it. A setting with no explicit `storage_key:` gets the setting
+# type's own name, which is what `define_setting!`'s convenience arms pass
+# (`storage_key: stringify!($name)`).
+#
+# Those three are the only declaration forms in the tree today. A *direct*
+# `define_setting!` invocation is invisible to this awk -- there are zero such
+# sites outside `crates/settings/src/macros.rs`, and the omission fails safe
+# (a missed declaration cannot manufacture a duplicate, only miss one), but do
+# not read the list above as exhaustive if that ever changes.
+#
+# The test exclusion is by FILENAME, not directory, so a test file that does
+# not end in `_test.rs`/`_tests.rs` is scanned -- `crates/integration/src/test/**`
+# is the live example. Harmless today (nothing there declares a setting) and
+# arguably right, since those are not settings fixtures.
+#
+# `crates/settings/src/macros.rs` is skipped because it *defines* those macros:
+# its `macro_rules!` arms and its doc examples are not declarations. Test files
+# (`*_test.rs`, `*_tests.rs`, `*test_support*`) are excluded on purpose:
+# `crates/settings`'s own fixtures declare `test.simple_setting` twice, in
+# `macros_tests.rs` and `mod_tests.rs`, and that is fine -- they are separate
+# fixtures in one test binary, not two declarations of one shipped setting.
+#
+# NO ESCAPE HATCH, DELIBERATELY. There is no legitimate aliasing case in this
+# tree: across the 303 settings this finds, the only duplicate of either key
+# was #635's, and it was a defect. A deliberate alias cannot work anyway -- the second
+# declaration does not alias the first, it evicts it from the registry. If a
+# real case ever turns up, add the exemption here with the reason, not a
+# blanket skip.
+#
+# `app/src/settings/init_tests.rs`'s `no_two_settings_declare_the_same_toml_path`
+# makes the same assertion at runtime over the `inventory` registry that
+# actually linked. This one is the fast pre-push half: it parses source and
+# compiles nothing, and it also covers explicit `storage_key:` collisions,
+# which the schema entry does not carry.
 #
 # DIRECTION: production -> test is a hard failure. test -> production is not
 # -----------------------------------------------------------------------
@@ -159,9 +232,135 @@ if [[ -n "$extra" ]]; then
     echo "$extra" | sed 's/^/  - /'
 fi
 
-if [[ $status -eq 0 && -z "$extra" ]]; then
-    echo "settings registry: ok ($(wc -l < "$prod_set" | tr -d ' ') group(s) registered in both)"
+group_count="$(wc -l < "$prod_set" | tr -d ' ')"
+rm -f "$prod_set" "$test_set"
+
+# ---------------------------------------------------------------------------
+# Check 2: no two settings declare the same toml_path or the same storage_key.
+# ---------------------------------------------------------------------------
+
+# Emit one "<kind>\t<key>\t<file>:<line>" record per declared setting: a
+# toml_path record when the setting has one, and always a storage_key record
+# (the explicit `storage_key:` if given, otherwise the setting type's own name,
+# which is what `define_setting!` passes as `stringify!($name)`).
+# `read -d ''` returns non-zero when it hits EOF instead of the delimiter,
+# which is exactly what a heredoc does; `|| true` keeps that off `$?`.
+read -r -d '' EXTRACT_SETTINGS_AWK <<'AWK' || true
+function flush() {
+    if (name == "") return
+    # Anything that is not a bare Rust identifier came from a macro_rules! arm
+    # pattern, not a declaration.
+    if (name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) { name = ""; path = ""; key = ""; return }
+    if (path != "") print "toml_path\t" path "\t" namefile ":" nameline
+    print "storage_key\t" (key != "" ? key : name) "\t" namefile ":" nameline
+    name = ""; path = ""; key = ""
+}
+FNR == 1 { flush(); in_group = 0; pending_enum = 0 }
+{
+    # Strip line comments (this also removes `///` and `//!` doc lines) and skip
+    # block-comment continuations, so the macro examples in the settings crate's
+    # own docs are not mistaken for declarations.
+    line = $0
+    sub(/[ \t]*\/\/.*$/, "", line)
+    if (line ~ /^[ \t]*\*/) next
+}
+# A top-level item closed at column 0 ends whatever declaration was open.
+line ~ /^[)}]/ { flush(); in_group = 0; next }
+line ~ /define_settings_group![ \t]*\(/ { flush(); in_group = 1; next }
+line ~ /maybe_define_setting![ \t]*\(/ {
+    flush()
+    if (match(line, /maybe_define_setting![ \t]*\([ \t]*[A-Za-z_][A-Za-z0-9_]*/)) {
+        s = substr(line, RSTART, RLENGTH); sub(/.*\(/, "", s); gsub(/[ \t]/, "", s)
+        name = s; namefile = FILENAME; nameline = FNR
+    }
+    next
+}
+line ~ /implement_setting_for_enum![ \t]*\(/ { flush(); pending_enum = 1; next }
+# The enum's name is the first argument, on the line after the macro call.
+pending_enum && line ~ /[A-Za-z_]/ {
+    s = line; gsub(/[ \t,]/, "", s)
+    name = s; namefile = FILENAME; nameline = FNR; pending_enum = 0
+    next
+}
+# A `field: SettingType { ... }` entry inside a settings group.
+in_group && line ~ /^[ \t]*[a-z_][a-z0-9_]*[ \t]*:[ \t]*[A-Z][A-Za-z0-9_]*[ \t]*\{/ {
+    flush()
+    s = line; sub(/^[ \t]*[a-z_][a-z0-9_]*[ \t]*:[ \t]*/, "", s); sub(/[ \t]*\{.*$/, "", s)
+    name = s; namefile = FILENAME; nameline = FNR
+    next
+}
+name != "" && line ~ /^[ \t]*storage_key[ \t]*:[ \t]*"/ {
+    s = line; sub(/^[^"]*"/, "", s); sub(/".*$/, "", s); key = s; next
+}
+name != "" && line ~ /^[ \t]*toml_path[ \t]*:[ \t]*"/ {
+    s = line; sub(/^[^"]*"/, "", s); sub(/".*$/, "", s); path = s; next
+}
+END { flush() }
+AWK
+
+decls="$(mktemp)"
+find app/src crates/*/src -name '*.rs' \
+     ! -name '*_test.rs' ! -name '*_tests.rs' ! -name '*test_support*' \
+     ! -path 'crates/settings/src/macros.rs' -print0 \
+    | xargs -0 awk "$EXTRACT_SETTINGS_AWK" > "$decls"
+
+if [[ ! -s "$decls" ]]; then
+    echo "error: found no setting declarations at all (extraction is out of date)" >&2
+    rm -f "$decls"
+    exit 2
 fi
 
-rm -f "$prod_set" "$test_set"
+# LC_ALL=C on every sort here for the reason in the header: a UTF-8 collation
+# ignores punctuation, so `warpify.ssh.x` and `warpifysshx` compare EQUAL and
+# `uniq -d` misses the pair -- and settings keys are all punctuation.
+report_duplicates() {
+    local kind="$1" dupes
+    dupes="$(awk -F'\t' -v k="$kind" '$1 == k { print $2 }' "$decls" \
+             | LC_ALL=C sort | LC_ALL=C uniq -d)"
+    [[ -z "$dupes" ]] && return 0
+
+    echo "error: duplicate settings $kind:" >&2
+    while IFS= read -r dupe; do
+        echo "  $dupe" >&2
+        # Sort by file, then by line NUMERICALLY -- a plain sort puts :621 before
+        # :86. LC_ALL=C for the reason above.
+        awk -F'\t' -v k="$kind" -v d="$dupe" '$1 == k && $2 == d { print "      " $3 }' \
+            "$decls" | LC_ALL=C sort -t: -k1,1 -k2,2n >&2
+    done <<< "$dupes"
+    return 1
+}
+
+dup_status=0
+report_duplicates toml_path || dup_status=1
+report_duplicates storage_key || dup_status=1
+
+if [[ $dup_status -ne 0 ]]; then
+    status=1
+    cat >&2 <<'EOF'
+
+A second declaration of a key does not create a second setting. Every
+SettingsManager map is keyed by storage key and populated with
+HashMap::insert, so the settings group registered LAST in
+register_all_settings silently evicts the other's entry. The loser then has
+no registration at all: the update/load/clear callbacks a TOML reload
+dispatches go to the winner's model only, while both groups still read and
+write the one underlying value. The schema and default-settings generators
+meanwhile see both declarations via inventory and emit the key twice. The
+registered sync_to_cloud, default and supported_platforms are the winner's.
+That is issue #635.
+
+Fix: delete one declaration and point its readers at the survivor. If the
+two really are meant to be the same setting, that is what deleting one
+gives you; if they are meant to be different settings, give one a different
+toml_path and storage_key.
+EOF
+fi
+
+setting_count="$(awk -F'\t' '$1 == "storage_key"' "$decls" | wc -l | tr -d ' ')"
+rm -f "$decls"
+
+if [[ $status -eq 0 && -z "$extra" ]]; then
+    echo "settings registry: ok ($group_count group(s) registered in both, $setting_count setting(s) with unique toml_path and storage_key)"
+fi
+
 exit $status
