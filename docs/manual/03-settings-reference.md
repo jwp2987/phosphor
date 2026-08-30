@@ -453,22 +453,21 @@ Cursor, Vim mode, and input-editing behaviour.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `updates.automatic_updates_enabled` | boolean | `true` | Whether Phosphor checks for and downloads updates in the background. **Live on macOS and Windows** (both release bundlers compile the `autoupdate` feature in). **Inert on Linux**, where the bundler does not, so the `true` default gates a check that never runs. |
+| `updates.automatic_updates_enabled` | boolean | `true` | Whether Phosphor checks for and downloads updates in the background. **Inert on every platform** — no release bundler compiles the `autoupdate` feature in, so the `true` default gates a check that never runs. |
 
-**Caveat.** This is the *GUI* updater, and whether it is compiled in is decided
-per platform by the release bundler, not by `app/Cargo.toml`. The `autoupdate`
-Cargo feature is **not** in the default feature set, and `FeatureFlag::Autoupdate`
-was deliberately dropped from `RELEASE_FLAGS`; the flag is set only by
-`extra_flags` under `#[cfg(feature = "autoupdate")]`. The macOS bundler
-(`script/macos/bundle:358`) and the Windows bundler
-(`script/windows/bundle.ps1:125`) both pass that feature, so shipped macOS and
-Windows builds do poll GitHub Releases and this setting gates the poll. The
-Linux OSS bundler resets the feature list to `release_bundle`
-(`script/linux/bundle:198-203`), so on Linux nothing polls, the two update
-commands are never registered, and this setting has nothing to gate. A local
-`cargo build` without `--features autoupdate` behaves like the Linux build on
-every platform. Do not confuse this with `general.autoupdate_enabled`, which is
-the terminal UI's separate updater.
+**Caveat.** This is the *GUI* updater, and **this fork does not ship it on any
+platform** (#630). Whether it is compiled in is decided by the release bundler,
+not by `app/Cargo.toml`: the `autoupdate` Cargo feature is **not** in the default
+feature set, and `FeatureFlag::Autoupdate` was deliberately dropped from
+`RELEASE_FLAGS`, so the flag is set only by `extra_flags` under
+`#[cfg(feature = "autoupdate")]`. No bundler passes that feature — Linux never
+did, and it was removed from the macOS and Windows bundlers, which had carried it
+since `160cfca59`. So nothing polls GitHub Releases, the two update commands are
+never registered, and this setting has nothing to gate. `script/check_no_autoupdate`
+enforces that. A local `cargo build --features autoupdate` still turns the whole
+subsystem on, and this setting then gates the poll as described. Do not confuse
+this with `general.autoupdate_enabled`, which is the terminal UI's separate
+updater.
 
 ## BlockVisibilitySettings
 
@@ -533,7 +532,7 @@ renders in your host terminal's cells and uses that terminal's font.
 |---|---|---|---|
 | `appearance.text.font_name` | string | `"Hack"` | The monospace font used in the terminal. |
 | `appearance.text.fallback_font_name` | string | `""` | The font used when the terminal font cannot render a character. Empty means no explicit fallback. |
-| `appearance.text.font_size` | float | `13.0` | Monospace font size. `13.0` on **every** platform. The source contains a rule that would start a new Windows user at `16.0` to match Windows Terminal (`app/src/settings/initializer.rs:80-105`), but it sits inside the `auth_state.is_onboarded() == Some(false)` block, and the local placeholder user hardcodes `is_onboarded: true` (`app/src/auth/mod.rs:213`), so that branch never runs. |
+| `appearance.text.font_size` | float | `13.0` | Monospace font size. `13.0` on **every** platform. The source used to contain a rule that would start a new Windows user at `16.0` to match Windows Terminal, inside the `auth_state.is_onboarded() == Some(false)` block. The local placeholder user hardcodes `is_onboarded: true` (`app/src/auth/mod.rs:213`), so that branch never ran; it was removed in #634 and the declared default is the effective one. |
 | `appearance.text.font_weight` | `"thin"` \| `"extra_light"` \| `"light"` \| `"normal"` \| `"medium"` \| `"semibold"` \| `"bold"` \| `"extra_bold"` \| `"black"` | `"normal"` | Monospace font weight. |
 | `appearance.text.line_height_ratio` | float | `1.2` | Line height as a multiple of font size. |
 | `appearance.text.ai_font_name` | string | `"Hack"` | The font used for AI-generated content. |
@@ -564,11 +563,12 @@ renders in your host terminal's cells and uses that terminal's font.
 |---|---|---|---|
 | `appearance.input.input_mode` | `"pinned_to_bottom"` \| `"pinned_to_top"` \| `"waterfall"` | `"pinned_to_bottom"` | Where the input sits. `pinned_to_bottom` puts newest blocks at the bottom; `pinned_to_top` inverts that; `waterfall` starts the input at the top and pushes it down as commands accumulate. |
 
-Note: the source carries a comment (`app/src/settings/input_mode.rs:9-11`)
-saying new users are defaulted to `waterfall` by the settings initializer. The
-comment is stale — no such override exists anywhere in this tree, and the
+Note: the source used to carry a comment (`app/src/settings/input_mode.rs`)
+saying new users are defaulted to `waterfall` by the settings initializer. It was
+stale — no such override ever existed in this tree, and the
 `DefaultWaterfallMode` feature flag it belonged to is registered but has no
-reader. The effective default really is `pinned_to_bottom`, for everyone.
+reader — and it was corrected in #634. The effective default really is
+`pinned_to_bottom`, for everyone.
 
 ## InputSettings
 
@@ -850,7 +850,7 @@ works is the most likely way to waste an afternoon.
 | `privacy.telemetry_enabled` | Telemetry channel physically removed; toggle never rendered. |
 | `privacy.crash_reporting_enabled` | The toggle renders, but `crash_reporting::init` is compiled out of every OSS bundle (`app/src/lib.rs:1551-1557`; no `oss` bundler branch sets the cargo feature). Live only in a `--features crash_reporting` build. |
 | `cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok` | There are no credits. The value is computed and never read. |
-| `updates.automatic_updates_enabled` | **Inert on Linux only.** The macOS and Windows bundlers add the `autoupdate` Cargo feature explicitly (`script/macos/bundle:358`, `script/windows/bundle.ps1:125`), so the setting is live there. The Linux OSS bundler resets the feature list to `release_bundle` (`script/linux/bundle:198-203`), so nothing polls. Note `FeatureFlag::Autoupdate` is **not** in `RELEASE_FLAGS` (`crates/warp_features/src/lib.rs:896` says so explicitly); it is set only by `extra_flags` under `#[cfg(feature = "autoupdate")]`. See §AutoupdateSettings. |
+| `updates.automatic_updates_enabled` | **Inert on every platform.** No OSS bundler adds the `autoupdate` Cargo feature: Linux never did, and it was removed from `script/macos/bundle` and `script/windows/bundle.ps1` (#630), so nothing polls anywhere. Note `FeatureFlag::Autoupdate` is **not** in `RELEASE_FLAGS` (`crates/warp_features/src/lib.rs` says so explicitly); it is set only by `extra_flags` under `#[cfg(feature = "autoupdate")]`, which is why dropping the Cargo feature is sufficient. `script/check_no_autoupdate` guards all three paths. See §AutoupdateSettings. |
 | `general.autoupdate_enabled` | The shipped TUI configures no update endpoint. |
 | `agents.voice.voice_input_enabled`, `agents.voice.voice_input_toggle_key` | Audio capture works; transcription is disabled because the BYOP protocol cannot carry audio. Recording always ends in a transcription failure. |
 | `general.default_session_mode = "ambient_agent"` | Ambient (cloud) agents do not exist here. |
@@ -968,8 +968,7 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/settings/gpu.rs:5-29
   app/src/settings/input.rs:26-33 (InputBoxType Classic default), :35-210
   app/src/settings/input_mode.rs:6-19 + app/src/terminal/block_list_viewport.rs:261-273 (PinnedToBottom default)
-  app/src/settings/initializer.rs:44-49 (the is_onboarded()==Some(false) block is unreachable; local user hardcodes is_onboarded: true)
-  app/src/settings/initializer.rs:80-105 (Windows font size 16.0 for new users)
+  app/src/settings/initializer.rs (the is_onboarded()==Some(false) block was unreachable -- local user hardcodes is_onboarded: true -- and was removed by #634)
   app/src/settings/language.rs:36-46,100-111
   app/src/settings/linux.rs:4-17 (default linux::is_wsl())
   app/src/settings/local_control.rs:46-58,149-151,169-183 + crates/warp_core/src/channel/mod.rs:30-35 (Oss is not dogfood => Disabled)
@@ -985,8 +984,8 @@ Group declarations (all defaults/paths/platforms above are read from these):
   crates/warpui/src/platform/mac/delegate.rs:302 vs crates/warpui/src/windowing/winit/delegate.rs:543 (set_accessibility_contents implemented on macOS, empty on the winit delegate used by Linux/FreeBSD/Windows)
   app/src/lib.rs:1701 (a11y verbosity is read on every platform)
   app/src/terminal/settings.rs:192-223 + app/Cargo.toml:648 (experimental.async_find_enabled is ORed with FeatureFlag::AsyncFind, which is a default feature)
-  app/src/settings/initializer.rs:80-105 + app/src/auth/mod.rs:213 (the Windows 16.0 font-size override is inside is_onboarded()==Some(false), which is never true)
-  app/src/settings/input_mode.rs:9-11 + app/src/lib.rs:2955-2956 (the "new users default to waterfall" comment is stale; DefaultWaterfallMode has no reader)
+  app/src/settings/initializer.rs + app/src/auth/mod.rs:213 (the Windows 16.0 font-size override was inside is_onboarded()==Some(false), which is never true; removed by #634)
+  app/src/settings/input_mode.rs + app/src/lib.rs:2955-2956 (the "new users default to waterfall" comment was stale and is now corrected; DefaultWaterfallMode has no reader)
   app/src/settings/scroll.rs:3-13
   app/src/settings/select.rs:26-32,44-86 (platform sets: LINUX for selection clipboard, WINDOWS|MAC for middle click)
   app/src/settings/ssh.rs:5-30
@@ -1000,11 +999,11 @@ Group declarations (all defaults/paths/platforms above are read from these):
 Inertness claims:
   app/src/settings_view/features_page.rs:6469 and app/src/settings_view/keybindings.rs:1158 and app/src/settings_view/settings_page.rs:522 (settings_sync_enabled only drives a "local only" icon); no CloudPreferencesSyncer exists in the tree
   app/src/ai/agent/api.rs:512-513,642 + grep: allow_use_of_warp_credits_with_byok is never read after being set
-  app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle:358 and script/windows/bundle.ps1:125 (both ADD the feature) + script/linux/bundle:198-203 (oss resets FEATURES to "release_bundle", dropping the crash_reporting default set at :24) + crates/warp_features/src/lib.rs:895-907 (RELEASE_FLAGS: FeatureFlag::Autoupdate is deliberately NOT present) + app/src/lib.rs:2926-2929 (extra_flags adds it under #[cfg(feature = "autoupdate")])
+  app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle and script/windows/bundle.ps1 (oss FEATURES; the feature was removed from both by #630) + script/linux/bundle (oss resets FEATURES to "release_bundle", dropping the crash_reporting default set at :24) + crates/warp_features/src/lib.rs:895-907 (RELEASE_FLAGS: FeatureFlag::Autoupdate is deliberately NOT present) + app/src/lib.rs:2926-2929 (extra_flags adds it under #[cfg(feature = "autoupdate")])
   app/src/autoupdate/mod.rs:273-274,313-317 (both autoupdate paths gated on FeatureFlag::Autoupdate / can_autoupdate)
   app/src/autoupdate/github.rs:1-6 (Oss autoupdate source is GitHub Releases)
   DECLINED.md "TUI autoupdate" row (crates/warp_tui/src/bin/oss.rs:42 hardcodes autoupdate_config: None; server_root_url is a 192.0.2.0:9 sentinel)
-  DECLINED.md "Telemetry and crash reporting" table (is_telemetry_available hard-coded false, widget never renders). NOTE: the crash-reporting toggle *renders* (should_render gates on FeatureFlag::CrashReporting, which is in RELEASE_FLAGS -- crates/warp_features/src/lib.rs:912, app/src/lib.rs:2906-2907) but does nothing in a shipped build: crash_reporting::init sits behind #[cfg(feature = "crash_reporting")] (app/src/lib.rs:1551-1557) and no OSS bundler sets that cargo feature. Verify this at the `oss` BRANCH, not at the script's default FEATURES line -- script/linux/bundle:24 and script/windows/bundle.ps1:17 do list crash_reporting, but those are the dev-channel values and the oss branches OVERWRITE them: script/macos/bundle:358 = release_bundle,extern_plist,autoupdate; script/linux/bundle:203 = release_bundle; script/windows/bundle.ps1:125 = release_bundle,gui,nld_improvements,autoupdate. Panic backtraces reach the log via log_panics regardless (crates/warp_logging/src/native.rs:804-807). See section 9.
+  DECLINED.md "Telemetry and crash reporting" table (is_telemetry_available hard-coded false, widget never renders). NOTE: the crash-reporting toggle *renders* (should_render gates on FeatureFlag::CrashReporting, which is in RELEASE_FLAGS -- crates/warp_features/src/lib.rs:912, app/src/lib.rs:2906-2907) but does nothing in a shipped build: crash_reporting::init sits behind #[cfg(feature = "crash_reporting")] (app/src/lib.rs:1551-1557) and no OSS bundler sets that cargo feature. Verify this at the `oss` BRANCH, not at the script's default FEATURES line -- script/linux/bundle:24 and script/windows/bundle.ps1:17 do list crash_reporting, but those are the dev-channel values and the oss branches OVERWRITE them: script/macos/bundle = release_bundle,extern_plist; script/linux/bundle = release_bundle; script/windows/bundle.ps1 = release_bundle,gui,nld_improvements. Panic backtraces reach the log via log_panics regardless (crates/warp_logging/src/native.rs:804-807). See section 9.
   app/Cargo.toml:474-479 ("crash_reporting" is not in the default feature list)
   app/src/crash_reporting/mod.rs:189-200,270-290 (init reads the setting and installs the local panic hook)
   app/src/settings_view/privacy_page.rs:1538-1550 (should_render gate)

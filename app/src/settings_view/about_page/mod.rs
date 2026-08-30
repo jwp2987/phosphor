@@ -60,9 +60,20 @@ pub struct AboutPageView {
 }
 
 /// Whether the autoupdate UI (update-status row + "Automatic updates" toggle) is
-/// shown on the About page. Hidden for this fork: there is no Phosphor release
-/// channel to update from (the upstream release URLs point at Warp/Zap), so those
-/// controls would be misleading. Flip to `true` to restore them.
+/// shown on the About page. Hidden for this fork.
+///
+/// The reason recorded here used to be "the upstream release URLs point at
+/// Warp/Zap". That was wrong: `app/src/autoupdate/github.rs` polls the GitHub
+/// Releases API for `jwp2987/phosphor`, this fork's own repo. The real reason is a
+/// deliberate decision (#630): **this fork ships no autoupdate on any platform.**
+/// None of the three bundlers passes the `autoupdate` cargo feature, and that
+/// feature is the only thing that sets `FeatureFlag::Autoupdate` (it is
+/// deliberately not in `RELEASE_FLAGS`), so the whole subsystem is inert in a
+/// shipped build. Showing a status row and an "Automatic updates" toggle that
+/// drive nothing would be misleading.
+///
+/// Flip to `true` only together with re-enabling the cargo feature in the
+/// bundlers; on its own it just restores dead controls.
 const SHOW_AUTOUPDATE_UI: bool = false;
 
 impl AboutPageView {
@@ -404,5 +415,36 @@ impl SettingsPageMeta for AboutPageView {
 impl From<ViewHandle<AboutPageView>> for SettingsPageViewHandle {
     fn from(view_handle: ViewHandle<AboutPageView>) -> Self {
         SettingsPageViewHandle::About(view_handle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Inline because the only thing under test is a private constant in this
+    //! file; there is no behaviour here to drive through an `App`.
+
+    /// The About page must not offer controls that drive nothing.
+    ///
+    /// `SHOW_AUTOUPDATE_UI` and the `autoupdate` cargo feature have to move
+    /// together. With the feature off — which is every bundle this fork ships, on
+    /// every platform (#630) — `FeatureFlag::Autoupdate` is never set, so
+    /// `AutoupdateState` never starts its polling loop and the "Automatic updates"
+    /// toggle and update-status row would be inert decoration: a user could switch
+    /// "automatic updates" off and on and change nothing at all.
+    ///
+    /// This fails if someone flips the constant to `true` on its own. The way to
+    /// restore the UI is to re-enable the cargo feature in the bundlers as well —
+    /// at which point `cfg(not(feature = "autoupdate"))` stops applying and this
+    /// test stops asserting anything. `script/check_no_autoupdate` guards the
+    /// other direction (the feature coming back in a bundler).
+    #[cfg(not(feature = "autoupdate"))]
+    #[test]
+    fn autoupdate_ui_stays_hidden_while_the_autoupdate_feature_is_off() {
+        assert!(
+            !super::SHOW_AUTOUPDATE_UI,
+            "SHOW_AUTOUPDATE_UI is true but the `autoupdate` cargo feature is off, so \
+             FeatureFlag::Autoupdate can never be set and the update-status row and \
+             \"Automatic updates\" toggle would control nothing"
+        );
     }
 }

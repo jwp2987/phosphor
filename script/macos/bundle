@@ -347,15 +347,39 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     BUNDLE_ID="dev.phosphor.Phosphor"
     WARP_APP_NAME="Phosphor"
     WARP_SCHEME_NAME="phosphor"
-    # autoupdate polls the GitHub Releases API for jwp2987/phosphor -- the repo
-    # is REPO_OWNER/REPO_NAME in app/src/autoupdate/github.rs:13-14, not a URL
-    # configured here. On the Oss channel it downloads the DMG to
-    # cache_dir/autoupdate/<update_id>/ (get_download_dir, app/src/autoupdate/mac.rs:841-846)
-    # -- NOT to ~/Downloads -- and never overwrites the .app: there is no Developer ID
-    # signature, so instead of the official mount+cp+codesign path it just runs
-    # `/usr/bin/open <dmg>` after this process exits (mac.rs:142-150, :211-220) and the
-    # user drags the app into /Applications themselves.
-    FEATURES="release_bundle,extern_plist,autoupdate"
+    # `autoupdate` is DELIBERATELY ABSENT from this list. Do not "restore parity"
+    # by adding it back (#630).
+    #
+    # No platform ships the GUI autoupdater: script/linux/bundle's oss branch
+    # never had it, and `160cfca59` turned it on for macOS and Windows only --
+    # that is the commit this line reverses, so mac/Windows now match Linux.
+    #
+    # The cargo feature is the ONLY enable path. `FeatureFlag::Autoupdate` is
+    # deliberately not in `RELEASE_FLAGS` (see the comment at
+    # crates/warp_features/src/lib.rs:896); the flag is set solely by
+    # `#[cfg(feature = "autoupdate")] FeatureFlag::Autoupdate` in `enabled_features()`
+    # (app/src/lib.rs:2927-2928). Dropping it here is therefore sufficient and
+    # complete -- there is nothing to also switch off in Rust.
+    #
+    # Kept for whoever re-enables it: with the feature on, autoupdate polls the
+    # GitHub Releases API for jwp2987/phosphor -- the repo is REPO_OWNER/REPO_NAME
+    # in app/src/autoupdate/github.rs:13-14, not a URL configured here. On the Oss
+    # channel it downloads the DMG to cache_dir/autoupdate/<update_id>/
+    # (get_download_dir, app/src/autoupdate/mac.rs:841-846) -- NOT to ~/Downloads --
+    # and never overwrites the .app: there is no Developer ID signature, so instead
+    # of the official mount+cp+codesign path it just runs `/usr/bin/open <dmg>`
+    # after this process exits (mac.rs:142-150, :211-220) and the user drags the app
+    # into /Applications themselves.
+    #
+    #
+    # Scope: this is the GUI app. `phosphor-tui` ships a SEPARATE background updater
+    # (`crates/warp_tui/src/autoupdate.rs`), keyed off `general.autoupdate_enabled`
+    # (default true) rather than this cargo feature or `FeatureFlag::Autoupdate`. It
+    # is inert for a different reason -- eligibility needs a managed
+    # `versions/<version>/` install layout the shipped tarball never creates -- and is
+    # declined separately in DECLINED.md. Do not conflate the two.
+    # `extern_plist` is unrelated and load-bearing; keep it.
+    FEATURES="release_bundle,extern_plist"
 fi
 
 OUT_DIR="target/$TARGET_PROFILE_DIR/bundle/osx"

@@ -472,19 +472,44 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
 - [ ] **`installer.sh` in the repo root is an AnythingLLM AppImage installer.** Tracked,
       referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
       API" work for Ollama. Accidental `git add`. Deletion left for the maintainer.
+- [ ] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
+      all left in place deliberately — each removal reaches further than that fix's diff:
+      - `TerminalAction::DismissCodeToolbeltTooltip` has **no dispatcher**. The variant, its
+        `Display` arm (`terminal/view/action.rs`) and its handler (`terminal/view.rs`) are
+        still compiled and now unreachable. The handler sits inside the 26k-line
+        `terminal/view.rs` action match.
+      - `FeatureFlag::CodeLaunchModal` has **no `is_enabled()` reader**. Its last one was the
+        removed tooltip gate. Still declared (`warp_features/src/lib.rs:401`), still enabled
+        by a default cargo feature (`app/Cargo.toml:553`, `app/src/lib.rs:3155-3156`).
+      - `FeatureFlag::DefaultAdeberryTheme` has **no `is_enabled()` reader**. Its last one was
+        the removed new-user theme override. Declared at `warp_features/src/lib.rs:204`,
+        cargo feature at `app/Cargo.toml:668` (**not** in `default`), added to `extra_flags`
+        at `app/src/lib.rs:3024-3025`.
+
+      **Not residue, checked rather than assumed:**
+      `CodeSettings.dismissed_code_toolbelt_new_feature_popup` still has a live writer in
+      `workspace/one_time_modal_model.rs` and is covered by
+      `crates/integration/src/test/settings_private.rs`;
+      `PrivacySettings::disable_default_regex_trigger` lost its only caller but is kept on
+      purpose, with the reason at its definition.
 
 **Agent-reported, not yet coordinator-verified** (recorded so they are not lost; verify
 before acting):
 
-- [ ] **Autoupdate is in a broken half-state.** `SHOW_AUTOUPDATE_UI = false` with a stale
-      rationale claiming there is no Phosphor feed — HEAD polls `jwp2987/phosphor` and the
-      release workflow publishes it. So macOS/Windows get a **working background updater with
-      no UI to disable it** short of editing `settings.toml`. The update-ready red dot is
-      gated only on `AutoupdateUIRevamp` (default-on) while the "Update and relaunch" menu
-      item is *additionally* gated on `show_autoupdate_menu_items()`, false for oss — a badge
-      with nothing behind it, and no banner either. **Linux ships no autoupdate at all**
-      (the feature is never added by `script/linux/bundle`) yet the setting still defaults
-      `true` there.
+- [x] **Autoupdate is in a broken half-state.** — FIXED (#630). The report was accurate:
+      `SHOW_AUTOUPDATE_UI = false` carried a stale rationale claiming there is no Phosphor
+      feed (HEAD polls `jwp2987/phosphor` and the release workflow publishes it), so
+      macOS/Windows shipped a working background updater with no UI to disable it short of
+      editing `settings.toml`, while Linux shipped none. Resolved in the direction of Linux:
+      **no platform ships autoupdate.** `autoupdate` was removed from `script/macos/bundle`
+      and `script/windows/bundle.ps1` (it was added for those two by `160cfca59`), which is
+      the whole switch — `FeatureFlag::Autoupdate` is not in `RELEASE_FLAGS`, so the Cargo
+      feature is the only enable path. `SHOW_AUTOUPDATE_UI`'s comment now gives the real
+      reason, `updates.automatic_updates_enabled` is documented as gating nothing, and
+      `script/check_no_autoupdate` (wired into `precheck` and `pr-check.yml`) fails if any of
+      the three enable paths comes back. The red-dot/menu-item asymmetry the report describes
+      is now moot in a shipped build — both sides are unreachable — and is **not** separately
+      fixed; it would matter again to anyone building `--features autoupdate`.
 - [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
       the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
 - [ ] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,

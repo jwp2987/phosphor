@@ -242,12 +242,37 @@ Two entirely separate updaters exist, and they cover different things.
 
 ### The GUI updater (`AutoupdateSettings`)
 
-It polls `https://api.github.com/repos/jwp2987/phosphor/releases/latest` — the
-same GitHub Release the pipeline publishes — every **10 minutes** while the app
-is running, plus a check each time the app is reactivated from the background.
-When a newer version exists it downloads the installer for your platform into a
-local cache, verifies its SHA-256 against the digest GitHub published for that
-asset, and then stops. **It never replaces the running application by itself.**
+**Phosphor does not update itself. On any platform.** Update it the way you
+installed it: download the new `.dmg`, AppImage/package, or Windows installer
+from the releases page. (Check what you are running under Settings → About, or
+`phosphor --version`.)
+
+This is a deliberate decision (#630), not an oversight and not a
+platform gap. The whole updater sits behind the `autoupdate` Cargo feature, and
+no release bundler passes it — Linux never did, and it was removed from the macOS
+and Windows bundlers, which had carried it for a while. With the feature off,
+`FeatureFlag::Autoupdate` is never set (it is deliberately absent from
+`RELEASE_FLAGS`, so the Cargo feature is the only switch), so:
+
+- nothing polls GitHub Releases, on any schedule;
+- the **Check for updates** and **Install update and relaunch** command-palette
+  commands are never registered;
+- the About page's "Automatic updates" switch and update-status row are hidden
+  (`SHOW_AUTOUPDATE_UI` is a compile-time `false`);
+- there is no "Check for updates" application-menu entry — the fork's
+  `app_menus.rs` registers none.
+
+`script/check_no_autoupdate` fails the build's gates if any of that changes
+without the decision changing with it.
+
+**If you build it yourself with `--features autoupdate`**, the subsystem is
+intact and behaves as follows. It polls
+`https://api.github.com/repos/jwp2987/phosphor/releases/latest` — the same
+GitHub Release the pipeline publishes — every **10 minutes** while the app is
+running, plus a check each time the app is reactivated from the background. When
+a newer version exists it downloads the installer for your platform into a local
+cache, verifies its SHA-256 against the digest GitHub published for that asset,
+and then stops. **It never replaces the running application by itself.**
 
 - **macOS:** the verified `.dmg` is re-hashed a second time at install time and
   then handed to Finder via `/usr/bin/open` after Phosphor exits. You drag the
@@ -258,10 +283,6 @@ asset, and then stops. **It never replaces the running application by itself.**
   `/SP- /NORESTART /LOG /update=1 /NOCLOSEAPPLICATIONS /DIR=…`. `/SILENT` is
   deliberately omitted on this channel, so you see the normal install UI and
   can cancel.
-- **Linux: there is no GUI updater at all.** The `autoupdate` Cargo feature is
-  compiled into the shipped macOS and Windows bundles, but *not* into the Linux
-  bundle. On Linux, update by downloading the new AppImage or package. (Check
-  what you are running under Settings → About, or `phosphor --version`.)
 
 Verification is fail-closed by design: if a release publishes an asset with no
 usable `sha256` digest, or the bytes do not match, the update is **refused**
@@ -272,19 +293,8 @@ it catches corruption and a misbehaving CDN edge — it is not supply-chain
 integrity, because nothing signs these artifacts with a key held outside
 GitHub.
 
-**Where the controls are — and where they aren't.** The About page's
-"Automatic updates" switch and update-status row are **hidden in this build**
-(`SHOW_AUTOUPDATE_UI` is a compile-time `false` in
-`app/src/settings_view/about_page/mod.rs:66`), and there is no "Check for
-updates" application-menu entry at all — the fork's `app_menus.rs` registers
-none. What remains reachable are two command-palette commands, and only where the
-`autoupdate` Cargo feature was compiled in, i.e. macOS and Windows
-(`app/src/workspace/mod.rs:1169-1188`):
-
-- **Check for updates** (`workspace:check_for_updates`)
-- **Install update and relaunch** (`workspace:update_and_relaunch`)
-
-Neither has a default key binding; open the command palette and type the name.
+Even in such a build the About-page controls stay hidden; the two command-palette
+commands are what you get, and neither has a default key binding.
 
 ### The TUI updater (`TuiAutoupdateSettings`)
 
@@ -312,7 +322,7 @@ Both settings live in `settings.toml`:
 
 | setting | TOML path | type | default | what it does | where else it is set |
 |---|---|---|---|---|---|
-| `automatic_updates_enabled` | `updates.automatic_updates_enabled` | bool | `true` | Whether Phosphor automatically checks for and downloads updates in the background. Consulted for the 10-minute poll and the daily/on-activate check; a *manual* check ignores it. | Nowhere in the UI — the About-page toggle is compiled out. Edit `settings.toml`. |
+| `automatic_updates_enabled` | `updates.automatic_updates_enabled` | bool | `true` | **Gates nothing in a shipped build** — the GUI updater is not compiled in on any platform. In a `--features autoupdate` build it is consulted for the 10-minute poll and the daily/on-activate check; a *manual* check ignores it. | Nowhere in the UI — the About-page toggle is compiled out. Edit `settings.toml`. |
 | `autoupdate_enabled` (TUI) | `general.autoupdate_enabled` | bool | `true` | Whether `phosphor-tui` installs updates in the background. Read **once at TUI startup**, so a change takes effect on the next launch. | Edit `settings.toml`. |
 
 Neither setting is ever synced anywhere (`SyncToCloud::Never`); there is nowhere
@@ -320,15 +330,17 @@ to sync it to.
 
 ### How do I turn updates off?
 
-**GUI (macOS/Windows):** add to `settings.toml`
+**GUI:** nothing to turn off — the updater is not in the build on any platform.
+The setting exists and can be written, but it gates nothing:
 
 ```toml
 [updates]
 automatic_updates_enabled = false
 ```
 
-Background polling and downloading stop. The two command-palette commands still
-work if you want to check by hand. On Linux there is nothing to turn off.
+In a `--features autoupdate` build of your own, that does stop the background
+polling and downloading, and the two command-palette commands still work if you
+want to check by hand.
 
 **TUI:** either
 
@@ -530,7 +542,7 @@ GUI autoupdate:
 - app/src/autoupdate/mod.rs:113-190 (verify_oss_asset_sha256 doc: fail-closed, UpdateBlocked -> UnableToUpdateToNewVersion banner with "Update Phosphor manually"; explicit statement that this is not supply-chain integrity)
 - app/src/autoupdate/mod.rs:1053-1066 (Channel::Oss short-circuits fetch_version to the GitHub release)
 - crates/warp_core/src/execution_mode.rs:76-78 (can_autoupdate == is_app)
-- crates/warp_features/src/lib.rs / app/src/lib.rs:2926-2928 (FeatureFlag::Autoupdate only under #[cfg(feature = "autoupdate")])
+- crates/warp_features/src/lib.rs / app/src/lib.rs:2926-2928 (FeatureFlag::Autoupdate only under #[cfg(feature = "autoupdate")]; no bundler passes it -- #630, guarded by script/check_no_autoupdate)
 - app/Cargo.toml:480-661 ("autoupdate" absent from `default`; "autoupdate_ui_revamp" at :830 is a different feature and IS in default)
 - script/macos/bundle:345-358 (oss: FEATURES="release_bundle,extern_plist,autoupdate"; DMG downloaded to cache_dir/autoupdate/<update_id>/, NOT ~/Downloads; `open <dmg>` after exit, user drags to /Applications)
 - script/windows/bundle.ps1:117-125 (oss: FEATURES includes autoupdate; installer to a tempfile; Inno invoked non-/SILENT so the user sees the wizard and can cancel)

@@ -14,8 +14,16 @@ use settings::{
 define_settings_group!(ThemeSettings, settings: [
     theme_kind: Theme {
         type: ThemeKind,
-        // Note that for new users, we now override this default value in SettingsInitializer
-        // to set the default theme to Phenomenon.
+        // The effective default, for every user: `ThemeKind::default()` is
+        // `PhosphorAmber` in this fork (upstream defaults to `Dark`). The comment
+        // here used to say "for new users, we now override this default value in
+        // SettingsInitializer to set the default theme to Phenomenon", and it was
+        // wrong on both counts (#634): the override read the *other* direction
+        // (Phenomenon -> Adeberry, under `FeatureFlag::DefaultAdeberryTheme`), and it
+        // sat in the `is_onboarded() == Some(false)` block, which never ran because
+        // the local placeholder user hardcodes `is_onboarded: true`. That block has
+        // been removed -- this fork has no first-run state -- and
+        // `FeatureFlag::DefaultAdeberryTheme` now has no reader at all.
         default: ThemeKind::default(),
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),

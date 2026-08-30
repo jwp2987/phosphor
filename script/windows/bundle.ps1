@@ -114,15 +114,39 @@ if ("$CHANNEL" -eq 'local') {
     $BINARY_NAME = 'phosphor-oss.exe'
     $APP_NAME = 'Phosphor'
     # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
-    # autoupdate polls the GitHub Releases API for jwp2987/phosphor -- the repo is
-    # REPO_OWNER/REPO_NAME in app/src/autoupdate/github.rs:13-14, not a URL configured
-    # here. The installer is downloaded to a tempfile (tempfile::Builder in
+    # `autoupdate` is DELIBERATELY ABSENT from this list. Do not "restore parity"
+    # by adding it back (#630).
+    #
+    # No platform ships the GUI autoupdater: script/linux/bundle's oss branch
+    # never had it, and `160cfca59` turned it on for macOS and Windows only --
+    # that is the commit this line reverses, so mac/Windows now match Linux.
+    #
+    # The cargo feature is the ONLY enable path. `FeatureFlag::Autoupdate` is
+    # deliberately not in `RELEASE_FLAGS` (see the comment at
+    # crates/warp_features/src/lib.rs:896); the flag is set solely by
+    # `#[cfg(feature = "autoupdate")] FeatureFlag::Autoupdate` in `enabled_features()`
+    # (app/src/lib.rs:2927-2928). Dropping it here is therefore sufficient and
+    # complete -- there is nothing to also switch off in Rust.
+    #
+    # Kept for whoever re-enables it: with the feature on, autoupdate polls the
+    # GitHub Releases API for jwp2987/phosphor -- the repo is REPO_OWNER/REPO_NAME in
+    # app/src/autoupdate/github.rs:13-14, not a URL configured here. The installer is
+    # downloaded to a tempfile (tempfile::Builder in
     # app/src/autoupdate/windows.rs:72-75), NOT to ~/Downloads, and Inno Setup IS
     # invoked: windows.rs:347-357 execs the downloaded installer with Inno switches
     # (/SP- /NORESTART /LOG /update=1 /NOCLOSEAPPLICATIONS /DIR=...). On the Oss channel
     # it deliberately omits /SILENT, so the user sees the standard install UI and can
     # cancel -- that is the difference from the official channels, not "no Inno Setup".
-    $FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'
+    #
+    #
+    # Scope: this is the GUI app. `phosphor-tui` ships a SEPARATE background updater
+    # (`crates/warp_tui/src/autoupdate.rs`), keyed off `general.autoupdate_enabled`
+    # (default true) rather than this cargo feature or `FeatureFlag::Autoupdate`. It
+    # is inert for a different reason -- eligibility needs a managed
+    # `versions/<version>/` install layout the shipped tarball never creates -- and is
+    # declined separately in DECLINED.md. Do not conflate the two.
+    # `gui` and `nld_improvements` are unrelated and load-bearing; keep them.
+    $FEATURES = 'release_bundle,gui,nld_improvements'
 }
 
 $BINARY_PATH = "$CARGO_TARGET_OUTPUT_DIR\$BINARY_NAME"

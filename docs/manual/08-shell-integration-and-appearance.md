@@ -321,9 +321,10 @@ Cyber Wave, Willow Dream, Phenomenon, Solar Flare, Adeberry, WezTerm Classic,
 VS Code 2026 Dark, **Phosphor Amber** and **Phosphor Green**.
 
 **Phosphor Amber is the default** (`ThemeKind::default()`), which is a fork
-change — upstream defaults to Dark, and the "new user gets Phenomenon → Adeberry"
-override inherited from upstream never fires here because a fresh install never
-sits on Phenomenon.
+change — upstream defaults to Dark. The "new user gets Phenomenon → Adeberry"
+override inherited from upstream could never fire here (a fresh install never
+sits on Phenomenon, and the onboarding branch it lived in was never taken) and
+has been removed with that branch (#634).
 
 The repo also ships five of these as standalone YAML under `themes/` at the
 project root (`one_dark.yaml`, `phosphor_amber.yaml`, `phosphor_green.yaml`,

@@ -13,10 +13,7 @@ use crate::{
     },
     send_telemetry_from_ctx,
     server::telemetry::TelemetryEvent,
-    settings::CodeSettings,
     tab::tab_position_id,
-    terminal::view::TerminalAction,
-    view_components::{FeaturePopup, NewFeaturePopupEvent, NewFeaturePopupLabel},
     workspace::{TabBarLocation, VerticalTabsPaneDropTargetData},
 };
 
@@ -28,11 +25,10 @@ use pathfinder_geometry::{
     rect::RectF,
     vector::{vec2f, Vector2F},
 };
-use warp_core::{features::FeatureFlag, settings::Setting};
 use warpui::{
     elements::{
         AcceptedByDropTarget, Align, Border, ChildAnchor, Clipped, ConstrainedBox, Container,
-        CornerRadius, CrossAxisAlignment, Dismiss, Draggable, DraggableState, Empty, Flex,
+        CornerRadius, CrossAxisAlignment, Draggable, DraggableState, Empty, Flex,
         Hoverable, Icon, MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning,
         ParentAnchor, ParentElement, ParentOffsetBounds, PositionedElementAnchor,
         PositionedElementOffsetBounds, Radius, SavePosition, Shrinkable, Stack, Text,
@@ -134,7 +130,6 @@ pub struct PaneHeader<P: BackingView> {
     toolbelt_buttons: Vec<ToolbeltButton>,
     open_overlay: OpenOverlay,
     is_visible_in_pane_group: bool, // If this pane header is being dragged along the tab bar, then it is not visible in the pane group
-    toolbelt_feature_popup: ViewHandle<FeaturePopup>,
 }
 
 impl<P: BackingView> PaneHeader<P> {
@@ -146,15 +141,6 @@ impl<P: BackingView> PaneHeader<P> {
         let overflow_menu = ctx.add_typed_action_view(|_| Menu::new());
         ctx.subscribe_to_view(&overflow_menu, move |me, _, event, ctx| {
             me.handle_overflow_menu_action(event, ctx);
-        });
-
-        let toolbelt_feature_popup = ctx.add_view(|_| {
-            FeaturePopup::new_feature(NewFeaturePopupLabel::FromString(
-                "Open files and review code diffs".to_string(),
-            ))
-        });
-        ctx.subscribe_to_view(&toolbelt_feature_popup, move |me, _, event, ctx| {
-            me.handle_toolbelt_feature_popup_event(event, ctx);
         });
 
         ctx.subscribe_to_model(&pane_configuration, Self::handle_pane_state_event);
@@ -169,7 +155,6 @@ impl<P: BackingView> PaneHeader<P> {
             open_overlay: Default::default(),
             toolbelt_buttons: Default::default(),
             is_visible_in_pane_group: true,
-            toolbelt_feature_popup,
         }
     }
 
@@ -231,24 +216,6 @@ impl<P: BackingView> PaneHeader<P> {
             });
             ctx.emit(Event::PaneHeaderOverflowMenuToggled(false));
             ctx.notify();
-        }
-    }
-
-    fn handle_toolbelt_feature_popup_event(
-        &mut self,
-        event: &NewFeaturePopupEvent,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        match event {
-            NewFeaturePopupEvent::Dismissed => {
-                // Update the setting to mark the popup as dismissed
-                CodeSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    let _ = settings
-                        .dismissed_code_toolbelt_new_feature_popup
-                        .set_value(true, ctx);
-                });
-                ctx.notify();
-            }
         }
     }
 
@@ -386,7 +353,7 @@ impl<P: BackingView> PaneHeader<P> {
         )
     }
 
-    fn render_toolbelt_buttons(&self, app: &AppContext) -> Box<dyn Element> {
+    fn render_toolbelt_buttons(&self) -> Box<dyn Element> {
         let mut flex = Flex::row();
         for toolbelt_button in &self.toolbelt_buttons {
             flex.add_child(
@@ -403,42 +370,23 @@ impl<P: BackingView> PaneHeader<P> {
         let container = Container::new(flex.finish()).with_margin_left(2.).finish();
 
         // Create Stack with the container as the first child
-        let mut stack = Stack::new().with_child(container);
+        let stack = Stack::new().with_child(container);
 
-        // Check if tooltip has been dismissed already.
-        // We should only trigger this if we are in a git repository,
-        // but the pane header will only render if we are already in one.
-        let auth_state = crate::auth::AuthStateProvider::as_ref(app).get();
-        let should_show_tooltip = FeatureFlag::CodeLaunchModal.is_enabled()
-            && !auth_state.is_onboarded().unwrap_or_default() // We only want to show the tooltip for new users.
-            && !*CodeSettings::as_ref(app)
-                .dismissed_code_toolbelt_new_feature_popup
-                .value()
-                // We should not render the tooltip if no code toolbelt buttons are present.
-                && !self.toolbelt_buttons.is_empty();
-
-        if should_show_tooltip {
-            // Position the FeaturePopup tooltip below the header
-            stack.add_positioned_overlay_child(
-                Dismiss::new(ChildView::new(&self.toolbelt_feature_popup).finish())
-                    .on_dismiss(|ctx, _app| {
-                        ctx.dispatch_typed_action(
-                            PaneHeaderAction::<TerminalAction, TerminalAction>::CustomAction(
-                                TerminalAction::DismissCodeToolbeltTooltip,
-                            ),
-                        );
-                        ctx.notify();
-                    })
-                    .finish(),
-                OffsetPositioning::offset_from_parent(
-                    vec2f(0., 4.),
-                    ParentOffsetBounds::WindowByPosition,
-                    ParentAnchor::BottomLeft,
-                    ChildAnchor::TopLeft,
-                ),
-            );
-        }
-
+        // The "Open files and review code diffs" new-feature popup used to be
+        // rendered here as a positioned overlay. It has been removed (#634): it was
+        // gated on `!auth_state.is_onboarded().unwrap_or_default()` with the comment
+        // "We only want to show the tooltip for new users", and this fork has no new
+        // users -- the local placeholder hardcodes `is_onboarded: true`
+        // (`app/src/auth/mod.rs:213`), so the gate was a constant `false` and the
+        // overlay could never appear.
+        //
+        // Deleting it is behaviour-preserving, and it stays dead even if someone
+        // gives `is_onboarded` a real source: `OneTimeModalModel::check_and_trigger_all_modals`
+        // unconditionally sets `dismissed_code_toolbelt_new_feature_popup = true`
+        // for every user ("Existing users should never see the code toolbelt new
+        // feature popup"), which is a second, independent kill switch on the same
+        // popup. Reviving the tooltip means dealing with that one too -- and it is a
+        // product decision (this fork ships no first-run experience), not a repair.
         stack.finish()
     }
 }
@@ -656,7 +604,7 @@ impl<P: BackingView> PaneHeader<P> {
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
                     .with_main_axis_size(MainAxisSize::Min);
 
-                left_justified_row.add_child(self.render_toolbelt_buttons(app));
+                left_justified_row.add_child(self.render_toolbelt_buttons());
 
                 let header_left_inset = self.pane_configuration.as_ref(app).header_left_inset;
                 let left_justified_container = Container::new(left_justified_row.finish())

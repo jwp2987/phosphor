@@ -251,9 +251,10 @@ things you asked for:
   tool while you are watching it.
 - **CLI-agent notification plugin installs**, which run the third-party agent's
   own CLI against GitHub or npm.
-- **Update checks on macOS and Windows**, which read the project's public GitHub
-  Releases feed. Nothing about you is sent; it is an unauthenticated GET. You can
-  turn it off — see [Updates](#updates). On Linux this does not happen at all.
+- **Update checks — not in any shipped build.** Phosphor does not poll for
+  updates on any platform (#630); see [Updates](#updates). A self-built
+  `--features autoupdate` binary reads the project's public GitHub Releases feed
+  with an unauthenticated GET, sending nothing about you.
 - **SSH sessions you open**, for the two bootstrap paths described under
   [Shell integration](#shell-integration-is-not-detected). The remote-server
   extension has the *remote* host fetch
@@ -272,7 +273,7 @@ And that is the list. The specifics:
 | **Crash reports** | Never uploaded. See above. |
 | **Settings sync** | `account.is_settings_sync_enabled` exists and defaults to `false`, but it has **no production consumer**: it only decides whether a "local only" badge is drawn next to a setting. Nothing syncs anywhere regardless of its value. |
 | **Account / identity** | There is no account. `AuthState` is a local placeholder that always reports "logged in"; the placeholder id no longer appears in any outgoing header. |
-| **Update checks** | On macOS and Windows, an unauthenticated GET against the project's public GitHub Releases feed, controlled by `updates.automatic_updates_enabled`. Nothing identifying is sent. Absent on Linux. |
+| **Update checks** | **None** — autoupdate is not compiled into any shipped build (#630). In a self-built `--features autoupdate` binary it is an unauthenticated GET against the project's public GitHub Releases feed, controlled by `updates.automatic_updates_enabled`, sending nothing identifying. |
 
 The `IsTelemetryEnabled` setting and its widget are kept in the tree
 deliberately, so that the control would reappear on its own if a telemetry
@@ -378,29 +379,33 @@ Work through these in order.
 
 ### Updates
 
-**Updating behaves differently on each platform**, because the three release
-bundlers do not compile the same feature set.
+**Phosphor does not update itself, on any platform** — a deliberate decision
+(#630), not a per-platform gap. None of the three release bundlers compiles the
+`autoupdate` feature in.
 
 | Platform | Auto-update |
 |---|---|
-| macOS | **On.** Polls the GitHub Releases API for the project repository. |
-| Windows | **On.** Same source. |
-| Linux | **Off entirely.** The Linux bundler does not compile the autoupdate feature in, so nothing polls, and the update commands are not registered. |
+| macOS | **Off entirely.** The bundler does not compile the autoupdate feature in, so nothing polls and the update commands are not registered. (It did until #630.) |
+| Windows | **Off entirely.** Same, and same history. |
+| Linux | **Off entirely.** The Linux bundler never compiled it in. |
 | TUI (all platforms) | **Off.** Eligibility is decided at startup and fails on *"not running from a managed install"* — background updates need the binary to sit inside a `versions/<version>/` tree, and Phosphor ships a plain tarball. (`crates/warp_tui/src/autoupdate.rs:302-307`. The empty `releases_base_url` and the `oss`-channel artifact bail sit downstream and are never reached.) |
 
-On macOS and Windows, background checking is gated by
-`updates.automatic_updates_enabled` (default `true`). **There is no UI for that
-setting** — the About page's update section is deliberately hidden — so if you
-want to turn background checks off, edit `settings.toml`:
+`updates.automatic_updates_enabled` (default `true`) therefore **gates nothing**
+in any shipped build, and there is no UI for it — the About page's update section
+is deliberately hidden. The **Check for updates** and **Update and relaunch**
+command-palette entries are not registered either. Update Phosphor by downloading
+the new build.
+
+All of that machinery is intact behind the Cargo feature: a self-built
+`--features autoupdate` binary polls the GitHub Releases API for the project
+repository, honours `updates.automatic_updates_enabled` for the background check,
+and registers the two commands. To turn the background check off in such a build,
+edit `settings.toml`:
 
 ```toml
 [updates]
 automatic_updates_enabled = false
 ```
-
-Two command-palette entries do exist on those platforms: **Check for updates**
-and, once one is downloaded, **Update and relaunch**. If an update is found but
-cannot be applied you get an error banner.
 
 Nothing is silently replaced under you:
 
@@ -756,7 +761,7 @@ These are private settings: they have no TOML path and are stored in
 | `warpify.subshells.added_subshell_commands` | Extra commands to treat as subshells. | empty | Settings → Phosphorize |
 | `warpify.subshells.subshell_commands_denylist` | Commands never to offer phosphorization for. | empty | Settings → Phosphorize |
 | `agents.mcp_servers.file_based_mcp_enabled` | Auto-spawn MCP servers found in third-party agents' *global* config files. | `false` | Settings → MCP Servers |
-| `updates.automatic_updates_enabled` | Background update checks. Live on macOS and Windows; inert on Linux, where autoupdate is not compiled in. | `true` | `settings.toml` only — the About page's update UI is hidden |
+| `updates.automatic_updates_enabled` | Background update checks. **Inert on every platform** — no bundler compiles autoupdate in (#630). | `true` | `settings.toml` only — the About page's update UI is hidden |
 | `general.autoupdate_enabled` | TUI auto-updater. Inert: the TUI has no release channel. | `true` | `settings.toml` only |
 | `account.is_settings_sync_enabled` | Only controls whether a "local only" badge is drawn. Nothing syncs. | `false` | `settings.toml` |
 | `DebugSettings.is_shell_debug_mode_enabled` | Sets `WARP_SHELL_DEBUG_MODE` in new sessions. | `false` | Private setting (`user_preferences.json`); App → Debug menu, debug builds |
@@ -871,7 +876,7 @@ the part you actually want.
 |---|---|---|
 | **Usage telemetry / app analytics** | Opt-out collection of usage events and some console interactions. | **Channel physically removed**, and the toggle never renders. See [What leaves the machine](#what-leaves-the-machine). |
 | **Uploaded crash reports** | Crashes sent to a crash service. | **Local only.** Panics are written to your log with a backtrace; nothing is sent. |
-| **Auto-update from Warp's channel** | Warp's own release feed. | **Replaced by GitHub Releases** on macOS and Windows; **absent on Linux**, where you install new releases yourself. |
+| **Auto-update from Warp's channel** | Warp's own release feed. | **Absent on every platform** (#630) — you install new releases yourself. The GitHub Releases replacement still exists behind `--features autoupdate` for anyone who builds it. |
 
 <!-- SOURCES
 
@@ -936,7 +941,7 @@ the part you actually want.
 - set_user_id is a no-op: app/src/crash_reporting/mod.rs:311
 - privacy toggle gated on FeatureFlag::CrashReporting rather than the availability check, with rationale: app/src/settings_view/privacy_page.rs:24-31, :1538-1545
 - CrashReporting is in RELEASE_FLAGS and RELEASE_FLAGS apply to any release-profile build: crates/warp_features/src/lib.rs:912, app/src/lib.rs:2906-2908
-- the `crash_reporting` cargo feature is NOT in `default` (app/Cargo.toml:474-479) and NOT set by any OSS bundler: script/linux/bundle sets `FEATURES="release_bundle"` for the oss channel at :198-203 (overwriting the `release_bundle,crash_reporting` default at :24), and script/windows/bundle.ps1 sets `$FEATURES = 'release_bundle,gui,nld_improvements,autoupdate'` at :125 (overwriting the default at :17); script/macos/bundle sets `FEATURES="release_bundle,extern_plist,autoupdate"` at :358
+- the `crash_reporting` cargo feature is NOT in `default` (app/Cargo.toml:474-479) and NOT set by any OSS bundler: script/linux/bundle sets `FEATURES="release_bundle"` for the oss channel at :198-203 (overwriting the `release_bundle,crash_reporting` default at :24), and script/windows/bundle.ps1 sets `$FEATURES = 'release_bundle,gui,nld_improvements'` (overwriting the default at :17); script/macos/bundle sets `FEATURES="release_bundle,extern_plist"`
 - consequence: `crash_reporting::init` is behind `#[cfg(feature = "crash_reporting")]` (app/src/lib.rs:1551-1557) so it never runs in a shipped OSS build, while `CrashReportsWidget::should_render` gates only on the feature *flag* (app/src/settings_view/privacy_page.rs:1538-1551) and therefore renders
 - panics reach the log regardless, via log_panics with `with-backtrace`, installed whenever logging goes to a file: crates/warp_logging/src/native.rs:805-808, crates/warp_logging/Cargo.toml:18
 - MinidumpServer subcommand, hidden: crates/warp_cli/src/lib.rs:298-303; dispatch app/src/lib.rs:832-838
@@ -991,9 +996,9 @@ the part you actually want.
 - WARP_USE_DIRECT_COMPOSITION: crates/warpui/src/rendering/wgpu/mod.rs:35-41
 
 ## Updates
-- SHOW_AUTOUPDATE_UI = false hides the About-page update row and toggle: app/src/settings_view/about_page/mod.rs:62-66
+- SHOW_AUTOUPDATE_UI = false hides the About-page update row and toggle: app/src/settings_view/about_page/mod.rs (reason corrected by #630: the fork ships no autoupdate anywhere, not "the release URLs point at Warp/Zap")
 - FeatureFlag::Autoupdate deliberately not in RELEASE_FLAGS; it comes only from the cargo feature via `extra_flags`: crates/warp_features/src/lib.rs:895-907, app/src/lib.rs:2927-2929
-- `autoupdate` cargo feature declared at app/Cargo.toml:449 and not in `default`; per-platform OSS bundler settings: macOS ON (script/macos/bundle:340-358), Windows ON (script/windows/bundle.ps1:112-125), Linux OFF (script/linux/bundle:198-203, :218-222)
+- `autoupdate` cargo feature declared at app/Cargo.toml:449 and not in `default`; OSS bundlers: macOS OFF, Windows OFF (both removed by #630; added by 160cfca59), Linux OFF (never had it). script/check_no_autoupdate guards all three, plus `default` and RELEASE_FLAGS
 - update keybindings registered only under FeatureFlag::Autoupdate: app/src/workspace/mod.rs:1169-1188
 - background polling gated on FeatureFlag::Autoupdate + can_autoupdate, then on `updates.automatic_updates_enabled`: app/src/autoupdate/mod.rs:269-291, :303-325; startup hook app/src/lib.rs:1577
 - "unable to update" banner needs only FeatureFlag::Autoupdate: app/src/workspace/view.rs:20113-20135
