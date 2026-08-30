@@ -1,6 +1,6 @@
 ---
 name: tab-configs
-description: Reference the Warp tab config schema, validation rules, and examples. Use when creating or updating Warp tab config TOML files or when another tab-config skill needs the canonical schema details.
+description: Reference the Phosphor tab config schema, validation rules, and examples. Use when creating or updating Phosphor tab config TOML files or when another tab-config skill needs the canonical schema details.
 ---
 
 # tab-configs

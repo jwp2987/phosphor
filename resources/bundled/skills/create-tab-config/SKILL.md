@@ -1,6 +1,6 @@
 ---
 name: create-tab-config
-description: Create new Warp tab config TOML files from natural-language requests. Use when the user wants a new tab config, a new tab layout, or asks for a slash command to generate a tab config.
+description: Create new Phosphor tab config TOML files from natural-language requests. Use when the user wants a new tab config, a new tab layout, or asks for a slash command to generate a tab config.
 ---
 
 # create-tab-config

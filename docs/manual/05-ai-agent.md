@@ -411,9 +411,7 @@ some of which only activate on the surface or with the feature they are about.
 Those are the names you invoke. One of them does not match its directory: the
 MCP skill lives in `resources/bundled/skills/add-mcp-server/` but its
 frontmatter `name:` is `agent-add-mcp`, and frontmatter wins, so `/add-mcp-server`
-finds nothing — type `/agent-add-mcp`. (Its body also still tells the agent to
-write `~/.warp/.mcp.json`; the real global path is `~/.phosphor/.mcp.json`. See
-§6.1.)
+finds nothing — type `/agent-add-mcp`.
 
 To use one: `/skills` opens a picker, `/<skill-name>` invokes it directly, `@`
 → Skills does the same, and `/open-skill` opens its file for editing. There is

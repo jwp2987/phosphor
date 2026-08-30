@@ -229,10 +229,10 @@ at about 60 MiB.
 Troubleshooting order:
 
 1. Is the config file where Phosphor looks? The global one is
-   `~/.phosphor/.mcp.json`, **not** `~/.warp/.mcp.json`. This trips people up
-   because Phosphor's own bundled `agent-add-mcp` skill still tells the agent to
-   write `~/.warp/.mcp.json` — a leftover from upstream. If you asked the agent
-   to add a server for you and nothing appeared, look there and move the file.
+   `~/.phosphor/.mcp.json`, **not** `~/.warp/.mcp.json`. Older builds shipped an
+   `agent-add-mcp` skill that told the agent to write `~/.warp/.mcp.json` — a
+   leftover from upstream, fixed in #631. If you asked the agent to add a server
+   for you back then and nothing appeared, look there and move the file.
 2. Does every `${VAR}` in it resolve in the environment Phosphor was launched
    from? An unset variable stops the server before it spawns.
 3. Is it a project config? Those never auto-start; start it from the "Detected

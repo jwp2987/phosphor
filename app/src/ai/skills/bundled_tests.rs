@@ -201,6 +201,74 @@ fn tui_settings_bundled_skill_renders_every_template_variable() {
     );
 }
 
+// ============================================================================
+// The shipped `agent-add-mcp` bundled skill (directory `add-mcp-server`)
+//
+// Issue #631: the skill told the agent that the global MCP config is
+// `~/.warp/.mcp.json`. Nothing reads that path on the shipped OSS build --
+// `home_config_file_path(MCPProvider::Zap)` resolves through
+// `warp_core::paths::warp_home_mcp_config_file_path`, whose directory is
+// channel-aware and is `~/.phosphor` on OSS -- so a server the agent added on
+// the user's behalf silently never appeared.
+// ============================================================================
+
+#[test]
+fn add_mcp_skill_documents_the_global_config_path_phosphor_actually_reads() {
+    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
+    let skill = skills
+        .get("add-mcp-server")
+        .expect("the add-mcp-server skill is bundled with the app");
+
+    assert!(
+        !skill.content.contains("~/.warp/.mcp.json"),
+        "the global config path must not be `~/.warp/.mcp.json`; nothing reads it on the shipped build: {}",
+        skill.content
+    );
+    assert!(
+        skill.content.contains("~/.phosphor/.mcp.json"),
+        "the skill must name the global config path of the build that ships it: {}",
+        skill.content
+    );
+    // The home config directory name is channel-aware (`warp_home_config_dir_name`), so the
+    // skill must also tell the agent how to find the directory rather than only hardcoding one.
+    assert!(
+        skill.content.contains("ls -d ~/.phosphor* ~/.warp*"),
+        "the skill must give the agent a way to resolve a non-OSS channel's config directory: {}",
+        skill.content
+    );
+    // Project-scoped configs are NOT channel-aware (`MCPProvider::project_config_path`), so this
+    // one stays literal.
+    assert!(
+        skill.content.contains("{repo_root}/.warp/.mcp.json"),
+        "the project-scoped path is literal `.warp/.mcp.json` on every channel: {}",
+        skill.content
+    );
+    // The MCP settings page renders `Detected from {provider.display_name()}`, which is "Phosphor".
+    assert!(
+        !skill.content.contains("Detected from Warp"),
+        "the settings section is labelled \"Detected from Phosphor\": {}",
+        skill.content
+    );
+}
+
+/// A bundled skill's `description:` is user-visible -- it is what the skills picker and the
+/// system prompt's `<available_skills>` block show. `script/check_brand_strings` does not read
+/// Markdown, so this is where issue #631's rebranding is held in place.
+#[test]
+fn bundled_skill_descriptions_do_not_name_the_product_warp() {
+    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
+    assert!(!skills.is_empty(), "no bundled skills were read");
+    for (id, skill) in &skills {
+        for brand in ["Warp", "Zap", "Oz"] {
+            assert!(
+                !skill.description.contains(brand),
+                "bundled skill `{id}` describes the product as {brand}: {}",
+                skill.description
+            );
+        }
+    }
+}
+
 fn bundled_skill_with_content(content: &str) -> BundledSkill {
     let mut bundled_skill = BundledSkill::default();
     bundled_skill.insert_for_testing(

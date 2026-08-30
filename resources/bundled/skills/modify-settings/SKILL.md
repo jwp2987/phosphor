@@ -1,6 +1,6 @@
 ---
 name: modify-settings
-description: View or modify Warp application settings using the bundled JSON schema for guidance
+description: View or modify Phosphor application settings using the bundled JSON schema for guidance
 ---
 
 # modify-settings

@@ -2081,18 +2081,22 @@ mod tests {
 
     #[test]
     fn plan_mode_on_injects_plan_block_for_all_families() {
-        for id in [
-            "claude-sonnet-4-5",
-            "gpt-4o",
-            "gpt-5-codex",
-            "gemini-2.5-pro",
-            "kimi-k2",
-            "trinity-v1",
-            "deepseek-chat",
-            "weird-model",
+        // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
+        // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
+        // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
+        for (api_type, id) in [
+            (AgentProviderApiType::OpenAi, "claude-sonnet-4-5"),
+            (AgentProviderApiType::OpenAi, "gpt-4o"),
+            (AgentProviderApiType::OpenAi, "gpt-5-codex"),
+            (AgentProviderApiType::OpenAi, "gemini-2.5-pro"),
+            (AgentProviderApiType::OpenAi, "kimi-k2"),
+            (AgentProviderApiType::OpenAi, "trinity-v1"),
+            (AgentProviderApiType::OpenAi, "deepseek-chat"),
+            (AgentProviderApiType::OpenAi, "weird-model"),
+            (AgentProviderApiType::Ollama, "qwen2.5-coder"),
         ] {
             let out = render_system(
-                AgentProviderApiType::OpenAi,
+                api_type,
                 &LLMId::from(format!("byop:p:{id}").as_str()),
                 &[],
                 &[],
@@ -2158,20 +2162,24 @@ mod tests {
     fn render_includes_user_rules_across_all_template_families() {
         // user_rules.j2 is injected via footer.j2, and every system template family references footer.
         // This regression case ensures anthropic / beast / codex / gemini / kimi / trinity /
-        // default -- any template family renders user rules, and none miss injection because a family didn't pull in footer.
+        // default / local -- any template family renders user rules, and none miss injection because a family didn't pull in footer.
         let rules = vec![(Some("family override".to_string()), "snake_case only.".to_string())];
-        for id in [
-            "claude-sonnet-4-5",
-            "gpt-4o",
-            "gpt-5-codex",
-            "gemini-2.5-pro",
-            "kimi-k2",
-            "trinity-v1",
-            "deepseek-chat",
-            "weird-model",
+        // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
+        // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
+        // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
+        for (api_type, id) in [
+            (AgentProviderApiType::OpenAi, "claude-sonnet-4-5"),
+            (AgentProviderApiType::OpenAi, "gpt-4o"),
+            (AgentProviderApiType::OpenAi, "gpt-5-codex"),
+            (AgentProviderApiType::OpenAi, "gemini-2.5-pro"),
+            (AgentProviderApiType::OpenAi, "kimi-k2"),
+            (AgentProviderApiType::OpenAi, "trinity-v1"),
+            (AgentProviderApiType::OpenAi, "deepseek-chat"),
+            (AgentProviderApiType::OpenAi, "weird-model"),
+            (AgentProviderApiType::Ollama, "qwen2.5-coder"),
         ] {
             let out = render_system(
-                AgentProviderApiType::OpenAi,
+                api_type,
                 &LLMId::from(format!("byop:p:{id}").as_str()),
                 &[],
                 &[],
@@ -2245,21 +2253,25 @@ mod tests {
     #[test]
     fn render_includes_thinking_language_across_all_template_families() {
         // thinking_language.j2 is injected via footer.j2, and every system template family references footer.
-        // This regression case ensures all 8 template families render thinking_language, and none miss injection because a family didn't pull in footer,
+        // This regression case ensures all 9 template families render thinking_language, and none miss injection because a family didn't pull in footer,
         // which would make the LLM still think in English when a user asks in Chinese.
-        // The 8 families are: anthropic / gpt / beast / codex / gemini / kimi / trinity / default
-        for id in [
-            "claude-sonnet-4-5",
-            "gpt-3.5-turbo",
-            "gpt-4o",
-            "gpt-5-codex",
-            "gemini-2.5-pro",
-            "kimi-k2",
-            "trinity-v1",
-            "weird-model",
+        // The 9 families are: anthropic / gpt / beast / codex / gemini / kimi / trinity / default / local
+        // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
+        // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
+        // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
+        for (api_type, id) in [
+            (AgentProviderApiType::OpenAi, "claude-sonnet-4-5"),
+            (AgentProviderApiType::OpenAi, "gpt-3.5-turbo"),
+            (AgentProviderApiType::OpenAi, "gpt-4o"),
+            (AgentProviderApiType::OpenAi, "gpt-5-codex"),
+            (AgentProviderApiType::OpenAi, "gemini-2.5-pro"),
+            (AgentProviderApiType::OpenAi, "kimi-k2"),
+            (AgentProviderApiType::OpenAi, "trinity-v1"),
+            (AgentProviderApiType::OpenAi, "weird-model"),
+            (AgentProviderApiType::Ollama, "qwen2.5-coder"),
         ] {
             let out = render_system(
-                AgentProviderApiType::OpenAi,
+                api_type,
                 &LLMId::from(format!("byop:p:{id}").as_str()),
                 &[],
                 &[],
@@ -2297,6 +2309,65 @@ mod tests {
         assert!(
             pos_thinking < pos_tools,
             "thinking_language should come before tool_aliases: thinking={pos_thinking}, tools={pos_tools}\n{out}"
+        );
+    }
+
+    /// Issue #627 regression: `system/local.j2` (every Ollama model, per `pick_template`) included
+    /// only `partials/env.j2` and not `partials/footer.j2`, so Ollama users silently lost their
+    /// user rules, skills, plan mode, and thinking-language block. The family loops above all
+    /// passed `OpenAi`, so none of them could reach `local.j2`.
+    #[test]
+    fn ollama_local_template_renders_full_footer() {
+        use crate::ai::skills::SkillDescriptor;
+        use ai::skills::{SkillProvider, SkillReference, SkillScope};
+
+        let skill_path = "/home/user/.agents/skills/open-browser-use/SKILL.md";
+        let ctx = vec![AIAgentContext::Skills {
+            skills: vec![SkillDescriptor {
+                reference: SkillReference::Path(warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                    skill_path.into(),
+                )),
+                name: "open-browser-use".into(),
+                description: "Automates Chrome browser operations.".into(),
+                scope: SkillScope::Project,
+                provider: SkillProvider::Agents,
+                icon_override: None,
+            }],
+        }];
+        let rules = vec![(Some("My rule".to_string()), "Always use snake_case in Rust.".to_string())];
+        let out = render_system(
+            AgentProviderApiType::Ollama,
+            &LLMId::from("byop:p:qwen2.5-coder"),
+            &ctx,
+            &["read_files".to_string()],
+            true,
+            &rules,
+        );
+
+        // The terse, tool-focused local.j2 body must survive the footer being added.
+        assert!(
+            out.contains("run_shell_command"),
+            "local.j2's own tool guidance should still render: {out}"
+        );
+        // Everything footer.j2 provides.
+        assert!(out.contains("# Thinking language"), "thinking_language missing: {out}");
+        assert!(out.contains("# Available Tools"), "tool_aliases missing: {out}");
+        assert!(out.contains("<env>"), "env missing: {out}");
+        assert!(
+            out.contains("open-browser-use") && out.contains(skill_path),
+            "the skills block must render for Ollama: {out}"
+        );
+        assert!(
+            out.contains("# User rules") && out.contains("Always use snake_case in Rust."),
+            "user rules must render for Ollama: {out}"
+        );
+        assert!(out.contains("Plan Mode (Read-Only)"), "plan_mode missing: {out}");
+
+        // footer.j2 already includes env.j2; local.j2 must not include it a second time.
+        assert_eq!(
+            out.matches("<env>").count(),
+            1,
+            "the env block must be emitted exactly once: {out}"
         );
     }
 }

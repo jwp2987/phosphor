@@ -1,19 +1,19 @@
 ---
 name: agent-add-mcp
-description: Use this skill when helping users add MCP servers to their Warp configuration.
+description: Use this skill when helping users add MCP servers to their Phosphor configuration.
 ---
 
-# Adding MCP Servers to Warp
+# Adding MCP Servers to Phosphor
 
-Warp supports MCP servers via native config files. Follow these steps when helping a user add an MCP server.
+Phosphor supports MCP servers via native config files. Follow these steps when helping a user add an MCP server.
 
 ## Step 1: Determine Scope
 
 If the user hasn't specified, ask whether they want to configure the server **globally** (for all projects) or **project-scoped** (for a specific repository only).
 
 Config file paths:
-- **Global (user-scoped):** `~/.warp/.mcp.json`
-- **Project-scoped:** `{repo_root}/.warp/.mcp.json`
+- **Global (user-scoped):** `.mcp.json` inside Phosphor's home config directory — `~/.phosphor/.mcp.json` on the open-source build that ships this skill. That directory name is channel-specific, so do not hardcode it blindly: other builds use `~/.warp`, `~/.warp-dev`, `~/.warp-local`, or `~/.warp-integration`, each with a further `-<profile>` suffix when a data profile is set. If `~/.phosphor` does not exist, run `ls -d ~/.phosphor* ~/.warp* 2>/dev/null` and use the directory that already holds this build's config (it contains `skills/`, `prompts/`, or an existing `.mcp.json`). Only create `~/.phosphor` when none of them exists.
+- **Project-scoped:** `{repo_root}/.warp/.mcp.json` — project configs are not channel-specific, so this path is literal.
 
 ## Step 2: Gather Server Details
 
@@ -61,9 +61,9 @@ Check whether the target config file exists.
 }
 ```
 
-By default, Warp spawns stdio servers from the directory the config was discovered in:
+By default, Phosphor spawns stdio servers from the directory the config was discovered in:
 - Project-scoped configs (`{repo_root}/.warp/.mcp.json`) run from the repo root.
-- Global configs (`~/.warp/.mcp.json`, `~/.claude.json`, etc.) run from the home directory.
+- Global configs (the home config directory's `.mcp.json`, `~/.claude.json`, etc.) run from the home directory.
 
 If the server's `command` or `args` are relative paths (e.g. `./tooling/mcp/server.js`) or the server expects a specific cwd, set `working_directory` to override the default:
 
@@ -94,10 +94,10 @@ If the server's `command` or `args` are relative paths (e.g. `./tooling/mcp/serv
 }
 ```
 
-For environment variables containing secrets, use `${VAR_NAME}` syntax — Warp will substitute the value from the user's environment at runtime.
+For environment variables containing secrets, use `${VAR_NAME}` syntax — Phosphor will substitute the value from the user's environment at runtime.
 
 ## Notes
 
-- Warp auto-detects changes to `.mcp.json` files on save — no restart required.
-- Configured servers appear in Warp's Settings under MCP, labeled **"Detected from Warp"**.
+- Phosphor auto-detects changes to `.mcp.json` files on save — no restart required.
+- Configured servers appear in Phosphor's Settings under MCP, labeled **"Detected from Phosphor"**.
 - Global config applies across all sessions; project config only applies when working inside that repository.

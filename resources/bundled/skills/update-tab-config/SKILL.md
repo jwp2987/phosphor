@@ -1,6 +1,6 @@
 ---
 name: update-tab-config
-description: Update existing Warp tab config TOML files from natural-language edit requests. Use when the user wants to modify a tab config that already exists or when editing a tab config file already open in Warp.
+description: Update existing Phosphor tab config TOML files from natural-language edit requests. Use when the user wants to modify a tab config that already exists or when editing a tab config file already open in Phosphor.
 ---
 
 # update-tab-config
