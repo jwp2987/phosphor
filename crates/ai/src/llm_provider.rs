@@ -25,6 +25,19 @@
 //! port (`DECLINED.md`, xAI / Grok subscription OAuth, #319 -- a product
 //! decision, not a cloud drop). `ApiKeyManager` has no field for it either;
 //! callers reject `Xai` before it ever reaches the store.
+//!
+//! **As of #629 no provider reaches the store.** A key in `AiApiKeys` cannot
+//! affect anything a user of this fork can reach: the store is read (by
+//! `is_using_api_key_for_provider`, `app/src/ai/llms.rs:26`), but only for the
+//! provider identities `OpenAI`/`Anthropic`/`Google`, and every model this fork
+//! constructs carries `LLMProvider::Unknown` -- so those reads return `false`
+//! whatever is stored, and the key is never sent. Both flags are therefore now
+//! refused for every provider and point the user at the arbitrary-provider
+//! `AgentProviderSecrets` store instead
+//! (`session::reject_provider_api_key_flags`). This type is still
+//! what parses and validates the slug -- the flags still accept exactly this
+//! closed set before refusing it -- so the grammar above is unchanged, but
+//! `supports_pasted_api_key` no longer has a production caller, only its test.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LLMProvider {

@@ -44,9 +44,14 @@
 //!   here, so the notification moved into the two stores' write choke points
 //!   (`ApiKeyManager::write_keys_to_secure_storage` and
 //!   `AgentProviderSecrets::persist`) and now covers the GUI's Settings > AI
-//!   editors and the TUI's `/api-keys` picker as well. The explicit call in
-//!   `crates/warp_tui/src/session.rs` is kept: it is what turns a failed stamp
-//!   into a message on the CLI's stderr instead of a line in the log.
+//!   editors and the TUI's `/api-keys` picker as well. There used to be a
+//!   second, explicit call in `crates/warp_tui/src/session.rs`, kept because it
+//!   reported a failed stamp on the CLI's stderr rather than in the log; it went
+//!   away with the `--set-provider-api-key` / `--clear-provider-api-key` write
+//!   path itself (#629 -- see `session::reject_provider_api_key_flags`), so
+//!   [`notify_tui_api_keys_changed`] currently has no caller. It stays exported
+//!   because it is the notifier's public entry point; the stores' own choke
+//!   points reach the same mechanism through [`secret_revision::bump_or_log`].
 //!
 //! - **`AgentProviderSecrets` subscribes too.** It has no counterpart at the
 //!   pin — upstream's BYOP keys live in `ApiKeys::custom_endpoints` — but it is

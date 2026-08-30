@@ -16,8 +16,6 @@
 //! shared app id"). So *every* write races every other running process's cached
 //! copy, in both directions:
 //!
-//! - `zap-tui --set-provider-api-key` / `--clear-provider-api-key` writes
-//!   `ApiKeyManager` and exits (`crates/warp_tui/src/session.rs`);
 //! - the TUI's `/api-keys` picker writes `AgentProviderSecrets`
 //!   (`app/src/tui_export.rs::tui_set_agent_provider_api_key`);
 //! - the GUI's Settings > AI page writes `AgentProviderSecrets` too
@@ -27,6 +25,13 @@
 //! Without a signal, each already-running process keeps serving the keys it read
 //! at startup, and the key the user just saved looks like it was ignored until
 //! the app is restarted.
+//!
+//! This list used to open with a fourth writer, `zap-tui --set-provider-api-key`
+//! / `--clear-provider-api-key` writing [`crate::api_keys::ApiKeyManager`].
+//! Both flags are refused as of #629 -- a key in `AiApiKeys` cannot reach the
+//! agent -- so `ApiKeyManager` now has no writer in this fork at all, and every
+//! live writer above targets `AgentProviderSecrets`. `ApiKeyManager` stays
+//! subscribed; see the note on `ApiKeyManager::reload_keys_from_secure_storage`.
 //!
 //! # The mechanism
 //!

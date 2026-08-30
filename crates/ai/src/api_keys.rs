@@ -184,10 +184,18 @@ impl ApiKeyManager {
     ///
     /// [`Self::new`] reads secure storage once, at construction. That is
     /// enough while a process is the only writer, but a key can also be
-    /// written by a *different* process sharing the same keyring namespace --
-    /// notably `zap-tui --set-provider-api-key`, which persists a key and
-    /// exits. Without this, an already-running app keeps serving the keys it
-    /// read at startup and the newly-saved key appears to have been ignored.
+    /// written by a *different* process sharing the same keyring namespace,
+    /// and without this an already-running app keeps serving the keys it read
+    /// at startup so the newly-saved key appears to have been ignored.
+    ///
+    /// As of #629 this store has **no writer left in this fork**: its only one
+    /// was `zap-tui --set-provider-api-key` / `--clear-provider-api-key`, and
+    /// both flags are now refused (`session::reject_provider_api_key_flags`)
+    /// because a key here cannot reach the agent. The hook is kept wired
+    /// anyway -- it costs one re-read on a revision bump, it is what makes this
+    /// store behave correctly if a writer is ever reintroduced, and removing it
+    /// would leave `AgentProviderSecrets` as the lone subscriber to a mechanism
+    /// documented as serving both. See `app/src/ai/tui_api_keys.rs`.
     ///
     /// Emits [`ApiKeyManagerEvent::KeysUpdated`] unconditionally, matching the
     /// setters above: subscribers re-derive from `keys()` rather than diffing.

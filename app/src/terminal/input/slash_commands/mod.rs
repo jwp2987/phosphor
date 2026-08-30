@@ -40,6 +40,7 @@ use crate::search::slash_command_menu::{SlashCommandId, SlashCommandKind, Static
 use crate::server::ids::SyncId;
 use crate::server::telemetry::{AgentModeAutoDetectionSettingOrigin, SlashCommandAcceptedDetails};
 use crate::settings::AISettings;
+use crate::settings_view::SettingsSection;
 use crate::tab::SelectedTabColor;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::inline_menu::{InlineMenuAction, InlineMenuType};
@@ -882,6 +883,20 @@ impl Input {
             }
             open_mcp_servers if command.name == commands::OPEN_MCP_SERVERS.name => {
                 ctx.dispatch_typed_action(&TerminalAction::OpenViewMCPPane);
+            }
+            api_keys if command.name == commands::API_KEYS.name => {
+                // `/api-keys` is the TUI's inline BYOP key picker
+                // (`crates/warp_tui/src/api_keys_menu.rs`). The GUI has no such
+                // inline surface, but it does have the same store behind a real
+                // page -- Settings > AI > Agent providers, backed by
+                // `AgentProviderSecrets` -- so the GUI arm navigates there
+                // rather than leaving the command in `active_commands()` with
+                // nothing behind it. Before this it fell through to the
+                // no-handler catch-all below: `debug_assert!(false)` in debug,
+                // a silent `return false` in release (#628).
+                ctx.dispatch_typed_action(&WorkspaceAction::ShowSettingsPage(
+                    SettingsSection::AgentProviders,
+                ));
             }
             open_settings_file if command.name == commands::OPEN_SETTINGS_FILE.name => {
                 if !FeatureFlag::SettingsFile.is_enabled() || !cfg!(feature = "local_fs") {

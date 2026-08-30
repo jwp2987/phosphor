@@ -4,15 +4,11 @@
 //! initialization is done, the mount built here starts the TUI driver and
 //! defers creating the first terminal session until login.
 
-use std::io::{self, IsTerminal as _, Read as _};
-
 use ai::LLMProvider;
-use ai::api_keys::ApiKeyManager;
 use crate::report_error::report_error;
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
 use clap::error::ErrorKind;
-use inquire::{InquireError, Password, PasswordDisplayMode};
 use warp::settings::{TuiThemeSettings, TuiZeroStateSettings, TuiZeroStateSettingsChangedEvent};
 use warp::tui_export::{AIConversationAutoexecuteMode, Appearance, ServerConversationToken};
 use warp::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase};
@@ -72,7 +68,9 @@ struct TuiArgs {
     #[arg(long, env = "WARP_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
 
-    /// Securely store a model-provider API key for Warp Agent CLI.
+    /// Accepted for compatibility and always refused: keys live in the
+    /// "Agent providers" store (Settings > AI > Agent providers, or the
+    /// TUI's /api-keys menu). See `reject_provider_api_key_flags`.
     #[arg(
         long,
         value_name = LLMProvider::API_KEY_PROVIDER_VALUE_NAME,
@@ -81,7 +79,9 @@ struct TuiArgs {
     )]
     set_provider_api_key: Option<LLMProvider>,
 
-    /// Remove a securely stored model-provider API key from Warp Agent CLI.
+    /// Accepted for compatibility and always refused: keys live in the
+    /// "Agent providers" store (Settings > AI > Agent providers, or the
+    /// TUI's /api-keys menu). See `reject_provider_api_key_flags`.
     #[arg(
         long,
         value_name = LLMProvider::API_KEY_PROVIDER_VALUE_NAME,
@@ -91,37 +91,65 @@ struct TuiArgs {
     clear_provider_api_key: Option<LLMProvider>,
 }
 
-enum ProviderApiKeyCommand {
-    Set {
-        provider: LLMProvider,
-        api_key: String,
-    },
-    Clear {
-        provider: LLMProvider,
-    },
-}
-
-/// Reads a provider API key from a masked TTY prompt or, when stdin is piped,
-/// from stdin. Empty input and interactive cancellation return `Ok(None)`.
-/// Never echoes or logs the returned value; callers must not print it either.
-fn read_provider_api_key() -> Result<Option<String>> {
-    if io::stdin().is_terminal() {
-        return match Password::new("Provider API key:")
-            .with_display_mode(PasswordDisplayMode::Masked)
-            .without_confirmation()
-            .prompt()
-        {
-            Ok(value) if value.trim().is_empty() => Ok(None),
-            Ok(value) => Ok(Some(value)),
-            Err(InquireError::OperationCanceled | InquireError::OperationInterrupted) => Ok(None),
-            Err(error) => Err(error.into()),
-        };
-    }
-
-    let mut value = String::new();
-    io::stdin().read_to_string(&mut value)?;
-    let value = value.trim().to_owned();
-    Ok((!value.is_empty()).then_some(value))
+/// Refuses `--set-provider-api-key` / `--clear-provider-api-key`, for every
+/// provider. `Ok(())` only when neither flag was given.
+///
+/// They used to write `ai::api_keys::ApiKeyManager` (secure-storage key
+/// `AiApiKeys`) and report success, over a store that cannot affect anything a
+/// user of this fork can reach. These flags were its only writers.
+///
+/// Be precise about *why*, because the obvious short version is wrong and the
+/// next reader will re-derive this. The store **is** read: `is_using_api_key_for_provider`
+/// (`app/src/ai/llms.rs:26`) calls `ApiKeyManager::keys()`, from six live call
+/// sites, one of them behavioural rather than cosmetic (clearing
+/// `DisableReason::RequiresUpgrade` in `terminal/input/models/data_source.rs:245,355`).
+/// It is dead *in effect*, not dead in code: every arm that could observe a
+/// stored key is gated on `LLMProvider::{OpenAI, Anthropic, Google}` with
+/// `_ => false`, and no model this fork constructs carries any of those --
+/// every production `LLMInfo` site sets `provider: LLMProvider::Unknown`
+/// (`ai/llms.rs:295,440,467,489,511` and `ai/agent_providers/mod.rs:219,248`).
+/// So each of those six reads returns `false` whatever is stored. The three
+/// variants appear nowhere else in production but two further *matches*
+/// (`ai/llms.rs:97` provider icons, `data_source.rs:679` the BYOK hint), never
+/// a construction.
+///
+/// The key is also never sent. Its one other consumer is `RequestParams::api_keys`
+/// (`app/src/ai/agent/api.rs:161`), a `warp_multi_agent_api` field belonging to
+/// the removed server path: `RequestParams` is `#[derive(Debug, Clone)]` with no
+/// `Serialize`, and nothing anywhere reads that field. The agent's BYOP send
+/// path resolves keys from `AgentProviderSecrets` instead
+/// (`agent_providers::lookup_byop`), so the flags' whole effect was a success
+/// message over a key the agent could not use. See #629.
+///
+/// Pointing them at `AgentProviderSecrets` is not available as a fix: that
+/// store is keyed by the UUID of a provider entry the user defined (name,
+/// `base_url`, `api_type`, model list -- `settings::ai::AgentProvider`), and
+/// `agent_providers` defaults to empty. A fixed [`LLMProvider`] name has no
+/// entry to map onto, and inventing one would mean inventing an endpoint and a
+/// model list on the user's behalf.
+///
+/// This subsumes the narrower `Xai` refusal that used to live here
+/// (`DECLINED.md`'s xAI / Grok subscription-OAuth entry, #319): every provider
+/// now gets the same message, pointing at the store that does serve the agent.
+///
+/// A separate function rather than inline in [`run`] so it is assertable from
+/// argv without booting an app -- the whole fix is this refusal and its
+/// wording, and a message that stops naming the surface which actually serves
+/// the agent puts the user back where they started.
+fn reject_provider_api_key_flags(args: &TuiArgs) -> Result<()> {
+    // `conflicts_with_all` already rejects giving both.
+    let (flag, provider) = match (args.set_provider_api_key, args.clear_provider_api_key) {
+        (Some(provider), _) => ("--set-provider-api-key", provider),
+        (_, Some(provider)) => ("--clear-provider-api-key", provider),
+        (None, None) => return Ok(()),
+    };
+    Err(anyhow!(
+        "{flag} is not supported in this build: the agent reads its keys from the \
+         arbitrary-provider \"Agent providers\" store, which is keyed by provider entries \
+         you define yourself, so a fixed provider name has nothing to write to. Manage \
+         the {} key from Settings > AI > Agent providers, or the TUI's /api-keys menu.",
+        provider.display_name()
+    ))
 }
 
 /// Validates and wraps a server conversation token from the command line.
@@ -155,91 +183,10 @@ pub fn run() -> Result<()> {
         }
         Err(error) => return Err(anyhow::Error::new(error)),
     };
-    // `--set-provider-api-key` / `--clear-provider-api-key`: a one-shot,
-    // non-interactive credential command, not a TUI launch (clap's
-    // `conflicts_with_all` above already rejects combining either with
-    // `--resume`). `Xai` is parsed like the other three providers but has no
-    // pasted-key path in this fork -- see `DECLINED.md`'s xAI / Grok
-    // subscription OAuth entry (#319) -- so it is rejected here with
-    // guidance toward the store that *does* serve it (the arbitrary-provider
-    // "Agent providers" BYOP surface, reachable from Settings or the TUI's
-    // own `/api-keys` menu).
-    let provider_api_key_command = if let Some(provider) = args.set_provider_api_key {
-        if !provider.supports_pasted_api_key() {
-            return Err(anyhow!(
-                "{} credentials aren't supported by --set-provider-api-key in this build; \
-                 add an xAI key as a custom agent provider instead (Settings > AI > Agent \
-                 providers, or the TUI's /api-keys menu)",
-                provider.display_name()
-            ));
-        }
-        let Some(api_key) = read_provider_api_key()? else {
-            return Err(anyhow!("No provider API key was supplied"));
-        };
-        Some(ProviderApiKeyCommand::Set { provider, api_key })
-    } else {
-        match args.clear_provider_api_key {
-            Some(LLMProvider::Xai) => {
-                return Err(anyhow!(
-                    "xAI credentials aren't managed by --clear-provider-api-key in this \
-                     build; remove them via Settings > AI > Agent providers or the TUI's \
-                     /api-keys menu instead"
-                ));
-            }
-            Some(provider) => Some(ProviderApiKeyCommand::Clear { provider }),
-            None => None,
-        }
-    };
-    if let Some(command) = provider_api_key_command {
-        // Reuses the same shared bootstrap as a normal launch (`init` below)
-        // instead of a separate one-shot entry point: `mount` already runs
-        // after `ApiKeyManager` is registered, and returning without adding a
-        // window (mirroring the `spawn_tui_driver` error path in `init`) is
-        // enough to persist the key and exit without ever drawing a TUI.
-        return warp::run_tui(
-            None,
-            Box::new(move |ctx| {
-                let (provider, key, success_verb) = match command {
-                    ProviderApiKeyCommand::Set { provider, api_key } => {
-                        (provider, Some(api_key), "saved")
-                    }
-                    ProviderApiKeyCommand::Clear { provider } => (provider, None, "cleared"),
-                };
-                ApiKeyManager::handle(ctx).update(ctx, |manager, ctx| match provider {
-                    LLMProvider::OpenAI => manager.set_openai_key(key, ctx),
-                    LLMProvider::Anthropic => manager.set_anthropic_key(key, ctx),
-                    LLMProvider::Google => manager.set_google_key(key, ctx),
-                    // Unreachable: `Xai` is rejected above and
-                    // `from_api_key_slug` never produces `Unknown`.
-                    LLMProvider::Xai | LLMProvider::Unknown => {}
-                });
-                // The setters above write the shared keyring synchronously, so
-                // this process is done persisting by the time it bumps the
-                // revision file. Already-running Zap processes -- GUI or TUI --
-                // watch that file and re-read the keyring, instead of serving
-                // the keys they read at their own startup until restarted.
-                // A failure here means only that other processes keep stale
-                // keys until they restart; the key itself is already saved, so
-                // it must not turn a successful save into an error exit.
-                //
-                // The setters now stamp the revision themselves (the write
-                // choke point in `ApiKeyManager::write_keys_to_secure_storage`,
-                // so that the GUI's key editors notify too). This second stamp
-                // is kept anyway: it is the only path that reports a failed
-                // stamp to the user, on a CLI whose whole output is one line.
-                // Two stamps in a row cost one extra file write and are
-                // coalesced by the watcher's debounce.
-                if let Err(error) = warp::tui_export::notify_tui_api_keys_changed() {
-                    log::warn!(
-                        "API key was saved, but signalling running Phosphor processes to \
-                         reload it failed: {error:#}"
-                    );
-                }
-                println!("{} API key {success_verb}", provider.display_name());
-                ctx.terminate_app(TerminationMode::ForceTerminate, None);
-            }),
-        );
-    }
+    // Neither key flag does anything this build can use; see
+    // `reject_provider_api_key_flags` for why they are refused rather than
+    // repointed (#629).
+    reject_provider_api_key_flags(&args)?;
     let resume_token = args.resume.map(parse_resume_token).transpose()?;
     // `--auto-approve` only sets the mode new conversations *start* in. It does
     // not widen what auto-approve means: this fork's `can_ask_user_question`
