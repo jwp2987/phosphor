@@ -35,6 +35,7 @@ use crate::settings::{
 use crate::terminal::session_settings::{SessionSettings, SessionSettingsChangedEvent};
 use crate::terminal::cli_agent::{CLIAgentInstallEvent, CLIAgentInstallModel};
 use crate::terminal::CLIAgent;
+use crate::util::links;
 use crate::view_components::{
     action_button::{ActionButton, ButtonSize, SecondaryTheme},
     DismissibleToast, FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
@@ -5846,7 +5847,7 @@ impl AgentsWidget {
                 FormattedTextFragment::plain_text(" or "),
                 FormattedTextFragment::hyperlink(
                     "learn more about MCPs.",
-                    "",
+                    links::manual_url(links::MANUAL_MCP),
                 ),
             ];
 
@@ -6356,9 +6357,11 @@ impl SettingsWidget for MCPServersWidget {
                 "Add MCP servers to extend the Phosphor Agent's capabilities. \
             MCP servers expose data sources or tools to agents through a standardized interface, essentially acting like plugins. ",
             ),
+            // Was an empty string, i.e. a "Learn more" that opened nothing
+            // (issue #632). The manual's MCP chapter is this fork's docs.
             FormattedTextFragment::hyperlink(
                 crate::t!("common-learn-more"),
-                "",
+                links::manual_url(links::MANUAL_MCP),
             ),
         ];
 
@@ -6405,7 +6408,7 @@ impl SettingsWidget for MCPServersWidget {
                                 ),
                                 FormattedTextFragment::hyperlink(
                                     "See supported providers.",
-                                    "",
+                                    links::manual_url(links::MANUAL_MCP),
                                 ),
                             ]
                         });

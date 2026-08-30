@@ -1,5 +1,6 @@
 use crate::ai::blocklist::inline_action::inline_action_icons;
 use crate::ui_components::blended_colors;
+use crate::util::links;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
@@ -32,8 +33,18 @@ const WARP_DRIVE_ENV_VAR_COLLECTION_ICON_COLOR: u32 = 0xC464FFFF;
 const ICON_MARGIN: f32 = 4.;
 const TERMINAL_ICON: &str = "bundled/svg/terminal.svg";
 pub const HORIZONTAL_TEXT_MARGIN: f32 = 20.;
-pub const SSH_DOCS_URL: &str = "";
-pub const SUBSHELL_DOCS_URL: &str = "";
+/// "Learn more" destinations for the Phosphorization blocks. Both used to be
+/// empty strings — Warp's docs site does not apply to this fork — which made
+/// every "Learn more" here a dead link (issue #632). The in-repo user manual is
+/// this fork's documentation, and its shell-integration chapter covers both the
+/// subshell and the SSH path.
+pub fn ssh_docs_url() -> String {
+    links::manual_url(links::MANUAL_SHELL_INTEGRATION)
+}
+
+pub fn subshell_docs_url() -> String {
+    links::manual_url(links::MANUAL_SHELL_INTEGRATION)
+}
 
 /// Errored blocks have a red stripe, and subshells have a gray one.
 pub const LEFT_STRIPE_WIDTH: f32 = 5.;

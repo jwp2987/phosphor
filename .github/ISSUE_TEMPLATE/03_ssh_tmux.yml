@@ -68,9 +68,9 @@ body:
     validations:
       required: false
   - type: input
-    id: "zap-version"
+    id: "phosphor-version"
     attributes:
-      label: "Zap version / commit"
+      label: "Phosphor version / commit"
       description: "Open Settings → About to copy the version, or run `git rev-parse --short HEAD` if built from source."
     validations:
       required: true

@@ -9,7 +9,7 @@ use crate::terminal::bootstrap::SESSION_ID_PLACEHOLDER;
 use crate::terminal::model::session::SessionId;
 use crate::terminal::shell::ShellType;
 use crate::terminal::warpify;
-use crate::terminal::warpify::render::SSH_DOCS_URL;
+use crate::terminal::warpify::render::ssh_docs_url;
 use crate::ui_components::icons::Icon as UiIcon;
 use warpui::elements::{HighlightedHyperlink, Hoverable, Icon, MouseStateHandle};
 use warpui::keymap::FixedBinding;
@@ -82,7 +82,7 @@ pub fn warpify_description(
         FormattedTextFragment::plain_text(
             "Bring Phosphor's features to your remote session. Blocks, full text editing, auto-complete, Phosphor Agent, and more. "
         ),
-        FormattedTextFragment::hyperlink(crate::t!("common-learn-more"), SSH_DOCS_URL),
+        FormattedTextFragment::hyperlink(crate::t!("common-learn-more"), ssh_docs_url()),
     ])]);
     warpify::render::build_description_row(description, theme, appearance, hyperlink_index.clone())
         .with_hyperlink_font_color(appearance.theme().accent().into_solid())

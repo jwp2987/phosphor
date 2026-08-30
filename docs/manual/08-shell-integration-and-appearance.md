@@ -264,9 +264,10 @@ a pager, a nested REPL) will not raise it.
 downstream of `is_bootstrapped`. Either the far side is not integrated (see the
 fallback list above) or you are on a host where only the extension can work.
 
-**"Learn more" links do nothing.** Known: `SSH_DOCS_URL` and
-`SUBSHELL_DOCS_URL` are empty strings in this fork, as is the Settings →
-Phosphorize page's link. There is no hosted documentation to point at.
+**"Learn more" links open this manual.** There is no hosted documentation site,
+so `ssh_docs_url()`, `subshell_docs_url()` and the Settings → Phosphorize page's
+link all point at this chapter on GitHub. They were empty strings — silently
+dead — until issue #632.
 
 ### Shell-integration reference
 
@@ -662,8 +663,9 @@ A Warp user will look for these and not find them.
 - **Team- or org-enforced appearance policy.** `UserWorkspaces::has_teams()` is
   hard-coded `false` and `current_team()` returns `None`; there is no policy
   layer to enforce a theme (`DECLINED.md`, "Teams stay stubbed").
-- **In-app documentation links.** The "Learn more" links on the Phosphorize page
-  and in the SSH blocks are empty strings — there is no hosted docs site.
+- **A hosted documentation site.** There is none. The "Learn more" links on the
+  Phosphorize page and in the SSH blocks open the relevant chapter of this
+  manual on GitHub instead.
 - **Alacritty settings import on Linux.** The importer exists but is behind the
   non-default `alacritty_settings_import` feature; the iTerm importer is macOS
   only. In practice Settings → import has nothing to offer a Linux user.

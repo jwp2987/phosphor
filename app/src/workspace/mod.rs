@@ -1584,11 +1584,15 @@ fn add_overflow_menu_items_as_editable_binding(app: &mut AppContext) {
     // Add the ability to open all overflow menu items to the command palette.
     // Decentralized branch: the "Invite People..." command, which mapped to ShowReferralSettingsPage, has been removed.
     app.register_editable_bindings([
+        // `SLACK_URL` and `PRIVACY_POLICY_URL` are deliberate empty placeholders
+        // in this fork (see `util::links`). A palette command that opens nothing
+        // is worse than an absent one, so they are gated off until a URL exists.
         EditableBinding::new(
             "workspace:link_to_slack",
             crate::t!("keybinding-desc-workspace-link-to-slack"),
             WorkspaceAction::JoinSlack,
         )
+        .with_enabled(|| !crate::util::links::SLACK_URL.is_empty())
         .with_context_predicate(id!("Workspace")),
         EditableBinding::new(
             "workspace:link_to_user_docs",
@@ -1614,6 +1618,7 @@ fn add_overflow_menu_items_as_editable_binding(app: &mut AppContext) {
             crate::t!("keybinding-desc-workspace-link-to-privacy-policy"),
             WorkspaceAction::ViewPrivacyPolicy,
         )
+        .with_enabled(|| !crate::util::links::PRIVACY_POLICY_URL.is_empty())
         .with_context_predicate(id!("Workspace")),
     ]);
 }

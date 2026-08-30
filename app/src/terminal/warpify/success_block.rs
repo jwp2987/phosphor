@@ -23,7 +23,7 @@ use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
-use super::render::{HORIZONTAL_TEXT_MARGIN, SSH_DOCS_URL, SUBSHELL_DOCS_URL};
+use super::render::{ssh_docs_url, subshell_docs_url, HORIZONTAL_TEXT_MARGIN};
 use super::settings::WarpifySettings;
 use super::{render, subshell_bootstrap_success_block_bytes, WarpificationSource};
 
@@ -185,8 +185,8 @@ impl WarpifySuccessBlock {
 
     fn render_learn_more_link(&self, appearance: &Appearance) -> Box<dyn Element> {
         let url = match self.source {
-            WarpificationSource::Ssh => SSH_DOCS_URL,
-            WarpificationSource::Subshell => SUBSHELL_DOCS_URL,
+            WarpificationSource::Ssh => ssh_docs_url(),
+            WarpificationSource::Subshell => subshell_docs_url(),
         };
 
         let font_family_id = appearance.monospace_font_family();
@@ -198,9 +198,7 @@ impl WarpifySuccessBlock {
                 None,
                 Some(Box::new({
                     move |ctx| {
-                        ctx.dispatch_typed_action(WarpifySuccessBlockAction::OpenUrl(
-                            url.to_owned(),
-                        ));
+                        ctx.dispatch_typed_action(WarpifySuccessBlockAction::OpenUrl(url.clone()));
                     }
                 })),
                 self.learn_more_link_mouse_states.clone(),

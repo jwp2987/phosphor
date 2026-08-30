@@ -5931,11 +5931,16 @@ impl Workspace {
     }
 
     fn join_slack(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.open_url(links::SLACK_URL);
+        // `SLACK_URL` is a deliberate empty placeholder in this fork; the
+        // surfaces that offer this action are hidden while it is empty, so
+        // reaching here at all would mean one of them regressed.
+        if !links::SLACK_URL.is_empty() {
+            ctx.open_url(links::SLACK_URL);
+        }
     }
 
     fn view_user_docs(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.open_url(links::USER_DOCS_URL);
+        ctx.open_url(&links::user_docs_url());
     }
 
     fn view_latest_changelog(&mut self, ctx: &mut ViewContext<Self>) {
@@ -5954,7 +5959,11 @@ impl Workspace {
     }
 
     fn view_privacy_policy(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.open_url(links::PRIVACY_POLICY_URL);
+        // Same as `join_slack`: an empty placeholder, and every entry point is
+        // hidden while it stays empty.
+        if !links::PRIVACY_POLICY_URL.is_empty() {
+            ctx.open_url(links::PRIVACY_POLICY_URL);
+        }
     }
 
     fn send_feedback(&mut self, ctx: &mut ViewContext<Self>) {
@@ -8764,12 +8773,16 @@ impl Workspace {
                 .into_item(),
         );
 
-        items.extend([
-            MenuItemFields::new(crate::t!("workspace-menu-slack"))
-                .with_on_select_action(WorkspaceAction::JoinSlack)
-                .into_item(),
-            MenuItem::Separator,
-        ]);
+        // `links::SLACK_URL` is an empty placeholder in this fork, so the entry
+        // would open nothing; leave it out until the URL exists.
+        if !links::SLACK_URL.is_empty() {
+            items.push(
+                MenuItemFields::new(crate::t!("workspace-menu-slack"))
+                    .with_on_select_action(WorkspaceAction::JoinSlack)
+                    .into_item(),
+            );
+        }
+        items.push(MenuItem::Separator);
 
         // Decentralized branch: this used to append account CTA / Upgrade /
         // Billing / Invite / Log out and other account-related items; all

@@ -363,10 +363,11 @@ Settings is reachable from the same palette. Pick **Terminal session** and you
 have a working prompt — your normal login shell, in your normal working
 directory.
 
-> **That logo is not the Phosphor mark.** The welcome pane still renders
-> `bundled/svg/warp-logo-neutral.svg` — the pre-rename *Zap* mark — while the
-> About page uses `bundled/svg/phosphor-logo.svg`. Known and filed as issue
-> #636; nothing about it affects behaviour.
+> **The logo is the Phosphor mark**, `bundled/svg/phosphor-logo.svg`, the same
+> asset the About page uses. Until issue #636 the welcome and Get Started panes
+> rendered `bundled/svg/warp-logo-neutral.svg` — the pre-rename *Zap* mark —
+> because they routed it through `Icon`, which flat-tints its input; the
+> gradient-filled Phosphor mark has to go through `Image` instead.
 
 That is the whole first run. If you are coming from Warp and are waiting for a
 sign-in step: it does not exist and is not being skipped. The `oss` build has no
@@ -569,7 +570,7 @@ First run / no onboarding:
 - app/src/workspace/view.rs:6990-7010 (should_trigger_get_started_onboarding: false once is_onboarded), :3883-3900 (falls through to add_welcome_tab when WelcomeTab is enabled)
 - app/Cargo.toml (default features include "welcome_tab", "agent_onboarding", "open_warp_new_settings_modes", "get_started_tab")
 - app/src/pane_group/pane/welcome_view.rs:34-53 (workspace:new_tab "Terminal session"; welcome_view:open_project "Add repository" with cmd-shift-N / alt-n), :86-89 (workspace:show_settings also shown), :135-170 (create_terminal_session / open_project folder picker)
-- app/src/pane_group/pane/welcome_view.rs:247 (welcome pane renders "bundled/svg/warp-logo-neutral.svg", NOT phosphor-logo.svg — issue #636; About page uses app/src/settings_view/about_page/mod.rs's phosphor-logo.svg)
+- app/src/pane_group/pane/welcome_view.rs, app/src/pane_group/pane/get_started_view.rs (both render the Phosphor mark via ui_components::icon_with_status::render_phosphor_logo — an `Image`, not an `Icon`; fixed under issue #636)
 - app/i18n/en/warp.ftl:2246-2247 ("Terminal session", "Add repository")
 - app/src/workspace/one_time_modal_model.rs:34-60, 262-289 (launch modal only triggers off AuthManagerEvent::AuthComplete) + app/src/auth/mod.rs:788-795, 818-822 (AuthComplete only emitted by create_anonymous_user / set_user_onboarded)
 

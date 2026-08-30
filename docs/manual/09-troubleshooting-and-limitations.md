@@ -568,10 +568,12 @@ unsupported shell (only bash, zsh and fish work; PowerShell does not) — plus t
 escape hatches: **Phosphorize without TMUX** and **Continue without
 Phosphorization**.
 
-> **The "More info" and "Learn more" links in these banners go nowhere.** The
-> known-issues, prompt-compatibility and ControlMaster-troubleshooting URLs are
-> empty strings in this fork, because they pointed at Warp's documentation site.
-> The powerlevel10k link is the one that still works.
+> **The "More info" and "Learn more" links in these banners open this manual.**
+> The known-issues and prompt-compatibility links open this chapter, and the
+> ControlMaster one opens *Shell integration and appearance*; the powerlevel10k
+> link still goes to p10k's own instructions. All three used to be empty strings
+> — they pointed at Warp's documentation site, which does not apply here — and
+> were silently dead until issue #632.
 
 **A coupling worth knowing about.** `terminal.input.honor_ps1` (default `false`)
 and the input box type are wired together: turning `honor_ps1` on forces the
@@ -863,7 +865,7 @@ the part you actually want.
 | **xAI / Grok subscription OAuth** | Signed in with an xAI subscription instead of an API key. | **Not supported.** API keys only. An xAI key works — add it as a custom agent provider. This one is a product decision, not a cloud limitation: the OAuth flow never touched Warp's servers. |
 | **AWS Bedrock OIDC role assumption** (`--bedrock-role-arn`) | Assumed an IAM role for Bedrock access. | **Absent.** |
 | **Network log console** | An in-app console of the app's own HTTP traffic to Warp. | **Absent.** The BYOP wire inspector covers the equivalent need for model traffic. |
-| **Warp's docs site, Slack and privacy-policy links** | In-app links to Warp's properties. | **Removed, and the menu entries that opened them now do nothing** — the URL constants are empty strings. |
+| **Warp's docs site, Slack and privacy-policy links** | In-app links to Warp's properties. | **Repointed or removed.** "Documentation" and every in-app "Learn more" now open this manual on GitHub, and "GitHub issues" / "Send feedback" open this repo's tracker. Phosphor has no Slack workspace and no privacy policy of its own, so `SLACK_URL` and `PRIVACY_POLICY_URL` stay empty and every control that would open them — menu entry, command-palette command, Resource Center button, settings section — is hidden rather than shown as a dead link. |
 
 ### Telemetry, updates and crash reporting
 
@@ -1118,7 +1120,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - Grok subscription OAuth: DECLINED.md "xAI / Grok subscription OAuth" (#319); rejection message crates/warp_tui/src/session.rs:167-176
 - Bedrock OIDC role assumption: DECLINED.md "AWS Bedrock OIDC role assumption"
 - network log console not ported: app/src/settings_view/privacy_page.rs:12-15
-- empty docs/Slack/privacy-policy URLs: app/src/util/links.rs:5-11
+- project links derived from one repo identity, and the empty Slack/privacy-policy placeholders: app/src/util/links.rs (+ app/src/util/links_tests.rs); empty-URL suppression: app/src/app_menus.rs link_menu_item, app/src/resource_center/view.rs ResourceCenterFooterItem::url, app/src/workspace/mod.rs add_overflow_menu_items_as_editable_binding, app/src/settings_view/privacy_page.rs should_render
 - README's own user-facing "Not included, on purpose" table: README.md, "Not included, on purpose" section
 
 -->

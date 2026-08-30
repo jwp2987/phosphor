@@ -44,6 +44,22 @@ const ANTIGRAVITY_LOGO_PATH: &str = "bundled/svg/antigravity.svg";
 const OMP_LOGO_PATH: &str = "bundled/svg/omp.svg";
 const PHOSPHOR_LOGO_PATH: &str = "bundled/svg/phosphor-logo.svg";
 
+/// The Phosphor brand mark, sized by whatever constraint the caller wraps it in.
+///
+/// It must go through `Image`, never `Icon`: `phosphor-logo.svg` carries four
+/// linear gradients and `Icon` flat-tints its input to a single fill, so routed
+/// through `Icon` the mark renders as a white silhouette (issue #636). Same
+/// reason as the multi-colour branch of [`render_cli_agent_logo`] below.
+pub(crate) fn render_phosphor_logo() -> Box<dyn Element> {
+    Image::new(
+        AssetSource::Bundled {
+            path: PHOSPHOR_LOGO_PATH,
+        },
+        CacheOption::BySize,
+    )
+    .finish()
+}
+
 pub(crate) fn render_cli_agent_logo(
     agent: CLIAgent,
     icon_color: WarpThemeFill,
@@ -467,3 +483,50 @@ pub(crate) fn render_custom_avatar_with_status_badge(
 #[cfg(test)]
 #[path = "icon_with_status_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod tests {
+    use super::PHOSPHOR_LOGO_PATH;
+
+    /// Regression test for issue #636. The first-run panes rendered the
+    /// pre-rename Zap mark, and the fix is not a path swap: routing
+    /// `phosphor-logo.svg` through `Icon` flat-tints its gradients away and the
+    /// mark comes out a white silhouette, so both call sites have to go through
+    /// [`super::render_phosphor_logo`]. Nothing in a unit test can observe which
+    /// element type a view built, so this asserts on the call sites themselves.
+    #[test]
+    fn first_run_panes_render_the_phosphor_mark_as_an_image() {
+        for (name, source) in [
+            (
+                "welcome_view.rs",
+                include_str!("../pane_group/pane/welcome_view.rs"),
+            ),
+            (
+                "get_started_view.rs",
+                include_str!("../pane_group/pane/get_started_view.rs"),
+            ),
+        ] {
+            assert!(
+                !source.contains("warp-logo-neutral.svg"),
+                "{name} is back to rendering warp-logo-neutral.svg, the pre-rename mark"
+            );
+            assert!(
+                source.contains("render_phosphor_logo()"),
+                "{name} no longer goes through render_phosphor_logo, so the mark \
+                 may be flat-tinted into a white silhouette"
+            );
+        }
+    }
+
+    /// The reason `render_phosphor_logo` must use `Image`: `Icon` renders its
+    /// asset with a single fill, which erases these.
+    #[test]
+    fn the_phosphor_mark_is_gradient_filled() {
+        let svg = include_str!("../../assets/bundled/svg/phosphor-logo.svg");
+        assert!(
+            svg.contains("linearGradient"),
+            "{PHOSPHOR_LOGO_PATH} no longer carries gradients; if that is \
+             deliberate, revisit whether it still needs the Image branch"
+        );
+    }
+}
