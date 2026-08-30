@@ -46,8 +46,8 @@ own.
 | `--resume <TOKEN>` | Resume a conversation by server token. **Inert in Phosphor** — see §7.13. | none |
 | `--auto-approve` | New conversations start in run-to-completion auto-approve instead of following your settings. Does *not* suppress the agent's questions. | off |
 | `--api-key <KEY>` | Warp-account authentication key, also read from `WARP_API_KEY`. **Inert in Phosphor** — it is not a provider key and the shipped build discards it. | none |
-| `--set-provider-api-key <openai\|anthropic\|google\|grok>` | One-shot: prompt (masked) for a provider key, store it in the OS keychain, print a confirmation, exit. Reads the key from stdin when stdin is not a TTY. Never launches the UI. **Writes the wrong store** — see the note below. | — |
-| `--clear-provider-api-key <openai\|anthropic\|google\|grok>` | One-shot: remove that provider's stored key and exit. | — |
+| `--set-provider-api-key <openai\|anthropic\|google\|grok>` | **Refused, for every provider** (issue #629). Parses, then exits with an error naming the two surfaces that do work. Never prompts for a key and never launches the UI. See the note below. | — |
+| `--clear-provider-api-key <openai\|anthropic\|google\|grok>` | **Refused, for every provider** — same message. | — |
 | `-h`, `--help` | Print help and exit. | — |
 | `-V`, `--version` | Print the bare version string and exit. | — |
 
@@ -58,20 +58,21 @@ Notes that matter in practice:
   on the release channel Phosphor ships. Use `/api-keys` in the TUI, or the GUI's
   *Settings → AI → Providers* page.
 * **`--set-provider-api-key` / `--clear-provider-api-key` are not the BYOP
-  surface either** (issue #629). They write `ApiKeyManager`, whose keyring entry
-  is `AiApiKeys` — the pin's fixed four-provider store, read only by
-  `api_keys_for_request` on the removed warp-server request path
-  (`app/src/ai/agent/api.rs:508-511`). The BYOP send path reads a *different*
-  keyring entry, `AgentProviderSecrets`
-  (`app/src/ai/agent_providers/secrets.rs:13`). A key set with these flags is
-  stored, reported as saved, and never used by the agent. Use `/api-keys` or the
-  GUI settings page for a key you want the agent to send.
+  surface either, and are now refused outright** (issue #629). They used to
+  write `ApiKeyManager`, whose keyring entry is `AiApiKeys` — the pin's fixed
+  four-provider store. The BYOP send path reads a *different* keyring entry,
+  `AgentProviderSecrets` (`app/src/ai/agent_providers/secrets.rs:13`), so a key
+  set with these flags was stored, reported as saved, and never used by the
+  agent. Rather than leave that lie in place, both flags now fail with an error
+  pointing at `/api-keys` and the GUI settings page. They could not simply be
+  repointed: `AgentProviderSecrets` is keyed by the UUID of a provider entry
+  *you* defined (name, base URL, model list), so a fixed provider name like
+  `anthropic` has no entry to write to.
 * `--set-provider-api-key` and `--clear-provider-api-key` cannot be combined
   with each other or with `--resume`.
-* `grok` parses but is **rejected at runtime** for both key flags, with a
-  message pointing you at the arbitrary-provider store instead (Settings → AI →
-  Agent providers in the GUI, or `/api-keys` in the TUI). Only OpenAI,
-  Anthropic and Google have a pasted-key path through these flags.
+* All four provider names — including `grok` — parse and are then refused
+  identically. Before #629, `grok` was the only one rejected; now the other
+  three are too, because none of them reached a store the agent reads.
 * Keys written by these flags land in the shared keychain and a running GUI or
   TUI picks them up without a restart.
 * `--help` deliberately hides the resolved value of `WARP_API_KEY`, so it is
@@ -669,7 +670,7 @@ decision, recorded in `DECLINED.md`.
 | Missing | Why |
 |---|---|
 | **`--resume <token>` actually resuming anything** | The flag is live and parsed, but server conversation tokens are a Warp cloud concept; BYOP never produces one, and the loader that would consume one always returns nothing. The "to continue this conversation, run …" hint is therefore never printed either. |
-| **`--api-key` / `WARP_API_KEY` doing anything** | It carried a Warp-account credential, and the release channel discards it before it reaches the auth state. Provider keys go through `--set-provider-api-key` or `/api-keys`. |
+| **`--api-key` / `WARP_API_KEY` doing anything** | It carried a Warp-account credential, and the release channel discards it before it reaches the auth state. Provider keys go through `/api-keys` or the GUI's *Settings → AI → Agent providers*. |
 | **Sign-in, `/logout`, account status** | There is no Warp account. The login model is hardcoded to "logged in", and `/logout` is deliberately not registered rather than shown as a row that does nothing. `/status` correspondingly drops Warp's organisation and email rows. |
 | **Credits, cost-in-dollars, and the billing pane** | No cloud credit accounting exists. `/usage` reports context-window occupancy, and `/cost` reports token spend at *your* configured provider rates. The statusline's `context_window_usage` item replaces Warp's clickable credits⇄cost entry and is informational only. |
 | **Voice input in the composer** | The transcription backend is cloud, and it is turned off in this fork; the composer state machine and its statusline item were not ported. |
@@ -706,9 +707,9 @@ Flags
 - app/src/lib.rs:1351-1366 (the Tui launch mode's api_key is taken only when ChannelState::channel().is_dogfood(), then further gated on FeatureFlag::APIKeyAuthentication, and it feeds AuthState — Warp-account auth, not a provider key)
 - crates/warp_core/src/channel/mod.rs:30-35 (Channel::Oss is NOT dogfood, so the shipped binary discards --api-key)
 - crates/warp_tui/src/session.rs:33-39 (CLI_VERSION), :140-155 (--version prints bare tag; --help)
-- crates/warp_tui/src/session.rs:156-235 (Xai rejected at runtime for both key flags with the "add an xAI key as a custom agent provider" message; masked TTY prompt / piped stdin; notify_tui_api_keys_changed so running processes reload)
-- crates/warp_tui/src/session.rs:100-121 (read_provider_api_key: masked prompt when stdin is a tty, else read stdin)
-- crates/warp_tui/src/session.rs:236-248 (--auto-approve -> RunToCompletion; comment: does not suppress ask_user_question, DECLINED #373)
+- crates/warp_tui/src/session.rs (reject_provider_api_key_flags: both key flags refused for every provider, with the derivation of why AiApiKeys cannot affect the agent and why AgentProviderSecrets cannot be the target)
+- crates/warp_tui/src/session_tests.rs (provider_api_key_flags_are_refused_for_every_provider: all 8 flag x provider combinations)
+- crates/warp_tui/src/session.rs:191-199 (--auto-approve -> RunToCompletion; comment: does not suppress ask_user_question, DECLINED #373)
 - DECLINED.md:165 (#588: --api-key hide_env_values diverges from the pin deliberately)
 
 Runtime / driver
@@ -845,7 +846,7 @@ Host terminal disconnect
 
 Not-available table
 - DECLINED.md:224 (tui_cli_shell_command / tui_resume_shell_command: no server tokens; load_conversation_by_server_token hardcoded to None)
-- crates/warp_tui/src/session.rs:249-262 (the --resume hint is currently unreachable for exactly that reason)
+- crates/warp_tui/src/session.rs:214-225 (the --resume hint is currently unreachable for exactly that reason)
 - DECLINED.md:86 (/logout); commands.rs:523-526 (/status drops org/email)
 - DECLINED.md:215 (provider-cost baselines; footer answers context, not cost); crates/warp_tui/src/usage.rs:1-14
 - DECLINED.md:122, :139-146 (voice input UI incl. the TUI composer and statusline item)

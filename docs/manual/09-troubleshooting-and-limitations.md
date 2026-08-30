@@ -1115,7 +1115,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - SSH manager declined: DECLINED.md "SSH connection management - the system owns it, not the app"; tmux wrapper kept: DECLINED.md "SSH tmux wrapper - kept, deprecation not ported" (#322)
 - voice: DECLINED.md "Voice input - recording exists, transcription is cloud and disabled" (#389, #352)
 - screen/session recording: DECLINED.md "Screen recording" (#367), "computer_use session recording" (#350)
-- Grok subscription OAuth: DECLINED.md "xAI / Grok subscription OAuth" (#319); rejection message crates/warp_tui/src/session.rs:167-176
+- Grok subscription OAuth: DECLINED.md "xAI / Grok subscription OAuth" (#319). The Grok-specific rejection message in session.rs is gone as of #629 — all four providers now hit the same refusal in reject_provider_api_key_flags
 - Bedrock OIDC role assumption: DECLINED.md "AWS Bedrock OIDC role assumption"
 - network log console not ported: app/src/settings_view/privacy_page.rs:12-15
 - empty docs/Slack/privacy-policy URLs: app/src/util/links.rs:5-11

@@ -60,9 +60,12 @@ immediately, and cannot produce a malformed value.
 
 - **Provider API keys** live in the OS secure store, not on disk. One namespace
   serves both surfaces, so a key added in the GUI works in the TUI with no
-  reconfiguration, and vice versa. A key written by the TUI's
-  `--set-provider-api-key` command is picked up by already-running Phosphor
-  processes without a restart.
+  reconfiguration, and vice versa. A key is picked up by already-running
+  Phosphor processes without a restart. There are exactly two places to add
+  one: the TUI's `/api-keys` picker, and the GUI's Settings > AI > Agent
+  providers. Do not tell the user about `--set-provider-api-key` or
+  `--clear-provider-api-key`; both flags are refused and only print the same
+  two destinations.
 - **MCP servers** come from the shared global and project `.mcp.json` files. Use
   the `add-mcp-server` skill; do not hand-resolve the global path.
 - **Rules and skills** are discovered from the same paths in both surfaces.

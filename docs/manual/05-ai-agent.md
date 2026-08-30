@@ -967,13 +967,15 @@ here.
 `phosphor-tui` accepts `--resume <id>`, `--auto-approve`, `--api-key`
 (`WARP_API_KEY`; the app's own auth flag, not a provider key), and `--set-provider-api-key` / `--clear-provider-api-key`.
 Those last two take one of four provider slugs — `openai`, `anthropic`,
-`google`, `grok` — of which `grok` is parsed and then refused with a message
-pointing you at the Providers page. The other three write the **legacy fixed
-key store** (`AiApiKeys` in secure storage, a different keyring entry from
-BYOP's `AgentProviderSecrets`), **and the BYOP send path never reads it**. So
-`--set-provider-api-key anthropic` reports success and leaves the agent with no
-usable key. To store a key the agent will actually use, use `/api-keys` or the
-Providers settings page.
+`google`, `grok` — and **all four are now refused** (issue #629). They used to
+write the **legacy fixed key store** (`AiApiKeys` in secure storage, a different
+keyring entry from BYOP's `AgentProviderSecrets`), which the BYOP send path
+never reads, so `--set-provider-api-key anthropic` reported success and left the
+agent with no usable key. They now fail with a message pointing at `/api-keys`
+or the Providers settings page — the two surfaces that store a key the agent
+will actually send. Repointing the flags was not an option: `AgentProviderSecrets`
+is keyed by the UUID of a provider entry you defined, so a fixed slug like
+`anthropic` has nothing to write to.
 
 ---
 
@@ -1073,10 +1075,11 @@ Providers / BYOP
 - app/src/ai/agent_providers/wire_inspector.rs:1-7 and wire_log.rs:10-20 (inspector arms only when opened; needs non-zero context window)
 - app/src/ai/llms.rs:697-728 (model precedence: per-view override, byop_last_used_model_id, profile base_model, default)
 - DECLINED.md:96 (xAI/Grok subscription OAuth declined; API keys only)
-- crates/ai/src/llm_provider.rs:29-47 (LLMProvider; Xai excluded from pasted-key support)
-- crates/warp_tui/src/session.rs:50 (CLI_NAME "phosphor-tui"), :55-92 (TuiArgs), :169-215 (set/clear-provider-api-key writes ApiKeyManager)
+- crates/ai/src/llm_provider.rs:43-60 (LLMProvider; Xai excluded from pasted-key support), :29-41 (module doc: as of #629 no provider reaches the AiApiKeys store)
+- crates/warp_tui/src/session.rs:50 (CLI_NAME "phosphor-tui"), :55-92 (TuiArgs), reject_provider_api_key_flags (both key flags refused for every provider, #629)
 - crates/ai/src/api_keys.rs:7,21-26 (keyring key "AiApiKeys"; fixed four providers), :121-181 (api_keys_for_request)
-- app/src/ai/agent_providers/chat_stream.rs (no api_keys reference; BYOP path never reads ApiKeyManager) and app/src/ai/agent/api.rs:508-511 (only consumer)
+- app/src/ai/agent_providers/chat_stream.rs (no api_keys reference; BYOP path never reads ApiKeyManager) and app/src/ai/agent/api.rs:508-511 (feeds RequestParams::api_keys, which nothing reads and which is not serialized)
+- app/src/ai/llms.rs:26-42 (is_using_api_key_for_provider does read AiApiKeys, from six call sites — but only for OpenAI/Anthropic/Google, and every LLMInfo this fork builds carries LLMProvider::Unknown, so it always returns false)
 
 Slash commands / keybindings
 - app/src/search/slash_command_menu/static_commands/commands.rs:12-625 (all commands), :304-311 (/model), :313-324 (/api-keys, fork-native, AI_ENABLED), :326-333 (/profile), :379-388 (/queue), :599-625 (/usage, /cost with rationale)

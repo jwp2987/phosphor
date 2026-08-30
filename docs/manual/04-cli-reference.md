@@ -389,9 +389,10 @@ or the TUI's `/api-keys` picker. `--api-key` on this CLI is unrelated — it is
 Warp's account credential and does nothing here.
 
 `phosphor-tui`'s `--set-provider-api-key` / `--clear-provider-api-key` flags are
-**not** a route into that store, despite the name: they write `ApiKeyManager`'s
-`AiApiKeys` keyring entry (the pin's fixed four providers), which the BYOP send
-path never reads. See §7.1 and issue #629.
+**not** a route into that store, despite the name, and both now **fail with an
+error** for every provider rather than silently writing the wrong place. They
+used to write `ApiKeyManager`'s `AiApiKeys` keyring entry (the pin's fixed four
+providers), which the BYOP send path never reads. See §7.1 and issue #629.
 
 What the CLI *does* give you is the model side. Once a provider is configured in
 the app, its models appear in `model list`, and that list is built entirely from
@@ -803,7 +804,7 @@ Provider / model / BYOP
 - app/Cargo.toml — no `provider_command` cargo feature exists
 - app/src/ai/agent_sdk/model.rs:26-60 — model list is built from LLMPreferences::get_base_llm_choices_for_agent_mode; column "MODEL ID"; item {id}
 - DECLINED.md:177 — the fork's BYOP surface is AgentProviderSecrets (arbitrary providers with their own base_url), superseding the pin's fixed-four + CustomEndpoint
-- DECLINED.md:225 — provider API keys are set in-process (warp_tui --set-provider-api-key / --clear-provider-api-key, /api-keys picker), not via a self-shelling CLI
+- DECLINED.md:225 — provider API keys are set in-process through the /api-keys picker, not via a self-shelling CLI; the warp_tui --set-provider-api-key / --clear-provider-api-key flags are refused (#629)
 
 Auth / whoami
 - app/src/auth/mod.rs:31-32 — TEST_USER_EMAIL "test_user@warp.dev", TEST_USER_UID "test_user_uid"

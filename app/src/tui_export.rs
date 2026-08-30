@@ -127,9 +127,12 @@ pub use crate::ai::llms::{LLMId, LLMInfo, LLMPreferences, LLMPreferencesEvent};
 pub use crate::ai::option_snapshot::{
     OptionBadge, OptionFooter, OptionRow, OptionSnapshot, OptionSourceStatus,
 };
-// Lets `--set-provider-api-key` / `--clear-provider-api-key` tell already-running
-// Zap processes to re-read the shared keyring after it persists a key.
 pub use crate::ai::skills::{SkillManager, SkillReference};
+// The public entry point for telling already-running Zap processes to re-read
+// the shared keyring. Its one caller was `--set-provider-api-key` /
+// `--clear-provider-api-key`, both refused as of #629, so it currently has
+// none; the stores' own write choke points reach the same mechanism through
+// `ai::secret_revision::bump_or_log`. Kept exported as the named entry point.
 #[cfg(not(target_family = "wasm"))]
 pub use crate::ai::tui_api_keys::notify_tui_api_keys_changed;
 pub use crate::ai::usage_cost::{UsageCostOutcome, context_usage_report, conversation_cost_report};

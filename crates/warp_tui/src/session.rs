@@ -95,14 +95,31 @@ struct TuiArgs {
 /// provider. `Ok(())` only when neither flag was given.
 ///
 /// They used to write `ai::api_keys::ApiKeyManager` (secure-storage key
-/// `AiApiKeys`) and report success -- but nothing in this fork ever reads a key
-/// back out of that store, and these flags were its only writers. Its one
-/// consumer is `RequestParams::api_keys` (`app/src/ai/agent/api.rs`), a
-/// `warp_multi_agent_api` request field belonging to the removed server path,
-/// and no code reads that field either. The agent's BYOP send path resolves
-/// keys from `AgentProviderSecrets` instead (`agent_providers::lookup_byop`),
-/// so the flags' whole effect was a success message over a key the agent could
-/// not use. See #629.
+/// `AiApiKeys`) and report success, over a store that cannot affect anything a
+/// user of this fork can reach. These flags were its only writers.
+///
+/// Be precise about *why*, because the obvious short version is wrong and the
+/// next reader will re-derive this. The store **is** read: `is_using_api_key_for_provider`
+/// (`app/src/ai/llms.rs:26`) calls `ApiKeyManager::keys()`, from six live call
+/// sites, one of them behavioural rather than cosmetic (clearing
+/// `DisableReason::RequiresUpgrade` in `terminal/input/models/data_source.rs:245,355`).
+/// It is dead *in effect*, not dead in code: every arm that could observe a
+/// stored key is gated on `LLMProvider::{OpenAI, Anthropic, Google}` with
+/// `_ => false`, and no model this fork constructs carries any of those --
+/// every production `LLMInfo` site sets `provider: LLMProvider::Unknown`
+/// (`ai/llms.rs:295,440,467,489,511` and `ai/agent_providers/mod.rs:219,248`).
+/// So each of those six reads returns `false` whatever is stored. The three
+/// variants appear nowhere else in production but two further *matches*
+/// (`ai/llms.rs:97` provider icons, `data_source.rs:679` the BYOK hint), never
+/// a construction.
+///
+/// The key is also never sent. Its one other consumer is `RequestParams::api_keys`
+/// (`app/src/ai/agent/api.rs:161`), a `warp_multi_agent_api` field belonging to
+/// the removed server path: `RequestParams` is `#[derive(Debug, Clone)]` with no
+/// `Serialize`, and nothing anywhere reads that field. The agent's BYOP send
+/// path resolves keys from `AgentProviderSecrets` instead
+/// (`agent_providers::lookup_byop`), so the flags' whole effect was a success
+/// message over a key the agent could not use. See #629.
 ///
 /// Pointing them at `AgentProviderSecrets` is not available as a fix: that
 /// store is keyed by the UUID of a provider entry the user defined (name,

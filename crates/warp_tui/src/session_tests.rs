@@ -42,9 +42,16 @@ fn parses_provider_api_key_clear_flag() {
 
 /// Fork-authored (AGENTS §5.10), regression for #629. Both key flags used to
 /// write `ai::api_keys::ApiKeyManager` (secure-storage `AiApiKeys`) and print
-/// "<provider> API key saved" -- a store nothing in this fork reads, so the
-/// agent still had no usable key. They are now refused for every provider, and
-/// the refusal must name the surface that does serve the agent.
+/// "<provider> API key saved", over a store that cannot affect anything the
+/// user can reach -- not because nothing reads it (six live call sites do, via
+/// `is_using_api_key_for_provider`), but because every one of those reads is
+/// gated on `LLMProvider::{OpenAI, Anthropic, Google}` while every model this
+/// fork constructs carries `LLMProvider::Unknown`, so they all return `false`
+/// whatever is stored. The key is never sent either: `RequestParams` is not
+/// `Serialize` and nothing reads `params.api_keys`. See
+/// `session::reject_provider_api_key_flags` for the full derivation. The flags
+/// are now refused for every provider, and the refusal must name the surface
+/// that does serve the agent.
 ///
 /// Restoring the `ApiKeyManager` write path (or dropping the
 /// `reject_provider_api_key_flags` call from `run`) fails this: the parsed args
