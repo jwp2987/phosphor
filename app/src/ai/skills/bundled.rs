@@ -501,7 +501,9 @@ fn display_optional_path(path: Option<PathBuf>) -> String {
 /// - `{{settings_schema_path}}` - Path to the bundled JSON settings schema
 /// - `{{settings_file_path}}` - Path to the user's settings TOML file
 /// - `{{keybindings_file_path}}` - Path to the user's `keybindings.yaml`
+/// - `{{mcp_config_file_path}}` - Path to the user's global MCP config file
 /// - `{{tab_configs_dir}}` - Directory the user's tab configs are read from
+/// - `{{default_tab_configs_dir}}` - Directory holding the editable config templates
 /// - `{{worktrees_dir}}` - Base directory app-generated worktrees default into
 ///
 /// The pin's GUI/TUI-split variables (`gui_settings_file_path`,
@@ -554,8 +556,22 @@ pub(crate) fn build_bundled_skill_context() -> HashMap<String, String> {
         // The tab-config skills used to spell them as `~/.warp/...`, which is a path this
         // fork reads on no platform (#631), so they are rendered rather than described.
         (
+            // The one path `home_config_file_path(MCPProvider::Zap)` resolves. Rendered rather
+            // than described because prose cannot name it without either hardcoding one
+            // channel's directory or telling the agent to go looking for it -- and a search of
+            // `$HOME` finds a real Warp installation's `~/.warp` just as readily as ours (#631).
+            "mcp_config_file_path".to_owned(),
+            display_optional_path(warp_core::paths::warp_home_mcp_config_file_path()),
+        ),
+        (
             "tab_configs_dir".to_owned(),
             crate::user_config::tab_configs_dir().display().to_string(),
+        ),
+        (
+            "default_tab_configs_dir".to_owned(),
+            crate::user_config::default_tab_configs_dir()
+                .display()
+                .to_string(),
         ),
         (
             // Keep in sync with `tab_configs::tab_config::generated_worktree_repo_dir`,

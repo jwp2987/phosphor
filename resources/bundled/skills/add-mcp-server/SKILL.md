@@ -12,7 +12,13 @@ Phosphor supports MCP servers via native config files. Follow these steps when h
 If the user hasn't specified, ask whether they want to configure the server **globally** (for all projects) or **project-scoped** (for a specific repository only).
 
 Config file paths:
-- **Global (user-scoped):** `.mcp.json` inside Phosphor's home config directory — `~/.phosphor/.mcp.json` on the open-source build that ships this skill. That directory name is channel-specific, so do not hardcode it blindly: other builds use `~/.warp`, `~/.warp-dev`, `~/.warp-local`, or `~/.warp-integration`, each with a further `-<profile>` suffix when a data profile is set. If `~/.phosphor` does not exist, run `ls -d ~/.phosphor* ~/.warp* 2>/dev/null` and use the directory that already holds this build's config (it contains `skills/`, `prompts/`, or an existing `.mcp.json`). Only create `~/.phosphor` when none of them exists.
+- **Global (user-scoped):**
+
+  ```
+  {{mcp_config_file_path}}
+  ```
+
+  That is the exact file this running build reads, resolved for its channel. Use it verbatim. Do NOT derive it from `$HOME` and do NOT go looking for a config directory: the home directory of a machine that also has Warp installed contains a real `.warp` directory with its own `skills/` and `.mcp.json`, so any search finds a plausible-looking wrong answer and the server lands where Phosphor never looks. Create the parent directory if it does not exist. If the path above is blank, Phosphor could not resolve it — ask the user instead of guessing.
 - **Project-scoped:** `{repo_root}/.warp/.mcp.json` — project configs are not channel-specific, so this path is literal.
 
 ## Step 2: Gather Server Details
@@ -63,7 +69,7 @@ Check whether the target config file exists.
 
 By default, Phosphor spawns stdio servers from the directory the config was discovered in:
 - Project-scoped configs (`{repo_root}/.warp/.mcp.json`) run from the repo root.
-- Global configs (the home config directory's `.mcp.json`, `~/.claude.json`, etc.) run from the home directory.
+- The global config (the path above) and other agents' global configs (`~/.claude.json`, etc.) run from the home directory.
 
 If the server's `command` or `args` are relative paths (e.g. `./tooling/mcp/server.js`) or the server expects a specific cwd, set `working_directory` to override the default:
 

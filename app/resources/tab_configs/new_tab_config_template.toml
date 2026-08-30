@@ -1,5 +1,5 @@
 # Phosphor Tab Config
-# Stored in ~/.warp/tab_configs/ — rename this file and edit anytime!
+# Stored in the `tab_configs` directory you opened this file from — rename this file and edit anytime!
 #
 # Tip: Ask Phosphor Agent to update this tab config for you using /skills -> /update-tab-config!
 #   e.g. "/update-tab-config turn this into a 2x2 tab config with one pane running my dev server"

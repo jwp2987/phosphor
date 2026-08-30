@@ -9974,7 +9974,7 @@ impl Workspace {
     }
 
     /// Opens a worktree in the given repo using the default worktree tab config,
-    /// saving the materialized config to `~/.warp/tab_configs/` first.
+    /// saving the materialized config to [`tab_configs_dir`] first.
     /// The branch name is auto-generated.
     #[cfg(feature = "local_fs")]
     fn open_worktree_in_repo(&mut self, repo_path: String, ctx: &mut ViewContext<Self>) {

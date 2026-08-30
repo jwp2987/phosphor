@@ -17,6 +17,14 @@ That is the directory this running build actually reads, resolved for its channe
 
 Each `.toml` file defines a single tab layout that appears in the `+` menu. When the user selects one, Phosphor opens a new tab with the configured pane layout and runs any specified commands.
 
+A second, sibling directory holds the editable templates Phosphor generates configs from:
+
+```
+{{default_tab_configs_dir}}
+```
+
+`worktree.toml` there is the template the "Worktree in…" submenu materializes every generated worktree config from, and it is meant to be customized. Edit it when the user wants to change what *new* worktree configs look like; edit a file in the tab config directory above when they want to change one existing config.
+
 Use this skill as shared context:
 - `create-tab-config` should use it when authoring a new config.
 - `update-tab-config` should use it when modifying an existing config.

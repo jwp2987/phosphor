@@ -597,6 +597,19 @@ fn env() -> EnvHandle {
 ///
 /// Ollama / local BYOP uses [`pick_template`]'s short `local.j2` template (see the `api_type` parameter),
 /// to avoid the 9k+ default.j2 drowning a small model's conversation context.
+///
+/// That terseness is now a weaker guarantee than it reads, and the tradeoff is deliberate.
+/// `local.j2` originally included only `partials/env.j2`, which also meant Ollama users silently
+/// lost their rules, skills and plan mode (#627); it now ends in `partials/footer.j2` like every
+/// other system template. The cost is size: a realistic non-plan Ollama turn measures ~6.5 KB
+/// against ~1.2 KB before, and plan mode plus a large `AGENTS.md` reaches ~41 KB — against a
+/// common Ollama `num_ctx` of 4096. Nothing anywhere truncates the system prompt against the
+/// model's window, so on a small local model a long enough prompt simply evicts the
+/// conversation.
+///
+/// Shipping correct-but-large beats shipping small-and-silently-wrong, so the footer stays.
+/// Bounding it is follow-up work and belongs here: the shape is a size budget for this path
+/// (rules and skills summarised or dropped past a threshold, plan mode kept), not a revert.
 pub fn pick_template(model_id: &str, api_type: AgentProviderApiType) -> &'static str {
     if api_type == AgentProviderApiType::Ollama {
         return "system/local.j2";
@@ -1470,6 +1483,34 @@ mod tests {
         assert!(tmp.path().join("tasks/title_system.md").is_file());
     }
 
+    /// Issue #627 was one system template that did not include `partials/footer.j2`, so the
+    /// rules / skills / plan-mode blocks silently vanished for everyone routed to it. The render
+    /// loops below can only reach the templates a model id and api_type select; `lean.j2` and
+    /// `troubleshooting.j2` are selected only by a `PromptSource::Builtin` override and no loop
+    /// visits them. This checks the invariant at its own level instead: every template under
+    /// `system/` pulls in the footer, whatever selects it.
+    #[test]
+    fn every_system_template_includes_the_footer() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/ai/agent_providers/prompts/system");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("j2") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                body.contains(r#"{% include "partials/footer.j2" %}"#),
+                "{} does not include partials/footer.j2, so anything routed to it loses user \
+                 rules, project rules, skills, plan mode and the thinking-language block",
+                path.display()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 11, "expected every system template to be checked, saw {checked}");
+    }
+
     #[test]
     fn embedded_table_covers_every_template_file() {
         // Regression guard: if someone adds a template under prompts/ but forgets
@@ -2086,6 +2127,7 @@ mod tests {
         // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
         for (api_type, id) in [
             (AgentProviderApiType::OpenAi, "claude-sonnet-4-5"),
+            (AgentProviderApiType::OpenAi, "gpt-3.5-turbo"),
             (AgentProviderApiType::OpenAi, "gpt-4o"),
             (AgentProviderApiType::OpenAi, "gpt-5-codex"),
             (AgentProviderApiType::OpenAi, "gemini-2.5-pro"),
@@ -2161,14 +2203,18 @@ mod tests {
     #[test]
     fn render_includes_user_rules_across_all_template_families() {
         // user_rules.j2 is injected via footer.j2, and every system template family references footer.
-        // This regression case ensures anthropic / beast / codex / gemini / kimi / trinity /
-        // default / local -- any template family renders user rules, and none miss injection because a family didn't pull in footer.
+        // This loop reaches the nine templates a model id + api_type can select: anthropic /
+        // gpt / beast / codex / gemini / kimi / trinity / default / local. `lean.j2` and
+        // `troubleshooting.j2` are the other two registered system templates and no model id
+        // selects either -- they are reachable only through a `PromptSource::Builtin` override --
+        // so `every_system_template_includes_the_footer` covers all eleven at the source level.
         let rules = vec![(Some("family override".to_string()), "snake_case only.".to_string())];
         // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
         // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
         // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
         for (api_type, id) in [
             (AgentProviderApiType::OpenAi, "claude-sonnet-4-5"),
+            (AgentProviderApiType::OpenAi, "gpt-3.5-turbo"),
             (AgentProviderApiType::OpenAi, "gpt-4o"),
             (AgentProviderApiType::OpenAi, "gpt-5-codex"),
             (AgentProviderApiType::OpenAi, "gemini-2.5-pro"),
@@ -2253,9 +2299,12 @@ mod tests {
     #[test]
     fn render_includes_thinking_language_across_all_template_families() {
         // thinking_language.j2 is injected via footer.j2, and every system template family references footer.
-        // This regression case ensures all 9 template families render thinking_language, and none miss injection because a family didn't pull in footer,
+        // This regression case ensures the nine model-selectable templates render
+        // thinking_language, and none miss injection because a family didn't pull in footer,
         // which would make the LLM still think in English when a user asks in Chinese.
-        // The 9 families are: anthropic / gpt / beast / codex / gemini / kimi / trinity / default / local
+        // They are: anthropic / gpt / beast / codex / gemini / kimi / trinity / default / local.
+        // The remaining two (`lean.j2`, `troubleshooting.j2`) are override-only; see
+        // `every_system_template_includes_the_footer`.
         // Ollama is listed as an explicit (api_type, id) pair because `pick_template` routes every
         // Ollama model to `system/local.j2` regardless of id -- a loop that only passes `OpenAi`
         // can never reach that template, which is how issue #627 (local.j2 missing footer.j2) survived.
@@ -2344,9 +2393,11 @@ mod tests {
             &rules,
         );
 
-        // The terse, tool-focused local.j2 body must survive the footer being added.
+        // The terse, tool-focused local.j2 body must survive the footer being added. Match a
+        // phrase unique to that body: `plan_mode.j2` also names `run_shell_command`, so
+        // asserting on the tool name alone would pass with local.j2's body deleted entirely.
         assert!(
-            out.contains("run_shell_command"),
+            out.contains("The exact tool name is"),
             "local.j2's own tool guidance should still render: {out}"
         );
         // Everything footer.j2 provides.

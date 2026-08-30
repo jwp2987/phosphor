@@ -210,6 +210,12 @@ fn tui_settings_bundled_skill_renders_every_template_variable() {
 // `warp_core::paths::warp_home_mcp_config_file_path`, whose directory is
 // channel-aware and is `~/.phosphor` on OSS -- so a server the agent added on
 // the user's behalf silently never appeared.
+//
+// Naming `~/.phosphor/.mcp.json` in prose and letting the agent search for the
+// directory on other channels was the first fix and was still wrong: on a fresh
+// install `~/.phosphor` need not exist, and the home directory of a machine that
+// also runs Warp has a real `.warp` with its own `skills/` and `.mcp.json`, so
+// the search selects Warp's config. The path is rendered now.
 // ============================================================================
 
 #[test]
@@ -219,21 +225,17 @@ fn add_mcp_skill_documents_the_global_config_path_phosphor_actually_reads() {
         .get("add-mcp-server")
         .expect("the add-mcp-server skill is bundled with the app");
 
+    let config_path = warp_core::paths::warp_home_mcp_config_file_path()
+        .expect("the global MCP config path resolves in the test environment");
     assert!(
-        !skill.content.contains("~/.warp/.mcp.json"),
-        "the global config path must not be `~/.warp/.mcp.json`; nothing reads it on the shipped build: {}",
+        skill.content.contains(&config_path.display().to_string()),
+        "the skill must name the file `home_config_file_path(MCPProvider::Zap)` resolves to ({}): {}",
+        config_path.display(),
         skill.content
     );
     assert!(
-        skill.content.contains("~/.phosphor/.mcp.json"),
-        "the skill must name the global config path of the build that ships it: {}",
-        skill.content
-    );
-    // The home config directory name is channel-aware (`warp_home_config_dir_name`), so the
-    // skill must also tell the agent how to find the directory rather than only hardcoding one.
-    assert!(
-        skill.content.contains("ls -d ~/.phosphor* ~/.warp*"),
-        "the skill must give the agent a way to resolve a non-OSS channel's config directory: {}",
+        !skill.content.contains("{{mcp_config_file_path}}"),
+        "the skill still contains an unrendered {{{{mcp_config_file_path}}}}: {}",
         skill.content
     );
     // Project-scoped configs are NOT channel-aware (`MCPProvider::project_config_path`), so this
@@ -278,13 +280,31 @@ fn tab_config_skills_name_the_directory_the_app_actually_reads() {
         );
         // `handlebars::render_template` leaves an unknown variable verbatim, so a typo'd or
         // unregistered name ships as visibly broken skill text rather than failing the build.
-        for variable in ["{{tab_configs_dir}}", "{{worktrees_dir}}"] {
+        for variable in [
+            "{{tab_configs_dir}}",
+            "{{default_tab_configs_dir}}",
+            "{{worktrees_dir}}",
+        ] {
             assert!(
                 !skill.content.contains(variable),
                 "`{id}` still contains an unrendered {variable}: {}",
                 skill.content
             );
         }
+    }
+
+    // `default_tab_configs_dir()` holds `worktree.toml`, the user-editable template every
+    // generated worktree config is materialized from. A skill that names only `tab_configs_dir()`
+    // sends "change the default worktree template" to the wrong directory.
+    let default_tab_configs_dir = crate::user_config::default_tab_configs_dir()
+        .display()
+        .to_string();
+    for id in ["tab-configs", "update-tab-config"] {
+        assert!(
+            skills[id].content.contains(&default_tab_configs_dir),
+            "`{id}` must name the editable template directory ({default_tab_configs_dir}): {}",
+            skills[id].content
+        );
     }
 
     // The worktree example writes a shell command the user's config will run, so it must not
@@ -300,29 +320,60 @@ fn tab_config_skills_name_the_directory_the_app_actually_reads() {
     );
 }
 
-/// No bundled skill may send the agent to a literal `~/.warp/<something>`: every home-anchored
-/// directory this fork reads is resolved through `warp_core::paths` and is `.phosphor` on the
-/// shipped OSS channel, so a hardcoded `~/.warp/` path is read by nothing (#631).
+/// Nothing this app ships to the user's disk or renders into a prompt may name a literal
+/// `~/.warp/<something>`: every home-anchored directory this fork reads is resolved through
+/// `warp_core::paths` and is `.phosphor` on the shipped OSS channel, so a hardcoded `~/.warp/`
+/// path is read by nothing (#631).
+///
+/// The scope is both bundled skills and `app/resources/tab_configs`, because the second is
+/// the same defect through a different door: `default_worktree.toml` and
+/// `new_tab_config_template.toml` are copied verbatim onto the user's disk by
+/// `ensure_default_worktree_config` and the new-config flow, header comments included, and
+/// invite the user to edit them. A skills-only walk cannot see them.
 ///
 /// Two things this deliberately does NOT forbid, because both are correct:
 ///
 /// - `{repo_root}/.warp/.mcp.json` in `add-mcp-server`. `MCPProvider::project_config_path()` is
 ///   a literal `.warp/.mcp.json` on every channel, so the project-scoped path really is that.
 ///   It is not home-anchored, so the `~/` and `$HOME/` prefixes below already exclude it.
-/// - The `ls -d ~/.phosphor* ~/.warp*` discovery step in the same skill. For the MCP *home*
-///   config the `.warp*` family genuinely is the answer on the non-OSS channels
-///   (`base_warp_config_dir_name`), so enumerating it is the fix, not the bug. The glob has no
-///   trailing slash and so does not match a `~/.warp/` path either.
+/// - A bare `.warp` mentioned in prose as the thing NOT to go looking for (`add-mcp-server`
+///   warns that a machine with Warp installed has one). Naming the wrong directory in order to
+///   steer away from it is the opposite of hardcoding it, and the trailing slash excludes it.
 #[test]
-fn bundled_skills_do_not_hardcode_a_home_warp_directory() {
-    let skills = futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()));
-    assert!(!skills.is_empty(), "no bundled skills were read");
-    for (id, skill) in &skills {
+fn shipped_resources_do_not_hardcode_a_home_warp_directory() {
+    let mut sources: Vec<(String, String)> =
+        futures::executor::block_on(read_bundled_skills(&bundled_skills_dir()))
+            .into_iter()
+            .map(|(id, skill)| (format!("bundled skill `{id}`"), skill.content))
+            .collect();
+    assert!(!sources.is_empty(), "no bundled skills were read");
+
+    let tab_config_resources = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("tab_configs");
+    let mut resource_count = 0;
+    for entry in std::fs::read_dir(&tab_config_resources).expect("app resources/tab_configs exists")
+    {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        sources.push((
+            path.display().to_string(),
+            std::fs::read_to_string(&path).unwrap(),
+        ));
+        resource_count += 1;
+    }
+    assert!(
+        resource_count >= 2,
+        "expected the shipped tab config templates to be walked, saw {resource_count}"
+    );
+
+    for (label, text) in &sources {
         for spelling in ["~/.warp/", "$HOME/.warp/"] {
             assert!(
-                !skill.content.contains(spelling),
-                "bundled skill `{id}` hardcodes `{spelling}`, which nothing reads on the shipped build: {}",
-                skill.content
+                !text.contains(spelling),
+                "{label} hardcodes `{spelling}`, which nothing reads on the shipped build: {text}"
             );
         }
     }

@@ -1,10 +1,13 @@
 # Default worktree tab config
-# Stored in ~/.warp/default_tab_configs/ — you can customize this file!
+# Stored in the `default_tab_configs` directory you opened this file from — you
+# can customize it! (That directory lives under Phosphor's data directory,
+# which is a channel-specific dotfile directory in $HOME on macOS and the XDG
+# data directory on Linux, so it is not a fixed path worth writing down here.)
 # Any customizations will apply for any new worktree configs going forward that are created from the "New worktree config" flow
 #
 # This config is used by the "Worktree in" submenu to quickly create
-# worktrees under ~/.warp/worktrees/<repo-name>/<worktree-name> for your
-# known repositories.
+# worktrees under `<data directory>/worktrees/<repo-name>/<worktree-name>` for
+# your known repositories.
 
 name = "Worktree"
 
