@@ -9,7 +9,7 @@ Pin: `4111d08f932e0eda34fe57e62ee32df7d0f398d9` (see `ORACLE.md` — never measu
 
 ## Is it verified?
 
-Last fully green `script/precheck`: `52e94ae9bb5295b9a8d6cce12613cdbcac9aeed2` (2026-08-29 00:26) — **85 commit(s) since**
+Last fully green `script/precheck`: `566525c940ca3a037b4dd529f4d4be5eaceba957` (2026-08-29 14:31) — **19 commit(s) since**
 
 | guard | |
 |---|---|
@@ -27,7 +27,7 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 11289 |
+| Fork tests | 11310 |
 | Shared | 8616 |
 | Absent from fork | 3039 |
 
@@ -88,6 +88,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **0 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **125 open**, 13 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **147 open**, 13 in flight | secondary; counts formatting, so it under-reports silently |
 
 > Ledger open bucket is represented in `TODO.md`'s tracked items.
