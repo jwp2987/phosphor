@@ -4,9 +4,8 @@ use std::sync::Arc;
 
 use itertools::Itertools as _;
 use warp_core::context_flag::ContextFlag;
-use warp_core::ui::appearance::Appearance;
 use warpui::elements::{
-    Align, ChildView, ConstrainedBox, Container, CrossAxisAlignment, Flex, Icon, ParentElement,
+    Align, ChildView, ConstrainedBox, Container, CrossAxisAlignment, Flex, ParentElement,
 };
 use warpui::keymap::EditableBinding;
 use warpui::platform::FilePickerConfiguration;
@@ -25,6 +24,7 @@ use crate::pane_group::{
 use crate::projects::ProjectManagementModel;
 use crate::search::binding_source::BindingSource;
 use crate::search::welcome_palette::{Event as WelcomePaletteEvent, WelcomePalette};
+use crate::ui_components::icon_with_status::render_phosphor_logo;
 use crate::util::bindings::{keybinding_name_to_display_string, BindingGroup, CustomAction};
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ToastStack, Workspace};
@@ -235,23 +235,22 @@ impl View for WelcomeView {
         "WelcomeView"
     }
 
-    fn render(&self, app: &AppContext) -> Box<dyn Element> {
-        let appearance = Appearance::as_ref(app);
+    fn render(&self, _app: &AppContext) -> Box<dyn Element> {
         Align::new(
             Flex::column()
                 .with_cross_axis_alignment(CrossAxisAlignment::Center)
                 .with_children([
                     Container::new(
-                        ConstrainedBox::new(
-                            Icon::new(
-                                "bundled/svg/warp-logo-neutral.svg",
-                                appearance.theme().foreground(),
-                            )
+                        // The Phosphor mark, not the pre-rename Zap one this
+                        // used to render (issue #636). It goes through `Image`
+                        // because the SVG is gradient-filled; see
+                        // `render_phosphor_logo`. The square constraint box is
+                        // unchanged, and the asset is square, so it sizes the
+                        // same as the `Icon` it replaces.
+                        ConstrainedBox::new(render_phosphor_logo())
+                            .with_height(50.)
+                            .with_width(50.)
                             .finish(),
-                        )
-                        .with_height(50.)
-                        .with_width(50.)
-                        .finish(),
                     )
                     .with_margin_bottom(40.)
                     .finish(),

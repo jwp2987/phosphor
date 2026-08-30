@@ -127,6 +127,14 @@ jobs:
         shell: bash
         run: ./script/check_declined_collisions
 
+      # Issue #632: five separate call sites, added at five different times,
+      # each pasted a link to the dead ancestor's disabled issue tracker. A
+      # unit test in links.rs cannot see a literal in another file, so the
+      # check has to be repo-wide.
+      - name: Dead links (no Rust literal points at the dead ancestor)
+        shell: bash
+        run: ./script/check_dead_links
+
       # Ports arrive as PRs and each one drags more of Warp's copy in, so this
       # has to run on every PR or it is voluntary. The explicit python3 check
       # is deliberate: check_brand_strings prints "skipped" and exits 0 when

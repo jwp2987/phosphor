@@ -44,6 +44,22 @@ const ANTIGRAVITY_LOGO_PATH: &str = "bundled/svg/antigravity.svg";
 const OMP_LOGO_PATH: &str = "bundled/svg/omp.svg";
 const PHOSPHOR_LOGO_PATH: &str = "bundled/svg/phosphor-logo.svg";
 
+/// The Phosphor brand mark, sized by whatever constraint the caller wraps it in.
+///
+/// It must go through `Image`, never `Icon`: `phosphor-logo.svg` carries four
+/// linear gradients and `Icon` flat-tints its input to a single fill, so routed
+/// through `Icon` the mark renders as a white silhouette (issue #636). Same
+/// reason as the multi-colour branch of [`render_cli_agent_logo`] below.
+pub(crate) fn render_phosphor_logo() -> Box<dyn Element> {
+    Image::new(
+        AssetSource::Bundled {
+            path: PHOSPHOR_LOGO_PATH,
+        },
+        CacheOption::BySize,
+    )
+    .finish()
+}
+
 pub(crate) fn render_cli_agent_logo(
     agent: CLIAgent,
     icon_color: WarpThemeFill,

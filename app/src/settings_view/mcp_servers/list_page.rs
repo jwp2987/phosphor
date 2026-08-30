@@ -9,6 +9,7 @@ use crate::settings_view::mcp_servers_page::InstallOrigin;
 use crate::settings_view::settings_page::{
     build_toggle_element, render_body_item_label, LocalOnlyIconState, ToggleState,
 };
+use crate::util::links;
 use crate::util::truncation::truncate_from_end;
 use crate::view_components::DismissibleToast;
 use crate::ToastStack;
@@ -1081,7 +1082,7 @@ impl MCPServersListPageView {
             )),
             FormattedTextFragment::hyperlink(
                 crate::t!("settings-mcp-list-file-based-supported-providers"),
-                "",
+                links::manual_url(links::MANUAL_MCP),
             ),
         ];
 
@@ -1120,9 +1121,11 @@ impl MCPServersListPageView {
                 "{} ",
                 crate::t!("settings-mcp-list-description")
             )),
+            // Was an empty string, i.e. a "Learn more" that opened nothing
+            // (issue #632). The manual's MCP chapter is this fork's docs.
             FormattedTextFragment::hyperlink(
                 crate::t!("settings-mcp-list-learn-more"),
-                "",
+                links::manual_url(links::MANUAL_MCP),
             ),
         ];
 

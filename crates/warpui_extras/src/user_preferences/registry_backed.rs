@@ -25,6 +25,15 @@ pub struct RegistryBackedPreferences {
     cached_key: Mutex<Option<Key>>,
 }
 
+/// Root of the per-channel registry path, e.g. `HKCU\Software\Zap\Phosphor`.
+///
+/// **Kept as `Zap` on purpose — do not rebrand it.** This is a compatibility
+/// surface, not an oversight: it is where existing Windows installs already
+/// store their private preferences, and renaming it orphans every one of them
+/// (settings silently reset to defaults, with the old values still on disk under
+/// the old key). Changing it would need a migration that copies the old subtree
+/// forward, which is a larger piece of work than a rename. See issue #636, which
+/// filed this as a brand leak and concluded it should stay.
 static WARP_REGISTRY_BASE_PATH: &str = "Software\\Zap\\";
 pub const KEY_NOT_FOUND_ERR: HRESULT = HRESULT::from_win32(0x80070002);
 

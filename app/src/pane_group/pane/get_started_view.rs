@@ -2,7 +2,7 @@ use pathfinder_geometry::vector::vec2f;
 use warp_core::ui::{self, appearance::Appearance, color::blend::Blend as _};
 use warpui::{
     elements::{
-        Align, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex, Icon,
+        Align, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Flex,
         MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement as _, Radius,
     },
     keymap::EditableBinding,
@@ -26,6 +26,7 @@ use crate::{
     },
     send_telemetry_from_ctx,
     terminal::TerminalView,
+    ui_components::icon_with_status::render_phosphor_logo,
     util::bindings::{keybinding_name_to_display_string, BindingGroup, CustomAction},
     view_components::DismissibleToast,
     workspace::ToastStack,
@@ -219,12 +220,15 @@ impl GetStartedView {
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
             .with_children([
                 Container::new(
-                    ConstrainedBox::new(
-                        Icon::new("bundled/svg/warp-logo-neutral.svg", theme.foreground()).finish(),
-                    )
-                    .with_height(40.)
-                    .with_width(40.)
-                    .finish(),
+                    // The Phosphor mark, not the pre-rename Zap one this used to
+                    // render (issue #636). It goes through `Image` because the
+                    // SVG is gradient-filled; see `render_phosphor_logo`. The
+                    // square constraint box is unchanged, and the asset is
+                    // square, so it sizes the same as the `Icon` it replaces.
+                    ConstrainedBox::new(render_phosphor_logo())
+                        .with_height(40.)
+                        .with_width(40.)
+                        .finish(),
                 )
                 .with_margin_bottom(12.)
                 .finish(),

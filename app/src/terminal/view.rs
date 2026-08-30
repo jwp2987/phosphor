@@ -510,6 +510,7 @@ use crate::terminal::{color::List, model::block::LONG_RUNNING_BOTTOM_PADDING_LIN
 use crate::terminal::{event::AfterBlockCompletedEvent, event::BlockLatencyData, event::BlockType};
 use crate::throttle::throttle;
 use crate::util::color::darken;
+use crate::util::links;
 use crate::{send_telemetry_from_ctx, send_telemetry_on_executor, send_telemetry_sync_from_ctx};
 
 use self::link_detection::HighlightedLinkOption;
@@ -665,16 +666,24 @@ const SLOW_BOOTSTRAP_BANNER_AUTO_DISMISS_DURATION: Duration = Duration::from_sec
 /// Repaint interval for the live elapsed-duration counter shown on a still-executing
 /// block's label. See issue #426.
 const LIVE_COMMAND_DURATION_REPAINT_INTERVAL: Duration = Duration::from_secs(1);
-const KNOWN_ISSUES_URL: &str =
-    "";
+/// Link to the manual chapter covering slow shell startup and the shell
+/// configurations the bootstrap knows it cannot work with. These three used to
+/// be empty strings — Warp's docs site does not apply to this fork — which made
+/// every banner's "More info" a dead link (issue #632). The manual is this
+/// fork's documentation, so they point at it.
+fn known_issues_url() -> String {
+    links::manual_url(links::MANUAL_TROUBLESHOOTING)
+}
 
 /// Link to supported custom prompts.
-const PROMPT_COMPATIBILITY_URL: &str =
-    "";
+fn prompt_compatibility_url() -> String {
+    links::manual_url(links::MANUAL_TROUBLESHOOTING)
+}
 
 /// Link to troubleshooting steps for ControlMaster errors.
-const CONTROLMASTER_ISSUES_URL: &str =
-    "";
+fn controlmaster_issues_url() -> String {
+    links::manual_url(links::MANUAL_SHELL_INTEGRATION)
+}
 
 /// Link to instructions on how to update p10k.
 const P10K_UPDATE_INSTRUCTIONS_URL: &str =
@@ -3685,7 +3694,7 @@ impl TerminalView {
                     )),
                     FormattedTextFragment::hyperlink(
                         crate::t!("terminal-more-info"),
-                        KNOWN_ISSUES_URL,
+                        known_issues_url(),
                     ),
                 ]),
                 vec![BannerTextButton::new(
@@ -3721,7 +3730,7 @@ impl TerminalView {
                 )),
                 FormattedTextFragment::hyperlink(
                     crate::t!("terminal-banner-more-info-lower"),
-                    CONTROLMASTER_ISSUES_URL,
+                    controlmaster_issues_url(),
                 ),
                 FormattedTextFragment::plain_text(crate::t!(
                     "terminal-banner-completions-not-working-middle"
@@ -3747,7 +3756,7 @@ impl TerminalView {
                 )),
                 FormattedTextFragment::hyperlink(
                     crate::t!("terminal-banner-more-info"),
-                    KNOWN_ISSUES_URL,
+                    known_issues_url(),
                 ),
             ]))
         });
@@ -21381,7 +21390,7 @@ impl TerminalView {
                     )),
                     FormattedTextFragment::hyperlink(
                         crate::t!("common-learn-more"),
-                        PROMPT_COMPATIBILITY_URL,
+                        prompt_compatibility_url(),
                     ),
                 ]))
             } else {
@@ -24225,7 +24234,9 @@ impl TerminalView {
 
         match action {
             LearnMore => {
-                ctx.open_url("");
+                // Was an empty string, i.e. a dead "Learn more" (issue #632).
+                // The manual's shell-integration chapter documents this wrapper.
+                ctx.open_url(&links::manual_url(links::MANUAL_SHELL_INTEGRATION));
             }
             Settings => {
                 if FeatureFlag::SSHTmuxWrapper.is_enabled() {

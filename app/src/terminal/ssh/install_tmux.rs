@@ -11,6 +11,7 @@ use crate::terminal::warpify::render;
 use crate::terminal::warpify::settings::WarpifySettings;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon as UiIcon;
+use crate::util::links;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::ui::theme::WarpTheme;
 use warpui::elements::{
@@ -25,8 +26,11 @@ use warpui::{
 };
 use warpui::{BlurContext, FocusContext};
 
-pub const WHY_INSTALL_TMUX_URL: &str =
-    "";
+/// Was an empty string, i.e. a dead "Why do I need tmux?" link (issue #632).
+/// The manual's shell-integration chapter documents the tmux wrapper.
+pub fn why_install_tmux_url() -> String {
+    links::manual_url(links::MANUAL_SHELL_INTEGRATION)
+}
 
 #[derive(Debug, Clone)]
 pub struct TmuxInstallMethod {
@@ -387,7 +391,7 @@ impl View for SshInstallTmuxBlock {
             FormattedTextFragment::plain_text(explanation),
             FormattedTextFragment::hyperlink(
                 crate::t!("terminal-ssh-why-need-tmux"),
-                WHY_INSTALL_TMUX_URL,
+                why_install_tmux_url(),
             ),
         ];
 
@@ -519,6 +523,20 @@ impl TypedActionView for SshInstallTmuxBlock {
 /// instead of reporting why (#532). The substitution happens here rather than at send time so
 /// that the script shown to the user in the install block is exactly the one that will run.
 #[cfg(not(test))]
+/// The scripts these return install a portable tmux into `$HOME/.warp/tmux` on
+/// the **remote** host, and `warpify_ssh_session.sh` looks for
+/// `$HOME/.warp/tmux/execute_tmux.sh` there.
+///
+/// **The `.warp` path stays as-is deliberately** (issue #636 filed it as a brand
+/// leak). Two reasons: it is remote state written by earlier versions, so
+/// renaming it strands every existing install — the new client would neither
+/// find nor clean up the old tree, and the error paths' `rm -rf "$HOME/.warp/tmux"`
+/// would stop reclaiming it; and `~/.warp` is this fork's config directory
+/// convention everywhere else too (`~/.warp/tab_configs`, `~/.warp/skills`,
+/// `.warp/attachments`), so moving only this one would be an inconsistency, not
+/// a rebrand. Doing it properly means renaming the whole `~/.warp` convention
+/// behind a migration that also copies the remote tree forward, which is its own
+/// piece of work.
 #[allow(unused_variables)]
 pub fn install_tmux_script(
     system: &SystemDetails,
@@ -612,6 +630,20 @@ pub fn install_root_tmux_script(
 /// This method has a separate test-only implementation so we don't try to access a bundled
 /// asset when executing a unit test
 #[cfg(test)]
+/// The scripts these return install a portable tmux into `$HOME/.warp/tmux` on
+/// the **remote** host, and `warpify_ssh_session.sh` looks for
+/// `$HOME/.warp/tmux/execute_tmux.sh` there.
+///
+/// **The `.warp` path stays as-is deliberately** (issue #636 filed it as a brand
+/// leak). Two reasons: it is remote state written by earlier versions, so
+/// renaming it strands every existing install — the new client would neither
+/// find nor clean up the old tree, and the error paths' `rm -rf "$HOME/.warp/tmux"`
+/// would stop reclaiming it; and `~/.warp` is this fork's config directory
+/// convention everywhere else too (`~/.warp/tab_configs`, `~/.warp/skills`,
+/// `.warp/attachments`), so moving only this one would be an inconsistency, not
+/// a rebrand. Doing it properly means renaming the whole `~/.warp` convention
+/// behind a migration that also copies the remote tree forward, which is its own
+/// piece of work.
 #[allow(unused_variables)]
 pub fn install_tmux_script(
     system: &SystemDetails,

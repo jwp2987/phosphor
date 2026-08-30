@@ -11,8 +11,10 @@ use anyhow::{Context as _, Result};
 use lazy_static::lazy_static;
 use serde::Deserialize;
 
-const REPO_OWNER: &str = "jwp2987";
-const REPO_NAME: &str = "phosphor";
+// Shared with every user-visible link that names the repository (the issue
+// tracker, the feedback form, the manual), so the update feed and those links
+// cannot drift apart.
+use crate::util::links::{REPO_NAME, REPO_OWNER};
 
 // GitHub mandatorily requires a User-Agent; the API version is also explicitly declared to avoid future default drift.
 const USER_AGENT: &str = "Phosphor-Autoupdate";

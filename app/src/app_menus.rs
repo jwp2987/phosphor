@@ -162,11 +162,13 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
         menu_items.push(MenuItem::Services);
     }
 
-    menu_items.push(MenuItem::Separator);
-    menu_items.push(link_menu_item(
+    if let Some(privacy_policy_item) = link_menu_item(
         crate::t!("app-menu-privacy-policy"),
         links::PRIVACY_POLICY_URL.into(),
-    ));
+    ) {
+        menu_items.push(MenuItem::Separator);
+        menu_items.push(privacy_policy_item);
+    }
 
     let debug_menu_items = debug_menu_items();
     if !debug_menu_items.is_empty() {
@@ -831,15 +833,26 @@ fn debug_menu_items() -> Vec<MenuItem> {
     debug_menu_items
 }
 
-fn link_menu_item(title: String, link: Cow<'static, str>) -> MenuItem {
-    MenuItem::Custom(CustomMenuItem::new(
+/// A menu item that opens `link`, or nothing at all when `link` is empty.
+///
+/// Some of this fork's link constants are deliberate empty placeholders
+/// (`util::links::SLACK_URL`, `PRIVACY_POLICY_URL`) because the fork has
+/// neither a Slack workspace nor a privacy policy of its own. `ctx.open_url("")`
+/// is a silent no-op, so the entry is dropped until the URL is filled in rather
+/// than presented as a dead link — the same rule
+/// `settings_view::privacy_page`'s `should_render` already applies.
+fn link_menu_item(title: String, link: Cow<'static, str>) -> Option<MenuItem> {
+    if link.is_empty() {
+        return None;
+    }
+    Some(MenuItem::Custom(CustomMenuItem::new(
         &title,
         move |ctx| {
             ctx.open_url(&link);
         },
         no_updates,
         None,
-    ))
+    )))
 }
 
 fn feedback_menu_item() -> MenuItem {
@@ -857,24 +870,22 @@ fn feedback_menu_item() -> MenuItem {
 }
 
 fn make_new_help_menu() -> Menu {
-    Menu::new(
-        &crate::t!("app-menu-help"),
-        vec![
-            feedback_menu_item(),
-            link_menu_item(
-                crate::t!("app-menu-warp-documentation"),
-                links::USER_DOCS_URL.into(),
-            ),
-            link_menu_item(
-                crate::t!("app-menu-github-issues"),
-                links::GITHUB_ISSUES_URL.into(),
-            ),
-            link_menu_item(
-                crate::t!("app-menu-warp-slack-community"),
-                links::SLACK_URL.into(),
-            ),
-        ],
-    )
+    let mut items = vec![feedback_menu_item()];
+    // `link_menu_item` returns `None` for a placeholder (empty) URL, so an
+    // entry with nowhere to go is left out of the menu entirely.
+    items.extend(link_menu_item(
+        crate::t!("app-menu-warp-documentation"),
+        links::user_docs_url().into(),
+    ));
+    items.extend(link_menu_item(
+        crate::t!("app-menu-github-issues"),
+        links::github_issues_url().into(),
+    ));
+    items.extend(link_menu_item(
+        crate::t!("app-menu-warp-slack-community"),
+        links::SLACK_URL.into(),
+    ));
+    Menu::new(&crate::t!("app-menu-help"), items)
 }
 
 fn make_launch_config_menu_items(ctx: &mut AppContext) -> Vec<MenuItem> {

@@ -26,6 +26,7 @@ use crate::terminal::warpify::settings::{
     UseSshTmuxWrapper, WarpifySettingsChangedEvent,
 };
 use crate::ui_components::blended_colors;
+use crate::util::links;
 use crate::{
     appearance::Appearance,
     report_if_error, send_telemetry_from_ctx,
@@ -558,9 +559,12 @@ impl TitleWidget {
     fn render_top_of_page(&self, appearance: &Appearance, _app: &AppContext) -> Box<dyn Element> {
         let warpify_description = vec![
             FormattedTextFragment::plain_text(crate::t!("settings-warpify-description-prefix")),
+            // Was an empty string, i.e. a "Learn more" that opened nothing
+            // (issue #632). The manual's shell-integration chapter is this
+            // fork's docs for Phosphorization.
             FormattedTextFragment::hyperlink(
                 crate::t!("settings-warpify-learn-more"),
-                "",
+                links::manual_url(links::MANUAL_SHELL_INTEGRATION),
             ),
         ];
 
@@ -836,9 +840,11 @@ impl SettingsWidget for SSHWidget {
                     crate::t!("settings-warpify-use-tmux"),
                     Some(AdditionalInfo {
                         mouse_state: self.additional_info_mouse_state.clone(),
-                        on_click_action: Some(WarpifyPageAction::OpenUrl(
-                            "".into(),
-                        )),
+                        // Was an empty string, i.e. an info icon that opened
+                        // nothing (issue #632).
+                        on_click_action: Some(WarpifyPageAction::OpenUrl(links::manual_url(
+                            links::MANUAL_SHELL_INTEGRATION,
+                        ))),
                         secondary_text: None,
                         tooltip_override_text: None,
                     }),

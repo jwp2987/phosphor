@@ -62,6 +62,25 @@ impl ResourceCenterFooterItem {
             ResourceCenterFooterItem::Feedback => FEEDBACK_SVG_PATH,
         }
     }
+
+    /// The URL the item opens, or `None` when it has no destination in this
+    /// fork. `links::SLACK_URL` is a deliberate empty placeholder — the fork has
+    /// no Slack workspace — and `ctx.open_url("")` is a silent no-op, so the
+    /// button is left out of the footer rather than rendered as a dead control.
+    /// `Feedback` dispatches a workspace action instead of opening a URL here.
+    fn url(&self) -> Option<String> {
+        let url = match self {
+            ResourceCenterFooterItem::Docs => links::user_docs_url(),
+            ResourceCenterFooterItem::Slack => links::SLACK_URL.to_owned(),
+            ResourceCenterFooterItem::Feedback => return None,
+        };
+        (!url.is_empty()).then_some(url)
+    }
+
+    /// Whether the footer should render a button for this item at all.
+    fn is_available(&self) -> bool {
+        matches!(self, ResourceCenterFooterItem::Feedback) || self.url().is_some()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -257,8 +276,11 @@ impl ResourceCenterView {
         ctx: &mut ViewContext<Self>,
     ) {
         match item {
-            ResourceCenterFooterItem::Docs => ctx.open_url(links::USER_DOCS_URL),
-            ResourceCenterFooterItem::Slack => ctx.open_url(links::SLACK_URL),
+            ResourceCenterFooterItem::Docs | ResourceCenterFooterItem::Slack => {
+                if let Some(url) = item.url() {
+                    ctx.open_url(&url);
+                }
+            }
             // Route feedback through the workspace action so the guided agent experience is
             // launched when AI is available, and the GitHub issue form is opened otherwise.
             ResourceCenterFooterItem::Feedback => {
@@ -453,15 +475,19 @@ impl ResourceCenterView {
     }
 
     fn render_footer(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let docs_button = self.render_footer_button(ResourceCenterFooterItem::Docs, appearance);
-        let slack_button = self.render_footer_button(ResourceCenterFooterItem::Slack, appearance);
-        let feedback_button =
-            self.render_footer_button(ResourceCenterFooterItem::Feedback, appearance);
+        // Items whose link is an empty placeholder in this fork are omitted
+        // rather than rendered as buttons that open nothing.
+        let buttons = [
+            ResourceCenterFooterItem::Docs,
+            ResourceCenterFooterItem::Slack,
+            ResourceCenterFooterItem::Feedback,
+        ]
+        .into_iter()
+        .filter(ResourceCenterFooterItem::is_available)
+        .map(|item| self.render_footer_button(item, appearance));
 
         let footer = Flex::row()
-            .with_child(docs_button)
-            .with_child(slack_button)
-            .with_child(feedback_button)
+            .with_children(buttons)
             .with_main_axis_size(MainAxisSize::Max)
             .with_main_axis_alignment(MainAxisAlignment::SpaceEvenly)
             .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -523,5 +549,47 @@ impl View for ResourceCenterView {
             .with_child(Shrinkable::new(1., body).finish())
             .with_child(footer)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ResourceCenterFooterItem;
+
+    /// Regression test for issue #632: the Docs and Slack footer buttons were
+    /// rendered unconditionally and called `ctx.open_url("")` — a silent no-op —
+    /// when their URL was one of this fork's empty placeholders. A button is now
+    /// only offered when it has somewhere to go. Filling `links::SLACK_URL` in
+    /// brings its button back without touching this test.
+    #[test]
+    fn no_footer_button_is_offered_without_a_destination() {
+        for item in [
+            ResourceCenterFooterItem::Docs,
+            ResourceCenterFooterItem::Slack,
+            ResourceCenterFooterItem::Feedback,
+        ] {
+            if !item.is_available() {
+                continue;
+            }
+            match item {
+                // Dispatches a workspace action rather than opening a URL.
+                ResourceCenterFooterItem::Feedback => {}
+                _ => assert!(
+                    item.url().is_some_and(|url| !url.is_empty()),
+                    "{:?} is rendered in the footer but opens nothing",
+                    item
+                ),
+            }
+        }
+    }
+
+    /// The manual is this fork's documentation, so Docs always has a
+    /// destination and is always offered.
+    #[test]
+    fn docs_button_points_at_the_manual() {
+        assert!(ResourceCenterFooterItem::Docs.is_available());
+        assert!(ResourceCenterFooterItem::Docs
+            .url()
+            .is_some_and(|url| url.contains("/docs/manual")));
     }
 }
