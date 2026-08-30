@@ -109,9 +109,7 @@ impl AboutPageWidget {
                 // re-checking before SHOW_AUTOUPDATE_UI is ever flipped back on.
                 let url = github::cached_release()
                     .map(|r| r.html_url)
-                    .unwrap_or_else(|| {
-                        "https://github.com/jwp2987/phosphor/releases/latest".to_owned()
-                    });
+                    .unwrap_or_else(crate::util::links::latest_release_url);
                 (text, UpdateAction::OpenReleasePage(url))
             }
             // Fallback (theoretically unreachable): any remaining stage is treated as "already

@@ -840,9 +840,11 @@ impl SettingsWidget for SSHWidget {
                     crate::t!("settings-warpify-use-tmux"),
                     Some(AdditionalInfo {
                         mouse_state: self.additional_info_mouse_state.clone(),
-                        on_click_action: Some(WarpifyPageAction::OpenUrl(
-                            "".into(),
-                        )),
+                        // Was an empty string, i.e. an info icon that opened
+                        // nothing (issue #632).
+                        on_click_action: Some(WarpifyPageAction::OpenUrl(links::manual_url(
+                            links::MANUAL_SHELL_INTEGRATION,
+                        ))),
                         secondary_text: None,
                         tooltip_override_text: None,
                     }),

@@ -1120,7 +1120,7 @@ All rows are drawn from DECLINED.md; the specific rows and their supporting code
 - Grok subscription OAuth: DECLINED.md "xAI / Grok subscription OAuth" (#319); rejection message crates/warp_tui/src/session.rs:167-176
 - Bedrock OIDC role assumption: DECLINED.md "AWS Bedrock OIDC role assumption"
 - network log console not ported: app/src/settings_view/privacy_page.rs:12-15
-- project links derived from one repo identity, and the empty Slack/privacy-policy placeholders: app/src/util/links.rs (+ app/src/util/links_tests.rs); empty-URL suppression: app/src/app_menus.rs link_menu_item, app/src/resource_center/view.rs ResourceCenterFooterItem::url, app/src/workspace/mod.rs add_overflow_menu_items_as_editable_binding, app/src/settings_view/privacy_page.rs should_render
+- project links derived from one repo identity, and the empty Slack/privacy-policy placeholders: app/src/util/links.rs (+ app/src/util/links_tests.rs, and script/check_dead_links, which greps the whole tree for the dead ancestor because a unit test in links.rs cannot see a literal pasted elsewhere); empty-URL suppression: app/src/app_menus.rs link_menu_item, app/src/resource_center/view.rs ResourceCenterFooterItem::url, app/src/workspace/mod.rs add_overflow_menu_items_as_editable_binding, app/src/settings_view/privacy_page.rs should_render
 - README's own user-facing "Not included, on purpose" table: README.md, "Not included, on purpose" section
 
 -->

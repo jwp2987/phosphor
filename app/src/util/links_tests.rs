@@ -3,9 +3,13 @@
 
 use super::*;
 
-/// The whole point of `REPO_OWNER`/`REPO_NAME` is that no link hardcodes a
-/// second copy of the repository. If someone reintroduces a literal URL, one of
-/// these stops agreeing with `repo_url()`.
+/// Every link function in this module must hang off `repo_url()`.
+///
+/// Scope, stated precisely because the first version of this comment claimed
+/// more than it delivers: this only sees functions defined HERE. A literal URL
+/// pasted into some other file is invisible to it — which is exactly how the
+/// five #632 call sites got there in the first place. `script/check_dead_links`
+/// is the repo-wide half of the pair; neither one alone is sufficient.
 #[test]
 fn every_project_link_is_derived_from_the_repo_constants() {
     assert_eq!(
@@ -18,6 +22,8 @@ fn every_project_link_is_derived_from_the_repo_constants() {
         user_docs_url(),
         manual_url(MANUAL_TROUBLESHOOTING),
         feedback_form_url(),
+        new_issue_url(),
+        issue_form_url("01_bug_report.yml"),
     ] {
         assert!(
             url.starts_with(&repo_url()),
@@ -39,7 +45,9 @@ fn feedback_form_opens_this_repos_issue_chooser() {
 }
 
 /// The ancestor's tracker is disabled, so a link to it loses the report
-/// silently. Nothing user-facing in this module may point there.
+/// silently. Nothing user-facing in this module may point there — and
+/// `script/check_dead_links` enforces the same rule across the whole tree,
+/// which this test cannot.
 #[test]
 fn no_link_points_at_the_dead_ancestor() {
     for url in [

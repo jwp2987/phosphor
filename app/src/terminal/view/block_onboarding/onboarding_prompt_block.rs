@@ -10,6 +10,7 @@ use crate::terminal::model::ObfuscateSecrets;
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::view::block_onboarding::util;
 use crate::terminal::SizeInfo;
+use crate::util::links;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use settings::Setting as _;
 use warpui::{
@@ -66,8 +67,10 @@ impl OnboardingPromptBlock {
         const LINE_ONE: &str = "Next, let’s set up your prompt. Phosphor has a custom prompt builder or you can select PS1 to honor your pre-existing prompt configuration.";
         const LINE_TWO: &str =
             "Phosphor works with many custom prompts like oh-my-zsh, Starship, Powerlevel10K. ";
-        const LINK_DESTINATION: &str =
-            "";
+        // Was an empty string, i.e. a dead "Learn more" (issue #632). The
+        // manual's troubleshooting chapter is where prompt compatibility
+        // (oh-my-zsh, Starship, powerlevel10k, pure) is documented.
+        let link_destination = links::manual_url(links::MANUAL_TROUBLESHOOTING);
 
         Flex::column()
             .with_children([
@@ -84,7 +87,7 @@ impl OnboardingPromptBlock {
                             FormattedTextFragment::plain_text(LINE_TWO),
                             FormattedTextFragment::hyperlink(
                                 crate::t!("common-learn-more"),
-                                LINK_DESTINATION,
+                                link_destination,
                             ),
                         ])]),
                         font_size,
@@ -244,7 +247,10 @@ impl OnboardingPromptBlock {
         const NO_PS1_TEXT: &str = "No existing prompt.";
         const CORRECTION_TEXT: &str = "Look incorrect? ";
         const LINK_TEXT: &str = "Let us know.";
-        const LINK_DESTINATION: &str = "https://github.com/zerx-lab/warp/issues/new?assignees=&labels=Bug&projects=&template=01_bug_report.yml";
+        // Was `github.com/zerx-lab/warp`, the dead ancestor whose issue tracker
+        // is disabled, so this report went nowhere (issue #632). The template
+        // declares its own labels, so none are pinned in the URL.
+        let link_destination = links::issue_form_url("01_bug_report.yml");
 
         const HEADER_MARGIN_LEFT: f32 = 4.;
         const PS1_PADDING_VERTICAL: f32 = 12.;
@@ -305,7 +311,7 @@ impl OnboardingPromptBlock {
                                     .ui_builder()
                                     .link(
                                         LINK_TEXT.to_string(),
-                                        Some(LINK_DESTINATION.to_string()),
+                                        Some(link_destination),
                                         None,
                                         self.mouse_state_handle_look_incorrect.clone(),
                                     )

@@ -6600,7 +6600,12 @@ impl Workspace {
                     open_in_active_window: false,
                 },
             ),
-            NewSessionMenuItem::OpenLaunchConfigDocs => ctx.open_url(""),
+            // Unreachable: nothing constructs this variant (it is matched here
+            // and declared in `tab.rs`, and that is all), so it is dead code
+            // rather than the dead LINK it looks like. There is also no launch
+            // config chapter in `docs/manual/` to point it at. Left as a no-op
+            // deliberately — inventing a URL here would be worse.
+            NewSessionMenuItem::OpenLaunchConfigDocs => {}
             #[cfg(feature = "local_fs")]
             NewSessionMenuItem::CreateNewTabConfig => {
                 self.create_and_open_new_tab_config(ctx);
@@ -11313,7 +11318,10 @@ impl Workspace {
     }
 
     pub fn open_autoupdate_failure_link(&mut self, ctx: &mut ViewContext<Self>) {
-        ctx.open_url("");
+        // Was an empty string, i.e. a banner offering a way out of a failed
+        // update that did nothing (issue #632). If autoupdate could not do it,
+        // the releases page is where the user finishes the job by hand.
+        ctx.open_url(&links::latest_release_url());
     }
 
     pub fn add_terminal_tab(&mut self, hide_homepage: bool, ctx: &mut ViewContext<Self>) {

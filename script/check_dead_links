@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Fail if shipped Rust code puts the dead ancestor's repository in a URL.
+#
+# WHY THIS EXISTS
+# ---------------
+# Issue #632. "Send feedback", "File issue", "Let us know." and the GitHub
+# Issues menu entry all opened `github.com/zerx-lab/warp` — the fork's dead
+# ancestor, whose issue tracker is DISABLED. Every one of those buttons looked
+# like it worked and silently lost the report. Five separate call sites carried
+# the literal, in five different files, added at five different times.
+#
+# That is the shape of the problem: not one bad constant, but a URL that gets
+# copied. `app/src/util/links.rs` now holds the repository identity once
+# (`REPO_OWNER`/`REPO_NAME`) and every project link is derived from it, and
+# `app/src/util/links_tests.rs` asserts that the functions IN THAT FILE agree
+# with it. What that test structurally cannot see is a literal pasted into some
+# other file — which is exactly how all five got there. Hence a repo-wide grep.
+#
+# WHAT IT CHECKS
+# --------------
+# A URL naming `zerx-lab` inside a Rust STRING LITERAL, anywhere under
+# `app/src` or `crates/*/src`. Prose is exempt: the fork legitimately cites
+# ancestor issue numbers in comments ("see zerx-lab/warp #25"), and those are
+# attribution, not a link a user can click. So whole-line `//` comments are
+# stripped before matching, and a hit must sit between double quotes.
+#
+# WHAT IT DELIBERATELY DOES NOT CHECK
+# -----------------------------------
+# * `script/macos/bundle` and `script/windows/bundle.ps1` also name
+#   `zerx-lab/warp`. That is a real defect but a different one — packaging
+#   metadata, not a clickable control — and it is already tracked (TODO.md,
+#   "bundle.ps1:117 name repo zerx-lab/warp"). Widen the SEARCH_ROOTS below
+#   once those are fixed, not before: a guard that ships red teaches people to
+#   ignore it.
+# * Empty URLs. `ctx.open_url("")` is a silent no-op and roughly twenty
+#   controls still call it, so a guard for that cannot pass today. The rule to
+#   encode once they are fixed is the one #632 settled on: a control whose URL
+#   is empty must be HIDDEN, not rendered dead. Until then the suppression
+#   helpers carry it (`app_menus::link_menu_item`,
+#   `ResourceCenterFooterItem::is_available`, `privacy_page::should_render`).
+# * `warp.dev` and `warpdotdev`. Not safe to ban: `warpdotdev/*` are real,
+#   working, deliberately-kept package names the user must type verbatim
+#   (DECLINED.md, "CLI agent notification plugins").
+# * Test files (`*_test.rs`, `*_tests.rs`). Two kinds of legitimate hit live
+#   there: link-detection FIXTURES that need some URL and happen to use this
+#   one (`terminal/model/grid/grid_handler_test.rs`), and guards asserting the
+#   string's ABSENCE (`util/links_tests.rs`, `remote_server/src/setup_tests.rs`
+#   — that second one predates this script, which is its own evidence that the
+#   class recurs). Neither is a control a user can click.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# The dead ancestor's GitHub org. Anything under it is unreachable for users.
+DEAD_ORG="zerx-lab"
+
+SEARCH_ROOTS=(app/src crates)
+
+hits=0
+scanned=0
+
+while IFS= read -r file; do
+    scanned=$((scanned + 1))
+    # Strip whole-line comments, then require the org name inside quotes.
+    # `awk` reports the ORIGINAL line number so the message is actionable.
+    while IFS= read -r hit; do
+        if [[ -n "$hit" ]]; then
+            printf '  %s:%s\n' "$file" "$hit"
+            hits=$((hits + 1))
+        fi
+    done < <(awk -v org="$DEAD_ORG" '
+        {
+            line = $0
+            stripped = line
+            sub(/^[ \t]*/, "", stripped)
+            if (stripped ~ /^\/\//) next
+            if (line !~ ("\"[^\"]*" org)) next
+            print NR ": " stripped
+        }
+    ' "$file")
+done < <(find "${SEARCH_ROOTS[@]}" -type f -name '*.rs' \
+    -not -path '*/target/*' \
+    -not -name '*_test.rs' \
+    -not -name '*_tests.rs' \
+    -not -path '*/tests/*' | sort)
+
+if (( hits > 0 )); then
+    cat >&2 <<EOF
+
+error: $hits Rust string literal(s) point at the dead ancestor '$DEAD_ORG'.
+
+Its issue tracker is disabled, so a user who clicks one of these loses whatever
+they were trying to tell you, with no error. Build the URL from the repository
+identity instead of pasting a literal:
+
+    use crate::util::links;
+
+    links::new_issue_url()                    // the issue-form chooser
+    links::issue_form_url("01_bug_report.yml")// a specific form
+    links::github_issues_url()                // the tracker
+    links::feedback_form_url()                // "Send feedback"
+    links::manual_url(links::MANUAL_*)        // a chapter of docs/manual/
+
+Citing an ancestor issue in a COMMENT is fine and is not matched.
+EOF
+    exit 1
+fi
+
+echo "dead links: ok ($scanned Rust file(s) scanned; no literal names $DEAD_ORG)"

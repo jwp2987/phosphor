@@ -59,6 +59,19 @@ pub fn issue_form_url(template: &str) -> String {
     format!("{}/issues/new?template={template}", repo_url())
 }
 
+/// The issue-form chooser, for "file an issue" controls that should not presume
+/// which template the user wants.
+pub fn new_issue_url() -> String {
+    format!("{}/issues/new/choose", repo_url())
+}
+
+/// The latest release, for "download it yourself" paths — the About page's
+/// manual-download link and the autoupdate-failure banner. `autoupdate::github`
+/// polls the API form of this same release off `REPO_OWNER`/`REPO_NAME`.
+pub fn latest_release_url() -> String {
+    format!("{}/releases/latest", repo_url())
+}
+
 /// Name of the version query parameter on the feedback form. Matches the `id:`
 /// of the version field in `.github/ISSUE_TEMPLATE/*.yml`.
 pub const APP_VERSION_QUERY_PARAM: &str = "phosphor-version";
@@ -71,8 +84,7 @@ pub const APP_VERSION_QUERY_PARAM: &str = "phosphor-version";
 /// renaming one here without renaming the template field silently stops the
 /// pre-fill.
 pub fn feedback_form_url() -> String {
-    let mut url = url::Url::parse(&format!("{}/issues/new/choose", repo_url()))
-        .expect("Should not fail to parse");
+    let mut url = url::Url::parse(&new_issue_url()).expect("Should not fail to parse");
     if let Some(version) = ChannelState::app_version() {
         url.query_pairs_mut()
             .append_pair(APP_VERSION_QUERY_PARAM, version);

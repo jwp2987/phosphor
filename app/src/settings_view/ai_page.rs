@@ -6500,7 +6500,10 @@ impl SettingsWidget for RulesWidget {
                 "{} ",
                 crate::t!("settings-ai-rules-description")
             )),
-            FormattedTextFragment::hyperlink(crate::t!("settings-ai-learn-more"), ""),
+            FormattedTextFragment::hyperlink(
+                crate::t!("settings-ai-learn-more"),
+                links::manual_url(links::MANUAL_MCP),
+            ),
         ];
         let description = Container::new(
             FormattedTextElement::new(

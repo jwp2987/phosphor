@@ -11,6 +11,7 @@ use crate::terminal::warpify::render;
 use crate::terminal::warpify::settings::WarpifySettings;
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon as UiIcon;
+use crate::util::links;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::ui::theme::WarpTheme;
 use warpui::elements::{
@@ -25,8 +26,11 @@ use warpui::{
 };
 use warpui::{BlurContext, FocusContext};
 
-pub const WHY_INSTALL_TMUX_URL: &str =
-    "";
+/// Was an empty string, i.e. a dead "Why do I need tmux?" link (issue #632).
+/// The manual's shell-integration chapter documents the tmux wrapper.
+pub fn why_install_tmux_url() -> String {
+    links::manual_url(links::MANUAL_SHELL_INTEGRATION)
+}
 
 #[derive(Debug, Clone)]
 pub struct TmuxInstallMethod {
@@ -387,7 +391,7 @@ impl View for SshInstallTmuxBlock {
             FormattedTextFragment::plain_text(explanation),
             FormattedTextFragment::hyperlink(
                 crate::t!("terminal-ssh-why-need-tmux"),
-                WHY_INSTALL_TMUX_URL,
+                why_install_tmux_url(),
             ),
         ];
 

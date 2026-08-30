@@ -13,7 +13,7 @@ use warpui::{
     Entity, SingletonEntity as _, TypedActionView, View, ViewContext,
 };
 
-use crate::{terminal::model::terminal_model::ExitReason, ui_components};
+use crate::{terminal::model::terminal_model::ExitReason, ui_components, util::links};
 
 /// A banner to display when the shell process terminates.
 ///
@@ -215,9 +215,7 @@ impl TerminationType {
                         .with_text_label(crate::t!("terminal-file-issue"))
                         .build()
                         .on_click(|ctx, _, _| {
-                            ctx.dispatch_typed_action(Action::OpenUrl(
-                                "https://github.com/zerx-lab/warp/issues/new/choose".to_string(),
-                            ));
+                            ctx.dispatch_typed_action(Action::OpenUrl(links::new_issue_url()));
                         })
                         .finish(),
                     ui_builder
@@ -225,9 +223,9 @@ impl TerminationType {
                         .with_text_label(crate::t!("terminal-more-info"))
                         .build()
                         .on_click(|ctx, _, _| {
-                            ctx.dispatch_typed_action(Action::OpenUrl(
-                                "".to_string(),
-                            ));
+                            ctx.dispatch_typed_action(Action::OpenUrl(links::manual_url(
+                                links::MANUAL_TROUBLESHOOTING,
+                            )));
                         })
                         .finish(),
                 ]
@@ -253,9 +251,7 @@ impl TerminationType {
                         .with_text_label(crate::t!("terminal-file-issue"))
                         .build()
                         .on_click(|ctx, _, _| {
-                            ctx.dispatch_typed_action(Action::OpenUrl(
-                                "https://github.com/zerx-lab/warp/issues/new/choose".to_string(),
-                            ));
+                            ctx.dispatch_typed_action(Action::OpenUrl(links::new_issue_url()));
                         })
                         .finish(),
                     ui_builder
@@ -263,9 +259,9 @@ impl TerminationType {
                         .with_text_label(crate::t!("terminal-more-info"))
                         .build()
                         .on_click(|ctx, _, _| {
-                            ctx.dispatch_typed_action(Action::OpenUrl(
-                                "".to_string(),
-                            ));
+                            ctx.dispatch_typed_action(Action::OpenUrl(links::manual_url(
+                                links::MANUAL_TROUBLESHOOTING,
+                            )));
                         })
                         .finish(),
                 ]
