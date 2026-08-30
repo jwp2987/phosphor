@@ -26,24 +26,47 @@ the help output do not all agree.
 | macOS bundle CLI wrapper | `…/Contents/Resources/bin/phosphor-oss` |
 | GUI's "install CLI" action | `/usr/local/bin/phosphor-oss` |
 
-**What you type is `phosphor-oss`** (or `phosphor`, if you installed the desktop
-package — it is a symlink to the same executable and accepts the same
-subcommands). The name `oz` is Warp's upstream name for this CLI; it survives
-only as clap's internal command identifier and never as an installed command in
-Phosphor. Nothing in a Phosphor install is called `oz`, `warp`, or `zap`.
+**What you type depends on what you installed.**
+
+* **The Linux desktop package** (`.deb`/`.rpm`/Arch) puts only **`phosphor`** on
+  your `PATH` — a symlink (Arch: a wrapper script) to `/opt/phosphor/phosphor-oss`.
+  `phosphor-oss` itself is *not* on `PATH` from that package
+  (`resources/linux/debian/app/postinst.template:13`,
+  `resources/linux/rpm/app/warp.spec.template:62`). Type `phosphor`.
+* **The separate CLI package/tarball** (`phosphor-cli`) installs
+  `/usr/bin/phosphor-oss`.
+* **macOS** exposes `phosphor-oss` — from the bundle's
+  `Contents/Resources/bin/`, or at `/usr/local/bin/phosphor-oss` after the GUI's
+  "install CLI" action.
+
+Both names are the same executable and accept the same subcommands. The name `oz`
+is Warp's upstream name for this CLI; it survives only as clap's internal command
+identifier and never as an installed command. Nothing on your `PATH` after a
+Phosphor install is called `oz`, `warp`, or `zap` (the string `oz` does survive
+in one place on disk: the agent-mailbox directory, §4.5).
 
 Two consequences worth knowing:
 
 * Help output, examples and generated completions are built from **argv\[0\]**,
   not from the internal name. Invoke it as `phosphor` and the examples in
   `--help` say `phosphor`; invoke it as `phosphor-oss` and they say
-  `phosphor-oss`. The internal `oz` name is never shown.
+  `phosphor-oss`. There is one exception. `oz` leaks into the `Usage:` line of
+  the help that a **bare invocation** prints in CLI mode — the CLI-only
+  (`standalone`) build, an argv\[0\] starting with `oz`, or `WARP_CLI_MODE`
+  set. That path calls clap's `print_help()` on a command clap never parsed
+  argv with, so clap has no `bin_name` to substitute and falls back to the
+  internal `name`, printing `Usage: oz [OPTIONS] [COMMAND]`. An explicit
+  `--help` (or any real parse) goes through clap's argument parser, which does
+  set `bin_name` from argv\[0\], so `phosphor-oss --help` says
+  `Usage: phosphor-oss …` as expected. The `Examples:` block is built from
+  argv\[0\] on both paths.
 * Some **help strings in the source still say `warp` or `oz`** and were not
   rebranded: the `completions` help shows `path/to/warp completions bash`, and
   `--model`'s help says "Use `warp model list`". Read those as `phosphor-oss`.
-  See §4.11 for the ones that are actually wrong rather than merely stale.
+  See §4.13 for the one that is actually wrong rather than merely stale.
 
-Throughout this chapter examples use `phosphor-oss`.
+Throughout this chapter examples use `phosphor-oss`. On a Linux desktop-package
+install, substitute `phosphor`.
 
 ### Running the CLI vs. launching the GUI
 
@@ -67,7 +90,7 @@ These are accepted before or after any subcommand.
 
 | flag | what it does | default |
 |---|---|---|
-| `--api-key <KEY>` | Sets a local placeholder credential. **Inert in Phosphor** — there is no server to authenticate against, and the flag is only honoured at all when the build enables API-key authentication. It does *not* set your AI provider key; see §4.7. | unset |
+| `--api-key <KEY>` | Sets a local placeholder credential. **Inert in Phosphor** — the value is accepted (the `api_key_authentication` cargo feature is in the default build) and stored as a local `Credentials::ApiKey`, but nothing reads it: there is no server to authenticate against. It does *not* set your AI provider key; see §4.7. | unset |
 | `--output-format <FORMAT>` | `pretty`, `text`, `json`, or `ndjson`. See §4.6. | `pretty` |
 | `--debug` | Enable debug logging. | off |
 | `-h`, `--help` | Help for the command or subcommand. | — |
@@ -94,7 +117,7 @@ phosphor-oss
 ├── agent
 │   ├── run  (alias: r)          run an agent headlessly
 │   ├── profile list             list agent profiles
-│   ├── list                     (present, but disabled — see §4.9)
+│   ├── list                     (present, but disabled — see §4.13)
 │   └── message
 │       ├── send                 write to a local agent's on-disk mailbox
 │       └── list                 read a local agent's on-disk mailbox
@@ -238,7 +261,7 @@ searched, in precedence order, under `.agents/skills/`, `.warp/skills/`,
 
 ### Selecting an agent profile
 
-`--profile <ID>` is accepted but see the caveat in §4.11 — the IDs printed by
+`--profile <ID>` is accepted but see the caveat in §4.12 — the IDs printed by
 `agent profile list` are not, in a normal Phosphor install, in the form
 `--profile` requires.
 
@@ -361,9 +384,14 @@ For more information, try '--help'
 
 Nor is there a CLI command for adding an AI provider key. **API keys are entered
 in the app, not on the command line**, through Phosphor's arbitrary-provider
-BYOP store: the GUI's settings, or the TUI's `/api-keys` picker and its
-`--set-provider-api-key` / `--clear-provider-api-key` flags. `--api-key` on this
-CLI is unrelated — it is Warp's account credential and does nothing here.
+BYOP store (`AgentProviderSecrets`): the GUI's *Settings → AI → Providers* page,
+or the TUI's `/api-keys` picker. `--api-key` on this CLI is unrelated — it is
+Warp's account credential and does nothing here.
+
+`phosphor-tui`'s `--set-provider-api-key` / `--clear-provider-api-key` flags are
+**not** a route into that store, despite the name: they write `ApiKeyManager`'s
+`AiApiKeys` keyring entry (the pin's fixed four providers), which the BYOP send
+path never reads. See §7.1 and issue #629.
 
 What the CLI *does* give you is the model side. Once a provider is configured in
 the app, its models appear in `model list`, and that list is built entirely from
@@ -417,7 +445,7 @@ $ phosphor-oss agent profile list
 ```
 
 The `ID` column shows a profile's sync ID when it has one and `Unsynced`
-otherwise. See §4.11 for why that matters for `--profile`.
+otherwise. See §4.12 for why that matters for `--profile`.
 
 ### … check who Phosphor thinks I am?
 
@@ -513,10 +541,11 @@ phosphor-oss completions fish > ~/.config/fish/completions/phosphor-oss.fish
 phosphor-oss completions powershell | Out-String | Invoke-Expression
 ```
 
-> The built-in help text for this subcommand is out of date in two ways: it says
-> `path/to/warp` (the binary is `phosphor-oss`), and its PowerShell line omits
-> `completions powershell` entirely, so copying it verbatim will not work. The
-> commands above are correct.
+> The built-in help text for this subcommand is partly stale: its bash, zsh and
+> fish lines still say `path/to/warp` (the binary is `phosphor-oss`). Its
+> PowerShell line was rebranded and reads
+> `path\to\phosphor-oss completions powershell | Out-String | Invoke-Expression`,
+> which is correct. The commands above are correct for every shell.
 
 ---
 
@@ -540,7 +569,7 @@ phosphor-oss completions powershell | Out-String | Invoke-Expression
 | `--harness <HARNESS>` | Execution harness: `oz`, `claude`, `opencode`, `gemini`, `codex`. | `oz` | **no** (hidden) |
 | `--gui` | Show the run's progress in the Phosphor window instead of running headlessly. | off | **no** (hidden) |
 | `--sandboxed` | Marks the run as sandboxed. | off | **no** (hidden) |
-| `--share [RECIPIENTS]` | **Inert. Parses and does nothing.** See §4.12. | — | **no** (hidden) |
+| `--share [RECIPIENTS]` | **Inert. Parses and does nothing.** See §4.13. | — | **no** (hidden) |
 | `--mcp-server <UUID>` | Legacy form of `--mcp` for UUIDs only. | none | **no** (hidden) |
 | `--bedrock-inference-role <ROLE_ARN>` | AWS Bedrock federated-credential role. Requires `--bedrock-role-region`. | — | **no** (hidden) |
 | `--bedrock-role-region <REGION>` | Region for the Bedrock `AssumeRoleWithWebIdentity` call. Requires `--bedrock-inference-role`. | — | **no** (hidden) |
@@ -574,7 +603,7 @@ checked against `model list`.
 | `-r`, `--repo <REPO>` | List skills from `owner/repo` or a GitHub URL. | — |
 
 The command parses, but the handler returns
-`Agent skill listing is disabled in Phosphor` — see §4.12.
+`Agent skill listing is disabled in Phosphor` — see §4.13.
 
 ### `agent profile list`, `mcp list`, `model list`, `whoami`
 
@@ -676,6 +705,7 @@ Binary / command naming
 - crates/warp_cli/src/lib.rs:90-99 — #[command(name = "oz", display_name = "Phosphor", about = "Phosphor local agent CLI…")]
 - crates/warp_cli/src/lib.rs:226-240 — after_help examples substitute binary_name() (argv[0]) at runtime
 - crates/warp_cli/src/lib.rs:516-522 — binary_name() reads argv[0]
+- clap_builder 4.6.0 (Cargo.lock) src/builder/command.rs:934-944 `print_help()` calls `_build_self`, which never assigns `bin_name`; :905 is the only place argv[0] populates it (inside `try_get_matches_from_mut`), and output/usage.rs:157 + command.rs:3719-3746 fall back `usage_name -> bin_name -> get_name()`. So `Args::clap_command().print_help()` (app/src/lib.rs:793-795) prints `Usage: oz`, while a parsed `--help` prints `Usage: <argv[0]>`.
 - crates/warp_cli/src/completions.rs:16-22 — generated completion script is named after binary_name()
 - script/linux/bundle:198-215 — oss channel: WARP_BIN/BINARY_NAME = phosphor-oss; cli artifact keeps phosphor-oss (no warp→oz rename for oss)
 - script/macos/bundle:340-350, 583-605 — oss: WARP_BIN=phosphor-oss, CLI wrapper at Contents/Resources/bin/phosphor-oss
@@ -780,7 +810,7 @@ Auth / whoami
 - app/src/auth/mod.rs:205-221 — User::test() is the placeholder identity
 - app/src/auth/mod.rs:261-291 — AuthState::new()/initialize(): api_key only sets a local Credentials::ApiKey
 - app/src/auth/mod.rs:393-395, 437-439 — user_id() / principal_type()
-- app/src/lib.rs:1352-1365 — api_key honoured only under FeatureFlag::APIKeyAuthentication
+- app/src/lib.rs:1352-1365 — api_key gated on FeatureFlag::APIKeyAuthentication; app/src/lib.rs:3157-3158 maps it to the `api_key_authentication` cargo feature, which IS in `app/Cargo.toml`'s `default` (line 558), so the CLI does accept the flag. `LaunchMode::CommandLine` is not dogfood-gated (unlike `App`/`Tui`). app/src/auth/mod.rs:272-289 — all it does is set a local `Credentials::ApiKey`.
 - app/src/ai/agent_sdk/admin.rs:36-125 — whoami output shape per format
 - DECLINED.md:83-86 — teams/current_team() are permanently None; login/logout removed
 
@@ -795,7 +825,7 @@ MCP list
 - app/src/ai/agent_sdk/mcp.rs:28-68 — get_all_runnable_mcp_servers, sorted by uuid; columns UUID, Name
 
 Completions
-- crates/warp_cli/src/lib.rs:379-407 — Completions doc comment (verbatim_doc_comment) with the stale `path/to/warp` text and the PowerShell line missing `completions powershell`
+- crates/warp_cli/src/lib.rs:386-400 — Completions doc comment (verbatim_doc_comment): bash/zsh/fish lines still say `path/to/warp`; the PowerShell line at :398 reads `path\to\phosphor-oss completions powershell | Out-String | Invoke-Expression` (rebranded and complete — it was fixed by 0c9ef1c2f, and the earlier claim that it omitted `completions powershell` described the pre-fix text)
 - crates/warp_cli/src/completions.rs:10-23 — Shell::from_env fallback and the "Could not determine shell from environment" error
 - crates/warp_cli/Cargo.toml:24 — clap_complete 4.5.58 supplies aot::Shell; the accepted value list is that enum, not enumerated in this tree. The four shells named in the manual come from the Completions doc comment at crates/warp_cli/src/lib.rs:379-407.
 

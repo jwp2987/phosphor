@@ -46,7 +46,7 @@ own.
 | `--resume <TOKEN>` | Resume a conversation by server token. **Inert in Phosphor** — see §7.13. | none |
 | `--auto-approve` | New conversations start in run-to-completion auto-approve instead of following your settings. Does *not* suppress the agent's questions. | off |
 | `--api-key <KEY>` | Warp-account authentication key, also read from `WARP_API_KEY`. **Inert in Phosphor** — it is not a provider key and the shipped build discards it. | none |
-| `--set-provider-api-key <openai\|anthropic\|google\|grok>` | One-shot: prompt (masked) for a provider key, store it in the OS keychain, print a confirmation, exit. Reads the key from stdin when stdin is not a TTY. Never launches the UI. | — |
+| `--set-provider-api-key <openai\|anthropic\|google\|grok>` | One-shot: prompt (masked) for a provider key, store it in the OS keychain, print a confirmation, exit. Reads the key from stdin when stdin is not a TTY. Never launches the UI. **Writes the wrong store** — see the note below. | — |
 | `--clear-provider-api-key <openai\|anthropic\|google\|grok>` | One-shot: remove that provider's stored key and exit. | — |
 | `-h`, `--help` | Print help and exit. | — |
 | `-V`, `--version` | Print the bare version string and exit. | — |
@@ -55,8 +55,17 @@ Notes that matter in practice:
 
 * `--api-key` / `WARP_API_KEY` is **not** how you supply an OpenAI or Anthropic
   key. It fed Warp's account authentication, and the value is dropped outright
-  on the release channel Phosphor ships. Use `--set-provider-api-key`,
-  `/api-keys`, or the GUI's agent-provider settings instead.
+  on the release channel Phosphor ships. Use `/api-keys` in the TUI, or the GUI's
+  *Settings → AI → Providers* page.
+* **`--set-provider-api-key` / `--clear-provider-api-key` are not the BYOP
+  surface either** (issue #629). They write `ApiKeyManager`, whose keyring entry
+  is `AiApiKeys` — the pin's fixed four-provider store, read only by
+  `api_keys_for_request` on the removed warp-server request path
+  (`app/src/ai/agent/api.rs:508-511`). The BYOP send path reads a *different*
+  keyring entry, `AgentProviderSecrets`
+  (`app/src/ai/agent_providers/secrets.rs:13`). A key set with these flags is
+  stored, reported as saved, and never used by the agent. Use `/api-keys` or the
+  GUI settings page for a key you want the agent to send.
 * `--set-provider-api-key` and `--clear-provider-api-key` cannot be combined
   with each other or with `--resume`.
 * `grok` parses but is **rejected at runtime** for both key flags, with a
@@ -494,7 +503,7 @@ file dialog that the TUI does not have.
 | `/add-prompt` | Opens the new-prompt editor |
 | `/add-rule` | Opens the new-global-rule editor |
 | `/open-rules` | Opens the rules viewer |
-| `/open-project-rules` | Opens `AGENTS.md` in the editor |
+| `/open-project-rules` | Opens the project rules file. Its palette description says `AGENTS.md`, but the handler hard-codes `<pwd>/WARP.md` (`app/src/terminal/view.rs:722`, `:26265-26272`) — so in a repo whose rules live in `AGENTS.md` it opens a file that does not exist. Also offered only inside a repository. |
 | `/open-file` | Opens a file in Phosphor's code editor |
 | `/open-skill` | Opens a skill's markdown file in the editor |
 | `/open-settings-file` | Opens `settings.toml` in the editor |
@@ -502,7 +511,7 @@ file dialog that the TUI does not have.
 | `/open-repo` | Switches to another indexed repository |
 | `/plan` | Prompts the agent to research and produce a plan |
 | `/rename-tab`, `/set-tab-color` | Act on GUI tabs |
-| `/changelog` | Opens the changelog view *(off by default)* |
+| `/changelog` | Opens the changelog view |
 | `/docker-sandbox` | Creates a docker sandbox session *(off by default)* |
 | `/index` | Indexes the codebase *(off by default)* |
 | `/pr-comments` | Pulls GitHub PR review comments *(superseded by a skill; not registered by default)* |
@@ -792,7 +801,7 @@ Slash-command split
 - commands.rs:313-324 and mod.rs:208-212 (/api-keys is fork-native and marked both-surfaces); commands.rs:895-914 (upstream calls it TUI-only; this fork deliberately does not)
 - commands.rs:21-28, :1105-1143 (/add-mcp GUI-only: "has no TUI implementation; offering it there would dead-end")
 - commands.rs:117-137 (/statusline and /reset-statusline TUI-only, with the GUI-guard note)
-- commands.rs:718-800 (feature gates: LocalDockerSandbox, Changelog, FullSourceCodeEmbedding, PRComments* — the four that are off in a default build)
+- commands.rs:718-800 (feature gates: LocalDockerSandbox, Changelog, FullSourceCodeEmbedding, PRComments*). Off in a shipped build: `/docker-sandbox` (LocalDockerSandbox is DOGFOOD + `ZAP_UNSTABLE_FEATURES=local_docker_sandbox` only), `/index` (FullSourceCodeEmbedding, same), `/pr-comments` (both `pr_comments_slash_command` and `pr_comments_skill` are in `app/Cargo.toml` `default`, and the gate is `slash_command && !skill`). `/changelog` is NOT off: `FeatureFlag::Changelog` is in `RELEASE_FLAGS` (crates/warp_features/src/lib.rs:911) and app/src/lib.rs:2906-2908 applies that list whenever `is_release_bundle() || !cfg!(debug_assertions)` — every shipped bundle sets `release_bundle` (script/linux/bundle:203).
 - DECLINED.md:86 (/logout deliberately not registered — "BYOP has no account to log out of")
 - crates/warp_tui/src/terminal_session_view.rs:4653-4671 (/compact, /plan, /init round-trip as a prompt), :4790-4835 (/orchestrate on the Other arm)
 

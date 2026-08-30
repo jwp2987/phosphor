@@ -20,9 +20,15 @@ four targets:
 | macOS arm64 (Apple Silicon) | `macos-26` | `Phosphor-arm64.dmg` |
 | macOS x86_64 (Intel) | `macos-26-intel` | `Phosphor-intel.dmg` |
 | Windows x64 | `windows-latest` | `PhosphorSetup.exe` |
-| Linux x86_64 | `ubuntu-22.04` | AppImage, `.deb`, `.rpm`, Arch package |
+| Linux x86_64 | `ubuntu-22.04` | AppImage and `.deb`; `.rpm` and Arch package best-effort |
 
 Plus command-line artifacts on the same targets (see the asset table below).
+
+> **Only the AppImage and the `.deb` are guaranteed to be on a release page.**
+> The `.rpm` and Arch steps are `continue-on-error`, and in practice they have
+> been missing — the `v2026.08.29.1-beta` release published the AppImage and
+> the `.deb` and neither of the other two. See
+> [Which Linux packages are guaranteed?](#which-linux-packages-are-guaranteed)
 
 ### What upstream builds that Phosphor does not
 
@@ -94,7 +100,8 @@ Download from **https://github.com/jwp2987/phosphor/releases**.
 
 ### Linux
 
-Four package formats are published. Pick one:
+Up to four package formats can appear on a release page; in practice expect the
+first two. Pick one:
 
 **AppImage** — works anywhere, no install step:
 
@@ -143,6 +150,10 @@ build, the whole release fails and nothing is published. The **`.rpm`** and the
 toolchain failure in either one is allowed through so it cannot block the
 release. If a release page is missing an `.rpm` or a `.pkg.tar.zst`, that is
 why; use the AppImage.
+
+This is not hypothetical. The `v2026.08.29.1-beta` release page carries the
+AppImage and the `.deb` and **neither** the `.rpm` nor the Arch package. Treat
+those two rows as "may be there", not as a promise.
 
 ### Building your own
 
@@ -263,9 +274,12 @@ GitHub.
 
 **Where the controls are — and where they aren't.** The About page's
 "Automatic updates" switch and update-status row are **hidden in this build**
-(`SHOW_AUTOUPDATE_UI` is compiled to `false`), and the "Check for updates" menu
-entries are hidden too, because the `oss` channel ships no `autoupdate_config`.
-What remains reachable are two command-palette commands, on macOS and Windows:
+(`SHOW_AUTOUPDATE_UI` is a compile-time `false` in
+`app/src/settings_view/about_page/mod.rs:66`), and there is no "Check for
+updates" application-menu entry at all — the fork's `app_menus.rs` registers
+none. What remains reachable are two command-palette commands, and only where the
+`autoupdate` Cargo feature was compiled in, i.e. macOS and Windows
+(`app/src/workspace/mod.rs:1169-1188`):
 
 - **Check for updates** (`workspace:check_for_updates`)
 - **Install update and relaunch** (`workspace:update_and_relaunch`)
@@ -339,7 +353,7 @@ Any value works; only its presence is checked.
 plan". Phosphor opens a window and you are in.
 
 Concretely, first launch gives you a window with a single **New tab** pane
-showing the Phosphor mark and a small palette with two entries:
+showing a logo and a small palette with two entries:
 
 - **Terminal session** — opens a shell in a new tab.
 - **Add repository** (`cmd-shift-N` on macOS, `alt-n` on Linux/Windows) — opens
@@ -348,6 +362,11 @@ showing the Phosphor mark and a small palette with two entries:
 Settings is reachable from the same palette. Pick **Terminal session** and you
 have a working prompt — your normal login shell, in your normal working
 directory.
+
+> **That logo is not the Phosphor mark.** The welcome pane still renders
+> `bundled/svg/warp-logo-neutral.svg` — the pre-rename *Zap* mark — while the
+> About page uses `bundled/svg/phosphor-logo.svg`. Known and filed as issue
+> #636; nothing about it affects behaviour.
 
 That is the whole first run. If you are coming from Warp and are waiting for a
 sign-in step: it does not exist and is not being skipped. The `oss` build has no
@@ -384,10 +403,15 @@ the AI/providers section of this manual.
 The storage identity changed on 2026-08-14 with **no automatic migration**.
 A pre-rename build stored everything under a `zap` identity; this one uses
 `phosphor`. On first launch you start fresh: no settings, no history, no saved
-API keys. Nothing is deleted — the old directories are left in place. See
-`docs/migrate-from-warp.md` and the README's migration table for the hand-copy
-procedure. API keys cannot be copied that way, because OS keychain entries are
-keyed by service name; re-enter those.
+API keys. Nothing is deleted — the old directories are left in place. Use **the README's
+migration table** for the hand-copy procedure. API keys cannot be copied that
+way, because OS keychain entries are keyed by service name; re-enter those.
+
+> **Do not follow `docs/migrate-from-warp.md` as written.** It predates the
+> rename and still names `zap` *destinations* throughout (`~/.zap`,
+> `~/.config/zap`, `%LOCALAPPDATA%\zap\Zap\`), which this build never reads —
+> copying there looks like it worked and changes nothing. Issue #639. The
+> README's table is the correct one.
 
 ---
 
@@ -419,12 +443,16 @@ source. If `GIT_RELEASE_TAG` was not set at build time (any local `cargo build`
 or `cargo run`), the About page shows **`Dev`** and `--version` prints
 **`<unknown>`**.
 
-**A wrinkle worth knowing.** The Cargo package version is currently `0.1.2`
-(`app/Cargo.toml`), and release *tags* use a dated scheme
-(`v2026.08.29.1-beta`). These are two different numbering systems and neither
-is derived from the other. Nothing a user sees reports `0.1.2` — the About page
-and `--version` both show the tag. Quote the tag when reporting a bug; it is
-what identifies the build.
+**A wrinkle worth knowing: there are three version numbers, and none is derived
+from the others.** The Cargo package version is `0.1.2` (`app/Cargo.toml:8`);
+release *tags* use a dated scheme (`v2026.08.29.1-beta`); and the macOS bundle
+carries a third, `CFBundleShortVersionString`, which is what Finder's **Get
+Info**, Gatekeeper and any "what version is installed" tooling read — the plist
+compiled into the binary hard-codes it to `0.1.0`
+(`app/src/bin/phosphor_oss.rs:99-100`). This is filed as issue #640.
+
+The About page and `--version` both show **the tag**. Quote the tag when
+reporting a bug; it is the one that identifies the build.
 
 ---
 
@@ -541,6 +569,7 @@ First run / no onboarding:
 - app/src/workspace/view.rs:6990-7010 (should_trigger_get_started_onboarding: false once is_onboarded), :3883-3900 (falls through to add_welcome_tab when WelcomeTab is enabled)
 - app/Cargo.toml (default features include "welcome_tab", "agent_onboarding", "open_warp_new_settings_modes", "get_started_tab")
 - app/src/pane_group/pane/welcome_view.rs:34-53 (workspace:new_tab "Terminal session"; welcome_view:open_project "Add repository" with cmd-shift-N / alt-n), :86-89 (workspace:show_settings also shown), :135-170 (create_terminal_session / open_project folder picker)
+- app/src/pane_group/pane/welcome_view.rs:247 (welcome pane renders "bundled/svg/warp-logo-neutral.svg", NOT phosphor-logo.svg — issue #636; About page uses app/src/settings_view/about_page/mod.rs's phosphor-logo.svg)
 - app/i18n/en/warp.ftl:2246-2247 ("Terminal session", "Add repository")
 - app/src/workspace/one_time_modal_model.rs:34-60, 262-289 (launch modal only triggers off AuthManagerEvent::AuthComplete) + app/src/auth/mod.rs:788-795, 818-822 (AuthComplete only emitted by create_anonymous_user / set_user_onboarded)
 
@@ -555,6 +584,7 @@ Version:
 - crates/warp_cli/src/lib.rs:221-223 (command.version(version_string())), :523-530 (version_string() -> app_version().unwrap_or("<unknown>"))
 - app/src/settings_view/about_page/mod.rs:184 (ChannelState::app_version().unwrap_or("Dev")), :190-210 (version text + copy button)
 - app/Cargo.toml:8 (version = "0.1.2"); git tag list shows dated tags e.g. v2026.08.29.1-beta
+- app/src/bin/phosphor_oss.rs:99-100 (embedded Info.plist CFBundleShortVersionString = 0.1.0 — a third number, tracking neither of the other two; issue #640)
 - app/src/bin/phosphor_oss.rs:3 (windows_subsystem = "windows" under feature "release_bundle"), :30-31 (app_id dev.phosphor.Phosphor, display_name "Phosphor")
 - app/i18n/en/warp.ftl:640-644, 659-662 (About page copyright / licence / source-code link / Export logs strings)
 - app/src/settings_view/about_page/mod.rs:144 (SOURCE_CODE_URL github.com/jwp2987/phosphor)
@@ -565,4 +595,6 @@ Not available:
 - DECLINED.md:214, :222 (InitProject wizard declined; /init supersedes it)
 - README.md:44-58, :162-183 (BYOP, no mandatory cloud, "Not included, on purpose")
 - README.md:189-232 (storage identity rename 2026-08-14, no migration, hand-copy procedure, keychain caveat)
+- docs/migrate-from-warp.md:47-51 (still names `zap` DESTINATIONS — ~/.zap, ~/.config/zap, %LOCALAPPDATA%\zap\Zap\ — which this build never reads; issue #639. Section 9 carries the same caveat.)
+- .github/workflows/phosphor_release.yml:567-568, :593-594 (rpm + arch steps are continue-on-error) — and the published v2026.08.29.1-beta release page carries only Phosphor-arm64.dmg, Phosphor-intel.dmg, Phosphor-x86_64.AppImage, PhosphorSetup.exe, phosphor_2026.08.29.1-beta_amd64.deb and the phosphor-cli-* / phosphor-tui-* tarballs: no .rpm, no .pkg.tar.zst
 -->

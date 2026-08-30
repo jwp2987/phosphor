@@ -154,13 +154,22 @@ This is the part that surprises people, so it is worth stating exactly:
 
 | Where the server came from | Starts automatically? |
 |---|---|
-| Global Phosphor config (`~/.phosphor/.mcp.json`) | **Yes, always** — the `Auto-spawn` toggle does not apply. |
-| Global third-party config (Claude/Codex/Agents, in your home dir) | Only if **Settings → AI → Auto-spawn servers from third-party agents** is on. Default **off**. |
-| Any project-scoped config (any provider) | **Never.** Start it by hand from the "Detected from …" section of the MCP Servers page. |
-| Anything at all, in the TUI | Never automatically; the TUI's `/mcp` menu requires an explicit start. |
+| Global Phosphor config (`~/.phosphor/.mcp.json`) | **Yes, always** — the `Auto-spawn` toggle does not apply. This holds in the TUI too; see below. |
+| Global third-party config (Claude/Codex/Agents, in your home dir) | Only if **Settings → AI → Auto-spawn servers from third-party agents** is on. Default **off**. In the TUI, **never** — the toggle is GUI-only there and the guarantee is unconditional. |
+| Any project-scoped config (any provider) | **Never**, on either surface. Start it by hand from the "Detected from …" section of the MCP Servers page. |
 
 The toggle is `agents.mcp_servers.file_based_mcp_enabled` in `settings.toml`,
 default `false`.
+
+**The TUI is not a blanket "nothing auto-starts" surface.** Global *Phosphor*
+servers are only *deferred* there, not suppressed: nothing spawns during the
+pre-mount config scan, and then the TUI front-end releases them immediately
+after mount (`app/src/tui/mod.rs` calls `activate_global_warp_servers`), which
+starts every global `~/.phosphor/.mcp.json` server it has already detected and
+lets later ones start on detection. Upstream held them until device
+authorization completed; BYOP has no login, so the release point is simply "the
+session exists". Only global *third-party* servers and project-scoped servers
+require an explicit start from the `/mcp` menu in the TUI.
 
 ### How do I add a server through the UI?
 
@@ -348,6 +357,24 @@ This is small but people ask, so here is the honest state.
   parameters) triggers it.
 - **Images.** Inline Markdown images in agent replies render by default
   (`blocklist_markdown_images`).
+
+### In agent responses (TUI)
+
+The heading above says GUI because the TUI is not the same, and the difference
+is worth one paragraph:
+
+- **Tables render.** The TUI has its own table renderer
+  (`crates/warp_tui/src/tui_markdown/table.rs`, reached from
+  `FormattedTextLine::Table`), so a Markdown table in an agent reply is drawn as
+  a table there too.
+- **Mermaid does not.** A ```` ```mermaid ```` fence reaches the TUI as a
+  `MermaidDiagram` section, and the TUI hands its **source** to an ordinary code
+  block tagged `mermaid` (`crates/warp_tui/src/agent_block.rs:861-863`). You get
+  the diagram's text, syntax-highlighted, not a picture. There is no terminal
+  renderer for `mermaid_to_svg` output.
+- **Images** are not drawn either: `image_fallback`
+  (`crates/warp_tui/src/tui_markdown.rs:338-350`) prints `Image: <alt text>`, or
+  `Image: <url>` when there is no alt text.
 
 ### In Markdown files you open
 
@@ -1139,7 +1166,10 @@ app/src/ai/mcp/file_mcp_watcher.rs:176-213  Zap config watched via warp_managed_
 app/src/ai/mcp/file_mcp_watcher.rs:600-640  project roots check both home_config_path and project_config_path; substitute_env_vars errors on missing var
 app/src/warp_managed_paths_watcher.rs:75-80 warp_managed_mcp_config_path root = home, config = ~/.phosphor/.mcp.json
 app/src/ai/mcp/file_based_manager.rs:381-421 is_global_warp_server / scope_for_source
-app/src/ai/mcp/file_based_manager.rs:424-465 spawn rules: global Zap always; global third-party per toggle; project never; TUI never
+app/src/ai/mcp/file_based_manager.rs:425-467 spawn rules: global Zap always (in the TUI, deferred until activation); global third-party per toggle and never in the TUI; project never
+app/src/ai/mcp/file_based_manager.rs:44-71,470-476,517-535 defer_global_warp_autostart / activate_global_warp_servers
+app/src/tui/mod.rs:76-99 TUI releases the deferred global Zap servers right after mount
+app/src/ai/mcp/file_based_manager_tests.rs:198-235 tui_global_warp_servers_start_only_after_activation
 app/src/settings/ai.rs:2466-2476            file_based_mcp_enabled default false, toml agents.mcp_servers.file_based_mcp_enabled
 app/src/ai/mcp/logs.rs:1-38                 log path <state>/mcp/<uuid>.log, 10 MiB x 5 rotations
 crates/simple_logger/src/manager.rs:33-47   resolve_log_path; Windows inserts WARP_LOGS_DIR ("logs")

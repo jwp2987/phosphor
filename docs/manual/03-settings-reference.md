@@ -3,10 +3,17 @@
 Phosphor keeps almost all of its configuration in a single, hand-editable TOML
 file. Every option in the Settings window writes to that file, and every option
 in that file can be set without opening the Settings window at all. This section
-is the exhaustive list: what each setting is called in the file, what type it
-takes, what it defaults to, and what it does. It is meant to be searched rather
-than read start to finish — if you know roughly what a setting is called, use
-your reader's find function on the TOML path.
+lists what each setting is called in the file, what type it takes, what it
+defaults to, and what it does. It is meant to be searched rather than read start
+to finish — if you know roughly what a setting is called, use your reader's find
+function on the TOML path.
+
+It is **not** complete. The app registers about fifty settings groups
+(`app/src/settings/init.rs`) and this section has a table for a little over
+thirty of them; the rest are listed under
+[Groups not covered here](#groups-not-covered-here) with a pointer to wherever
+in this manual they *are* described. If find turns up nothing for a key, check
+that list before concluding the key does not exist.
 
 Two things to know before you start editing.
 
@@ -190,13 +197,49 @@ Groups are listed alphabetically by their source name. The name is a Rust type,
 not something you type anywhere — it is here so you can match this reference
 against the code.
 
+## Groups not covered here
+
+These groups are registered by the app (`app/src/settings/init.rs`) and their
+keys are real, but they have no table in this section. Where another chapter
+documents them, it is named.
+
+| Group | Source | Keys | Documented in |
+|---|---|---|---|
+| `AltScreenReporting` | `app/src/terminal/alt_screen_reporting.rs` | `terminal.mouse_reporting_enabled`, `terminal.scroll_reporting_enabled`, `terminal.focus_reporting_enabled` | §2, *What full-screen programs receive* |
+| `BlockListSettings` | `app/src/terminal/block_list_settings.rs` | `appearance.blocks.show_jump_to_bottom_of_block_button`, `appearance.blocks.show_block_dividers`, `general.snackbar_enabled`, `general.preserve_input_focus_on_block_selection` | §2, *Blocks* |
+| `CommandSearchSettings` | `app/src/search/command_search/settings.rs` | `workflows.show_global_workflows_in_universal_search` | **nowhere** |
+| `EditorSettings` | `app/src/util/file/external_editor/settings.rs` | `code.editor.open_file_editor`, `code.editor.open_code_panels_file_editor`, `code.editor.open_file_layout`, `code.editor.prefer_markdown_viewer`, `code.editor.prefer_tabbed_editor_view`, `agents.warp_agent.other.open_conversation_layout_preference` | **nowhere** |
+| `GeneralSettings` | `app/src/terminal/general_settings.rs` | `general.restore_session`, `general.link_tooltip`, `general.show_warning_before_quitting`, `general.quit_on_last_window_closed` (macOS), `general.persist_conversations`, `general.login_item`, `code.editor.auto_open_code_review_pane_on_first_agent_change` | §2 (first two only) |
+| `KeysSettings` | `app/src/terminal/keys_settings.rs` | `keys.ctrl_tab_behavior_setting`, `terminal.input.extra_meta_keys`, `global_hotkey.dedicated_window.*`, `global_hotkey.toggle_all_windows.*` | §2 (first two only) |
+| `LigatureSettings` | `app/src/terminal/ligature_settings.rs` | `appearance.text.ligature_rendering_enabled` | §2, *Ligatures* |
+| `SafeModeSettings` | `app/src/terminal/safe_mode_settings.rs` | `privacy.secret_redaction.*` | below, under `WarpDrivePrivacySettings` |
+| `SemanticSelection` | `crates/warp_core/src/semantic_selection/mod.rs` | `terminal.smart_select.enabled`, `terminal.smart_select.word_char_allowlist` | §2, *Clicking and dragging* |
+| `SessionSettings` | `app/src/terminal/session_settings.rs` | `terminal.input.honor_ps1`, `general.should_confirm_close_session`, `session.startup_shell_override`, `session.new_session_shell_override`, `notifications.preferences`, `notifications.toast_duration_secs`, and the agent-toolbar chip selections | §2 (first two only) |
+| `SharedSessionSettings` | `app/src/terminal/shared_session/settings.rs` | all **private** — no TOML keys. Session-sharing inactivity timers and an onboarding-block flag; session sharing itself has no backend in this fork | §2, *Not available in Phosphor* |
+| `TabSettings` | `app/src/workspace/tab_settings.rs` | `general.new_tab_placement`, `appearance.tabs.*`, `appearance.vertical_tabs.*`, `code.editor.show_code_review_*` | §2 (partly) |
+| `TerminalSettings` | `app/src/terminal/settings.rs` | `terminal.use_audible_bell`, `terminal.maximum_grid_size`, `terminal.show_terminal_zero_state_block`, `terminal.osc52_clipboard_access`, `appearance.spacing`, `appearance.full_screen_apps.alt_screen_padding`, `experimental.async_find_enabled` | §2 |
+| `UndoCloseSettings` | `app/src/undo_close/settings.rs` | `general.undo_close.enabled`, `general.undo_close.grace_period` | §2, *Tabs* |
+| `WarpDriveSettings` | `app/src/drive/settings.rs` | `warp_drive.enabled`, `warp_drive.sorting_choice` | **nowhere** |
+| `WarpifySettings` | `app/src/terminal/warpify/settings.rs` | `warpify.subshells.*`, `warpify.ssh.ssh_hosts_denylist`, `warpify.ssh.enable_ssh_warpification`, `warpify.ssh.use_ssh_tmux_wrapper`, `warpify.ssh.ssh_extension_install_mode` | **nowhere** (`SshSettings` below is a different group) |
+| `WindowSettings` | `app/src/window_settings.rs` | `appearance.window.override_opacity`, `appearance.window.override_blur`, `appearance.window.zoom_level`, `appearance.window.open_windows_at_custom_size`, `appearance.window.new_windows_num_columns` / `_rows`, `appearance.window.left_panel_visibility_across_tabs` | §8 (partly) |
+| `WorkflowAliases` | `app/src/workflows/aliases.rs` | **private** — no TOML key. The `WorkflowAliases` list of Library workflow aliases, stored in the native store | **nowhere** |
+
 ## AccessibilitySettings
 
 Screen-reader behaviour.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `accessibility.accessibility_verbosity` | `"verbose"` \| `"concise"` | `"verbose"` | How much detail screen-reader announcements carry. `verbose` includes the help string for a control; `concise` announces only the value. |
+| `accessibility.accessibility_verbosity` | `"verbose"` \| `"concise"` | `"verbose"` | How much detail screen-reader announcements carry. `verbose` includes the help string for a control; `concise` announces only the value. **macOS only in practice** — see below. |
+
+`supported_platforms` is `ALL` and the value is read on every platform
+(`app/src/lib.rs:1701`), but it only reaches an assistive technology on macOS.
+The announcement is delivered through `Delegate::set_accessibility_contents`,
+which is implemented on the macOS delegate
+(`crates/warpui/src/platform/mac/delegate.rs:302`) and is an empty function on
+the winit delegate used by Linux, FreeBSD and Windows
+(`crates/warpui/src/windowing/winit/delegate.rs:543`). Changing this key on
+those platforms has no observable effect.
 
 ## AISettings
 
@@ -266,7 +309,7 @@ These are what stand between the agent and your shell. Read them carefully.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `agents.warp_agent.providers` | array of tables | `[]` | Your configured AI providers. Each entry carries `id`, `name`, `api_type` (OpenAI / OpenAI-Response / Gemini / Anthropic / Ollama), `base_url`, a `models` list of `{name, id}` pairs, optional `extra_headers`, an optional provider-wide `token_price`, a `disabled` flag that hides the provider from the model picker without deleting it, and Vertex-only `vertex_project` / `vertex_location`. Each model entry may carry its own `token_price`, which overrides the provider-wide one; with no rate configured, `/cost` reports token counts only rather than guessing a price. **API keys are not stored here** — they go to the OS secure store. |
+| `agents.warp_agent.providers` | array of tables | `[]` | Your configured AI providers. Each entry carries `id`, `name`, `api_type` (TOML values `open_ai`, `open_ai_resp`, `gemini`, `anthropic`, `ollama`, `deep_seek`, `vertex`), `base_url`, a `models` list of `{name, id}` pairs, optional `extra_headers`, an optional provider-wide `token_price`, a `disabled` flag that hides the provider from the model picker without deleting it, and Vertex-only `vertex_project` / `vertex_location`. Each model entry may carry its own `token_price`, which overrides the provider-wide one; with no rate configured, `/cost` reports token counts only rather than guessing a price. **API keys are not stored here** — they go to the OS secure store. |
 | `agents.warp_agent.catalog_provider_visibility_overrides` | array of strings | `[]` | Catalog provider ids whose default visibility in the "Quick add" chip row you have flipped. Membership hides an otherwise-common provider, or pins an otherwise-uncommon one visible. Does not configure the provider. |
 | `agents.byop.last_used_model_id` | string | `""` | The last model you picked. New tabs and restarts hydrate from this, so a switch in the model picker carries over. Empty falls back to the profile default. This carry-over is a Phosphor-specific behaviour; upstream has no equivalent. |
 | `agents.byop.last_used_reasoning` | table | `{}` | Per-`(api_type, model)` reasoning-effort memory, written when you switch in the picker. Rendered with nested values inline. |
@@ -412,13 +455,20 @@ Cursor, Vim mode, and input-editing behaviour.
 |---|---|---|---|
 | `updates.automatic_updates_enabled` | boolean | `true` | Whether Phosphor checks for and downloads updates in the background. **Live on macOS and Windows** (both release bundlers compile the `autoupdate` feature in). **Inert on Linux**, where the bundler does not, so the `true` default gates a check that never runs. |
 
-**Caveat.** This is the *GUI* updater, and in a stock build it has nothing to
-drive: the `autoupdate` Cargo feature is not in Phosphor's default feature set,
-and the `Autoupdate` feature flag was deliberately removed from the release flag
-list, so no background update check runs. If you build with `--features
-autoupdate`, this setting takes effect and the updater reads GitHub Releases.
-Do not confuse this with `general.autoupdate_enabled`, which is the terminal
-UI's separate updater.
+**Caveat.** This is the *GUI* updater, and whether it is compiled in is decided
+per platform by the release bundler, not by `app/Cargo.toml`. The `autoupdate`
+Cargo feature is **not** in the default feature set, and `FeatureFlag::Autoupdate`
+was deliberately dropped from `RELEASE_FLAGS`; the flag is set only by
+`extra_flags` under `#[cfg(feature = "autoupdate")]`. The macOS bundler
+(`script/macos/bundle:358`) and the Windows bundler
+(`script/windows/bundle.ps1:125`) both pass that feature, so shipped macOS and
+Windows builds do poll GitHub Releases and this setting gates the poll. The
+Linux OSS bundler resets the feature list to `release_bundle`
+(`script/linux/bundle:198-203`), so on Linux nothing polls, the two update
+commands are never registered, and this setting has nothing to gate. A local
+`cargo build` without `--features autoupdate` behaves like the Linux build on
+every platform. Do not confuse this with `general.autoupdate_enabled`, which is
+the terminal UI's separate updater.
 
 ## BlockVisibilitySettings
 
@@ -442,7 +492,7 @@ The code editor, project explorer, and codebase indexing.
 | `code.editor.show_project_explorer` | boolean | `true` | Show the project explorer / file tree in the tools panel. |
 | `code.editor.show_global_search` | boolean | `true` | Show global file search in the tools panel. |
 | `code.editor.show_hidden_files` | boolean | `true` | Show dotfiles in the project explorer. |
-| `code.indexing.agent_mode_codebase_context` | boolean | `false` | Whether the agent may use the codebase embedding index as context. **Desktop only, and off by default here on purpose** — upstream defaults it on because indexing ran on Warp's servers, whereas here it spends your own embedding-provider quota and, on the remote surface, sends your provider API key to whichever host you installed the daemon on. Turning this on *is* the consent step. |
+| `code.indexing.agent_mode_codebase_context` | boolean | `false` | Whether the agent may use the codebase embedding index as context. **Unreachable in a stock build:** both this row and the one below only render when `FeatureFlag::FullSourceCodeEmbedding` is on, whose sole enable path is `ZAP_UNSTABLE_FEATURES=full_source_code_embedding` (`app/src/settings_view/code_page.rs:1503-1510`), and nothing indexes without it whatever the setting says. **Desktop only, and off by default here on purpose** — upstream defaults it on because indexing ran on Warp's servers, whereas here it spends your own embedding-provider quota and, on the remote surface, sends your provider API key to whichever host you installed the daemon on. Turning this on *is* the consent step. See §5 “Codebase search”. |
 | `code.indexing.agent_mode_codebase_context_auto_indexing` | boolean | `false` | Whether repositories are indexed automatically as you open them, rather than only on explicit request. Desktop only. |
 
 ### Internal state (no TOML key)
@@ -483,7 +533,7 @@ renders in your host terminal's cells and uses that terminal's font.
 |---|---|---|---|
 | `appearance.text.font_name` | string | `"Hack"` | The monospace font used in the terminal. |
 | `appearance.text.fallback_font_name` | string | `""` | The font used when the terminal font cannot render a character. Empty means no explicit fallback. |
-| `appearance.text.font_size` | float | `13.0` | Monospace font size. (A new Windows user is started at `16.0` instead, matching Windows Terminal.) |
+| `appearance.text.font_size` | float | `13.0` | Monospace font size. `13.0` on **every** platform. The source contains a rule that would start a new Windows user at `16.0` to match Windows Terminal (`app/src/settings/initializer.rs:80-105`), but it sits inside the `auth_state.is_onboarded() == Some(false)` block, and the local placeholder user hardcodes `is_onboarded: true` (`app/src/auth/mod.rs:213`), so that branch never runs. |
 | `appearance.text.font_weight` | `"thin"` \| `"extra_light"` \| `"light"` \| `"normal"` \| `"medium"` \| `"semibold"` \| `"bold"` \| `"extra_bold"` \| `"black"` | `"normal"` | Monospace font weight. |
 | `appearance.text.line_height_ratio` | float | `1.2` | Line height as a multiple of font size. |
 | `appearance.text.ai_font_name` | string | `"Hack"` | The font used for AI-generated content. |
@@ -514,10 +564,11 @@ renders in your host terminal's cells and uses that terminal's font.
 |---|---|---|---|
 | `appearance.input.input_mode` | `"pinned_to_bottom"` \| `"pinned_to_top"` \| `"waterfall"` | `"pinned_to_bottom"` | Where the input sits. `pinned_to_bottom` puts newest blocks at the bottom; `pinned_to_top` inverts that; `waterfall` starts the input at the top and pushes it down as commands accumulate. |
 
-Note: the source carries a comment saying new users are defaulted to
-`waterfall` by the settings initializer. That override sits inside a
-first-run-onboarding branch which is unreachable in this build, so the effective
-default really is `pinned_to_bottom`.
+Note: the source carries a comment (`app/src/settings/input_mode.rs:9-11`)
+saying new users are defaulted to `waterfall` by the settings initializer. The
+comment is stale — no such override exists anywhere in this tree, and the
+`DefaultWaterfallMode` feature flag it belonged to is registered but has no
+reader. The effective default really is `pinned_to_bottom`, for everyone.
 
 ## InputSettings
 
@@ -643,12 +694,15 @@ in the running application.
 
 ## SameLinePromptBlockSettings
 
-**Internal — no TOML key.** A record of whether an onboarding block has been
-shown, not a preference.
+**Internal — no TOML key. Inert in Phosphor.** A record of whether an onboarding
+block has been shown, not a preference — and the onboarding block it tracked was
+never ported. The group is registered (`app/src/settings/init.rs:108`) and
+nothing else in the tree reads or writes it, so the value stays `not_shown`
+forever. Listed only so you can identify the name.
 
 | Name | Type | Default | What it tracks |
 |---|---|---|---|
-| `SameLinePromptBlockState` | `not_shown` \| `shown` \| `do_not_show` | `not_shown` | Whether the same-line-prompt onboarding block has been shown. `do_not_show` is set when it is not applicable, e.g. when you are not using PS1. |
+| `SameLinePromptBlockState` | `not_shown` \| `shown` \| `do_not_show` | `not_shown` | Upstream: whether the same-line-prompt onboarding block has been shown, with `do_not_show` for "not applicable" (e.g. you are not using PS1). Here: never written. |
 
 ## ScrollSettings
 
@@ -698,10 +752,16 @@ relative to the themes directory; an absolute path to a local file is not.
 |---|---|---|---|
 | `general.autoupdate_enabled` | boolean | `true` | Whether the terminal UI installs updates in the background. Read once at TUI startup. `WARP_TUI_DISABLE_AUTOUPDATE` also disables updates for a single launch. |
 
-**Caveat.** Although this defaults to `true`, the shipped TUI binary configures
-no autoupdate endpoint, so nothing is fetched. The setting is functional in the
-sense that it is read; the mechanism behind it is not shipped. This is a
-*different* updater from `updates.automatic_updates_enabled`.
+**Caveat.** Although this defaults to `true`, the shipped TUI never runs the
+updater. Eligibility is decided once at startup
+(`crates/warp_tui/src/autoupdate.rs:282-308`) and the check that stops it is
+**"not running from a managed install"**: background updates only run for a
+binary sitting inside a `versions/<version>/` tree laid down by an install
+script, and Phosphor publishes the TUI as a plain tarball. Two further guards sit
+downstream and are never reached — the `oss` channel has no TUI release artifacts
+(`:695-704`) and `releases_base_url` is empty (`:660-663`). The setting is
+functional in the sense that it is read; there is nothing behind it to gate. This
+is a *different* updater from `updates.automatic_updates_enabled`.
 
 ## TuiThemeSettings
 
@@ -757,15 +817,24 @@ next to something that transmits nothing.
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
 | `privacy.telemetry_enabled` | boolean | `false` | **No effect.** The telemetry channel was removed; nothing is ever sent and the toggle is not even rendered in the Settings window. The setting is retained so the control reappears automatically if a telemetry channel is ever added. |
-| `privacy.crash_reporting_enabled` | boolean | `false` | **Real, but local.** Nothing is uploaded — there is no crash-report endpoint. What it does do is install a panic hook that writes a full backtrace to your local log file. Turn it on if you are trying to capture a crash to report by hand. |
+| `privacy.crash_reporting_enabled` | boolean | `false` | **Inert in every shipped build, on every platform.** Nothing is uploaded — there is no crash-report endpoint — and the local panic hook it would install (`app/src/crash_reporting/mod.rs:275`) is not compiled in: `crash_reporting::init` sits behind `#[cfg(feature = "crash_reporting")]` (`app/src/lib.rs:1551-1557`), that cargo feature is not in `app/Cargo.toml`'s default list, and every bundler's `oss` branch resets `FEATURES` without it (`script/macos/bundle:358`, `script/linux/bundle:203`, `script/windows/bundle.ps1:125` — each script's *default* `FEATURES` line does mention `crash_reporting`, but that is the dev value and `oss` overwrites it). The Settings → Privacy toggle nonetheless renders, because `should_render` gates on `FeatureFlag::CrashReporting` (`app/src/settings_view/privacy_page.rs:1546`), which is in `RELEASE_FLAGS` (`crates/warp_features/src/lib.rs:912`, `app/src/lib.rs:2906-2907`). Build with `--features crash_reporting` and the setting becomes live. Independently of all this, plain panic backtraces go to the log on every platform via `log_panics` (`crates/warp_logging/src/native.rs:804-807`), with no setting involved. |
 
-The same source file also defines two settings that belong to the `PrivacySettings`
-group rather than this one, but which land in the same `[privacy]` section of
-your file and are worth listing here:
+### Secret redaction (`SafeModeSettings`, `PrivacySettings`)
+
+Secret redaction lives in two other groups, but its keys land in the same
+`[privacy]` section of your file, so they are listed here.
+
+**Redaction is off by default.** `privacy.secret_redaction.enabled` is the master
+switch and defaults to `false`; adding patterns to
+`privacy.custom_secret_regex_list` does nothing until you also turn that on. All
+four are configured in Settings → Privacy.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `privacy.custom_secret_regex_list` | array of tables | `[]` | Your own regex patterns for detecting and redacting secrets before they reach a model. Configured in Settings → Privacy. |
+| `privacy.secret_redaction.enabled` | boolean | `false` | Master switch. Detects secrets in terminal output and obscures them, and blocks saving an MCP server config that contains one. Group `SafeModeSettings`. |
+| `privacy.secret_redaction.secret_display_mode_setting` | `"asterisks"` \| `"strikethrough"` \| `"always_show"` | `"strikethrough"` | How a detected secret is drawn. `always_show` still detects and redacts it, but applies no visual treatment. Group `SafeModeSettings`. |
+| `privacy.secret_redaction.hide_secrets_in_block_list` | boolean | `false` | **Legacy.** Superseded by `secret_display_mode_setting` and kept only for backward compatibility: it is consulted *only* when the display mode is still at its `strikethrough` default, in which case `true` upgrades it to `asterisks`. Setting the display mode explicitly makes this key inert. Group `SafeModeSettings`. |
+| `privacy.custom_secret_regex_list` | array of tables | `[]` | Your own regex patterns for detecting and redacting secrets before they reach a model. Group `PrivacySettings`. |
 | `HasInitializedDefaultSecretRegexes` (internal — no TOML key) | boolean | `false` | Whether the built-in default secret-redaction patterns have been seeded into your list. New users start without them, by design — adding them is an explicit action. |
 
 ---
@@ -779,13 +848,17 @@ works is the most likely way to waste an afternoon.
 |---|---|
 | `account.is_settings_sync_enabled` | No cloud, no syncer. Only draws a "local only" icon. |
 | `privacy.telemetry_enabled` | Telemetry channel physically removed; toggle never rendered. |
+| `privacy.crash_reporting_enabled` | The toggle renders, but `crash_reporting::init` is compiled out of every OSS bundle (`app/src/lib.rs:1551-1557`; no `oss` bundler branch sets the cargo feature). Live only in a `--features crash_reporting` build. |
 | `cloud_platform.third_party_api_keys.can_use_warp_credits_with_byok` | There are no credits. The value is computed and never read. |
-| ~~`updates.automatic_updates_enabled`~~ | **Removed from this table — the claim was wrong.** The feature is not a Cargo *default*, but both release bundlers add it explicitly (`script/macos/bundle:358`, `script/windows/bundle.ps1:125`), and `FeatureFlag::Autoupdate` **is** in `RELEASE_FLAGS`. So this setting is live on macOS and Windows. It is inert only on **Linux**, whose bundler ships `release_bundle,crash_reporting` with no `autoupdate`. See §Autoupdate. |
+| `updates.automatic_updates_enabled` | **Inert on Linux only.** The macOS and Windows bundlers add the `autoupdate` Cargo feature explicitly (`script/macos/bundle:358`, `script/windows/bundle.ps1:125`), so the setting is live there. The Linux OSS bundler resets the feature list to `release_bundle` (`script/linux/bundle:198-203`), so nothing polls. Note `FeatureFlag::Autoupdate` is **not** in `RELEASE_FLAGS` (`crates/warp_features/src/lib.rs:896` says so explicitly); it is set only by `extra_flags` under `#[cfg(feature = "autoupdate")]`. See §AutoupdateSettings. |
 | `general.autoupdate_enabled` | The shipped TUI configures no update endpoint. |
 | `agents.voice.voice_input_enabled`, `agents.voice.voice_input_toggle_key` | Audio capture works; transcription is disabled because the BYOP protocol cannot carry audio. Recording always ends in a transcription failure. |
 | `general.default_session_mode = "ambient_agent"` | Ambient (cloud) agents do not exist here. |
 | `general.user_native_preference`, `UserAppInstallStatus` | Web-build-only settings; inert in every downloadable build. |
 | `migration_test.*` | Test-fixture keys. Never registered in the running app. |
+| `SameLinePromptBlockState` (internal) | Registered, never read or written. The onboarding block it tracked was not ported. |
+| `accessibility.accessibility_verbosity` **on Linux, FreeBSD and Windows** | Read, but the winit delegate's `set_accessibility_contents` is an empty function; only the macOS delegate forwards announcements. Live on macOS. |
+| `experimental.async_find_enabled` | Opt-in for async find on channels where `FeatureFlag::AsyncFind` is off. The flag is in this build's default feature list, so `is_async_find_enabled()` already returns `true` and the setting changes nothing. |
 
 ---
 
@@ -905,7 +978,15 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/settings/network.rs:44-56,77-113 (ProxyMode::Off default and why)
   app/src/settings/pane.rs:5-24
   app/src/settings/privacy.rs:96-141 (defaults flipped true->false; PrivacySettings' custom_secret_regex_list and HasInitializedDefaultSecretRegexes)
-  app/src/settings/same_line_prompt_block.rs:39-47 (private)
+  app/src/settings/same_line_prompt_block.rs:39-47 (private; registered at app/src/settings/init.rs:108 and read/written nowhere else -- inert)
+  app/src/terminal/safe_mode_settings.rs:72-101 (SafeModeSettings: privacy.secret_redaction.enabled default false, secret_display_mode_setting default Strikethrough, hide_secrets_in_block_list default false)
+  app/src/terminal/safe_mode_settings.rs:104-132 (get_secret_obfuscation_mode gates on safe_mode_enabled; get_effective_secret_display_mode consults the legacy key only while the new one is at its default)
+  app/src/settings/init.rs (the ~50 ::register() calls -- the full group list this section is measured against)
+  crates/warpui/src/platform/mac/delegate.rs:302 vs crates/warpui/src/windowing/winit/delegate.rs:543 (set_accessibility_contents implemented on macOS, empty on the winit delegate used by Linux/FreeBSD/Windows)
+  app/src/lib.rs:1701 (a11y verbosity is read on every platform)
+  app/src/terminal/settings.rs:192-223 + app/Cargo.toml:648 (experimental.async_find_enabled is ORed with FeatureFlag::AsyncFind, which is a default feature)
+  app/src/settings/initializer.rs:80-105 + app/src/auth/mod.rs:213 (the Windows 16.0 font-size override is inside is_onboarded()==Some(false), which is never true)
+  app/src/settings/input_mode.rs:9-11 + app/src/lib.rs:2955-2956 (the "new users default to waterfall" comment is stale; DefaultWaterfallMode has no reader)
   app/src/settings/scroll.rs:3-13
   app/src/settings/select.rs:26-32,44-86 (platform sets: LINUX for selection clipboard, WINDOWS|MAC for middle click)
   app/src/settings/ssh.rs:5-30
@@ -919,11 +1000,14 @@ Group declarations (all defaults/paths/platforms above are read from these):
 Inertness claims:
   app/src/settings_view/features_page.rs:6469 and app/src/settings_view/keybindings.rs:1158 and app/src/settings_view/settings_page.rs:522 (settings_sync_enabled only drives a "local only" icon); no CloudPreferencesSyncer exists in the tree
   app/src/ai/agent/api.rs:512-513,642 + grep: allow_use_of_warp_credits_with_byok is never read after being set
-  app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle:358 and script/windows/bundle.ps1:125 (both ADD the feature) + script/linux/bundle:24 (does not) + crates/warp_features/src/lib.rs RELEASE_FLAGS (FeatureFlag::Autoupdate IS present -- an earlier draft claimed it was absent, which was wrong) + app/src/lib.rs:2928
+  app/Cargo.toml ("autoupdate" not in default) + script/macos/bundle:358 and script/windows/bundle.ps1:125 (both ADD the feature) + script/linux/bundle:198-203 (oss resets FEATURES to "release_bundle", dropping the crash_reporting default set at :24) + crates/warp_features/src/lib.rs:895-907 (RELEASE_FLAGS: FeatureFlag::Autoupdate is deliberately NOT present) + app/src/lib.rs:2926-2929 (extra_flags adds it under #[cfg(feature = "autoupdate")])
   app/src/autoupdate/mod.rs:273-274,313-317 (both autoupdate paths gated on FeatureFlag::Autoupdate / can_autoupdate)
   app/src/autoupdate/github.rs:1-6 (Oss autoupdate source is GitHub Releases)
   DECLINED.md "TUI autoupdate" row (crates/warp_tui/src/bin/oss.rs:42 hardcodes autoupdate_config: None; server_root_url is a 192.0.2.0:9 sentinel)
-  DECLINED.md "Telemetry and crash reporting" table (is_telemetry_available hard-coded false, widget never renders; crash reporting toggle IS functional and writes a local backtrace)
+  DECLINED.md "Telemetry and crash reporting" table (is_telemetry_available hard-coded false, widget never renders). NOTE: the crash-reporting toggle *renders* (should_render gates on FeatureFlag::CrashReporting, which is in RELEASE_FLAGS -- crates/warp_features/src/lib.rs:912, app/src/lib.rs:2906-2907) but does nothing in a shipped build: crash_reporting::init sits behind #[cfg(feature = "crash_reporting")] (app/src/lib.rs:1551-1557) and no OSS bundler sets that cargo feature. Verify this at the `oss` BRANCH, not at the script's default FEATURES line -- script/linux/bundle:24 and script/windows/bundle.ps1:17 do list crash_reporting, but those are the dev-channel values and the oss branches OVERWRITE them: script/macos/bundle:358 = release_bundle,extern_plist,autoupdate; script/linux/bundle:203 = release_bundle; script/windows/bundle.ps1:125 = release_bundle,gui,nld_improvements,autoupdate. Panic backtraces reach the log via log_panics regardless (crates/warp_logging/src/native.rs:804-807). See section 9.
+  app/Cargo.toml:474-479 ("crash_reporting" is not in the default feature list)
+  app/src/crash_reporting/mod.rs:189-200,270-290 (init reads the setting and installs the local panic hook)
+  app/src/settings_view/privacy_page.rs:1538-1550 (should_render gate)
   DECLINED.md "Privacy toggle defaults" row
   DECLINED.md "Voice input" section (VoiceTranscriber::disabled() since 9d92598c4; TranscribeError::Disabled: "the BYOP genai protocol can't carry audio")
   DECLINED.md "Voice input language preference" row (#352)

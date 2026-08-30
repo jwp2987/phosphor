@@ -118,8 +118,9 @@ TUI equivalent is noted at each step.
    it, and the wire inspector will not record without it.
 5. **Save.** The page shows a `Saved` toast.
 6. **Pick the model.** In the agent input, type `/model` and choose an entry.
-   Rows are labelled `provider / model`, with `(key connected)` on providers
-   that have a key stored.
+   Rows are labelled `provider / model`. A provider with a usable stored key is
+   marked — in the GUI with a key icon, in the TUI with the text suffix
+   `(key connected)`.
 7. **Ask something.** In the GUI press `cmd-enter` (macOS) / `ctrl-shift-enter`
    (Linux, Windows) from the terminal to start a new agent conversation, or
    `cmd-i` / `ctrl-i` to switch the existing input box into agent mode. Type a
@@ -151,7 +152,10 @@ context_window = 65536
 
 The `id` field is generated for you on first save and is what associates the
 provider with its stored key, so let Phosphor write it rather than inventing
-one. Add the key afterwards through the settings page or `/api-keys`.
+one. Add the key afterwards through the GUI's *Settings → AI → Providers* page,
+or the TUI's `/api-keys` menu. `/api-keys` is offered in the **GUI** palette too,
+but has no GUI handler and does nothing there (issue #628) — in the GUI, use the
+settings page.
 
 ### Things that will bite you
 
@@ -163,6 +167,10 @@ one. Add the key afterwards through the settings page or `/api-keys`.
   `Authorization: Bearer` header rather than putting your key on the wire in
   clear. The request still goes out — it just goes out unauthenticated, and the
   provider's 401 is what you will see.
+- **`api_type = "ollama"` costs you rules, skills and plan mode.** That API type
+  selects a deliberately short system prompt that omits the shared prompt
+  footer, so none of them are injected. See the callout under
+  [What the agent can see](#what-the-agent-can-see) for the two workarounds.
 - **Model IDs are trimmed** — a trailing space used to be sent verbatim and
   rejected upstream.
 - **Vertex needs `gcloud`.** There is no service-account-JSON or headless path.
@@ -199,32 +207,36 @@ in-terminal natural-language detection is on
 
 ### Slash commands
 
-Type `/` in the agent input. The ones that matter for the agent itself:
+Type `/` in the agent input. The ones that matter for the agent itself — the
+**surface** column matters, because a command missing from a surface is filtered
+out of that surface's palette entirely. §7.7 has the complete split; this table
+is the agent-relevant subset.
 
-| command | what it does |
-|---|---|
-| `/agent`, `/new` | Start a new conversation |
-| `/model` | Switch the base agent model |
-| `/api-keys` | Add, view, or clear a provider's API key |
-| `/profile` | Switch the active execution profile |
-| `/auto-approve` | Toggle auto-approve |
-| `/plan` | Plan mode |
-| `/queue <prompt>` | Queue a prompt to send after the agent finishes |
-| `/compact` | Summarise the conversation to free context |
-| `/compact-and <prompt>` | Compact, then send this prompt |
-| `/fork`, `/fork-from`, `/fork-and-compact` | Branch the conversation |
-| `/rewind` | Rewind to an earlier point |
-| `/conversations` | Open conversation history |
-| `/usage` | Context-window usage for this conversation |
-| `/cost` | Token spend at *your* configured rates |
-| `/skills` | Invoke a skill |
-| `/init` | Generate or update an `AGENTS.md` |
-| `/add-rule`, `/open-rules`, `/open-project-rules` | Manage agent rules |
-| `/mcp`, `/add-mcp`, `/open-mcp-servers` | MCP servers |
-| `/index` | Index this codebase — only listed when codebase indexing is on, which it cannot be in a stock build; see [Codebase search](#codebase-search--read-this-before-expecting-it) |
-| `/status` | Session status |
-| `/export-to-file`, `/export-to-clipboard` | Export the conversation |
-| `/open-settings-file` | Open `settings.toml` |
+| command | surface | what it does |
+|---|---|---|
+| `/agent`, `/new` | both | Start a new conversation |
+| `/model` | both | Switch the base agent model |
+| `/api-keys` | both, but **TUI only in practice** | Add, view, or clear a provider's API key. Listed in the GUI palette with no handler (issue #628); use *Settings → AI → Providers* in the GUI. |
+| `/profile` | both | Switch the active execution profile |
+| `/auto-approve` | **TUI only** | Toggle auto-approve |
+| `/plan` | **GUI only** | Plan mode |
+| `/queue <prompt>` | both | Queue a prompt to send after the agent finishes |
+| `/compact` | both | Summarise the conversation to free context |
+| `/compact-and <prompt>` | both | Compact, then send this prompt |
+| `/fork`, `/fork-from`, `/fork-and-compact` | both | Branch the conversation |
+| `/rewind` | both | Rewind to an earlier point |
+| `/conversations` | both | Open conversation history |
+| `/usage` | both | Context-window usage for this conversation |
+| `/cost` | both | Token spend at *your* configured rates |
+| `/skills` | both | Invoke a skill |
+| `/init` | both | Generate or update an `AGENTS.md` |
+| `/add-rule`, `/open-rules`, `/open-project-rules` | **GUI only** | Manage agent rules. `/open-project-rules` opens `<pwd>/WARP.md` specifically, whatever its palette description says — see §6.4. |
+| `/mcp` | **TUI only** | View and manage MCP servers |
+| `/add-mcp`, `/open-mcp-servers` | **GUI only** | MCP servers |
+| `/index` | **GUI only** | Index this codebase — only listed when codebase indexing is on, which it cannot be in a stock build; see [Codebase search](#codebase-search--read-this-before-expecting-it) |
+| `/status` | **TUI only** | Session status |
+| `/export-to-file`, `/export-to-clipboard` | both | Export the conversation |
+| `/open-settings-file` | **GUI only** | Open `settings.toml` |
 
 Availability is contextual: `/model` and `/profile` require the agent view;
 `/queue`, `/fork*` and `/rewind` require an active conversation and that the
@@ -305,6 +317,20 @@ overflow is undecidable without it — another reason to fill that field in.
 
 ## What the agent can see
 
+> **Exception, and it is a big one: `api_type = "ollama"` providers.** Phosphor
+> picks the system-prompt template by API type before it picks by model, and any
+> provider whose `api_type` is `ollama` gets the short `system/local.j2`
+> template. That template includes only the environment block — **not** the
+> shared prompt footer, so your **rules files, the skills listing and plan mode
+> are all silently absent** on an Ollama provider. The short template exists so
+> a 9k-token prompt does not swamp a small local model, but the effect on rules
+> and skills is real and there is no toggle for it. Two workarounds: point at
+> the same Ollama server with `api_type = "open_ai"` and base URL
+> `http://localhost:11434/v1/` (Ollama speaks the OpenAI protocol, and that
+> route takes a full template), or export the prompt templates and add
+> `{% include "partials/footer.j2" %}` to your own `system/local.j2` — see
+> §6.6. Everything in the rest of this section assumes a non-Ollama provider.
+
 ### Always, on every request
 
 - **Your working directory, git branch and the date**, sent as a standalone
@@ -377,10 +403,17 @@ Each root is looked for both in the directories above your working directory
 own root, which lives in the app config directory: **`~/.phosphor/skills`**, not
 `~/.warp/skills`.
 
-Eleven skills ship with Phosphor — `add-mcp-server`, `change-keybinding`,
+Eleven skills ship with Phosphor — `agent-add-mcp`, `change-keybinding`,
 `claude-api`, `create-skill`, `create-tab-config`, `modify-settings`,
 `pr-comments`, `tab-configs`, `tui-settings`, `update-tab-config`, `warpctrl` —
 some of which only activate on the surface or with the feature they are about.
+
+Those are the names you invoke. One of them does not match its directory: the
+MCP skill lives in `resources/bundled/skills/add-mcp-server/` but its
+frontmatter `name:` is `agent-add-mcp`, and frontmatter wins, so `/add-mcp-server`
+finds nothing — type `/agent-add-mcp`. (Its body also still tells the agent to
+write `~/.warp/.mcp.json`; the real global path is `~/.phosphor/.mcp.json`. See
+§6.1.)
 
 To use one: `/skills` opens a picker, `/<skill-name>` invokes it directly, `@`
 → Skills does the same, and `/open-skill` opens its file for editing. There is
@@ -542,15 +575,41 @@ already approved stays approved for the rest of that conversation, and under
 *Always ask* a path under the profile's directory allowlist is read without
 asking.
 
-Writing has a hard floor no setting can lift: **MCP configuration files are
-never auto-written**. `.mcp.json`, `~/.claude.json`, `~/.codex/config.toml` and
-the other providers' config paths are matched by both exact path and filename
+**Be clear about what "Agent decides" means for reads: it always allows.** There
+is no model judgement in that branch — the code returns "allowed" unconditionally
+and never asks you. Since *Agent decides* is the default for **Read files**, a
+stock profile lets the agent read any file it can name without a prompt. If you
+want reads gated, set *Always ask* and populate the directory read allowlist.
+
+Writing has a floor no setting can lift: **MCP configuration files are never
+auto-written**. `.mcp.json`, `~/.claude.json`, `~/.codex/config.toml` and the
+other providers' config paths are matched by both exact path and filename
 suffix, before any autonomy check, and always fall through to asking you. The
 reason is direct: a config the agent can silently edit is a config through which
 the agent can grant itself new tools.
 
-### Two honest caveats
+That floor is a lexical path check, and its own doc comment names the residue:
+it normalises `~`, `.` and `..` but does **not** resolve symlinks or `$HOME`-style
+variable spellings, cannot resolve a cwd-relative path at all (it is handed the
+raw strings the model emitted, not the resolved ones), and never sees a *rename
+destination* — a V4A edit's `move_to` is not in the path list the guard
+receives, while the writer renames onto it. So: a real and useful floor, and
+still not a boundary.
 
+### Three honest caveats
+
+- **None of this applies to a third-party harness run.** Everything in this
+  section — profile, allowlist, denylist, auto-approve, the protected-write
+  floor — governs *Phosphor's own agent only*. When Phosphor drives Claude Code,
+  Codex or Gemini CLI, it consults none of it, and it goes further: it launches
+  the harness with that vendor's own safety prompts disabled
+  (`--dangerously-skip-permissions`, `--dangerously-bypass-approvals-and-sandbox`,
+  `--yolo`) and pre-writes trust into the vendor's config files first. **A
+  harness run is an unsupervised agent with full permissions in that
+  directory.** See
+  [How the harness path differs](#how-the-harness-path-differs-from-phosphors-own-agent).
+  This is reachable only from `phosphor-oss agent run --harness …` and
+  `/orchestrate`, never from an ordinary GUI conversation.
 - **The denylist is defence in depth, not a boundary.** Phosphor normalises far
   more spellings than upstream Warp does — quoted command names, escapes,
   leading environment assignments, line continuations, embedded newlines — and
@@ -657,9 +716,13 @@ session and executes the harness CLI in it.
 
 **From `/orchestrate`:** `/orchestrate <task>; <task>` spawns local child agents.
 This path always uses **Claude Code** — there is no way to choose another
-harness from it. It requires bash, zsh or fish (PowerShell is rejected). Codex
-as a child is gated behind a flag with no enable path in shipped builds; Gemini
-and OpenCode are rejected outright.
+harness from it. It requires bash, zsh or fish (PowerShell is rejected). Of the
+other harnesses: **Gemini** and Phosphor's own **`oz`** are rejected outright by
+the child-harness parser; **Codex** parses but is gated behind a flag with no
+enable path in shipped builds, so a launch fails on its precondition; and
+**OpenCode** parses and is not rejected, but has no launch implementation and
+nothing can select it, because `/orchestrate` hardcodes `claude` and takes no
+flags at all. In practice Claude Code is the only child harness.
 
 **There is no GUI harness picker.** A harness-selector menu exists in the source
 but is never rendered, so in the GUI every agent run uses Phosphor's own agent.
@@ -670,10 +733,16 @@ but is never rendered, so in the GUI every agent run uses Phosphor's own agent.
 |---|---|---|---|
 | Claude Code | `claude` | your existing Claude Code login, or `ANTHROPIC_API_KEY` in the environment | `claude --session-id <uuid> --dangerously-skip-permissions [--append-system-prompt-file …] [--mcp-config …] < <prompt file>` |
 | Codex | `codex` | `~/.codex/auth.json`, seeded from `OPENAI_API_KEY` if present | `codex --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust "$(cat <prompt file>)"` |
-| Gemini CLI | `gemini` | your existing Gemini CLI auth | `gemini --yolo -i "$(cat <prompt file>)"` |
+| Gemini CLI | `gemini` | an API key — Phosphor **rewrites** `~/.gemini/settings.json` to `security.auth.selectedType = "gemini-api-key"` before every run | `gemini --yolo -i "$(cat <prompt file>)"` |
 
 If the executable is missing, Phosphor tells you and links the vendor's install
 docs. There is no minimum version requirement on the CLIs themselves.
+
+**The Gemini row is not a passive read of your config — it is a write.** Every
+Gemini harness run sets `selectedType` to `gemini-api-key` in your own
+`~/.gemini/settings.json`, so if you had signed the Gemini CLI in with a Google
+account, a Phosphor harness run switches it to API-key mode and leaves it that
+way for your own later `gemini` invocations. The value is never restored.
 
 #### How the harness path differs from Phosphor's own agent
 
@@ -872,9 +941,12 @@ Per-model fields: `name`, `id`, `context_window` (0 = unknown),
 
 ### Command-line
 
-`phosphor-oss` accepts the agent CLI subcommands. The examples in `--help` use
-the real binary name, but the usage lines still say `oz` (the internal parser
-name) and one flag's help text still says `warp` — type `phosphor-oss`.
+`phosphor-oss` accepts the agent CLI subcommands. Both the usage lines and the
+examples in `--help` are built from argv\[0\], so they say `phosphor-oss` (clap
+overwrites the internal `oz` command name with the invoked name; verified against
+the built binary via a renamed symlink). What *is* stale is a handful of help
+*strings*: `--model`'s help says "Use `warp model list`" and `completions`
+shows `path/to/warp completions bash`. Read those as `phosphor-oss`.
 
 | command | what it does |
 |---|---|
@@ -889,13 +961,19 @@ There is a `provider` subcommand in the parser, but it is **not** about AI
 providers — it is a Linear/Slack integration stub. It is hidden from `--help`
 and disabled in shipped builds, so `phosphor-oss provider …` exits with
 `error: unrecognized subcommand 'provider'`. Provider setup happens in the
-settings page or via `/api-keys`, never here.
+settings page (GUI) or via `/api-keys` (TUI only in practice — see §7.13), never
+here.
 
 `phosphor-tui` accepts `--resume <id>`, `--auto-approve`, `--api-key`
 (`WARP_API_KEY`; the app's own auth flag, not a provider key), and `--set-provider-api-key` / `--clear-provider-api-key`.
-Note the last two write a **legacy four-provider key store** (`openai`,
-`anthropic`, `google`, `grok`) that the BYOP send path does not read. To store a
-key the agent will actually use, use `/api-keys` or the Providers settings page.
+Those last two take one of four provider slugs — `openai`, `anthropic`,
+`google`, `grok` — of which `grok` is parsed and then refused with a message
+pointing you at the Providers page. The other three write the **legacy fixed
+key store** (`AiApiKeys` in secure storage, a different keyring entry from
+BYOP's `AgentProviderSecrets`), **and the BYOP send path never reads it**. So
+`--set-provider-api-key anthropic` reports success and leaves the agent with no
+usable key. To store a key the agent will actually use, use `/api-keys` or the
+Providers settings page.
 
 ---
 
@@ -962,8 +1040,10 @@ tool** (per-profile flag with no way to set it).
 
 - The TUI's cargo target is `zap-tui-oss`; the binary you download and run is
   `phosphor-tui`.
-- `phosphor-oss --help` prints `oz` in its usage lines, and `--model`'s help
-  text refers to `warp model list`.
+- `phosphor-oss --help` shows `phosphor-oss` in its usage lines (clap takes the
+  name from argv\[0\], not from the internal `oz` command name), but two help
+  *strings* were never rebranded: `--model`'s help refers to `warp model list`,
+  and `completions`' help shows `path/to/warp completions bash`.
 - Project skills are still read from `.warp/skills`, and files an agent-SDK
   session downloads land in `<working dir>/.warp/attachments`. The home skills
   directory, by contrast, is `~/.phosphor/skills`.
@@ -1087,7 +1167,8 @@ Harness driver
 - app/src/ai/agent_sdk/provider.rs:1,60,72-98 ("Provider OAuth setup ... is disabled in Phosphor")
 - app/src/ai/agent_sdk/driver.rs:401-404 (NotLoggedIn gate) with app/src/auth/mod.rs:294-296 (is_logged_in always true, so the gate never fires), :1109-1134 (setup/prepare/run harness), :1266-1275 (MCP translated per harness), :1330-1440 (error-pattern output monitor)
 - app/src/ai/agent_sdk/driver/terminal.rs:102-118,308-353 (harness runs as an ordinary command in a real terminal session)
-- app/src/ai/local_harness_launch.rs:103-128 (/orchestrate argument syntax), :111 (ORCHESTRATE_DEFAULT_HARNESS = "claude"), :150-162 (bash/zsh/fish only), :203-221 (child launch commands), :301,:372 (oz and gemini rejected), :313-317 (children inherit local harness auth)
+- app/src/pane_group/pane/local_harness_launch.rs:113-128 (/orchestrate argument syntax), :103-111 (ORCHESTRATE_DEFAULT_HARNESS = "claude"), :150-162 (bash/zsh/fish only), :295-298 (Codex precondition), :300-373 (child launch commands), :301,:372 (oz and gemini unreachable, i.e. filtered out earlier), :313-317 (children inherit local harness auth)
+- crates/warp_cli/src/agent.rs:153-158 (parse_local_child_harness accepts Claude/OpenCode/Codex; rejects Oz/Gemini/Unknown)
 - app/src/ai/local_harness_setup.rs:50-51,83-95 (Codex child gated on LocalClaudeCodexChildHarnesses), :74-109 (dead selectable/product-enabled helpers)
 - crates/warp_features/src/lib.rs:806-828 (LOCAL_FLAGS / DOGFOOD_FLAGS enable nothing in this fork), :926 (RUNTIME_FEATURE_FLAGS)
 - app/src/terminal/view/ambient_agent/harness_selector.rs (exists), app/src/terminal/input.rs:2251-2257,1652,3327 (constructed and stored but never rendered as a child view)

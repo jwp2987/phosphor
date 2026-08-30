@@ -42,14 +42,16 @@ whose application identity is `dev.phosphor.Phosphor`.
 The log directory is chosen per platform and then gets a subdirectory per
 frontend, so a long-running TUI session cannot evict the GUI's rotated logs.
 
-| | GUI (`phosphor-oss`) | TUI (`zap-tui-oss`) | CLI (`phosphor-oss agent …`, remote-server daemon) |
+| | GUI (`phosphor-oss`) | TUI (`phosphor-tui`) | CLI (`phosphor-oss agent …`, remote-server daemon) |
 |---|---|---|---|
 | **macOS** | `~/Library/Logs/phosphor.log` | `~/Library/Logs/warp-cli/phosphor-tui.log` | `~/Library/Logs/oz/phosphor.log` |
 | **Linux** | `~/.local/state/phosphor/phosphor.log` | `~/.local/state/phosphor/warp-cli/phosphor-tui.log` | `~/.local/state/phosphor/oz/phosphor.log` |
 | **Windows** | `%LOCALAPPDATA%\phosphor\Phosphor\data\logs\phosphor.log` | …`\logs\warp-cli\phosphor-tui.log` | …`\logs\oz\phosphor.log` |
 
 The subdirectory names (`warp-cli`, `oz`) are lineage internals that were not
-renamed; they are the real directory names on disk.
+renamed; they are the real directory names on disk. (The TUI's *cargo* target is
+still called `zap-tui-oss`; the release pipeline renames it to `phosphor-tui`
+before packaging, so `phosphor-tui` is what you actually have on disk.)
 
 Each launch rotates the previous run's file: the active file becomes
 `phosphor.log.old.0`, older ones shift up, and the oldest is dropped. The GUI
@@ -202,28 +204,36 @@ like; the backtrace reaches the log either way.
 
 ### The `minidump-server` subcommand
 
-The binary carries a hidden subcommand:
+The argument parser carries a hidden subcommand:
 
 ```
 phosphor-oss minidump-server <socket-path>
 ```
 
-It is a worker process, not something to run by hand. When started it listens on
-the given socket and, on receiving a crash from a client process, writes a
-`.dmp` file to `<state dir>/logs/crash-dumps/zap-minidump-<uuid>.dmp`, logs a
-one-line summary — message, dump size, dump path and the accumulated tag map —
-to `<state dir>/logs/warp-minidump.log`, and exits. It has no network code at
-all: `send_crash_report` is a `log::error!` call and nothing else. Tags are
-local diagnostic metadata (GPU device info, antivirus product, windowing system,
-virtual-environment detection, application lifecycle stage); no user identity is
-attached — `set_user_id` is an empty function.
+**In the shipped builds it does nothing but abort.** The whole
+`app/src/crash_reporting` module — the minidump server, its client half, the
+tag collection, all of it — sits behind `#[cfg(feature = "crash_reporting")]`,
+and none of the three OSS bundlers enable that cargo feature (see above). The
+subcommand's dispatch arm is compiled to
+`panic!("The minidump server is not supported on this platform")`
+(`app/src/lib.rs:832-841`), so running it by hand gets you a panic, not a
+worker. There is likewise no caller for the client half (`local_minidump::init`,
+via `MinidumpGuard::start`) anywhere in the tree, so nothing would spawn it even
+if the feature were on.
 
-**In practice you will not see these files.** The client half that spawns the
-server (`local_minidump::init`, via `MinidumpGuard::start`) has no caller
-anywhere in the tree, so no Phosphor process ever launches the minidump server.
-Crash diagnostics in this build are the panic backtrace in the log, not a
-minidump. This is worth knowing before you go hunting for a `crash-dumps`
-directory that will not exist.
+Consequences to know before you go looking:
+
+- There is **no `crash-dumps` directory** and no `.dmp` file to find. If a
+  `crash_reporting`-enabled build ever wrote one it would land at
+  `<state dir>/logs/crash-dumps/zap-minidump-<uuid>.dmp`, with a one-line
+  summary in `<state dir>/logs/warp-minidump.log` — that is the path the log
+  bundle looks for, which is why `warp-minidump.log` appears in the bundle's
+  "when present" list.
+- Crash diagnostics in this build are **the panic backtrace in the log**,
+  nothing else.
+- Nothing was ever going to be uploaded regardless: `send_crash_report` in that
+  module is a `log::error!` call and nothing else, and `set_user_id` is an empty
+  function.
 
 ---
 
@@ -244,6 +254,14 @@ things you asked for:
 - **Update checks on macOS and Windows**, which read the project's public GitHub
   Releases feed. Nothing about you is sent; it is an unauthenticated GET. You can
   turn it off — see [Updates](#updates). On Linux this does not happen at all.
+- **SSH sessions you open**, for the two bootstrap paths described under
+  [Shell integration](#shell-integration-is-not-detected). The remote-server
+  extension has the *remote* host fetch
+  `phosphor-cli-<os>-<arch>.tar.gz` from this project's GitHub Releases (and
+  verifies it against a digest pinned into your client at build time); the tmux
+  wrapper, if you turn `warpify.ssh.use_ssh_tmux_wrapper` on, has the remote host
+  install tmux through its own package manager. Both run on the far end of a
+  connection you initiated, and neither sends anything about you.
 
 And that is the list. The specifics:
 
@@ -368,7 +386,7 @@ bundlers do not compile the same feature set.
 | macOS | **On.** Polls the GitHub Releases API for the project repository. |
 | Windows | **On.** Same source. |
 | Linux | **Off entirely.** The Linux bundler does not compile the autoupdate feature in, so nothing polls, and the update commands are not registered. |
-| TUI (all platforms) | **Off.** Its release base URL is empty, so the update path returns immediately. |
+| TUI (all platforms) | **Off.** Eligibility is decided at startup and fails on *"not running from a managed install"* — background updates need the binary to sit inside a `versions/<version>/` tree, and Phosphor ships a plain tarball. (`crates/warp_tui/src/autoupdate.rs:302-307`. The empty `releases_base_url` and the `oss`-channel artifact bail sit downstream and are never reached.) |
 
 On macOS and Windows, background checking is gated by
 `updates.automatic_updates_enabled` (default `true`). **There is no UI for that
@@ -682,9 +700,11 @@ phosphor-oss mcp list        # UUID and name for every runnable server
 run, `phosphor-oss agent run --mcp <spec>` takes a JSON file path or inline
 JSON, and may be repeated.
 
-> **The CLI calls itself `oz` in its own help text.** The executable you actually
-> run is `phosphor-oss`; the name baked into the argument parser was not renamed,
-> so usage lines and error messages say `oz`. Type `phosphor-oss`.
+> **Two help strings still say `warp`.** The usage lines are fine — clap builds
+> them from argv\[0\], so `--help` says `phosphor-oss` (or `phosphor`), never the
+> internal `oz` parser name. But `--model`'s help text says "Use `warp model
+> list`" and `completions`' help shows `path/to/warp completions bash`. Read both
+> as `phosphor-oss`.
 
 > **Do not pass a bare UUID to `--mcp`.** It is accepted and written into the
 > merged config as a Warp-managed server reference, which nothing in this fork
@@ -769,7 +789,7 @@ These are private settings: they have no TOML path and are stored in
 | `phosphor-oss --dump-debug-info` | shell | Print the graphics/environment report and exit. |
 | `phosphor-oss mcp list` | shell | List runnable MCP servers. The whole `mcp` CLI surface. |
 | `phosphor-oss whoami` | shell | Prints the local placeholder identity. There is no account. |
-| `phosphor-oss minidump-server <socket>` | worker | Hidden. Writes local minidumps. Never started by this build. |
+| `phosphor-oss minidump-server <socket>` | worker | Hidden, and inert: the `crash_reporting` cargo feature is off in every shipped build, so this arm panics. |
 | `phosphor-oss completions [shell]` | shell | Print shell completions to stdout. |
 | **View Phosphor logs** | GUI palette | Build a log bundle and reveal it. |
 | **Dump debug info** | GUI palette | Type the `--dump-debug-info` command into the active session. |
@@ -874,6 +894,7 @@ the part you actually want.
 - per-crate quieting of naga / wgpu_core / wgpu_hal / tantivy: crates/warp_logging/src/native.rs:736-750
 - log base directory per platform: crates/warp_logging/src/native.rs:823-836 (macOS `~/Library/Logs/`, Linux `state_dir()`, Windows `state_dir()/logs`); WARP_LOGS_DIR = "logs": crates/warp_core/src/paths.rs:35
 - logfile names `phosphor.log` / `phosphor-tui.log`: app/src/bin/phosphor_oss.rs:38, crates/warp_tui/src/bin/oss.rs:43
+- the TUI's cargo bin target is `zap-tui-oss`; the release pipeline copies it to `phosphor-tui` before packaging, so that is the on-disk name users get: .github/workflows/phosphor_release.yml:418-428 (Windows), :815-826 (Linux), :896-905 (macOS)
 - LaunchMode -> LogFrontend mapping: app/src/lib.rs:608-616; log destination and ZAP_LOG_STDOUT: app/src/lib.rs:565-600
 - LogConfig built with `..Default::default()`, so `max_file_size_bytes: None` and in-session rotation is off: app/src/lib.rs:947-958; field doc crates/warp_logging/src/lib.rs:31-38
 - `.old.N` rotation naming: crates/warp_logging/src/native.rs:211-265
@@ -925,6 +946,8 @@ the part you actually want.
 - module doc "without uploading them to a remote crash service": app/src/crash_reporting/local_minidump.rs:1-3
 - crash tags are local diagnostics: app/src/crash_reporting/mod.rs:45-97
 - local_minidump::init / MinidumpGuard::start have no caller: `grep -rn "local_minidump::init\|MinidumpGuard::start" app crates` returns only the definition at app/src/crash_reporting/local_minidump.rs:38-50 and its internal use at :42
+- the whole module is behind the cargo feature (`#[cfg(feature = "crash_reporting")] mod crash_reporting;` app/src/lib.rs:36-37), so in a shipped OSS build none of it is compiled; the `minidump-server` dispatch arm is then the `else` branch, `panic!("The minidump server is not supported on this platform")`: app/src/lib.rs:831-841. The clap variant itself is NOT feature-gated (crates/warp_cli/src/lib.rs:297-303), so the subcommand parses and then aborts.
+- `local_tty`, which gates that dispatch arm, is set unconditionally for non-wasm targets by app/build.rs:245-249 — it is on even though it appears in no feature list
 - privacy toggle defaults flipped from Warp's on to off, with rationale: app/src/settings/privacy.rs:92-96; DECLINED.md "Privacy toggle defaults" row
 
 ## Telemetry
@@ -956,6 +979,10 @@ the part you actually want.
 - Network page strings incl. Test connection semantics: app/i18n/en/warp.ftl:870-899
 - WARP_EXTRA_HTTP_HEADERS is read only on Channel::Integration, so it is not a user-facing switch: crates/http_client/src/lib.rs:50-53
 
+## SSH bootstrap egress
+- the remote-server install script has the REMOTE host fetch the CLI tarball from this project's GitHub Releases, verified against a digest pinned into the client at build time: crates/remote_server/src/setup.rs:550-553, :580 (expected_sha256, baked in via option_env! — crates/remote_server/build.rs:4), asserted URL crates/remote_server/src/setup_tests.rs:255-261 (`https://github.com/jwp2987/phosphor/releases/latest/download/phosphor-cli-linux-x86_64.tar.gz`); digests pinned at .github/workflows/phosphor_release.yml:277-315, :496-524
+- tmux is installed on the remote host through its own package manager, only when `warpify.ssh.use_ssh_tmux_wrapper` (default false) is on: app/src/terminal/ssh/warpify.rs:184-196, app/src/terminal/warpify/settings.rs:18-56
+
 ## Graphics
 - GPUSettings group with toml paths and defaults: app/src/settings/gpu.rs:9-29
 - GraphicsBackend variants: crates/warpui_core/src/platform/mod.rs:726-743
@@ -973,7 +1000,7 @@ the part you actually want.
 - macOS DMG-to-cache, no in-place replacement, `open` after exit: script/macos/bundle:350-357; Windows tempfile + visible Inno Setup UI: script/windows/bundle.ps1:117-124
 - AutoupdateSettings default true, toml path `updates.automatic_updates_enabled`: app/src/settings/autoupdate.rs:3-13
 - TuiAutoupdateSettings default true, toml path `general.autoupdate_enabled`, WARP_TUI_DISABLE_AUTOUPDATE: app/src/settings/tui_autoupdate.rs:8-21
-- TUI updater exits when releases_base_url is empty: crates/warp_tui/src/autoupdate.rs:660-663; releases_base_url is empty because autoupdate_config is None: crates/warp_core/src/channel/state.rs:177-185, app/src/bin/phosphor_oss.rs:39
+- TUI updater's operative stop is AutoupdateEligibility::determine -> "not running from a managed install": crates/warp_tui/src/autoupdate.rs:282-308 (InstallLayout::detect at :103-133 requires <root>/versions/<version>/<bin>). Downstream, never-reached guards: latest_version_for bails for Channel::Oss at :695-704, and the releases_base_url fallback at :660-663 is empty because autoupdate_config is None (crates/warp_core/src/channel/state.rs:177-185, app/src/bin/phosphor_oss.rs:39). Note download_os() returns None on Windows (:723-731), which disables it a step earlier there.
 - OSS GUI update path would use the GitHub Releases API for jwp2987/phosphor if enabled: app/src/autoupdate/github.rs:14-15, :99-104
 - Linux update methods (AppImage in place, package manager -> manual): app/src/autoupdate/linux.rs:21-58, :288-312
 - windows updater log `warp_update.log` collected into the bundle: app/src/workspace/view.rs:6138-6142

@@ -652,7 +652,7 @@ Cursor style is not configurable while vim mode is on — vim drives it.
 
 | Setting | What it does | TOML path | Default |
 |---|---|---|---|
-| Prefer the low-power GPU | Uses the integrated GPU rather than the discrete one | `system.prefer_low_power_gpu` | `true` on Linux/FreeBSD, `false` elsewhere |
+| Prefer the low-power GPU | Uses the integrated GPU rather than the discrete one | `system.prefer_low_power_gpu` | `true` on Linux/FreeBSD **and on Windows**; `false` on macOS |
 | Preferred graphics backend | Windows only; `vulkan` or the platform default | `system.preferred_graphics_backend` | unset |
 
 `system.force_x11` is also available on Linux if the Wayland backend gives you
@@ -730,7 +730,8 @@ macOS and `ctrl-shift-X` elsewhere. A dash means the action ships with no key.
 | `workspace:close_active_tab` | Close the tab | — | — |
 | `workspace:close_other_tabs` / `workspace:close_tabs_right_active_tab` | Close other / right | — | — |
 | `workspace:activate_prev_tab` / `_next_tab` | Previous / next tab | `shift-cmd-{` / `shift-cmd-}` | `ctrl-pageup` / `ctrl-pagedown` |
-| `workspace:activate_first_tab` … `_last_tab` | Go to tab 1–9 | `cmd-1` … `cmd-9` | `ctrl-1` … `ctrl-9` |
+| `workspace:activate_first_tab` … `_eighth_tab` | Go to tab 1–8 | `cmd-1` … `cmd-8` | `ctrl-1` … `ctrl-8` |
+| `workspace:activate_last_tab` | Go to the **last** tab (not tab 9) | `cmd-9` | `ctrl-9` |
 | `workspace:move_tab_left` / `_right` | Reorder the tab | `shift-ctrl-←` / `→` | `shift-ctrl-pageup` / `pagedown` |
 | `workspace:rename_active_tab` | Rename the tab | — | — |
 | `workspace:cycle_active_tab_color` | Cycle the tab colour | — | — |
@@ -820,7 +821,7 @@ contexts, so changing it changes both.
 | `keys.ctrl_tab_behavior_setting` | What `ctrl-tab` does | `activate_prev_next_tab` |
 | `system.force_x11` | Force the X11 backend on Linux | `true` under WSL, `false` otherwise |
 | `system.linux_selection_clipboard` | Use the primary selection *(Linux)* | `true` |
-| `system.prefer_low_power_gpu` | Use the integrated GPU | `true` on Linux/FreeBSD |
+| `system.prefer_low_power_gpu` | Use the integrated GPU | `true` on Linux/FreeBSD and Windows, `false` on macOS |
 | `system.preferred_graphics_backend` | Windows graphics backend | unset |
 | `terminal.copy_on_select` | Copy on selection | `true` |
 | `terminal.focus_reporting_enabled` | Forward focus events to full-screen apps | `true` |
@@ -876,10 +877,34 @@ are coming from Warp, these terminal features are gone on purpose. See
 | **Telemetry** | The channel is physically removed; the toggle never renders. |
 | **The "Oz updates" zero-state feed and Warp-branded feature-intro popovers** | Branded content this fork does not carry. |
 
-Two things that *are* still here despite looking cloudy: crash reporting (it is
-functional, and writes a local backtrace to the log — nothing is uploaded), and
-the SSH tmux wrapper, which Phosphor keeps permanently even though upstream
-deprecated it.
+One thing that *is* still here despite looking cloudy: the SSH tmux wrapper,
+which Phosphor keeps permanently even though upstream deprecated it.
+
+Crash reporting is the case people get wrong in both directions, so be precise
+about it. Nothing is uploaded — but the toggle is also not doing what it looks
+like it is doing:
+
+- Panic backtraces are written into the log file on **every** platform,
+  unconditionally — `log_panics::init()` runs whenever file logging is on
+  (`crates/warp_logging/src/native.rs:804-807`). No setting controls this.
+- `privacy.crash_reporting_enabled` (default `false`) would additionally install
+  a richer panic hook that logs the panic location, payload and thread
+  (`app/src/crash_reporting/mod.rs:275`), but **not in a shipped build**. That
+  hook is behind the `crash_reporting` cargo feature
+  (`app/src/lib.rs:1551-1557`), which is not in `app/Cargo.toml`'s default list,
+  and each bundler's `oss` branch *resets* the feature list without it —
+  `release_bundle,extern_plist,autoupdate` on macOS (`script/macos/bundle:358`),
+  `release_bundle` on Linux (`script/linux/bundle:203`), and
+  `release_bundle,gui,nld_improvements,autoupdate` on Windows
+  (`script/windows/bundle.ps1:125`). Do not be misled by the `crash_reporting`
+  in each script's *default* `FEATURES` assignment: that is the dev-channel
+  value, overwritten for `oss`.
+- The Settings → Privacy toggle still renders, because its `should_render` gates
+  on `FeatureFlag::CrashReporting`, which `RELEASE_FLAGS` turns on in every
+  release bundle independently of the cargo feature
+  (`crates/warp_features/src/lib.rs:912`, `app/src/lib.rs:2906-2907`). It is a
+  switch with nothing behind it.
+- Nothing is uploaded on any platform. There is no crash-report endpoint.
 
 ---
 
@@ -929,7 +954,10 @@ app/src/settings/select.rs:10-88,95-156          RightClickBehavior{ContextMenu(
                                                  check (:109-114)
 app/src/settings/scroll.rs:3-13                  mouse_scroll_multiplier=3.0; toml general.mouse_scroll_multiplier
 app/src/settings/pane.rs:5-24                    should_dim_inactive_panes=false; focus_panes_on_hover=false
-app/src/settings/gpu.rs:9-29                     prefer_low_power_gpu = cfg!(linux|freebsd); preferred_backend
+app/src/settings/gpu.rs:5-29                     prefer_low_power_gpu = cfg!(linux|freebsd)
+                                                 || (cfg!(windows) && !default_to_windows_high_performance_gpu());
+                                                 the Windows clause is true in stock builds because
+                                                 FeatureFlag::WindowsHighPerformanceGpuDefault is off; preferred_backend
 app/src/settings/linux.rs:6-13                   force_x11 default = linux::is_wsl()
 app/src/settings/font.rs:17-26,28-207            DEFAULT_MONOSPACE_FONT_NAME="Hack"; DEFAULT_MONOSPACE_FONT_SIZE=13.0;
                                                  DEFAULT_MONOSPACE_FONT_WEIGHT=Weight::Normal; fallback=""; ui_font_name="";
