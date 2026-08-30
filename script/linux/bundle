@@ -200,6 +200,9 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
   BINARY_NAME="phosphor-oss"
   APP_NAME="Phosphor"
   # The OSS channel uses local crash reporting; it doesn't enable the release default feature set.
+  # `autoupdate` is deliberately absent here and in the macOS/Windows bundlers:
+  # no platform ships the GUI autoupdater (#630). Do not add it back. (The TUI's
+  # own updater is separate and unaffected -- see the macOS bundler's note.)
   FEATURES="release_bundle"
 fi
 

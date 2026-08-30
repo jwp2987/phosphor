@@ -1,17 +1,8 @@
-use std::sync::Arc;
-
 use warp_core::{features::FeatureFlag, settings::Setting};
 use warpui::{Entity, ModelContext, SingletonEntity};
 
-use crate::settings::{AISettings, FontSettings, ThinkingDisplayMode};
-use crate::{
-    auth::AuthState,
-    report_if_error,
-    settings::input::InputBoxType,
-    settings::{InputSettings, PrivacySettings, ThemeSettings},
-    terminal::session_settings::SessionSettings,
-    themes::theme::ThemeKind,
-};
+use crate::report_if_error;
+use crate::settings::{AISettings, ThinkingDisplayMode};
 
 pub struct SettingsInitializer;
 
@@ -26,13 +17,12 @@ impl SettingsInitializer {
         Self
     }
 
-    /// Adjusts settings values once the user identity is known.
+    /// One-shot migrations of renamed or restructured settings keys, run once at
+    /// startup.
     ///
-    /// Specifically useful for adjusting settings for first-time users when the default value of a
-    /// setting as set in define_settings_group! is no longer the desired default value,
-    /// but we don't want to change it for existing users (which is what would happen if we changed the
-    /// default value in define_settings_group! in code), and for one-shot migrations of renamed
-    /// settings keys.
+    /// Upstream's version was also the place to give first-time users a different
+    /// default from the one declared in `define_settings_group!`. That half is gone
+    /// here — see the "no new-user branch" note below.
     ///
     /// Zap: at the pin this was `handle_user_fetched`, called from
     /// `42effe840:app/src/auth/auth_manager.rs:430` when the server returned the
@@ -43,92 +33,39 @@ impl SettingsInitializer {
     /// fully determined the moment it is constructed, so startup is the trigger and
     /// `settings::run_startup_settings_initialization` is the caller.
     ///
-    /// Caveat, so it is not re-derived: the `is_onboarded() == Some(false)` block is
-    /// still unreachable in this fork, because the local user hardcodes
-    /// `is_onboarded: true` (`app/src/auth/mod.rs:213`). It is kept intact rather
-    /// than deleted so it works again if a real onboarding state is ever introduced.
-    /// The migrations below the block are the part that this fork actually needs,
-    /// and they now run.
+    /// **There is no "new user" branch here, on purpose (#634).** This function used
+    /// to open with `if auth_state.is_onboarded() == Some(false) { ... }`, holding
+    /// four first-run overrides: `disable_default_regex_trigger`, the Adeberry
+    /// theme, the Windows 16px monospace default, and Universal input box (plus its
+    /// `honor_ps1` follow-up). None of them ever ran. This fork has no first-run
+    /// experience: the local placeholder user hardcodes `is_onboarded: true`
+    /// (`app/src/auth/mod.rs:213`) and nothing outside tests clears it, so the
+    /// predicate is a constant `Some(true)` and the block was unreachable. It was
+    /// previously kept "so it works again if a real onboarding state is ever
+    /// introduced"; the decision is now that the declared defaults are the whole
+    /// story, so the block is gone rather than lying about what ships.
     ///
-    /// Audit of every migration in here for "pin predicate reading a fork-diverged
-    /// default", so it is not re-derived (the NLD one below was an instance and is
-    /// fixed; the rest are recorded as checked):
+    /// **Do not re-add it.** The effective defaults are the ones declared at the
+    /// settings themselves — `InputBoxType::Classic`
+    /// (`app/src/settings/input.rs`), 13px monospace on every platform including
+    /// Windows (`app/src/settings/font.rs`), `ThemeKind::PhosphorAmber`
+    /// (`app/src/themes/theme.rs`) — and removing the block changed none of them.
+    /// A first-run experience is a product decision, not a migration; building one
+    /// means giving `is_onboarded` a real source first.
+    /// `startup_migrations_do_not_apply_new_user_overrides` below fails if the block
+    /// comes back.
+    ///
+    /// Audit of every migration left in here for "pin predicate reading a
+    /// fork-diverged default", so it is not re-derived (the NLD one below was an
+    /// instance and is fixed; the rest are recorded as checked):
     ///
     /// * NLD-in-terminal — **was** an instance; see the long comment at its call
     ///   site. `nld_in_terminal_enabled_internal` defaults `true` here vs `false` at
     ///   the pin.
-    /// * Adeberry theme — compares against the literal `ThemeKind::Phenomenon`, not
-    ///   against the default, so a diverged default cannot make it write the wrong
-    ///   value. It does diverge in the harmless direction: `ThemeKind::default()` is
-    ///   `PhosphorAmber` here and `Dark` at the pin, so a fresh fork user never
-    ///   matches `Phenomenon` and the override simply never fires. That is fine —
-    ///   `PhosphorAmber` is the fork's intended branding default. Moot in practice
-    ///   while the enclosing `is_onboarded() == Some(false)` block is unreachable.
-    /// * Universal input box / `honor_ps1` — `input_box_type` defaults to
-    ///   `InputBoxType::Classic` in both trees, so the comparison means the same
-    ///   thing. Also inside the unreachable block.
-    /// * Windows monospace font size — a constant, reads no setting.
     /// * `KeepThinkingExpanded` -> `ThinkingDisplayMode` — reads the two raw
     ///   preference keys directly rather than any typed default, and only writes
     ///   when the old key was explicitly `true`. Immune to default divergence.
-    pub fn apply_startup_settings_migrations(
-        &self,
-        auth_state: Arc<AuthState>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        /// We use a font-size of 16px (12pt) on Windows to more closely match the default font size of
-        /// Windows terminal.
-        const DEFAULT_WINDOWS_MONOSPACE_FONT_SIZE: f32 = 16.;
-
-        if auth_state.is_onboarded() == Some(false) {
-            PrivacySettings::handle(ctx).update(ctx, |settings, ctx| {
-                // Previously, secret redaction had a built-in default set of regexes that users couldn't change.
-                // We want to add that default list to all existing users' lists, so we don't regress their current secret redaction experience.
-                // However, for new users, we don't want to add these defaults without their explicit action, so we disable adding them here.
-                settings.disable_default_regex_trigger(ctx);
-            });
-
-            if FeatureFlag::DefaultAdeberryTheme.is_enabled() {
-                log::debug!("Setting default theme to Adeberry for new user");
-                ThemeSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    if *settings.theme_kind.value() == ThemeKind::Phenomenon {
-                        report_if_error!(settings.theme_kind.set_value(ThemeKind::Adeberry, ctx));
-                    }
-                });
-            }
-
-            if cfg!(windows) {
-                log::debug!("Setting default font size to 16px (12pt) for a new Windows user");
-                FontSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(settings
-                        .monospace_font_size
-                        .set_value(DEFAULT_WINDOWS_MONOSPACE_FONT_SIZE, ctx));
-                })
-            }
-
-            let did_update_input_type = InputSettings::handle(ctx).update(ctx, |settings, ctx| {
-                if !settings.input_box_type.is_value_explicitly_set()
-                    && *settings.input_box_type.value() == InputBoxType::Classic
-                {
-                    log::debug!("Setting default input type to Phosphor prompt for new user");
-                    report_if_error!(settings
-                        .input_box_type
-                        .set_value(InputBoxType::Universal, ctx));
-                    ctx.notify();
-                    return true;
-                }
-                false
-            });
-            // Keep honor_ps1 in sync: Universal input requires honor_ps1 = false.
-            if did_update_input_type {
-                SessionSettings::handle(ctx).update(ctx, |settings, ctx| {
-                    if *settings.honor_ps1.value() {
-                        report_if_error!(settings.honor_ps1.set_value(false, ctx));
-                    }
-                });
-            }
-        }
-
+    pub fn apply_startup_settings_migrations(&self, ctx: &mut ModelContext<Self>) {
         // Migrate the old, previously-global autodetection setting
         // (`ai_autodetection_enabled_internal`) to the new per-surface
         // `nld_in_terminal_enabled_internal`, when AgentView is enabled.
@@ -280,26 +217,151 @@ mod tests {
     //! `nld_in_terminal_enabled` default" — belongs next to the migration it
     //! guards.
 
-    use std::sync::Arc;
-
     use warp_core::features::FeatureFlag;
     use warp_core::settings::Setting;
     use warpui::{App, SingletonEntity};
 
     use super::SettingsInitializer;
-    use crate::auth::AuthState;
-    use crate::settings::AISettings;
+    use crate::settings::input::InputBoxType;
+    use crate::settings::{AISettings, FontSettings, InputSettings, PrivacySettings, ThemeSettings};
+    use crate::terminal::session_settings::SessionSettings;
     use crate::test_util::settings::initialize_settings_for_tests;
 
     fn run_startup_migrations(app: &mut App) {
         app.add_singleton_model(|_| SettingsInitializer::new());
         app.update(|ctx| {
-            // Mirrors `settings::run_startup_settings_initialization`: the local
-            // placeholder `AuthState` is what production hands the migrations,
-            // and it always reports `is_onboarded() == Some(true)`.
-            let auth_state = Arc::new(AuthState::new_for_test());
+            // Mirrors `settings::run_startup_settings_initialization`.
             SettingsInitializer::handle(ctx).update(ctx, |initializer, ctx| {
-                initializer.apply_startup_settings_migrations(auth_state, ctx);
+                initializer.apply_startup_settings_migrations(ctx);
+            });
+        });
+    }
+
+    /// #634: this fork has no first-run experience, so startup must leave the
+    /// declared defaults exactly as declared.
+    ///
+    /// The migrations used to open with `if auth_state.is_onboarded() == Some(false)`,
+    /// holding **all five** of the overrides asserted below. The predicate was a
+    /// constant `Some(true)` — `User::test()` hardcodes `is_onboarded: true` — so
+    /// none of it ran, and the block was removed rather than left implying a first
+    /// run that does not exist.
+    ///
+    /// What makes this fail: re-adding any of those overrides, including behind a
+    /// predicate that *can* be false. A first-run experience is a product decision
+    /// this fork has not made — see the note on `apply_startup_settings_migrations`.
+    ///
+    /// **Where this test's reach ends, so nobody over-trusts it.** It can only see
+    /// what `apply_startup_settings_migrations` writes. Dropping `auth_state` from
+    /// that signature is what forces a would-be restorer through a visible API
+    /// change; a restore that instead read `AuthStateProvider::as_ref(ctx)` off the
+    /// `ModelContext` would compile, and every assertion here would still hold
+    /// **as long as `is_onboarded()` stays a constant `Some(true)`** — which is the
+    /// same fact that makes the block dead in the first place. The day someone gives
+    /// `is_onboarded` a real source, this test starts catching that restore too.
+    ///
+    /// Note both halves of each assertion. The value alone is not enough: an
+    /// override that writes the same value the default already has — `honor_ps1`
+    /// was exactly that, already `false` — still marks the setting *explicitly set*,
+    /// which pins it forever and makes the default unrecoverable even by deleting the
+    /// migration again.
+    #[test]
+    fn startup_migrations_do_not_apply_new_user_overrides() {
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            // Not in `initialize_settings_for_tests` (production registers it later,
+            // from `initialize_app`), so the secret-redaction assertion below needs
+            // it added here. Same pattern as the other tests that touch it.
+            app.add_singleton_model(PrivacySettings::mock);
+
+            let (font_size_before, input_box_type_before, theme_before) = app.read(|ctx| {
+                assert!(
+                    !*PrivacySettings::as_ref(ctx)
+                        .has_initialized_default_secret_regexes
+                        .value(),
+                    "precondition: a fresh profile has not been seeded with the \
+                     recommended secret-redaction regexes yet"
+                );
+                (
+                    *FontSettings::as_ref(ctx).monospace_font_size.value(),
+                    *InputSettings::as_ref(ctx).input_box_type.value(),
+                    ThemeSettings::as_ref(ctx).theme_kind.value().clone(),
+                )
+            });
+            assert_eq!(
+                input_box_type_before,
+                InputBoxType::Classic,
+                "precondition: the declared default input box is Classic on every platform"
+            );
+
+            run_startup_migrations(&mut app);
+
+            app.read(|ctx| {
+                let input_settings = InputSettings::as_ref(ctx);
+                assert_eq!(
+                    *input_settings.input_box_type.value(),
+                    input_box_type_before,
+                    "startup must not switch the input box to Universal: that override was \
+                     the dead new-user branch removed in #634"
+                );
+                assert!(
+                    !input_settings.input_box_type.is_value_explicitly_set(),
+                    "startup must not write input_box_type at all -- an explicit write pins \
+                     the value and the declared default could never apply again"
+                );
+
+                // The Universal-input override's follow-up. `honor_ps1` already
+                // defaults to `false`, so only the "explicitly set" half of this can
+                // ever fail -- which is exactly the half that matters.
+                assert!(
+                    !SessionSettings::as_ref(ctx).honor_ps1.is_value_explicitly_set(),
+                    "startup must not write honor_ps1: it was the Universal-input \
+                     override's follow-up, and writing the value it already has would \
+                     still pin it"
+                );
+
+                let font_settings = FontSettings::as_ref(ctx);
+                assert_eq!(
+                    *font_settings.monospace_font_size.value(),
+                    font_size_before,
+                    "startup must not raise the monospace font size (the removed branch set \
+                     16px on Windows); the declared default applies on every platform"
+                );
+                assert!(
+                    !font_settings.monospace_font_size.is_value_explicitly_set(),
+                    "startup must not write monospace_font_size at all"
+                );
+
+                let theme_settings = ThemeSettings::as_ref(ctx);
+                assert_eq!(
+                    theme_settings.theme_kind.value(),
+                    &theme_before,
+                    "startup must not override the theme; the removed branch swapped \
+                     Phenomenon for Adeberry, and PhosphorAmber is this fork's default"
+                );
+                assert!(
+                    !theme_settings.theme_kind.is_value_explicitly_set(),
+                    "startup must not write theme_kind at all"
+                );
+
+                // The one with a security consequence, and the reason this assertion
+                // exists at all. The removed branch called
+                // `PrivacySettings::disable_default_regex_trigger`, which sets this
+                // guard to `true` WITHOUT seeding anything -- so a "new user" got a
+                // redactor compiled from an empty list and no secret in terminal
+                // output was ever blurred. `run_startup_settings_initialization`
+                // calls `initialize_default_regexes_once` immediately after these
+                // migrations and skips seeding when the guard is already set, so a
+                // migration that pre-sets it silently disables redaction for
+                // everyone.
+                assert!(
+                    !*PrivacySettings::as_ref(ctx)
+                        .has_initialized_default_secret_regexes
+                        .value(),
+                    "startup migrations must not pre-set \
+                     HasInitializedDefaultSecretRegexes: the very next step, \
+                     initialize_default_regexes_once, skips seeding when it is already \
+                     true, so this would leave secret redaction matching nothing"
+                );
             });
         });
     }

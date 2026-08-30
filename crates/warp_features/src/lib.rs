@@ -895,12 +895,22 @@ pub const PREVIEW_FLAGS: &[FeatureFlag] = &[
 pub const RELEASE_FLAGS: &[FeatureFlag] = &[
     // `FeatureFlag::Autoupdate` is deliberately NOT here, unlike upstream.
     //
-    // This fork does not ship autoupdate: `autoupdate` is not in `app/Cargo.toml`'s
-    // `default` feature list, and the release workflow publishes no update feed. Upstream's
-    // list assumes a product that updates itself; carrying that assumption meant the flag
-    // was set for every release build even though the Cargo feature behind it was off, so
-    // the runtime guards (`lib.rs`, `workspace/`, `resource_center/`) would branch as if
-    // autoupdate existed.
+    // This fork's GUI does not ship autoupdate: `autoupdate` is not in
+    // `app/Cargo.toml`'s `default` feature list, and since #630 no release bundler
+    // passes it either -- so the Cargo feature is off in every shipped build, on every
+    // platform. Upstream's list assumes a product that updates itself; carrying that
+    // assumption meant the flag was set for every release build even though the Cargo
+    // feature behind it was off, so the runtime guards (`lib.rs`, `workspace/`,
+    // `resource_center/`) would branch as if autoupdate existed.
+    //
+    // Do NOT re-add "and the release workflow publishes no update feed" here. That
+    // clause was wrong and has now been deleted twice: the workflow DOES publish the
+    // GitHub Release that `app/src/autoupdate/github.rs` polls (`jwp2987/phosphor`).
+    // `DECLINED.md` corrected it on 2026-08-20 and the correction did not reach this
+    // comment. The reason is the Cargo feature, not a missing feed.
+    //
+    // Scope: the GUI only. `phosphor-tui` has a separate updater keyed off
+    // `general.autoupdate_enabled`, inert for its own reasons -- see `DECLINED.md`.
     //
     // It stays reachable for anyone who wants it: `app/src/lib.rs`'s `extra_flags` still
     // adds it under `#[cfg(feature = "autoupdate")]`, so an explicit

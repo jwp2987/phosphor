@@ -150,6 +150,10 @@ jobs:
         shell: bash
         run: ./script/check_channel_command_names
 
+      - name: No autoupdate (bundlers, cargo default, RELEASE_FLAGS)
+        shell: bash
+        run: ./script/check_no_autoupdate
+
       - name: Generator wrapper names (bootstrap scripts match in_band_command_executor.rs)
         shell: bash
         run: ./script/check_generator_wrapper_names

@@ -158,17 +158,20 @@ the input:
 | `pinned_to_top` | Newest blocks at the top; the block list is inverted. |
 | `waterfall` | The input starts at the top of the pane and is pushed down as commands accumulate. |
 
-> A source comment claims new users are defaulted to `waterfall` by the settings
-> initializer. That is stale: nothing in this tree reads the
-> `DefaultWaterfallMode` flag, so the effective default really is
-> `pinned_to_bottom` for everyone.
+> A source comment used to claim new users are defaulted to `waterfall` by the
+> settings initializer. It was stale twice over — no such override ever existed
+> here, and nothing in this tree reads the `DefaultWaterfallMode` flag — and has
+> been corrected (#634). The effective default really is `pinned_to_bottom` for
+> everyone.
 
 ### Which input box (`InputSettings.input_box_type_setting`)
 
 `terminal.input.input_box_type_setting` picks between `classic` (terminal-first)
-and `universal` (AI-first). **The default is `classic`.** Phosphor contains code
-that would flip new users to `universal`, but it sits behind an onboarding check
-that is permanently false in this fork, so it never runs.
+and `universal` (AI-first). **The default is `classic`, for everyone.** Phosphor
+used to carry code that would flip new users to `universal`, behind an onboarding
+check that is permanently false in this fork. It never ran, and it has been
+removed (#634): this fork has no first-run experience, so the declared default is
+the whole story.
 
 ### Editing
 
@@ -621,10 +624,10 @@ also-default-on feature: `workspace:pin_active_tab`,
 | Thin strokes *(macOS)* | `appearance.text.use_thin_strokes` | `on_high_dpi_displays` |
 | Markdown heading scales H1–H6 | `appearance.text.markdown_heading_h1_scale` … `_h6_scale` | `2.0`, `1.5`, `1.17`, `1.0`, `0.83`, `0.75` |
 
-> Phosphor contains a rule that would bump the default font size to 16 px on
-> Windows for new users, but it lives inside the same never-taken onboarding
-> branch as the `universal` input default. The real default on every platform is
-> `13.0`.
+> Phosphor used to carry a rule that would bump the default font size to 16 px on
+> Windows for new users, inside the same never-taken onboarding branch as the
+> `universal` input default. Both were removed with that branch (#634). The real
+> default on every platform is `13.0`.
 
 Zoom: `cmd-=` / `cmd--` / `cmd-0` (macOS), `ctrl-=` / `ctrl--` / `ctrl-0`
 elsewhere.
@@ -893,10 +896,10 @@ like it is doing:
   hook is behind the `crash_reporting` cargo feature
   (`app/src/lib.rs:1551-1557`), which is not in `app/Cargo.toml`'s default list,
   and each bundler's `oss` branch *resets* the feature list without it —
-  `release_bundle,extern_plist,autoupdate` on macOS (`script/macos/bundle:358`),
-  `release_bundle` on Linux (`script/linux/bundle:203`), and
-  `release_bundle,gui,nld_improvements,autoupdate` on Windows
-  (`script/windows/bundle.ps1:125`). Do not be misled by the `crash_reporting`
+  `release_bundle,extern_plist` on macOS (`script/macos/bundle`),
+  `release_bundle` on Linux (`script/linux/bundle`), and
+  `release_bundle,gui,nld_improvements` on Windows
+  (`script/windows/bundle.ps1`). Do not be misled by the `crash_reporting`
   in each script's *default* `FEATURES` assignment: that is the dev-channel
   value, overwritten for `oss`.
 - The Settings → Privacy toggle still renders, because its `should_render` gates
@@ -1153,12 +1156,13 @@ crates/warp_features/src/lib.rs:44,758,763,929-986  Ligatures/GroupedTabs/Pinned
                                                    HOARemoteControl; is_enabled() resolution order;
                                                    DOGFOOD/LOCAL/PREVIEW lists reach no binary this repo builds
 app/src/settings/init.rs:296-307                   appearance.tabs.enable_tab_groups feeds the flag's user preference
-app/src/settings/initializer.rs:40-125             the new-user block (Universal input, Windows 16px font) sits
-                                                   under is_onboarded()==Some(false), documented unreachable
-                                                   because app/src/auth/mod.rs:213 hardcodes is_onboarded: true
+app/src/settings/initializer.rs                    the new-user block (Universal input, Windows 16px font) sat
+                                                   under is_onboarded()==Some(false); unreachable because
+                                                   app/src/auth/mod.rs:213 hardcodes is_onboarded: true, and
+                                                   REMOVED by #634 -- the declared defaults are the effective ones
 crates/warp_features/src/lib.rs (DefaultWaterfallMode) + app/src/lib.rs:2955-2956
-                                                   flag is set but has no reader anywhere; the stale comment is
-                                                   app/src/settings/input_mode.rs:9-11
+                                                   flag is set but has no reader anywhere; the comment that
+                                                   claimed otherwise (app/src/settings/input_mode.rs) is fixed
 
 ## Removed / declined
 DECLINED.md:74-90        cloud out of scope: teams, accounts, billing, RunAgents, environments

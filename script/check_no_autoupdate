@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+#
+# Fail if anything re-enables autoupdate in a shipped build.
+#
+# THE DECISION
+# ------------
+# The GUI app ships no autoupdate on any platform (#630). Linux never did;
+# `160cfca59` turned it on for macOS and Windows and that was reverted. The
+# About-page controls are hidden with it (`SHOW_AUTOUPDATE_UI`).
+#
+# "No autoupdate anywhere" is about the GUI only. `phosphor-tui` has its own,
+# separate updater -- see "what is deliberately not checked" below.
+#
+# WHY A GUARD AND NOT A TEST
+# --------------------------
+# The switch is not in Rust. `FeatureFlag::Autoupdate` is enabled by exactly one
+# thing -- the `autoupdate` cargo feature, via
+# `#[cfg(feature = "autoupdate")] FeatureFlag::Autoupdate` in `enabled_features()`
+# (app/src/lib.rs) -- and the cargo feature is turned on by a string inside a shell
+# script and a PowerShell script. A `#[test]` in the app crate cannot observe it:
+# the test binary is compiled with the test profile's features, so it reports on
+# its own build, never on what the bundlers ask for. Nothing in the type system
+# connects `FEATURES="...,autoupdate"` to the flag, so the whole thing compiles and
+# every test stays green while a release bundle quietly starts polling GitHub.
+#
+# That is the same defect class script/check_channel_command_names guards, one
+# string over.
+#
+# WHAT IS CHECKED -- all three enable paths, because checking one gives a
+# confident wrong answer:
+#
+#   1. No bundler passes the `autoupdate` cargo feature. Every FEATURES-producing
+#      assignment in the three bundlers is read back, comments stripped, and
+#      checked -- BOTH the top-level dev-channel default near the top of each file
+#      AND the `oss` branch that overwrites it. Comments are stripped on purpose:
+#      each bundler carries a long note explaining what autoupdate WOULD do if
+#      re-enabled, and that prose must not trip the guard.
+#
+#      The match pattern is fussier than it looks, and the first version of it had
+#      a hole. It anchored on `^[[:space:]]*\$?FEATURES`, which cannot match
+#      PowerShell's typed parameter declaration
+#
+#          [String]$FEATURES = 'release_bundle,crash_reporting,gui',
+#
+#      at script/windows/bundle.ps1's param() block -- the `[String]` breaks the
+#      anchor. The equivalent top-level defaults in the two bash bundlers WERE
+#      caught, so the guard was silently asymmetric: adding `,autoupdate` to that
+#      one line left it exiting 0. It now anchors on a non-identifier boundary
+#      instead, which also picks up `+=` appends in either language. Six positive
+#      controls -- default and `oss` branch in each of the three bundlers -- were
+#      re-verified by mutation after the fix.
+#   2. `autoupdate` is not in app/Cargo.toml's `default` feature list. (Note the
+#      distinct `autoupdate_ui_revamp`, which IS in `default` and is unrelated --
+#      it only chooses between two presentations of a subsystem that never runs.)
+#   3. `FeatureFlag::Autoupdate` is not in `RELEASE_FLAGS`. It was removed
+#      deliberately; putting it back would set the flag for every release build
+#      even with the cargo feature off, which is the state the removal fixed.
+#
+# WHAT IS DELIBERATELY NOT CHECKED
+# --------------------------------
+#   * `--features autoupdate` on a developer's own `cargo build`. That is the
+#      supported way to get autoupdate back and must keep working. By the same
+#      token script/macos/bundle's `--feature` passthrough (`FEATURES="$FEATURES,$2"`)
+#      is caller-supplied and cannot be checked from here.
+#   * The TUI's separate updater. `crates/warp_tui/src/autoupdate.rs` is a whole
+#      second background updater for `phosphor-tui`, gated on
+#      `general.autoupdate_enabled` (default `true`) rather than on this cargo
+#      feature or on `FeatureFlag::Autoupdate`. It is inert for a different reason
+#      -- eligibility needs a managed `versions/<version>/` install layout that the
+#      shipped tarball never creates -- and it is declined separately in
+#      `DECLINED.md`. Do not conflate the two; at least one audit already has.
+#   * `FeatureFlag::AutoupdateUIRevamp` -- see (2).
+#   * `SHOW_AUTOUPDATE_UI`. It is a Rust constant, so a Rust test can and does
+#      cover the fork's expectations for it; duplicating that here would be a
+#      second place to update.
+
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+status=0
+fail() { printf 'check_no_autoupdate: FAIL %s\n' "$1" >&2; status=1; }
+
+# --- 1. the bundlers -------------------------------------------------------
+# Strip comments first (`#` to end of line for both bash and PowerShell), then
+# keep only lines that assign FEATURES / $FEATURES.
+for bundler in script/linux/bundle script/macos/bundle script/windows/bundle.ps1; do
+    if [[ ! -f "$bundler" ]]; then
+        fail "$bundler is missing -- this guard is asserting nothing about it"
+        continue
+    fi
+    # `(^|[^A-Za-z0-9_])` rather than `^[[:space:]]*`: see the header. It admits
+    # `[String]$FEATURES = ...` and `$FEATURES += ...` while still refusing
+    # `CARGO_FEATURES=` (the preceding `_` is inside the excluded class) and
+    # `--features "$FEATURES"` (no `=` follows).
+    hits="$(sed 's/#.*$//' "$bundler" \
+        | grep -nE '(^|[^A-Za-z0-9_])\$?FEATURES[[:space:]]*\+?=' \
+        | grep -E '(^|[^_[:alnum:]])autoupdate([^_[:alnum:]]|$)')" || true
+    if [[ -n "$hits" ]]; then
+        fail "$bundler passes the \`autoupdate\` cargo feature:"
+        printf '%s\n' "$hits" | sed 's/^/         /' >&2
+        printf '       This fork ships no autoupdate on any platform (#630). If that\n' >&2
+        printf '       decision has changed, update this guard in the same commit.\n' >&2
+    fi
+done
+
+# --- 2. app/Cargo.toml `default` -------------------------------------------
+manifest=app/Cargo.toml
+if [[ ! -f "$manifest" ]]; then
+    fail "$manifest is missing"
+else
+    default_block="$(awk '/^default[[:space:]]*=[[:space:]]*\[/{f=1} f{print} f&&/^\]/{exit}' "$manifest")"
+    if [[ -z "$default_block" ]]; then
+        fail "could not find the \`default = [\` feature list in $manifest"
+    elif grep -qE '^[[:space:]]*"autoupdate"[[:space:]]*,?[[:space:]]*$' <<<"$default_block"; then
+        fail "\"autoupdate\" is in $manifest's \`default\` feature list"
+    fi
+fi
+
+# --- 3. RELEASE_FLAGS ------------------------------------------------------
+features_rs=crates/warp_features/src/lib.rs
+if [[ ! -f "$features_rs" ]]; then
+    fail "$features_rs is missing"
+else
+    release_block="$(awk '/pub const RELEASE_FLAGS/{f=1} f{print} f&&/^\];/{exit}' "$features_rs" \
+        | sed 's|//.*$||')"
+    if [[ -z "$release_block" ]]; then
+        fail "could not find RELEASE_FLAGS in $features_rs"
+    elif grep -qE 'FeatureFlag::Autoupdate[^A-Za-z]' <<<"$release_block"; then
+        fail "FeatureFlag::Autoupdate is back in RELEASE_FLAGS ($features_rs)"
+    fi
+fi
+
+if ((status == 0)); then
+    printf 'check_no_autoupdate: ok -- no bundler, cargo default or RELEASE_FLAGS entry enables autoupdate\n'
+fi
+exit $status

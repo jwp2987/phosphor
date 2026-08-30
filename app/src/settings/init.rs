@@ -324,9 +324,10 @@ pub fn init(
 }
 
 /// Second-phase settings initialization: the work [`init`] cannot do because it
-/// needs singletons that `initialize_app` registers *after* it runs
-/// (`AuthStateProvider` and `PrivacySettings`). Call it once, from
-/// `initialize_app`, right after `PrivacySettings::register_singleton`.
+/// needs `PrivacySettings`, which `initialize_app` registers *after* it runs. Call
+/// it once, from `initialize_app`, right after `PrivacySettings::register_singleton`.
+/// (It used to need `AuthStateProvider` too, for the first-run branch removed in
+/// #634.)
 ///
 /// At the pin both halves hung off the server round-trip in
 /// `42effe840:app/src/auth/auth_manager.rs`: `handle_user_fetched` at `:430-431`
@@ -338,16 +339,18 @@ pub fn init(
 /// `AuthState` is a local placeholder that is fully determined the instant it is
 /// constructed.
 ///
-/// Order matches the pin — the initializer first, then the regex seeding — because
-/// for a not-yet-onboarded user the initializer calls
-/// `disable_default_regex_trigger`, which must be set before the seeding reads it.
+/// Order still matches the pin — the initializer first, then the regex seeding.
+/// The pin's *reason* no longer applies: for a not-yet-onboarded user its
+/// initializer called `disable_default_regex_trigger`, which had to be set before
+/// the seeding read it. That branch is gone here (#634 — see
+/// `apply_startup_settings_migrations`; this fork has no first-run state, so it
+/// never ran), and the two steps are now independent. Kept in this order anyway,
+/// because reordering would be a diff against the pin that buys nothing.
 pub fn run_startup_settings_initialization(ctx: &mut AppContext) {
     use super::PrivacySettings;
-    use crate::auth::AuthStateProvider;
 
-    let auth_state = AuthStateProvider::as_ref(ctx).get().clone();
     SettingsInitializer::handle(ctx).update(ctx, |initializer, ctx| {
-        initializer.apply_startup_settings_migrations(auth_state, ctx);
+        initializer.apply_startup_settings_migrations(ctx);
     });
 
     // Install the recommended secret-redaction regexes. `CustomSecretRegexList`

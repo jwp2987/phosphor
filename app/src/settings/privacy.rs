@@ -617,6 +617,16 @@ impl PrivacySettings {
     }
 
     /// Disables the default regex trigger, so that it will not be executed.
+    ///
+    /// **No caller since #634.** Its only one was the first-run branch of
+    /// `SettingsInitializer::apply_startup_settings_migrations`, which suppressed the
+    /// recommended secret-redaction regexes for a brand-new user so they were never
+    /// added without an explicit action. That branch was unreachable in this fork
+    /// (`is_onboarded()` is a constant `Some(true)`) and has been removed, so every
+    /// user is seeded — which is the fork's intent: the redactor otherwise compiles a
+    /// match-nothing regex and blurs no secrets at all. Kept because it is the only
+    /// way to set the guard without also writing the list, and a real first-run state
+    /// would need it back.
     pub fn disable_default_regex_trigger(&mut self, ctx: &mut ModelContext<Self>) {
         if self
             .has_initialized_default_secret_regexes
