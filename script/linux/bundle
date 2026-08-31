@@ -269,6 +269,41 @@ fi
 # is preserved (the host glibc path is unaffected).
 if [[ "$BUILD" == "true" ]]; then
   echo "Building and bundling Phosphor for channel $RELEASE_CHANNEL and bundle id $BUNDLE_ID"
+
+  # Do NOT link release artifacts with mold.
+  #
+  # `.cargo/config.toml` sets `-fuse-ld=mold` under
+  # `[target.x86_64-unknown-linux-gnu]`, and its comment presents that as a
+  # local-dev speedup -- but a `[target.*]` block is committed and applies to
+  # every build for that triple, CI releases included. mold 2.x miscompiles the
+  # dynamic relocation table for this binary in the release profile: it emits a
+  # spurious `R_X86_64_PLT32` as the first entry of `.rela.dyn` (r_offset 0x24,
+  # inside the ELF header) and counts it in `DT_RELACOUNT`. glibc's `ld.so`
+  # trusts RELACOUNT and fast-paths that many entries through
+  # `elf_machine_rela_relative`, hits the non-relative type at index 0, and
+  # aborts before `main`:
+  #
+  #   Inconsistency detected by ld.so: dl-machine.h: 498:
+  #   elf_machine_rela_relative: Assertion `ELFW(R_TYPE) (reloc->r_info)
+  #   == R_X86_64_RELATIVE' failed!
+  #
+  # The binary is dead on arrival on every glibc host. This shipped in
+  # v2026.08.29.1-beta and v2026.08.30.1-beta because nothing in the pipeline
+  # ever executed the artifact it published -- see the verification step below.
+  #
+  # Measured, same source/profile/features, only the linker differing:
+  #   mold : first .rela.dyn entry R_X86_64_PLT32, RELACOUNT 273915 vs 273914
+  #          actual relative -- does not start
+  #   bfd  : first entry R_X86_64_RELATIVE, RELACOUNT 287442 == 287442
+  #          actual relative -- starts
+  #
+  # Setting RUSTFLAGS overrides the `[target.*]` rustflags wholesale, so the
+  # `symbol-mangling-version=v0` from that block has to be repeated here. The
+  # macOS-only `-headerpad_max_install_names` from `[build].rustflags` is
+  # deliberately not carried over; that block is already overridden on Linux.
+  # Local dev builds are untouched and keep mold.
+  export RUSTFLAGS="-C symbol-mangling-version=v0"
+
   if [[ "${USE_ZIGBUILD:-false}" == "true" ]]; then
     echo "Using cargo zigbuild (zig-backed cross toolchain)"
     cargo zigbuild -p warp --profile "$CARGO_PROFILE" --bin "$WARP_BIN" --features "$FEATURES" "${CARGO_TARGET_ARG[@]}"
@@ -288,6 +323,26 @@ if [[ "$BUILD" == "true" ]]; then
     # smaller.
     strip --strip-all "$EXECUTABLE_PATH"
   fi
+
+  # Verify the binary can actually be loaded before we package it.
+  #
+  # `DT_RELACOUNT` promises ld.so that the first N entries of `.rela.dyn` are
+  # all `R_X86_64_RELATIVE`, and ld.so processes them on that promise without
+  # re-checking each type. If the promise is wrong the process aborts before
+  # `main` -- see the mold note above. This costs a second and is the cheapest
+  # possible guard against shipping a binary that cannot start.
+  echo "Verifying dynamic relocations in '$EXECUTABLE_PATH'"
+  relacount="$(readelf -d "$EXECUTABLE_PATH" | awk '/RELACOUNT/ {print $NF}')"
+  actual_relative="$(readelf -r "$EXECUTABLE_PATH" \
+    | awk '/\.rela\.dyn/,0' \
+    | awk '$3 == "R_X86_64_RELATIVE"' | wc -l)"
+  if [[ -n "$relacount" && "$relacount" != "$actual_relative" ]]; then
+    echo "ERROR: DT_RELACOUNT ($relacount) != actual R_X86_64_RELATIVE count ($actual_relative)." >&2
+    echo "       ld.so will abort before main. This is the mold bug; see the" >&2
+    echo "       RUSTFLAGS note above. Refusing to package an unloadable binary." >&2
+    exit 1
+  fi
+  echo "  ok (RELACOUNT $relacount matches $actual_relative relative relocations)"
 else
   echo 'Skipping `cargo build` step due to --skip-build argument'
 fi

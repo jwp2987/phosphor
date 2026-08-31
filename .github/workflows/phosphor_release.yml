@@ -555,6 +555,35 @@ jobs:
           # runner versions.
           APPIMAGE_EXTRACT_AND_RUN: 1
 
+      # Launch what we are about to publish.
+      #
+      # Everything upstream of this proves the code compiles and the library's
+      # tests pass; nothing proves the packaged binary can start. v2026.08.29.1-beta
+      # and v2026.08.30.1-beta both shipped a Linux GUI binary that aborted in
+      # ld.so before `main` (a mold relocation bug -- see the note in
+      # `script/linux/bundle`), and both release runs were fully green, because
+      # no job ever executed the artifact.
+      #
+      # `--appimage-extract-and-run` avoids needing FUSE on the runner, and
+      # `--version` returns immediately and needs no display. This is the floor:
+      # it proves the binary loads and reaches argument parsing. It does NOT
+      # prove the GUI renders -- that needs a display and a real session.
+      - name: Smoke-launch the AppImage
+        run: |
+          set -euo pipefail
+          # `packages_dir` is the bundler's own output (target/release-lto/bundle/linux);
+          # the upload step below uses the same value, so this cannot drift from
+          # where the artifact is actually written.
+          appimage="$(ls "${{ steps.bundle_app.outputs.packages_dir }}"/*.AppImage 2>/dev/null | head -1)"
+          if [[ -z "$appimage" ]]; then
+            echo "ERROR: no AppImage found to smoke-launch in ${{ steps.bundle_app.outputs.packages_dir }}" >&2
+            exit 1
+          fi
+          echo "Launching $appimage"
+          chmod +x "$appimage"
+          "$appimage" --appimage-extract-and-run --version
+        shell: bash
+
       # RPM package: reuses the already-stripped `target/release-lto/phosphor-oss`
       # from the release-lto step above, no `cargo build` again. `--skip-build`
       # makes `script/bundle` skip compiling and stripping, and go straight
