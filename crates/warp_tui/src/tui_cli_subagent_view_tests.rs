@@ -77,6 +77,21 @@ fn terminal_use_status_covers_control_and_lifecycle_states() {
         terminal_use_status_text(&transferred, false, false),
         "Agent handed control to you · ctrl-g to hand back"
     );
+
+    // A password-prompt hand-over reads differently from the agent-initiated transfer above:
+    // nobody chose to hand over, the command stopped and needs a keystroke the agent cannot
+    // supply. The hand-back binding is still the way out once the prompt is answered.
+    let blocked_on_input = LongRunningCommandControlState::User {
+        reason: UserTakeOverReason::BlockedOnInput,
+    };
+    assert_eq!(
+        terminal_use_status_text(&blocked_on_input, false, false),
+        "Command needs your input · user is in control · ctrl-g to hand back"
+    );
+    assert_eq!(
+        terminal_use_status_text(&blocked_on_input, true, false),
+        "Command finished"
+    );
 }
 
 fn test_action(id: &str) -> AIAgentAction {

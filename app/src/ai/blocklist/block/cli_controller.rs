@@ -45,6 +45,15 @@ pub enum UserTakeOverReason {
         /// The reason the agent gave for transferring control.
         reason: String,
     },
+    /// An agent-executed command stopped on a terminal input prompt -- typically `sudo`'s
+    /// password prompt -- detected from termios by the attribute poller. The agent cannot
+    /// answer it and holds the PTY, so before this existed the block simply hung until
+    /// `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION` (30 minutes) fired, with no
+    /// prompt shown to the user; under tmux the prompt wasn't even on a pane they were
+    /// looking at. Control moves to the user so the prompt is answerable. Unlike `Manual`
+    /// and `Stop` this is not the user stepping in, so the conversation is left running and
+    /// resumes on its own once the command completes.
+    BlockedOnInput,
 }
 
 impl<'de> Deserialize<'de> for UserTakeOverReason {
@@ -69,6 +78,7 @@ impl<'de> Deserialize<'de> for UserTakeOverReason {
             Manual,
             Stop { should_auto_resume: bool },
             TransferFromAgent { reason: String },
+            BlockedOnInput,
         }
 
         #[derive(Deserialize)]
@@ -84,6 +94,7 @@ impl<'de> Deserialize<'de> for UserTakeOverReason {
             Wire::Current(Current::TransferFromAgent { reason }) => {
                 Self::TransferFromAgent { reason }
             }
+            Wire::Current(Current::BlockedOnInput) => Self::BlockedOnInput,
             Wire::LegacyStop(LegacyStop::Stop) => Self::Stop {
                 should_auto_resume: false,
             },
@@ -107,6 +118,10 @@ impl UserTakeOverReason {
         matches!(self, Self::TransferFromAgent { .. })
     }
 
+    pub fn is_blocked_on_input(&self) -> bool {
+        matches!(self, Self::BlockedOnInput)
+    }
+
     pub fn transfer_reason(&self) -> Option<&str> {
         match self {
             Self::TransferFromAgent { reason } => Some(reason.as_str()),
@@ -118,8 +133,20 @@ impl UserTakeOverReason {
     /// completes. Only a teardown `Stop` opts out.
     pub fn should_auto_resume(&self) -> bool {
         match self {
-            Self::Manual | Self::TransferFromAgent { .. } => true,
+            Self::Manual | Self::TransferFromAgent { .. } | Self::BlockedOnInput => true,
             Self::Stop { should_auto_resume } => *should_auto_resume,
+        }
+    }
+
+    /// Returns `true` if handing control to the user for this reason should also cancel the
+    /// conversation's in-flight progress. Only a take-over the user initiated does. The agent
+    /// asked for `TransferFromAgent` itself, and `BlockedOnInput` hands over the PTY in the
+    /// middle of the agent's own tool call purely so a prompt can be answered -- cancelling
+    /// there would throw away the very command result the agent is still waiting for.
+    pub fn should_cancel_conversation(&self) -> bool {
+        match self {
+            Self::Manual | Self::Stop { .. } => true,
+            Self::TransferFromAgent { .. } | Self::BlockedOnInput => false,
         }
     }
 }
@@ -607,7 +634,7 @@ impl CLISubagentController {
     }
 
     pub fn switch_control_to_user(&self, reason: UserTakeOverReason, ctx: &mut ModelContext<Self>) {
-        let should_cancel_conversation = !reason.is_transfer_from_agent();
+        let should_cancel_conversation = reason.should_cancel_conversation();
         let mut terminal_model = self.terminal_model.lock();
 
         let active_block = terminal_model.block_list_mut().active_block_mut();
@@ -625,7 +652,8 @@ impl CLISubagentController {
         // model lock before actually cancelling the conversation.
         drop(terminal_model);
 
-        // Only cancel conversation if user manually took control (not when agent transfers control).
+        // Only cancel the conversation if the user initiated the take-over. An agent-driven
+        // transfer, or a hand-over forced by a password prompt, needs the conversation alive.
         if should_cancel_conversation {
             if let Some(conversation_id) = conversation_id {
                 self.controller.update(ctx, |controller, ctx| {

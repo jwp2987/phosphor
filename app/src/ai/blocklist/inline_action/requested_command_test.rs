@@ -1,6 +1,10 @@
 //! Unit tests for format_command_text in requested_command.rs
 
-use super::{format_command_text, mcp_blocked_title_text, mcp_viewing_detail_title_text};
+use super::{
+    format_command_text, header_message_for_user_take_over_reason, mcp_blocked_title_text,
+    mcp_viewing_detail_title_text,
+};
+use crate::ai::blocklist::block::cli_controller::UserTakeOverReason;
 
 #[test]
 fn single_line_without_newline_is_unchanged_ascii() {
@@ -105,6 +109,34 @@ fn mcp_viewing_detail_title_falls_back_to_generic_message_when_tool_name_empty()
     assert_eq!(
         mcp_viewing_detail_title_text("", Some("github")),
         "Viewing MCP tool call detail"
+    );
+}
+
+// Every take-over reason has to say something specific in the block header. A password-prompt
+// hand-over in particular must not read as "User is in control": the user did not choose to
+// take it, and without naming the reason the block looks identical to a manual take-over while
+// the actual prompt may be off-screen (under tmux, on another pane entirely).
+#[test]
+fn header_message_names_every_take_over_reason() {
+    assert_eq!(
+        header_message_for_user_take_over_reason(&UserTakeOverReason::Manual),
+        "User is in control."
+    );
+    assert_eq!(
+        header_message_for_user_take_over_reason(&UserTakeOverReason::Stop {
+            should_auto_resume: true
+        }),
+        "Paused agent. User is in control."
+    );
+    assert_eq!(
+        header_message_for_user_take_over_reason(&UserTakeOverReason::TransferFromAgent {
+            reason: "enter password".to_owned()
+        }),
+        "User in control"
+    );
+    assert_eq!(
+        header_message_for_user_take_over_reason(&UserTakeOverReason::BlockedOnInput),
+        "Command needs your input. User is in control."
     );
 }
 

@@ -422,6 +422,7 @@ impl InteractionMode {
         reason: UserTakeOverReason,
     ) -> Result<(), UpdateInteractionModeError> {
         let Self::Agent(AgentInteractionMetadata {
+            requested_command_action_id,
             long_running_control_state,
             ..
         }) = self
@@ -429,10 +430,18 @@ impl InteractionMode {
             return Err(UpdateInteractionModeError::InvalidTakeOver);
         };
 
-        if !long_running_control_state
-            .as_ref()
-            .is_some_and(|state| state.is_agent_in_control())
-        {
+        // A take-over normally requires the CLI subagent to already hold control, which keeps
+        // stray take-overs from seizing a command the agent never had. The password-prompt
+        // hand-over is the one exception: termios is first sampled a second after the block
+        // starts, which is before `RequestCommandOutput` has returned and therefore before
+        // `CreatedSubtask` installs an `Agent` control state. Requiring one here would reject
+        // exactly the hand-over `BlockedOnInput` exists for, so an agent-requested command with
+        // no control state yet is also a valid take-over -- but only for that reason.
+        let is_valid_take_over = match long_running_control_state.as_ref() {
+            Some(state) => state.is_agent_in_control(),
+            None => reason.is_blocked_on_input() && requested_command_action_id.is_some(),
+        };
+        if !is_valid_take_over {
             return Err(UpdateInteractionModeError::InvalidTakeOver);
         }
 

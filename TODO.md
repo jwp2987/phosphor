@@ -2516,6 +2516,67 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
 - **`docs/STATE.md`'s "N are not adjudicated" is still #603** — a subtraction of totals
   rather than a set difference, so it under-reports.
 
+## AGENT COMMANDS WEDGED ON PASSWORD PROMPTS — 2026-09-02
+
+- [x] **An agent-run command that stops on `sudo`'s password prompt now hands the PTY to the
+      user instead of hanging.** **Written, not compiled** — the build freeze below is still
+      in force, so treat this as a reading-verified change, not a tested one.
+
+  The pieces were all already present and none of them were connected. Password-prompt
+  detection exists (`TerminalView::should_start_password_prompt_polling`,
+  `app/src/terminal/view.rs:25116`, over the termios ECHO/ICANON heuristic in
+  `local_tty/terminal_manager.rs:1022`), but it was armed **only** for the user's own blocks:
+  the gate was `password_notifications_enabled(ctx) || is_ssh_uploader()`, i.e. a *notification*
+  preference deciding whether an *agent* gets unwedged. A user who had turned needs-attention
+  notifications off silently disabled the only detector the agent path could have used. The
+  take-over machinery exists too — `LongRunningCommandControlState::User { reason }`, set
+  through `CLISubagentController::switch_control_to_user`
+  (`app/src/ai/blocklist/block/cli_controller.rs:636`) — but nothing ever called it for this
+  case, and `UserTakeOverReason` (`:34`) had no variant that *meant* it: `Manual`, `Stop` and
+  `TransferFromAgent` all describe somebody choosing to hand over, which is exactly what this
+  is not. So the block sat at "Executing command…" with no prompt and no explanation until
+  `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION`
+  (`app/src/ai/blocklist/action_model/execute/shell_command.rs:129`) fired 30 minutes later —
+  and that constant's own comment says it is a pager-hang defense, "**not** a general command
+  timeout". Under tmux the prompt was not even on a pane the user was looking at.
+
+  What changed: a `BlockedOnInput` variant on `UserTakeOverReason` (`cli_controller.rs:56`);
+  polling armed whenever the active block is agent-driven, regardless of the notification
+  setting (`view.rs:25125`); and `on_possible_password_prompt` switching control to the user
+  on detection (`view.rs:25154`).
+
+  Two consequences worth knowing before touching this again. First, `switch_control_to_user`
+  used to decide whether to cancel the conversation with `!reason.is_transfer_from_agent()`;
+  that is now `reason.should_cancel_conversation()` (`cli_controller.rs:146`), because
+  cancelling here would throw away the very command result the agent's in-flight tool call is
+  still waiting on. Second, `InteractionMode::take_over_for_user`
+  (`app/src/terminal/model/block/interaction_mode.rs:420`) required an existing `Agent` control
+  state, and for this path there is none: termios is first sampled ~1s after the block starts
+  (`local_tty/terminal_attributes.rs:8`), which is before `RequestCommandOutput` returns and
+  therefore before `CreatedSubtask` installs one. That check would have rejected exactly the
+  hand-over it was being asked for, so it now admits an agent-requested command with no control
+  state — for `BlockedOnInput` only.
+
+- [ ] **Not done: the same wedge via a non-password prompt.** The detector keys on termios
+      (ECHO off, ICANON on), which is the password shape specifically. An agent command that
+      blocks on an ordinary `read -p` or a `[y/N]` confirmation leaves echo on and is still
+      invisible; it hangs the same way and still relies on the 30-minute backstop.
+
+- [ ] **Not done: `would_emit_block_started_for_password_prompt_polling`
+      (`view.rs:15361`) still suppresses warpify-compatible subshell commands** — `ssh`,
+      `docker run`, and friends — so an agent-run `ssh` that prompts is not detected. That
+      suppression exists to stop spurious notifications on the *user* path; whether it should
+      apply to the agent path is a separate judgement and was left alone deliberately.
+
+- [ ] **Not done: the TUI gets none of this.** `impl TerminalSurface for TuiTerminalSessionView`
+      (`crates/warp_tui/src/terminal_session_view.rs:5775`) overrides only `on_shell_determined`
+      and `on_pty_spawn_failed`, so it inherits the trait's `false` default for
+      `should_start_password_prompt_polling` and has never polled termios at all. That predates
+      this change. Its rendering half *is* wired — `terminal_use_status_text`
+      (`crates/warp_tui/src/tui_cli_subagent_view.rs:86`) shows the new state — so a TUI session
+      whose control state was set elsewhere displays correctly; it simply cannot detect the
+      prompt itself.
+
 ## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
 
 **No builds. Nothing that compiles.** Maintainer instruction, 2026-08-11:
