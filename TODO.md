@@ -526,6 +526,18 @@ before acting):
       `FinishReason::Complete`, remove on Error/Cancelled — each placed *before* that arm's
       early return, since a queue whose head is being edited, or a cancel fired while the user
       is not in agent view, are exactly the cases that stranded rows.
+      The error/cancel arm **unlocks rather than removes**: `remove_pending_lrc_rows` there
+      would run before the `pop_front` restore at `view.rs:5145` and destroy text that arm
+      otherwise hands back to the input, turning locked-but-visible into silently-gone.
+      Unlocking keeps the row restorable *and* deletable.
+      Still open, found while reviewing this: `send_lrc_queued_prompts` (`view.rs:4968`)
+      collects with `take_while(|row| row.origin() == LrcAutoQueue)`, so a
+      `PendingLrcAutoQueue` head stops the drain dead and blocks every row behind it; and a
+      command that hangs without ever finishing never reaches `drain_queued_prompts` at all.
+      `CLISubagentEvent::FinishedSubagent` (`view.rs:6249`) and `handle_action_result`
+      (`app/src/ai/blocklist/action_model.rs:1407`) are the hooks that would cover those —
+      the latter is the semantically correct one, since the origin's own doc says "locked
+      until the snapshot fires".
       **Unverified by build: the change compiles only as far as `rustfmt` parses it.**
       The tests pass either way because they call the unlock function directly — the unit was
       always correct and the wiring was what was missing, so a test that exercises the drain

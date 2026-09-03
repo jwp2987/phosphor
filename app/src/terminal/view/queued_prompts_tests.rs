@@ -39,6 +39,13 @@ fn command_query(text: &str) -> QueuedQuery {
     QueuedQuery::new_command(text.to_owned(), QueuedQueryOrigin::AutoQueueToggle)
 }
 
+/// Builds a locked queued row. `PendingLrcAutoQueue` is the only locked origin in Zap, and is
+/// what a prompt submitted while an agent-requested `run_shell_command` action is still pending
+/// is filed under (`Input::maybe_queue_prompt`); it stays locked until the drain releases it.
+fn pending_lrc_query(text: &str) -> QueuedQuery {
+    QueuedQuery::new(text.to_owned(), QueuedQueryOrigin::PendingLrcAutoQueue)
+}
+
 /// Mirrors `TerminalView::drain_queued_prompts`' Complete path at the model level: peek the head
 /// row's action, then remove the fired row (both `AutofireAction` variants carry the row id).
 fn drain_one(
@@ -391,6 +398,155 @@ fn complete_drain_keeps_command_row_when_dispatch_fails_with_draft() {
             assert_eq!(queue[0].id(), query_id);
             assert_eq!(queue[0].text(), "echo 1");
             assert!(queue[0].is_command());
+        });
+    });
+}
+
+#[test]
+fn complete_drain_unlocks_pending_lrc_rows_behind_an_edited_head() {
+    // Regression: `unlock_pending_lrc_rows` was written for exactly this and had no production
+    // caller at all, so a `PendingLrcAutoQueue` row stayed locked for the life of the process --
+    // `is_locked()` gates delete, edit, reorder and auto-fire, and every one of those paths
+    // returned silently. The existing model-level tests call the unlock directly, so they pass
+    // whether or not anything in the app invokes it; this drives it through the drain.
+    //
+    // The Complete arm's unlock must run *before* its edit-mode early return, so the case under
+    // test is the one that return covers: the head row is being edited with a draft in the
+    // input, so the drain fires nothing, and the pending row behind it must still come out
+    // unlocked.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+
+        let (head_id, pending_id) =
+            QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+                let head_id = model.append(conversation_id, user_query("being edited"), ctx);
+                let pending_id =
+                    model.append(conversation_id, pending_lrc_query("locked behind it"), ctx);
+                model.enter_edit_mode(conversation_id, head_id, ctx);
+                (head_id, pending_id)
+            });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(
+                model.queue(conversation_id)[1].is_locked(),
+                "the pending row starts locked"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            // An edited head plus a non-empty input is what trips the Complete arm's early
+            // return, so nothing fires and only the unlock is under test.
+            view.input().update(ctx, |input, ctx| {
+                input.replace_buffer_content("draft in progress", ctx);
+            });
+            view.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(queue.len(), 2, "the early return leaves both rows queued");
+            assert_eq!(queue[0].id(), head_id);
+            assert_eq!(queue[1].id(), pending_id);
+            assert_eq!(queue[1].origin(), QueuedQueryOrigin::LrcAutoQueue);
+            assert!(!queue[1].is_locked());
+        });
+
+        // The user-visible symptom of the missing wiring: before the fix this delete was a
+        // silent no-op, however many times the user dispatched it.
+        let removed = QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.remove_by_id(conversation_id, pending_id, ctx)
+        });
+        assert!(
+            removed.is_some(),
+            "an unlocked row must be deletable by the user"
+        );
+    });
+}
+
+#[test]
+fn cancelled_drain_unlocks_pending_lrc_rows_even_outside_agent_view() {
+    // Regression: neither release function had a production caller, so a row locked when a
+    // turn was cancelled stayed locked for the life of the process.
+    //
+    // This arm unlocks rather than removes, and the difference matters: the restore path in the
+    // same arm pops the head back into the input, so removing here would destroy text the arm
+    // otherwise hands back. Locked-but-visible would have become silently-gone. Unlocking keeps
+    // the row restorable *and* makes it deletable, so the assertions below check both that it
+    // survives and that the user can now act on it.
+    //
+    // The unlock must run *before* the `is_active_in_agent_view` early return. That return
+    // exists so a cancel triggered by leaving agent view preserves the queue for the user's
+    // return, but a preserved *locked* row is one the user can neither fire nor delete -- and a
+    // cancel fired while nobody is looking at the conversation is precisely where a stranded row
+    // goes unnoticed. No agent view is entered here, so that return fires and only the unlock
+    // is under test.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                pending_lrc_query("locked when the turn was cancelled"),
+                ctx,
+            );
+            model.append(conversation_id, user_query("ordinary row"), ctx);
+        });
+
+        terminal.read(&app, |view, ctx| {
+            // Precondition for the early return this test is about: the conversation is not the
+            // one being viewed in agent view.
+            assert_ne!(
+                view.agent_view_controller()
+                    .as_ref(ctx)
+                    .agent_view_state()
+                    .active_conversation_id(),
+                Some(conversation_id)
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.drain_queued_prompts(conversation_id, FinishReason::Cancelled, ctx);
+        });
+
+        let unlocked_id = QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert_eq!(
+                queue.len(),
+                2,
+                "no row is destroyed; the text stays recoverable"
+            );
+            assert_eq!(queue[0].text(), "locked when the turn was cancelled");
+            assert_eq!(queue[0].origin(), QueuedQueryOrigin::LrcAutoQueue);
+            assert!(!queue[0].is_locked(), "the row must no longer be locked");
+            assert_eq!(queue[1].text(), "ordinary row");
+            queue[0].id()
+        });
+
+        // The reported symptom: delete was a silent no-op while the row was locked.
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            assert!(
+                model
+                    .remove_by_id(conversation_id, unlocked_id, ctx)
+                    .is_some(),
+                "an unlocked row must be deletable"
+            );
         });
     });
 }

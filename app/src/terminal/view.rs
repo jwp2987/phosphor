@@ -5026,8 +5026,9 @@ impl TerminalView {
                 // undeletable, uneditable and never fired, because `is_locked()` gates all
                 // three. Must run before the edit-mode early return below, or a queue whose
                 // head is being edited never unlocks the rows behind it.
-                QueuedQueryModel::handle(ctx)
-                    .update(ctx, |model, ctx| model.unlock_pending_lrc_rows(conversation_id, ctx));
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_lrc_rows(conversation_id, ctx)
+                });
 
                 let input_is_empty = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
                 let first_row_is_in_edit_mode =
@@ -5109,17 +5110,21 @@ impl TerminalView {
             | FinishReason::Cancelled
             | FinishReason::CancelledDuringRequestedCommandExecution => {
                 // A turn that errored or was cancelled never produces the snapshot these rows
-                // are waiting on, so unlocking them would leave rows queued against an action
-                // that will never arrive. Drop them instead -- this is the "so stale locked
-                // rows do not linger" case the function was written for.
+                // wait on, so they must not stay locked. Unlock rather than remove: the restore
+                // path below pops the head back into the input, and `remove_pending_lrc_rows`
+                // here would delete that row first, destroying text this arm otherwise hands
+                // back to the user. Locked-but-visible became silently-gone -- worse than the
+                // bug being fixed. Unlocking makes the row restorable *and* deletable, which is
+                // both properties.
                 //
                 // Deliberately before the `is_active_in_agent_view` early return: that return
                 // exists so a cancel triggered by leaving agent view preserves the queue for
                 // when the user comes back, but a *locked* row preserved that way is one the
-                // user can neither fire nor delete. The cleanup has to happen even when nobody
+                // user can neither fire nor delete. The unlock has to happen even when nobody
                 // is looking.
-                QueuedQueryModel::handle(ctx)
-                    .update(ctx, |model, ctx| model.remove_pending_lrc_rows(conversation_id, ctx));
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_lrc_rows(conversation_id, ctx)
+                });
 
                 // Only restore the head into the input when the user is currently viewing this
                 // conversation in agent view. Cancels triggered by exiting the agent view leave
