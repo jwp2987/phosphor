@@ -120,10 +120,17 @@ impl QueuedQuery {
         }
     }
 
-    /// Returns true if this row is locked from user mutation, reorder, and auto-fire.
-    /// Locked rows cannot be edited, deleted, reordered, pushed manually, or auto-fired by
-    /// the drain mechanism. `PendingLrcAutoQueue` rows are locked only until the action
-    /// snapshot fires.
+    /// Returns true if this row is locked from *submission*: it cannot be reordered, pushed
+    /// manually, popped, or auto-fired by the drain, because doing so during a pending action
+    /// snapshot is the CliAgentUserQuery/LRC race this origin exists to prevent.
+    ///
+    /// It can still be **deleted and edited**. Neither submits anything, so neither can race,
+    /// and gating them meant a user who queued a prompt during a long-running command could
+    /// not remove it for as long as that command ran -- with both handlers returning silently,
+    /// so the row simply ignored every click. The panel already took this view: it disables
+    /// only the Send Now button for these rows (`queued_prompts_panel.rs:400`).
+    ///
+    /// `PendingLrcAutoQueue` rows are locked only until the action snapshot fires.
     pub fn is_locked(&self) -> bool {
         matches!(self.origin, QueuedQueryOrigin::PendingLrcAutoQueue)
     }
@@ -683,9 +690,13 @@ impl QueuedQueryModel {
     ) -> Option<QueuedQuery> {
         let state = self.queues.get_mut(&conversation_id)?;
         let idx = state.queue.iter().position(|q| q.id == query_id)?;
-        if state.queue[idx].is_locked() {
-            return None;
-        }
+        // Deliberately not gated on `is_locked()`. The lock exists to stop a row being
+        // *submitted* while an action snapshot is pending -- that is the CliAgentUserQuery/LRC
+        // race. Removing a row cannot race anything: a row that is gone never fires, which is
+        // strictly safer than leaving it queued. Refusing here left the user staring at a row
+        // they could not delete for as long as the command ran, with no feedback at all, and
+        // the panel agrees -- it disables only the Send Now button for these rows
+        // (`queued_prompts_panel.rs:400`), never the trash.
         let removed = state.queue.remove(idx);
         if state.editing == Some(query_id) {
             state.editing = None;
@@ -737,11 +748,10 @@ impl QueuedQueryModel {
         let Some(state) = self.queues.get_mut(&conversation_id) else {
             return;
         };
-        if !state
-            .queue
-            .iter()
-            .any(|q| q.id == query_id && !q.is_locked())
-        {
+        // Also not gated on `is_locked()`, for the same reason as `remove_by_id`: editing a
+        // row's text does not submit it. The row still cannot fire while locked, because
+        // `peek_autofire` and `pop_front` keep their guards.
+        if !state.queue.iter().any(|q| q.id == query_id) {
             return;
         }
         let prev_edit = state.editing.replace(query_id);

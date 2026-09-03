@@ -83,7 +83,11 @@ fn append_user(
 }
 
 #[test]
-fn locked_head_rejects_user_mutations_and_autofire() {
+fn locked_head_rejects_reorder_and_autofire() {
+    // The lock's remaining purpose: a pending row must not be *submitted* while an action
+    // snapshot is outstanding. Reorder counts because moving a row to the head changes what
+    // the drain fires next. Deletion and editing used to be refused here too; see
+    // `a_locked_row_can_still_be_deleted_and_edited` for why they no longer are.
     with_model(|mut app, model, _events| {
         let conv = AIConversationId::new();
         let initial_id = model.update(&mut app, |model, ctx| {
@@ -91,27 +95,63 @@ fn locked_head_rejects_user_mutations_and_autofire() {
         });
         let followup_id = append_user(&model, &mut app, conv, "follow up");
 
-        let removed = model.update(&mut app, |model, ctx| {
-            model.remove_by_id(conv, initial_id, ctx)
-        });
-        assert!(removed.is_none());
-
         model.update(&mut app, |model, ctx| {
-            model.enter_edit_mode(conv, initial_id, ctx);
             model.reorder(conv, initial_id, 1, ctx);
             model.reorder(conv, followup_id, 0, ctx);
         });
 
         let action = model.read(&app, |model, _| model.peek_autofire(conv));
-        assert!(action.is_none());
+        assert!(action.is_none(), "a locked head must never auto-fire");
 
         model.read(&app, |model, _| {
             let queue = model.queue(conv);
-            assert_eq!(queue.len(), 2);
+            assert_eq!(queue.len(), 2, "neither reorder moved anything");
             assert_eq!(queue[0].id(), initial_id);
             assert_eq!(queue[0].origin(), QueuedQueryOrigin::PendingLrcAutoQueue);
             assert_eq!(queue[1].id(), followup_id);
-            assert_eq!(model.editing_row(conv), None);
+        });
+    });
+}
+
+#[test]
+fn a_locked_row_can_still_be_deleted_and_edited() {
+    // Contract change, made deliberately. `is_locked()` previously gated delete and edit as
+    // well as submission, so a prompt queued during a long-running command could not be
+    // removed until that command ended -- and since `remove_by_id` returned `None` and
+    // `enter_edit_mode` returned early, the row ignored every click with no feedback. Neither
+    // operation submits anything, so neither can race the action snapshot the lock guards.
+    with_model(|mut app, model, _events| {
+        let conv = AIConversationId::new();
+        let locked_id = model.update(&mut app, |model, ctx| {
+            model.append(
+                conv,
+                pending_lrc_query("queued during a long-running command"),
+                ctx,
+            )
+        });
+
+        model.update(&mut app, |model, ctx| {
+            model.enter_edit_mode(conv, locked_id, ctx);
+        });
+        model.read(&app, |model, _| {
+            assert_eq!(
+                model.editing_row(conv),
+                Some(locked_id),
+                "a locked row must be editable"
+            );
+        });
+
+        let removed = model.update(&mut app, |model, ctx| {
+            model.remove_by_id(conv, locked_id, ctx)
+        });
+        assert!(removed.is_some(), "a locked row must be deletable");
+        model.read(&app, |model, _| {
+            assert!(model.queue(conv).is_empty());
+            assert_eq!(
+                model.editing_row(conv),
+                None,
+                "removing the edited row clears the edit"
+            );
         });
     });
 }
