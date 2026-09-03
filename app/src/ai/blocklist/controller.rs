@@ -62,6 +62,7 @@ use crate::global_resource_handles::GlobalResourceHandlesProvider;
 use crate::network::NetworkStatus;
 use crate::notebooks::editor::model::FileLinkResolutionContext;
 use crate::persistence::ModelEvent;
+use crate::remote_server::manager::RemoteServerManager;
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::terminal::model::block::{
     formatted_terminal_contents_for_input, BlockId, CURSOR_MARKER,
@@ -119,6 +120,27 @@ pub struct SessionContext {
     ssh_connection_info: Option<InteractiveSshCommand>,
     /// Whether this is a legacy SSH session (`IsLegacySSHSession::Yes`).
     is_legacy_ssh: bool,
+    /// Whether a *connected* remote-server client exists for this session's host — i.e.
+    /// whether the file tools have any route at all to the filesystem the shell is running
+    /// on.
+    ///
+    /// Resolved here, once, because answering it needs the `RemoteServerManager` singleton
+    /// and therefore an `AppContext`. Everything downstream of `RequestParams` (the
+    /// tool-list build and the prompt blocks in `ai/agent_providers/chat_stream.rs`) runs
+    /// without one, so the answer has to travel with the context rather than be looked up
+    /// where it is needed.
+    ///
+    /// This is the same lookup the runtime guards perform before they refuse
+    /// (`action_model/execute/read_files.rs:117`, and
+    /// `action_model/execute/request_file_edits/apply_diff_model.rs:54`, which already
+    /// computes exactly `is_remote()` + no client inline): same manager, same host id.
+    /// Keeping the two in step is the point — the advertised tool list and the executor must agree
+    /// about what can work, or the model is handed tools that are guaranteed to fail.
+    ///
+    /// Always `false` for a local session, where the file tools work through the *local*
+    /// filesystem and need no client; `is_remote()` is what separates "no client because
+    /// there is no remote host" from "no client on a host that needs one".
+    has_remote_server_client: bool,
 }
 
 impl SessionContext {
@@ -132,12 +154,37 @@ impl SessionContext {
             .as_ref()
             .map(|s| s.is_legacy_ssh_session())
             .unwrap_or(false);
+        let session_type = session.session_type(app);
+        // Only a `WarpifiedRemote` session with a resolved host id can have a client at
+        // all, and this is the same lookup `read_files.rs:117` makes before deciding
+        // whether to refuse — `apply_diff_model.rs:54` computes the identical pair inline.
+        //
+        // The `has_singleton_model` guard is not defensive noise: `as_ref` *panics* when
+        // the singleton was never registered, and unit tests legitimately build a
+        // `WarpifiedRemote { host_id: Some(..) }` session without a `RemoteServerManager`
+        // (`read_skill_tests.rs`'s `build_remote_active_session`). "No manager" and "no
+        // client" are the same answer for every consumer of this field, so answering
+        // `false` there is correct as well as safe.
+        let has_remote_server_client = match &session_type {
+            Some(SessionType::WarpifiedRemote {
+                host_id: Some(host_id),
+            }) => {
+                app.has_singleton_model::<RemoteServerManager>()
+                    && RemoteServerManager::as_ref(app)
+                        .client_for_host(host_id)
+                        .is_some()
+            }
+            Some(SessionType::WarpifiedRemote { host_id: None })
+            | Some(SessionType::Local)
+            | None => false,
+        };
         SessionContext {
-            session_type: session.session_type(app),
+            session_type,
             shell: session.shell_launch_data(app),
             current_working_directory: session.current_working_directory().cloned(),
             ssh_connection_info,
             is_legacy_ssh,
+            has_remote_server_client,
         }
     }
 
@@ -168,6 +215,29 @@ impl SessionContext {
         matches!(self.session_type, Some(SessionType::WarpifiedRemote { .. }))
     }
 
+    /// Returns `true` if this is a remote session on which the file tools have no route to
+    /// the filesystem the shell is running on: `WarpifiedRemote` with no connected
+    /// remote-server client.
+    ///
+    /// This is the exact condition the runtime guards already enforce — a remote session
+    /// type plus `client_for_host(..).is_none()`, in
+    /// `action_model/execute/read_files.rs:129` and
+    /// `action_model/execute/request_file_edits/apply_diff_model.rs:54-80` — lifted to
+    /// where the tool list and the system prompt are built, so the model is never offered a tool that
+    /// the executor will refuse.
+    ///
+    /// It deliberately covers more than `is_legacy_ssh()`. That flag requires an `SSHValue`
+    /// with a control-master socket, i.e. Phosphor's own ssh wrapper brokered the
+    /// connection; a user who types `ssh host` inside tmux (or with the wrapper disabled)
+    /// gets a `WarpifiedRemote` session with the flag false, and every gate keyed on the
+    /// flag silently no-ops while the runtime guard still refuses.
+    ///
+    /// It also stays `false` for the case that must NOT be gated: a warpified-remote
+    /// session *with* the remote-server extension connected, where the file tools work.
+    pub fn is_remote_without_file_tools(&self) -> bool {
+        self.is_remote() && !self.has_remote_server_client
+    }
+
     /// Identifies how skill paths in this session's live API messages should be
     /// interpreted: against the local filesystem, or against a connected remote
     /// host's filesystem.
@@ -188,10 +258,15 @@ impl SessionContext {
         self.ssh_connection_info.as_ref()
     }
 
-    /// Zap: whether this session is legacy SSH (the user typed ssh by hand, and the
-    /// remote has no warp hook). For this kind of session, `session_type` is still
-    /// `Local`, but the PTY is actually running remotely; profile fields like
-    /// `host_info`/`shell` reflect the local client, not the remote shell.
+    /// Zap: whether this session is legacy SSH (the user typed ssh by hand, the remote has
+    /// no warp hook, and Phosphor's own ssh wrapper brokered the connection — the flag comes
+    /// from an `SSHValue` carrying a control-master socket). `session_type` is
+    /// `WarpifiedRemote { host_id: None }` for such a session, not `Local` (see the
+    /// correction on `ssh_connection_info` above); what *is* local is `host_info`/`shell`,
+    /// which reflect the client the PTY was launched on rather than the remote shell.
+    ///
+    /// Not a usable test for "the file tools cannot reach this host" — it is strictly
+    /// narrower than that. Use [`Self::is_remote_without_file_tools`].
     pub fn is_legacy_ssh(&self) -> bool {
         self.is_legacy_ssh
     }
@@ -204,6 +279,7 @@ impl SessionContext {
             current_working_directory: None,
             ssh_connection_info: None,
             is_legacy_ssh: false,
+            has_remote_server_client: false,
         }
     }
 
@@ -213,7 +289,7 @@ impl SessionContext {
     /// `session_type` is set to `WarpifiedRemote { host_id: None }` alongside the flag because
     /// the two co-occur *by construction* in production (`command_executor.rs:316`), and the
     /// pair is what downstream code keys on — `SkillPathOrigin::Unavailable` is derived from
-    /// the `session_type` arm at line 179 of this file, not from `is_legacy_ssh`. A fixture
+    /// the `session_type` arm at line 242 of this file, not from `is_legacy_ssh`. A fixture
     /// that set only the flag would be a session shape that cannot exist, and would quietly
     /// under-test anything reading the session type.
     #[cfg(test)]
@@ -224,6 +300,33 @@ impl SessionContext {
             current_working_directory: None,
             ssh_connection_info: None,
             is_legacy_ssh: true,
+            has_remote_server_client: false,
+        }
+    }
+
+    /// A warpified-remote session that did NOT go through Phosphor's ssh wrapper, so
+    /// `is_legacy_ssh` is false — the shape a user gets by typing `ssh host` inside tmux,
+    /// and the shape whose gates silently no-opped before `is_remote_without_file_tools()`
+    /// existed.
+    ///
+    /// `has_remote_server_client` drags `host_id` along with it because in production the
+    /// two cannot vary independently: a client is looked up *by* host id
+    /// (`RemoteServerManager::client_for_host`), so a connected session necessarily has
+    /// one, and the extension-less session the withdrawal exists for is
+    /// `WarpifiedRemote { host_id: None }`. Passing `true` therefore builds the session on
+    /// which the file tools work and must NOT be withdrawn.
+    #[cfg(test)]
+    pub fn new_warpified_remote_for_test(has_remote_server_client: bool) -> Self {
+        SessionContext {
+            session_type: Some(SessionType::WarpifiedRemote {
+                host_id: has_remote_server_client
+                    .then(|| warp_core::HostId::new("test-host".to_owned())),
+            }),
+            shell: None,
+            current_working_directory: None,
+            ssh_connection_info: None,
+            is_legacy_ssh: false,
+            has_remote_server_client,
         }
     }
 }

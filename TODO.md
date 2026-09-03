@@ -512,6 +512,51 @@ before acting):
       fixed; it would matter again to anyone building `--features autoupdate`.
 - [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
       the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
+- [x] **Three places decided "is this a remote session the file tools cannot reach", and
+      only one of them was right — FIXED 2026-09-03.** The runtime guard in
+      `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
+      is `SessionType::WarpifiedRemote` **and** `RemoteServerManager::client_for_host` has no
+      client; `apply_diff_model.rs:54-80` computes the same pair inline for the write side.
+      The two gates that are supposed to keep the model away from those refusals instead
+      keyed on `SessionContext::is_legacy_ssh()` — the tool withdrawal
+      (`ai/agent_providers/chat_stream.rs:4516`, mirrored in `available_tool_names` at
+      `:4426`) and the prompt block `render_ssh_session_block` (`chat_stream.rs:297`). That flag is strictly
+      narrower: it is set only when an `SSHValue` carrying a control-master socket reaches
+      `SessionInfo::create_pending` (`terminal/model/session.rs:648`), i.e. when Phosphor's
+      own legacy ssh wrapper brokered the connection. A user with
+      `warpify.ssh.use_ssh_tmux_wrapper = true` who typed `ssh` inside tmux got a
+      `WarpifiedRemote` session with the flag **false**, so both gates silently no-opped
+      while the runtime guard still fired. Their log shows `tools=18`, including all three
+      of `read_files`, `apply_file_diffs` and `read_skill`; the agent called `read_files`,
+      got the "needs the Phosphor remote-server extension" refusal, and fell back to
+      `run_shell_command`/`cat`. The model was being handed tools that could not work, and
+      only that runtime guard stood between it and a **local** file returned as if it were
+      the remote host's.
+      The fix moves both gates onto the signal the runtime guard already trusts.
+      `SessionContext` now resolves `has_remote_server_client` once, in `from_session`
+      (`ai/blocklist/controller.rs:157-181`) where an `AppContext` still exists — the tool
+      list is built from `RequestParams` with no context to look the manager up from — and
+      exposes `is_remote_without_file_tools()` (`controller.rs:237`), which is
+      `is_remote() && !has_remote_server_client`. That is deliberately **not** a match on
+      `WarpifiedRemote { .. }`: a warpified-remote session with the extension connected
+      reads and writes files through it, and withdrawing the tools there would have been a
+      regression, so the condition mirrors the guard's `remote_client.is_none()` exactly.
+      `LEGACY_SSH_BLOCKED_TOOLS` is renamed `NO_FILE_ROUTE_BLOCKED_TOOLS` for the same
+      reason the old name misled.
+      The prompt guidance was **split rather than widened**, because most of the ssh block's
+      content is not true of the sessions it was missing. `render_ssh_session_block` keeps
+      its `is_legacy_ssh()` trigger: it names a host and port from `ssh_connection_info`
+      (which only a wrapper-brokered session has), says "do not prepend `ssh {host}`", and
+      warns that the `[Environment]` block describes the local client — true there, false
+      for a session whose own remote shell hook bootstrapped it, since
+      `WarpAiExecutionContext::new` reads that session's `host_info()`/`shell()`. The new
+      `render_remote_no_file_tools_block` (`chat_stream.rs:364`) carries only the part that
+      is common — the shell is remote, those three tools are withdrawn, use `cat`/heredoc,
+      `grep`/`file_glob` still work — and is mutually exclusive with the ssh block.
+      Untested by anything here: the real tmux-inside-ssh session that produced the report.
+      The new tests are fixture-level (`SessionContext::new_warpified_remote_for_test`), so
+      they prove the withdrawal keys on the right predicate, not that a live session
+      classifies as `WarpifiedRemote` with no client.
 - [ ] **An agent command on the warpify path is never monitorable or seizable.** The
       `Agent` long-running control state is installed in exactly one place — the BYOP LRC
       monitor fallback (`app/src/ai/blocklist/block/cli_controller.rs:383`), gated on a CLI

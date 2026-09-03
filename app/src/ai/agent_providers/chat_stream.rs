@@ -286,6 +286,14 @@ fn render_lrc_request_context(params: &RequestParams) -> Option<String> {
 /// The discriminator is `is_legacy_ssh()`, NOT `session_type` — see the correction above.
 /// Both kinds are `SessionType::WarpifiedRemote`, so testing the session type here would
 /// match both and render this block for a session that does not need it.
+///
+/// **Scope, 2026-09-03:** this block stays on `is_legacy_ssh()` on purpose. Its content is
+/// ssh-specific — a host/port pair taken from `ssh_connection_info` (which only a
+/// wrapper-brokered session has), "do not prepend `ssh {host}`", and the warning that the
+/// `[Environment]` block describes the local client. None of that is safe to emit for a
+/// remote session that merely lacks the remote-server extension. The tool-availability half
+/// of the advice, which *is* common to both, lives in
+/// [`render_remote_no_file_tools_block`]; the two are mutually exclusive by construction.
 fn render_ssh_session_block(
     session_context: &crate::ai::blocklist::SessionContext,
 ) -> Option<String> {
@@ -320,6 +328,64 @@ fn render_ssh_session_block(
          </rules>\n\
          </ssh_session>"
     ))
+}
+
+/// Renders the status block for a remote session whose file tools have no route to the
+/// filesystem — `SessionContext::is_remote_without_file_tools()` — and which is NOT legacy
+/// SSH, so [`render_ssh_session_block`] does not already cover it.
+///
+/// The session this exists for: the user reached a remote shell without Phosphor's legacy
+/// ssh wrapper brokering it — `ssh` typed inside tmux, or with
+/// `warpify.ssh.use_ssh_tmux_wrapper` set, which selects the tmux warpification flow over
+/// the legacy wrapper (`terminal/ssh/ssh_detection.rs:31`) and so leaves no control-master
+/// `SSHValue` to set `IsLegacySSHSession::Yes`. The remote shell's own hook then
+/// bootstrapped a session whose hostname differs from the local one, and
+/// `SessionInfo::determine_session_type` (`terminal/model/session.rs:702`) classified it
+/// `WarpifiedRemote` — with `host_id: None`, because no remote-server extension is
+/// connected. `is_legacy_ssh()` is false for it, which is exactly why the ssh block and the
+/// tool withdrawal both used to no-op on the one session shape that most needed them.
+///
+/// **Deliberately narrower than the ssh block.** It says only what is true for any remote
+/// session with no file-tool route:
+/// - no `host`/`port` attributes: `ssh_connection_info` comes from the wrapper's
+///   `SubshellInitializationInfo` and is `None` here, so there is no host to name — and a
+///   `host="unknown"` attribute is worse than no attribute.
+/// - no "do not prepend `ssh {host}`": that instruction needs the host, and the nested-ssh
+///   mistake it prevents is an artefact of the model being told the environment is local.
+///   The neutral form ("this session is already on the target host") is kept.
+/// - **no `[Environment]`-is-local warning.** Verified rather than assumed: this session's
+///   env comes from `ActiveSession::ai_execution_environment` →
+///   `WarpAiExecutionContext::new(session)`, which reads `session.host_info()` and
+///   `session.shell()` — the values the *remote* shell's own bootstrap reported, since a
+///   session only becomes `WarpifiedRemote` this way by the remote hook running. Telling
+///   the model to distrust an accurate environment block would push it into re-probing
+///   `uname`/`pwd` on every turn for nothing. Legacy SSH is the case where those fields
+///   really are the client's, and that case keeps its warning.
+fn render_remote_no_file_tools_block(
+    session_context: &crate::ai::blocklist::SessionContext,
+) -> Option<String> {
+    // Legacy SSH is excluded here rather than at the call site so the function is correct on
+    // its own: that session gets the richer, ssh-specific block instead, and emitting both
+    // would contradict itself about the environment.
+    if !session_context.is_remote_without_file_tools() || session_context.is_legacy_ssh() {
+        return None;
+    }
+
+    Some(
+        "\n\n<remote_session>\n  \
+         <fact>The active terminal session's shell is running on a REMOTE host, not on the user's local machine. \
+         Every command you run via `run_shell_command` executes on that remote host, and the files you are working with are the remote host's files.</fact>\n  \
+         <unavailable_tools>`read_files`, `apply_file_diffs` and `read_skill` reach a remote filesystem only through the Phosphor remote-server extension, which is \
+         NOT connected on this host, so they are NOT in your tool list for this session — they have been withdrawn, not merely discouraged. \
+         Do not try to call them by name; use the shell instead, as described below.</unavailable_tools>\n  \
+         <rules>\n    \
+         - For FILE operations on this host, use `run_shell_command` — read with `cat path` (or `sed -n '1,200p' path` for a slice), write with a heredoc (`cat > path <<'EOF' ... EOF`), search with `grep -rn` / `find`. This overrides `run_shell_command`'s usual instruction to prefer the specialised file tools; that instruction assumes those tools work, and here they do not.\n    \
+         - `grep` and `file_glob` DO work here — they run over this same remote shell — so prefer them over hand-rolled `grep`/`find` commands for searching.\n    \
+         - Run commands DIRECTLY in this session; it is already on the target host. Do NOT wrap them in an `ssh ...` invocation, which would open a further connection from the remote host.\n  \
+         </rules>\n\
+         </remote_session>"
+            .to_owned(),
+    )
 }
 
 /// XML-escapes the string while also stripping any illegal/problematic control characters,
@@ -1954,6 +2020,13 @@ fn build_chat_request(
     // the remote host, so we append an SSH status block to correct the LLM's inference.
     if let Some(ssh_block) = render_ssh_session_block(&params.session_context) {
         system_text.push_str(&ssh_block);
+    }
+    // The same correction for the remote sessions the ssh block does not cover: warpified
+    // remote with no remote-server client, where `is_legacy_ssh()` is false but the file
+    // tools have just been withdrawn from the list this prompt accompanies. The two
+    // renderers are mutually exclusive (see `render_remote_no_file_tools_block`).
+    if let Some(remote_block) = render_remote_no_file_tools_block(&params.session_context) {
+        system_text.push_str(&remote_block);
     }
     // Note: LRC / long-running-command tool-usage guidance (write_to_long_running_shell_command
     // + command_id + the various modes and raw byte sequences) is already fully covered in
@@ -4267,20 +4340,34 @@ fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
     plan_mode && PLAN_MODE_BLOCKED_TOOLS.contains(&tool_name)
 }
 
-/// Tools that cannot function **at all** on a legacy SSH session, and are therefore withdrawn
-/// from the advertised tool list rather than left to fail.
+/// Tools that cannot function **at all** on a remote session with no route to its
+/// filesystem, and are therefore withdrawn from the advertised tool list rather than left
+/// to fail.
 ///
-/// A legacy SSH session is the user typing `ssh host` into the PTY instead of using the
-/// remote-server extension: `SessionType::WarpifiedRemote { host_id: None }`. The PTY is on
-/// the remote host, but these three tools reach for a file layer that is only wired for a
-/// local session or a *connected* remote server, and this session is neither.
+/// The condition is `SessionContext::is_remote_without_file_tools()`: a
+/// `SessionType::WarpifiedRemote` session for which `RemoteServerManager` has no connected
+/// client. The shell is on the remote host, but these three tools reach for a file layer
+/// that is only wired for a local session or a *connected* remote server, and this session
+/// is neither.
+///
+/// **This used to key on `is_legacy_ssh()` and that was too narrow.** That flag requires
+/// Phosphor's own ssh wrapper to have brokered the connection (an `SSHValue` with a
+/// control-master socket, `terminal/model/session.rs:648`); a user who types `ssh host`
+/// inside tmux gets the same unreachable filesystem with the flag false, so the withdrawal
+/// and the prompt block both silently no-opped while the runtime guard still refused. The
+/// observed failure: an agent on such a session was advertised 18 tools including all
+/// three of these, called `read_files`, got the refusal, and fell back to `cat`.
+///
+/// The condition must be the *no client* one, not merely "remote": a warpified-remote
+/// session with the extension connected reads and writes files through it perfectly well,
+/// and withdrawing these tools there would be a regression.
 ///
 /// Each is verified dead on this path, not assumed:
 /// - `read_files` — `execute/read_files.rs` returns the "needs the remote-server extension"
 ///   refusal for a remote session with no remote-server client.
 /// - `apply_file_diffs` — same refusal in
 ///   `execute/request_file_edits/diff_application.rs`.
-/// - `read_skill` — `blocklist/controller.rs:179` maps `WarpifiedRemote { host_id: None }` to
+/// - `read_skill` — `blocklist/controller.rs:242` maps `WarpifiedRemote { host_id: None }` to
 ///   `SkillPathOrigin::Unavailable`, which `skills/bundled.rs:101` turns into an empty
 ///   catalog. Every lookup then fails, so it is not merely bundled skills that break.
 ///
@@ -4299,7 +4386,7 @@ fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
 /// these and it called them anyway; worse, a malformed call fails at argument-decode time in
 /// `from_args`, which is upstream of every refusal message, so the user got a serde error
 /// instead of the redirect. A tool absent from the list cannot produce either.
-const LEGACY_SSH_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
+const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
 
 /// Whether `name` is one of the two computer-use descriptors.
 ///
@@ -4331,10 +4418,12 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = request_plan_mode(params);
-    // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
-    // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
-    // already on `RequestParams` because `render_ssh_session_block` uses it.
-    let legacy_ssh = params.session_context.is_legacy_ssh();
+    // A remote session with no connected remote-server client (`ssh host` typed into the
+    // PTY, with or without Phosphor's ssh wrapper): some tools cannot reach the host's
+    // filesystem at all. Cheap boolean, read once -- resolved when the `SessionContext`
+    // was built, because the answer needs the `RemoteServerManager` singleton and there is
+    // no `AppContext` here.
+    let no_file_route = params.session_context.is_remote_without_file_tools();
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
@@ -4361,11 +4450,12 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             if plan_mode_blocks_tool(plan_mode, t.name) {
                 return false;
             }
-            // Must mirror `build_tools_array`'s legacy-SSH filter. This list is the allowlist
-            // for the content→tool extraction fallback, so leaving a withdrawn tool in it
-            // would let a call the model wrote as *text* be executed anyway — reintroducing
-            // exactly the failure the withdrawal exists to prevent, by the back door.
-            if legacy_ssh && LEGACY_SSH_BLOCKED_TOOLS.contains(&t.name) {
+            // Must mirror `build_tools_array`'s no-file-route filter. This list is the
+            // allowlist for the content→tool extraction fallback, so leaving a withdrawn
+            // tool in it would let a call the model wrote as *text* be executed anyway —
+            // reintroducing exactly the failure the withdrawal exists to prevent, by the
+            // back door.
+            if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
                 return false;
             }
             true
@@ -4418,10 +4508,12 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     );
     let computer_use_enabled = params.computer_use_enabled;
     let plan_mode = request_plan_mode(params);
-    // Legacy SSH (`ssh host` typed into the PTY, no remote-server extension): some tools
-    // cannot reach the host at all. Cheap boolean, read once -- `is_legacy_ssh()` is
-    // already on `RequestParams` because `render_ssh_session_block` uses it.
-    let legacy_ssh = params.session_context.is_legacy_ssh();
+    // A remote session with no connected remote-server client (`ssh host` typed into the
+    // PTY, with or without Phosphor's ssh wrapper): some tools cannot reach the host's
+    // filesystem at all. Cheap boolean, read once -- resolved when the `SessionContext`
+    // was built, because the answer needs the `RemoteServerManager` singleton and there is
+    // no `AppContext` here.
+    let no_file_route = params.session_context.is_remote_without_file_tools();
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
     // handle_suggest_prompt_executor_event`), so it can be exposed to the model.
@@ -4479,10 +4571,12 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             if plan_mode_blocks_tool(plan_mode, t.name) {
                 return false;
             }
-            // Legacy SSH: withdraw the tools that physically cannot reach this host. See
-            // `LEGACY_SSH_BLOCKED_TOOLS` for why these three, and why `grep` / `file_glob`
-            // are deliberately kept. Keep in step with `available_tool_names`.
-            if legacy_ssh && LEGACY_SSH_BLOCKED_TOOLS.contains(&t.name) {
+            // Remote session with no connected remote-server client: withdraw the tools
+            // that physically cannot reach this host's filesystem. See
+            // `NO_FILE_ROUTE_BLOCKED_TOOLS` for why these three, why `grep` / `file_glob`
+            // are deliberately kept, and why the condition is *not* `is_legacy_ssh()`.
+            // Keep in step with `available_tool_names`.
+            if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
                 return false;
             }
             true
@@ -8508,7 +8602,7 @@ mod name_recovery_tests {
 
     /// Recovery reads the turn's advertised list, not the registry, so it cannot resurrect a
     /// tool that was deliberately withdrawn. `read_files` is withdrawn on a legacy-SSH session
-    /// (`LEGACY_SSH_BLOCKED_TOOLS`), and reaching it by argument shape would be exactly the
+    /// (`NO_FILE_ROUTE_BLOCKED_TOOLS`), and reaching it by argument shape would be exactly the
     /// back door `available_tool_names`' allowlist comment warns about.
     #[test]
     fn does_not_resurrect_a_tool_withdrawn_this_turn() {
@@ -11197,7 +11291,7 @@ mod serializer_readiness_tests {
             .map(|tool| tool.name.as_str().to_owned())
             .collect();
 
-        for withdrawn in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+        for withdrawn in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
             assert!(
                 !names.iter().any(|n| n.as_str() == withdrawn),
                 "{withdrawn} cannot reach a legacy-SSH host and must not be advertised; got {names:?}",
@@ -11232,7 +11326,7 @@ mod serializer_readiness_tests {
             .map(|tool| tool.name.as_str().to_owned())
             .collect();
 
-        for present in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+        for present in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
             assert!(
                 names.iter().any(|n| n.as_str() == present),
                 "{present} must still be advertised on a local session; got {names:?}",
@@ -11250,13 +11344,138 @@ mod serializer_readiness_tests {
 
         let names = available_tool_names(&params);
 
-        for withdrawn in LEGACY_SSH_BLOCKED_TOOLS.iter().copied() {
+        for withdrawn in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
             assert!(
                 !names.iter().any(|n| n.as_str() == withdrawn),
                 "{withdrawn} must not be extractable from assistant text on a legacy-SSH \
                  session; got {names:?}",
             );
         }
+    }
+
+    /// The withdrawal must fire on the session it was missing on: warpified-remote with no
+    /// remote-server client, which is NOT legacy SSH.
+    ///
+    /// Regression, 2026-09-03: keyed on `is_legacy_ssh()`, the withdrawal no-opped for a
+    /// user who typed `ssh` inside tmux -- the flag needs Phosphor's own ssh wrapper to have
+    /// brokered the connection. The model was advertised all three tools, called
+    /// `read_files`, and got the runtime guard's refusal
+    /// (`action_model/execute/read_files.rs:129`), which keys on the session type and the
+    /// absent client instead. Only that guard stood between the model and a *local* file
+    /// returned as if it were the remote one.
+    #[test]
+    fn a_remote_session_without_a_client_withdraws_the_file_tools() {
+        let mut params = request_params(vec![], vec![]);
+        params.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        // The point of the fixture: the old signal is false here, so a test that passed on
+        // `new_legacy_ssh_for_test` alone proved nothing about this session.
+        assert!(
+            !params.session_context.is_legacy_ssh(),
+            "fixture must not be a legacy-SSH session",
+        );
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect();
+
+        for withdrawn in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !names.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} cannot reach a remote host with no remote-server client and \
+                 must not be advertised; got {names:?}",
+            );
+        }
+
+        // Same reasoning as the legacy-SSH case: these three run over the session's own
+        // shell, so they reach the remote host correctly and withdrawing them would strip
+        // the model's only structured search.
+        for kept in ["run_shell_command", "grep", "file_glob"] {
+            assert!(
+                names.iter().any(|n| n.as_str() == kept),
+                "{kept} works over the remote shell and must stay advertised; got {names:?}",
+            );
+        }
+
+        // The extraction allowlist has to agree, or a call written as plain text would be
+        // scraped out and executed anyway.
+        let extractable = available_tool_names(&params);
+        for withdrawn in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !extractable.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} must not be extractable from assistant text on a remote \
+                 session with no client; got {extractable:?}",
+            );
+        }
+    }
+
+    /// The other half of the condition, and the one that makes it a fix rather than a
+    /// regression: a warpified-remote session WITH the remote-server extension connected
+    /// reads and writes files through it, so the tools must survive. Matching on
+    /// `WarpifiedRemote { .. }` alone would have withdrawn them here.
+    #[test]
+    fn a_remote_session_with_a_client_keeps_the_file_tools() {
+        let mut params = request_params(vec![], vec![]);
+        params.session_context =
+            crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
+        assert!(
+            !params.session_context.is_remote_without_file_tools(),
+            "fixture is remote but has a client, so the file tools have a route",
+        );
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect();
+
+        for present in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                names.iter().any(|n| n.as_str() == present),
+                "{present} works through the connected remote server and must still be \
+                 advertised; got {names:?}",
+            );
+        }
+    }
+
+    /// The prompt half of the fix, and its scoping: the non-ssh block renders exactly for
+    /// the session the ssh block does not cover, and says nothing ssh-specific.
+    #[test]
+    fn the_remote_block_renders_only_where_the_ssh_block_does_not() {
+        let local = crate::ai::blocklist::SessionContext::new_for_test();
+        assert!(render_remote_no_file_tools_block(&local).is_none());
+
+        // Legacy SSH keeps the richer, ssh-specific block; rendering both would contradict
+        // itself about whether the [Environment] block describes the local machine.
+        let legacy = crate::ai::blocklist::SessionContext::new_legacy_ssh_for_test();
+        assert!(render_ssh_session_block(&legacy).is_some());
+        assert!(render_remote_no_file_tools_block(&legacy).is_none());
+
+        let connected = crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(true);
+        assert!(render_remote_no_file_tools_block(&connected).is_none());
+
+        let stranded = crate::ai::blocklist::SessionContext::new_warpified_remote_for_test(false);
+        assert!(render_ssh_session_block(&stranded).is_none());
+        let block = render_remote_no_file_tools_block(&stranded)
+            .expect("a remote session with no client needs the block");
+        for tool in NO_FILE_ROUTE_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                block.contains(tool),
+                "the block must name {tool} as withdrawn; got {block}",
+            );
+        }
+        // No host to name and no evidence the environment block is wrong: this session was
+        // classified remote *because* the remote shell's own hook bootstrapped it, so its
+        // OS/shell are the remote's. See `render_remote_no_file_tools_block`'s doc comment.
+        assert!(
+            !block.contains("host=\""),
+            "there is no known host on this path; got {block}",
+        );
+        assert!(
+            !block.contains("skepticism"),
+            "the environment block is the remote's here, so do not tell the model to \
+             distrust it; got {block}",
+        );
     }
 }
 
