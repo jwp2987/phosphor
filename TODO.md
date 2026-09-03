@@ -524,15 +524,20 @@ before acting):
       condition) and locks the queue; and `is_agent_driving_active_block` is false, so the
       password-prompt hand-over cannot fire either. Reported as an agent inside tmux inside
       ssh sitting on an unanswerable prompt with no way to intervene.
-      Fixed at the source: `AgentInteractionMetadata::new_hidden` now installs
-      `Agent { .. }` control up front, so a command the agent issued is described as
-      agent-controlled from the moment it starts rather than only once a subagent happens to
-      appear. The upgrade's call-site guard changed with it — "already upgraded" is now the
-      presence of a `subagent_task_id`, not of any control state, or the guard would have
-      skipped every upgrade and never attached the task id; a block the user has taken over is
-      still left alone. Two earlier escape-hatch changes (indicator visibility,
-      `take_over_for_user` accepting a stateless block) are superseded but kept as belt and
-      braces for any path that still arrives without state. **Unverified by build.**
+      **Not fixed at the source, and the attempt is instructive.** Installing
+      `Agent { .. }` in `new_hidden` was tried and reverted. Two widely consulted predicates
+      are defined in terms of that state being *absent*: `is_agent_driving_command`'s fallback
+      arm requires `long_running_control_state().is_none()`, and `is_agent_monitoring()` is
+      `is_active_and_long_running() && state.is_some()`. Filling the state in therefore
+      collapsed the first to `is_agent_in_control()` — false for a block's first 50 ms, which
+      is exactly when `AfterBlockStarted` arms the password-prompt poller — and made the
+      `PendingLrcAutoQueue` origin unproducible, so it disabled *both* fixes it was meant to
+      complete while flipping a dozen unrelated call sites at the 50 ms boundary (Ctrl-C
+      routing, the "Agent is monitoring command…" header on unmonitored blocks, keymap
+      context, focus ownership).
+      The end state is still right — a warpified agent command should carry a control state —
+      but it requires redefining those two predicates first, so that "the agent is driving
+      this" stops meaning "no state yet". That is a design change, not a constructor tweak.
 
 - [ ] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as

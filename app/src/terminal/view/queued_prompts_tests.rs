@@ -1228,10 +1228,10 @@ fn a_pending_head_no_longer_blocks_the_rows_queued_behind_it() {
     // merely holding one stuck row.
     //
     // `take_while` is not itself wrong -- firing past a differently-originated row would run
-    // prompts the user never auto-queued. The fix is that the row is unlocked before the
-    // collect, which `CLISubagentEvent::FinishedSubagent` now does. This test drives the
-    // collect directly with the row already unlocked, which is the state that handler
-    // establishes.
+    // prompts the user never auto-queued. The fix is that `send_lrc_queued_prompts` unlocks
+    // before it collects. The row therefore goes in *locked*: an earlier version of this test
+    // unlocked it in setup, which meant it passed against the unfixed code and guarded
+    // nothing.
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
 
@@ -1259,15 +1259,13 @@ fn a_pending_head_no_longer_blocks_the_rows_queued_behind_it() {
                 ctx,
             );
             model.append(conversation_id, lrc_auto_query("stranded behind it"), ctx);
-            // The unlock the FinishedSubagent handler performs before draining.
-            model.unlock_pending_lrc_rows(conversation_id, ctx);
         });
 
         QueuedQueryModel::handle(&app).read(&app, |model, _| {
             let queue = model.queue(conversation_id);
             assert!(
-                queue.iter().all(|row| !row.is_locked()),
-                "precondition: the unlock has run"
+                queue[0].is_locked(),
+                "precondition: the head is locked, which is what stopped the take_while"
             );
         });
 

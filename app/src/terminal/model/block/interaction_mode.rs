@@ -531,17 +531,19 @@ impl AgentInteractionMetadata {
 
     /// Convenience constructor for the common "hidden by default" case used for requested commands.
     ///
-    /// The block is marked agent-controlled from the moment the command starts, rather than
-    /// waiting for the BYOP LRC monitor fallback (`cli_controller.rs`) to upgrade it. That
-    /// upgrade is gated on a CLI subagent task existing, and an agent command taking the
-    /// warpify path -- `ssh`, `docker run` -- spawns no subagent, so it never arrived: the
-    /// block stayed `long_running_control_state: None` for its whole life. Everything that
-    /// asks "is the agent driving this?" keys on that state, so its absence made such a block
-    /// simultaneously unmonitored, unseizable, and a trap that locked any prompt queued behind
-    /// it. Starting in `Agent` is the honest description of a command the agent just issued.
+    /// `long_running_control_state` deliberately stays `None` until the BYOP LRC monitor
+    /// fallback upgrades it. Installing `Agent { .. }` here was tried and reverted: two widely
+    /// consulted predicates are defined in terms of its *absence* --
+    /// `is_agent_driving_command`'s fallback arm requires `long_running_control_state().is_none()`,
+    /// and `is_agent_monitoring()` is `is_active_and_long_running() && state.is_some()` -- so
+    /// filling it in collapsed the first to `is_agent_in_control()` (false for the block's first
+    /// 50ms, which is exactly when the password-prompt poller is armed) and made the
+    /// `PendingLrcAutoQueue` origin unproducible. It disabled both fixes it was meant to
+    /// complete, and flipped a dozen unrelated call sites at the 50ms boundary besides.
     ///
-    /// `should_hide_block` stays `true` and `subagent_task_id` stays `None`; the upgrade still
-    /// applies both when a subagent does appear.
+    /// Giving a warpified agent command a control state is still the right end state; it needs
+    /// those predicates redefined first, which is a design change rather than a constructor
+    /// tweak. See TODO.md.
     pub fn new_hidden(
         requested_command_action_id: AIAgentActionId,
         conversation_id: AIConversationId,
@@ -550,10 +552,7 @@ impl AgentInteractionMetadata {
             Some(requested_command_action_id),
             conversation_id,
             None,
-            Some(LongRunningCommandControlState::Agent {
-                is_blocked: false,
-                should_hide_responses: false,
-            }),
+            None,
             false,
             true,
         )

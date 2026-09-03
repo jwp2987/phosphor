@@ -6289,30 +6289,6 @@ impl TerminalView {
                 if let Some(conversation_id) = conversation_id {
                     QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                         model.clear_queue_next_lrc_prompt_override(*conversation_id, ctx);
-                        // The command ending is the event `PendingLrcAutoQueue` rows are
-                        // waiting on, so this is where they stop being pending -- and it is
-                        // the only unlock point that fires for a command which ends without
-                        // the conversation taking another turn. `drain_queued_prompts` runs
-                        // on turn completion, so a command that hung and was then killed
-                        // never reached it, which is how a row stayed locked indefinitely.
-                        //
-                        // It must also precede `send_lrc_queued_prompts` below, which
-                        // collects with `take_while(origin == LrcAutoQueue)`: a still-pending
-                        // head stops that dead, so the locked row blocks not only itself but
-                        // every ordinary row queued behind it.
-                        //
-                        // Known imprecision, accepted deliberately: this unlocks every pending
-                        // row for the conversation, but `AIAgentActionModel::running_actions`
-                        // holds a *set* per conversation and its own comment notes actions may
-                        // be processed in parallel, so a second command finishing can release a
-                        // row still waiting on the first -- reopening the snapshot race the lock
-                        // guards. Narrow (two concurrent shell commands, one ending first)
-                        // against a lock that was otherwise permanent and left the queue
-                        // unusable, which is the failure actually reported. The precise fix is
-                        // action-scoped, in `AIAgentActionModel::handle_action_result` where
-                        // each id leaves `running_actions`; it needs a model dependency this
-                        // view does not currently have. Recorded in TODO.md.
-                        model.unlock_pending_lrc_rows(*conversation_id, ctx);
                     });
                     self.send_lrc_queued_prompts(*conversation_id, ctx);
                 }
