@@ -72,9 +72,30 @@ runs:
         # Make sure x86_64-unknown-linux-gnu and wasm32-unknown-unknown builds
         # don't share a cache, despite running on the same _host_ architecture.
         key: ${{ inputs.cache_key != '' && inputs.cache_key || inputs.target_os }}
-        # Only cache runs on the master branch (caches on feature branches
-        # are not reusable).
-        save-if: ${{ github.ref == 'refs/heads/master' }}
+        # Save on the default branch and on tags; never on PR branches, whose
+        # caches are not reusable.
+        #
+        # This was `github.ref == 'refs/heads/master'`, inherited from upstream
+        # Warp. This fork's default branch is `main`, so the condition was never
+        # true on any trigger -- not on main pushes, not on tags, not on PRs --
+        # and `gh cache list` returned zero entries. Every job on every platform
+        # recompiled the whole workspace and all its dependencies from scratch,
+        # which is most of the four-hour release build.
+        #
+        # Tags matter as much as the default branch here: phosphor_release.yml
+        # runs ONLY on tag push, so without them a release can never populate
+        # the five cache keys it later wants to restore (macos-<arch>, x64,
+        # linux-cli, macos-cli-<arch>). Those keys stay split per job on
+        # purpose -- they build different targets and profiles, and sharing a
+        # slot would make them race -- so each is warmed by its own job on the
+        # previous release. rust-cache prunes workspace crates before saving and
+        # keeps the registry and dependency artifacts, which is both the bulk of
+        # a cold build and what keeps five keys inside the 10GB repo limit.
+        # `|| 'main'` is a coalesce, not a second condition: if a trigger ever
+        # delivers a payload without `repository`, the comparison would go
+        # silently false and we would be back to never saving -- which is
+        # exactly how the `master` hardcode hid for so long.
+        save-if: ${{ github.ref == format('refs/heads/{0}', github.event.repository.default_branch || 'main') || startsWith(github.ref, 'refs/tags/') }}
 
     - name: Set up Namespace cache
       if: ${{ startsWith(runner.name, 'nsc-runner') }}
