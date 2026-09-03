@@ -1235,6 +1235,14 @@ fn a_pending_head_no_longer_blocks_the_rows_queued_behind_it() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
 
+        // This test actually fires the queued prompts, and submission goes through the
+        // provider's model-event sender, so it must be registered -- unlike the drain tests
+        // above, which stop before dispatch and therefore never need it.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
         let terminal = add_window_with_terminal(&mut app, None);
         let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
         let conversation_id =

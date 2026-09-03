@@ -431,21 +431,19 @@ impl InteractionMode {
         };
 
         // A take-over normally requires the CLI subagent to already hold control, which keeps
-        // stray take-overs from seizing a command the agent never had.
+        // stray take-overs from seizing a command the agent never had. The password-prompt
+        // hand-over is the one exception: termios is first sampled a second after the block
+        // starts, so a hand-over can be attempted before a control state is installed, and
+        // requiring one would reject exactly what `BlockedOnInput` exists for.
         //
-        // An agent-requested command with *no* control state is the case that matters, and it
-        // is not merely a startup race. The upgrade to an `Agent` state happens only in the
-        // BYOP LRC monitor fallback (`cli_controller.rs:383`), gated on a CLI subagent task
-        // existing; an agent command that takes the warpify path -- `ssh`, `docker run` --
-        // spawns no subagent, so it never gets one at all. Such a block is long-running and
-        // agent-driven yet permanently unseizable, which is how an agent inside ssh inside
-        // tmux could sit on an unanswerable prompt with no way for the user to intervene.
-        //
-        // `requested_command_action_id.is_some()` is what keeps this narrow: only a command
-        // the agent actually requested qualifies, never an ordinary user block.
+        // Widening this to *any* reason was tried and reverted. It was the escape hatch for a
+        // warpified agent command that never received a control state at all, but
+        // `AgentInteractionMetadata::new_hidden` now installs one at the source, so the hatch
+        // is unnecessary -- and `terminal_use_tests.rs:413` correctly guards the property it
+        // gave up: a manual take-over should still require the agent to actually hold control.
         let is_valid_take_over = match long_running_control_state.as_ref() {
             Some(state) => state.is_agent_in_control(),
-            None => requested_command_action_id.is_some(),
+            None => reason.is_blocked_on_input() && requested_command_action_id.is_some(),
         };
         if !is_valid_take_over {
             return Err(UpdateInteractionModeError::InvalidTakeOver);
