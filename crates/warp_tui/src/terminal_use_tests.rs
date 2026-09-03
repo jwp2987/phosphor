@@ -384,3 +384,54 @@ fn completed_user_controlled_requested_command_resumes_unless_tearing_down() {
         .set_user_control_with_stop_reason();
     assert_eq!(terminal_use_conversation_to_resume(&model, &block_id), None);
 }
+
+// The password-prompt detector samples termios about a second into the block, which is before
+// `RequestCommandOutput` has returned and therefore before `CreatedSubtask` installs an `Agent`
+// control state. `BlockedOnInput` is consequently the one reason allowed to take over an
+// agent-requested command that has no control state yet -- every other reason still requires
+// the subagent to hold control, so nothing else can seize a command mid-dispatch. Once taken
+// over the PTY belongs to the user, and the command returns to the agent when it completes.
+#[test]
+fn blocked_on_input_takes_over_before_the_subagent_has_control() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("sudo apt update", "[sudo] password for user:");
+    let conversation_id = AIConversationId::new();
+    let block_id = {
+        let block = model.block_list_mut().active_block_mut();
+        block.set_agent_interaction_mode_for_requested_command(
+            AIAgentActionId::from("requested-command".to_owned()),
+            None,
+            conversation_id,
+        );
+        block.id().clone()
+    };
+    assert!(
+        !inline_process_owns_input(&model),
+        "the agent still drives the command until the prompt is detected"
+    );
+
+    assert!(
+        model
+            .block_list_mut()
+            .active_block_mut()
+            .take_over_control_for_user(UserTakeOverReason::Manual)
+            .is_err(),
+        "a manual take-over still requires the subagent to hold control"
+    );
+
+    model
+        .block_list_mut()
+        .active_block_mut()
+        .take_over_control_for_user(UserTakeOverReason::BlockedOnInput)
+        .expect("a password-prompt take-over must not need a control state to exist yet");
+
+    assert!(
+        inline_process_owns_input(&model),
+        "the user must be able to type the password into the PTY"
+    );
+    assert_eq!(
+        terminal_use_conversation_to_resume(&model, &block_id),
+        Some(conversation_id),
+        "the agent gets the command back once the user has answered the prompt"
+    );
+}

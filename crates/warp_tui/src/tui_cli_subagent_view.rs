@@ -83,6 +83,11 @@ fn terminal_use_status_text(
                 HAND_BACK_KEY_BINDING,
                 "to hand back",
             ),
+            UserTakeOverReason::BlockedOnInput => (
+                "Command needs your input · user is in control",
+                HAND_BACK_KEY_BINDING,
+                "to hand back",
+            ),
         },
     };
     format!("{status} · {key_binding} {action}")

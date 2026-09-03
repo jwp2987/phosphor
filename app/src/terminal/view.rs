@@ -15381,6 +15381,18 @@ impl TerminalView {
         !is_compatible_subshell_command
     }
 
+    /// Whether the active block is a command the agent executed and still drives.
+    ///
+    /// Locking the terminal model here is safe: both callers reach this from a model-event or
+    /// poller subscription that takes the same lock itself immediately afterwards, so it is
+    /// never held across the call.
+    #[cfg(unix)]
+    fn is_agent_driving_active_block(&self) -> bool {
+        let model = self.model.lock();
+        let active_block = model.block_list().active_block();
+        active_block.is_agent_requested_command() && active_block.is_agent_driving_command()
+    }
+
     fn paste(&mut self, middle_click: bool, ctx: &mut ViewContext<Self>) {
         let (should_paste_in_input, needs_bracketed_paste) = {
             let mut model = self.model.lock();
@@ -25105,7 +25117,13 @@ impl TerminalSurface for TerminalView {
         if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
             return false;
         }
-        password_notifications_enabled(ctx)
+        // An agent-executed command that stops on a password prompt has nobody watching the
+        // PTY -- in the reported case the session was inside tmux, so the prompt went to a pane
+        // the user wasn't even looking at. The poller is the only way to find out, so arm it
+        // regardless of the notification setting: that setting governs whether the *user* is
+        // told about their own command, not whether the agent gets unwedged.
+        self.is_agent_driving_active_block()
+            || password_notifications_enabled(ctx)
             || (self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled())
     }
 
@@ -25123,6 +25141,22 @@ impl TerminalSurface for TerminalView {
         block_index: Option<BlockIndex>,
         ctx: &mut ViewContext<Self>,
     ) {
+        // An agent-executed command sitting on a password prompt can never answer itself: the
+        // agent holds the PTY, so the user's keystrokes are dropped and the block hangs at
+        // "Executing command..." until `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION`
+        // (30 minutes) fires -- a pager-hang backstop, not a prompt. Hand the PTY over so the
+        // prompt is answerable and label the block with why. The conversation is deliberately
+        // left running: `BlockedOnInput` does not cancel it, and its `should_auto_resume` gives
+        // the command back to the agent once it completes. Focus follows via the resulting
+        // `CLISubagentEvent::UpdatedControl`, the same route every other take-over uses --
+        // `redetermine_global_focus` is deliberately not called here, since it can steal focus
+        // from a terminal view the user is actually working in.
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
+
         if FeatureFlag::SshDragAndDrop.is_enabled() {
             self.propagate_password_request(ctx);
         }

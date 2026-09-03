@@ -99,6 +99,11 @@ const AGENT_NEEDS_INPUT_MESSAGE: &str = "Agent needs your input to continue";
 const USER_TOOK_CONTROL_COMMAND_MESSAGE: &str = "User is in control.";
 const USER_STOPPED_CLI_SUBAGENT_COMMAND_MESSAGE: &str = "Paused agent. User is in control.";
 const AGENT_REQUESTED_USER_TAKE_CONTROL_COMMAND_MESSAGE: &str = "User in control";
+/// Shown when the agent's own command stopped on a terminal input prompt and the PTY was
+/// handed to the user so they can answer it. Distinct from [`AGENT_NEEDS_INPUT_MESSAGE`],
+/// which means the agent is waiting on the user to approve an action, not that the command
+/// itself is waiting on a keystroke.
+const COMMAND_BLOCKED_ON_INPUT_MESSAGE: &str = "Command needs your input. User is in control.";
 const AGENT_ERRORED_COMMAND_MESSAGE: &str = "Agent ran into an issue. Take over control.";
 pub const VIEWING_COMMAND_DETAIL_MESSAGE: &str = "Viewing command detail";
 const VIEWING_MCP_TOOL_DETAIL_MESSAGE: &str = "Viewing MCP tool call detail";
@@ -1481,6 +1486,7 @@ pub(crate) fn header_message_for_user_take_over_reason(
         UserTakeOverReason::TransferFromAgent { .. } => {
             AGENT_REQUESTED_USER_TAKE_CONTROL_COMMAND_MESSAGE
         }
+        UserTakeOverReason::BlockedOnInput => COMMAND_BLOCKED_ON_INPUT_MESSAGE,
     }
 }
 
