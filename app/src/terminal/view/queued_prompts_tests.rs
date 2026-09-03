@@ -39,6 +39,12 @@ fn command_query(text: &str) -> QueuedQuery {
     QueuedQuery::new_command(text.to_owned(), QueuedQueryOrigin::AutoQueueToggle)
 }
 
+/// Builds an unlocked auto-queue row -- what a `PendingLrcAutoQueue` row becomes once released,
+/// and the only origin `send_lrc_queued_prompts`' `take_while` will collect.
+fn lrc_auto_query(text: &str) -> QueuedQuery {
+    QueuedQuery::new(text.to_owned(), QueuedQueryOrigin::LrcAutoQueue)
+}
+
 /// Builds a locked queued row. `PendingLrcAutoQueue` is the only locked origin in Zap, and is
 /// what a prompt submitted while an agent-requested `run_shell_command` action is still pending
 /// is filed under (`Input::maybe_queue_prompt`); it stays locked until the drain releases it.
@@ -1207,6 +1213,65 @@ fn finished_receiving_output_drains_queue_when_sibling_block_masks_turn_end() {
             assert_eq!(
                 model.queue(streaming_conversation)[0].text(),
                 "sibling stays queued"
+            );
+        });
+    });
+}
+
+#[test]
+fn a_pending_head_no_longer_blocks_the_rows_queued_behind_it() {
+    // Regression for the second half of the stuck-queue bug. `send_lrc_queued_prompts`
+    // collects with `take_while(|row| row.origin() == LrcAutoQueue)`, so a locked
+    // `PendingLrcAutoQueue` row at the head stopped the iterator on its first element: the
+    // pending row could not fire *and* neither could any ordinary auto-queue row behind it.
+    // The queue simply stopped draining, which is why the panel looked wedged rather than
+    // merely holding one stuck row.
+    //
+    // `take_while` is not itself wrong -- firing past a differently-originated row would run
+    // prompts the user never auto-queued. The fix is that the row is unlocked before the
+    // collect, which `CLISubagentEvent::FinishedSubagent` now does. This test drives the
+    // collect directly with the row already unlocked, which is the state that handler
+    // establishes.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let terminal_view_id = terminal.read(&app, |view, _| view.view_id);
+        let conversation_id =
+            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+                let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+                history.set_active_conversation_id(id, terminal_view_id, ctx);
+                id
+            });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                pending_lrc_query("was the blocking head"),
+                ctx,
+            );
+            model.append(conversation_id, lrc_auto_query("stranded behind it"), ctx);
+            // The unlock the FinishedSubagent handler performs before draining.
+            model.unlock_pending_lrc_rows(conversation_id, ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            let queue = model.queue(conversation_id);
+            assert!(
+                queue.iter().all(|row| !row.is_locked()),
+                "precondition: the unlock has run"
+            );
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.send_lrc_queued_prompts(conversation_id, ctx);
+        });
+
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(
+                model.queue(conversation_id).is_empty(),
+                "both rows drain; before the unlock the take_while stopped at the locked head \
+                 and neither fired"
             );
         });
     });

@@ -534,10 +534,21 @@ before acting):
       collects with `take_while(|row| row.origin() == LrcAutoQueue)`, so a
       `PendingLrcAutoQueue` head stops the drain dead and blocks every row behind it; and a
       command that hangs without ever finishing never reaches `drain_queued_prompts` at all.
-      `CLISubagentEvent::FinishedSubagent` (`view.rs:6249`) and `handle_action_result`
-      (`app/src/ai/blocklist/action_model.rs:1407`) are the hooks that would cover those —
-      the latter is the semantically correct one, since the origin's own doc says "locked
-      until the snapshot fires".
+      Both are now closed by one unlock in the `CLISubagentEvent::FinishedSubagent` arm
+      (`view.rs`), placed before its existing `send_lrc_queued_prompts` call: the command
+      ending is the event the rows wait on, and it fires for a command that ends without the
+      conversation taking another turn — the case `drain_queued_prompts` never sees. Unlocking
+      before the collect also clears the `take_while` head, so the rows behind it drain.
+      **Still imprecise, and deliberately so.** That unlock is conversation-scoped, but
+      `AIAgentActionModel::running_actions` holds a set per conversation and notes actions may
+      be processed in parallel, so a second command finishing can release a row still waiting
+      on the first, reopening the snapshot race the lock guards. Accepted because the window
+      is narrow — two concurrent shell commands, one ending first — against a lock that was
+      otherwise permanent and made the whole queue unusable, which is the reported failure.
+      The precise fix is action-scoped, in `handle_action_result`
+      (`app/src/ai/blocklist/action_model.rs:1407`) where each id leaves `running_actions`,
+      keying unlock on the same condition as lock; it needs a model dependency `view.rs` does
+      not currently have.
       **Unverified by build: the change compiles only as far as `rustfmt` parses it.**
       The tests pass either way because they call the unlock function directly — the unit was
       always correct and the wiring was what was missing, so a test that exercises the drain
