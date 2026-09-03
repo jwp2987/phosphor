@@ -748,12 +748,21 @@ impl BlocklistAIStatusBar {
         let conversation = model.conversation(app)?;
         let terminal_model = self.terminal_model.lock();
         let active_block = terminal_model.block_list().active_block();
+        // Deliberately does *not* include an agent-requested command. A block with no control
+        // state used to suppress the whole indicator, and with it the only "Take over"
+        // affordance -- but an agent command that took the warpify path never receives a
+        // control state at all (the upgrade in `cli_controller.rs:383` needs a CLI subagent
+        // task, and `ssh` spawns none). That hid the escape hatch in precisely the case that
+        // needs it: a long-running agent command the user cannot otherwise reach. Blocks with
+        // no requested-command action keep the old suppression.
         let has_expanded_requested_command_with_no_subagent = active_block
             .is_active_and_long_running()
             && active_block
                 .agent_interaction_metadata()
                 .is_some_and(|metadata| {
-                    !metadata.should_hide_block() && metadata.long_running_control_state().is_none()
+                    !metadata.should_hide_block()
+                        && metadata.long_running_control_state().is_none()
+                        && metadata.requested_command_action_id().is_none()
                 });
         let should_render_warping = !model.request_type(app).is_passive()
             && !has_expanded_requested_command_with_no_subagent

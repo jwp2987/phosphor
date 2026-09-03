@@ -512,6 +512,26 @@ before acting):
       fixed; it would matter again to anyone building `--features autoupdate`.
 - [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
       the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
+- [ ] **An agent command on the warpify path is never monitorable or seizable.** The
+      `Agent` long-running control state is installed in exactly one place — the BYOP LRC
+      monitor fallback (`app/src/ai/blocklist/block/cli_controller.rs:383`), gated on a CLI
+      subagent task existing. An agent-requested command that takes the warpify path (`ssh`,
+      `docker run`, ...) spawns no subagent, so `long_running_control_state` stays `None` for
+      the life of the block. Three user-visible failures follow from that one gap, and each was
+      previously chased separately: the warping indicator is suppressed
+      (`status_bar.rs:751`), taking the only "Take over" affordance with it; a submitted prompt
+      is filed `PendingLrcAutoQueue` (`input.rs:12775` tests the same no-control-state
+      condition) and locks the queue; and `is_agent_driving_active_block` is false, so the
+      password-prompt hand-over cannot fire either. Reported as an agent inside tmux inside
+      ssh sitting on an unanswerable prompt with no way to intervene.
+      Partially addressed: the indicator no longer hides for a block carrying a
+      `requested_command_action_id`, and `take_over_for_user` accepts a manual take-over in
+      that state, so the escape hatch exists. **The root cause is untouched** — such a block
+      is still unmonitored, its snapshots never poll, and the agent never learns the command
+      finished. Fixing that means deciding whether a warpified agent command should be
+      agent-monitored at all, which is a design call about the warpify/agent boundary, not a
+      patch. **Unverified by build.**
+
 - [ ] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as
       `QueuedQueryOrigin::PendingLrcAutoQueue` (`app/src/terminal/input.rs:12856`), which
