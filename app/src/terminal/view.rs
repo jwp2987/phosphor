@@ -5020,6 +5020,15 @@ impl TerminalView {
     ) {
         match finish_reason {
             FinishReason::Complete => {
+                // The turn finishing IS the action snapshot firing, so any row parked as
+                // `PendingLrcAutoQueue` is now safe to auto-fire. Nothing else in the app
+                // called this, so a locked row stayed locked for the life of the process --
+                // undeletable, uneditable and never fired, because `is_locked()` gates all
+                // three. Must run before the edit-mode early return below, or a queue whose
+                // head is being edited never unlocks the rows behind it.
+                QueuedQueryModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.unlock_pending_lrc_rows(conversation_id, ctx));
+
                 let input_is_empty = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
                 let first_row_is_in_edit_mode =
                     QueuedQueryModel::as_ref(ctx).first_row_is_in_edit_mode(conversation_id);
@@ -5099,6 +5108,19 @@ impl TerminalView {
             FinishReason::Error
             | FinishReason::Cancelled
             | FinishReason::CancelledDuringRequestedCommandExecution => {
+                // A turn that errored or was cancelled never produces the snapshot these rows
+                // are waiting on, so unlocking them would leave rows queued against an action
+                // that will never arrive. Drop them instead -- this is the "so stale locked
+                // rows do not linger" case the function was written for.
+                //
+                // Deliberately before the `is_active_in_agent_view` early return: that return
+                // exists so a cancel triggered by leaving agent view preserves the queue for
+                // when the user comes back, but a *locked* row preserved that way is one the
+                // user can neither fire nor delete. The cleanup has to happen even when nobody
+                // is looking.
+                QueuedQueryModel::handle(ctx)
+                    .update(ctx, |model, ctx| model.remove_pending_lrc_rows(conversation_id, ctx));
+
                 // Only restore the head into the input when the user is currently viewing this
                 // conversation in agent view. Cancels triggered by exiting the agent view leave
                 // `agent_view_state` Inactive by the time the cancel fires, so the head stays in

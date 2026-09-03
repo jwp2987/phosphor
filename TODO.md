@@ -512,6 +512,25 @@ before acting):
       fixed; it would matter again to anyone building `--features autoupdate`.
 - [ ] **Nothing a user sees reports `0.1.2`.** Cargo says `0.1.2`, About and `--version` show
       the dated git tag, and the embedded macOS `Info.plist` still carries `0.1.0`.
+- [ ] **A queued prompt could lock permanently, with no production unlock.** A prompt
+      submitted while an agent `run_shell_command` action was still pending queued as
+      `QueuedQueryOrigin::PendingLrcAutoQueue` (`app/src/terminal/input.rs:12856`), which
+      `QueuedQuery::is_locked()` treats as locked — gating delete, edit, reorder and
+      auto-fire. The two functions written to release it,
+      `QueuedQueryModel::unlock_pending_lrc_rows` and `remove_pending_lrc_rows`, **had no
+      production caller at all**; every reference was in `queued_query_tests.rs`. So the row
+      stayed locked for the life of the process, and `remove_by_id` / `enter_edit_mode`
+      returned silently, giving the user no feedback. Observed in v0.1.3: four DeleteRow and
+      three StartEditingRow dispatches against one `QueuedQueryId`, all no-ops.
+      Both are now called from `drain_queued_prompts` (`app/src/terminal/view.rs`) — unlock on
+      `FinishReason::Complete`, remove on Error/Cancelled — each placed *before* that arm's
+      early return, since a queue whose head is being edited, or a cancel fired while the user
+      is not in agent view, are exactly the cases that stranded rows.
+      **Unverified by build: the change compiles only as far as `rustfmt` parses it.**
+      The tests pass either way because they call the unlock function directly — the unit was
+      always correct and the wiring was what was missing, so a test that exercises the drain
+      is the real gap.
+
 - [ ] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,
       `TEST_USER_UID = "test_user_uid"` (`app/src/auth/mod.rs:31-32`) with no indication it is
       not a real identity. (Constants verified; the print path was not traced.)
