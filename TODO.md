@@ -524,13 +524,15 @@ before acting):
       condition) and locks the queue; and `is_agent_driving_active_block` is false, so the
       password-prompt hand-over cannot fire either. Reported as an agent inside tmux inside
       ssh sitting on an unanswerable prompt with no way to intervene.
-      Partially addressed: the indicator no longer hides for a block carrying a
-      `requested_command_action_id`, and `take_over_for_user` accepts a manual take-over in
-      that state, so the escape hatch exists. **The root cause is untouched** — such a block
-      is still unmonitored, its snapshots never poll, and the agent never learns the command
-      finished. Fixing that means deciding whether a warpified agent command should be
-      agent-monitored at all, which is a design call about the warpify/agent boundary, not a
-      patch. **Unverified by build.**
+      Fixed at the source: `AgentInteractionMetadata::new_hidden` now installs
+      `Agent { .. }` control up front, so a command the agent issued is described as
+      agent-controlled from the moment it starts rather than only once a subagent happens to
+      appear. The upgrade's call-site guard changed with it — "already upgraded" is now the
+      presence of a `subagent_task_id`, not of any control state, or the guard would have
+      skipped every upgrade and never attached the task id; a block the user has taken over is
+      still left alone. Two earlier escape-hatch changes (indicator visibility,
+      `take_over_for_user` accepting a stateless block) are superseded but kept as belt and
+      braces for any path that still arrives without state. **Unverified by build.**
 
 - [ ] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as

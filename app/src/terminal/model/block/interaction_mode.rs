@@ -532,6 +532,18 @@ impl AgentInteractionMetadata {
     }
 
     /// Convenience constructor for the common "hidden by default" case used for requested commands.
+    ///
+    /// The block is marked agent-controlled from the moment the command starts, rather than
+    /// waiting for the BYOP LRC monitor fallback (`cli_controller.rs`) to upgrade it. That
+    /// upgrade is gated on a CLI subagent task existing, and an agent command taking the
+    /// warpify path -- `ssh`, `docker run` -- spawns no subagent, so it never arrived: the
+    /// block stayed `long_running_control_state: None` for its whole life. Everything that
+    /// asks "is the agent driving this?" keys on that state, so its absence made such a block
+    /// simultaneously unmonitored, unseizable, and a trap that locked any prompt queued behind
+    /// it. Starting in `Agent` is the honest description of a command the agent just issued.
+    ///
+    /// `should_hide_block` stays `true` and `subagent_task_id` stays `None`; the upgrade still
+    /// applies both when a subagent does appear.
     pub fn new_hidden(
         requested_command_action_id: AIAgentActionId,
         conversation_id: AIConversationId,
@@ -540,7 +552,10 @@ impl AgentInteractionMetadata {
             Some(requested_command_action_id),
             conversation_id,
             None,
-            None,
+            Some(LongRunningCommandControlState::Agent {
+                is_blocked: false,
+                should_hide_responses: false,
+            }),
             false,
             true,
         )

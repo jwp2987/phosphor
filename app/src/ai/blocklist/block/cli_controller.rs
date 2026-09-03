@@ -328,9 +328,19 @@ impl CLISubagentController {
                 let upgrade_target = snapshot_block_id.as_ref().and_then(|block_id| {
                     let terminal_model = me.terminal_model.lock();
                     let block = terminal_model.block_list().block_with_id(block_id)?;
-                    if !block.is_agent_driving_command()
-                        || block.long_running_control_state().is_some()
-                    {
+                    // "Already upgraded" is now the presence of a subagent task id, not the
+                    // presence of a control state: agent-requested commands start in `Agent`
+                    // control (see `AgentInteractionMetadata::new_hidden`), so keying on the
+                    // state would skip every upgrade and the task id would never be attached.
+                    // A block the user has taken over is still left alone -- re-upgrading it
+                    // would silently pull control back from them.
+                    let already_upgraded = block
+                        .agent_interaction_metadata()
+                        .is_some_and(|metadata| metadata.subagent_task_id().is_some());
+                    let user_holds_control = block
+                        .long_running_control_state()
+                        .is_some_and(|state| state.is_user_in_control());
+                    if !block.is_agent_driving_command() || already_upgraded || user_holds_control {
                         return None;
                     }
                     let conversation_id = block.ai_conversation_id()?;
