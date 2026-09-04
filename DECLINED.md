@@ -281,6 +281,61 @@ Filed as cloud or as decisions, but actually in scope. Do not add these here.
   Phosphor wants it.
 - **Grok OAuth** — declined for product reasons (above), *not* because it is cloud.
   It never touches Warp's servers.
+- **`experimental.async_find_enabled` as a live user toggle** — **DECIDED 2026-08-17: leave
+  it as-is. Row finally written 2026-09-04 (#638).** The setting cannot affect anything: the
+  read is a composite, `FeatureFlag::AsyncFind.is_enabled() || *self.async_find_enabled`
+  (`app/src/terminal/settings.rs:222`, sole consumer `terminal/find/model.rs:246`), and
+  `AsyncFind` is registered under `#[cfg(feature = "async_find")]` (`app/src/lib.rs:3278`)
+  with `async_find` in `app/Cargo.toml`'s `default`, so the left arm is constant-`true` in
+  every build this repo ships. **The key point is that this is not fork drift.** The pin is
+  byte-identical — the same composite with the same explanatory comment, and `async_find` in
+  the pin's `default` too — so the toggle is dead *upstream*, by upstream's design. Making it
+  live again would be a deliberate divergence from the oracle, which AGENTS.md §5.10 puts
+  behind maintainer sign-off; the answer was no.
+  **Do not re-file this as dead code.** It already happened once: the decision closed with
+  "this closes with a `DECLINED.md` row", the row was never written, and the surviving open
+  duplicate in `TODO.md` was re-reported and filed as part of #638. Deleting the setting would
+  also be user-visible in a way pure dead code is not — it is `private: false` with a real
+  `toml_path`, and `SettingsFileError::UnknownKeys` (`app/src/settings/mod.rs:105`) raises a
+  diagnostic for any key it does not recognise, so removal would warn every user who has it in
+  their `settings.toml`. Revisit only if async find is ever made optional upstream.
+  <!-- markers: keep:async_find_enabled -->
+- **macOS-only menu bar** (`set_menu_bar_builder`, `crates/warpui/src/platform/mac/app.rs:60,187`;
+  `#[cfg(target_os = "macos")] mod app_menus`, `app/src/lib.rs:16-17`) — **pin parity, not a
+  fork divergence, and it costs Linux almost nothing.** The pin is identical:
+  `4111d08f9:crates/warpui/src/platform/mac/app.rs:63,195` are the only definitions there and
+  `4111d08f9:app/src/lib.rs:6-7` carries the same `cfg`. `warpui` has no Linux/Windows
+  menu-bar API at all. Nearly every entry in `app_menus.rs` dispatches a `CustomAction`, and
+  the command palette lists **all** bindings for the active view *including unbound ones* —
+  `ctx.key_bindings_for_view` keeps empty triggers explicitly
+  (`crates/warpui_core/src/core/app.rs:1865-1868`, consumed at
+  `app/src/search/action/data_source.rs:85-92`) — so a binding with no keystroke is still
+  reachable. Every non-`CustomAction` item was checked for another route: prompt/PS1 →
+  Settings › Appearance prompt modal; copy-on-select and mouse/scroll/focus reporting →
+  Settings › Features (`features_page.rs:1366, 1592-1620, 6958-6975`); compact mode
+  (`appearance_page.rs:2657`); default terminal (`features_page.rs:1995-1999`); feedback →
+  `workspace:send_feedback` (`workspace/mod.rs:1604`) plus the Resource Center footer; docs →
+  Resource Center; the debug block/recording/network/memory toggles → palette bindings at
+  `settings_view/mod.rs:661-725`; the Slack and Privacy Policy links are not rendered at all
+  (empty placeholder URLs, `util/links.rs:31-32`). **The complete menu-only residue on Linux
+  is six items, none of which loses a capability.** Release builds: "Show/Hide Phosphorized
+  SSH Blocks" (`app_menus.rs:611-637`; only route is the TOML key
+  `appearance.blocks.should_show_ssh_block`, `settings/block_visibility.rs:26-32`),
+  "Show/Hide In-Band Command Blocks" (`app_menus.rs:578-608`; its palette pair is gated on
+  `ChannelState::enable_debug_features() || cfg!(windows)`, `settings_view/mod.rs:661`, and
+  `enable_debug_features()` is `debug_assertions || Local | Dev`, `channel/state.rs:84-86`),
+  and the "GitHub Issues" help link (`app_menus.rs:880-883`). Debug builds only (`DEBUG_FLAGS`
+  are added under `cfg!(debug_assertions)`, `bin/phosphor_oss.rs:43-45`): "Enable/Disable
+  Shell Debug Mode" (`app_menus.rs:696-726`; `DebugSettings` is `private: true` with no
+  `toml_path`, `settings/debug.rs:22-28` — genuinely unreachable), "Export Default Settings
+  CSV" (`app_menus.rs:796-828`), and the runtime feature-flags submenu
+  (`app_menus.rs:829-831`, `crates/warp_core/src/features.rs:19-27`, whose entire content is
+  `LocalClaudeCodexChildHarnesses` — not in `UNSTABLE_FEATURES`, so no `ZAP_UNSTABLE_FEATURES`
+  route either). A Linux menu bar means adding a platform surface neither `warpui` nor the pin
+  has, to recover three settings toggles and a URL. **Do not file this as a Linux platform
+  bug.** One cheap follow-up is worth a separate issue: add the two block-visibility toggles
+  to the `ToggleSettingActionPair` list in `settings_view/mod.rs` so they reach the command
+  palette on every platform.
 
 ## The import test is necessary, not sufficient
 

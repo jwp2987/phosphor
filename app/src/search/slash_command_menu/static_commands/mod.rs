@@ -346,6 +346,7 @@ impl StaticCommand {
             self.name,
             "/statusline"
                 | "/reset-statusline"
+                | "/vim-mode"
                 | "/auto-approve"
                 | "/natural-language-detection"
                 | "/exit"

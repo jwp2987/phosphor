@@ -1221,6 +1221,7 @@ impl Input {
             }
             tui_only
                 if command.name == commands::STATUSLINE.name
+                    || command.name == commands::VIM_MODE.name
                     || command.name == commands::AUTO_APPROVE.name
                     || command.name == commands::NATURAL_LANGUAGE_DETECTION.name
                     || command.name == commands::EXIT.name

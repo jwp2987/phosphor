@@ -470,9 +470,15 @@ pub static EXPORT_TO_FILE: LazyLock<StaticCommand> = LazyLock::new(|| StaticComm
     argument: Some(Argument::optional().with_hint_text(t_static!("slash-cmd-export-to-file-hint"))),
 });
 
-/// Toggles the shared `text_editing.vim_mode_enabled` setting. Primarily useful on the
-/// ratatui TUI surface (see `crates/warp_tui`'s `supports_tui` gate below), where there is
-/// no Settings UI; on the GUI the same effect is available from Settings > Text Editing.
+/// Toggles the shared `text_editing.vim_mode_enabled` setting. TUI-only: on the ratatui
+/// surface there is no Settings UI, so this command is the only way to reach the setting;
+/// on the GUI the same effect is available from Settings > Text Editing.
+///
+/// It was registered without a GUI dispatch arm and without being declared TUI-only (#642),
+/// so the GUI palette offered it and selecting it fell through to `execute_slash_command`'s
+/// no-handler catch-all -- `debug_assert!` in debug, a silent `return false` in release.
+/// Declaring it TUI-only rather than giving it a GUI arm is what its own documentation
+/// already said: the GUI has a Settings page for this and does not need a command.
 pub static VIM_MODE: LazyLock<StaticCommand> = LazyLock::new(|| StaticCommand {
     name: "/vim-mode",
     description: t_static!("slash-cmd-vim-mode-desc"),
@@ -919,6 +925,35 @@ mod tests {
         assert!(command.supports_tui());
         assert!(command.supports_gui());
         assert!(!command.is_tui_only());
+    }
+
+    /// `/vim-mode` toggles a setting the GUI already exposes in Settings > Text Editing,
+    /// so it is TUI-only (#642). Before that it was registered, reported GUI support, and
+    /// had no GUI dispatch arm, so the palette offered a row that did nothing.
+    ///
+    /// Both halves are asserted because they must move together: `is_tui_only` is
+    /// deliberately the exact set `execute_slash_command`'s TUI-only guard enumerates, so a
+    /// command in one and not the other either resurfaces in the palette or lands in the
+    /// no-handler catch-all.
+    #[test]
+    fn vim_mode_command_is_tui_only() {
+        crate::i18n::init(Some("en"));
+
+        let command = COMMAND_REGISTRY
+            .get_command_with_name(VIM_MODE.name)
+            .expect("expected /vim-mode to be registered");
+        assert!(
+            command.supports_tui(),
+            "/vim-mode is the only route to the setting on the TUI"
+        );
+        assert!(
+            command.is_tui_only(),
+            "/vim-mode has no GUI dispatch arm; the GUI uses Settings > Text Editing"
+        );
+        assert!(
+            !command.supports_gui(),
+            "offering it in the GUI palette is what made it fall through to the catch-all"
+        );
     }
 
     /// Ported from Warp OSS `commands_tests.rs::version_command_is_not_registered`.

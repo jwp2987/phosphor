@@ -31,9 +31,12 @@ use url::Url;
 /// change to keep the two paths in sync.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProxyMode {
-    /// Consistent with `http_client::ProxyMode`: defaults to `Off`.
-    #[default]
     Off,
+    /// Consistent with `http_client::ProxyMode`: defaults to `System`, so that a
+    /// connection opened before the app pushes settings still honours
+    /// `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` the way upstream Warp does
+    /// unconditionally. See Issue #638.
+    #[default]
     System,
     Custom,
 }

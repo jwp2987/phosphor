@@ -22,7 +22,11 @@ use super::GlobalRules;
 /// no if-else logic needs to change.
 ///
 /// Defined outside `cfg_if` so that paths not compiling `local_fs` (WASM / tests) can still reference it.
-pub(crate) const RULES_FILE_PATTERN: &[&str] = &["WARP.md", "AGENTS.md", "CLAUDE.md"];
+///
+/// `pub` rather than `pub(crate)` because the app's `/open-project-rules` command has to open the
+/// same file the agent reads; before it could see this list it hard-coded `WARP.md` and opened a
+/// nonexistent file in every `AGENTS.md`-only project (#638).
+pub const RULES_FILE_PATTERN: &[&str] = &["WARP.md", "AGENTS.md", "CLAUDE.md"];
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {

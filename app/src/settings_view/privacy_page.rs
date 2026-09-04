@@ -21,14 +21,18 @@
 //!
 //! Behavioral adaptations, all of which keep the user-visible behavior Warp intends:
 //!
-//! * `CrashReportsWidget::should_render` is gated on `FeatureFlag::CrashReporting` instead of
+//! * `CrashReportsWidget::should_render` is gated on the `crash_reporting` cargo feature *and*
+//!   `FeatureFlag::CrashReporting`, instead of on
 //!   `ChannelState::is_crash_reporting_available()`. Warp's gate means "this build cannot ship
 //!   crash reports, so the toggle is a no-op". In this fork `is_crash_reporting_available()` is
-//!   hard-coded `false` (no crash reports are ever *uploaded*), but the setting is emphatically
-//!   not a no-op: `crash_reporting::init` reads it and subscribes to it, and turning it on
-//!   installs the panic hook in `init_local_crash_reporting` that writes a full backtrace to
-//!   the local log. Applying Warp's gate verbatim would hide a control that still does
-//!   something, which is the exact defect this page is being ported to fix.
+//!   hard-coded `false` (no crash reports are ever *uploaded*), but the setting is not
+//!   necessarily a no-op: where the subsystem is compiled in, `crash_reporting::init` reads it
+//!   and subscribes to it, and turning it on installs the panic hook in
+//!   `init_local_crash_reporting` that writes a full backtrace to the local log. Applying Warp's
+//!   gate verbatim would hide a control that still does something; gating on the runtime flag
+//!   alone showed a control that does nothing, because that flag is in `RELEASE_FLAGS` while no
+//!   OSS bundler passes the cargo feature (issue #633). Both halves are needed, and both are
+//!   the exact defect this page is being ported to fix, in opposite directions.
 //! * Hard-coded 12px font sizes are replaced with `appearance.ui_font_body()` /
 //!   `ui_font_overline()`, matching this fork's conversion of `settings_page::CONTENT_FONT_SIZE`
 //!   to scalable UI font sizes.
@@ -1528,6 +1532,25 @@ struct CrashReportsWidget {
     switch_state: SwitchStateHandle,
 }
 
+/// Whether the crash-reporting subsystem exists in this binary at all.
+///
+/// `app/src/lib.rs` compiles the whole `crash_reporting` module, and its `crash_reporting::init`
+/// call, under `#[cfg(feature = "crash_reporting")]`. With the cargo feature off there is no
+/// remaining reader of `IsCrashReportingEnabled` anywhere in the tree, so the setting is inert
+/// storage.
+const CRASH_REPORTING_COMPILED_IN: bool = cfg!(feature = "crash_reporting");
+
+/// Whether the "Send crash reports" row controls anything, given the runtime feature flag.
+///
+/// Both halves are required and they answer different questions: the cargo feature decides
+/// whether `crash_reporting::init` *exists*, `FeatureFlag::CrashReporting` decides whether it
+/// *returns early* (`crash_reporting/mod.rs:165`). Split out of
+/// [`CrashReportsWidget::should_render`] so the compile-time half can be asserted without
+/// standing up an `AppContext` -- see `privacy_page_tests.rs`.
+fn crash_reports_row_is_live(feature_flag_enabled: bool) -> bool {
+    CRASH_REPORTING_COMPILED_IN && feature_flag_enabled
+}
+
 impl SettingsWidget for CrashReportsWidget {
     type View = PrivacyPageView;
 
@@ -1538,14 +1561,24 @@ impl SettingsWidget for CrashReportsWidget {
     fn should_render(&self, app: &AppContext) -> bool {
         // Warp gates this on `ChannelState::is_crash_reporting_available()`, meaning "this build
         // cannot ship crash reports, so the toggle is a no-op". In this fork nothing is uploaded
-        // (that function is hard-coded `false`), but the setting is still live: it gates the
-        // panic hook installed by `crash_reporting::init_local_crash_reporting`, which writes a
-        // full backtrace to the local log. Gate on the feature flag that actually decides
-        // whether `crash_reporting::init` runs, so the toggle appears exactly when it does
-        // something.
-        if !FeatureFlag::CrashReporting.is_enabled() {
+        // (that function is hard-coded `false`), but the setting is not necessarily a no-op: when
+        // the subsystem is present it gates the panic hook installed by
+        // `crash_reporting::init_local_crash_reporting`, which writes a full backtrace to the
+        // local log. So gate on what actually decides whether `crash_reporting::init` runs.
+        //
+        // That is two things, not one, and only checking the flag was issue #633:
+        // `FeatureFlag::CrashReporting` is in `RELEASE_FLAGS`, so it is on in every release
+        // build, while no OSS bundler passes the `crash_reporting` cargo feature --
+        // `script/linux/bundle` and `script/windows/bundle.ps1` both reset `FEATURES` on their
+        // `oss` arm. Every shipped build therefore drew a live-looking switch over a subsystem
+        // that had been compiled out, which is precisely the defect this page was ported to fix
+        // (see the module doc).
+        if !crash_reports_row_is_live(FeatureFlag::CrashReporting.is_enabled()) {
             return false;
         }
+        // Deliberately read after the gates: `PrivacySettings::as_ref` panics on an unregistered
+        // singleton, and callers that never reach a live crash-reports row should not be forced
+        // to register one.
         let privacy_settings = PrivacySettings::as_ref(app);
         !privacy_settings.is_telemetry_force_enabled()
     }
@@ -1665,7 +1698,7 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
 ) {
     // The "cloud AI conversation storage" pair Warp registers here is dropped along with
     // `IsCloudConversationStorageEnabled`.
-    let toggle_binding_pairs = vec![
+    let mut toggle_binding_pairs = vec![
         ToggleSettingActionPair::new(
             "app analytics",
             builder(SettingsAction::PrivacyPageToggle(
@@ -1673,14 +1706,6 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             )),
             context,
             flags::TELEMETRY_FLAG,
-        ),
-        ToggleSettingActionPair::new(
-            "crash reporting",
-            builder(SettingsAction::PrivacyPageToggle(
-                PrivacyPageAction::ToggleCrashReporting,
-            )),
-            context,
-            flags::CRASH_REPORTING_FLAG,
         ),
         ToggleSettingActionPair::new(
             "secret redaction",
@@ -1691,6 +1716,23 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
             flags::SAFE_MODE_FLAG,
         ),
     ];
+
+    // Registered only when the subsystem is compiled in, for the same reason
+    // `CrashReportsWidget::should_render` is gated (#633). `CRASH_REPORTING_FLAG` is a
+    // keybinding *context* string reflecting the setting's current value
+    // (`workspace/view.rs`), NOT a feature gate -- so hiding the settings row alone left
+    // this pair registered, and the command palette still offered a toggle for a setting
+    // nothing reads. Both surfaces have to move together.
+    if CRASH_REPORTING_COMPILED_IN {
+        toggle_binding_pairs.push(ToggleSettingActionPair::new(
+            "crash reporting",
+            builder(SettingsAction::PrivacyPageToggle(
+                PrivacyPageAction::ToggleCrashReporting,
+            )),
+            context,
+            flags::CRASH_REPORTING_FLAG,
+        ));
+    }
 
     ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(toggle_binding_pairs, app);
 }
@@ -1710,3 +1752,7 @@ mod styles {
 fn description_text_color(theme: &WarpTheme) -> warp_core::ui::theme::Fill {
     theme.sub_text_color(theme.surface_2())
 }
+
+#[cfg(test)]
+#[path = "privacy_page_tests.rs"]
+mod tests;

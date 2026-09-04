@@ -31,16 +31,34 @@ fn test_builder() -> reqwest::ClientBuilder {
     reqwest::ClientBuilder::new().tls_certs_only([])
 }
 
+/// The pre-injection default is `System`.
+///
+/// This is what a `Client` built during cold start — before the app has read
+/// settings.toml and called `set_global_proxy_config` — gets. `Off` here would make the
+/// fork ignore `HTTPS_PROXY` in that window while upstream Warp honours it, and would
+/// contradict the app-side setting default. See Issue #638.
+#[test]
+fn proxy_mode_defaults_to_system() {
+    assert_eq!(ProxyMode::default(), ProxyMode::System);
+    assert_eq!(ProxyConfig::default().mode, ProxyMode::System);
+}
+
 #[test]
 fn proxy_mode_from_str_lenient_handles_variants() {
     assert_eq!(ProxyMode::from_str_lenient("system"), ProxyMode::System);
     assert_eq!(ProxyMode::from_str_lenient("SYSTEM"), ProxyMode::System);
     assert_eq!(ProxyMode::from_str_lenient("custom"), ProxyMode::Custom);
+    // The three explicit opt-out spellings stay opt-outs.
     assert_eq!(ProxyMode::from_str_lenient("off"), ProxyMode::Off);
     assert_eq!(ProxyMode::from_str_lenient("disabled"), ProxyMode::Off);
     assert_eq!(ProxyMode::from_str_lenient("none"), ProxyMode::Off);
-    // Unknown values fall back to Off, matching the default, avoiding an unexpected system proxy.
-    assert_eq!(ProxyMode::from_str_lenient("wat"), ProxyMode::Off);
+    // An unrecognised value falls back to the default, which is `System`. It previously
+    // fell back to a hard-coded `Off` described as "matching the default"; that stopped
+    // being true the moment the default moved (Issue #638), which is why the fallback is
+    // now expressed as `ProxyMode::default()` in the source. Asserted here against the
+    // literal `System` rather than against `ProxyMode::default()`, so this test still
+    // fails if the default itself is reverted.
+    assert_eq!(ProxyMode::from_str_lenient("wat"), ProxyMode::System);
 }
 
 #[test]

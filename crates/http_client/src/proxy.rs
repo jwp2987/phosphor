@@ -27,15 +27,25 @@ use std::sync::{OnceLock, RwLock};
 
 /// Global proxy mode.
 ///
-/// Defaults to `Off`: avoids a `Client` constructed during cold start (before
-/// app-layer settings have been injected) picking up an unexpected system proxy
-/// detected by reqwest. Same default as app::ProxyMode.
+/// Defaults to `System`, the same default as `app::settings::network::ProxyMode`.
+///
+/// This is the value in effect during cold start, before the app layer has read
+/// settings.toml and called [`set_global_proxy_config`], so it decides what any
+/// `Client` built in that window does. It used to be `Off`, to keep such a client
+/// from picking up a system proxy reqwest detected on its own — but upstream Warp
+/// builds reqwest with default features and no `no_proxy()` call outside tests, so
+/// `Off` made the fork quietly *less* proxy-aware than the product it forks, both
+/// during cold start and (via the settings default) forever after. Keeping the two
+/// defaults identical also means the cold-start window and the post-injection state
+/// agree for a stock install, instead of flipping proxying on partway through
+/// startup. See Issue #638.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProxyMode {
-    /// Disable the proxy, including environment variables. The default.
-    #[default]
+    /// Disable the proxy, including environment variables.
     Off,
     /// Fully follow the system / environment variables (reqwest's default behavior).
+    /// The default.
+    #[default]
     System,
     /// Use the proxy explicitly configured in [`ProxyConfig::url`].
     Custom,
@@ -54,8 +64,13 @@ impl ProxyMode {
         match s.to_ascii_lowercase().as_str() {
             "system" => ProxyMode::System,
             "custom" => ProxyMode::Custom,
-            // off / disabled / none / unknown all fall back to Off (default), avoiding an unexpected system proxy.
-            _ => ProxyMode::Off,
+            // `off` / `disabled` / `none` are explicit opt-outs and are honoured as such.
+            "off" | "disabled" | "none" => ProxyMode::Off,
+            // Anything else is a typo or a value from a newer build. Fall back to the
+            // default rather than to a hard-coded variant, so this can never drift away
+            // from it again the way it did in Issue #638 — a mis-spelled mode should land
+            // a user on the documented default, not silently disable their proxy.
+            _ => ProxyMode::default(),
         }
     }
 }

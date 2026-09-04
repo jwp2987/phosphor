@@ -54,10 +54,9 @@ pub fn initialize_settings_for_tests_with_mode(
             AccessibilitySettings, AliasExpansionSettings, AppEditorSettings,
             BlockVisibilitySettings, CodeSettings, DebugSettings, EmacsBindingsSettings,
             FontSettings, GPUSettings, InputModeSettings, InputSettings, LocalControlSettings,
-            NativePreferenceSettings, PaneSettings, PreferencesSettings,
-            SameLinePromptBlockSettings, ScrollSettings, SelectionSettings, SshSettings,
-            ThemeSettings, TuiAutoupdateSettings, TuiThemeSettings, TuiZeroStateSettings,
-            VimBannerSettings, WarpDrivePrivacySettings,
+            NativePreferenceSettings, PaneSettings, PreferencesSettings, ScrollSettings,
+            SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings,
+            TuiThemeSettings, TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings,
         },
         terminal::{
             alt_screen_reporting::AltScreenReporting, general_settings::GeneralSettings,
@@ -122,7 +121,6 @@ pub fn initialize_settings_for_tests_with_mode(
 
     NativePreferenceSettings::register(app);
     SafeModeSettings::register(app);
-    SameLinePromptBlockSettings::register(app);
     ScrollSettings::register(app);
     SelectionSettings::register(app);
     app.update(|ctx| {

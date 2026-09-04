@@ -387,27 +387,87 @@ should not be left implying otherwise.
 
 #### Agent-reported, plausible, NOT fully traced
 
-- [ ] **Downloadable fallback fonts may be dead.** `url_for_font`
-      (`app/src/font_fallback.rs:8-15`) builds `{scheme}://assets/fallback-fonts/…` and
-      **coordinator-verified the Oss scheme is `phosphor`** (`channel/state.rs:274`), so the
-      URLs are `phosphor://…`. Whether that actually fails depends on how
-      `assets/asset_cache.rs` dispatches non-HTTP schemes — it carries *both* a bundled
-      provider and a URL provider, and I did not finish tracing which handles this.
-      **Recorded at the confidence it has:** the reporting agent's own words were "a static
-      read of the call chain, not an observed failure." Do not quote this as confirmed.
+- [x] **Downloadable fallback fonts: CLOSED 2026-09-04, no defect — the code is broken
+      *and* unreachable, and it is unreachable at the pin too.** Now fully traced, so it no
+      longer belongs under this heading.
+      **(a) The dispatch would fail.** The premise this row was filed on — that
+      `asset_cache.rs` picks between a bundled and a URL provider *by scheme* — is wrong.
+      `AssetCache` dispatches on the `AssetSource` **variant the caller already chose**
+      (`crates/warpui_core/src/assets/asset_cache.rs:405-451`); `bundled_asset_provider` is
+      consulted only in the `AssetSource::Bundled` arm (`:421-424`), which takes a
+      `&'static str` path and never a URL. The registered provider is
+      `::asset_cache::url_source`, unconditionally (`app/src/lib.rs:1567`, called at
+      `crates/warpui_core/src/core/app.rs:4137`), and that always builds an
+      `AssetSource::Async` fetching via `reqwest::get`
+      (`crates/asset_cache/src/lib.rs:34-46, 144-153`). `phosphor://…` parses fine — a
+      non-special scheme with an authority — and then dies at
+      `reqwest-0.13.4/src/async_impl/client.rs:2605-2606`
+      (`if url.scheme() != "http" && url.scheme() != "https" { url_bad_scheme }`). No
+      `fallback-fonts` assets are bundled either.
+      **(b) It is never reached.** `mod font_fallback` is `#[cfg(target_family = "wasm")]`
+      (`app/src/lib.rs:47-48`), and so is `set_fallback_font_fn` (`:2787-2788`) — the same
+      wasm gate the `port/completer-cache` refutation established at `TODO.md:1547`, never
+      connected to this row until now. `app/src/font_fallback.rs` is the only constructor of
+      `ExternalFontFamily`; with `fallback_font_fn` unset,
+      `app_fallback_family_for_char` returns `None`
+      (`crates/warpui_core/src/fonts/external_fallback.rs:78-82`),
+      `request_fallback_font_for_char` early-returns (`:92`), and the requested-families map
+      stays empty. No `phosphor://` URL is ever constructed in a shipped build. Nothing in
+      `.github/workflows/` or `script/precheck` targets `wasm32`; `script/wasm/bundle` is
+      invoked by nothing.
+      **(c) Not fork drift.** The pin carries the identical gates —
+      `4111d08f9:app/src/lib.rs:38-39` (coordinator-verified) and `:3084-3085`. Downloadable
+      fallback fonts are a **web-build-only** mechanism upstream; desktop Warp at the pin has
+      none either. The de-Warping rewrite (`a186e0041`,
+      `{server_root_url}/assets/client/static/…` → `{url_scheme}://assets/…`) broke a path
+      that was already dark on every desktop target.
+      **Correction to `docs/manual/08-shell-integration-and-appearance.md:458-466`:** its
+      advice is right and its cause is wrong. It blames the URL rewrite; the mechanism is
+      absent because the module is wasm-gated. The user-facing guidance (install the fonts,
+      set `fallback_font_name`) is unaffected.
+      Source reading only — no build was run. Revisit only if the wasm build is revived, and
+      then the URL must return to an HTTP(S) origin or the fonts must be bundled.
 
 #### Inert settings and dead surfaces (agent-reported)
 
-- [ ] `SameLinePromptBlockSettings` — registered, read and written by nothing.
-- [ ] `experimental.async_find_enabled` — `async_find` is in `default` and the check ORs the
-      flag, so the toggle can never matter.
-- [ ] `FeatureFlag::DefaultWaterfallMode` has **no reader anywhere**, yet
-      `settings/input_mode.rs:9-11` still claims new users get `Waterfall`.
-- [ ] `CustomAction::CreateBlockPermalink` survives with a `cmd-shift-S` default keystroke,
-      registered to no binding and dispatching nowhere — leftover from the removed cloud
-      share-block feature, with orphaned i18n strings alongside it.
-- [ ] **Only macOS has a menu bar** (`set_menu_bar_builder` is inside the macOS `cfg`), so
-      menu-driven toggles are unreachable on this fork's primary platform.
+- [x] `SameLinePromptBlockSettings` — **DELETED 2026-09-04 (#638).** Confirmed by grep to have
+      exactly four sites (definition, `mod`/`pub use`, and the two `register` calls), no
+      `toml_path`, no test. Note the many `same_line_prompt_enabled` hits are a **different,
+      live** feature (prompt configuration) — do not confuse them, as this entry's phrasing
+      invites. `check_settings_registry` re-run: 49 groups in both production and the test
+      harness, down from 50, which is what proves the mirrored removal.
+- [x] `experimental.async_find_enabled` — **NOT DELETED. This entry duplicates a decision
+      already taken and is closed unactioned (2026-09-04).** See the CLOSED entry further
+      down this file: *"MAINTAINER DECISION 2026-08-17: leave it as-is"*, on the grounds that
+      the fork is byte-identical to the pin here — the composite
+      (`FeatureFlag::AsyncFind.is_enabled() || *self.async_find_enabled`) and `async_find`'s
+      presence in `default` are both upstream's, so the dead toggle is dead UPSTREAM and
+      removing it would be a deliberate divergence needing sign-off under AGENTS.md §5.10.
+      That decision closed with "this closes with a `DECLINED.md` row"; **the row was never
+      written**, which is exactly why this open duplicate survived and was re-filed as part of
+      #638. The row is now in `DECLINED.md`. Two further reasons not to delete it regardless:
+      the setting is `private: false` with a live `toml_path`, and
+      `SettingsFileError::UnknownKeys` (`settings/mod.rs:105`) raises a user-visible
+      diagnostic, so removal would warn every user who has the key in their `settings.toml`.
+- [x] `FeatureFlag::DefaultWaterfallMode` — **DELETED 2026-09-04 (#638).** Four sites, **zero**
+      `is_enabled()` calls, and absent from every flag set. The variant, its registration in
+      `app/src/lib.rs`, and the `default_waterfall_mode` cargo feature are all gone; the
+      `settings/input_mode.rs` comment that described it as present is reworded.
+- [x] `CustomAction::CreateBlockPermalink` — **DELETED 2026-09-04 (#638).** Two sites (variant
+      and keystroke), no dispatch, no menu item, no test. The discriminant hazard was checked
+      rather than assumed: `From<CustomAction> for CustomTag` is `action as isize`, so
+      removing a mid-enum variant shifts every later tag — but tags are rebuilt at runtime
+      from `all::<CustomAction>()` and `keybindings.yaml` persists bindings **by name string**
+      (`app/src/keyboard.rs:66`), so no user's saved bindings move.
+      Its 19 orphaned i18n keys are **not** removed: they belong to the whole removed cloud
+      share-block feature (the modal, the settings page, the `terminal:open_share_block_modal`
+      binding), not to this variant, which never had a string of its own. `ja` and `zh-CN`
+      carry the same keys. Left for a separate i18n sweep.
+- [x] **Only macOS has a menu bar** — **NOT A DEFECT; recorded in `DECLINED.md` 2026-09-04
+      (#638).** Pin parity, not fork drift (`4111d08f9` has the identical `cfg`), and the
+      command palette lists unbound bindings too, so every `CustomAction` menu item is already
+      reachable on Linux. The complete menu-only residue is six items, three of them
+      debug-build-only, none losing a capability. See `DECLINED.md` for the full trace.
 - [ ] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` is
       `OR(WINDOWS, MAC)` and the read early-returns on Linux, so the only way to disable it
       there is `system.linux_selection_clipboard = false`, which also kills copy-to-primary.
@@ -469,9 +529,10 @@ in front of a user. **All of these are in the `v2026.08.29.1-beta` build.**
       **The fix is not a path swap:** `phosphor-logo.svg` carries four linear gradients and must
       go through `Image`; routed through `Icon` as those two call sites do, it renders as a white
       silhouette (the reason is already written at `ui_components/icon_with_status.rs:56`).
-- [ ] **`installer.sh` in the repo root is an AnythingLLM AppImage installer.** Tracked,
+- [x] **`installer.sh` in the repo root is an AnythingLLM AppImage installer.** Tracked,
       referenced by nothing, and **added by `ab8ff5787`** — a commit about making "Fetch from
-      API" work for Ollama. Accidental `git add`. Deletion left for the maintainer.
+      API" work for Ollama. Accidental `git add`. **DELETED 2026-09-04 (#639)**, after
+      confirming by grep that nothing in the tree referenced it.
 - [ ] **Residue of #634, not part of that change.** Three orphans, all verified by grep,
       all left in place deliberately — each removal reaches further than that fix's diff:
       - `TerminalAction::DismissCodeToolbeltTooltip` has **no dispatcher**. The variant, its

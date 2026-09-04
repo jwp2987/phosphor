@@ -39,10 +39,9 @@ use super::{
     AliasExpansionSettings,
     AppEditorSettings, AutoupdateSettings, BlockVisibilitySettings, CodeSettings, DebugSettings,
     EmacsBindingsSettings, FontSettings, FontSettingsChangedEvent, GPUSettings, InputBoxType,
-    InputModeSettings, InputSettings, LocalControlSettings, PaneSettings,
-    SameLinePromptBlockSettings, ScrollSettings, SelectionSettings, SshSettings, ThemeSettings,
-    TuiAutoupdateSettings, TuiThemeSettings, TuiZeroStateSettings, VimBannerSettings,
-    WarpDrivePrivacySettings,
+    InputModeSettings, InputSettings, LocalControlSettings, PaneSettings, ScrollSettings,
+    SelectionSettings, SshSettings, ThemeSettings, TuiAutoupdateSettings, TuiThemeSettings,
+    TuiZeroStateSettings, VimBannerSettings, WarpDrivePrivacySettings,
 };
 
 pub struct UserDefaultsOnStartup {
@@ -105,7 +104,6 @@ pub fn register_all_settings(ctx: &mut AppContext) {
     WarpDriveSettings::register(ctx);
     WorkflowAliases::register(ctx);
     EmacsBindingsSettings::register(ctx);
-    SameLinePromptBlockSettings::register(ctx);
     SemanticSelection::register(ctx);
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]

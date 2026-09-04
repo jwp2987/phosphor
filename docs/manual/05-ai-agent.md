@@ -230,7 +230,7 @@ is the agent-relevant subset.
 | `/cost` | both | Token spend at *your* configured rates |
 | `/skills` | both | Invoke a skill |
 | `/init` | both | Generate or update an `AGENTS.md` |
-| `/add-rule`, `/open-rules`, `/open-project-rules` | **GUI only** | Manage agent rules. `/open-project-rules` opens `<pwd>/WARP.md` specifically, whatever its palette description says — see §6.4. |
+| `/add-rule`, `/open-rules`, `/open-project-rules` | **GUI only** | Manage agent rules. `/open-project-rules` opens whichever of `WARP.md`, `AGENTS.md` or `CLAUDE.md` the current directory has, in that order — see §6.4. |
 | `/mcp` | **TUI only** | View and manage MCP servers |
 | `/add-mcp`, `/open-mcp-servers` | **GUI only** | MCP servers |
 | `/index` | **GUI only** | Index this codebase — only listed when codebase indexing is on, which it cannot be in a stock build; see [Codebase search](#codebase-search--read-this-before-expecting-it) |

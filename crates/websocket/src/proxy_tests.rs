@@ -22,13 +22,17 @@ fn clear_proxy_env() {
     ] {
         unsafe { env::remove_var(var); }
     }
-    // The fork's ProxyConfig gating defaults to `Off`, which short-circuits
-    // resolve_proxy before it ever reads the environment. These tests exercise
-    // the env-var fallback, which only runs under `System` mode, so install it.
-    set_global_proxy_config(ProxyConfig {
-        mode: ProxyMode::System,
-        ..Default::default()
-    });
+    // `resolve_proxy` consults the global `ProxyConfig` before it looks at the
+    // environment, and that global is process-wide, so reset it here to keep these
+    // tests hermetic against whatever a neighbouring test installed.
+    //
+    // Reset to `ProxyConfig::default()` deliberately, *not* to an explicit
+    // `ProxyMode::System`: the default is `System` (Issue #638), so these ported Warp
+    // tests exercise the shipped default rather than a mode propped up just for them.
+    // That is the point — if the default is ever reverted to `Off`, `resolve_proxy`
+    // short-circuits before reading the environment and every env-var test below fails,
+    // which is exactly the signal an explicit `System` here used to suppress.
+    set_global_proxy_config(ProxyConfig::default());
 }
 
 fn wss_uri(host: &str) -> http::Uri {

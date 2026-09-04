@@ -4,10 +4,17 @@ This guide is for people who want to bring **settings-style configuration**
 (custom keybindings, themes, workflows, MCP config, etc.) into Phosphor from a
 previous install.
 
-> **Note on names:** this project is now **Phosphor**. So far only the branding
-> has changed — on disk it still uses the `zap` app id, so every destination path
-> below intentionally uses `zap` / `Zap`, and existing installs keep working
-> unchanged. (Earlier names, oldest first: OpenWarp → Zap → Phosphor.)
+> **Note on names:** this project is now **Phosphor**, on disk as well as in the
+> branding. The app id has been `dev.phosphor.Phosphor`
+> (`crates/warp_core/src/channel/state.rs`) since 2026-08-14, so every destination
+> path below uses `phosphor`. (Earlier names, oldest first: OpenWarp → Zap →
+> Phosphor.)
+>
+> If you are coming from a **Zap** install that predates that rename, its
+> directories are a *source*, not a destination — see "Zap source paths" below.
+> This note previously claimed the `zap` app id was still in use and pointed every
+> destination at it, which sent migrations to directories Phosphor never reads
+> (#639).
 
 There are two source installs this might apply to:
 
@@ -27,7 +34,7 @@ not safe to copy across forks.
 
 ## How on-disk state is laid out
 
-Zap (and OpenWarp / upstream Warp before it) splits its on-disk state into
+Phosphor (and Zap / OpenWarp / upstream Warp before it) splits its on-disk state into
 **three categories of directory**:
 
 - **config** — `settings.toml`, `keybindings.yaml`
@@ -35,18 +42,32 @@ Zap (and OpenWarp / upstream Warp before it) splits its on-disk state into
 - **home dotfile** — `.mcp.json`, `skills/`
 
 On macOS all three categories coincide under a single home dotfile directory
-(`~/.warp/`, `~/.openwarp/`, or `~/.zap/`). On Linux and Windows they live in
+(`~/.phosphor/` here; `~/.warp/`, `~/.openwarp/` or `~/.zap/` for the sources).
+On Linux and Windows they live in
 **three different places** following XDG conventions on Linux and the
 `directories` crate layout on Windows. The migration scripts below take care
 of placing each file in the correct destination per platform.
 
-### Zap destination paths
+### Phosphor destination paths
+
+| Category | macOS | Linux | Windows |
+|---|---|---|---|
+| config | `~/.phosphor/` | `${XDG_CONFIG_HOME:-~/.config}/phosphor/` | `%LOCALAPPDATA%\zap\Zap\config\` |
+| data | `~/.phosphor/` | `${XDG_DATA_HOME:-~/.local/share}/phosphor/` | `%APPDATA%\zap\Zap\data\` |
+| home dotfile | `~/.phosphor/` | `~/.phosphor/` | `%USERPROFILE%\.phosphor\` |
+
+### Zap source paths
 
 | Category | macOS | Linux | Windows |
 |---|---|---|---|
 | config | `~/.zap/` | `${XDG_CONFIG_HOME:-~/.config}/zap/` | `%LOCALAPPDATA%\zap\Zap\config\` |
 | data | `~/.zap/` | `${XDG_DATA_HOME:-~/.local/share}/zap/` | `%APPDATA%\zap\Zap\data\` |
 | home dotfile | `~/.zap/` | `~/.zap/` | `%USERPROFILE%\.zap\` |
+
+Zap was this project under its previous name, so the formats are identical and
+every file listed below copies across as-is. Substitute these paths for the
+OpenWarp ones in the scripts below; `README.md`'s migration table covers the
+same move in short form.
 
 ### OpenWarp source paths
 
@@ -95,15 +116,15 @@ as-is.
 
 ### Steps
 
-> Quit Zap before copying, so no process is holding the files open.
+> Quit Phosphor before copying, so no process is holding the files open.
 
 **macOS**
 
 ```sh
-mkdir -p "$HOME/.zap"
+mkdir -p "$HOME/.phosphor"
 for f in settings.toml keybindings.yaml themes workflows launch_configurations tab_configs skills .mcp.json; do
-  if [ -e "$HOME/.openwarp/$f" ] && [ ! -e "$HOME/.zap/$f" ]; then
-    cp -R "$HOME/.openwarp/$f" "$HOME/.zap/$f"
+  if [ -e "$HOME/.openwarp/$f" ] && [ ! -e "$HOME/.phosphor/$f" ]; then
+    cp -R "$HOME/.openwarp/$f" "$HOME/.phosphor/$f"
   fi
 done
 ```
@@ -115,9 +136,9 @@ src_config="${XDG_CONFIG_HOME:-$HOME/.config}/openwarp"
 src_data="${XDG_DATA_HOME:-$HOME/.local/share}/openwarp"
 src_home="$HOME/.openwarp"
 
-dst_config="${XDG_CONFIG_HOME:-$HOME/.config}/zap"
-dst_data="${XDG_DATA_HOME:-$HOME/.local/share}/zap"
-dst_home="$HOME/.zap"
+dst_config="${XDG_CONFIG_HOME:-$HOME/.config}/phosphor"
+dst_data="${XDG_DATA_HOME:-$HOME/.local/share}/phosphor"
+dst_home="$HOME/.phosphor"
 mkdir -p "$dst_config" "$dst_data" "$dst_home"
 
 copy() {
@@ -143,9 +164,9 @@ $src_config = "$env:LOCALAPPDATA\openwarp\OpenWarp\config"
 $src_data   = "$env:APPDATA\openwarp\OpenWarp\data"
 $src_home   = "$env:USERPROFILE\.openwarp"
 
-$dst_config = "$env:LOCALAPPDATA\zap\Zap\config"
-$dst_data   = "$env:APPDATA\zap\Zap\data"
-$dst_home   = "$env:USERPROFILE\.zap"
+$dst_config = "$env:LOCALAPPDATA\phosphor\Phosphor\config"
+$dst_data   = "$env:APPDATA\phosphor\Phosphor\data"
+$dst_home   = "$env:USERPROFILE\.phosphor"
 New-Item -ItemType Directory -Force -Path $dst_config, $dst_data, $dst_home | Out-Null
 
 function Copy-IfMissing($srcDir, $dstDir, $name) {
@@ -167,10 +188,10 @@ Copy-IfMissing $src_home   $dst_home   skills
 ```
 
 The `[ ! -e ... ]` / `-not (Test-Path $to)` guard avoids overwriting anything
-you might have already set in Zap. Drop it if you'd rather have OpenWarp's
+you might have already set in Phosphor. Drop it if you'd rather have OpenWarp's
 values win.
 
-After verifying Zap looks right, you can delete the OpenWarp directories above
+After verifying Phosphor looks right, you can delete the OpenWarp directories above
 to reclaim disk space. They're no longer used by anything.
 
 ---
@@ -178,14 +199,14 @@ to reclaim disk space. They're no longer used by anything.
 ## 2. From upstream Warp
 
 Upstream Warp is a separate product with its own on-disk identity (see the
-"Upstream Warp source paths" table above). Zap is built with channel `Oss`,
-which gives it its own app ID (`dev.zap.Zap`) and its own per-platform layout.
+"Upstream Warp source paths" table above). Phosphor is built with channel `Oss`,
+which gives it its own app ID (`dev.phosphor.Phosphor`) and its own per-platform layout.
 The two installations cannot see each other's files, which is also what keeps
-your Warp account / cloud state out of Zap.
+your Warp account / cloud state out of Phosphor.
 
 The text-format files listed below have stable, compatible schemas, so copying
 them across is safe. **Other state is not** — Warp evolves independently of
-Zap, and binary / private stores can be tied to Warp's auth and bundle
+Phosphor, and binary / private stores can be tied to Warp's auth and bundle
 identity.
 
 ### What to copy
@@ -209,23 +230,23 @@ Same eight items as above:
   `~/Library/Application Support/dev.warp.Warp/` (macOS) or the equivalent
   state directory on Linux/Windows. Mixes user preferences with auth tokens,
   machine-bound IDs and cached cloud state. Copying it can leak identity and
-  confuse Zap's auth state. Zap defaults are already privacy-friendly.
+  confuse Phosphor's auth state. Phosphor defaults are already privacy-friendly.
 - **`warp.sqlite`** (and its `-wal` / `-shm` sidecars) — schema is coupled
-  to upstream Warp and not guaranteed to be compatible with Zap's migrations.
+  to upstream Warp and not guaranteed to be compatible with Phosphor's migrations.
 - **Keychain / DPAPI / libsecret entries** — bound to the Warp bundle /
-  service name, useless to Zap.
+  service name, useless to Phosphor.
 
 ### Steps
 
-> Quit both Warp and Zap before copying.
+> Quit both Warp and Phosphor before copying.
 
 **macOS**
 
 ```sh
-mkdir -p "$HOME/.zap"
+mkdir -p "$HOME/.phosphor"
 for f in settings.toml keybindings.yaml themes workflows launch_configurations tab_configs skills .mcp.json; do
-  if [ -e "$HOME/.warp/$f" ] && [ ! -e "$HOME/.zap/$f" ]; then
-    cp -R "$HOME/.warp/$f" "$HOME/.zap/$f"
+  if [ -e "$HOME/.warp/$f" ] && [ ! -e "$HOME/.phosphor/$f" ]; then
+    cp -R "$HOME/.warp/$f" "$HOME/.phosphor/$f"
   fi
 done
 ```
@@ -237,9 +258,9 @@ src_config="${XDG_CONFIG_HOME:-$HOME/.config}/warp-terminal"
 src_data="${XDG_DATA_HOME:-$HOME/.local/share}/warp-terminal"
 src_home="$HOME/.warp"
 
-dst_config="${XDG_CONFIG_HOME:-$HOME/.config}/zap"
-dst_data="${XDG_DATA_HOME:-$HOME/.local/share}/zap"
-dst_home="$HOME/.zap"
+dst_config="${XDG_CONFIG_HOME:-$HOME/.config}/phosphor"
+dst_data="${XDG_DATA_HOME:-$HOME/.local/share}/phosphor"
+dst_home="$HOME/.phosphor"
 mkdir -p "$dst_config" "$dst_data" "$dst_home"
 
 copy() {
@@ -265,9 +286,9 @@ $src_config = "$env:LOCALAPPDATA\warp\Warp-Terminal\config"
 $src_data   = "$env:APPDATA\warp\Warp-Terminal\data"
 $src_home   = "$env:USERPROFILE\.warp"
 
-$dst_config = "$env:LOCALAPPDATA\zap\Zap\config"
-$dst_data   = "$env:APPDATA\zap\Zap\data"
-$dst_home   = "$env:USERPROFILE\.zap"
+$dst_config = "$env:LOCALAPPDATA\phosphor\Phosphor\config"
+$dst_data   = "$env:APPDATA\phosphor\Phosphor\data"
+$dst_home   = "$env:USERPROFILE\.phosphor"
 New-Item -ItemType Directory -Force -Path $dst_config, $dst_data, $dst_home | Out-Null
 
 function Copy-IfMissing($srcDir, $dstDir, $name) {
@@ -294,35 +315,35 @@ Your original Warp data is never touched — Warp itself keeps working.
 
 ## Verifying
 
-Start Zap. You should see your custom themes in the theme picker, your
+Start Phosphor. You should see your custom themes in the theme picker, your
 keybindings in the keybinding editor, and your workflows in the workflow
 launcher. Settings UI values should reflect what was in `settings.toml`.
 
 If something looks off, the offending file is one of the eight above — open
-it in a text editor, or just delete it and let Zap fall back to defaults.
+it in a text editor, or just delete it and let Phosphor fall back to defaults.
 
 ## Rolling back
 
-Nothing in this guide is destructive: every file copied is something Zap will
+Nothing in this guide is destructive: every file copied is something Phosphor will
 recreate from defaults on next launch. To undo everything:
 
 ```sh
 # macOS
-rm -rf ~/.zap
+rm -rf ~/.phosphor
 ```
 
 ```sh
 # Linux
-rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/zap"
-rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/zap"
-rm -rf "$HOME/.zap"
+rm -rf "${XDG_CONFIG_HOME:-$HOME/.config}/phosphor"
+rm -rf "${XDG_DATA_HOME:-$HOME/.local/share}/phosphor"
+rm -rf "$HOME/.phosphor"
 ```
 
 ```powershell
 # Windows
-Remove-Item -Recurse -Force "$env:APPDATA\zap"
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\zap"
-Remove-Item -Recurse -Force "$env:USERPROFILE\.zap"
+Remove-Item -Recurse -Force "$env:APPDATA\phosphor"
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\phosphor"
+Remove-Item -Recurse -Force "$env:USERPROFILE\.phosphor"
 ```
 
 The OpenWarp and Warp source directories are never touched by this guide.

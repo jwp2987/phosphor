@@ -87,9 +87,6 @@ pub enum FeatureFlag {
     /// Enable multiselect in Notebooks and Zap Text.
     RichTextMultiselect,
 
-    /// If enabled, the default input mode is set to waterfall for new users.
-    DefaultWaterfallMode,
-
     /// Makes the input editor's prompt selectable.
     SelectablePrompt,
 
@@ -461,8 +458,6 @@ pub enum FeatureFlag {
     /// Displays debugging IDs for MCP servers, installations, and gallery items.
     McpDebuggingIds,
 
-    /// Enables rendering of images in markdown files and AI responses.
-    MarkdownImages,
     /// Enables rendering Mermaid diagrams in markdown notebooks.
     MarkdownMermaid,
     /// Enables editable Mermaid diagrams to behave atomically in notebook and plan editors.
@@ -590,7 +585,15 @@ pub enum FeatureFlag {
     /// Enables file-based MCP server support via .mcp.json files in repo roots.
     FileBasedMcp,
 
-    /// Enables passing user query arguments to skill invocations ($ARGUMENTS, $N).
+    /// Enables passing the user's trailing query text along with a skill invocation.
+    ///
+    /// There is no `$ARGUMENTS` / `$N` substitution anywhere in this tree, despite what
+    /// this doc comment used to claim (#638). The only consumer is
+    /// `SlashCommandRequest::InvokeSkill` (`app/src/ai/blocklist/controller/slash_command.rs`),
+    /// which, when the flag is on, trims the text after the skill name and carries it as
+    /// `InvokeSkillUserQuery`; `chat_stream` then appends it to the composed skill prompt
+    /// as a trailing `Additional instruction from the user: ...` line. When the flag is
+    /// off the text is dropped entirely.
     SkillArguments,
 
     /// When enabled, a conversation is only considered "active" once a new query has been
@@ -845,7 +848,6 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::NLDClassifierModelEnabled,
     FeatureFlag::Projects,
     FeatureFlag::ProviderCommand,
-    FeatureFlag::MarkdownImages,
     FeatureFlag::FileAndDiffSetComments,
     FeatureFlag::FileGlobV2Warnings,
     FeatureFlag::SummarizationViaMessageReplacement,
@@ -919,7 +921,25 @@ pub const RELEASE_FLAGS: &[FeatureFlag] = &[
     // Removing it is also what makes it safe to apply this whole list to release-*profile*
     // builds and not just release *bundles* — see `enabled_features()` in `app/src/lib.rs`.
     FeatureFlag::Changelog,
-    FeatureFlag::CrashReporting,
+    // `FeatureFlag::CrashReporting` is deliberately NOT here either, for exactly the
+    // reason spelled out above for `Autoupdate`, and it was found the same way (#633).
+    //
+    // No OSS bundler enables the `crash_reporting` Cargo feature: `script/linux/bundle`
+    // sets `release_bundle,crash_reporting` at the top and its oss arm overwrites that
+    // with `FEATURES="release_bundle"`, and `script/windows/bundle.ps1` does the same.
+    // `crash_reporting::init` sits behind `#[cfg(feature = "crash_reporting")]`, so with
+    // the flag in this list every shipped build set a flag for a subsystem that was not
+    // compiled in -- which is what drew a "Send crash reports" toggle on the Privacy
+    // page over nothing at all.
+    //
+    // As with `Autoupdate`, it stays reachable: `app/src/lib.rs`'s `extra_flags` adds it
+    // under `#[cfg(feature = "crash_reporting")]`, so an explicit
+    // `--features crash_reporting` build behaves exactly as it does today.
+    //
+    // The settings row and its command-palette action are ALSO gated on the Cargo
+    // feature directly (`settings_view/privacy_page.rs`). That is belt and braces, not
+    // duplication: this list decides what the flag says, those decide what is drawn, and
+    // an explicit `--features crash_reporting` build needs both to agree.
     // winit's IME path supports marked text on both macOS and Windows.
     // Windows must have this flag enabled to render IME preedit / input
     // composition text, otherwise only the OS candidate window is visible and

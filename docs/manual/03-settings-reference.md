@@ -566,9 +566,9 @@ renders in your host terminal's cells and uses that terminal's font.
 Note: the source used to carry a comment (`app/src/settings/input_mode.rs`)
 saying new users are defaulted to `waterfall` by the settings initializer. It was
 stale — no such override ever existed in this tree, and the
-`DefaultWaterfallMode` feature flag it belonged to is registered but has no
-reader — and it was corrected in #634. The effective default really is
-`pinned_to_bottom`, for everyone.
+`DefaultWaterfallMode` feature flag it belonged to had no reader — and it was
+corrected in #634. The flag itself was deleted in 2026-09 (#638). The effective
+default really is `pinned_to_bottom`, for everyone.
 
 ## InputSettings
 
@@ -659,7 +659,7 @@ Settings → Network.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"off"` | `off` disables proxying entirely, *including* environment variables like `HTTP_PROXY` — this is the default deliberately, so an unexpected system proxy cannot intercept local calls. `system` follows the system/environment configuration. `custom` uses the URL below. |
+| `network.proxy_mode` | `"off"` \| `"system"` \| `"custom"` | `"system"` | `system` follows the system/environment configuration — on Linux the `HTTP_PROXY` family, on macOS SystemConfiguration, on Windows WinINET. This is the default, matching Warp, which honours those environment variables unconditionally. `custom` uses the URL below. `off` disables proxying entirely, *including* environment variables — the opt-out for a machine whose environment carries a stale or unreachable proxy. |
 | `network.proxy_url` | string | `""` | The proxy URL used in `custom` mode, e.g. `http://proxy.corp:8080`. |
 | `network.proxy_username` | string | `""` | The proxy username for `custom` mode. Empty means no basic auth. |
 | `network.proxy_no_proxy` | string | `""` | Comma-separated host exceptions, e.g. `localhost,127.0.0.1,.internal`. |
@@ -692,17 +692,12 @@ in the running application.
 |---|---|---|---|
 | `account.is_settings_sync_enabled` | boolean | `false` | **Largely inert.** Upstream this enabled cloud settings sync. Phosphor has no cloud and no syncer — nothing is uploaded whether this is on or off. Its only remaining effect is cosmetic: when it is `true`, the Settings window draws a small "this setting is local only" icon next to settings that upstream would not have synced. Leave it at `false`. |
 
-## SameLinePromptBlockSettings
+## SameLinePromptBlockSettings — removed
 
-**Internal — no TOML key. Inert in Phosphor.** A record of whether an onboarding
-block has been shown, not a preference — and the onboarding block it tracked was
-never ported. The group is registered (`app/src/settings/init.rs:108`) and
-nothing else in the tree reads or writes it, so the value stays `not_shown`
-forever. Listed only so you can identify the name.
-
-| Name | Type | Default | What it tracks |
-|---|---|---|---|
-| `SameLinePromptBlockState` | `not_shown` \| `shown` \| `do_not_show` | `not_shown` | Upstream: whether the same-line-prompt onboarding block has been shown, with `do_not_show` for "not applicable" (e.g. you are not using PS1). Here: never written. |
+**Deleted in 2026-09 (#638); it never had a TOML key.** Upstream this recorded
+whether the same-line-prompt onboarding block had been shown. That block was
+never ported here, so the group was registered and then read and written by
+nothing. Listed only so the name is searchable if you meet it in upstream code.
 
 ## ScrollSettings
 
@@ -861,7 +856,7 @@ works is the most likely way to waste an afternoon.
 | `general.default_session_mode = "ambient_agent"` | Ambient (cloud) agents do not exist here. |
 | `general.user_native_preference`, `UserAppInstallStatus` | Web-build-only settings; inert in every downloadable build. |
 | `migration_test.*` | Test-fixture keys. Never registered in the running app. |
-| `SameLinePromptBlockState` (internal) | Registered, never read or written. The onboarding block it tracked was not ported. |
+| `SameLinePromptBlockState` (internal) | **Removed 2026-09 (#638).** Was registered and never read or written; the onboarding block it tracked was not ported. |
 | `accessibility.accessibility_verbosity` **on Linux, FreeBSD and Windows** | Read, but the winit delegate's `set_accessibility_contents` is an empty function; only the macOS delegate forwards announcements. Live on macOS. |
 | `experimental.async_find_enabled` | Opt-in for async find on channels where `FeatureFlag::AsyncFind` is off. The flag is in this build's default feature list, so `is_async_find_enabled()` already returns `true` and the setting changes nothing. |
 
@@ -979,10 +974,10 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/settings/local_control.rs:46-58,149-151,169-183 + crates/warp_core/src/channel/mod.rs:30-35 (Oss is not dogfood => Disabled)
   app/src/settings/init_tests.rs:22-45 (MigrationTestSettings), :398-409 (NotificationsMigrationTestSettings)
   app/src/settings/native_preference.rs:20-46 (WEB)
-  app/src/settings/network.rs:44-56,77-113 (ProxyMode::Off default and why)
+  app/src/settings/network.rs (ProxyMode::System default and why -- see the module doc)
   app/src/settings/pane.rs:5-24
   app/src/settings/privacy.rs:96-141 (defaults flipped true->false; PrivacySettings' custom_secret_regex_list and HasInitializedDefaultSecretRegexes)
-  app/src/settings/same_line_prompt_block.rs:39-47 (private; registered at app/src/settings/init.rs:108 and read/written nowhere else -- inert)
+  app/src/settings/same_line_prompt_block.rs DELETED 2026-09 (#638) (was private; registered and read/written nowhere else -- inert)
   app/src/terminal/safe_mode_settings.rs:72-101 (SafeModeSettings: privacy.secret_redaction.enabled default false, secret_display_mode_setting default Strikethrough, hide_secrets_in_block_list default false)
   app/src/terminal/safe_mode_settings.rs:104-132 (get_secret_obfuscation_mode gates on safe_mode_enabled; get_effective_secret_display_mode consults the legacy key only while the new one is at its default)
   app/src/settings/init.rs (the ~50 ::register() calls -- the full group list this section is measured against)
@@ -990,7 +985,7 @@ Group declarations (all defaults/paths/platforms above are read from these):
   app/src/lib.rs:1701 (a11y verbosity is read on every platform)
   app/src/terminal/settings.rs:192-223 + app/Cargo.toml:648 (experimental.async_find_enabled is ORed with FeatureFlag::AsyncFind, which is a default feature)
   app/src/settings/initializer.rs + app/src/auth/mod.rs:213 (the Windows 16.0 font-size override was inside is_onboarded()==Some(false), which is never true; removed by #634)
-  app/src/settings/input_mode.rs + app/src/lib.rs:2955-2956 (the "new users default to waterfall" comment was stale and is now corrected; DefaultWaterfallMode has no reader)
+  app/src/settings/input_mode.rs (the "new users default to waterfall" comment was stale and is now corrected; DefaultWaterfallMode had no reader and was deleted 2026-09, #638)
   app/src/settings/scroll.rs:3-13
   app/src/settings/select.rs:26-32,44-86 (platform sets: LINUX for selection clipboard, WINDOWS|MAC for middle click)
   app/src/settings/ssh.rs:5-30

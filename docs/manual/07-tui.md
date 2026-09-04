@@ -504,7 +504,7 @@ file dialog that the TUI does not have.
 | `/add-prompt` | Opens the new-prompt editor |
 | `/add-rule` | Opens the new-global-rule editor |
 | `/open-rules` | Opens the rules viewer |
-| `/open-project-rules` | Opens the project rules file. Its palette description says `AGENTS.md`, but the handler hard-codes `<pwd>/WARP.md` (`app/src/terminal/view.rs:722`, `:26265-26272`) — so in a repo whose rules live in `AGENTS.md` it opens a file that does not exist. Also offered only inside a repository. |
+| `/open-project-rules` | Opens the project rules file — whichever of `WARP.md`, `AGENTS.md` or `CLAUDE.md` the current directory has, in that order (`project_rules_path_for_dir`, `app/src/terminal/view.rs`). It used to hard-code `<pwd>/WARP.md`, so in an `AGENTS.md` repo it opened a file that does not exist. Also offered only inside a repository. |
 | `/open-file` | Opens a file in Phosphor's code editor |
 | `/open-skill` | Opens a skill's markdown file in the editor |
 | `/open-settings-file` | Opens `settings.toml` in the editor |

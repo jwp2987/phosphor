@@ -292,35 +292,43 @@ flag.
 
 ## Networking and proxies
 
-### The default is "no proxy", including environment variables
+### The default follows your environment
 
-This is the single most surprising networking behaviour in Phosphor, so it comes
-first: `network.proxy_mode` defaults to **`off`**, and `off` means
-`reqwest::ClientBuilder::no_proxy()` — *environment variables included*. If you
-are behind a corporate proxy and have `HTTPS_PROXY` exported, Phosphor will
-still not use it until you change this setting.
+`network.proxy_mode` defaults to **`system`**: `HTTPS_PROXY`, `HTTP_PROXY`,
+`ALL_PROXY` and `NO_PROXY` are honoured out of the box, as they are in Warp,
+which reads them unconditionally and offers no setting to turn them off.
 
-(The settings page's own description text says system mode is the default. That
-text is wrong; the code default is `off`.)
+If your environment carries a proxy you do *not* want Phosphor to use — a stale
+export, or one that is unreachable from where you are now — set the mode to
+`off`. That is stronger than unsetting the variables: `off` is
+`reqwest::ClientBuilder::no_proxy()`, so the platform proxy configuration is
+ignored too.
+
+> Builds between the introduction of this setting and its correction defaulted
+> to `off` while every description string still said `system`. If you are on one
+> of those and proxying appears dead, that is why; setting `proxy_mode =
+> "system"` explicitly works on both.
 
 | `network.proxy_mode` | Behaviour |
 |---|---|
-| `off` (default) | All proxying disabled, environment variables ignored. |
-| `system` | Follow the platform's proxy configuration. On Linux that is the standard environment variables; on macOS, SystemConfiguration; on Windows, WinINET. |
+| `system` (default) | Follow the platform's proxy configuration. On Linux that is the standard environment variables; on macOS, SystemConfiguration; on Windows, WinINET. |
 | `custom` | Use `network.proxy_url`, with optional Basic auth and a no-proxy list. |
+| `off` | All proxying disabled, environment variables ignored. |
 
-Set it in `settings.toml`:
+Since `system` is the default, the setting is normally only worth writing down
+to turn proxying *off*, or to pin an explicit URL:
 
 ```toml
 [network]
-proxy_mode = "system"
+proxy_mode = "off"
 ```
 
 or in **Settings → Network**, which also offers a **Test connection** button —
 in Custom mode it TCP-probes the proxy's host and port (reachability of the
 proxy, not internet egress); otherwise it issues a real GET.
 
-Any value that is not `system` or `custom` is read leniently as `off`.
+`off`, `disabled` and `none` all read as `off`. Any other unrecognised value
+falls back to the default, `system`.
 
 ### Environment variables, when `system` mode is on
 
@@ -363,8 +371,9 @@ Work through these in order.
    TUI's `/api-keys` menu. Keys live in the OS keychain, keyed by the
    `dev.phosphor.Phosphor` service name — a key saved by a pre-rename build is
    not visible to this one.
-2. **Is the proxy setting blocking you?** See above: the default is `off`, which
-   ignores `HTTPS_PROXY`.
+2. **Is the proxy setting blocking you?** See above. The default is `system`, so
+   `HTTPS_PROXY` is honoured — check that the proxy it names is actually
+   reachable from here, and that `network.proxy_mode` has not been set to `off`.
 3. **Open the wire inspector** (`ctrl-alt-i`) and send the message again. If
    nothing is captured, the request never left; if the request is there and the
    response is an error, the provider's own error text is in it.
@@ -745,7 +754,7 @@ These are private settings: they have no TOML path and are stored in
 | `privacy.telemetry_enabled` | Retained for a telemetry channel that does not exist. The toggle never renders and the setting is never read. | `false` | `settings.toml`; no UI |
 | `privacy.crash_reporting_enabled` | Would install a second local panic hook. Uploads nothing, and has no observable effect in the shipped builds — panics already reach the log with a backtrace. | `false` | Settings → Privacy → Send crash reports |
 | `privacy.custom_secret_regex_list` | Extra regexes for secret redaction. | empty | Settings → Privacy → Custom secret redaction |
-| `network.proxy_mode` | `off` / `system` / `custom`. `off` ignores proxy environment variables too. | `off` | Settings → Network |
+| `network.proxy_mode` | `off` / `system` / `custom`. `off` ignores proxy environment variables too. | `system` | Settings → Network |
 | `network.proxy_url` | Proxy URL for `custom` mode, e.g. `http://proxy.corp:8080`. | empty | Settings → Network |
 | `network.proxy_username` | Basic-auth username for `custom` mode. | empty | Settings → Network |
 | `network.proxy_no_proxy` | Comma-separated bypass list, e.g. `localhost,127.0.0.1,.internal`. | empty | Settings → Network |
@@ -784,7 +793,7 @@ These are private settings: they have no TOML path and are stored in
 | `WARP_ENABLE_WAYLAND=1` | Linux: force Wayland regardless of `system.force_x11`. |
 | `WARP_USE_DIRECT_COMPOSITION=0` | Windows: disable DirectComposition. |
 | `WGPU_BACKEND` | wgpu's own backend restriction, e.g. `vulkan` or `vulkan,dx12`. |
-| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` (and lower-case forms) | Honoured only when `network.proxy_mode` is `system`. |
+| `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY` (and lower-case forms) | Honoured when `network.proxy_mode` is `system`, which is the default. Set it to `off` to have them ignored. |
 | `WARP_DATA_PROFILE` | Debug builds only: suffixes the config/data/state directories and the keychain namespace, so you can run an isolated instance. Ignored in release builds. |
 | `OZ_AGENT_MAILBOX_ROOT` | Overrides the on-disk agent mailbox root (default `<state dir>/oz/…`). |
 | `WARP_TUI_DISABLE_AUTOUPDATE` | Disables the TUI auto-updater for one launch. Moot: it is not shipped. |
@@ -972,10 +981,10 @@ the part you actually want.
 - crash-report toggle copy stating nothing is uploaded: app/i18n/en/warp.ftl:933-934
 
 ## Networking
-- NetworkSettings group, toml paths, all defaults: app/src/settings/network.rs:77-110; ProxyMode default Off: app/src/settings/network.rs:44-48
-- module doc claiming a `system` default is stale relative to the code: app/src/settings/network.rs:8-9 vs :46, :80
-- settings-page description text also says system is the default: app/i18n/en/warp.ftl:874
-- Off means reqwest `no_proxy()` including environment variables: crates/http_client/src/proxy.rs:14-16, :84-87
+- NetworkSettings group, toml paths, all defaults: app/src/settings/network.rs; ProxyMode default System and the reasoning: app/src/settings/network.rs (enum + module doc "Why the default is `system`")
+- the pre-injection default the two transport mirrors carry, also System: crates/http_client/src/proxy.rs, crates/websocket/src/proxy.rs
+- settings-page description text, agreeing that system is the default: app/i18n/en/warp.ftl:874
+- Off means reqwest `no_proxy()` including environment variables: crates/http_client/src/proxy.rs:14-16
 - ProxyMode::from_str_lenient falls back to Off: crates/http_client/src/proxy.rs:53-60
 - System mode delegates to reqwest's platform proxy detection: crates/http_client/src/proxy.rs:9-13, :85
 - websocket env-var precedence HTTPS_PROXY/ALL_PROXY and HTTP_PROXY/ALL_PROXY, both cases: crates/websocket/src/proxy.rs:88-141, and `read_env_var` handling of the lower-case spelling

@@ -105,7 +105,21 @@ impl SelectionSettings {
                 .is_supported_on_current_platform()
     }
 
-    /// Writes the selection content to the user's clipboard if `copy_on_select` is enabled.
+    /// Writes the selection to the system clipboard if `copy_on_select` is enabled, and to the
+    /// Linux primary selection if `system.linux_selection_clipboard` is enabled.
+    ///
+    /// The primary-selection write is deliberately **not** gated on `copy_on_select`: the two
+    /// settings govern two different clipboards. `copy_on_select` is the switch for CLIPBOARD,
+    /// `linux_selection_clipboard` is the switch for PRIMARY, and populating PRIMARY on selection
+    /// is the X11/Wayland convention. Turning `copy_on_select` off therefore stops the CLIPBOARD
+    /// write only; stopping the PRIMARY write is `system.linux_selection_clipboard = false`. The
+    /// asymmetry is documented for users in `docs/manual/02-terminal-basics.md`.
+    ///
+    /// This ordering is byte-identical to the pin (`4111d08f9:app/src/settings/select.rs:108-113`).
+    /// #638 filed it as a defect ("disabling `copy_on_select` does not stop primary-selection
+    /// writes"); reordering it would change observable behavior away from Warp, which AGENTS.md
+    /// §5.10 makes a maintainer-sign-off decision rather than a silent fix. Do not reorder these
+    /// two statements without that sign-off and a tracking issue.
     pub fn maybe_copy_on_select(&self, clipboard_content: ClipboardContent, ctx: &mut AppContext) {
         self.maybe_write_to_linux_selection_clipboard(|_| clipboard_content.clone(), ctx);
         if self.copy_on_select_enabled() && !clipboard_content.plain_text.is_empty() {
@@ -142,6 +156,15 @@ impl SelectionSettings {
     /// Linux has the "primary clipboard" to which it maps the middle mouse button. Other platforms
     /// lack this separate clipboard, and so we map middle-click to the normal clipboard on those
     /// platforms.
+    ///
+    /// `middle_click_paste_enabled` is therefore *not* consulted on Linux/FreeBSD, and its
+    /// `SupportedPlatforms::OR(WINDOWS, MAC)` declaration above says so explicitly: the setting
+    /// exists to switch off an *emulation* of the Linux convention on platforms that lack the
+    /// primary selection, not to switch off the convention itself. The consequence, filed as #638,
+    /// is that Linux has no way to disable middle-click paste while keeping copy-to-primary —
+    /// `system.linux_selection_clipboard` is one switch for both directions. That is the pin's
+    /// behavior verbatim (`4111d08f9:app/src/settings/select.rs:144-154`); widening the setting to
+    /// Linux is a Warp divergence under AGENTS.md §5.10 and needs maintainer sign-off.
     pub fn read_for_middle_click_paste(&self, ctx: &mut AppContext) -> Option<ClipboardContent> {
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
             return self.maybe_read_from_linux_selection_clipboard(ctx);

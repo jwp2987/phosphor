@@ -109,18 +109,14 @@ UI:
   debug build, on the `Local`/`Dev` channels, or on Windows.
 - On every platform, editing `settings.toml` works.
 
-### `SameLinePromptBlockSettings`
+### `SameLinePromptBlockSettings` — removed
 
-`SameLinePromptBlockSettings` is not a preference and you cannot set it. It is a
-one-bit record (`NotShown` / `Shown` / `DoNotShow`) of whether Phosphor has
-already shown you the "same line prompt" onboarding block, so that the block is
-shown at most once. It is private, has no TOML path, and does not appear in
-`settings.toml`.
-
-**In Phosphor it is inert.** The setting is registered but nothing in the tree
-reads or writes it — the onboarding block it was tracking was never ported. It
-will stay `NotShown` forever. It is documented here only because you may see the
-name and wonder.
+Upstream carries a private `SameLinePromptBlockSettings` recording whether the
+"same line prompt" onboarding block has been shown (`NotShown` / `Shown` /
+`DoNotShow`). **Phosphor deleted it in 2026-09 (#638.)** The onboarding block it
+tracked was never ported, so the setting was registered and then read and written
+by nothing; it had no TOML path and never appeared in `settings.toml`. It is
+mentioned here only so the name is searchable if you meet it in upstream code.
 
 "Same line prompt" itself — drawing the prompt and the input on one line instead
 of stacked — is a real prompt option, but its checkbox is currently unrendered
@@ -160,9 +156,9 @@ the input:
 
 > A source comment used to claim new users are defaulted to `waterfall` by the
 > settings initializer. It was stale twice over — no such override ever existed
-> here, and nothing in this tree reads the `DefaultWaterfallMode` flag — and has
-> been corrected (#634). The effective default really is `pinned_to_bottom` for
-> everyone.
+> here, and nothing read the `DefaultWaterfallMode` flag — and has been corrected
+> (#634). The flag itself was deleted in 2026-09 (#638), having never had a
+> reader. The effective default really is `pinned_to_bottom` for everyone.
 
 ### Which input box (`InputSettings.input_box_type_setting`)
 
@@ -870,7 +866,7 @@ are coming from Warp, these terminal features are gone on purpose. See
 
 | What you will look for | Why it is not here |
 |---|---|
-| **Share block / block permalinks** | The share-block modal and the `terminal:open_share_block_modal` binding were removed with the rest of the cloud layer; a permalink needs Warp's servers to host it. The block context menu's "Share block…" / "Share session…" entries are gone, as is the **Settings → Shared Blocks** page. A `CreateBlockPermalink` action still exists as a leftover enum variant but is registered to nothing and dispatches nowhere. |
+| **Share block / block permalinks** | The share-block modal and the `terminal:open_share_block_modal` binding were removed with the rest of the cloud layer; a permalink needs Warp's servers to host it. The block context menu's "Share block…" / "Share session…" entries are gone, as is the **Settings → Shared Blocks** page. A `CreateBlockPermalink` enum variant survived as a leftover, registered to nothing and dispatching nowhere; it was deleted in 2026-09 (#638). |
 | **Shared sessions / session sharing** | Cloud-hosted. There is no server to host a shared session or resolve who may join it. |
 | **Screen and session recording** | Declined outright (`DECLINED.md`, #367 and #350) — not because it was cloud, but because Phosphor is not shipping it. There is no capture code in the tree. |
 | **Warp Drive as a cloud store** | The Library panel is local. Cloud Drive objects, team folders and team workflows do not exist; `warp.dev/drive/...` links resolve to nothing. |
@@ -930,7 +926,7 @@ Paths are relative to the repository root.
 
 ## Settings groups and defaults
 app/src/settings/block_visibility.rs:7-35        BlockVisibilitySettings; all three default false; toml appearance.blocks.*
-app/src/settings/same_line_prompt_block.rs:19-48 SLPBlockState {NotShown,Shown,DoNotShow}; private, no toml_path
+(app/src/settings/same_line_prompt_block.rs                DELETED 2026-09 (#638); was private, no toml_path, no reader)
 app/src/settings/input.rs:35-211                 InputSettings: show_hint_text=true, classic_completions_mode=false,
                                                  completions_open_while_typing=false, error_underlining=true,
                                                  syntax_highlighting=true, command_corrections=true,
@@ -1027,7 +1023,7 @@ app/src/util/bindings.rs:266-470   custom_tag_to_keystroke master table:
                                    CopyBlock (c); FindWithinBlock (f); ReopenClosedSession cmd-shift-T | ctrl-alt-t;
                                    AddWindow (n); CloseCurrentSession (w); NewAgentModePane ctrl-space;
                                    AttachSelectionAsAgentModeContext ctrl-shift-space;
-                                   CreateBlockPermalink mac_only cmd-shift-S (dead: no registration site);
+                                   (CreateBlockPermalink was here: DELETED 2026-09 (#638), never had a registration site);
                                    SelectAllBlocks/CloseTab/RenameTab/... => None (:447-472)
 app/src/util/bindings.rs:871-896   cmd_or_ctrl_shift: mac "cmd-x", else "ctrl-shift-X"
 app/src/util/bindings.rs:946-952   mac_only_keystroke => None off macOS
@@ -1160,9 +1156,10 @@ app/src/settings/initializer.rs                    the new-user block (Universal
                                                    under is_onboarded()==Some(false); unreachable because
                                                    app/src/auth/mod.rs:213 hardcodes is_onboarded: true, and
                                                    REMOVED by #634 -- the declared defaults are the effective ones
-crates/warp_features/src/lib.rs (DefaultWaterfallMode) + app/src/lib.rs:2955-2956
-                                                   flag is set but has no reader anywhere; the comment that
-                                                   claimed otherwise (app/src/settings/input_mode.rs) is fixed
+crates/warp_features/src/lib.rs (DefaultWaterfallMode) + app/src/lib.rs
+                                                   flag had no reader anywhere and was DELETED 2026-09 (#638),
+                                                   along with its registration and its Cargo feature; the comment
+                                                   that claimed otherwise (app/src/settings/input_mode.rs) is fixed
 
 ## Removed / declined
 DECLINED.md:74-90        cloud out of scope: teams, accounts, billing, RunAgents, environments

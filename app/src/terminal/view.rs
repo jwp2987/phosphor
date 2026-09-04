@@ -728,8 +728,6 @@ const DEFAULT_AI_BLOCK_HEIGHT: f32 = 96.;
 
 pub const DEFAULT_ASK_AI_AUTOSUGGESTION_TEXT: &str = "What happened here?";
 
-const WARP_MD_PATH: &str = "WARP.md";
-
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_CONTEXT_KEY: &str = "LongRunningRequestedCommand";
 pub const LONG_RUNNING_AGENT_REQUESTED_COMMAND_USER_TOOK_OVER_CONTEXT_KEY: &str =
     "LongRunningRequestedUserTookOverCommand";
@@ -26353,16 +26351,19 @@ impl TypedActionView for TerminalView {
                 }
             }
             OpenProjectRulesPane => {
-                if let Some(current_dir) = self.pwd() {
-                    let mut warp_md_path = PathBuf::from(&current_dir);
-                    warp_md_path.push(WARP_MD_PATH);
-                    #[cfg(feature = "local_fs")]
-                    ctx.emit(Event::OpenCodeInWarp {
-                        source: CodeSource::ProjectRules { path: warp_md_path },
-                        layout: *crate::util::file::external_editor::EditorSettings::as_ref(ctx)
+                #[cfg(feature = "local_fs")]
+                {
+                    if let Some(current_dir) = self.pwd() {
+                        let rules_path = project_rules_path_for_dir(Path::new(&current_dir));
+                        ctx.emit(Event::OpenCodeInWarp {
+                            source: CodeSource::ProjectRules { path: rules_path },
+                            layout: *crate::util::file::external_editor::EditorSettings::as_ref(
+                                ctx,
+                            )
                             .open_file_layout
                             .value(),
-                    });
+                        });
+                    }
                 }
             }
             OpenViewMCPPane => {
@@ -27697,6 +27698,36 @@ fn agent_view_back_button_label(
         Some(name) => crate::t!("terminal-agent-header-for-parent-named", name = name),
         None => crate::t!("terminal-agent-header-for-parent-agent"),
     }
+}
+
+/// Resolves the project-rules file `/open-project-rules` should open for `dir`.
+///
+/// The command is advertised as opening "the project rules file", and the agent reads whichever
+/// name in `RULES_FILE_PATTERN` (`ai::project_context::model`) a directory
+/// actually holds — `WARP.md` > `AGENTS.md` > `CLAUDE.md`, the same precedence
+/// `RuleAtPath::respected_rule` applies. This used to be a hard-coded `WARP.md`, so in an
+/// `AGENTS.md`-only project (this repository included) the command opened an empty buffer for a
+/// file that does not exist while the rules the agent was actually reading sat untouched beside it
+/// (#638). Resolving against the shared list keeps the command and the agent pointed at one file.
+///
+/// Only `dir` itself is examined, matching the previous behavior; the agent's ancestor walk is
+/// deliberately not reproduced here, so the command never opens a rules file outside the directory
+/// the user is standing in.
+///
+/// With no rules file on disk there is nothing to resolve, so we fall back to the first name in the
+/// list — the project's native convention, and the file the user is implicitly asking to create.
+/// That keeps the empty-project case identical to the old hard-coded path. Note that `/init`'s
+/// prompt asks the agent to create `AGENTS.md` (`ai/agent_providers/prompt_renderer.rs`), so the
+/// two commands disagree about which file a *fresh* project should get; that is a separate call to
+/// make about the fork's naming convention, not something to settle silently here.
+fn project_rules_path_for_dir(dir: &Path) -> PathBuf {
+    use ai::project_context::model::RULES_FILE_PATTERN;
+
+    RULES_FILE_PATTERN
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file())
+        .unwrap_or_else(|| dir.join(RULES_FILE_PATTERN[0]))
 }
 
 #[cfg(test)]

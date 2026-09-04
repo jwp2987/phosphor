@@ -551,8 +551,17 @@ A separate `appearance.vertical_tabs.*` group configures the vertical tab panel.
 ### Accessibility
 
 `accessibility.accessibility_verbosity` controls how much a screen reader is
-told: `VERBOSE` (default — announces the element's label *and* its help text) or
-`CONCISE` (label only).
+told: `"verbose"` (default — announces the element's label *and* its help text)
+or `"concise"` (label only).
+
+Write them lower-case. Earlier revisions of this page said `VERBOSE` / `CONCISE`,
+reading the enum's `#[serde(rename = "VERBOSE")]` as the settings-file spelling.
+It is not: the settings file goes through `SettingsValue`, not serde, and that
+derive snake-cases an explicit serde rename, so the file spelling is `verbose`
+— which is exactly what the generated schema advertises. The `VERBOSE` spelling
+is only ever seen by cloud sync and the platform-native stores. A `settings.toml`
+written with `VERBOSE` fails to parse, is skipped, and silently leaves the
+default in place.
 
 Two caveats, both important:
 
@@ -633,7 +642,7 @@ page can show "Transparency is not supported with your graphics drivers."
 | `appearance.window.open_windows_at_custom_size` | Use fixed rows/cols for new windows | `false` | Appearance → Window |
 | `appearance.window.new_windows_num_columns` / `_rows` | That size | `80` / `40` | Appearance → Window |
 | `appearance.window.zoom_level` | App zoom, % | `100` | Appearance → Zoom |
-| `accessibility.accessibility_verbosity` | `VERBOSE` / `CONCISE` | `VERBOSE` | TOML only |
+| `accessibility.accessibility_verbosity` | `verbose` / `concise` | `verbose` | TOML only |
 | `system.force_x11` | Use X11 instead of Wayland | `false` (`true` on WSL) | Features → *Use Wayland…* (inverted) |
 
 ---
@@ -793,7 +802,12 @@ DECLINED.md:183 (ctrl-shift-> font size vs file_tree hidden-files collision on L
 Accessibility:
 app/src/settings/accessibility.rs:6-17 (a11y_verbosity, toml_path accessibility.accessibility_verbosity)
 crates/warpui_core/src/accessibility.rs:78-98 (AccessibilityVerbosity; serde rename "VERBOSE"/"CONCISE", Verbose default)
-crates/settings_value_derive/src/lib.rs:363-371 (file value = serde rename > container rename_all > snake_case) — hence VERBOSE/CONCISE in TOML while schemars advertises lowercase
+crates/settings_value_derive/src/lib.rs:367-393 file_variant_name (file value = serde rename > container
+                                                 rename_all > snake_case, and the rename itself is snake_cased) — so "VERBOSE"
+                                                 becomes verbose in TOML, matching what schemars advertises; the SCREAMING
+                                                 spelling reaches only serde paths (cloud sync, native stores)
+crates/settings/src/lib.rs:441-470 (settings-file reads go through SettingsValue::from_file_value, not serde)
+app/src/settings/schema_validation_tests.rs accessibility_verbosity_file_values_match_schema (guards the above)
 crates/warpui_core/src/core/app.rs:1292-1320 (announcements gated on is_screen_reader_enabled().unwrap_or(false))
 crates/warpui/src/windowing/winit/delegate.rs:564-567 (winit delegate returns None)
 crates/warpui/src/platform/mac/delegate.rs:173,423 (only macOS answers)

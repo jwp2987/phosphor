@@ -10260,3 +10260,59 @@ fn is_passive_conversation_does_not_re_derive_from_history_after_construction() 
         });
     })
 }
+
+/// `/open-project-rules` must open the rules file the project actually has, using the same
+/// precedence the agent applies when it reads them (`WARP.md` > `AGENTS.md` > `CLAUDE.md`).
+///
+/// Before #638 the path was a hard-coded `<cwd>/WARP.md`, so in an `AGENTS.md`-only project — this
+/// repository included — the command opened an empty buffer for a file that does not exist. The
+/// `AGENTS.md` and `CLAUDE.md` cases below are what fail if that hard-coding comes back; the
+/// `WARP.md` cases pin the unchanged behavior for projects that use the native convention.
+#[test]
+fn project_rules_path_resolves_the_rules_file_the_project_has() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path();
+
+    // Empty project: fall back to the native convention, so "create the rules file" is unchanged.
+    assert_eq!(
+        super::project_rules_path_for_dir(path),
+        path.join("WARP.md")
+    );
+
+    // Lowest-priority name alone still wins over a WARP.md that is not there.
+    std::fs::write(path.join("CLAUDE.md"), "claude").expect("write CLAUDE.md");
+    assert_eq!(
+        super::project_rules_path_for_dir(path),
+        path.join("CLAUDE.md")
+    );
+
+    // AGENTS.md outranks CLAUDE.md.
+    std::fs::write(path.join("AGENTS.md"), "agents").expect("write AGENTS.md");
+    assert_eq!(
+        super::project_rules_path_for_dir(path),
+        path.join("AGENTS.md")
+    );
+
+    // WARP.md outranks both, matching `RuleAtPath::respected_rule`.
+    std::fs::write(path.join("WARP.md"), "warp").expect("write WARP.md");
+    assert_eq!(
+        super::project_rules_path_for_dir(path),
+        path.join("WARP.md")
+    );
+}
+
+/// A directory that merely *shares the name* of a rules file is not a rules file; resolution must
+/// skip it rather than hand the editor a directory path.
+#[test]
+fn project_rules_path_ignores_directories_named_like_rules_files() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path();
+
+    std::fs::create_dir(path.join("WARP.md")).expect("create WARP.md dir");
+    std::fs::write(path.join("AGENTS.md"), "agents").expect("write AGENTS.md");
+
+    assert_eq!(
+        super::project_rules_path_for_dir(path),
+        path.join("AGENTS.md")
+    );
+}

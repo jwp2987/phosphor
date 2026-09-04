@@ -394,8 +394,11 @@ at runtime**: no binary this repository builds passes that list to
 `ZAP_UNSTABLE_FEATURES` token for it either. The only way to turn it on is to
 rebuild with `--features editable_markdown_mermaid`.
 
-The same is true of `FeatureFlag::MarkdownImages`, with an extra wrinkle: it has
-**no consumer anywhere in this tree**. Turning it on would change nothing.
+`FeatureFlag::MarkdownImages` was a similar case with an extra wrinkle — it had
+**no consumer anywhere in this tree**, so turning it on would have changed
+nothing — and it was deleted in 2026-09 (#638). Do not confuse it with
+`BlocklistMarkdownImages`, which is a different flag, is live, and gates the
+blocklist image loading described below.
 
 ### Jupyter notebooks — behind an opt-in
 
@@ -795,14 +798,18 @@ Or let the agent write the file for you: `/init` generates or updates an
 | `/init` | GUI + TUI | Generate or update an `AGENTS.md` for this repository. |
 | `/add-rule` | GUI | Opens the pane for adding a new saved global rule. |
 | `/open-rules` | GUI | Opens the Rules pane — Global and Project-based tabs. |
-| `/open-project-rules` | GUI (requires a repository) | Opens the project rules file in Phosphor's editor. |
+| `/open-project-rules` | GUI (requires a repository) | Opens the project rules file in Phosphor's editor — whichever of `WARP.md`, `AGENTS.md` or `CLAUDE.md` the current directory has, in that order. |
 
 There is no `/rules` command.
 
-> **Known inconsistency:** `/open-project-rules` is described as "Open the project
-> rules file (AGENTS.md)", but it always opens `<cwd>/WARP.md` regardless of which
-> rule file the project actually has. If your repository uses `AGENTS.md`, open it
-> yourself.
+> **Which file it opens.** It resolves the current directory against the same
+> precedence the agent itself uses — `WARP.md` > `AGENTS.md` > `CLAUDE.md` — so an
+> `AGENTS.md`-only repository opens `AGENTS.md`. Only the current directory is
+> checked, not its ancestors. If the directory has no rules file at all it opens a
+> new `WARP.md`, which is *not* the file `/init` creates (`AGENTS.md`) — a known
+> inconsistency. Until this was fixed the command always opened `<cwd>/WARP.md`,
+> so in an `AGENTS.md` repository it presented an empty buffer for a file that did
+> not exist.
 
 | Setting | TOML path | Default | Where |
 |---|---|---|---|
@@ -1058,7 +1065,6 @@ Each is a decision, not an oversight; `DECLINED.md` is the register.
 | `JupyterNotebookRendering` (`.ipynb` viewer) | **off** | `ZAP_UNSTABLE_FEATURES=jupyter_notebook_rendering` |
 | `EditableMarkdownMermaid` | **off** | rebuild with `--features editable_markdown_mermaid`; no runtime path |
 | `SuggestedAgentModeWorkflows` | **off** | rebuild with `--features suggested_agent_mode_workflows`; no runtime path, and still inert |
-| `MarkdownImages` | **off**, and has no consumer in this tree | nothing to change |
 | `WarpPacks` | on, inert | — |
 
 **`DOGFOOD_FLAGS` membership enables nothing at runtime in this fork.** Upstream's
@@ -1101,7 +1107,7 @@ repository's binaries do. A flag needs a cargo feature in `app/Cargo.toml`'s
 | `/init` | GUI + TUI | Generate or update an `AGENTS.md`. |
 | `/add-rule` | GUI | Add a saved global rule. |
 | `/open-rules` | GUI | Open the Rules pane. |
-| `/open-project-rules` | GUI | Open the project rules file (opens `WARP.md`, see the note in §6.4). |
+| `/open-project-rules` | GUI | Open the project rules file (`WARP.md` > `AGENTS.md` > `CLAUDE.md`, see the note in §6.4). |
 | `/prompts` | GUI + TUI | Search saved agent-mode workflows. |
 
 ### CLI
@@ -1201,8 +1207,8 @@ app/Cargo.toml:480-662                      the `default` feature list
 app/Cargo.toml:616-619                      markdown_tables, markdown_mermaid, blocklist_markdown_images, blocklist_markdown_table_rendering all in default
 app/Cargo.toml:667                          editable_markdown_mermaid declared but NOT in default
 app/src/lib.rs:3048-3058                    cfg mapping of the markdown flags
-crates/warp_features/src/lib.rs:464-482     MarkdownImages / MarkdownMermaid / EditableMarkdownMermaid / MarkdownTables / JupyterNotebookRendering / Blocklist*
-crates/warp_features/src/lib.rs:848         MarkdownImages in DOGFOOD_FLAGS only
+crates/warp_features/src/lib.rs             MarkdownMermaid / EditableMarkdownMermaid / MarkdownTables / JupyterNotebookRendering / Blocklist*
+                                            (MarkdownImages was here; DELETED 2026-09 (#638), zero consumers)
 crates/warp_features/src/lib.rs:868         EditableMarkdownMermaid in DOGFOOD_FLAGS only
 crates/warp_features/src/lib.rs:881         JupyterNotebookRendering in DOGFOOD_FLAGS
 crates/warp_features/src/lib.rs:806-828     DOGFOOD_FLAGS enables nothing at runtime in this fork
@@ -1210,7 +1216,7 @@ crates/warp_features/src/lib.rs:886-891     PREVIEW_FLAGS (MarkdownTables)
 crates/warp_features/src/lib.rs:894-924     RELEASE_FLAGS (BlocklistMarkdownTableRendering)
 app/src/lib.rs:3326-3352                    ZAP_UNSTABLE_FEATURES parsing, "all"/"*"
 app/src/lib.rs:3355-3439                    UNSTABLE_FEATURES table (7 tokens)
-grep MarkdownImages across the tree         only warp_features declares it; zero consumers
+grep MarkdownImages across the tree         no hits since its deletion (#638); BlocklistMarkdownImages is a different, live flag
 app/src/ai/agent/util.rs:268-290            ```mermaid fence -> AIAgentTextSection::MermaidDiagram
 app/src/ai/blocklist/block/view_impl/common.rs:2122-2140 mermaid section requires BlocklistMarkdownImages + MarkdownMermaid, falls back to raw markdown
 app/src/ai/blocklist/block/view_impl/common.rs:1501-1520 mermaid lightbox
