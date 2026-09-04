@@ -79,6 +79,38 @@ use std::{
 pub const LONG_RUNNING_COMMAND_DURATION_MS: u64 = 50;
 pub const LONG_RUNNING_BOTTOM_PADDING_LINES: f32 = 0.2;
 
+/// Top padding for a block running a long-running command, mirroring
+/// [`LONG_RUNNING_BOTTOM_PADDING_LINES`].
+///
+/// **This diverges from the pin deliberately.** Upstream shrinks only the *bottom*
+/// padding for long-running blocks, for the reason written on `padding_bottom`: the
+/// pty row count is derived from the window size, so block padding that the row count
+/// does not know about is space the program believes it has and cannot see. That
+/// reasoning applies identically to the top, and upstream does not apply it there --
+/// `padding_top` returns the full block padding whatever the block is doing.
+///
+/// The visible consequence: a normal-screen full-height program (`top`, `watch`) paints
+/// its first rows into the padded strip and they scroll out of the block. Measured on a
+/// 106-row window, the first fully visible row was row 3 -- two rows lost off the *top*,
+/// which is why `top` appears to lose its header while its process list is intact. Alt-screen
+/// programs are unaffected, which is why `vim` looks fine and was the clue that this is not
+/// an alt-screen bug at all.
+pub const LONG_RUNNING_TOP_PADDING_LINES: f32 = 0.2;
+
+/// Every line of vertical padding a long-running block reserves that the program running in
+/// it cannot use: three gaps above the output (`padding_top`, `command_padding_top`,
+/// `padding_middle`) and one below (`padding_bottom`).
+///
+/// `SizeInfo` derives the pty row count from the window height, so this is what has to be
+/// subtracted for the rows the pty reports to match the rows the block actually shows. It
+/// previously subtracted the bottom only, so a full-height normal-screen program was told it
+/// had ~2 rows more than it did and painted them off the top of the block.
+///
+/// Keep this in step with the four `padding_*` accessors: a value here that disagrees with
+/// what they return puts the grid and the pty back out of alignment, which is the bug.
+pub const TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES: f32 =
+    3. * LONG_RUNNING_TOP_PADDING_LINES + LONG_RUNNING_BOTTOM_PADDING_LINES;
+
 /// We don't consider commands that were killed via Ctrl-C (error code 130) or that were killed
 /// by SIGPIPE (error code 141) to have failed. We also don't consider the exit code for any
 /// commands that didn't start execution (i.e. `preexec` was never called), as the exit code is
@@ -2120,6 +2152,17 @@ impl Block {
     pub fn padding_top(&self) -> Lines {
         if self.missing_command() || !self.ready_to_render() {
             Lines::zero()
+        } else if self.is_active_and_long_running() && self.block_banner.is_none() {
+            // Same reasoning as `padding_bottom`, and see
+            // `LONG_RUNNING_TOP_PADDING_LINES` for why this arm does not exist upstream:
+            // the pty row count is computed from the window size, so any block padding it
+            // does not account for is space the running program thinks it owns. Padding the
+            // top pushes the program's first rows out of the block.
+            //
+            // A block with a banner keeps its (already truncated) padding: the banner is
+            // itself chrome above the output, so shrinking the gap does not hand those rows
+            // back to the program and only breaks the banner's visual tie to the block.
+            LONG_RUNNING_TOP_PADDING_LINES.into_lines()
         } else {
             match self.block_banner {
                 // Truncate the padding if there is a banner, so not break the visual relationship
@@ -2133,6 +2176,11 @@ impl Block {
     pub fn command_padding_top(&self) -> Lines {
         if self.header_grid.is_command_empty() || !self.ready_to_render() {
             Lines::zero()
+        } else if self.is_active_and_long_running() {
+            // Part of the same total as `padding_top` and `padding_middle`; see
+            // `LONG_RUNNING_TOP_PADDING_LINES`. Shrinking only one of the three would
+            // leave the rest unaccounted in the pty row count and only narrow the gap.
+            LONG_RUNNING_TOP_PADDING_LINES.into_lines()
         } else {
             self.padding.command_padding_top.into_lines()
         }
@@ -2155,6 +2203,12 @@ impl Block {
     pub fn padding_middle(&self) -> Lines {
         if self.is_background() || self.output_grid.is_empty() || !self.ready_to_render() {
             Lines::zero()
+        } else if self.is_active_and_long_running() {
+            // The last of the three gaps above the output; see
+            // `LONG_RUNNING_TOP_PADDING_LINES`. Together these are the 1.79 lines
+            // (1.1 + 0.19 + 0.5 at the default `BlockPadding`) that the pty row count
+            // never subtracted, which is the ~2 rows a full-height program lost off the top.
+            LONG_RUNNING_TOP_PADDING_LINES.into_lines()
         } else {
             self.padding.middle.into_lines()
         }

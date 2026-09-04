@@ -506,7 +506,7 @@ use crate::menu::{Event as MenuEvent, Menu, MenuItem, MenuItemFields};
 use crate::server::telemetry::{BlockLatencyInfo, BootstrappingInfo};
 use crate::terminal::{block_list_element::BlockListMenuSource, prompt};
 use crate::terminal::{color, History, SizeInfo};
-use crate::terminal::{color::List, model::block::LONG_RUNNING_BOTTOM_PADDING_LINES};
+use crate::terminal::{color::List, model::block::TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES};
 use crate::terminal::{event::AfterBlockCompletedEvent, event::BlockLatencyData, event::BlockType};
 use crate::throttle::throttle;
 use crate::util::color::darken;
@@ -27488,9 +27488,15 @@ pub fn create_size_info_for_blocklist(
     let cell_size_px =
         grid_cell_dimensions(font_cache, font_family_id, font_size, line_height_ratio);
 
-    // Note: `SizeInfo` treats the padding as symmetric, so for bottom-only padding we divide by 2
+    // Note: `SizeInfo` treats the padding as symmetric and doubles it, so halve the real
+    // total here. That total is now top + bottom: the bottom has always been
+    // `LONG_RUNNING_BOTTOM_PADDING_LINES`, and the top used to be the block's full padding
+    // while this calculation pretended it was zero -- so the pty was told it had rows the
+    // block never showed, and a full-height normal-screen program (`top`, `watch`) painted
+    // its first rows into the padded strip and lost them off the top. See
+    // `LONG_RUNNING_TOP_PADDING_LINES`.
     let padding_x = PADDING_LEFT.into_pixels();
-    let padding_y = (cell_size_px.y() * LONG_RUNNING_BOTTOM_PADDING_LINES / 2.).into_pixels();
+    let padding_y = (cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.).into_pixels();
 
     SizeInfo::new(
         pane_size,
@@ -27558,9 +27564,12 @@ pub fn cell_size_and_padding(
 ) -> CellSizeAndWindowPadding {
     let cell_size_px =
         grid_cell_dimensions(font_cache, font_family_id, font_size, line_height_ratio);
+    // Must stay identical to `create_size_info_for_blocklist`'s `padding_y`: two
+    // derivations of the same geometry that disagree would give the grid and the pty
+    // different heights.
     let (padding_x_px, padding_y_px) = (
         *PADDING_LEFT,
-        cell_size_px.y() * LONG_RUNNING_BOTTOM_PADDING_LINES / 2.,
+        cell_size_px.y() * TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES / 2.,
     );
 
     CellSizeAndWindowPadding {

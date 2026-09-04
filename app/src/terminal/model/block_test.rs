@@ -317,6 +317,45 @@ pub fn test_long_running_block_bottom_padding() {
     });
 }
 
+/// The mirror of `test_long_running_block_bottom_padding`, and the reason it exists:
+/// the pty row count is derived from the window size, so top padding the row count does not
+/// account for is space the running program believes it has and cannot see. Upstream shrinks
+/// only the bottom, which left a full-height normal-screen program (`top`, `watch`) painting
+/// its first rows into the padded strip and losing them off the top of the block.
+///
+/// Asserted as `<` the pre-long-running value rather than a literal, so the test survives a
+/// change to the block's normal padding and only fails if the long-running arm stops firing.
+#[test]
+pub fn test_long_running_block_top_padding() {
+    warpui::r#async::block_on(async {
+        let mut block = TestBlockBuilder::new().build();
+
+        block.prompt_only_precmd(Default::default());
+        block.start();
+        for c in "command".chars() {
+            block.input(c);
+        }
+        block.preexec(Default::default());
+        for c in "output".chars() {
+            block.input(c);
+        }
+
+        // Before the threshold the block keeps its full top padding.
+        assert!(!block.is_active_and_long_running());
+        let padding_before = block.padding_top();
+        assert!(padding_before > LONG_RUNNING_TOP_PADDING_LINES.into_lines());
+
+        let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
+        warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
+
+        // Once long-running, the top collapses so the program gets the rows the pty
+        // already told it that it had.
+        assert!(block.is_active_and_long_running());
+        assert!(block.padding_top() == LONG_RUNNING_TOP_PADDING_LINES.into_lines());
+        assert!(block.padding_top() < padding_before);
+    });
+}
+
 // Tests that the command grid has a non-zero height even if `preexec` is never called.
 #[test]
 pub fn test_precmd_no_preexec() {
