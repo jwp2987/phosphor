@@ -340,10 +340,22 @@ pub fn test_long_running_block_top_padding() {
             block.input(c);
         }
 
+        // `test_utils::block_padding` sets `padding_top: 0.2`, which is already the
+        // collapsed value -- with it the assertions below would hold whether or not the
+        // long-running arm exists, i.e. the test would pass against unfixed code. Install
+        // the production padding from `settings/mod.rs` so the collapse is observable.
+        block.update_padding(BlockPadding {
+            padding_top: 1.1,
+            command_padding_top: 0.19,
+            middle: 0.5,
+            bottom: 1.0,
+        });
+
         // Before the threshold the block keeps its full top padding.
         assert!(!block.is_active_and_long_running());
         let padding_before = block.padding_top();
         assert!(padding_before > LONG_RUNNING_TOP_PADDING_LINES.into_lines());
+        let middle_before = block.padding_middle();
 
         let duration = LONG_RUNNING_COMMAND_DURATION_MS + 1;
         warpui::r#async::Timer::after(Duration::from_millis(duration)).await;
@@ -353,6 +365,11 @@ pub fn test_long_running_block_top_padding() {
         assert!(block.is_active_and_long_running());
         assert!(block.padding_top() == LONG_RUNNING_TOP_PADDING_LINES.into_lines());
         assert!(block.padding_top() < padding_before);
+
+        // `padding_middle` is part of the same total the pty row count subtracts, so it has
+        // to collapse with the other two or the gap only narrows instead of closing.
+        assert!(block.padding_middle() == LONG_RUNNING_TOP_PADDING_LINES.into_lines());
+        assert!(block.padding_middle() < middle_before);
     });
 }
 
