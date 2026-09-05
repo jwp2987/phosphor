@@ -42,6 +42,15 @@ if [[ "$(source /etc/os-release; echo $ID $ID_LIKE)" = *"debian"* ]]; then
     # .cargo/config.toml hardcodes -fuse-ld=mold for x86_64-unknown-linux-gnu;
     # without this installed, linking fails with a misleading "cannot find 'ld'".
     mold
+    # Linked transitively (xz), but only at the final link step, so a box without it
+    # compiles the whole workspace and then dies with `mold: fatal: library not found:
+    # lzma`. Found on a clean Ubuntu 25.x build host that had followed this script.
+    liblzma-dev
+    # script/state's parity percentages are computed with `bc` (see its `pct()`).
+    # Without it the script still writes docs/STATE.md and exits 0 -- the percentages
+    # just come out blank. That is a silent corruption of a generated file precheck
+    # gates on, which is worse than a hard failure, so it belongs here.
+    bc
   )
   sudo apt-get install -y "${PACKAGES[@]}"
 

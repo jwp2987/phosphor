@@ -89,7 +89,7 @@ use super::view::{
 };
 use super::warpify::render::{draw_flag_pole, render_subshell_flag};
 use super::TerminalModel;
-use super::{heights_approx_eq, HEIGHT_FUDGE_FACTOR_LINES};
+use super::heights_approx_eq;
 use crate::terminal::blockgrid_renderer::BlockGridParams;
 use crate::terminal::model::terminal_model::BlockIndex;
 use crate::terminal::warpify::SubshellSource;
@@ -349,21 +349,33 @@ impl SnackbarHeader {
         grid_origin: Vector2F,
         blocklist_element_bounds: RectF,
         params: &BlockGridParams,
-        scroll_position: ScrollPosition,
+        // Retained so the call sites keep their shape; the snackbar no longer varies with
+        // scroll position now that it never draws over a running command.
+        _scroll_position: ScrollPosition,
     ) -> Option<SnackbarHeader> {
         if !snackbar_enabled {
             self.clear_state();
             return None;
         }
 
-        if block.is_active_and_long_running()
-            && Self::should_hide_snackbar_during_long_running_command(
-                block,
-                params,
-                scroll_position,
-                blocklist_element_bounds.size(),
-            )
-        {
+        // Never pin a header over a command that is still running.
+        //
+        // The snackbar is drawn *on top of* the blocklist, so while a long-running command is
+        // painting it occludes that command's own output. This used to be a judgement call --
+        // `should_hide_snackbar_during_long_running_command` hid it only when the user had
+        // scrolled, or when the output grid was strictly taller than the content area by more
+        // than `HEIGHT_FUDGE_FACTOR_LINES` (0.01). A program that paints *exactly* the terminal
+        // height, which is what `top` and `watch` do by construction, is never "taller than"
+        // the content area, so it fell on the wrong side of that test and had its first rows
+        // covered. `git log` cleared the threshold and behaved, which is why this looked
+        // app-specific for a long time.
+        //
+        // No threshold fixes that: the failing case is exact equality, and the whole point of a
+        // full-screen program is to fill the viewport exactly. Drawing over output that a live
+        // program is still writing has no correct tuning, so this stops doing it at all. The
+        // header returns the moment the command finishes, which is when it is useful anyway --
+        // its purpose is to keep a scrolled-away block identifiable, not to label a running one.
+        if block.is_active_and_long_running() {
             self.clear_state();
             return None;
         }
@@ -439,31 +451,6 @@ impl SnackbarHeader {
             return None;
         }
         Some(*self)
-    }
-
-    /// Returns whether the snackbar should be hidden when there is a long running command.
-    /// While a command is executing, we hide the snackbar if:
-    /// 1) The user has scrolled OR
-    /// 2) The height of the block's _output_ grid is taller than the content area.
-    /// In the latter case, we hide the snackbar to make sure that commands like `git log` and
-    /// `less` (which simulate full screen apps) don't have the snackbar shown on top of them.
-    fn should_hide_snackbar_during_long_running_command(
-        block: &Block,
-        params: &BlockGridParams,
-        scroll_position: ScrollPosition,
-        element_size: Vector2F,
-    ) -> bool {
-        // A user has scrolled iff they are fixed at a pixel position. Otherwise, they are fixed to
-        // the bottom of a block.
-        let has_scrolled = matches!(scroll_position, ScrollPosition::FixedAtPosition { .. });
-
-        let block_output_taller_than_content_area =
-            block.output_grid_displayed_height().into_lines()
-                - Pixels::new(element_size.y())
-                    .to_lines(params.grid_render_params.size_info.cell_height_px)
-                > HEIGHT_FUDGE_FACTOR_LINES;
-
-        !has_scrolled && !block_output_taller_than_content_area
     }
 
     fn clear_state(&mut self) {
