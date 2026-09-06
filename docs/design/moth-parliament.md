@@ -399,6 +399,15 @@ Installing there needs four things that do not exist:
 None is hard individually. Together they are a deliberate piece of work, and none of it
 is started.
 
+**DEFERRED 2026-09-05: Windows as a remote host is out of scope for this branch.** Not
+declined — deferred, with the four gaps above as the known cost. It is recorded here so
+that a later reader finds a decision rather than an oversight, and so that nobody
+designs the session-ownership work in a way that forecloses it. Concretely, that means
+the remote-side protocol should not assume a POSIX shell, `uname`, or a POSIX path
+shape, even while Linux and macOS are the only targets that can be built and tested.
+Costing nothing now to avoid a rewrite later is the same argument §4a makes for naming
+the spawn target.
+
 ---
 
 ## 5. Known risks, stated before they bite
