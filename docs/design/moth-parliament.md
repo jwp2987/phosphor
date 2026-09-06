@@ -307,7 +307,97 @@ already the only warpification route on Windows. The right first question is not
 should we build" but **"what does the remote-server extension already do, and what is
 missing for it to own a session rather than assist a shell?"**
 
-That question is not answered here and should be answered before any of it is designed.
+### What the remote-server extension already does — answered 2026-09-05
+
+**It has, and these are the tedious parts:** an install path over SSH that downloads a
+published tarball and verifies it against a SHA-256 pinned into the client at build
+time, **fail-closed** — no digest, no install (`install_remote_server.sh`, and the
+release workflow's "Pin CLI tarball digests" step). A proxy/daemon split with
+identity-scoped sockets (`LaunchMode::RemoteServerProxy` / `RemoteServerDaemon`,
+`warp_cli/src/lib.rs:309,316`). A framed protocol with size limits
+(`remote_server/src/protocol.rs`). Preinstall capability detection (`RemoteOs`,
+`RemoteArch`, `UnsupportedReason`, `PreinstallStatus`).
+
+**It lacks session ownership entirely.** The whole operation surface
+(`remote_server/src/manager.rs:111`):
+
+```rust
+pub enum RemoteServerOperation {
+    NavigateToDirectory,
+    LoadRepoMetadataDirectory,
+    IndexCodebase,
+    ResyncCodebase,
+    DropCodebaseIndex,
+    GetFragmentMetadataFromHash,
+}
+```
+
+Filesystem navigation and codebase indexing. No pty, no process lifecycle, no reattach.
+It **assists a shell the user started; it does not host one.** That is precisely the
+gap, and it is why the file tools are withdrawn when it is absent (`6a021357f`).
+
+So the work is not "build a remote agent". It is **add session ownership to something
+that already solves install, transport, identity and platform detection.**
+
+### What is actually in `phosphor-cli` — and it is close to the whole app
+
+`script/linux/bundle:220-224` is the answer:
+
+```sh
+if   [[ "$ARTIFACT" == "cli" ]]; then FEATURES="$FEATURES,standalone"
+elif [[ "$ARTIFACT" == "app" ]]; then FEATURES="$FEATURES,gui,nld_improvements"
+fi
+```
+
+Same `--bin phosphor-oss` for both. The CLI is the *same binary target* as the desktop
+app, built with `release-cli` instead of `release-lto` and statically linked against
+musl, with `gui` off and `standalone` on. Everything not behind `#[cfg(feature =
+"gui")]` ships: the agent, the terminal model, the block list, providers, MCP.
+
+That is why the published `phosphor-cli-linux-x86_64.tar.gz` is **62.7 MB**. Against
+§4b requirement 2 — "a single static binary, nothing to configure" — it passes on shape
+and fails on weight, and it is worth being honest that this is a consequence of reusing
+what existed rather than of what a remote daemon needs.
+
+**Not an argument to rewrite it.** A purpose-built remote binary is a bigger change than
+reusing the CLI and would fork the install path. But if the daemon grows to own
+sessions, "what is in this binary and does the remote need all of it" becomes a real
+question rather than a rhetorical one.
+
+### Windows: there is currently no route at all
+
+This is the finding that matters most for the requirement above, and it is worse than
+"tmux does not work there".
+
+`remote_server/src/setup.rs:196`:
+
+```rust
+pub enum RemoteOs { Linux, MacOs }
+```
+
+No Windows. Detection is `parse_uname_output` over `uname -sm`, which a Windows host
+does not answer. And the published artifacts confirm it — the release ships
+`phosphor-cli-{linux-x86_64, macos-x86_64, macos-aarch64}.tar.gz` and **no Windows CLI
+at all**; the only Windows asset is `phosphor-tui-windows-x64.zip`, which is the TUI,
+not the remote server. The digest pins match: `PHOSPHOR_CLI_SHA256_` exists for
+`LINUX_X86_64`, `LINUX_AARCH64`, `MACOS_X86_64`, `MACOS_AARCH64`, and nothing for
+Windows.
+
+So for a Windows **remote host**: tmux cannot work (ConPTY has no DCS), and the
+remote-server extension cannot install. **Both routes are closed.** `DECLINED.md`'s
+accepted Windows asymmetry is about Windows as the *local* machine, where the extension
+is the only warpification route — it says nothing about Windows as a *target*, and that
+gap has not been decided, only left.
+
+Installing there needs four things that do not exist:
+
+1. **A published Windows CLI artifact.** The release builds a Windows TUI but no CLI.
+2. **A digest pin for it**, or the fail-closed check refuses the install — correctly.
+3. **Platform detection that is not `uname`.** PowerShell `$PSVersionTable`, or `cmd /c ver`.
+4. **An installer that is not a POSIX shell script.** `install_remote_server.sh` is `sh`.
+
+None is hard individually. Together they are a deliberate piece of work, and none of it
+is started.
 
 ---
 
