@@ -27058,8 +27058,10 @@ impl View for TerminalView {
         //
         // This is also where the pty's rows are reserved, and it is the only place that
         // happens. `element` is the flex-shrinkable child, so layout hands it
-        // `pane - WINDOW_FOOTER_BAR_HEIGHT_PX`, and the `TerminalSizeElement` that
-        // reports the pty size is inside it in both modes:
+        // `pane - reserved_bar_height_px(pane)` (`WINDOW_FOOTER_BAR_HEIGHT_PX` on any
+        // pane with room to spare it; less on one too short -- see
+        // `window_footer_bar::reserved_bar_height_px`), and the `TerminalSizeElement`
+        // that reports the pty size is inside it in both modes:
         //
         // - blocklist: it wraps `element` itself (the `!did_wrap_terminal_size` arm
         //   above), so the size it reports is the shrunk size.
@@ -27089,18 +27091,32 @@ impl View for TerminalView {
         // both modes share (`use_agent_footer_view_id_for_window_footer_bar`), replacing
         // the block-list insertion *and* the alt-screen-only column sibling above. The
         // bar's height does not depend on what that returns: `render_window_footer_bar`
-        // pins its child to `WINDOW_FOOTER_BAR_HEIGHT_PX` and clips the overflow, so a
-        // toolbar whose chips would wrap to two or three runs in a narrow pane is
-        // truncated to the first run rather than growing the bar. If it could grow, the
-        // pty's rows would depend on how many chips the user has enabled -- the §8 bug
-        // again, with a new trigger.
+        // pins its child to the reserved height and clips the overflow, so a toolbar
+        // whose chips would wrap to two or three runs in a narrow pane is truncated to
+        // the first run rather than growing the bar. If it could grow, the pty's rows
+        // would depend on how many chips the user has enabled -- the §8 bug again, with
+        // a new trigger.
         let footer_bar_content = self
             .use_agent_footer_view_id_for_window_footer_bar(&model, app)
             .map(|_| ChildView::new(&self.use_agent_footer).finish());
+        // The pane height is passed in so the bar can yield when the pane can't
+        // spare its full natural height (`window_footer_bar::reserved_bar_height_px`)
+        // -- a non-flex `Flex` child's own `layout` constraint has its main-axis max
+        // widened to infinity before it gets here, so it cannot read the pane off
+        // that. `self.size_info` is render()'s existing pane-size field (used
+        // throughout this struct, e.g. for auto-opening a pane at
+        // `MINIMUM_WIDTH_TO_AUTO_OPEN_PANE`); it can be a layout pass behind the pane
+        // `TerminalSizeElement` is about to report this frame, same as the "seeds the
+        // model a couple of rows too tall" staleness `window_footer_bar`'s module doc
+        // describes for session creation -- a one-frame lag the next layout pass
+        // corrects, not an arithmetic double-count.
         let element = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(Shrinkable::new(1., element).finish())
-            .with_child(render_window_footer_bar(footer_bar_content))
+            .with_child(render_window_footer_bar(
+                footer_bar_content,
+                self.size_info.pane_height_px().as_f32(),
+            ))
             .finish();
 
         let final_element = if self.is_file_drop_target && FeatureFlag::SshDragAndDrop.is_enabled()
