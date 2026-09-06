@@ -1343,3 +1343,37 @@ fn end_of_list_drop_target_handles_empty_tab_list() {
         }
     );
 }
+
+/// A native "New agent conversation" is recognised as an agent *only* by its selected
+/// conversation: `is_ambient_agent_session` is a hard-coded `false` stub and a
+/// `CLIAgentSessionsModel` session exists only for an external CLI tool. `pane_section`
+/// originally read just those first two -- while its doc comment claimed parity with the kind
+/// badge, which reads all three -- so every agent tab banded as `Terminal`, every unit tied,
+/// and the stable sort left the sidebar in insertion order with a terminal sandwiched between
+/// agent conversations.
+///
+/// Non-vacuous, and specifically against *that* failure: each signal is asserted sufficient on
+/// its own, so dropping any one of the three from `is_agent_terminal` fails a case here. A test
+/// that only classified one fully-populated agent would have passed throughout the bug.
+#[test]
+fn test_each_agent_signal_is_sufficient_on_its_own() {
+    use super::is_agent_terminal;
+
+    assert!(
+        is_agent_terminal(true, false, false),
+        "an external CLI-tool session alone must band as Agent"
+    );
+    assert!(
+        is_agent_terminal(false, true, false),
+        "an ambient agent session alone must band as Agent"
+    );
+    assert!(
+        is_agent_terminal(false, false, true),
+        "a selected conversation alone must band as Agent -- this is the signal that was \
+         missing, and the only one a native agent conversation has"
+    );
+    assert!(
+        !is_agent_terminal(false, false, false),
+        "a terminal with none of the three signals must stay in the Terminal band"
+    );
+}

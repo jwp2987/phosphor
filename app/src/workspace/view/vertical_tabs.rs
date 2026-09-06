@@ -326,6 +326,20 @@ pub(super) enum VerticalTabSection {
     Other,
 }
 
+/// Whether a terminal pane's signals make it an agent.
+///
+/// Split out from [`pane_section`] so the *set* of signals is testable without a live
+/// `AppContext`: the defect this guards against was one of the three going unread, which no
+/// assertion about a single classification would have caught. Each signal alone must be
+/// sufficient -- they are alternatives, not a conjunction.
+fn is_agent_terminal(
+    has_cli_agent_session: bool,
+    is_ambient_agent_session: bool,
+    has_selected_conversation: bool,
+) -> bool {
+    has_cli_agent_session || is_ambient_agent_session || has_selected_conversation
+}
+
 /// The band a single pane implies.
 fn pane_section(typed: &TypedPane<'_>, app: &AppContext) -> VerticalTabSection {
     match typed {
@@ -333,12 +347,26 @@ fn pane_section(typed: &TypedPane<'_>, app: &AppContext) -> VerticalTabSection {
         TypedPane::Terminal(terminal_pane) => {
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
-            // Same two signals the kind badge uses (`render_detail_kind_badge_icon`), so the
-            // icon and the band can never disagree about what a tab is.
-            let is_agent = CLIAgentSessionsModel::as_ref(app)
-                .session(terminal_view.id())
-                .is_some()
-                || terminal_view.is_ambient_agent_session(app);
+            // The same three signals the kind badge uses (`render_detail_kind_badge_icon`),
+            // so the icon and the band can never disagree about what a tab is.
+            //
+            // An earlier version of this comment claimed parity while reading only the first
+            // two, which is the bug it was meant to prevent. The third is the common case:
+            // `is_ambient_agent_session` is a hard-coded `false` stub
+            // (`terminal/view/pane_impl.rs`), and a `CLIAgentSessionsModel` session exists only
+            // for an external CLI tool, so a native "New agent conversation" is recognised
+            // *solely* by its selected conversation. Without it every such tab banded as
+            // `Terminal`, every unit tied, and the stable sort left the list in insertion order
+            // -- the feature looked entirely dead while the row beside it drew an agent icon.
+            let is_agent = is_agent_terminal(
+                CLIAgentSessionsModel::as_ref(app)
+                    .session(terminal_view.id())
+                    .is_some(),
+                terminal_view.is_ambient_agent_session(app),
+                terminal_view
+                    .selected_conversation_display_title(app)
+                    .is_some(),
+            );
             if is_agent {
                 VerticalTabSection::Agent
             } else {
