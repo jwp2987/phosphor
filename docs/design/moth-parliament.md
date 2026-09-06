@@ -227,6 +227,90 @@ target explicitly, even though `Local` is the only value it can currently be giv
 
 ---
 
+## 4b. Remote execution: the target, and what it needs
+
+**DECIDED 2026-09-05: Model A is the target. Model B is parked, not rejected.**
+
+### Model A — remote *execution*. The laptop drives.
+
+Conversation, LLM calls and credentials stay local. Only tool execution goes to the
+remote host.
+
+- **Auth is already solved.** Transport is the user's own SSH keys and agent. No
+  provider credential ever leaves the machine — which matters, because "credentials
+  stay on disk, privacy-first" is §1 of this document's parent.
+- **cproxy keeps working unchanged**, and this is not incidental. cproxy never executes
+  tools; its entire design is to name one and stop, leaving the client to run it. Where
+  the client runs it is none of its business — local pty, SSH'd pty, container, the
+  conversation looks identical. It stays bound to loopback, one user, no tunnel, which
+  is the property its ToS position rests on. cproxy lives in a separate repository and
+  nothing in this tree mentions it, so it is recorded here or it is forgotten.
+- If the laptop sleeps, the agent pauses and the remote holds an idle shell.
+
+### Model B — remote *agents*. The remote drives its own loop.
+
+Parked, with two named blockers:
+
+- **Credential distribution.** The remote needs a provider key: forwarded per session
+  (exposed to the remote process), provisioned per box (N boxes, keys at rest somewhere
+  unwatched), or called back through a broker on the laptop. The third is the least bad
+  and is what cproxy already is — but a remote reaching it needs a reverse tunnel, which
+  widens an endpoint deliberately scoped to one process on one machine.
+- **History reconciliation.** Messages accumulating remotely while the laptop is off
+  means two histories to merge. That is the sync transport dropped with the cloud layer.
+
+Note the cheap version of B collapses into A: if the remote calls back to a broker on
+the laptop, the laptop must be awake, which is Model A wearing a hat.
+
+**This is not the cloud orchestration that was dropped.** That decision was about
+Warp's servers, not about remoteness — `DECLINED.md` is explicit that the remote-server
+daemon is "entirely local. Not Warp's cloud backend, despite the name."
+
+### The transport must not be tmux
+
+`DECLINED.md` records keeping the SSH tmux wrapper permanently, and it is a fine
+*terminal* feature. **It cannot be the reattach mechanism for remote execution**, for a
+reason already documented there:
+
+> The tmux flow needs tmux control mode, which needs DCS, which **ConPTY does not
+> support** ... So on Windows the remote-server extension is the **only** route to a
+> warpified SSH session.
+
+A remote-execution design resting on tmux is a design that does not work on Windows,
+and the same entry records that this asymmetry was accepted for *terminal warpification*
+specifically — not as licence to build every future remote feature on a Unix-only
+substrate. Reattach is also not what tmux is for here: we need to reattach a **session
+the app owns**, not a shell the user started.
+
+### What is actually needed
+
+A lightweight remote agent — a small binary the app can install and speak to over SSH,
+owning the remote side of a session and supporting clean reattach.
+
+Requirements, in priority order:
+
+1. **Cross-platform.** Windows included, which rules out tmux and anything else needing
+   DCS or a Unix-only pty control channel.
+2. **Lightweight.** A single static binary, installed over the existing SSH path, no
+   runtime dependency on the remote and nothing to configure by hand.
+3. **Secure by construction.** No listening socket of its own; everything over the SSH
+   channel the user already authenticated. No credential at rest on the remote — which
+   falls out of Model A, since none is sent.
+4. **Reattachable.** Survives the client disconnecting, so a dropped laptop does not
+   kill an in-flight command, and can be re-adopted on reconnect.
+5. **Discoverable and disposable.** The app can tell whether it is installed, install
+   it, upgrade it, and remove it, without the user managing versions.
+
+**The precedent exists.** `crates/remote_server` and `app/src/remote_server` are exactly
+this shape — Phosphor's SSH remote-host daemon, installed over SSH, "entirely local",
+already the only warpification route on Windows. The right first question is not "what
+should we build" but **"what does the remote-server extension already do, and what is
+missing for it to own a session rather than assist a shell?"**
+
+That question is not answered here and should be answered before any of it is designed.
+
+---
+
 ## 5. Known risks, stated before they bite
 
 - **"Session pending, indefinitely" is a new state.** `is_input_box_visible`, the
