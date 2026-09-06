@@ -6,6 +6,7 @@ use crate::safe_triangle::SafeTriangle;
 use crate::terminal::CLIAgent;
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
+use crate::workspace::{TabBarLocation, VerticalTabsPaneDropTargetData};
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 use std::path::PathBuf;
@@ -25,7 +26,8 @@ use super::{
     shows_synced_inputs_indicator, sort_summary_primary_labels_status_first, summary_overflow_count,
     summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
     terminal_pull_request_badge_label, terminal_search_text_fragments,
-    terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
+    terminal_title_fallback_font, uses_outer_group_container, vertical_tabs_end_of_list_drop_target_data,
+    visible_pane_ids_for_detail_target,
     vtab_diff_stats_text, AgentTabTextPreference, SummaryPaneKind, SummaryPaneKindIcons,
     TerminalAgentText, TerminalPrimaryLineData, TerminalPrimaryLineFont, VerticalTabsDetailTarget,
     VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
@@ -1306,4 +1308,38 @@ fn tab_group_save_position_ids_are_distinct_per_axis_and_role() {
     assert_eq!(vertical, vtab_group_position_id(group));
     // Distinct groups must not collide.
     assert_ne!(vertical, vtab_group_position_id(TabGroupId::new()));
+}
+
+/// The empty-space filler below the last row must resolve to "append at the
+/// very end, ungrouped" -- an `AfterTabIndex` location (not a `TabIndex`, which
+/// would target an existing row) paired with an ungrouped `BeforeTab` hover at
+/// the same index. Fails if the location kind is swapped for `TabIndex`, if a
+/// group is attached, or if the index used doesn't match `tab_count`.
+#[test]
+fn end_of_list_drop_target_targets_append_ungrouped() {
+    let data = vertical_tabs_end_of_list_drop_target_data(3);
+    assert_eq!(data.tab_bar_location, TabBarLocation::AfterTabIndex(3));
+    assert_eq!(
+        data.tab_hover_index,
+        TabBarHoverIndex::BeforeTab {
+            index: 3,
+            group: None,
+        }
+    );
+}
+
+/// `tab_count == 0` is a boundary the pure function must not special-case
+/// away: it should still resolve to "append at index 0", not panic or return
+/// some other sentinel.
+#[test]
+fn end_of_list_drop_target_handles_empty_tab_list() {
+    let data = vertical_tabs_end_of_list_drop_target_data(0);
+    assert_eq!(data.tab_bar_location, TabBarLocation::AfterTabIndex(0));
+    assert_eq!(
+        data.tab_hover_index,
+        TabBarHoverIndex::BeforeTab {
+            index: 0,
+            group: None,
+        }
+    );
 }

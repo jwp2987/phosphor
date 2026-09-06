@@ -332,6 +332,93 @@ fn test_flex_main_axis_alignment() {
     })
 }
 
+/// A `Shrinkable` child is `FlexFit::Loose`: unlike an `Expanded` child
+/// (`FlexFit::Tight`), it is laid out with `min = 0` on the main axis, so it
+/// is never forced to fill its allotted flex space -- it reports whatever
+/// size its own content settles on. This is the load-bearing fact behind
+/// where `render_vertical_tabs_panel`
+/// (`app/src/workspace/view/vertical_tabs.rs`) attaches its "drop in empty
+/// space" target: only the enclosing `MainAxisSize::Max` flex's own bounds
+/// cover the panel's full height when the `Shrinkable`-wrapped scrollable
+/// inside it is shorter than the available space. Attaching the target to the
+/// `Shrinkable`-wrapped child instead (as an earlier version of that fix did)
+/// covers only the child's own content height, silently leaving the empty
+/// space below it uncovered -- this test pins the distinction so that
+/// mistake fails loudly here instead of shipping unnoticed.
+#[test]
+fn test_shrinkable_child_does_not_fill_main_axis_size_max_flex() {
+    App::test((), |mut app| async move {
+        let app = &mut app;
+        let (window_id, _test_view) = app.add_window(WindowStyle::NotStealFocus, |_| {
+            TestDynamicView::new(|_| {
+                Stack::new()
+                    .with_child(
+                        Align::new(
+                            SavePosition::new(
+                                Flex::column()
+                                    .with_main_axis_size(MainAxisSize::Max)
+                                    .with_child(
+                                        Shrinkable::new(
+                                            1.,
+                                            SavePosition::new(
+                                                ConstrainedBox::new(Rect::new().finish())
+                                                    .with_height(20.)
+                                                    .with_width(50.)
+                                                    .finish(),
+                                                "short_child",
+                                            )
+                                            .finish(),
+                                        )
+                                        .finish(),
+                                    )
+                                    .finish(),
+                                "flex",
+                            )
+                            .finish(),
+                        )
+                        .top_left()
+                        .finish(),
+                    )
+                    .finish()
+            })
+        });
+
+        let mut presenter = Presenter::new(window_id);
+
+        let mut updated = HashSet::new();
+        updated.insert(app.root_view_id(window_id).expect("root view should exist"));
+        let invalidation = WindowInvalidation {
+            updated,
+            ..Default::default()
+        };
+
+        app.update(move |ctx| {
+            presenter.invalidate(invalidation.clone(), ctx);
+            let window_size = RectF::new(Vector2F::zero(), vec2f(300., 300.));
+            presenter.build_scene(window_size.size(), 1., None, ctx);
+
+            let flex = presenter
+                .position_cache()
+                .get_position("flex")
+                .expect("position should exist");
+            let short_child = presenter
+                .position_cache()
+                .get_position("short_child")
+                .expect("position should exist");
+
+            // The outer flex is `MainAxisSize::Max`, so its own reported
+            // bounds fill the full window height regardless of its child's
+            // content height.
+            assert_eq!(flex.height(), 300.);
+            // Its `Shrinkable`-wrapped child reports only its own content
+            // height -- it is not forced to fill the space the outer flex
+            // allotted it.
+            assert_eq!(short_child.height(), 20.);
+            assert!(short_child.height() < flex.height());
+        });
+    })
+}
+
 #[test]
 fn test_flex_row_spacing() {
     App::test((), |mut app| async move {

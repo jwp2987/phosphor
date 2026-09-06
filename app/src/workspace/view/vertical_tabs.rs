@@ -1422,6 +1422,23 @@ fn vertical_tabs_tab_bar_location(insert_index: usize, tab_count: usize) -> TabB
     }
 }
 
+/// Drop target data for the empty space below the last row in the vertical
+/// tabs panel: append a dragged pane as a new tab at the very end of the list,
+/// ungrouped. Same fencepost every other "after the whole list" site in this
+/// file already uses (see `last_member_after_index`, `trailing_after_index`),
+/// just generalized from the last banded/filtered position to the true end of
+/// `workspace.tabs`, since the filler this feeds sits behind the whole panel
+/// rather than after one particular row.
+fn vertical_tabs_end_of_list_drop_target_data(tab_count: usize) -> VerticalTabsPaneDropTargetData {
+    VerticalTabsPaneDropTargetData {
+        tab_bar_location: vertical_tabs_tab_bar_location(tab_count, tab_count),
+        tab_hover_index: TabBarHoverIndex::BeforeTab {
+            index: tab_count,
+            group: None,
+        },
+    }
+}
+
 fn render_vertical_tab_hover_indicator(theme: &WarpTheme) -> Box<dyn Element> {
     ConstrainedBox::new(
         Container::new(Empty::new().finish())
@@ -1832,6 +1849,50 @@ fn render_vertical_tabs_panel(
         ))
         .with_child(Shrinkable::new(1., scrollable_groups).finish())
         .finish();
+
+    // While a pane is being dragged, make the whole panel a drop target for
+    // "append at the end, ungrouped" -- not just its rows. The rendered
+    // row/strip/header list is `MainAxisSize::Min` (only as tall as its
+    // content), and `Shrinkable` (`FlexFit::Loose`) never forces the
+    // scrollable body to fill the flex space it's allotted -- it reports only
+    // its own content height (`Shrinkable::layout`/`ClippedScrollable::layout`
+    // both just pass through to their child; the `Loose` fit gives a `min` of
+    // `0.`, not `constraint.max`). So neither the content list nor the
+    // scrollable wrapping it ever spans the empty area below the last row.
+    // `panel_content` itself is the thing that does: it's `MainAxisSize::Max`,
+    // which unconditionally reports its own size as the incoming max
+    // constraint (`Flex::layout`), independent of its children -- the same
+    // mechanism that already lets its background paint to the bottom of the
+    // panel today. Wrapping it here, before the control bar's search input
+    // is folded in below, gives this `DropTarget` the full panel body without
+    // touching `ClippedScrollable`'s constraint (and therefore its scrollbar
+    // geometry) at all.
+    //
+    // This also covers the control bar (the search input sits inside
+    // `panel_content` too), matching the horizontal tab bar's own precedent
+    // of wrapping its entire bar -- including its trailing buttons -- in one
+    // outer `AfterTabIndex` target (`render_tab_bar`). `DropTarget` never
+    // consumes events (`crates/warpui_core/src/elements/drag/drop_target.rs`),
+    // so this changes nothing about clicking the search box; the only
+    // consequence is that releasing a dragged pane while over the control bar
+    // resolves to "append at the end" instead of doing nothing.
+    //
+    // This target's bounds overlap every row's own smaller `DropTarget`, but
+    // `Draggable::compute_drop_target_data` resolves overlapping matches by
+    // smallest area, so a nested row/strip/header target always wins when the
+    // cursor is actually over one -- this only wins in genuinely empty space.
+    // Gated on `is_any_pane_dragging` so it never registers (and so never
+    // risks intercepting an ordinary click in the sidebar) outside a drag.
+    let is_any_pane_dragging = any_workspace_pane_being_dragged(workspace, app);
+    let panel_content: Box<dyn Element> = if is_any_pane_dragging {
+        DropTarget::new(
+            panel_content,
+            vertical_tabs_end_of_list_drop_target_data(workspace.tabs.len()),
+        )
+        .finish()
+    } else {
+        panel_content
+    };
 
     // The settings popup is rendered at the workspace level (with Dismiss for click-outside-
     // to-close). Rendering it here again shares MouseStateHandle instances across two Hoverable
