@@ -2020,6 +2020,26 @@ fn render_groups(
             .collect()
     };
 
+    // Band the rows: Settings, then agents, then terminals.
+    //
+    // This is the render path. `matching_tab_indices` is banded too, but it only feeds
+    // `activate_next_tab`/`activate_previous_tab` -- keyboard navigation -- so banding
+    // there alone left the visible list in `workspace.tabs` declaration order, which is
+    // to say unsorted. Both need it, and they must agree or tab-cycling would jump around
+    // relative to what is on screen.
+    let visible_tabs: Vec<(usize, Option<Vec<PaneId>>)> = {
+        let ordered = order_tabs_into_sections(
+            visible_tabs.iter().map(|(index, _)| *index).collect(),
+            &workspace.tabs,
+            app,
+        );
+        let mut by_index: HashMap<usize, Option<Vec<PaneId>>> = visible_tabs.into_iter().collect();
+        ordered
+            .into_iter()
+            .filter_map(|index| by_index.remove(&index).map(|panes| (index, panes)))
+            .collect()
+    };
+
     if visible_tabs.is_empty() {
         if query.is_empty() {
             return Empty::new().finish();
