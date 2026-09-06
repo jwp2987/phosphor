@@ -136,6 +136,61 @@ terminal; the block list showing a real pty is the product.
 
 ---
 
+## 4a. What this unlocks: execution location becomes a property
+
+The framing above — and `DESIGN-PHOSPHOR-FORK.md` §9 — describes this as a UI change:
+chat not tied to a terminal. That undersells it. **The same seam makes "where does
+this conversation execute" a question the code can ask.**
+
+Today it cannot. A conversation *is* a view onto a local `TerminalView` with a local
+pty; the answer is hardcoded by structure, so there is nowhere to put a different one.
+Once a conversation owns a lazily-spawned execution context instead of being owned by
+a terminal, the target of that spawn is a value.
+
+**And the remote machinery already exists.** Phosphor knows how to have non-local
+terminals — `SessionType::{Local, Remote, WarpifiedRemote}`, the remote-server
+extension, the ssh wrapper. It is currently reached by the user typing `ssh`, not by a
+conversation choosing where to run. A conversation on a laptop spawning its terminal
+on a build box is not a new subsystem; it is the existing one reached through a new
+seam.
+
+With step 4's `channel` field these become two independent axes:
+
+| axis | question it answers |
+|---|---|
+| execution context | where the work runs — local, ssh host, container |
+| channel | where you see and steer it |
+
+Those being separable is what "remote agent" actually means: work running on a machine
+you own, viewed from another, surviving the viewer going away.
+
+### This is not the cloud orchestration we dropped
+
+Phosphor dropped Warp's orchestrator, `server_api`, RunAgents/StartAgent and connected
+self-hosted workers. **That decision was about Warp's servers, not about remoteness.**
+`DECLINED.md`'s false-positives list is explicit on the distinction:
+
+> **`app/src/remote_server` / `crates/remote_server`** — Phosphor's SSH remote-host
+> daemon, entirely local. Not Warp's cloud backend, despite the name.
+
+An agent running on a host you own, over your own SSH, with your own provider keys, is
+squarely BYOP. Do not file it as cloud, and do not let the word "remote" trigger
+`script/check_cloud_boundary` reasoning by reflex.
+
+### What this changes about step 2
+
+**Design the spawn path to take a target from the start.** Not because remote
+execution is in scope for the first cut — it is not — but because "assume local, add a
+target later" is a retrofit, and this branch already has one retrofit hazard it is
+trying to avoid (the `channel` decision at step 4). A spawn function that takes an
+explicit local target costs nothing now and is the difference between a later feature
+and a later rewrite.
+
+Concretely, step 2's "done when" gains a clause: the spawn entry point names its
+target explicitly, even though `Local` is the only value it can currently be given.
+
+---
+
 ## 5. Known risks, stated before they bite
 
 - **"Session pending, indefinitely" is a new state.** `is_input_box_visible`, the
