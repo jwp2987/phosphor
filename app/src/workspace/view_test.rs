@@ -6101,3 +6101,79 @@ fn test_add_conversation_tab_action_adds_a_new_tab() {
         });
     });
 }
+
+/// #645: a code pane moved out of a tab used to leave a stale `CodeManager` entry naming
+/// the pane it had just left. Clicking that file again in the original tab then found a
+/// locator it could not resolve, and `CodePane::pre_attach` returned `false` anyway --
+/// discarding the pane it had just built. The click did nothing at all: no pane, no error.
+///
+/// Non-vacuous, and it pins both halves of the fix independently:
+///   * restore the `DetachType::HiddenForClose | Closed` guard on `CodePane::detach`'s
+///     deregistration and the stale entry comes back;
+///   * move `pre_attach`'s `FocusPaneInWorkspace` emit and `return false` back out of the
+///     inner `if let` and the reopen below finds zero code panes.
+/// Either regression alone fails the final assertion.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
+    use crate::code::editor_management::CodeManager;
+    use crate::code::global_buffer_model::GlobalBufferModel;
+    use crate::terminal::local_shell::LocalShellState;
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.add_singleton_model(warp_files::FileModel::new);
+        app.add_singleton_model(|_| CodeManager::default());
+        app.add_singleton_model(|_| LocalShellState::NotLoaded);
+        app.add_singleton_model(GlobalBufferModel::new);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let code_path = temp_dir.path().join("main.rs");
+        std::fs::write(&code_path, "// line 1\n").expect("failed to write code file");
+
+        let open_it = |workspace: &ViewHandle<Workspace>, app: &mut App| {
+            workspace.update(app, |workspace, ctx| {
+                let pane_group = workspace.active_tab_pane_group().clone();
+                workspace.handle_file_tree_event(
+                    pane_group,
+                    &crate::pane_group::Event::OpenFileWithTarget {
+                        path: code_path.clone(),
+                        target: FileTarget::CodeEditor(EditorLayout::SplitPane),
+                        line_col: None,
+                    },
+                    ctx,
+                );
+            });
+        };
+
+        open_it(&workspace, &mut app);
+
+        let code_pane_id = workspace.read(&app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            let code_panes = pane_group.code_panes(ctx).collect::<Vec<_>>();
+            assert_eq!(code_panes.len(), 1, "the file should open the first time");
+            code_panes[0].0
+        });
+
+        // Take the pane out of this group the way a drag to another tab/window does.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .update(ctx, |pane_group, ctx| {
+                    pane_group.remove_pane_for_move(&code_pane_id, ctx);
+                });
+        });
+
+        open_it(&workspace, &mut app);
+
+        workspace.read(&app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(
+                pane_group.code_panes(ctx).count(),
+                1,
+                "reopening a file whose code pane was moved away must open it again, not \
+                 silently discard the new pane because of a stale CodeManager entry"
+            );
+        });
+    });
+}

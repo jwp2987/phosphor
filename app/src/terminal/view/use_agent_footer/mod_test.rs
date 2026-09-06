@@ -29,7 +29,13 @@ use crate::{
     test_util::{add_window_with_terminal, terminal::initialize_app_for_terminal_view},
 };
 
-use super::super::{AIBlockMetadata, RichContentMetadata, RichContentType};
+// `RichContentInsertionPosition` used to arrive via `use super::*`, because
+// `mod.rs` imported it for the block-list insertion that the window footer bar
+// replaced. `insert_pending_ai_block` below still needs it, so it is imported
+// here directly rather than kept alive in `mod.rs` as an otherwise-unused import.
+use super::super::{
+    AIBlockMetadata, RichContentInsertionPosition, RichContentMetadata, RichContentType,
+};
 use super::*;
 
 #[test]
@@ -236,7 +242,7 @@ fn use_agent_footer_renders_for_manual_handoff_even_when_user_command_footer_set
         terminal.update(&mut app, |view, ctx| {
             simulate_user_started_long_running_command(view);
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
             {
                 let model = view.model.lock();
                 assert!(!view.should_render_use_agent_footer(&model, ctx));
@@ -245,19 +251,40 @@ fn use_agent_footer_renders_for_manual_handoff_even_when_user_command_footer_set
                     .block_list()
                     .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
                     .is_none());
+                // The block-list assertion above is now vacuous -- nothing inserts the
+                // footer there any more (§8 step 3) -- so assert what actually decides
+                // visibility: the window footer bar's per-frame predicate.
+                assert_eq!(
+                    view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                    None,
+                );
             }
 
             transition_to_user_handoff_state(view, UserTakeOverReason::Manual, ctx);
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
             let model = view.model.lock();
             assert!(view.should_render_use_agent_footer(&model, ctx));
-            let active_block_index = model.block_list().active_block_index();
-            let rendered_footer_view_id = model
-                .block_list()
-                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                .map(|(_, item)| item.view_id);
-            assert_eq!(rendered_footer_view_id, Some(view.use_agent_footer.id()));
+            // Contract change, `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3. This used to
+            // assert that the footer's view id was the last rich content after the
+            // active block -- i.e. that it had been injected *into the block list*
+            // underneath the running command. That injection is the defect §8 exists to
+            // remove: it occupies rows the pty was told it had and cannot see. The
+            // footer is now rendered by the window footer bar, outside the block list,
+            // so the assertion is inverted (nothing in the block list) and the identity
+            // check moves to the bar's own per-frame predicate.
+            assert!(
+                model
+                    .block_list()
+                    .rich_content_row_range(view.use_agent_footer.id())
+                    .is_none(),
+                "the Use Agent footer must not be injected into the block list",
+            );
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                Some(view.use_agent_footer.id()),
+                "the window footer bar should be rendering the Use Agent footer",
+            );
         });
     })
 }
@@ -306,12 +333,26 @@ fn use_agent_footer_renders_for_manual_handoff_when_unfinished_ai_block_remains(
         terminal.read(&app, |view, ctx| {
             let model = view.model.lock();
             assert!(view.should_render_use_agent_footer(&model, ctx));
-            let active_block_index = model.block_list().active_block_index();
-            let rendered_footer_view_id = model
-                .block_list()
-                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                .map(|(_, item)| item.view_id);
-            assert_eq!(rendered_footer_view_id, Some(view.use_agent_footer.id()));
+            // Contract change, `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3. This used to
+            // assert that the footer's view id was the last rich content after the
+            // active block -- i.e. that it had been injected *into the block list*
+            // underneath the running command. That injection is the defect §8 exists to
+            // remove: it occupies rows the pty was told it had and cannot see. The
+            // footer is now rendered by the window footer bar, outside the block list,
+            // so the assertion is inverted (nothing in the block list) and the identity
+            // check moves to the bar's own per-frame predicate.
+            assert!(
+                model
+                    .block_list()
+                    .rich_content_row_range(view.use_agent_footer.id())
+                    .is_none(),
+                "the Use Agent footer must not be injected into the block list",
+            );
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                Some(view.use_agent_footer.id()),
+                "the window footer bar should be rendering the Use Agent footer",
+            );
         });
     })
 }
@@ -342,7 +383,7 @@ fn use_agent_footer_hidden_during_ambient_agent_setup_lrc() {
                 "precondition: no CLI agent session yet",
             );
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
 
             let model = view.model.lock();
             assert!(
@@ -356,6 +397,13 @@ fn use_agent_footer_hidden_during_ambient_agent_setup_lrc() {
                     .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
                     .is_none(),
                 "footer rich content should not be in the blocklist during ambient setup",
+            );
+            // …and, since §8 step 3, that assertion is vacuous on its own: the bar is
+            // what renders the footer, so this is the check that can still fail.
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                None,
+                "the window footer bar must stay empty during ambient-agent setup LRCs",
             );
         });
     })
@@ -403,19 +451,33 @@ fn cli_agent_footer_renders_for_viewer_of_shared_ambient_agent_session() {
                 );
             });
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
 
             let model = view.model.lock();
             assert!(
                 view.should_render_use_agent_footer(&model, ctx),
                 "footer should render for viewer of shared ambient agent session with CLI agent",
             );
-            let active_block_index = model.block_list().active_block_index();
-            let rendered_footer_view_id = model
-                .block_list()
-                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                .map(|(_, item)| item.view_id);
-            assert_eq!(rendered_footer_view_id, Some(view.use_agent_footer.id()));
+            // Contract change, `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3. This used to
+            // assert that the footer's view id was the last rich content after the
+            // active block -- i.e. that it had been injected *into the block list*
+            // underneath the running command. That injection is the defect §8 exists to
+            // remove: it occupies rows the pty was told it had and cannot see. The
+            // footer is now rendered by the window footer bar, outside the block list,
+            // so the assertion is inverted (nothing in the block list) and the identity
+            // check moves to the bar's own per-frame predicate.
+            assert!(
+                model
+                    .block_list()
+                    .rich_content_row_range(view.use_agent_footer.id())
+                    .is_none(),
+                "the Use Agent footer must not be injected into the block list",
+            );
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                Some(view.use_agent_footer.id()),
+                "the window footer bar should be rendering the Use Agent footer",
+            );
         });
     })
 }
@@ -454,7 +516,7 @@ fn cli_agent_footer_does_not_render_for_phosphor_tui_session() {
                 );
             });
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
 
             let model = view.model.lock();
             assert!(!view.should_render_use_agent_footer(&model, ctx));
@@ -463,6 +525,132 @@ fn cli_agent_footer_does_not_render_for_phosphor_tui_session() {
                 .block_list()
                 .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
                 .is_none());
+            // Vacuous since §8 step 3; the bar's predicate is the live one.
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                None,
+            );
+        });
+    })
+}
+
+/// `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3: alt screen and blocklist mode now share one
+/// predicate and one surface.
+///
+/// Before this change there were two. Blocklist mode got the toolbar from the block list,
+/// where `maybe_show_use_agent_footer_in_blocklist` had inserted it below the running
+/// command -- the rows-stealing defect §8 exists to remove -- and alt screen got it from a
+/// column sibling added in `TerminalView::render` under
+/// `model.is_alt_screen_active() && self.should_render_use_agent_footer(..)`, which is why
+/// alt screen never had the bug. The column sibling is gone; both modes now come from
+/// `use_agent_footer_view_id_for_window_footer_bar`.
+#[test]
+fn use_agent_footer_renders_from_the_window_footer_bar_in_alt_screen() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            simulate_user_started_long_running_command(view);
+            view.model.lock().set_altscreen_active();
+
+            let view_id = view.id();
+            CLIAgentSessionsModel::handle(ctx).update(ctx, |sessions, ctx| {
+                sessions.set_session(
+                    view_id,
+                    CLIAgentSession {
+                        agent: CLIAgent::Claude,
+                        status: CLIAgentSessionStatus::InProgress,
+                        session_context: CLIAgentSessionContext::default(),
+                        input_state: CLIAgentInputState::Closed,
+                        listener: None,
+                        plugin_version: None,
+                        remote_host: None,
+                        draft_text: None,
+                        custom_command_prefix: None,
+                        should_auto_toggle_input: false,
+                        received_rich_notification: false,
+                    },
+                    ctx,
+                );
+            });
+
+            view.refresh_use_agent_footer(ctx);
+
+            let model = view.model.lock();
+            assert!(model.is_alt_screen_active(), "precondition: alt screen");
+            assert!(view.should_render_use_agent_footer(&model, ctx));
+            assert!(
+                model
+                    .block_list()
+                    .rich_content_row_range(view.use_agent_footer.id())
+                    .is_none(),
+                "alt screen never used the block list and still must not",
+            );
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                Some(view.use_agent_footer.id()),
+                "the window footer bar renders the toolbar in alt screen too",
+            );
+        });
+    })
+}
+
+/// The explicit hide survived the move off the block list.
+///
+/// Block-list membership was two things at once: the answer to
+/// `should_render_use_agent_footer` at insertion time, *and* a piece of state that call
+/// sites cleared deliberately (a spawned subagent, a completed block, tagging the agent
+/// in). Only the first became a per-frame predicate; the second is
+/// `use_agent_footer_suppressed`, and this pins it, because dropping it would have
+/// silently widened when the toolbar shows.
+///
+/// Note what the middle assertion says: the predicate is still true. Suppression is not
+/// the predicate, and it reserves nothing -- the bar is unconditional and fixed height
+/// whether or not it has content (§8), so this flag can never affect the pty's rows.
+#[test]
+fn suppressing_the_use_agent_footer_empties_the_window_footer_bar() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view_guard = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            simulate_user_started_long_running_command(view);
+            transition_to_user_handoff_state(view, UserTakeOverReason::Manual, ctx);
+            view.refresh_use_agent_footer(ctx);
+
+            {
+                let model = view.model.lock();
+                assert_eq!(
+                    view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                    Some(view.use_agent_footer.id()),
+                );
+            }
+
+            view.suppress_use_agent_footer(ctx);
+            {
+                let model = view.model.lock();
+                assert!(
+                    view.should_render_use_agent_footer(&model, ctx),
+                    "suppression is not the predicate -- the predicate is unchanged",
+                );
+                assert_eq!(
+                    view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                    None,
+                );
+            }
+
+            view.refresh_use_agent_footer(ctx);
+            {
+                let model = view.model.lock();
+                assert_eq!(
+                    view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                    Some(view.use_agent_footer.id()),
+                );
+            }
         });
     })
 }

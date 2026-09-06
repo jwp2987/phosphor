@@ -6,6 +6,7 @@ use crate::safe_triangle::SafeTriangle;
 use crate::terminal::CLIAgent;
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
+use crate::workspace::{TabBarLocation, VerticalTabsPaneDropTargetData};
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
 use std::path::PathBuf;
@@ -25,7 +26,8 @@ use super::{
     shows_synced_inputs_indicator, sort_summary_primary_labels_status_first, summary_overflow_count,
     summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
     terminal_pull_request_badge_label, terminal_search_text_fragments,
-    terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
+    terminal_title_fallback_font, uses_outer_group_container, vertical_tabs_end_of_list_drop_target_data,
+    visible_pane_ids_for_detail_target,
     vtab_diff_stats_text, AgentTabTextPreference, SummaryPaneKind, SummaryPaneKindIcons,
     TerminalAgentText, TerminalPrimaryLineData, TerminalPrimaryLineFont, VerticalTabsDetailTarget,
     VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
@@ -1348,4 +1350,72 @@ fn conversation_pane_resolves_to_typed_pane_conversation() {
             );
         });
     });
+}
+
+/// The empty-space filler below the last row must resolve to "append at the
+/// very end, ungrouped" -- an `AfterTabIndex` location (not a `TabIndex`, which
+/// would target an existing row) paired with an ungrouped `BeforeTab` hover at
+/// the same index. Fails if the location kind is swapped for `TabIndex`, if a
+/// group is attached, or if the index used doesn't match `tab_count`.
+#[test]
+fn end_of_list_drop_target_targets_append_ungrouped() {
+    let data = vertical_tabs_end_of_list_drop_target_data(3);
+    assert_eq!(data.tab_bar_location, TabBarLocation::AfterTabIndex(3));
+    assert_eq!(
+        data.tab_hover_index,
+        TabBarHoverIndex::BeforeTab {
+            index: 3,
+            group: None,
+        }
+    );
+}
+
+/// `tab_count == 0` is a boundary the pure function must not special-case
+/// away: it should still resolve to "append at index 0", not panic or return
+/// some other sentinel.
+#[test]
+fn end_of_list_drop_target_handles_empty_tab_list() {
+    let data = vertical_tabs_end_of_list_drop_target_data(0);
+    assert_eq!(data.tab_bar_location, TabBarLocation::AfterTabIndex(0));
+    assert_eq!(
+        data.tab_hover_index,
+        TabBarHoverIndex::BeforeTab {
+            index: 0,
+            group: None,
+        }
+    );
+}
+
+/// A native "New agent conversation" is recognised as an agent *only* by its selected
+/// conversation: `is_ambient_agent_session` is a hard-coded `false` stub and a
+/// `CLIAgentSessionsModel` session exists only for an external CLI tool. `pane_section`
+/// originally read just those first two -- while its doc comment claimed parity with the kind
+/// badge, which reads all three -- so every agent tab banded as `Terminal`, every unit tied,
+/// and the stable sort left the sidebar in insertion order with a terminal sandwiched between
+/// agent conversations.
+///
+/// Non-vacuous, and specifically against *that* failure: each signal is asserted sufficient on
+/// its own, so dropping any one of the three from `is_agent_terminal` fails a case here. A test
+/// that only classified one fully-populated agent would have passed throughout the bug.
+#[test]
+fn test_each_agent_signal_is_sufficient_on_its_own() {
+    use super::is_agent_terminal;
+
+    assert!(
+        is_agent_terminal(true, false, false),
+        "an external CLI-tool session alone must band as Agent"
+    );
+    assert!(
+        is_agent_terminal(false, true, false),
+        "an ambient agent session alone must band as Agent"
+    );
+    assert!(
+        is_agent_terminal(false, false, true),
+        "a selected conversation alone must band as Agent -- this is the signal that was \
+         missing, and the only one a native agent conversation has"
+    );
+    assert!(
+        !is_agent_terminal(false, false, false),
+        "a terminal with none of the three signals must stay in the Terminal band"
+    );
 }

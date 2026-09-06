@@ -588,3 +588,55 @@ fn test_toggle_raw_mode_remote_notebook_replaces_pane_with_remote_code_pane() {
         );
     });
 }
+
+/// #644: the pane header's "Open in editor" must never resolve a markdown file back to the
+/// markdown viewer it was invoked from. `resolve_file_target` forwards
+/// `prefer_markdown_viewer` (default `true`), which returned `FileTarget::MarkdownViewer`;
+/// that routed to `open_file_notebook`, which focused the already-focused pane and returned,
+/// so the menu item did nothing at all.
+///
+/// Non-vacuous: flip `open_in_editor_target`'s hard-coded `false` back to `true`, or restore
+/// the `resolve_file_target` call it replaced, and the first assertion sees `MarkdownViewer`.
+#[test]
+#[cfg(feature = "local_fs")]
+fn test_open_in_editor_never_resolves_back_to_the_markdown_viewer() {
+    use crate::util::file::external_editor::settings::EditorChoice;
+    use crate::util::openable_file_type::{EditorLayout, FileTarget};
+
+    for choice in [
+        EditorChoice::Zap,
+        EditorChoice::SystemDefault,
+        EditorChoice::EnvEditor,
+    ] {
+        let target = super::open_in_editor_target(
+            Path::new("/tmp/notes.md"),
+            choice,
+            EditorLayout::SplitPane,
+        );
+        assert!(
+            !matches!(target, FileTarget::MarkdownViewer(_)),
+            "\"Open in editor\" resolved a markdown file back to the markdown viewer for \
+             {choice:?}, which is the pane it was invoked from -- the menu item is a no-op"
+        );
+    }
+
+    // Suppressing the markdown precedence must not override the user's editor choice:
+    // Phosphor's own editor still resolves to the in-app code editor, and the default
+    // still hands off to the system.
+    assert!(matches!(
+        super::open_in_editor_target(
+            Path::new("/tmp/notes.md"),
+            EditorChoice::Zap,
+            EditorLayout::SplitPane,
+        ),
+        FileTarget::CodeEditor(_)
+    ));
+    assert!(matches!(
+        super::open_in_editor_target(
+            Path::new("/tmp/notes.md"),
+            EditorChoice::SystemDefault,
+            EditorLayout::SplitPane,
+        ),
+        FileTarget::SystemDefault
+    ));
+}

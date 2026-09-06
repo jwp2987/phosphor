@@ -4573,7 +4573,7 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
                 model.simulate_long_running_block("ssh localhost", "Password:");
             }
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
             {
                 let model = view.model.lock();
                 assert!(!view.should_render_use_agent_footer(&model, ctx));
@@ -4582,6 +4582,13 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
                     .block_list()
                     .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
                     .is_none());
+                // The block-list assertion above is now vacuous -- nothing inserts the
+                // footer there any more (§8 step 3) -- so assert what actually decides
+                // visibility: the window footer bar's per-frame predicate.
+                assert_eq!(
+                    view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                    None,
+                );
             }
 
             let conversation_id = view.agent_view_controller().update(ctx, |controller, ctx| {
@@ -4616,15 +4623,29 @@ fn use_agent_footer_renders_for_transfer_handoff_even_when_user_command_footer_s
                 );
             });
 
-            view.maybe_show_use_agent_footer_in_blocklist(ctx);
+            view.refresh_use_agent_footer(ctx);
             let model = view.model.lock();
             assert!(view.should_render_use_agent_footer(&model, ctx));
-            let active_block_index = model.block_list().active_block_index();
-            let rendered_footer_view_id = model
-                .block_list()
-                .last_non_hidden_rich_content_block_after_block(Some(active_block_index))
-                .map(|(_, item)| item.view_id);
-            assert_eq!(rendered_footer_view_id, Some(view.use_agent_footer.id()));
+            // Contract change, `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3. This used to
+            // assert that the footer's view id was the last rich content after the
+            // active block -- i.e. that it had been injected *into the block list*
+            // underneath the running command. That injection is the defect §8 exists to
+            // remove: it occupies rows the pty was told it had and cannot see. The
+            // footer is now rendered by the window footer bar, outside the block list,
+            // so the assertion is inverted (nothing in the block list) and the identity
+            // check moves to the bar's own per-frame predicate.
+            assert!(
+                model
+                    .block_list()
+                    .rich_content_row_range(view.use_agent_footer.id())
+                    .is_none(),
+                "the Use Agent footer must not be injected into the block list",
+            );
+            assert_eq!(
+                view.use_agent_footer_view_id_for_window_footer_bar(&model, ctx),
+                Some(view.use_agent_footer.id()),
+                "the window footer bar should be rendering the Use Agent footer",
+            );
         });
     })
 }

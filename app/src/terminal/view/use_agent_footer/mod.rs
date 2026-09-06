@@ -76,7 +76,7 @@ use crate::{
 
 use warp_terminal::model::escape_sequences::{BRACKETED_PASTE_END, BRACKETED_PASTE_START};
 
-use super::{RichContentInsertionPosition, TerminalAction, TerminalView};
+use super::{TerminalAction, TerminalView};
 use crate::terminal::view::block_banner::WarpificationMode;
 
 /// Small delay inserted between separate PTY writes to CLI agents.
@@ -171,7 +171,7 @@ impl TerminalView {
         ctx.subscribe_to_model(&ai_settings, |me, _, event, ctx| match event {
             AISettingsChangedEvent::IsAnyAIEnabled { .. }
             | AISettingsChangedEvent::ShouldRenderCLIAgentToolbar { .. } => {
-                me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                me.refresh_use_agent_footer(ctx);
             }
             AISettingsChangedEvent::ShouldRenderUseAgentToolbarForUserCommands { .. } => {
                 // When the setting is re-enabled (e.g. from the AI settings page),
@@ -184,10 +184,10 @@ impl TerminalView {
                         footer.did_user_dismiss = false;
                     });
                 }
-                me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                me.refresh_use_agent_footer(ctx);
             }
             AISettingsChangedEvent::CLIAgentToolbarEnabledCommands { .. } => {
-                me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                me.refresh_use_agent_footer(ctx);
             }
             _ => (),
         });
@@ -205,7 +205,7 @@ impl TerminalView {
             let is_pinned_to_top = settings_handle.as_ref(ctx).is_pinned_to_top();
             if was_pinned_to_top != is_pinned_to_top {
                 was_pinned_to_top = is_pinned_to_top;
-                me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                me.refresh_use_agent_footer(ctx);
             }
         });
 
@@ -213,10 +213,10 @@ impl TerminalView {
             &self.cli_subagent_controller,
             |me, _, event, ctx| match event {
                 CLISubagentEvent::SpawnedSubagent { .. } => {
-                    me.hide_use_agent_footer_in_blocklist(ctx);
+                    me.suppress_use_agent_footer(ctx);
                 }
                 CLISubagentEvent::UpdatedControl { .. } => {
-                    me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                    me.refresh_use_agent_footer(ctx);
                 }
                 _ => (),
             },
@@ -230,7 +230,7 @@ impl TerminalView {
     ) {
         match event {
             UseAgentToolbarEvent::Dismiss => {
-                self.hide_use_agent_footer_in_blocklist(ctx);
+                self.suppress_use_agent_footer(ctx);
                 send_telemetry_from_ctx!(TelemetryEvent::AgentToolbarDismissed, ctx);
                 ctx.notify();
             }
@@ -268,7 +268,7 @@ impl TerminalView {
                 self.close_cli_agent_rich_input_and_disable_auto_toggle(ctx);
             }
             UseAgentToolbarEvent::Warpify { mode } => {
-                self.hide_use_agent_footer_in_blocklist(ctx);
+                self.suppress_use_agent_footer(ctx);
                 match mode {
                     WarpificationMode::Ssh { .. } => {
                         self.handle_action(&TerminalAction::WarpifySSHSession, ctx);
@@ -285,7 +285,7 @@ impl TerminalView {
                 );
             }
             UseAgentToolbarEvent::UseAgent => {
-                self.hide_use_agent_footer_in_blocklist(ctx);
+                self.suppress_use_agent_footer(ctx);
                 self.handle_action(&TerminalAction::SetInputModeAgent, ctx);
             }
         }
@@ -375,6 +375,36 @@ impl TerminalView {
                 || active_block.is_eligible_for_agent_handoff())
     }
 
+    /// The view the window footer bar should render, if any.
+    ///
+    /// This is the whole of the Use Agent toolbar's visibility rule as of
+    /// `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3, and it is evaluated **every frame**
+    /// from `TerminalView::render`. Before the footer bar, the same question was asked
+    /// once at `insert_rich_content` time and the answer frozen as block-list
+    /// membership, which is why §8's table records "suppress the bar via its render
+    /// predicate" as a fix that turned out to be inert -- the predicate genuinely was
+    /// not consulted again while a program painted.
+    ///
+    /// It returns the view id rather than a bool so tests can assert *which* view the
+    /// bar renders, which is what the block-list assertions they replaced were doing.
+    ///
+    /// Both modes go through here. Alt screen used to render the toolbar as a column
+    /// sibling of the alt-screen element (`TerminalView::render`, removed in the same
+    /// change); blocklist mode used to get it from the block list. One surface, one
+    /// predicate, one place.
+    pub(super) fn use_agent_footer_view_id_for_window_footer_bar(
+        &self,
+        model: &TerminalModel,
+        app: &AppContext,
+    ) -> Option<EntityId> {
+        if self.use_agent_footer_suppressed {
+            return None;
+        }
+
+        self.should_render_use_agent_footer(model, app)
+            .then(|| self.use_agent_footer.id())
+    }
+
     /// Returns the detected CLI agent for the active block's command, if any.
     ///
     /// This method resolves aliases before detecting the CLI agent. For example,
@@ -455,7 +485,7 @@ impl TerminalView {
             self.use_agent_footer.update(ctx, |footer, ctx| {
                 footer.clear_warpify_mode(ctx);
             });
-            self.hide_use_agent_footer_in_blocklist(ctx);
+            self.suppress_use_agent_footer(ctx);
         }
 
         self.input.update(ctx, |input, ctx| {
@@ -503,7 +533,7 @@ impl TerminalView {
             .set_is_agent_tagged_in(false);
 
         if !self.model.lock().is_alt_screen_active() {
-            self.maybe_show_use_agent_footer_in_blocklist(ctx);
+            self.refresh_use_agent_footer(ctx);
         }
 
         self.input.update(ctx, |input, ctx| {
@@ -527,24 +557,52 @@ impl TerminalView {
         );
     }
 
-    pub(super) fn maybe_show_use_agent_footer_in_blocklist(&mut self, ctx: &mut ViewContext<Self>) {
-        // This is a bit of a hack- but it ensures we never show more than one footer in the
-        // blocklist.
-        self.hide_use_agent_footer_in_blocklist(ctx);
-        let (should_render_footer, is_alt_screen_active) = {
+    /// Clears the explicit suppression set by [`Self::suppress_use_agent_footer`] and
+    /// reports the toolbar as shown, if the live predicate agrees.
+    ///
+    /// This used to be `maybe_show_use_agent_footer_in_blocklist`, and it used to
+    /// `insert_rich_content(.., insert_below_long_running_block: true)` -- i.e. it put
+    /// the toolbar *into the block list underneath the running program*, which is the
+    /// second of the two defects `docs/DESIGN-PHOSPHOR-FORK.md` §8 exists to remove:
+    /// rows the pty was told it had, occupied by chrome the pty cannot see. The toolbar
+    /// is now rendered by the window footer bar instead (see
+    /// `TerminalView::use_agent_footer_view_id_for_window_footer_bar`), which is outside
+    /// the block list, always present, and fixed height.
+    ///
+    /// The consequential difference is *when the predicate runs*. Insertion evaluated
+    /// `should_render_use_agent_footer` exactly once, here, and the result was then
+    /// frozen as "is the view in the block list" until something called this again --
+    /// which is why §8's table records "suppress the bar via its render predicate" as a
+    /// failed fix: there was no render predicate to suppress. The bar re-evaluates it
+    /// every frame.
+    ///
+    /// What is *not* a per-frame predicate, deliberately, is the explicit hide. Block
+    /// list membership was also a piece of state that several call sites cleared on
+    /// purpose (a spawned subagent, a completed block, tagging the agent in), and
+    /// dropping it would have silently widened when the toolbar shows. That state is now
+    /// `use_agent_footer_suppressed`, set by `suppress_use_agent_footer` and cleared
+    /// here, so those call sites keep the behaviour they had. It costs nothing in rows:
+    /// the bar reserves its height whether or not it has content.
+    pub(super) fn refresh_use_agent_footer(&mut self, ctx: &mut ViewContext<Self>) {
+        self.use_agent_footer_suppressed = false;
+
+        let should_render_footer = {
             let model = self.model.lock();
-            (
-                self.should_render_use_agent_footer(&model, ctx),
-                model.is_alt_screen_active(),
-            )
+            self.should_render_use_agent_footer(&model, ctx)
         };
-        if is_alt_screen_active || !should_render_footer {
+
+        ctx.notify();
+
+        if !should_render_footer {
             return;
         }
 
-        let should_insert_after_block = !InputModeSettings::as_ref(ctx).is_pinned_to_top();
-
-        // Send telemetry when showing CLI agent footer
+        // Send telemetry when showing CLI agent footer.
+        //
+        // Unlike the old insertion, this no longer skips alt screen: the toolbar renders
+        // in the footer bar in both modes now, so alt screen is a "shown" too. Previously
+        // alt screen returned early before reaching here and rendered the toolbar from
+        // the column-sibling branch in `TerminalView::render`, which never reported it.
         if let Some(session) = CLIAgentSessionsModel::as_ref(ctx).session(self.view_id) {
             let cli_agent_type: CLIAgentType = session.agent.into();
             send_telemetry_from_ctx!(
@@ -554,22 +612,39 @@ impl TerminalView {
                 ctx
             );
         }
-
-        self.insert_rich_content(
-            None,
-            self.use_agent_footer.clone(),
-            None,
-            RichContentInsertionPosition::Append {
-                insert_below_long_running_block: should_insert_after_block,
-            },
-            ctx,
-        );
     }
 
-    pub(super) fn hide_use_agent_footer_in_blocklist(&mut self, ctx: &mut ViewContext<Self>) {
-        let mut model = self.model.lock();
-        let block_list = model.block_list_mut();
-        block_list.remove_rich_content(self.use_agent_footer.id());
+    /// Hides the Use Agent toolbar until something calls
+    /// [`Self::refresh_use_agent_footer`] again.
+    ///
+    /// The successor to `hide_use_agent_footer_in_blocklist`, which removed the toolbar's
+    /// rich content from the block list. Nothing inserts it there any more, so this sets
+    /// a flag the window footer bar reads instead. Note that this does *not* reserve or
+    /// release any rows -- the bar is unconditional and fixed height (§8) -- it only
+    /// decides whether the bar has anything to draw.
+    ///
+    /// **This is wider than what it replaced, deliberately, and the widening is not yet
+    /// covered by a test.** `hide_use_agent_footer_in_blocklist` removed a block-list
+    /// entry, and alt screen never read the block list -- so every hide was silently
+    /// inert while alt screen was active. The flag is read in both modes, so suppression
+    /// now takes effect in alt screen too. Two call sites (`tag_agent_in`/`tag_agent_out`,
+    /// `view.rs`) already guard themselves with `!is_alt_screen_active()` and so are
+    /// unaffected; the block-completed handler and `CLISubagentEvent::SpawnedSubagent`
+    /// do not, and those are the paths whose behaviour changed.
+    ///
+    /// Kept rather than guarded because the wider behaviour is the defensible one -- a
+    /// spawned subagent should hide the toolbar whichever mode is showing -- and because
+    /// the guard would have to live here, where taking `self.model.lock()` risks the
+    /// deadlock AGENTS.md §5.3 warns about, since `tag_agent_in` calls in with a lock
+    /// held nearby.
+    ///
+    /// **Missing coverage:** `suppressing_the_use_agent_footer_empties_the_window_footer_bar`
+    /// exercises suppression, and `use_agent_footer_renders_from_the_window_footer_bar_in_alt_screen`
+    /// exercises alt screen, but nothing exercises suppression *while* alt screen is
+    /// active. If that combination is ever found to be wrong, this comment is the place
+    /// to start.
+    pub(super) fn suppress_use_agent_footer(&mut self, ctx: &mut ViewContext<Self>) {
+        self.use_agent_footer_suppressed = true;
         ctx.notify();
     }
 

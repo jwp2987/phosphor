@@ -1,7 +1,18 @@
-# Declined parity
+# Declined parity — and deliberate improvements
 
 Deliberate decisions **not** to match the pinned oracle. These are choices, not
 debt, and not oversights.
+
+> **Scope widened 2026-09-05.** This file used to hold only things we decline to
+> port. It now also holds things we deliberately do **better** than upstream,
+> under the `IMPROVED` heading at the end. `ORACLE.md` no longer treats the pin as
+> a specification, so "differs from Warp" is no longer self-evidently a debt — it
+> is a decision, and decisions live here. See `AGENTS.md` §5.10.
+>
+> Recording an improvement is not bookkeeping. `docs/pin-migration.md` sequences
+> re-pins mechanically, and an unrecorded divergence is precisely what a re-pin
+> reverts back into upstream's behavior. An improvement nobody wrote down has a
+> scheduled expiry date.
 
 Read this before filing a parity issue or porting a subsystem. Several entries
 exist because an agent found a gap, filed it as debt, and the gap turned out to
@@ -356,3 +367,84 @@ the test is missing**. If the feature is missing, it is a feature issue, and it
 should be sized as one. If the feature was deliberately removed, it belongs in
 this file. Three separate issues were mislabelled as portable test debt for
 want of that distinction.
+
+---
+
+## IMPROVED — deliberate divergences where this fork is better
+
+Entries here are **not** declined parity. They are places where the pin's
+behavior was examined, found wrong, and deliberately changed. A re-pin must not
+revert them; `docs/pin-migration.md`'s queue should treat a diff against one of
+these as expected, not as drift to reconcile.
+
+Each entry must say what upstream does, what we do instead, and the evidence that
+upstream's behavior is actually a defect rather than a preference.
+
+- **A pinned block header is never drawn over a running command** (`ec2e2d227`,
+  2026-09-05, `app/src/terminal/block_list_element.rs`). **Upstream:**
+  `should_hide_snackbar_during_long_running_command` hides the pinned snackbar
+  only when the user has scrolled, or when the block's output grid is *strictly
+  taller* than the content area by more than `HEIGHT_FUDGE_FACTOR_LINES` — and
+  that constant is `0.01`, a rounding tolerance. **The defect:** a program that
+  paints *exactly* the terminal height is never "taller than" the content area.
+  That is not an edge case, it is the definition of a full-screen program, so
+  `top` and `watch` fall on the wrong side of a strict inequality and have their
+  first rows painted over. `git log` emits far more than a screenful, clears the
+  threshold, and behaves — which is why this read as app-specific for a long time,
+  and why `vim` is unaffected (alternate screen, different path). **Confirmed
+  present at the pin** (`4111d08f9:app/src/terminal/block_list_element.rs:422`,
+  byte-identical predicate) **and reproduced in shipping Warp** in a terminal-only
+  tab; it is masked in a Warp *agent* tab, where the offer to tag an agent in is
+  suppressed because one is already present. **We do:** pin no header at all while
+  a block is active-and-long-running; it returns when the command finishes, which
+  is when it earns its place — the snackbar exists to keep a *scrolled-away* block
+  identifiable, not to label a running one. **Why no threshold fixes it:** the
+  failing case is exact equality, and filling the viewport exactly is the whole
+  point of the programs involved.
+
+- **Long-running block padding collapses at the top as well as the bottom**
+  (`4203a0573`, 2026-09-04, `app/src/terminal/model/block.rs`). **Upstream:**
+  `padding_bottom()` collapses to `LONG_RUNNING_BOTTOM_PADDING_LINES` for a
+  long-running block — its own comment says why, "the terminal size (sent to PTY)
+  is calculated based on the window size ... this will allow full-screen programs
+  to fill the window properly" — but `padding_top`, `command_padding_top` and
+  `padding_middle` have no such arm. **The defect:** that reasoning applies
+  identically above the output. The pty row count is derived from the pane, so any
+  block padding it does not account for is space the running program believes it
+  has and cannot see. **We do:** collapse all three, with
+  `TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES` as the single value both the block
+  and the row calculation derive from. **Caveat, recorded honestly:** this was
+  measured with an absolute-positioning probe that turned out to measure the wrong
+  quantity (grid-vs-viewport offset, not the sequential scroll that actually loses
+  `top`'s header). It is defensible on the symmetry argument above and it is not
+  known to have hurt anything, but its benefit is **unproven**. If a future reader
+  wants to revert it, that is a reasonable position — do not treat it as load-bearing.
+  <!-- markers: keep:TOTAL_LONG_RUNNING_VERTICAL_PADDING_LINES -->
+
+- **The welcome pane yields to `general.default_session_mode`** (2026-09-05,
+  `app/src/workspace/view.rs`). **Upstream:** has no welcome pane at all — it deleted
+  the subsystem and shipped `crates/persistence/migrations/2026-06-13-000000_drop_welcome_panes`
+  to purge its rows ("Unrecognized pane kind: welcome"). **The defect:** this fork
+  revived it by putting `welcome_tab` in `app/Cargo.toml`'s default list (maintainer
+  decision 2026-08-17), which activated a `WelcomeTab` branch in `AddDefaultTab` and
+  `configure_empty_workspace` that had never run against a non-`Terminal` default. That
+  branch reads the effective session mode and then discards it: `add_welcome_tab` bypasses
+  `add_new_session_tab_with_default_mode`, the only path that computes
+  `should_enter_agent_view`. The welcome palette's own session action compounds it by
+  building a bare `PanesLayout::SingleTerminal` that never consults the setting. A user whose
+  default was `Agent` therefore got a welcome window that produced a terminal tab.
+  **We do:** `welcome_tab` is out of `app/Cargo.toml`'s default features as of 2026-09-05 —
+  which *converges* with upstream rather than diverging from it. The 2026-08-17 decision that
+  enabled it reasoned from the code being dark, not from the screen being wanted; the palette
+  offers two actions ("Add repository", "Terminal session") and stands in front of the terminal
+  on an empty workspace. `Workspace::should_open_welcome_tab` is kept as a guard so an explicit
+  `--features welcome_tab` build still honours the session-mode setting instead of
+  reintroducing the bug. **Why this is here rather than in TODO:** the end state matches
+  upstream, so a re-pin has nothing to correct — but the reasoning must not be lost, or the
+  flag gets switched back on the next time someone audits for dark code.
+  **Known residual:** a welcome pane persisted *before* the setting changed is still restored,
+  and `welcome_view.rs` rebinds `workspace:new_tab` inside its own context, so cmd-T from
+  within that pane still yields a terminal. Fixing that means either dropping the context
+  binding (losing the keystroke hint the palette renders) or splitting the button action from
+  the new-tab action — a UI call left open.
+

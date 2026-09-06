@@ -310,6 +310,147 @@ fn oz_icon_fill(theme: &WarpTheme) -> WarpThemeFill {
     theme.main_text_color(theme.background())
 }
 
+/// Which band of the vertical tab list a tab belongs to.
+///
+/// Settings first when open, then agents, then terminals, then anything else. Ordering is by
+/// discriminant, so adding a variant in the right position is all it takes to place it.
+///
+/// A tab's band is derived from live state, not fixed when the tab is created: a terminal that
+/// picks up a CLI agent session becomes `Agent` and moves on the next render. That is the point
+/// -- the list should say what a tab *is*, not what it was opened as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum VerticalTabSection {
+    Settings,
+    Agent,
+    Terminal,
+    Other,
+}
+
+/// Whether a terminal pane's signals make it an agent.
+///
+/// Split out from [`pane_section`] so the *set* of signals is testable without a live
+/// `AppContext`: the defect this guards against was one of the three going unread, which no
+/// assertion about a single classification would have caught. Each signal alone must be
+/// sufficient -- they are alternatives, not a conjunction.
+fn is_agent_terminal(
+    has_cli_agent_session: bool,
+    is_ambient_agent_session: bool,
+    has_selected_conversation: bool,
+) -> bool {
+    has_cli_agent_session || is_ambient_agent_session || has_selected_conversation
+}
+
+/// The band a single pane implies.
+fn pane_section(typed: &TypedPane<'_>, app: &AppContext) -> VerticalTabSection {
+    match typed {
+        TypedPane::Settings => VerticalTabSection::Settings,
+        TypedPane::Terminal(terminal_pane) => {
+            let terminal_view = terminal_pane.terminal_view(app);
+            let terminal_view = terminal_view.as_ref(app);
+            // The same three signals the kind badge uses (`render_detail_kind_badge_icon`),
+            // so the icon and the band can never disagree about what a tab is.
+            //
+            // An earlier version of this comment claimed parity while reading only the first
+            // two, which is the bug it was meant to prevent. The third is the common case:
+            // `is_ambient_agent_session` is a hard-coded `false` stub
+            // (`terminal/view/pane_impl.rs`), and a `CLIAgentSessionsModel` session exists only
+            // for an external CLI tool, so a native "New agent conversation" is recognised
+            // *solely* by its selected conversation. Without it every such tab banded as
+            // `Terminal`, every unit tied, and the stable sort left the list in insertion order
+            // -- the feature looked entirely dead while the row beside it drew an agent icon.
+            let is_agent = is_agent_terminal(
+                CLIAgentSessionsModel::as_ref(app)
+                    .session(terminal_view.id())
+                    .is_some(),
+                terminal_view.is_ambient_agent_session(app),
+                terminal_view
+                    .selected_conversation_display_title(app)
+                    .is_some(),
+            );
+            if is_agent {
+                VerticalTabSection::Agent
+            } else {
+                VerticalTabSection::Terminal
+            }
+        }
+        _ => VerticalTabSection::Other,
+    }
+}
+
+/// The band a whole tab belongs to: the strongest band any of its visible panes implies.
+///
+/// "Strongest" is the `Ord` minimum, so a split holding Settings sorts as Settings and a split
+/// holding an agent sorts as Agent. A tab is one row in the list, so it needs one answer.
+///
+/// Resolves the pane type directly rather than going through `PaneProps`: that type is a
+/// nineteen-argument render-time construction returning `Option`, and none of what it assembles
+/// -- mouse states, rename editors, hover state -- has any bearing on which band a tab is in.
+fn tab_section(tab: &TabData, app: &AppContext) -> VerticalTabSection {
+    let pane_group = tab.pane_group.as_ref(app);
+    pane_group
+        .visible_pane_ids()
+        .iter()
+        .map(|pane_id| pane_section(&pane_group.resolve_pane_type(*pane_id, app), app))
+        .min()
+        .unwrap_or(VerticalTabSection::Other)
+}
+
+/// Reorders visible tab indices into bands, keeping tab groups intact.
+///
+/// Sorts **units** rather than tabs: an ungrouped tab is its own unit, a tab group is one unit
+/// covering its whole run. `render_vertical_tabs_panel` relies on group members being a
+/// contiguous subslice ("Members are a contiguous subslice of `visible_tabs`"), and sorting
+/// individual tabs would break that the moment a group straddled two bands.
+///
+/// The sort is **stable within a band**, so tabs keep their relative order and only move when
+/// their band actually changes -- a terminal that becomes an agent migrates once, rather than
+/// the list reshuffling as titles or statuses update.
+fn order_tabs_into_sections(
+    indices: Vec<usize>,
+    tabs: &[TabData],
+    app: &AppContext,
+) -> Vec<usize> {
+    // Build units: consecutive entries sharing a `Some(group_id)` form one unit.
+    let mut units: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < indices.len() {
+        let group_id = tabs.get(indices[i]).and_then(|t| t.group_id);
+        match group_id {
+            Some(id) => {
+                let run: Vec<usize> = indices[i..]
+                    .iter()
+                    .copied()
+                    .take_while(|idx| tabs.get(*idx).and_then(|t| t.group_id) == Some(id))
+                    .collect();
+                i += run.len();
+                units.push(run);
+            }
+            None => {
+                units.push(vec![indices[i]]);
+                i += 1;
+            }
+        }
+    }
+
+    // A group takes the band of its strongest member, so a group containing an agent sorts
+    // with the agents rather than splitting across bands.
+    let mut keyed: Vec<(VerticalTabSection, usize, Vec<usize>)> = units
+        .into_iter()
+        .enumerate()
+        .map(|(order, unit)| {
+            let section = unit
+                .iter()
+                .filter_map(|idx| tabs.get(*idx))
+                .map(|tab| tab_section(tab, app))
+                .min()
+                .unwrap_or(VerticalTabSection::Other);
+            (section, order, unit)
+        })
+        .collect();
+    keyed.sort_by_key(|(section, order, _)| (*section, *order));
+    keyed.into_iter().flat_map(|(_, _, unit)| unit).collect()
+}
+
 fn render_pane_icon_with_status(
     variant: IconWithStatusVariant,
     theme: &WarpTheme,
@@ -1172,7 +1313,7 @@ impl VerticalTabsPanelState {
         app: &AppContext,
     ) -> Vec<usize> {
         if self.search_query.is_empty() {
-            return (0..tabs.len()).collect();
+            return order_tabs_into_sections((0..tabs.len()).collect(), tabs, app);
         }
         let query_lower = self.search_query.to_lowercase();
         let resolved_mode = resolve_vertical_tabs_mode(app);
@@ -1182,7 +1323,8 @@ impl VerticalTabsPanelState {
                 VerticalTabsDisplayGranularity::Tabs
             }
         };
-        tabs.iter()
+        let matched: Vec<usize> = tabs
+            .iter()
             .enumerate()
             .filter(|(tab_index, tab)| {
                 let pane_group = tab.pane_group.as_ref(app);
@@ -1242,7 +1384,11 @@ impl VerticalTabsPanelState {
                 }
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+
+        // Search results are banded too, so filtering never reorders relative to an unfiltered
+        // list -- a tab keeps its place whether or not a query is active.
+        order_tabs_into_sections(matched, tabs, app)
     }
 }
 
@@ -1301,6 +1447,23 @@ fn vertical_tabs_tab_bar_location(insert_index: usize, tab_count: usize) -> TabB
         TabBarLocation::AfterTabIndex(tab_count)
     } else {
         TabBarLocation::TabIndex(insert_index)
+    }
+}
+
+/// Drop target data for the empty space below the last row in the vertical
+/// tabs panel: append a dragged pane as a new tab at the very end of the list,
+/// ungrouped. Same fencepost every other "after the whole list" site in this
+/// file already uses (see `last_member_after_index`, `trailing_after_index`),
+/// just generalized from the last banded/filtered position to the true end of
+/// `workspace.tabs`, since the filler this feeds sits behind the whole panel
+/// rather than after one particular row.
+fn vertical_tabs_end_of_list_drop_target_data(tab_count: usize) -> VerticalTabsPaneDropTargetData {
+    VerticalTabsPaneDropTargetData {
+        tab_bar_location: vertical_tabs_tab_bar_location(tab_count, tab_count),
+        tab_hover_index: TabBarHoverIndex::BeforeTab {
+            index: tab_count,
+            group: None,
+        },
     }
 }
 
@@ -1715,6 +1878,50 @@ fn render_vertical_tabs_panel(
         .with_child(Shrinkable::new(1., scrollable_groups).finish())
         .finish();
 
+    // While a pane is being dragged, make the whole panel a drop target for
+    // "append at the end, ungrouped" -- not just its rows. The rendered
+    // row/strip/header list is `MainAxisSize::Min` (only as tall as its
+    // content), and `Shrinkable` (`FlexFit::Loose`) never forces the
+    // scrollable body to fill the flex space it's allotted -- it reports only
+    // its own content height (`Shrinkable::layout`/`ClippedScrollable::layout`
+    // both just pass through to their child; the `Loose` fit gives a `min` of
+    // `0.`, not `constraint.max`). So neither the content list nor the
+    // scrollable wrapping it ever spans the empty area below the last row.
+    // `panel_content` itself is the thing that does: it's `MainAxisSize::Max`,
+    // which unconditionally reports its own size as the incoming max
+    // constraint (`Flex::layout`), independent of its children -- the same
+    // mechanism that already lets its background paint to the bottom of the
+    // panel today. Wrapping it here, before the control bar's search input
+    // is folded in below, gives this `DropTarget` the full panel body without
+    // touching `ClippedScrollable`'s constraint (and therefore its scrollbar
+    // geometry) at all.
+    //
+    // This also covers the control bar (the search input sits inside
+    // `panel_content` too), matching the horizontal tab bar's own precedent
+    // of wrapping its entire bar -- including its trailing buttons -- in one
+    // outer `AfterTabIndex` target (`render_tab_bar`). `DropTarget` never
+    // consumes events (`crates/warpui_core/src/elements/drag/drop_target.rs`),
+    // so this changes nothing about clicking the search box; the only
+    // consequence is that releasing a dragged pane while over the control bar
+    // resolves to "append at the end" instead of doing nothing.
+    //
+    // This target's bounds overlap every row's own smaller `DropTarget`, but
+    // `Draggable::compute_drop_target_data` resolves overlapping matches by
+    // smallest area, so a nested row/strip/header target always wins when the
+    // cursor is actually over one -- this only wins in genuinely empty space.
+    // Gated on `is_any_pane_dragging` so it never registers (and so never
+    // risks intercepting an ordinary click in the sidebar) outside a drag.
+    let is_any_pane_dragging = any_workspace_pane_being_dragged(workspace, app);
+    let panel_content: Box<dyn Element> = if is_any_pane_dragging {
+        DropTarget::new(
+            panel_content,
+            vertical_tabs_end_of_list_drop_target_data(workspace.tabs.len()),
+        )
+        .finish()
+    } else {
+        panel_content
+    };
+
     // The settings popup is rendered at the workspace level (with Dismiss for click-outside-
     // to-close). Rendering it here again shares MouseStateHandle instances across two Hoverable
     // trees; click_count.take() is consumed by this copy first, leaving the workspace copy
@@ -1899,6 +2106,26 @@ fn render_groups(
                     }
                 }
             })
+            .collect()
+    };
+
+    // Band the rows: Settings, then agents, then terminals.
+    //
+    // This is the render path. `matching_tab_indices` is banded too, but it only feeds
+    // `activate_next_tab`/`activate_previous_tab` -- keyboard navigation -- so banding
+    // there alone left the visible list in `workspace.tabs` declaration order, which is
+    // to say unsorted. Both need it, and they must agree or tab-cycling would jump around
+    // relative to what is on screen.
+    let visible_tabs: Vec<(usize, Option<Vec<PaneId>>)> = {
+        let ordered = order_tabs_into_sections(
+            visible_tabs.iter().map(|(index, _)| *index).collect(),
+            &workspace.tabs,
+            app,
+        );
+        let mut by_index: HashMap<usize, Option<Vec<PaneId>>> = visible_tabs.into_iter().collect();
+        ordered
+            .into_iter()
+            .filter_map(|index| by_index.remove(&index).map(|panes| (index, panes)))
             .collect()
     };
 

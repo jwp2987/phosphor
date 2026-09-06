@@ -37,6 +37,7 @@ mod tab_metadata;
 mod testing;
 mod tooltips;
 pub mod use_agent_footer;
+pub mod window_footer_bar;
 mod zero_state_block;
 
 use warpui::clipboard_utils::get_image_filepaths_from_paths;
@@ -70,6 +71,7 @@ use crate::terminal::view::zero_state_block::TerminalViewZeroStateBlock;
 use crate::view_components::action_button::{ActionButton, ButtonSize, KeystrokeSource};
 
 use use_agent_footer::UseAgentToolbar;
+use window_footer_bar::render_window_footer_bar;
 
 use super::cli_agent;
 use super::CLIAgent;
@@ -178,7 +180,7 @@ use repo_metadata::repositories::{DetectedRepositories, RepoDetectionSource};
 use ssh_file_upload::{FileUpload, FileUploadEvent};
 use uuid::Uuid;
 use warp_core::channel::ChannelState;
-use warpui::elements::{shimmering_text::ShimmeringTextStateHandle, ChildView};
+use warpui::elements::{shimmering_text::ShimmeringTextStateHandle, ChildView, MainAxisSize};
 use warpui::fonts::Properties;
 use warpui::{ViewHandle, WeakModelHandle};
 
@@ -2727,6 +2729,23 @@ pub struct TerminalView {
     cli_subagent_controller: ModelHandle<CLISubagentController>,
     use_agent_footer: ViewHandle<UseAgentToolbar>,
 
+    /// Whether the Use Agent toolbar has been explicitly hidden until the next
+    /// `refresh_use_agent_footer`.
+    ///
+    /// This is the successor to "is the toolbar's rich content in the block list".
+    /// Until `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3, the toolbar was injected into
+    /// the block list under the running command, so block-list membership doubled as
+    /// its visibility state, and several call sites removed it deliberately (a spawned
+    /// subagent, a completed block, tagging the agent in). Rendering from the window
+    /// footer bar makes visibility a per-frame predicate, but that predicate cannot
+    /// express those explicit hides, so they get a flag.
+    ///
+    /// It does not affect the pty's row count. The footer bar is unconditional and
+    /// fixed height whether or not it has anything to draw -- that is the load-bearing
+    /// property of §8, and a `bool` anywhere near the row calculation is exactly what
+    /// the seven reverted attempts were.
+    use_agent_footer_suppressed: bool,
+
     agent_view_controller: ModelHandle<AgentViewController>,
     agent_view_back_button: ViewHandle<ActionButton>,
     is_using_conversation_for_pane_header_title: bool,
@@ -4130,6 +4149,7 @@ impl TerminalView {
             cli_subagent_views: Default::default(),
             cli_subagent_controller,
             use_agent_footer: use_agent_button_bar,
+            use_agent_footer_suppressed: false,
             agent_view_controller,
             agent_view_back_button,
             is_using_conversation_for_pane_header_title: false,
@@ -7715,7 +7735,7 @@ impl TerminalView {
             .set_is_agent_tagged_in(true);
 
         if !self.model.lock().is_alt_screen_active() {
-            self.hide_use_agent_footer_in_blocklist(ctx);
+            self.suppress_use_agent_footer(ctx);
         }
 
         self.input.update(ctx, |input, ctx| {
@@ -7745,7 +7765,7 @@ impl TerminalView {
             .set_is_agent_tagged_in(false);
 
         if !self.model.lock().is_alt_screen_active() {
-            self.maybe_show_use_agent_footer_in_blocklist(ctx);
+            self.refresh_use_agent_footer(ctx);
         }
 
         self.input.update(ctx, |input, ctx| {
@@ -7809,9 +7829,9 @@ impl TerminalView {
     /// Shows or hides the CLI agent footer from a shared session update.
     pub fn apply_cli_agent_footer_visibility(&mut self, show: bool, ctx: &mut ViewContext<Self>) {
         if show {
-            self.maybe_show_use_agent_footer_in_blocklist(ctx);
+            self.refresh_use_agent_footer(ctx);
         } else {
-            self.hide_use_agent_footer_in_blocklist(ctx);
+            self.suppress_use_agent_footer(ctx);
         }
     }
 
@@ -11007,7 +11027,7 @@ impl TerminalView {
                 self.use_agent_footer.update(ctx, |footer, ctx| {
                     footer.clear_warpify_mode(ctx);
                 });
-                self.hide_use_agent_footer_in_blocklist(ctx);
+                self.suppress_use_agent_footer(ctx);
                 if matches!(block_completed_event.block_type, BlockType::User(_)) {
                     // Close the rich input editor if it was open (side effects
                     // like input config restore happen reactively).
@@ -11234,7 +11254,7 @@ impl TerminalView {
                                         );
                                     }
 
-                                    me.maybe_show_use_agent_footer_in_blocklist(ctx);
+                                    me.refresh_use_agent_footer(ctx);
                                     me.maybe_auto_open_cli_agent_rich_input(ctx);
                                     me.input.update(ctx, |input, ctx| {
                                         input.universal_developer_input_button_bar().update(
@@ -25126,7 +25146,7 @@ impl TerminalView {
         self.use_agent_footer.update(ctx, |footer, ctx| {
             footer.set_warpify_mode(mode, ctx);
         });
-        self.maybe_show_use_agent_footer_in_blocklist(ctx);
+        self.refresh_use_agent_footer(ctx);
 
         send_telemetry_from_ctx!(TelemetryEvent::WarpifyFooterShown { is_ssh }, ctx);
     }
@@ -26758,10 +26778,12 @@ impl View for TerminalView {
 
                 column.add_child(Shrinkable::new(1., output_area).finish());
 
-                if model.is_alt_screen_active() && self.should_render_use_agent_footer(&model, app)
-                {
-                    column.add_child(ChildView::new(&self.use_agent_footer).finish());
-                }
+                // The Use Agent toolbar used to be added here, as a column sibling, but
+                // only in alt screen -- blocklist mode got it from the block list
+                // instead. It is now rendered by the window footer bar below, in both
+                // modes, from one per-frame predicate. See
+                // `docs/DESIGN-PHOSPHOR-FORK.md` §8 step 3 and
+                // `use_agent_footer_view_id_for_window_footer_bar`.
 
                 if self.is_input_box_visible(&model, app) {
                     column.add_child(self.render_input());
@@ -27081,6 +27103,77 @@ impl View for TerminalView {
         } else {
             SavePosition::new(stack.finish(), &self.terminal_position_id()).finish()
         };
+
+        // The window footer bar (`docs/DESIGN-PHOSPHOR-FORK.md` §8). It is a column
+        // sibling of the *entire* terminal content area rather than of the block list,
+        // and it is added here -- outside the `match` above -- for one reason: it has to
+        // be unconditional. That is the load-bearing property of §8. Adding it inside
+        // the `column` would have missed the waterfall-active-gap branch and the shared
+        // session / transcript loading state, and a bar that is only sometimes there is
+        // exactly the shape that failed seven times.
+        //
+        // This is also where the pty's rows are reserved, and it is the only place that
+        // happens. `element` is the flex-shrinkable child, so layout hands it
+        // `pane - reserved_bar_height_px(pane)` (`WINDOW_FOOTER_BAR_HEIGHT_PX` on any
+        // pane with room to spare it; less on one too short -- see
+        // `window_footer_bar::reserved_bar_height_px`), and the `TerminalSizeElement`
+        // that reports the pty size is inside it in both modes:
+        //
+        // - blocklist: it wraps `element` itself (the `!did_wrap_terminal_size` arm
+        //   above), so the size it reports is the shrunk size.
+        // - alt screen: it wraps only the alt element, deeper inside `stack`, which is
+        //   already sized within the shrunk `element`.
+        //
+        // So the bar is subtracted once, by layout, in both -- and `create_size_info` /
+        // `create_size_info_for_blocklist` stay ignorant of it. That is deliberate:
+        // those are shared by alt screen (including the
+        // `ALT_SCREEN_APPS_THAT_MUST_MATCH_BLOCKLIST_PADDING` apps such as `k9s` and
+        // `lazygit`, which take the blocklist padding *while in alt screen*), and an
+        // arithmetic subtraction in there would be applied on top of the one layout has
+        // already made, costing those apps the rows twice.
+        //
+        // Note also that this must not be folded into `SizeInfo`'s `padding_y`, which is
+        // symmetric -- the alt-screen container paints it top *and* bottom -- so half of
+        // a bottom-only reservation would end up above the grid.
+        // `MainAxisSize::Max` is load-bearing, not decoration. `Flex::column()` defaults to
+        // `Min`, which returns `bar + content` rather than the pane height whenever the
+        // content does not fill -- and in Waterfall the block list is content-sized
+        // (`block_list_element.rs`), so it frequently does not. The bar would then be painted
+        // immediately under the content, floating mid-pane. That is invisible while the bar
+        // draws nothing and becomes an obviously-wrong bar the moment step 3 puts content in
+        // it, which is exactly the kind of defect that only surfaces two changes later.
+        //
+        // Step 3 fills the bar. The content is chosen by one per-frame predicate that
+        // both modes share (`use_agent_footer_view_id_for_window_footer_bar`), replacing
+        // the block-list insertion *and* the alt-screen-only column sibling above. The
+        // bar's height does not depend on what that returns: `render_window_footer_bar`
+        // pins its child to the reserved height and clips the overflow, so a toolbar
+        // whose chips would wrap to two or three runs in a narrow pane is truncated to
+        // the first run rather than growing the bar. If it could grow, the pty's rows
+        // would depend on how many chips the user has enabled -- the §8 bug again, with
+        // a new trigger.
+        let footer_bar_content = self
+            .use_agent_footer_view_id_for_window_footer_bar(&model, app)
+            .map(|_| ChildView::new(&self.use_agent_footer).finish());
+        // The pane height is passed in so the bar can yield when the pane can't
+        // spare its full natural height (`window_footer_bar::reserved_bar_height_px`)
+        // -- a non-flex `Flex` child's own `layout` constraint has its main-axis max
+        // widened to infinity before it gets here, so it cannot read the pane off
+        // that. `self.size_info` is render()'s existing pane-size field (used
+        // throughout this struct, e.g. for auto-opening a pane at
+        // `MINIMUM_WIDTH_TO_AUTO_OPEN_PANE`); it can be a layout pass behind the pane
+        // `TerminalSizeElement` is about to report this frame, same as the "seeds the
+        // model a couple of rows too tall" staleness `window_footer_bar`'s module doc
+        // describes for session creation -- a one-frame lag the next layout pass
+        // corrects, not an arithmetic double-count.
+        let element = Flex::column()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_child(Shrinkable::new(1., element).finish())
+            .with_child(render_window_footer_bar(
+                footer_bar_content,
+                self.size_info.pane_height_px().as_f32(),
+            ))
+            .finish();
 
         let final_element = if self.is_file_drop_target && FeatureFlag::SshDragAndDrop.is_enabled()
         {

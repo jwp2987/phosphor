@@ -2,8 +2,61 @@
 
 `warp/master` is a **moving target**. Measuring against it produces a number that
 never shrinks, because upstream adds tests faster than any porting effort closes
-the gap. This file pins the oracle to a fixed point so parity work is a burndown
-instead of a treadmill.
+the gap. This file pins the oracle to a fixed point so that comparisons are made
+against code that actually shipped, on a known day.
+
+## What the pin is for (revised 2026-09-05)
+
+**The pin is a source of suggestions and evidence. It is not a specification.**
+
+It used to be both, and the second half stopped making sense. Two things changed:
+
+1. **Upstream is going somewhere else.** Warp's own changelog runs ~35% cloud- or
+   account-dependent in June 2026, ~40% in July, ~45% in August, ~50% in
+   September — about +5 points a month, and it is stated strategy rather than
+   drift (Warp Factories, 2026-08-18; "cloud software factories" as the framing).
+   `docs/STATE.md` already adjudicates 1,255 of 2,042 tests as CLOUD. A parity
+   percentage measured against that denominator is measuring distance from a
+   product this fork has deliberately declined to build.
+
+2. **We started finding upstream's bugs.** `ec2e2d227` fixes a defect that is
+   byte-identical at the pin: the pinned snackbar header hid only when a block's
+   output was *strictly taller* than the content area, so a program painting
+   exactly `$LINES` -- `top`, `watch` -- had its first rows drawn over. Under
+   "pin as specification" that fix is an unsanctioned divergence needing
+   justification. It is not. It is the fork being right.
+
+### The three jobs the pin still does
+
+- **Evidence.** "Is this our bug or upstream's?" `git show <pin>:path` answers it
+  in seconds and has repeatedly changed what we did. This is the pin's highest
+  value and it does not depend on parity at all.
+- **Drift detection.** So a re-pin does not silently revert a deliberate
+  divergence. `ec2e2d227` is exactly the kind of change that a mechanical re-pin
+  would "correct" back into upstream's bug.
+- **A candidate feed.** The other ~50% of upstream work is still ours: terminal
+  completions, tab groups, Vim keybindings, editor and Markdown work.
+
+### The job it no longer does
+
+**Absence is no longer debt.** A test or feature that exists upstream and not
+here needs no justification for being missing. What needs a record is a
+*decision* -- to port, to decline, or to deliberately do better. `DECLINED.md` is
+therefore the product definition, not an exception list, and it carries an
+`IMPROVED` verdict for the third case.
+
+**Do not quote the parity percentage as a goal.** `docs/STATE.md` still computes
+it because it is a useful descriptive number for "how much shared ancestry is
+left", and because a re-pin's blast radius is easier to reason about with it. It
+is not a burndown and there is no target value.
+
+### The risk this trades for, named
+
+A percentage nags; "suggestions" does not. The honest failure mode of this policy
+is that the candidate feed stops being read and the 130 genuinely-open items in
+`docs/STATE.md` quietly rot. If that starts happening, the answer is a metric for
+*decisions made* -- local-scope upstream changes reviewed since the last pin --
+not a return to measuring distance from a cloud product.
 
 ## Policy
 
@@ -11,13 +64,18 @@ instead of a treadmill.
 `preview`.**
 
 - A stable release is code real users run. `master` is unreleased trunk.
-- The pin tracks the **newest** stable. Warp ships weekly (Wednesdays), so
-  expect to re-pin roughly weekly — see [Re-pinning](#re-pinning).
+- The pin tracks the **newest** stable. Warp ships weekly (Wednesdays).
+  **Re-pin cadence should follow the local-scope change rate, not the total.**
+  With ~50% of each release cloud-dependent and rising, weekly re-pinning spends
+  roughly twice the classification effort for the same portable yield. Re-pin
+  when the candidate feed is worth reading, or when you need the evidence oracle
+  to be current — see [Re-pinning](#re-pinning).
 - A pin only moves by an explicit, recorded update to this file — never
   implicitly by fetching. Fetching `warp/master` must not change what any
   measurement compares against.
-- All parity claims, gap measurements and "is this a regression" checks are made
-  against the current pin, not against `warp/master`.
+- "Is this a regression?" and "is this our bug or upstream's?" are answered
+  against the current pin, not against `warp/master`. Gap measurements are
+  descriptive only — see "What the pin is for" above.
 - Porting something newer than the pin is allowed when there's a reason (a
   security fix, a bug you actually hit). Note it on the issue. It does not move
   the pin.

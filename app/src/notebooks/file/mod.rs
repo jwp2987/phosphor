@@ -1069,9 +1069,12 @@ impl TypedActionView for FileNotebookView {
                     self.open_as_code(ctx);
                 } else if let Some(path) = self.local_path() {
                     use crate::util::file::external_editor::EditorSettings;
-                    use crate::util::openable_file_type::resolve_file_target;
                     let settings = EditorSettings::as_ref(ctx);
-                    let target = resolve_file_target(&path, settings, None);
+                    let target = open_in_editor_target(
+                        &path,
+                        *settings.open_file_editor,
+                        *settings.open_file_layout,
+                    );
                     ctx.emit(FileNotebookEvent::OpenFileWithTarget {
                         path,
                         target,
@@ -1288,6 +1291,37 @@ impl FileLocation {
 
         Self { breadcrumbs, name }
     }
+}
+
+/// Resolves where the pane header's "Open in editor" should send a local file.
+///
+/// `prefer_markdown_viewer` is deliberately forced off rather than read from settings.
+/// This action is invoked *from* the markdown viewer, and the preference that put the file
+/// there resolves it straight back here: `resolve_file_target` forwards
+/// `*settings.prefer_markdown_viewer` (default `true`), step 1 of
+/// `resolve_file_target_with_editor_choice` returns `FileTarget::MarkdownViewer` for any
+/// markdown file, and `open_file_notebook` then finds the pane already showing this path,
+/// focuses the already-focused pane and returns. The menu item did nothing at all. See #644.
+///
+/// The sibling Jupyter branch in `FileNotebookAction::OpenInEditor` avoids the same round
+/// trip by jumping straight to the raw code editor. That is right for `.ipynb`, which has no
+/// in-app raw view, but wrong here: markdown already has a rendered/raw toggle in the pane
+/// header (see `pane_header_overflow_menu_items`), so "Open in editor" would just duplicate
+/// it. Suppressing only the markdown precedence leaves every other preference intact, so the
+/// file still lands in the user's configured editor.
+#[cfg(feature = "local_fs")]
+fn open_in_editor_target(
+    path: &Path,
+    editor_choice: crate::util::file::external_editor::settings::EditorChoice,
+    default_layout: crate::util::openable_file_type::EditorLayout,
+) -> FileTarget {
+    crate::util::openable_file_type::resolve_file_target_with_editor_choice(
+        path,
+        editor_choice,
+        false, /* prefer_markdown_viewer -- see the doc comment above */
+        default_layout,
+        None,
+    )
 }
 
 #[cfg(test)]

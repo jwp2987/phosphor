@@ -63,7 +63,24 @@ use super::{
     NotebookWorkflow,
 };
 
-const DEBOUNCED_RESIZE_PERIOD: Duration = Duration::from_millis(5);
+/// Trailing-edge debounce before a resize triggers `rebuild_layout`.
+///
+/// This was 5ms, which is shorter than a frame: a drag delivers mouse-move events roughly
+/// every 16ms at 60Hz, so the timer expired between every pair of them and the "debounce"
+/// coalesced nothing. Every tick of a window or split-divider drag therefore ran a full
+/// `rebuild_layout` -> `Buffer::invalidate_layout`, which re-lays-out the *entire* buffer
+/// (`CharOffset::from(1)..max_charoffset()`), making a drag O(document) per tick. On a large
+/// markdown file that is slow enough to look frozen.
+///
+/// 150ms is longer than any gap within a continuous drag, so the trailing edge fires once
+/// after the drag settles rather than on every tick, while still being well under the
+/// threshold at which a user would notice the relayout arriving late.
+///
+/// Only resize is debounced here, and only markdown/notebook content pays this cost at all:
+/// `CodeEditorModel::handle_render_state_model_event` ignores `RenderEvent::NeedsResize`
+/// outright. The real fix is the unimplemented TODO at the `set_viewport_size` call site
+/// (async, and avoided entirely where possible); this is the cheap lever until then.
+const DEBOUNCED_RESIZE_PERIOD: Duration = Duration::from_millis(150);
 
 lazy_static! {
     // Specifically match ASCII digits using [[:digit:]], rather than \d, which is Unicode-aware.
