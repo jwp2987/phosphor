@@ -481,6 +481,13 @@ fn make_new_ai_menu(ctx: &AppContext) -> Menu {
         ctx,
     )];
 
+    // A conversation pane (`docs/design/moth-parliament.md` step 1): a pane holding an
+    // agent conversation with no terminal process behind it yet.
+    items.push(updateable_custom_item_without_checkmark(
+        CustomAction::NewConversationPane,
+        ctx,
+    ));
+
     items.push(updateable_custom_item_without_checkmark(
         CustomAction::AttachSelectionAsAgentModeContext,
         ctx,

@@ -1307,3 +1307,45 @@ fn tab_group_save_position_ids_are_distinct_per_axis_and_role() {
     // Distinct groups must not collide.
     assert_ne!(vertical, vtab_group_position_id(TabGroupId::new()));
 }
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 1's actual deliverable:
+/// `resolve_pane_type` classifies a conversation pane as `TypedPane::Conversation`, not
+/// `TypedPane::Terminal`, and the pane-kind label follows. This is the one test in this
+/// file that needs a real `PaneGroup` rather than synthetic data, because the classification
+/// under test lives in `resolve_pane_type` itself (module-private, so it can only be
+/// exercised from within `vertical_tabs`'s own module tree) and reads live `TerminalView`
+/// state that only a real pane has. If the `IPaneType::Terminal` arm of `resolve_pane_type`
+/// stopped checking `is_conversation_pane()` (reverting to always returning
+/// `TypedPane::Terminal`), or if `kind_label`'s new arm were dropped, this fails.
+#[test]
+fn conversation_pane_resolves_to_typed_pane_conversation() {
+    use super::TypedPane;
+    use crate::pane_group::Direction;
+    use warpui::App;
+
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+        let workspace = crate::workspace::view::tests::mock_workspace(&mut app);
+        let pane_group = workspace
+            .read(&app, |workspace, _| workspace.tab_views().next().cloned())
+            .expect("mock_workspace has an initial tab");
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let base_pane_id = panes.pane_ids().next();
+
+            let new_pane_id: PaneId = panes
+                .add_conversation_pane(Direction::Right, base_pane_id, ctx)
+                .into();
+
+            let typed = panes.resolve_pane_type(new_pane_id, ctx);
+            assert!(
+                matches!(typed, TypedPane::Conversation(_)),
+                "a freshly-opened conversation pane must resolve to TypedPane::Conversation"
+            );
+            assert_eq!(
+                typed.kind_label(),
+                crate::t!("vertical-tabs-pane-kind-conversation")
+            );
+        });
+    });
+}

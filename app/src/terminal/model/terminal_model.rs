@@ -573,6 +573,16 @@ pub struct TerminalModel {
     /// (no local shell process, deferred shared-session viewer backing).
     is_dummy_ambient_agent_session: bool,
 
+    /// Whether this terminal model belongs to a `TypedPane::Conversation` -- a pane that
+    /// holds a conversation and was created with no process behind it at all (see
+    /// `docs/design/moth-parliament.md` step 1). Unlike `is_dummy_ambient_agent_session`,
+    /// which is a brief placeholder cleared once a shared session connects, this is meant
+    /// to persist indefinitely: a conversation pane has no pty until (in a later step) a
+    /// tool call actually needs a shell. `pending_session_id()` staying `None` forever is
+    /// exactly this state, and this flag is the explicit marker that it is *intentional*
+    /// rather than a session stuck mid-bootstrap -- see the design doc's §5 risk list.
+    is_conversation_only: bool,
+
     /// If Some, this terminal is displaying a read-only conversation transcript.
     /// Tracks both the loading state and the type of conversation being viewed.
     conversation_transcript_viewer_status: Option<ConversationTranscriptViewerStatus>,
@@ -1189,6 +1199,7 @@ impl TerminalModel {
             shared_session_status,
             shared_session_source_type: None,
             is_dummy_ambient_agent_session,
+            is_conversation_only: false,
             conversation_transcript_viewer_status: None,
             ordered_terminal_events_for_shared_session_tx: None,
             write_to_pty_events_for_shared_session_tx: None,
@@ -1462,6 +1473,19 @@ impl TerminalModel {
 
     pub fn is_dummy_ambient_agent_session(&self) -> bool {
         self.is_dummy_ambient_agent_session
+    }
+
+    /// See the doc comment on the `is_conversation_only` field.
+    pub fn is_conversation_only(&self) -> bool {
+        self.is_conversation_only
+    }
+
+    /// Marks this model as belonging to a process-free conversation pane. Set once, right
+    /// after construction (mirrors how `set_conversation_transcript_viewer_status` is used
+    /// for the read-only viewer panes) -- there is no legitimate way for a session to
+    /// transition into or out of this state later.
+    pub fn set_is_conversation_only(&mut self, is_conversation_only: bool) {
+        self.is_conversation_only = is_conversation_only;
     }
 
     pub fn is_shared_ambient_agent_session(&self) -> bool {

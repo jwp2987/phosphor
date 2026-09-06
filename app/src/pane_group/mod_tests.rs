@@ -896,6 +896,119 @@ fn test_group_without_terminals() {
     });
 }
 
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 1: a conversation pane
+/// is a `TerminalPane` (`IPaneType::Terminal`, see `TypedPane::Conversation`'s doc comment
+/// in `vertical_tabs.rs`) whose `TerminalView` was never given a real process.
+///
+/// This fails on the `MockTerminalManager` downcast if `add_conversation_pane` regressed to
+/// `PaneGroup::create_session` (a real pty); it fails on `is_conversation_only` if the
+/// `set_is_conversation_only(true)` call were dropped, which would make this
+/// indistinguishable from a session merely mid-bootstrap (the risk `docs/design/
+/// moth-parliament.md` §5 calls out); and it fails on `is_fullscreen` if the pane stopped
+/// entering agent view for its new conversation immediately.
+#[test]
+fn test_add_conversation_pane_has_no_process_and_enters_agent_view() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let existing_id = get_newly_created_pane_id(panes, &[]);
+
+            let new_pane_id: PaneId = panes
+                .add_conversation_pane(Direction::Right, Some(existing_id), ctx)
+                .into();
+
+            let terminal_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(new_pane_id)
+                .expect("a conversation pane is stored as a TerminalPane (IPaneType::Terminal)");
+
+            let manager = terminal_pane.terminal_manager(ctx);
+            let manager_ref = manager.as_ref(ctx);
+            assert!(
+                manager_ref.as_any().is::<MockTerminalManager>(),
+                "a conversation pane must not be backed by a real (pty-spawning) terminal manager"
+            );
+
+            let model = manager_ref.model();
+            assert!(
+                model.lock().is_conversation_only(),
+                "the model must be explicitly marked conversation-only, not merely mid-bootstrap"
+            );
+            assert!(
+                model.lock().pending_session_id().is_none(),
+                "a conversation pane has no session at all, pending or otherwise"
+            );
+
+            let terminal_view = terminal_pane.terminal_view(ctx);
+            assert!(terminal_view.as_ref(ctx).is_conversation_pane());
+            assert!(
+                terminal_view
+                    .as_ref(ctx)
+                    .agent_view_controller()
+                    .as_ref(ctx)
+                    .is_fullscreen(),
+                "a conversation pane's entire purpose is the agent view, so it enters it \
+                 immediately for a fresh conversation rather than waiting on a setting"
+            );
+        });
+    });
+}
+
+/// Non-vacuous coverage for `PanesLayout::Conversation` (`docs/design/moth-parliament.md`
+/// step 1): a conversation TAB's sole pane must be a conversation pane, exactly like the
+/// split-pane path `add_conversation_pane` produces (see
+/// `test_add_conversation_pane_has_no_process_and_enters_agent_view` above), not a plain
+/// terminal.
+///
+/// This fails on `is_conversation_pane()`/`is_conversation_only()` if the new variant fell
+/// through to `initial_single_terminal_pane`'s default (a real pty session) instead of
+/// routing to `initial_conversation_pane`, and fails on `is_fullscreen` if the sole pane
+/// didn't enter agent view for its new conversation immediately.
+#[test]
+fn test_conversation_panes_layout_produces_a_conversation_pane() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group_with_options(
+            &mut app,
+            MockOptions {
+                layout: PanesLayout::Conversation,
+                ..Default::default()
+            },
+        );
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+
+            let terminal_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(pane_id)
+                .expect("a conversation pane is stored as a TerminalPane (IPaneType::Terminal)");
+
+            let manager = terminal_pane.terminal_manager(ctx);
+            let manager_ref = manager.as_ref(ctx);
+            assert!(
+                manager_ref.as_any().is::<MockTerminalManager>(),
+                "a conversation pane must not be backed by a real (pty-spawning) terminal manager"
+            );
+            assert!(
+                manager_ref.model().lock().is_conversation_only(),
+                "the model must be explicitly marked conversation-only, not merely \
+                 mid-bootstrap"
+            );
+
+            let terminal_view = terminal_pane.terminal_view(ctx);
+            assert!(terminal_view.as_ref(ctx).is_conversation_pane());
+            assert!(
+                terminal_view
+                    .as_ref(ctx)
+                    .agent_view_controller()
+                    .as_ref(ctx)
+                    .is_fullscreen(),
+                "a conversation tab's entire purpose is the agent view, so it enters it \
+                 immediately for a fresh conversation rather than waiting on a setting"
+            );
+        });
+    });
+}
+
 #[test]
 fn test_close_active_session() {
     App::test((), |mut app| async move {

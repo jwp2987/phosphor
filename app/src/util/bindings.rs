@@ -132,6 +132,19 @@ pub enum CustomAction {
     GoToLine,
     ToggleGlobalSearch,
     ToggleConversationListView,
+    /// Adds a conversation pane to the active tab: a pane holding an agent conversation with
+    /// no terminal process behind it yet. See `docs/design/moth-parliament.md` step 1.
+    /// Appended at the end of the enum rather than grouped near `NewAgentModePane` --
+    /// `CustomAction` is `#[repr(isize)]` and `From<CustomAction> for CustomTag` casts the
+    /// discriminant, so inserting a variant mid-enum would shift every later tag's value.
+    /// Safe either way (tags are rebuilt at runtime and `keybindings.yaml` persists by name),
+    /// but appending avoids the shift entirely.
+    NewConversationPane,
+    /// Opens a conversation as its own tab (`docs/design/moth-parliament.md` step 1,
+    /// `PanesLayout::Conversation`), as distinct from `NewConversationPane`'s split into
+    /// the active tab. Appended at the end for the same reason as `NewConversationPane`
+    /// above.
+    NewConversationTab,
 }
 
 lazy_static! {
@@ -467,7 +480,12 @@ pub fn custom_tag_to_keystroke(custom: CustomTag) -> Option<Keystroke> {
         | CustomAction::OpenAIFactCollection
         | CustomAction::OpenMCPServerCollection
         | CustomAction::NewPersonalAIPrompt
-        | CustomAction::NewAgentTab => None,
+        | CustomAction::NewAgentTab
+        // Deliberately no default keystroke: no unbound key in the `NewTab`/`NewAgentTab`
+        // family obviously belongs to this action, and an unbound-but-palette-reachable
+        // action is the safer default.
+        | CustomAction::NewConversationPane
+        | CustomAction::NewConversationTab => None,
     }
 }
 

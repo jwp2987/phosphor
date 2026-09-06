@@ -7499,6 +7499,14 @@ impl TerminalView {
         self.model.lock().is_read_only()
     }
 
+    /// Whether this is a `TypedPane::Conversation` -- a pane created with no process
+    /// behind its `TerminalView` at all (see `docs/design/moth-parliament.md` step 1). Not
+    /// to be confused with `is_read_only`: a conversation pane is fully interactive, it
+    /// just has no pty to spawn a shell into until (in a later step) a tool call needs one.
+    pub fn is_conversation_pane(&self) -> bool {
+        self.model.lock().is_conversation_only()
+    }
+
     /// Whether this terminal pane is responsible for uploading a file.
     pub fn is_ssh_uploader(&self) -> bool {
         self.is_ssh_file_uploader
@@ -7596,6 +7604,31 @@ impl TerminalView {
 
     pub fn is_input_box_visible(&self, model: &TerminalModel, app: &AppContext) -> bool {
         if model.is_read_only() {
+            return false;
+        }
+        // A conversation pane (`docs/design/moth-parliament.md` step 1) has no pty at
+        // all until a later step spawns one on demand, and `MockTerminalManager` -- what
+        // backs it -- never subscribes to a `TerminalSurface` or consumes `PtyIntent`s the
+        // way `local_tty::TerminalManager` does. Showing this input box (the classic
+        // terminal prompt, not the agent view's own message composer, which is a separate
+        // widget that never calls `write_to_pty`) would let the user type into it, but
+        // `write_to_pty`, paste, Ctrl-C, Ctrl-D and resize would all just emit
+        // `Event::WriteBytesToPty` with nothing on the other end to receive it --
+        // keystrokes vanishing silently, which is the opposite of this pane type's stated
+        // contract. `write_to_pty` itself now refuses those writes too (see its doc
+        // comment) -- that is the real backstop, since paste/Ctrl-C/drag-and-drop and a
+        // few internal callers reach it without going through this method at all. This
+        // check stays anyway so the input box doesn't render as if typing into it would
+        // do something. Checked separately from `is_read_only()` above, not folded into
+        // it: `is_read_only()` is a computed OR of three unrelated booleans
+        // (`handled_exit`, `is_conversation_transcript_viewer()`,
+        // `shared_session_status().is_finished_viewer()`) with other callers
+        // (`view.rs:8250, 8269, 15028`, `is_long_running`,
+        // `is_long_running_and_user_controlled`) whose behavior would silently change if
+        // conversation-only panes were folded into it -- not because doing so would "mark
+        // it a transcript viewer" (`is_read_only()` only reads that flag, it doesn't set
+        // anything).
+        if model.is_conversation_only() {
             return false;
         }
         if self.has_active_cli_agent_input_session(app) {
@@ -8458,6 +8491,29 @@ impl TerminalView {
         data: B,
         ctx: &mut ViewContext<Self>,
     ) {
+        // A conversation pane (`docs/design/moth-parliament.md` step 1) has no pty at all --
+        // see `is_input_box_visible`'s doc comment for why. That guard only closes the
+        // *typing* route: paste, Ctrl-C, drag-and-drop and a few internal callers
+        // (`write_to_pty_for_syncing_long_running_commands`, the AWS-login and subshell-init
+        // writers, OSC 52 clipboard reads) all reach the pty through this function without
+        // ever consulting `is_input_box_visible`. Rather than repeat the check at each of
+        // those call sites -- guaranteed to miss the next one -- it belongs here, on the one
+        // primitive every write route funnels through.
+        //
+        // Step 1's contract is "fail loudly rather than silently, and not by spawning a
+        // pty," so this can't be a bare early return -- that just moves the silent void one
+        // level up. `show_error_toast` is the existing mechanism for a non-fatal,
+        // user-facing terminal error elsewhere in this file (see
+        // `display_non_local_environment_variable_error` and the PowerShell-subshell-not-
+        // supported toast), so reuse it here instead of inventing new UI.
+        if self.model.lock().is_conversation_only() {
+            log::warn!(
+                "write_to_pty dropped for a conversation-only pane (view_id={:?})",
+                self.view_id
+            );
+            self.show_error_toast(crate::t!("terminal-toast-conversation-only-no-input"), ctx);
+            return;
+        }
         ctx.emit(Event::WriteBytesToPty { bytes: data.into() });
     }
 

@@ -596,6 +596,7 @@ pub(crate) const TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME: &str =
 pub(crate) const NEW_TAB_BINDING_NAME: &str = "workspace:new_tab";
 pub(crate) const NEW_TERMINAL_TAB_BINDING_NAME: &str = "workspace:new_terminal_tab";
 pub(crate) const NEW_AGENT_TAB_BINDING_NAME: &str = "workspace:new_agent_tab";
+pub(crate) const NEW_CONVERSATION_TAB_BINDING_NAME: &str = "workspace:new_conversation_tab";
 pub(crate) const TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME: &str = "workspace:toggle_tab_configs_menu";
 
 // Editable left panel toolbelt keybindings.
@@ -4176,6 +4177,35 @@ impl Workspace {
         });
     }
 
+    /// Adds a conversation pane to the active tab, split to the right of the focused pane:
+    /// a pane holding an agent conversation with no terminal process behind it yet. See
+    /// `docs/design/moth-parliament.md` step 1. Mirrors `add_terminal_pane_in_ai_mode`'s
+    /// split rather than `add_terminal_tab_with_new_agent_view`'s new tab --
+    /// `PaneGroup::add_conversation_pane` only knows how to add a pane to an existing
+    /// pane group, not how to open a new tab.
+    fn add_conversation_pane_in_current_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+            let base_pane_id = pane_group.focused_pane_id(ctx);
+            let _ = pane_group.add_conversation_pane(Direction::Right, Some(base_pane_id), ctx);
+        });
+    }
+
+    /// Opens a conversation as its own tab: a tab whose sole pane holds an agent
+    /// conversation with no terminal process behind it yet
+    /// (`docs/design/moth-parliament.md` step 1). Unlike
+    /// `add_conversation_pane_in_current_tab`'s split, `PanesLayout::Conversation` needs no
+    /// existing pane group to attach to, so this goes straight through
+    /// `add_tab_with_pane_layout` the same way `add_welcome_tab`/`add_get_started_tab` do.
+    fn add_conversation_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.add_tab_with_pane_layout(
+            PanesLayout::Conversation,
+            Arc::new(HashMap::new()),
+            None,
+            ctx,
+        );
+        ctx.notify();
+    }
+
     /// Creates a new default terminal tab, then runs the launch command for the given CLI agent.
     fn add_tab_with_specific_agent(&mut self, agent: CLIAgent, ctx: &mut ViewContext<Self>) {
         self.add_terminal_tab(false, ctx);
@@ -6375,6 +6405,20 @@ impl Workspace {
                 agent_item = agent_item.with_key_shortcut_label(shortcut_label.clone());
             }
             menu_items.push(agent_item.into_item());
+        }
+
+        // 4b. Conversation (if AI enabled): a tab whose sole pane holds an agent
+        // conversation with no terminal process behind it yet
+        // (`docs/design/moth-parliament.md` step 1, `PanesLayout::Conversation`). No
+        // key-shortcut label: unlike Terminal/Agent this isn't a `DefaultSessionMode`
+        // value, so it can never be the mode `shortcut_label`'s binding applies to.
+        if is_any_ai_enabled {
+            menu_items.push(
+                MenuItemFields::new(crate::t!("workspace-new-session-conversation"))
+                    .with_on_select_action(WorkspaceAction::AddConversationTab)
+                    .with_icon(icons::Icon::NewConversation)
+                    .into_item(),
+            );
         }
 
         // 5. Coding Agents — only ones that are installed and have tab_menu enabled
@@ -21580,6 +21624,8 @@ impl TypedActionView for Workspace {
             }
             AddGetStartedTab => self.add_get_started_tab(ctx),
             AddAgentTab => self.add_terminal_tab_with_new_agent_view(ctx),
+            AddConversationPane => self.add_conversation_pane_in_current_tab(ctx),
+            AddConversationTab => self.add_conversation_tab(ctx),
             AddSpecificAgentTab(agent) => self.add_tab_with_specific_agent(*agent, ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             StartAgentOnboardingTutorial(tutorial) => {

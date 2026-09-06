@@ -400,6 +400,7 @@ impl PaneContent for TerminalPane {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             })
         } else if view.model.lock().is_conversation_transcript_viewer() {
             // Conversation transcript viewers (opened from the conversation list)
@@ -422,6 +423,7 @@ impl PaneContent for TerminalPane {
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    is_conversation_only: false,
                 })
             }
         } else {
@@ -463,6 +465,7 @@ impl PaneContent for TerminalPane {
                 active_profile_id,
                 conversation_ids_to_restore,
                 active_conversation_id,
+                is_conversation_only: view.is_conversation_pane(),
             })
         }
     }

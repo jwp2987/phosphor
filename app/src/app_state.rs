@@ -198,8 +198,10 @@ impl LeafContents {
             // persisted: `FileNotebookView::open_remote` is a stateless one-shot RPC fetch, not a
             // buffer-sync connection, so reopening it at restore time is safe even if the host
             // isn't connected yet — see `NotebookPaneSnapshot::Remote`'s doc comment.
-            LeafContents::Terminal(_)
-            | LeafContents::Notebook(_)
+            // A conversation pane (no process behind its `TerminalView`) is intentionally not
+            // persisted -- see the doc comment on `TerminalPaneSnapshot::is_conversation_only`.
+            LeafContents::Terminal(snapshot) => !snapshot.is_conversation_only,
+            LeafContents::Notebook(_)
             | LeafContents::AIDocument(_)
             | LeafContents::EnvVarCollection(_)
             | LeafContents::Workflow(_)
@@ -238,6 +240,18 @@ pub struct TerminalPaneSnapshot {
     /// The active conversation ID if the agent view was open in fullscreen mode.
     /// When `Some`, the agent view should be restored to fullscreen for this conversation.
     pub active_conversation_id: Option<AIConversationId>,
+    /// Whether this pane's `TerminalView` was created with no process behind it (see
+    /// `docs/design/moth-parliament.md` step 1 -- `TypedPane::Conversation`).
+    ///
+    /// There is currently no persisted representation for a process-free conversation pane:
+    /// doing that properly needs a new `terminal_panes.kind` value, and `terminal_panes.kind`
+    /// is `CHECK (kind = 'terminal')` at the database level, so it needs a migration (plus a
+    /// `schema.rs` regeneration this agent cannot produce -- see `AGENTS.md` §5.5, which
+    /// forbids hand-editing that generated file). Rather than resurrect a real shell for a
+    /// pane that deliberately never had one, this field is used only to make `is_persisted`
+    /// skip conversation panes entirely, the same way `LeafContents::Image` is skipped: they
+    /// render for the session but do not come back after a restart. See `is_persisted`.
+    pub is_conversation_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

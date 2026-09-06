@@ -51,6 +51,36 @@ fn test_has_horizontal_split() {
     assert!(horizontal_split.has_horizontal_split());
 }
 
+/// A conversation pane's snapshot (`docs/design/moth-parliament.md` step 1) is skipped
+/// during `save_app_state`'s pane-tree traversal, the same way `LeafContents::Image` is: it
+/// renders for the session but is never written to SQLite, so restoring it can never
+/// resurrect a real shell the user never asked for (there is currently no
+/// `terminal_panes.kind` value for it -- see `TerminalPaneSnapshot::is_conversation_only`'s
+/// doc comment for why). This fails if `is_persisted` stops reading the field at all (either
+/// direction: a conversation pane would start persisting, or an ordinary terminal pane would
+/// stop).
+#[test]
+fn conversation_pane_snapshot_is_not_persisted() {
+    fn terminal_snapshot(is_conversation_only: bool) -> LeafContents {
+        LeafContents::Terminal(TerminalPaneSnapshot {
+            uuid: vec![],
+            cwd: None,
+            shell_launch_data: None,
+            is_active: true,
+            is_read_only: false,
+            input_config: None,
+            llm_model_override: None,
+            active_profile_id: None,
+            conversation_ids_to_restore: vec![],
+            active_conversation_id: None,
+            is_conversation_only,
+        })
+    }
+
+    assert!(!terminal_snapshot(true).is_persisted());
+    assert!(terminal_snapshot(false).is_persisted());
+}
+
 #[test]
 fn test_code_pane_snapshot_single_tab() {
     let snapshot = CodePaneSnapShot::Local {
@@ -206,6 +236,7 @@ fn quake_test_window(title: &str, quake_mode: bool) -> WindowSnapshot {
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    is_conversation_only: false,
                 }),
             }),
             default_directory_color: None,

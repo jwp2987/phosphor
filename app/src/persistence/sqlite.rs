@@ -3303,6 +3303,10 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
                         active_profile_id,
                         conversation_ids_to_restore,
                         active_conversation_id,
+                        // Conversation panes are never written to `terminal_panes` (see
+                        // `TerminalPaneSnapshot::is_conversation_only`), so a row read back from
+                        // here is always a real, restorable terminal.
+                        is_conversation_only: false,
                     })
                 }
                 NOTEBOOK_PANE_KIND => {

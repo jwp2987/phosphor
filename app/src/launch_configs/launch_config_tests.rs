@@ -111,6 +111,7 @@ fn test_config_from_snapshot_flattens_single_pane() {
                         active_profile_id: None,
                         conversation_ids_to_restore: vec![],
                         active_conversation_id: None,
+                        is_conversation_only: false,
                     }),
                 }),
             ),
@@ -151,6 +152,7 @@ fn test_config_from_snapshot_filters_panes() {
                         active_profile_id: None,
                         conversation_ids_to_restore: vec![],
                         active_conversation_id: None,
+                        is_conversation_only: false,
                     }),
                 }),
             ),
@@ -181,6 +183,7 @@ fn test_config_from_snapshot_filters_panes() {
                         active_profile_id: None,
                         conversation_ids_to_restore: vec![],
                         active_conversation_id: None,
+                        is_conversation_only: false,
                     }),
                 }),
             ),
@@ -230,6 +233,94 @@ fn test_config_from_snapshot_filters_tabs() {
             }),
         )],
     }));
+
+    let template = LaunchConfig::from_snapshot("Test".into(), &state);
+    assert!(template.windows[0].tabs.is_empty())
+}
+
+fn conversation_only_leaf(is_focused: bool) -> PaneNodeSnapshot {
+    PaneNodeSnapshot::Leaf(LeafSnapshot {
+        is_focused,
+        custom_vertical_tabs_title: None,
+        contents: LeafContents::Terminal(TerminalPaneSnapshot {
+            uuid: vec![],
+            cwd: Some("/some/dir".into()),
+            is_active: true,
+            is_read_only: false,
+            shell_launch_data: None,
+            input_config: None,
+            llm_model_override: None,
+            active_profile_id: None,
+            conversation_ids_to_restore: vec![],
+            active_conversation_id: None,
+            is_conversation_only: true,
+        }),
+    })
+}
+
+/// A conversation pane (no process behind its `TerminalView`) must not be resurrected as
+/// a real, shell-spawning `PaneTemplate` when a session containing one is saved as a
+/// launch config -- see `docs/design/moth-parliament.md` step 1 and step 5's warning
+/// against resurrecting a shell nobody asked for. It should be dropped exactly like the
+/// already-unsupported `Notebook` pane in `test_config_from_snapshot_filters_panes` above.
+///
+/// Without the `terminal.is_conversation_only` guard in `PaneTemplateType`'s
+/// `TryFrom<PaneNodeSnapshot>`, this would instead assert-fail on the `panes.len()`
+/// check below: the conversation-only leaf would produce a third `PaneTemplate` with
+/// `pane_mode: PaneMode::Terminal`, which spawns a real shell on open.
+#[test]
+fn test_config_from_snapshot_excludes_conversation_only_pane() {
+    let state = single_tab_snapshot(PaneNodeSnapshot::Branch(BranchSnapshot {
+        direction: SplitDirection::Vertical,
+        children: vec![
+            (
+                PaneFlex(1.),
+                PaneNodeSnapshot::Leaf(LeafSnapshot {
+                    is_focused: true,
+                    custom_vertical_tabs_title: None,
+                    contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                        uuid: vec![],
+                        cwd: Some("/path/to/dir".into()),
+                        is_active: true,
+                        is_read_only: false,
+                        shell_launch_data: None,
+                        input_config: None,
+                        llm_model_override: None,
+                        active_profile_id: None,
+                        conversation_ids_to_restore: vec![],
+                        active_conversation_id: None,
+                        is_conversation_only: false,
+                    }),
+                }),
+            ),
+            (PaneFlex(1.), conversation_only_leaf(false)),
+        ],
+    }));
+
+    let template = LaunchConfig::from_snapshot("Test".into(), &state);
+    assert_eq!(
+        template.windows[0].tabs[0].layout,
+        // Flattened to a single leaf: same collapse `test_config_from_snapshot_flattens_single_pane`
+        // exercises for a single surviving pane out of a branch.
+        PaneTemplateType::PaneTemplate {
+            is_focused: Some(true),
+            cwd: PathBuf::from("/path/to/dir"),
+            commands: vec![],
+            pane_mode: PaneMode::Terminal,
+            shell: None,
+        },
+    )
+}
+
+/// If a tab's *only* pane is a conversation pane, the whole tab is dropped, the same way
+/// `test_config_from_snapshot_filters_tabs` drops a tab whose only pane is unsupported.
+///
+/// Without the guard, this would instead assert-fail: the tab would survive with a
+/// `PaneTemplate { pane_mode: PaneMode::Terminal, .. }` root, spawning a live shell where
+/// the user had a conversation with none the moment this launch config is opened.
+#[test]
+fn test_config_from_snapshot_excludes_conversation_only_tab_entirely() {
+    let state = single_tab_snapshot(conversation_only_leaf(true));
 
     let template = LaunchConfig::from_snapshot("Test".into(), &state);
     assert!(template.windows[0].tabs.is_empty())
@@ -389,6 +480,7 @@ fn test_config_with_active_tab_index() {
                                 active_profile_id: None,
                                 conversation_ids_to_restore: vec![],
                                 active_conversation_id: None,
+                                is_conversation_only: false,
                             }),
                         }),
                     )],
@@ -458,6 +550,7 @@ fn test_config_with_active_tab_index_and_filtered_tabs() {
                                 active_profile_id: None,
                                 conversation_ids_to_restore: vec![],
                                 active_conversation_id: None,
+                                is_conversation_only: false,
                             }),
                         }),
                     )],
@@ -501,6 +594,7 @@ fn test_config_with_active_tab_being_filtered() {
                                 active_profile_id: None,
                                 conversation_ids_to_restore: vec![],
                                 active_conversation_id: None,
+                                is_conversation_only: false,
                             }),
                         }),
                     )],

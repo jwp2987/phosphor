@@ -206,7 +206,11 @@ pub fn is_git_repo(path: &Path) -> bool {
 ///
 /// Walks the `PaneNodeSnapshot` recursively and produces a flat `[[panes]]`
 /// array. Non-terminal leaves (notebook, code, settings, etc.) are replaced
-/// with empty terminal panes to preserve the spatial layout.
+/// with empty terminal panes to preserve the spatial layout. The one exception is a
+/// conversation pane (see `snapshot_to_flat_panes`), which is dropped entirely rather
+/// than replaced -- if that empties the whole tree, `panes` ends up empty, which
+/// `resolve_pane_tree` in `tab_config.rs` already treats as an error with a graceful
+/// fallback (a single blank terminal pane), the same as any other malformed config.
 pub fn tab_config_from_pane_snapshot(
     snapshot: &PaneNodeSnapshot,
     custom_title: Option<String>,
@@ -214,7 +218,9 @@ pub fn tab_config_from_pane_snapshot(
 ) -> TabConfig {
     let mut panes = Vec::new();
     let mut counter: usize = 0;
-    snapshot_to_flat_panes(snapshot, &mut panes, &mut counter);
+    // The return value is the id of the root subtree, or `None` if the whole tree
+    // collapsed (every leaf was a conversation pane) -- see the doc comment above.
+    let _ = snapshot_to_flat_panes(snapshot, &mut panes, &mut counter);
 
     TabConfig {
         name: "My Tab Config".to_string(),
@@ -227,12 +233,17 @@ pub fn tab_config_from_pane_snapshot(
 }
 
 /// Recursively converts a `PaneNodeSnapshot` into flat `TabConfigPaneNode` entries.
-/// Returns the ID assigned to the root of this subtree.
+///
+/// Returns the ID assigned to the root of this subtree, or `None` if the subtree
+/// contributed no pane at all. The only way that happens is a conversation-only
+/// leaf (see below) with no surviving siblings: `None` then propagates up through
+/// each enclosing branch, which drops the reference the same way rather than
+/// leaving a dangling id in a parent's `children` list.
 fn snapshot_to_flat_panes(
     snapshot: &PaneNodeSnapshot,
     panes: &mut Vec<TabConfigPaneNode>,
     counter: &mut usize,
-) -> String {
+) -> Option<String> {
     match snapshot {
         PaneNodeSnapshot::Branch(BranchSnapshot {
             direction,
@@ -242,40 +253,76 @@ fn snapshot_to_flat_panes(
             let my_id = format!("p{counter}");
 
             // Record where this subtree starts so we can insert the split node
-            // before all of its descendants (root-first ordering).
+            // before all of its descendants (root-first ordering), if this branch
+            // ends up needing a split node at all -- see the match on `child_ids.len()`
+            // below.
             let insert_pos = panes.len();
 
-            // Recurse into children first to collect their IDs.
+            // Recurse into children first to collect their IDs. A child that
+            // contributed nothing (a conversation-only pane, see the leaf arm) is
+            // dropped via `filter_map` rather than referenced: `resolve_pane_node`
+            // in `tab_config.rs` looks up every id in `children` and errors on any
+            // that isn't in `panes`.
             let child_ids: Vec<String> = children
                 .iter()
-                .map(|(_, child)| snapshot_to_flat_panes(child, panes, counter))
+                .filter_map(|(_, child)| snapshot_to_flat_panes(child, panes, counter))
                 .collect();
 
-            let split_direction = match direction {
-                crate::app_state::SplitDirection::Horizontal => SplitDirection::Horizontal,
-                crate::app_state::SplitDirection::Vertical => SplitDirection::Vertical,
-            };
-            panes.insert(
-                insert_pos,
-                TabConfigPaneNode {
-                    id: my_id.clone(),
-                    pane_type: None,
-                    split: Some(split_direction),
-                    children: Some(child_ids),
-                    is_focused: None,
-                    directory: None,
-                    commands: None,
-                    shell: None,
-                },
-            );
+            match child_ids.len() {
+                // Every child was a conversation-only pane: this branch contributes
+                // nothing either, and whoever called us (a parent branch, or the
+                // top-level `tab_config_from_pane_snapshot`) must skip it in turn.
+                0 => None,
+                // A tab-config split needs >= 2 children -- `resolve_pane_node`
+                // rejects anything less with "must have at least 2 children". Collapse
+                // to the one surviving child instead of emitting a single-child split,
+                // the same way `PaneTemplateType`'s `TryFrom<PaneNodeSnapshot>` collapses
+                // a single-surviving-child branch for launch configs
+                // (`launch_configs/launch_config.rs`).
+                1 => child_ids.into_iter().next(),
+                _ => {
+                    let split_direction = match direction {
+                        crate::app_state::SplitDirection::Horizontal => SplitDirection::Horizontal,
+                        crate::app_state::SplitDirection::Vertical => SplitDirection::Vertical,
+                    };
+                    panes.insert(
+                        insert_pos,
+                        TabConfigPaneNode {
+                            id: my_id.clone(),
+                            pane_type: None,
+                            split: Some(split_direction),
+                            children: Some(child_ids),
+                            is_focused: None,
+                            directory: None,
+                            commands: None,
+                            shell: None,
+                        },
+                    );
 
-            my_id
+                    Some(my_id)
+                }
+            }
         }
         PaneNodeSnapshot::Leaf(LeafSnapshot {
             is_focused,
             custom_vertical_tabs_title: _,
             contents,
         }) => {
+            // A conversation pane (no process behind its `TerminalView` -- see
+            // `docs/design/moth-parliament.md` step 1) has no representation a tab
+            // config can express: both `TabConfigPaneType` variants spawn a real shell
+            // on open (`resolve_pane_node` maps `Terminal`/`Agent` to
+            // `PaneMode::Terminal`/`PaneMode::Agent`, both of which reach
+            // `PaneGroup::create_session`), and `Agent` additionally calls
+            // `enter_agent_view_for_new_conversation` -- so mapping a conversation-only
+            // pane here wouldn't just resurrect a shell nobody asked for, it would
+            // silently start a brand-new conversation too. Skip it, the same way
+            // `LeafContents::is_persisted` skips it for SQLite.
+            if matches!(contents, LeafContents::Terminal(terminal) if terminal.is_conversation_only)
+            {
+                return None;
+            }
+
             *counter += 1;
             let my_id = format!("p{counter}");
 
@@ -305,7 +352,7 @@ fn snapshot_to_flat_panes(
                 shell: None,
             });
 
-            my_id
+            Some(my_id)
         }
     }
 }

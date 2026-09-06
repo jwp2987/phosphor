@@ -5997,3 +5997,107 @@ fn test_cancel_tab_group_rename_keeps_the_old_name() {
         });
     });
 }
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 1's workspace-level wiring:
+/// dispatching `WorkspaceAction::AddConversationPane` (the action every entry point --
+/// `CustomAction::NewConversationPane`'s keybinding/palette entry and the macOS AI menu item
+/// -- funnels into) must actually add a conversation pane, not merely a regular one.
+///
+/// If the `AddConversationPane` match arm in `Workspace::handle_action` were reverted this
+/// would fail to compile; if it were wired to the wrong function (e.g.
+/// `add_terminal_tab_with_new_agent_view`, which creates a *real* terminal pane and enters
+/// agent view on it) the pane count would still grow by one but `is_conversation_pane()`
+/// would be `false`, so this test would fail at runtime instead of at compile time.
+#[test]
+fn test_add_conversation_pane_action_creates_a_conversation_pane() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let pane_count_before = workspace.read(&app, |workspace, ctx| {
+            workspace.active_tab_pane_group().as_ref(ctx).pane_count()
+        });
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(&WorkspaceAction::AddConversationPane, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(
+                pane_group.pane_count(),
+                pane_count_before + 1,
+                "dispatching AddConversationPane should add exactly one new pane"
+            );
+
+            let terminal_view = pane_group.focused_session_view(ctx).expect(
+                "the newly added conversation pane should be focused and be a TerminalPane",
+            );
+            assert!(
+                terminal_view.as_ref(ctx).is_conversation_pane(),
+                "the pane added by AddConversationPane must have no process behind its \
+                 TerminalView"
+            );
+        });
+    });
+}
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 1: dispatching
+/// `WorkspaceAction::AddConversationTab` must open a conversation as its own TAB, not
+/// split it into the active tab the way `AddConversationPane` does (the test just above).
+///
+/// If `AddConversationTab` were wired to `add_conversation_pane_in_current_tab` instead of
+/// `add_conversation_tab`, `tab_count()` would stay unchanged and the pre-existing active
+/// tab's pane count would grow instead of a new tab appearing -- this test fails on either
+/// symptom.
+#[test]
+fn test_add_conversation_tab_action_adds_a_new_tab() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let (tab_count_before, original_tab_pane_group) =
+            workspace.read(&app, |workspace, _ctx| {
+                (
+                    workspace.tab_count(),
+                    workspace.active_tab_pane_group().clone(),
+                )
+            });
+        let original_pane_count_before =
+            original_tab_pane_group.read(&app, |pane_group, _| pane_group.pane_count());
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(&WorkspaceAction::AddConversationTab, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(
+                workspace.tab_count(),
+                tab_count_before + 1,
+                "dispatching AddConversationTab should add exactly one new tab"
+            );
+
+            let original_pane_count_after = original_tab_pane_group.as_ref(ctx).pane_count();
+            assert_eq!(
+                original_pane_count_after, original_pane_count_before,
+                "the pre-existing tab's pane group must be untouched -- the conversation \
+                 belongs in its own tab, not split into the active one"
+            );
+
+            let new_pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            assert_eq!(
+                new_pane_group.pane_count(),
+                1,
+                "a conversation tab's sole pane is the conversation itself"
+            );
+
+            let terminal_view = new_pane_group
+                .focused_session_view(ctx)
+                .expect("the new tab's sole pane should be focused and be a TerminalPane");
+            assert!(
+                terminal_view.as_ref(ctx).is_conversation_pane(),
+                "the new tab's pane must have no process behind its TerminalView"
+            );
+        });
+    });
+}

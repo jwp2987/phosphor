@@ -268,6 +268,18 @@ pub enum WorkspaceAction {
     AddAgentTab,
     /// Add a new terminal tab and launch a specific CLI agent.
     AddSpecificAgentTab(CLIAgent),
+    /// Opens a conversation as its own tab: a tab whose sole pane holds an agent
+    /// conversation with no terminal process behind it yet
+    /// (`docs/design/moth-parliament.md` step 1, `PanesLayout::Conversation`). Unlike
+    /// `AddConversationPane`, this opens a new tab rather than splitting into the active
+    /// one.
+    AddConversationTab,
+    /// Adds a conversation pane to the active tab: a pane holding an agent conversation with
+    /// no terminal process behind it yet (`docs/design/moth-parliament.md` step 1). Splits
+    /// into the active tab, mirroring `NewPaneInAgentMode`'s split rather than `AddAgentTab`'s
+    /// new tab -- `PaneGroup::add_conversation_pane` only knows how to add a pane to an
+    /// existing pane group, not how to open a new tab.
+    AddConversationPane,
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
     OpenNewSessionMenu {
@@ -853,6 +865,8 @@ impl WorkspaceAction {
             | AddTabWithShell { .. }
             | AddGetStartedTab
             | AddAgentTab
+            | AddConversationPane
+            | AddConversationTab
             | AddSpecificAgentTab(_)
             | AddDockerSandboxTab
             | AddWindow

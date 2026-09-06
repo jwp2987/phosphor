@@ -172,6 +172,21 @@ impl TryFrom<PaneNodeSnapshot> for PaneTemplateType {
                 }
             }
             PaneNodeSnapshot::Leaf(leaf) => match leaf.contents {
+                // A conversation pane (no process behind its `TerminalView` -- see
+                // `docs/design/moth-parliament.md` step 1) has no representation
+                // `PaneTemplateType` can express: `PaneTemplate` always spawns a real
+                // shell on open (`pane_tree_from_template_recursive` ->
+                // `PaneGroup::create_session`), and there is no persisted form of a
+                // process-free pane (see `TerminalPaneSnapshot::is_conversation_only`'s
+                // doc comment). Saving a launch config from a session containing a
+                // conversation pane and reopening it must not resurrect a shell nobody
+                // asked for, so skip it the same way SQLite's `LeafContents::is_persisted`
+                // does. `Err(())` here is dropped by the enclosing branch's
+                // `filter_map(...ok())` above, or -- if this was the tab's only pane --
+                // propagates out through `TabTemplate`'s `?` and drops the whole tab via
+                // `WindowTemplate::from`'s `tab.try_into().ok()?`, exactly like an
+                // all-unsupported-panes tab today.
+                LeafContents::Terminal(terminal) if terminal.is_conversation_only => Err(()),
                 LeafContents::Terminal(terminal) => Ok(Self::PaneTemplate {
                     cwd: PathBuf::from(terminal.cwd.unwrap_or_default()),
                     commands: Vec::new(),

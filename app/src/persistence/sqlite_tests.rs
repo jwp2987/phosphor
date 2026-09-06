@@ -143,6 +143,7 @@ fn test_terminal_window_snapshot(vertical_tabs_panel_open: bool) -> WindowSnapsh
                     active_profile_id: None,
                     conversation_ids_to_restore: vec![],
                     active_conversation_id: None,
+                    is_conversation_only: false,
                 }),
             }),
             default_directory_color: None,
@@ -317,6 +318,7 @@ fn test_sqlite_round_trips_custom_vertical_tabs_title() {
                         active_profile_id: None,
                         conversation_ids_to_restore: vec![],
                         active_conversation_id: None,
+                        is_conversation_only: false,
                     }),
                 }),
                 default_directory_color: None,
@@ -547,6 +549,154 @@ fn test_sqlite_round_trips_remote_notebook_pane() {
 /// Ported from `warp/master`'s `test_sqlite_round_trips_tab_groups`, adapted to
 /// the fork's `WindowSnapshot` (no `team_uid`; has `cli_subagent_*` /
 /// `theme_override`) and its `read_sqlite_data(conn, user)` harness.
+/// The most important test in `docs/design/moth-parliament.md` step 1's persistence work.
+///
+/// A conversation pane is deliberately never persisted (`LeafContents::is_persisted`'s
+/// `LeafContents::Terminal(snapshot) => !snapshot.is_conversation_only` arm) -- there is no
+/// `terminal_panes.kind` value for it and adding one needs a migration this branch does not
+/// attempt. Before this branch, a conversation pane could only exist as a split alongside a
+/// real terminal, so its surrounding tab always had at least one persisted leaf. This branch
+/// makes a conversation pane a whole TAB by itself, which is new: a tab whose *entire* pane
+/// tree is unpersisted.
+///
+/// `save_app_state`'s traversal (`persistence/sqlite.rs`) already `continue`s past a
+/// non-persisted leaf before inserting its `pane_nodes` row, so a conversation-only tab gets
+/// zero `pane_nodes` rows at all. On restore, `read_sqlite_data` builds each window's tabs
+/// with `tabs_for_window.into_iter().filter_map(|tab| { let root =
+/// read_root_node(conn, tab.id).ok()?; ... })` -- `read_root_node` fails with `NotFound`
+/// (there is no row to find), `.ok()?` turns that into `None`, and `filter_map` drops just
+/// that one tab, per tab, independently of its siblings. So a conversation-only tab quietly
+/// not coming back is already safe with no extra guard: it disappears without taking any
+/// other tab, or the window, down with it. This test proves that rather than asserting it,
+/// per this branch's brief -- if the guard in `save_app_state` or the per-tab `filter_map` in
+/// `read_sqlite_data` regressed (e.g. an unconditional `pane_nodes` insert, or hoisting the
+/// `?` outside the closure so one bad tab fails the whole window), this would either grow
+/// `windows[0].tabs` back to 2 or shrink it to 0.
+#[test]
+fn test_sqlite_conversation_only_tab_does_not_take_the_terminal_tab_down_with_it() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let terminal_tab = TabSnapshot {
+        custom_title: None,
+        root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: true,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![7],
+                cwd: Some("/tmp/survivor".to_string()),
+                shell_launch_data: Some(ShellLaunchData::Executable {
+                    executable_path: PathBuf::from("/bin/zsh"),
+                    shell_type: crate::terminal::shell::ShellType::Zsh,
+                }),
+                is_active: true,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![],
+                active_conversation_id: None,
+                is_conversation_only: false,
+            }),
+        }),
+        default_directory_color: None,
+        selected_color: SelectedTabColor::default(),
+        left_panel: None,
+        right_panel: None,
+        group_id: None,
+        pinned: false,
+    };
+    let conversation_only_tab = TabSnapshot {
+        custom_title: None,
+        root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: false,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![9],
+                cwd: None,
+                shell_launch_data: None,
+                is_active: false,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![],
+                active_conversation_id: None,
+                is_conversation_only: true,
+            }),
+        }),
+        default_directory_color: None,
+        selected_color: SelectedTabColor::default(),
+        left_panel: None,
+        right_panel: None,
+        group_id: None,
+        pinned: false,
+    };
+
+    let app_state = AppState {
+        windows: vec![WindowSnapshot {
+            tabs: vec![terminal_tab, conversation_only_tab],
+            active_tab_index: 0,
+            bounds: None,
+            fullscreen_state: Default::default(),
+            quake_mode: false,
+            universal_search_width: None,
+            warp_ai_width: None,
+            voltron_width: None,
+            warp_drive_index_width: None,
+            left_panel_open: false,
+            vertical_tabs_panel_open: false,
+            left_panel_width: None,
+            right_panel_width: None,
+            cli_subagent_width: None,
+            cli_subagent_height: None,
+            agent_management_filters: None,
+            theme_override: None,
+            tab_groups: vec![],
+        }],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    assert_eq!(
+        restored.windows.len(),
+        1,
+        "the window itself must survive intact"
+    );
+    let restored_window = &restored.windows[0];
+
+    assert_eq!(
+        restored_window.tabs.len(),
+        1,
+        "the conversation-only tab must not persist, and it must not take the terminal tab \
+         down with it"
+    );
+
+    match &restored_window.tabs[0].root {
+        PaneNodeSnapshot::Leaf(LeafSnapshot {
+            contents: LeafContents::Terminal(snapshot),
+            ..
+        }) => {
+            assert_eq!(
+                snapshot.uuid,
+                vec![7],
+                "the surviving tab must be the terminal tab, not a corrupted/mixed-up row"
+            );
+            assert_eq!(snapshot.cwd.as_deref(), Some("/tmp/survivor"));
+            assert!(!snapshot.is_conversation_only);
+        }
+        other => panic!("expected the surviving tab to be the terminal leaf, got {other:?}"),
+    }
+}
+
 #[test]
 fn test_sqlite_round_trips_tab_groups() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
@@ -573,6 +723,7 @@ fn test_sqlite_round_trips_tab_groups() {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             }),
         }),
         default_directory_color: None,
@@ -601,6 +752,7 @@ fn test_sqlite_round_trips_tab_groups() {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             }),
         }),
         default_directory_color: None,
@@ -701,6 +853,7 @@ fn test_sqlite_round_trips_pinned_state() {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             }),
         }),
         default_directory_color: None,
@@ -729,6 +882,7 @@ fn test_sqlite_round_trips_pinned_state() {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             }),
         }),
         default_directory_color: None,
@@ -757,6 +911,7 @@ fn test_sqlite_round_trips_pinned_state() {
                 active_profile_id: None,
                 conversation_ids_to_restore: vec![],
                 active_conversation_id: None,
+                is_conversation_only: false,
             }),
         }),
         default_directory_color: None,

@@ -2210,6 +2210,31 @@ fn ambient_agent_deferred_terminal_model_starts_view_pending() {
     assert!(!restored_command_block.is_oz_environment_startup_command());
 }
 
+/// `is_conversation_only` defaults to `false` for every terminal model construction path --
+/// this goes through the same `new_internal` the field lives in -- and is only ever flipped
+/// by the explicit `set_is_conversation_only` call `PaneGroup::create_conversation_pane_data`
+/// makes (`docs/design/moth-parliament.md` step 1). If the default silently flipped to
+/// `true`, an ordinary session would masquerade as a process-free conversation pane; if the
+/// setter stopped writing through, a conversation pane would be indistinguishable from a
+/// session merely mid-bootstrap -- the exact ambiguity the design doc's §5 warns about.
+#[test]
+fn is_conversation_only_defaults_false_and_is_settable() {
+    let mut model = TerminalModel::new_for_ambient_agent_shared_session_viewer(
+        block_size(),
+        color::List::from(&color::Colors::default()),
+        ChannelEventListener::new_for_test(),
+        Arc::new(Background::default()),
+        false,
+        false,
+        false,
+        ObfuscateSecrets::No,
+    );
+
+    assert!(!model.is_conversation_only());
+    model.set_is_conversation_only(true);
+    assert!(model.is_conversation_only());
+}
+
 // Ported from the pinned oracle (`02b53fcd8`,
 // `app/src/terminal/model/terminal_model_tests.rs`). Unchanged from the pin.
 #[test]

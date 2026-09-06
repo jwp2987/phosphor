@@ -799,6 +799,11 @@ pub enum PanesLayout {
     Snapshot(Box<PaneNodeSnapshot>),
     Template(PaneTemplateType),
     AmbientAgent,
+    /// A tab whose sole pane is a conversation: an agent conversation with no terminal
+    /// process behind it (`docs/design/moth-parliament.md` step 1). See
+    /// `PaneGroup::create_conversation_pane_data`, the split-pane path this shares its
+    /// pane-construction logic with.
+    Conversation,
 }
 
 impl Default for PanesLayout {
@@ -2123,6 +2128,7 @@ impl PaneGroup {
                             active_profile_id: None,
                             conversation_ids_to_restore: Vec::new(),
                             active_conversation_id: None,
+                            is_conversation_only: false,
                         })
                     }
                 };
@@ -3251,6 +3257,55 @@ impl PaneGroup {
         )
     }
 
+    /// Initial layout for a [`PaneGroup`] with a single conversation pane: a conversation
+    /// as its own tab rather than split alongside a terminal (`PanesLayout::Conversation`,
+    /// see `docs/design/moth-parliament.md` step 1).
+    ///
+    /// This is called from the `initial_layout` closure passed to `new_internal`, before
+    /// `self` (the `PaneGroup` being constructed) exists, so it cannot call the instance
+    /// method `create_conversation_pane_data` the split-pane path
+    /// (`PaneGroup::add_conversation_pane`) uses. Both share `Self::conversation_pane_data`
+    /// instead, which needs only the `TerminalViewResources` this closure already has in
+    /// hand (the same `resources`/`model_event_sender` the sibling `initial_ambient_agent_pane`
+    /// takes), not `&self`.
+    fn initial_conversation_pane(
+        resources: TerminalViewResources,
+        view_bounds: RectF,
+        model_event_sender: Option<SyncSender<ModelEvent>>,
+        pane_contents: &mut HashMap<PaneId, Box<dyn AnyPaneContent>>,
+        pane_history: &mut Vec<PaneId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> (PaneData, InitialFocus) {
+        let (pane_data, view) = Self::conversation_pane_data(
+            resources,
+            view_bounds.size(),
+            None,
+            model_event_sender,
+            ctx,
+        );
+        let terminal_pane_id = pane_data.terminal_pane_id();
+        let pane_id = terminal_pane_id.into();
+        pane_contents.insert(pane_id, Box::new(pane_data));
+        pane_history.push(pane_id);
+
+        // A conversation pane's entire reason to exist is the agent view, so it is
+        // entered unconditionally here too, exactly as the split-pane path does, rather
+        // than being gated on the default-session-mode setting.
+        view.update(ctx, |terminal_view, ctx| {
+            terminal_view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::DefaultSessionMode,
+                ctx,
+            );
+        });
+
+        let focus = InitialFocus {
+            focused_pane: Some(pane_id),
+            active_session: Some(terminal_pane_id),
+        };
+        (PaneData::new(pane_id), focus)
+    }
+
     /// Initial layout for a [`PaneGroup`] with a single terminal pane.
     #[allow(clippy::too_many_arguments)]
     fn initial_single_terminal_pane(
@@ -3378,6 +3433,14 @@ impl PaneGroup {
                     ctx,
                 ),
                 PanesLayout::AmbientAgent => Self::initial_ambient_agent_pane(
+                    resources,
+                    view_bounds,
+                    model_event_sender_clone,
+                    pane_contents,
+                    pane_history,
+                    ctx,
+                ),
+                PanesLayout::Conversation => Self::initial_conversation_pane(
                     resources,
                     view_bounds,
                     model_event_sender_clone,
@@ -5873,6 +5936,137 @@ impl PaneGroup {
         );
 
         (pane_data, view)
+    }
+
+    /// Creates a new conversation pane: a `TerminalPane` whose `TerminalView` has no pty
+    /// behind it at all. See `docs/design/moth-parliament.md` step 1 -- the `TerminalView`
+    /// is created eagerly; only the pty spawn is deferred, to a later step this branch does
+    /// not implement. A tool call that needs a shell fails loudly instead of spawning one.
+    ///
+    /// An instance method wrapper around `Self::conversation_pane_data`, which does the
+    /// actual work: this just supplies the `TerminalViewResources` and view bounds from
+    /// `&self`/`ctx` for the split-pane call sites (`add_conversation_pane`) that already
+    /// have a live `PaneGroup` to read them from.
+    fn create_conversation_pane_data(
+        &self,
+        conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+        ctx: &mut ViewContext<Self>,
+    ) -> (TerminalPane, ViewHandle<TerminalView>) {
+        let resources = TerminalViewResources {
+            tips_completed: self.tips_completed.clone(),
+            model_event_sender: self.model_event_sender.clone(),
+        };
+        let view_bounds = Self::estimated_view_bounds(ctx);
+
+        Self::conversation_pane_data(
+            resources,
+            view_bounds.size(),
+            conversation_restoration,
+            self.model_event_sender.clone(),
+            ctx,
+        )
+    }
+
+    /// Builds the `TerminalPane`/`TerminalView` pair backing a conversation pane: a pane
+    /// whose `TerminalView` has no pty behind it at all (`docs/design/moth-parliament.md`
+    /// step 1). An associated function rather than an instance method so it can be called
+    /// both from `create_conversation_pane_data` (which has `&self` to read
+    /// `TerminalViewResources` from) and from `initial_conversation_pane` (called from the
+    /// `initial_layout` closure before the `PaneGroup` exists, which is handed the same
+    /// resources as a plain argument instead).
+    fn conversation_pane_data(
+        resources: TerminalViewResources,
+        view_bounds_size: Vector2F,
+        conversation_restoration: Option<ConversationRestorationInNewPaneType>,
+        model_event_sender: Option<SyncSender<ModelEvent>>,
+        ctx: &mut ViewContext<Self>,
+    ) -> (TerminalPane, ViewHandle<TerminalView>) {
+        let uuid = Uuid::new_v4();
+        // `MockTerminalManager` already is what a "no real session" `TerminalView` looks
+        // like here -- it backs the shared-session-viewer and loading panes for exactly the
+        // same reason (see `create_conversation_viewer` /
+        // `create_loading_terminal_manager_and_view` below). A conversation pane reuses it
+        // rather than inventing a second, parallel "process-free terminal" construction path.
+        let (view, terminal_manager) = MockTerminalManager::create_model(
+            // `ShellSpawned`, not `DeterminingShell`, to match every other
+            // `MockTerminalManager` call site (`create_conversation_viewer`,
+            // `create_loading_terminal_manager_and_view` below, and the docker-sandbox
+            // `cfg_if` fallback). Functionally inert today -- `MockTerminalManager` never
+            // reads this back out -- but `DeterminingShell` describes a state a
+            // conversation pane never leaves (there is no shell to finish determining), so
+            // a future spinner keyed on the variant would spin forever instead of just
+            // never appearing.
+            ShellLaunchState::ShellSpawned {
+                available_shell: None,
+                display_name: ShellName::blank(),
+                shell_type: ShellType::Zsh,
+            },
+            resources,
+            None,
+            conversation_restoration,
+            view_bounds_size,
+            ctx.window_id(),
+            ctx,
+        );
+
+        // The one thing those other `MockTerminalManager` users don't need, and a
+        // conversation pane does: an explicit, permanent marker that this session was
+        // never meant to have a process, rather than merely being mid-bootstrap or an
+        // in-progress viewer connection. See `TerminalModel::is_conversation_only`.
+        terminal_manager.update(ctx, |terminal_manager, _ctx| {
+            terminal_manager
+                .model()
+                .lock()
+                .set_is_conversation_only(true);
+        });
+
+        let pane_data = TerminalPane::new(
+            uuid.as_bytes().to_vec(),
+            terminal_manager,
+            view.clone(),
+            model_event_sender,
+            ctx,
+        );
+
+        (pane_data, view)
+    }
+
+    /// Opens a new conversation pane: a pane that holds a conversation and renders the
+    /// agent view, with no process behind its `TerminalView`. See
+    /// `docs/design/moth-parliament.md` step 1.
+    pub fn add_conversation_pane(
+        &mut self,
+        direction: Direction,
+        base_pane_id: Option<PaneId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> TerminalPaneId {
+        let (pane_data, view) = self.create_conversation_pane_data(None, ctx);
+        let new_pane_id = pane_data.terminal_pane_id();
+
+        let _ = self.add_pane(direction, base_pane_id, Box::new(pane_data), true, ctx);
+
+        // Unlike a real terminal session (which only auto-enters agent view when the
+        // default session mode says to), a conversation pane's entire reason to exist is
+        // the agent view, so it is entered unconditionally rather than gated on a setting.
+        view.update(ctx, |terminal_view, ctx| {
+            terminal_view.enter_agent_view_for_new_conversation(
+                None,
+                // Reused rather than adding a new `AgentViewEntryOrigin` variant: both mean
+                // "this pane has no purpose other than agent view," and `origin` is matched
+                // exhaustively in several other files (`agent_view_block.rs`,
+                // `zero_state_block.rs`, `controller.rs`), so a new variant would be a much
+                // wider change. Not a distinction nothing reads, though: `server/telemetry.rs`
+                // maps this variant straight to its own `DefaultSessionMode` telemetry origin,
+                // so every conversation-pane creation is currently reported as if the user's
+                // default-session-mode setting caused it. Analytics-only, and accepted for
+                // now -- a real fix is a new variant, which is exactly the wider change noted
+                // above.
+                AgentViewEntryOrigin::DefaultSessionMode,
+                ctx,
+            );
+        });
+
+        new_pane_id
     }
 
     #[allow(clippy::too_many_arguments)]

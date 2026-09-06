@@ -72,8 +72,8 @@ pub fn panel_header_corner_radius() -> warpui::elements::CornerRadius {
 use crate::workspace::view::{
     LEFT_PANEL_AGENT_CONVERSATIONS_BINDING_NAME, LEFT_PANEL_GLOBAL_SEARCH_BINDING_NAME,
     LEFT_PANEL_PROJECT_EXPLORER_BINDING_NAME, LEFT_PANEL_SKILL_MANAGER_BINDING_NAME,
-    LEFT_PANEL_WARP_DRIVE_BINDING_NAME,
-    NEW_AGENT_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME, NEW_TERMINAL_TAB_BINDING_NAME,
+    LEFT_PANEL_WARP_DRIVE_BINDING_NAME, NEW_AGENT_TAB_BINDING_NAME,
+    NEW_CONVERSATION_TAB_BINDING_NAME, NEW_TAB_BINDING_NAME, NEW_TERMINAL_TAB_BINDING_NAME,
     OPEN_GLOBAL_SEARCH_BINDING_NAME, TOGGLE_CONVERSATION_LIST_VIEW_BINDING_NAME,
     TOGGLE_HIDDEN_FILES_BINDING_NAME, TOGGLE_NOTIFICATION_MAILBOX_BINDING_NAME,
     TOGGLE_PROJECT_EXPLORER_BINDING_NAME, TOGGLE_RIGHT_PANEL_BINDING_NAME,
@@ -636,6 +636,21 @@ pub fn init(app: &mut AppContext) {
         )
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_custom_action(CustomAction::NewAgentTab)
+        .with_context_predicate(
+            id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED) & !id!("Workspace_PaneDragging"),
+        ),
+        // A conversation TAB (`docs/design/moth-parliament.md` step 1,
+        // `PanesLayout::Conversation`), as distinct from `AddConversationPane`'s split into
+        // the active tab. Deliberately no key binding: no unbound key in the
+        // `NewTab`/`NewAgentTab` family obviously belongs to this action either (see the
+        // matching comment on `CustomAction::NewConversationTab` in `util/bindings.rs`).
+        EditableBinding::new(
+            NEW_CONVERSATION_TAB_BINDING_NAME,
+            BindingDescription::new(crate::t!("keybinding-desc-workspace-new-conversation-tab")),
+            WorkspaceAction::AddConversationTab,
+        )
+        .with_group(bindings::BindingGroup::WarpAi.as_str())
+        .with_custom_action(CustomAction::NewConversationTab)
         .with_context_predicate(
             id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED) & !id!("Workspace_PaneDragging"),
         ),
@@ -1308,6 +1323,19 @@ pub fn init(app: &mut AppContext) {
         // two mac menu items for AM vs Zap AI since they are mutually exclusive.
         .with_custom_action(CustomAction::NewAgentModePane),
     ]);
+
+    // A conversation pane (`docs/design/moth-parliament.md` step 1) is unrelated to the
+    // `FeatureFlag::AgentMode` toggle above -- that flag chooses between two ways of
+    // presenting an agent pane, while a conversation pane is a third, always-available
+    // kind of pane -- so this isn't gated on it.
+    app.register_editable_bindings([EditableBinding::new(
+        "workspace:add_conversation_pane",
+        crate::t!("keybinding-desc-workspace-add-conversation-pane"),
+        WorkspaceAction::AddConversationPane,
+    )
+    .with_context_predicate(id!("Workspace") & id!(flags::IS_ANY_AI_ENABLED))
+    .with_group(bindings::BindingGroup::WarpAi.as_str())
+    .with_custom_action(CustomAction::NewConversationPane)]);
 
     app.register_editable_bindings([
         EditableBinding::new(

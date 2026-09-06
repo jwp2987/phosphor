@@ -2550,6 +2550,174 @@ fn test_not_bootstrapped() {
     })
 }
 
+/// `MockTerminalManager`-backed conversation panes never subscribe to a
+/// `TerminalSurface` and never consume `PtyIntent`s the way
+/// `local_tty::TerminalManager` does, so a shown input box would let a user type
+/// characters, paste, send Ctrl-C/Ctrl-D or trigger a resize that all vanish
+/// silently into `Event::WriteBytesToPty` with nothing subscribed to receive it.
+/// `is_input_box_visible` must hide the input box for a conversation-only model --
+/// via a check on `is_conversation_only()`, not folded into `is_read_only()` (which
+/// has other callers whose behavior would silently change). Without this check, this
+/// assertion would fail: `test_not_bootstrapped` above shows a plain,
+/// not-yet-bootstrapped terminal (not read-only, no active CLI agent session,
+/// no alt screen) already returns `true` here, so a merely-`is_conversation_only`
+/// terminal would too.
+///
+/// This only covers the input box, not the write primitive itself -- see
+/// `write_to_pty_refuses_conversation_only_pane` and
+/// `paste_into_conversation_only_pane_does_not_vanish_silently` below for the guard
+/// that actually stops bytes from reaching the (nonexistent) pty.
+#[test]
+fn conversation_only_pane_hides_input_box() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        terminal.update(&mut app, |view, ctx| {
+            let mut model = view.model.lock();
+            assert!(!model.is_conversation_only());
+            assert!(view.is_input_box_visible(&model, ctx));
+
+            model.set_is_conversation_only(true);
+            assert!(
+                !view.is_input_box_visible(&model, ctx),
+                "a conversation-only pane has no pty behind it and must not show an \
+                 input box that silently discards everything written to it"
+            );
+        });
+    })
+}
+
+/// Adversarial-review regression test: hiding the input box (above) only closes the
+/// *typing* route. `write_to_pty` -- the one primitive every write route (paste,
+/// Ctrl-C, drag-and-drop, and internal callers like
+/// `write_to_pty_for_syncing_long_running_commands` that bypass
+/// `write_user_bytes_to_pty` entirely) funnels through -- used to emit
+/// `Event::WriteBytesToPty` unconditionally, regardless of `is_input_box_visible`.
+/// This drives the primitive directly rather than through one caller, since the fix
+/// belongs on the primitive precisely so every caller is covered without needing its
+/// own test.
+///
+/// Without the guard in `write_to_pty`, the `pty_writes` assertion below would fail:
+/// the bytes would be forwarded to `Event::WriteBytesToPty` exactly as they are for
+/// an ordinary terminal, with nothing on the other end to receive them (the bug this
+/// whole guard exists to close). The `toast_count` assertion would separately fail on
+/// a revert, since `write_to_pty` would never touch `ToastStack` at all -- catching a
+/// regression to a silent early return just as much as to no guard whatsoever.
+#[test]
+fn write_to_pty_refuses_conversation_only_pane() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // The guard reports through the workspace toast stack, which `run_internal`
+        // registers in production (`lib.rs`) but the headless harness does not --
+        // without this the guard's `show_error_toast` call panics on the singleton
+        // lookup rather than exercising the behavior.
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| crate::ToastStack);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        let toast_count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let toasts = toast_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+            // Counts every event ToastStack emits, not just this one -- nothing else
+            // touches ToastStack in this test, so any count above zero is the guard's
+            // toast.
+            let toast_stack = ToastStack::handle(ctx);
+            ctx.subscribe_to_model(&toast_stack, move |_, _event, _| {
+                *toasts.borrow_mut() += 1;
+            });
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_is_conversation_only(true);
+            view.write_to_pty(b"echo hi\n".to_vec(), ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "write_to_pty must refuse to emit Event::WriteBytesToPty for a \
+             conversation-only pane -- nothing is subscribed on the other end"
+        );
+        assert_eq!(
+            *toast_count.borrow(),
+            1,
+            "the refusal must be observable (an ephemeral toast), not a silent early \
+             return"
+        );
+    })
+}
+
+/// Companion to `write_to_pty_refuses_conversation_only_pane`, driving the actual
+/// reported symptom end-to-end: pasting (Ctrl-V or middle-click) into a
+/// conversation-only pane. `paste` computes `should_paste_in_input` from
+/// `is_input_box_visible`, which is already `false` here, so execution falls into the
+/// `else` branch and calls `write_user_bytes_to_pty` -> `write_to_pty` directly --
+/// the exact path the task diagnosis named ("Ctrl+V and middle-click paste vanish
+/// silently").
+///
+/// Without the `write_to_pty` guard, the `pty_writes` assertion below would fail:
+/// the clipboard text would be forwarded to the pty exactly as for a normal paste,
+/// silently, with the toast never firing.
+#[test]
+fn paste_into_conversation_only_pane_does_not_vanish_silently() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        app.update(|ctx| {
+            ctx.add_singleton_model(|_| crate::ToastStack);
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        let pty_writes: Rc<RefCell<Vec<Vec<u8>>>> = Rc::new(RefCell::new(Vec::new()));
+        let writes = pty_writes.clone();
+        let toast_count: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let toasts = toast_count.clone();
+        app.update(|ctx| {
+            ctx.subscribe_to_view(&terminal, move |_, event, _| {
+                if let Event::WriteBytesToPty { bytes } = event {
+                    writes.borrow_mut().push(bytes.to_vec());
+                }
+            });
+            let toast_stack = ToastStack::handle(ctx);
+            ctx.subscribe_to_model(&toast_stack, move |_, _event, _| {
+                *toasts.borrow_mut() += 1;
+            });
+        });
+
+        app.update(|ctx| {
+            ctx.clipboard().write(ClipboardContent::plain_text(
+                "hello from clipboard".to_owned(),
+            ));
+        });
+
+        terminal.update(&mut app, |view, ctx| {
+            view.model.lock().set_is_conversation_only(true);
+            view.paste(false, ctx);
+        });
+
+        assert!(
+            pty_writes.borrow().is_empty(),
+            "a conversation-only pane has no pty behind it; paste must not forward the \
+             clipboard contents to Event::WriteBytesToPty, which nothing consumes"
+        );
+        assert_eq!(
+            *toast_count.borrow(),
+            1,
+            "paste into a conversation-only pane must surface an ephemeral toast \
+             instead of silently discarding the clipboard contents"
+        );
+    })
+}
+
 #[test]
 fn test_block_select() {
     App::test((), |mut app| async move {

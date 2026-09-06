@@ -1484,7 +1484,7 @@ fn render_detail_kind_badge_icon(
     let sub_text = theme.sub_text_color(theme.background());
     let disabled_text = detail_sidecar_text_colors(theme).disabled;
     match &props.typed {
-        TypedPane::Terminal(terminal_pane) => {
+        TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
             let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
@@ -3292,7 +3292,7 @@ fn resolve_icon_with_status_variant(
     };
 
     match typed {
-        TypedPane::Terminal(terminal_pane) => {
+        TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
             let terminal_view = terminal_pane.terminal_view(app);
             let terminal_view = terminal_view.as_ref(app);
             let cli_agent_session = CLIAgentSessionsModel::as_ref(app).session(terminal_view.id());
@@ -3391,7 +3391,11 @@ fn resolve_icon_with_status_variant(
 /// `WorkspaceView::notify_terminal_focus_change` clears them when that terminal
 /// gains focus in the active window.
 fn has_unread_activity(typed: &TypedPane<'_>, app: &AppContext) -> bool {
-    let TypedPane::Terminal(terminal_pane) = typed else {
+    // Conversation panes carry a real `TerminalView` id (see `TypedPane::Conversation`'s doc
+    // comment) and can equally have a notification filed against them while backgrounded, so
+    // they participate here too.
+    let (TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane)) = typed
+    else {
         return false;
     };
     let terminal_view = terminal_pane.terminal_view(app);
@@ -3586,6 +3590,14 @@ fn render_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {
 
 enum TypedPane<'a> {
     Terminal(&'a TerminalPane),
+    /// A pane that holds a conversation and renders the agent view, with no process
+    /// behind its `TerminalView` (see `docs/design/moth-parliament.md` step 1). Backed by
+    /// the same `TerminalPane`/`TerminalView` machinery as `Terminal` -- there is no
+    /// separate `IPaneType` for it, see `resolve_pane_type` -- so most of the match sites
+    /// below combine this arm with `Terminal`'s; only genuinely different behavior (the
+    /// icon, kind label, and whether the terminal-specific subtitle applies) gets its own
+    /// arm.
+    Conversation(&'a TerminalPane),
     Code(&'a CodePane),
     CodeDiff,
     File,
@@ -3603,7 +3615,7 @@ enum TypedPane<'a> {
 impl TypedPane<'_> {
     fn summary_pane_kind(&self, title: &str, app: &AppContext) -> SummaryPaneKind {
         match self {
-            TypedPane::Terminal(terminal_pane) => {
+            TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
                 let terminal_view = terminal_pane.terminal_view(app);
                 let terminal_view = terminal_view.as_ref(app);
                 if let Some(session) =
@@ -3648,12 +3660,15 @@ impl TypedPane<'_> {
     }
 
     fn supports_vertical_tabs_detail_sidecar(&self) -> bool {
-        matches!(self, TypedPane::Terminal(_) | TypedPane::Code(_))
-            || self.warp_drive_object_type().is_some()
+        matches!(
+            self,
+            TypedPane::Terminal(_) | TypedPane::Conversation(_) | TypedPane::Code(_)
+        ) || self.warp_drive_object_type().is_some()
     }
     fn kind_label(&self) -> String {
         match self {
             TypedPane::Terminal(_) => crate::t!("vertical-tabs-pane-kind-terminal"),
+            TypedPane::Conversation(_) => crate::t!("vertical-tabs-pane-kind-conversation"),
             TypedPane::Code(_) => crate::t!("vertical-tabs-pane-kind-code"),
             TypedPane::CodeDiff => crate::t!("vertical-tabs-pane-kind-code-diff"),
             TypedPane::File => crate::t!("vertical-tabs-pane-kind-file"),
@@ -3682,6 +3697,7 @@ impl TypedPane<'_> {
                 .contains_unsaved_changes(app)
                 .then(|| "Unsaved".to_string()),
             TypedPane::Terminal(_)
+            | TypedPane::Conversation(_)
             | TypedPane::CodeDiff
             | TypedPane::File
             | TypedPane::Notebook { .. }
@@ -3699,6 +3715,12 @@ impl TypedPane<'_> {
     fn icon(&self) -> WarpIcon {
         match self {
             TypedPane::Terminal(_) => WarpIcon::Terminal,
+            // A conversation pane always has a conversation open, so this is the same
+            // fallback `resolve_icon_with_status_variant` computes for a `Terminal` pane
+            // with `selected_conversation_display_title(app).is_some()`. This inherent
+            // method has no `AppContext` to ask the live conversation state, so it just
+            // uses that fixed answer directly.
+            TypedPane::Conversation(_) => WarpIcon::Oz,
             TypedPane::Code(_) => WarpIcon::Code2,
             TypedPane::CodeDiff => WarpIcon::Diff,
             TypedPane::File => WarpIcon::File,
@@ -3776,7 +3798,7 @@ fn build_vertical_tabs_summary_data(
         );
 
         match typed {
-            TypedPane::Terminal(terminal_pane) => {
+            TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
                 let terminal_view = terminal_pane.terminal_view(app);
                 let terminal_view = terminal_view.as_ref(app);
                 has_unread_activity |=
@@ -3978,11 +4000,13 @@ impl<'a> PaneProps<'a> {
 
     fn rendered_search_text_fragments(&self, app: &AppContext) -> Vec<String> {
         let generated_fragments = match &self.typed {
-            TypedPane::Terminal(terminal_pane) => terminal_pane_search_text_fragments(
-                terminal_pane,
-                self.display_title_override.as_deref(),
-                app,
-            ),
+            TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
+                terminal_pane_search_text_fragments(
+                    terminal_pane,
+                    self.display_title_override.as_deref(),
+                    app,
+                )
+            }
             TypedPane::Code(_)
             | TypedPane::CodeDiff
             | TypedPane::File
@@ -4298,10 +4322,24 @@ fn vtab_diff_stats_text(line_changes: &GitLineChanges) -> String {
 impl PaneGroup {
     fn resolve_pane_type(&self, pane_id: PaneId, app: &AppContext) -> TypedPane<'_> {
         match pane_id.pane_type() {
-            IPaneType::Terminal => TypedPane::Terminal(
-                self.downcast_pane_by_id::<TerminalPane>(pane_id)
-                    .expect("IPaneType::Terminal must correspond to a TerminalPane"),
-            ),
+            IPaneType::Terminal => {
+                let terminal_pane = self
+                    .downcast_pane_by_id::<TerminalPane>(pane_id)
+                    .expect("IPaneType::Terminal must correspond to a TerminalPane");
+                // A conversation pane (`docs/design/moth-parliament.md` step 1) is a
+                // `TerminalPane` under the same `IPaneType::Terminal` tag -- see the doc
+                // comment on `TypedPane::Conversation` -- so the split happens here, by
+                // asking the live `TerminalView` whether it was ever given a process.
+                if terminal_pane
+                    .terminal_view(app)
+                    .as_ref(app)
+                    .is_conversation_pane()
+                {
+                    TypedPane::Conversation(terminal_pane)
+                } else {
+                    TypedPane::Terminal(terminal_pane)
+                }
+            }
             IPaneType::Code => TypedPane::Code(
                 self.downcast_pane_by_id::<CodePane>(pane_id)
                     .expect("IPaneType::Code must correspond to a CodePane"),
@@ -6790,6 +6828,7 @@ fn typed_pane_warp_drive_object_type(typed: &TypedPane<'_>) -> Option<DriveObjec
             is_ai_document: true,
         }),
         TypedPane::Terminal(_)
+        | TypedPane::Conversation(_)
         | TypedPane::Code(_)
         | TypedPane::CodeDiff
         | TypedPane::File
@@ -6806,12 +6845,14 @@ fn render_detail_section(
     app: &AppContext,
 ) -> Box<dyn Element> {
     match &props.typed {
-        TypedPane::Terminal(terminal_pane) => render_terminal_detail_section(
-            props,
-            terminal_pane.terminal_view(app).as_ref(app),
-            appearance,
-            app,
-        ),
+        TypedPane::Terminal(terminal_pane) | TypedPane::Conversation(terminal_pane) => {
+            render_terminal_detail_section(
+                props,
+                terminal_pane.terminal_view(app).as_ref(app),
+                appearance,
+                app,
+            )
+        }
         TypedPane::Code(_) => render_code_detail_section(props, appearance, app),
         TypedPane::Notebook { .. }
         | TypedPane::Workflow { .. }

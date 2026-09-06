@@ -414,8 +414,135 @@ fn make_terminal_leaf(cwd: Option<&str>, is_focused: bool) -> PaneNodeSnapshot {
             active_profile_id: None,
             conversation_ids_to_restore: vec![],
             active_conversation_id: None,
+            is_conversation_only: false,
         }),
     })
+}
+
+/// A conversation pane (no process behind its `TerminalView` -- see
+/// `docs/design/moth-parliament.md` step 1): `TerminalPaneSnapshot::is_conversation_only`
+/// is the same flag `LeafContents::is_persisted` gates the SQLite path on.
+fn make_conversation_leaf(is_focused: bool) -> PaneNodeSnapshot {
+    PaneNodeSnapshot::Leaf(LeafSnapshot {
+        is_focused,
+        custom_vertical_tabs_title: None,
+        contents: LeafContents::Terminal(TerminalPaneSnapshot {
+            uuid: vec![],
+            cwd: None,
+            shell_launch_data: None,
+            is_active: false,
+            is_read_only: false,
+            input_config: None,
+            llm_model_override: None,
+            active_profile_id: None,
+            conversation_ids_to_restore: vec![],
+            active_conversation_id: None,
+            is_conversation_only: true,
+        }),
+    })
+}
+
+/// A conversation pane has no `TabConfigPaneType` that can express it -- both variants
+/// (`Terminal`, `Agent`) spawn a real shell on open (`resolve_pane_node` in
+/// `tab_config.rs` maps them to `PaneMode::Terminal`/`PaneMode::Agent`, both of which
+/// reach `PaneGroup::create_session`). Saving a tab containing one as a reusable tab
+/// config, and reopening it, must not resurrect that shell -- see
+/// `docs/design/moth-parliament.md` step 1 and its step 5 warning against resurrecting a
+/// shell nobody asked for.
+///
+/// Without the `is_conversation_only` guard in `snapshot_to_flat_panes`, this would
+/// instead produce 3 panes (a split plus two leaves), the second one
+/// `TabConfigPaneType::Terminal` -- a real shell spawned where the user had a
+/// conversation with none.
+#[test]
+fn snapshot_conversation_only_pane_is_excluded_from_split() {
+    let snapshot = PaneNodeSnapshot::Branch(BranchSnapshot {
+        direction: crate::app_state::SplitDirection::Horizontal,
+        children: vec![
+            (
+                crate::app_state::PaneFlex(0.5),
+                make_terminal_leaf(Some("/home/user/a"), true),
+            ),
+            (
+                crate::app_state::PaneFlex(0.5),
+                make_conversation_leaf(false),
+            ),
+        ],
+    });
+
+    let config = tab_config_from_pane_snapshot(&snapshot, None, None);
+
+    // The conversation-only leaf is dropped, and the surviving terminal pane is not left
+    // behind as a 1-child split -- `resolve_pane_node` in `tab_config.rs` rejects any
+    // split with fewer than 2 children, so a 1-child split here would fail to open at
+    // all (and take the *entire* tab config down with it via `render_tab_config`'s
+    // whole-tree error fallback, not just the unrepresentable pane).
+    assert_eq!(config.panes.len(), 1);
+    assert!(config.panes[0].split.is_none());
+    assert_eq!(config.panes[0].pane_type, Some(TabConfigPaneType::Terminal));
+    assert_eq!(config.panes[0].directory.as_deref(), Some("/home/user/a"));
+    assert_eq!(config.panes[0].is_focused, Some(true));
+}
+
+/// A 3-child split where 2 of the 3 children are conversation-only must collapse to the
+/// single surviving child, not leave a 1-child split node referencing it -- the same
+/// collapse `PaneTemplateType`'s `TryFrom<PaneNodeSnapshot>` performs for launch configs.
+///
+/// Without that collapse, `resolve_pane_node`'s "split node must have at least 2
+/// children" check would reject the whole tab-config tree, discarding the surviving
+/// terminal pane along with the two conversation panes it was never meant to travel
+/// with.
+#[test]
+fn snapshot_three_way_split_collapses_to_sole_survivor() {
+    let snapshot = PaneNodeSnapshot::Branch(BranchSnapshot {
+        direction: crate::app_state::SplitDirection::Vertical,
+        children: vec![
+            (
+                crate::app_state::PaneFlex(1.),
+                make_conversation_leaf(false),
+            ),
+            (
+                crate::app_state::PaneFlex(1.),
+                make_terminal_leaf(Some("/survivor"), true),
+            ),
+            (
+                crate::app_state::PaneFlex(1.),
+                make_conversation_leaf(false),
+            ),
+        ],
+    });
+
+    let config = tab_config_from_pane_snapshot(&snapshot, None, None);
+
+    assert_eq!(config.panes.len(), 1);
+    assert!(config.panes[0].split.is_none());
+    assert_eq!(config.panes[0].directory.as_deref(), Some("/survivor"));
+}
+
+/// If every pane in the tab is conversation-only, the whole tree contributes nothing --
+/// `panes` ends up empty rather than holding a `TabConfigPaneType` that would spawn a
+/// shell. `resolve_pane_tree` in `tab_config.rs` already treats an empty `panes` array
+/// as an error with a graceful, pre-existing fallback (a single blank terminal pane),
+/// so this is not a new failure mode -- just confirming the all-conversation case
+/// reaches it instead of producing a resurrected shell.
+#[test]
+fn snapshot_all_conversation_only_panes_yields_empty_config() {
+    let snapshot = PaneNodeSnapshot::Branch(BranchSnapshot {
+        direction: crate::app_state::SplitDirection::Horizontal,
+        children: vec![
+            (
+                crate::app_state::PaneFlex(0.5),
+                make_conversation_leaf(true),
+            ),
+            (
+                crate::app_state::PaneFlex(0.5),
+                make_conversation_leaf(false),
+            ),
+        ],
+    });
+
+    let config = tab_config_from_pane_snapshot(&snapshot, None, None);
+    assert!(config.panes.is_empty());
 }
 
 #[test]
@@ -616,6 +743,7 @@ fn make_agent_leaf(cwd: Option<&str>, is_focused: bool) -> PaneNodeSnapshot {
             active_profile_id: None,
             conversation_ids_to_restore: vec![],
             active_conversation_id: Some(AIConversationId::new()),
+            is_conversation_only: false,
         }),
     })
 }
