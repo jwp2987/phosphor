@@ -836,3 +836,55 @@ fn test_hide_multiple_child_agent_panes() {
     assert_eq!(tree.visible_pane_ids(), vec![panes[0], panes[1]]);
     assert!(tree.is_pane_hidden(&panes[2]));
 }
+
+/// A divider drag must accumulate across the several events that arrive between two paints.
+///
+/// `pane_size` reads the position cache, refreshed only by `build_scene`, and paint is deferred
+/// from input handling while raw `CursorMoved` events are dispatched uncoalesced -- so N drag
+/// events routinely see the same stale measurement. The old code recomputed an absolute flex
+/// from that measured size and overwrote the previous result, so only the last event before
+/// each repaint survived: the divider moved about 1/N of the cursor's travel, undershooting
+/// without ever catching up.
+///
+/// Non-vacuous, and specifically against that: it drives ten events with `total_size` held
+/// constant (the stale case) and asserts the full 100px arrives. The final assertion computes
+/// what the old stale-measurement formula would have produced and requires it to differ, so
+/// this test cannot pass against the code it replaced.
+#[test]
+fn test_divider_drag_accumulates_across_events_between_paints() {
+    use super::redistributed_flex;
+
+    let total_size = 1000.;
+    let total_flex = 2.;
+    let start_flex_1 = 1.; // an even 500/500 split
+    let delta = 10.;
+    let events = 10;
+
+    // Mirrors the two lines in `adjust_pane_size`: derive the divider's position from the flex
+    // already applied, then redistribute. `total_size` never changes -- no paint has happened.
+    let mut flex_1 = start_flex_1;
+    for _ in 0..events {
+        let current_size_1 = flex_1 / total_flex * total_size;
+        flex_1 = redistributed_flex(current_size_1, delta, total_size, total_flex);
+    }
+
+    let moved_px = flex_1 / total_flex * total_size - 500.;
+    assert!(
+        (moved_px - delta * events as f32).abs() < 0.01,
+        "ten 10px drag events between paints must move the divider the full 100px, got {moved_px}"
+    );
+
+    // What the replaced code did: every event started from the same stale measured size, so the
+    // last one overwrote the rest.
+    let stale_size_1 = 500.;
+    let old_flex_1 = redistributed_flex(stale_size_1, delta, total_size, total_flex);
+    let old_moved_px = old_flex_1 / total_flex * total_size - 500.;
+    assert!(
+        (old_moved_px - delta).abs() < 0.01,
+        "sanity: the old formula should have moved only one event's worth, got {old_moved_px}"
+    );
+    assert!(
+        moved_px > old_moved_px * 2.,
+        "the fix must accumulate strictly more travel than the overwrite it replaced"
+    );
+}

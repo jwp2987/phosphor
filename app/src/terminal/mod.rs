@@ -45,6 +45,7 @@ pub mod general_settings;
 pub mod grid_renderer;
 pub mod grid_size_util;
 pub mod history;
+mod host_footer_color;
 pub mod input;
 pub mod keys;
 pub mod keys_settings;

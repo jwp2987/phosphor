@@ -1234,6 +1234,18 @@ impl FindPaneByDirection for PaneNode {
     }
 }
 
+/// The flex the first of two adjacent panes should take after moving their shared divider by
+/// `delta` pixels.
+///
+/// Split out from [`PaneBranch::adjust_pane_size`] so the accumulation property is testable
+/// without a live `ViewContext`: the defect was that repeated calls failed to accumulate when
+/// the measured pane size behind them was stale, which no single-call assertion can detect.
+fn redistributed_flex(current_size_1: f32, delta: f32, total_size: f32, total_flex: f32) -> f32 {
+    ((current_size_1 + delta) / total_size * total_flex)
+        .max(0.)
+        .min(total_flex)
+}
+
 impl PaneBranch {
     fn new(old_pane: PaneNode, new_pane: PaneNode, direction: Direction) -> Self {
         let axis = direction.axis();
@@ -1552,19 +1564,45 @@ impl PaneBranch {
                 SplitDirection::Vertical => (pane_size_1.y(), pane_size_2.y()),
             };
 
+            // The pair's *combined* extent is invariant while their shared divider is
+            // dragged -- only the ratio between them moves -- so it stays correct even when
+            // the measurement behind it is stale. The individual sizes do not, and that
+            // distinction is the whole bug this guards against.
+            let total_size = size_1 + size_2;
+            if total_size <= 0. || total_flex <= 0. {
+                return true;
+            }
+
+            // Where the divider sits according to the flex already applied, rather than
+            // according to the last painted frame.
+            //
+            // `pane_size` reads the position cache, which only `build_scene` refreshes, and
+            // paint is deliberately deferred from input handling ("We'll do all of the actual
+            // work later", `warpui_core`'s window-invalidation callback) while every raw
+            // `CursorMoved` is dispatched uncoalesced. So several drag events routinely arrive
+            // between two paints. Recomputing an absolute flex from the *measured* `size_1`
+            // made each of those events start from the same stale position and overwrite the
+            // previous one, so only the last event before each repaint survived and the rest
+            // of the cursor's travel was discarded -- the divider moved roughly a fraction
+            // 1/N of the mouse, with N the drag events per painted frame. Undershoot, not lag:
+            // it never caught up. Deriving the position from the flex we have already applied
+            // makes each event accumulate, independent of paint cadence.
+            //
+            // When the cache *is* fresh this is identical to the old expression, because a
+            // completed layout leaves the measured ratio equal to the flex ratio.
+            let current_size_1 = flex_1 / total_flex * total_size;
+
             // Omit noise in dragging.
             let minimum_pane_size = get_minimum_pane_size(ctx);
-            if size_1 + delta < minimum_pane_size
-                || size_2 - delta < minimum_pane_size
+            if current_size_1 + delta < minimum_pane_size
+                || (total_size - current_size_1) - delta < minimum_pane_size
                 || delta.abs() < f32::EPSILON
             {
                 return true;
             }
 
             // Re-distribute the flex factors.
-            let new_flex = ((size_1 + delta) / (size_1 + size_2) * total_flex)
-                .max(0.)
-                .min(total_flex);
+            let new_flex = redistributed_flex(current_size_1, delta, total_size, total_flex);
 
             self.nodes[idx].0 = PaneFlex(new_flex);
             self.nodes[idx + 1].0 = PaneFlex(total_flex - new_flex);

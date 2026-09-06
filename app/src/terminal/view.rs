@@ -180,6 +180,7 @@ use repo_metadata::repositories::{DetectedRepositories, RepoDetectionSource};
 use ssh_file_upload::{FileUpload, FileUploadEvent};
 use uuid::Uuid;
 use warp_core::channel::ChannelState;
+use warp_core::ui::theme::AnsiColorIdentifier;
 use warpui::elements::{shimmering_text::ShimmeringTextStateHandle, ChildView, MainAxisSize};
 use warpui::fonts::Properties;
 use warpui::{ViewHandle, WeakModelHandle};
@@ -272,6 +273,7 @@ use crate::terminal::command_corrections_denylist::COMMAND_CORRECTIONS_PREFERRED
 use crate::terminal::event::RemoteServerSetupState;
 use crate::terminal::general_settings::GeneralSettings;
 use crate::terminal::grid_size_util::grid_cell_dimensions;
+use crate::terminal::host_footer_color;
 use crate::terminal::input::decorations::InputBackgroundJobOptions;
 use crate::terminal::input::{CommandExecutionSource, InputAction, InputEmptyStateChangeReason};
 use crate::terminal::ligature_settings::{should_use_ligature_rendering, LigatureSettings};
@@ -329,6 +331,7 @@ use crate::view_components::{DismissibleToast, ToastFlavor};
 use crate::workflows::workflow::Workflow;
 use crate::workflows::WorkflowSelectionSource;
 use crate::workspace::sync_inputs::SyncedInputState;
+use crate::workspace::tab_settings::{TabSettings, TabSettingsChangedEvent};
 use crate::workspace::{CommandSearchOptions, OneTimeModalModel, ToastStack, WorkspaceAction};
 use crate::workspace::{ForkAIConversationParams, ForkFromExchange, ForkedConversationDestination};
 use crate::workspaces::user_workspaces::UserWorkspaces;
@@ -2633,6 +2636,14 @@ pub struct TerminalView {
 
     warpify_state: WarpifyState,
 
+    /// The window-footer-bar color for this session's currently resolved host, per
+    /// `host_footer_color::resolve_footer_bar_color`. A plain cache: recomputed by
+    /// `recompute_window_footer_bar_color` only when the session's resolved host,
+    /// `TabSettings::host_footer_color_rules`, or `TabSettings::unknown_host_color`
+    /// changes, never read here except verbatim by `render` -- see that function's
+    /// doc for why the regex matching must not run per frame.
+    window_footer_bar_color: Option<AnsiColorIdentifier>,
+
     /// The keystroke bound to canceling a command.
     /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
     /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
@@ -4119,6 +4130,9 @@ impl TerminalView {
             input_hoverable_handle: Default::default(),
             find_model,
             warpify_state: Default::default(),
+            // Recomputed just below, once `Self` exists and `ctx.notify()` is
+            // callable; `None` here is never rendered.
+            window_footer_bar_color: None,
             cancel_command_keystroke: keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx),
             is_file_drop_target: false,
             is_ssh_file_uploader: false,
@@ -4168,6 +4182,23 @@ impl TerminalView {
             active_viewer_driven_size: None,
         };
         terminal_view.register_subscriptions_for_use_agent_footer(ctx);
+
+        // Recompute the window-footer-bar color whenever the color rules or the
+        // unknown-host color change -- the settings-change half of
+        // `recompute_window_footer_bar_color`'s two triggers; the other half (the
+        // session's resolved host changing) is recomputed at preexec and at
+        // bootstrap completion.
+        let tab_settings_handle = TabSettings::handle(ctx);
+        ctx.subscribe_to_model(&tab_settings_handle, |me, _, event, ctx| {
+            if matches!(
+                event,
+                TabSettingsChangedEvent::HostFooterColorRuleList { .. }
+                    | TabSettingsChangedEvent::UnknownHostColor { .. }
+            ) {
+                me.recompute_window_footer_bar_color(ctx);
+            }
+        });
+        terminal_view.recompute_window_footer_bar_color(ctx);
 
         // Forward RemoteServerManager setup events into the terminal event stream
         // so the ModelEventDispatcher can gate session initialization on them.
@@ -11021,6 +11052,22 @@ impl TerminalView {
 
                 if let BlockType::User(_) = &block_completed_event.block_type {
                     self.on_user_block_completed(&block_completed_event.block_id, ctx);
+
+                    // The command that just completed may have been the interactive
+                    // SSH-shaped command whose target colors the window footer bar
+                    // (`host_footer_color`). `pending_ssh_target` otherwise only gets
+                    // cleared at the *next* preexec (see `clear_pending_ssh_host`), so
+                    // without this, the bar stays colored for that command's target --
+                    // e.g. still red for a production host -- for as long as the user
+                    // sits at the local prompt before typing anything, which is exactly
+                    // the false-safety failure this feature exists to prevent, just in
+                    // the opposite direction. Precmd (this event) is the earliest signal
+                    // available that the command has actually ended, so clear and
+                    // recompute here instead of waiting on the user's next keystroke.
+                    if self.warpify_state.pending_ssh_target().is_some() {
+                        self.warpify_state.clear_pending_ssh_host();
+                        self.recompute_window_footer_bar_color(ctx);
+                    }
                 }
 
                 // Clear any stale warpify mode so it doesn't leak into the next command's footer rendering.
@@ -11190,9 +11237,14 @@ impl TerminalView {
                                     .set_pending_ssh_host(warpify_command.to_string(), ssh_host);
                                 self.model.lock().start_notify_on_end_of_ssh_login();
                                 ctx.emit(Event::TerminalViewStateChanged);
+                                // A pending SSH target just appeared (host resolved
+                                // or not) -- the other half of
+                                // `recompute_window_footer_bar_color`'s two triggers.
+                                self.recompute_window_footer_bar_color(ctx);
                             }
                         } else {
                             self.warpify_state.clear_pending_ssh_host();
+                            self.recompute_window_footer_bar_color(ctx);
 
                             ctx.spawn(
                                 Timer::after(Duration::from_millis(
@@ -12902,6 +12954,48 @@ impl TerminalView {
         });
     }
 
+    /// Recomputes and caches `window_footer_bar_color` from the currently active
+    /// block's session (resolved host, per `host_footer_color::resolve_host`'s
+    /// precedence), `TabSettings::host_footer_color_rules`, and
+    /// `TabSettings::unknown_host_color`.
+    ///
+    /// Must be called whenever any input can have changed: a preexec that starts,
+    /// resolves, or clears a pending SSH target; a session finishing bootstrap
+    /// (`handle_session_bootstrapped`); or either settings changing (the
+    /// `TabSettingsChangedEvent::HostFooterColorRuleList` /
+    /// `TabSettingsChangedEvent::UnknownHostColor` subscription in `new`).
+    /// Deliberately never called from `render`, which only reads the cached value
+    /// -- see `host_footer_color`'s module doc on why the regex matching this
+    /// triggers must not run every frame.
+    fn recompute_window_footer_bar_color(&mut self, ctx: &mut ViewContext<Self>) {
+        let session = self
+            .active_block_session_id()
+            .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id));
+
+        let (session_type, hostname) = match &session {
+            Some(session) => (session.session_type(), session.hostname().to_string()),
+            None => (SessionType::Local, String::new()),
+        };
+
+        let pending_ssh_target = self.warpify_state.pending_ssh_target();
+        let tab_settings = TabSettings::as_ref(ctx);
+        let rules = tab_settings.host_footer_color_rules.as_slice();
+        let unknown_host_color = *tab_settings.unknown_host_color.value();
+
+        let color = host_footer_color::resolve_footer_bar_color(
+            &session_type,
+            &hostname,
+            pending_ssh_target,
+            rules,
+            unknown_host_color,
+        );
+
+        if self.window_footer_bar_color != color {
+            self.window_footer_bar_color = color;
+            ctx.notify();
+        }
+    }
+
     /// Handles a session in this terminal pane completing the bootstrapping
     /// process.
     fn handle_session_bootstrapped(
@@ -12917,6 +13011,12 @@ impl TerminalView {
             );
             return;
         };
+
+        // Bootstrap completing is one of the two points the window-footer-bar
+        // color's inputs can change: `session.session_type()` may now be
+        // `WarpifiedRemote` with an authoritative `hostname()` (see
+        // `host_footer_color`'s module doc on precedence).
+        self.recompute_window_footer_bar_color(ctx);
 
         // Ensure that the new session's working directory and environment are persisted.
         ctx.dispatch_global_action("workspace:save_app", ());
@@ -27166,12 +27266,28 @@ impl View for TerminalView {
         // model a couple of rows too tall" staleness `window_footer_bar`'s module doc
         // describes for session creation -- a one-frame lag the next layout pass
         // corrects, not an arithmetic double-count.
+        // The footer bar's background comes from `window_footer_bar_color`, a plain
+        // cached field: which rule (if any) matches the session's resolved host is
+        // recomputed only when the session's host or the color-rule settings change
+        // (`recompute_window_footer_bar_color`), never here -- see
+        // `host_footer_color`'s module doc on why the regex matching must not run
+        // per frame. Converting the cached `AnsiColorIdentifier` to a paintable
+        // `Fill` is cheap enough to do on every render, and doing it here (rather
+        // than caching the `Fill` itself) keeps the cached value following the
+        // active theme instead of freezing whatever RGB the theme had at the last
+        // recompute.
+        let footer_bar_background = self.window_footer_bar_color.map(|color| {
+            color
+                .to_ansi_color(&appearance.theme().terminal_colors().normal)
+                .into()
+        });
         let element = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(Shrinkable::new(1., element).finish())
             .with_child(render_window_footer_bar(
                 footer_bar_content,
                 self.size_info.pane_height_px().as_f32(),
+                footer_bar_background,
             ))
             .finish();
 

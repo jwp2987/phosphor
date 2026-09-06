@@ -57,11 +57,11 @@ use crate::window_settings::{
 };
 use crate::workspace::header_toolbar_editor::HeaderToolbarInlineEditor;
 use crate::workspace::tab_settings::{
-    DirectoryTabColor, EnableTabGroups, PreserveActiveTabColor, ShowCodeReviewButton,
-    ShowIndicatorsButton, ShowTitleBarSearchBar, ShowVerticalTabPanelInRestoredWindows,
-    TabCloseButtonPosition,
-    TabSettings, TabSettingsChangedEvent, UseLatestUserPromptAsConversationTitleInTabNames,
-    UseVerticalTabs, WorkspaceDecorationVisibility,
+    DirectoryTabColor, EnableTabGroups, HostFooterColorRule, PreserveActiveTabColor,
+    ShowCodeReviewButton, ShowIndicatorsButton, ShowTitleBarSearchBar,
+    ShowVerticalTabPanelInRestoredWindows, TabCloseButtonPosition, TabSettings,
+    TabSettingsChangedEvent, UseLatestUserPromptAsConversationTitleInTabNames, UseVerticalTabs,
+    WorkspaceDecorationVisibility,
 };
 use crate::workspace::WorkspaceAction;
 use crate::{editor::EditorView, themes::theme_chooser::ThemeChooserMode};
@@ -73,11 +73,13 @@ use crate::{report_error, report_if_error, themes};
 use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
 use ::settings::{Setting, SettingSection, ToggleableSetting};
 use enum_iterator::all;
+use regex::Regex;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use warp_core::ui::theme::AnsiColorIdentifier;
 use warp_core::ui::theme::color::internal_colors;
 use warp_util::path::user_friendly_path;
 use warpui::elements::{
@@ -113,7 +115,7 @@ use warpui::{
 use crate::settings::UseThinStrokes;
 use crate::ui_components::color_dot::{render_color_dot, TAB_COLOR_OPTIONS};
 use crate::ui_components::icons::Icon;
-use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme};
+use crate::view_components::action_button::{ActionButton, ButtonSize, NakedTheme, SecondaryTheme};
 
 const FONT_SIZE_INPUT_BOX_WIDTH: f32 = 80.;
 const NOTEBOOK_FONT_SIZE_INPUT_BOX_WIDTH: f32 = 50.;
@@ -503,6 +505,10 @@ pub enum AppearancePageAction {
     RemoveDefaultDirectoryTabColor {
         path: PathBuf,
     },
+    SetPendingHostFooterColorRuleColor(AnsiColorIdentifier),
+    AddHostFooterColorRule,
+    RemoveHostFooterColorRule(usize),
+    SetUnknownHostColor(AnsiColorIdentifier),
 }
 
 pub struct AppearanceSettingsPageView {
@@ -546,6 +552,22 @@ pub struct AppearanceSettingsPageView {
     alt_screen_padding_editor: ViewHandle<EditorView>,
     color_picker_dot_states: Vec<Vec<MouseStateHandle>>,
     directory_tab_color_delete_buttons: Vec<ViewHandle<ActionButton>>,
+    host_footer_color_rule_delete_buttons: Vec<ViewHandle<ActionButton>>,
+    /// One persistent mouse state per `TAB_COLOR_OPTIONS` entry, for the color swatch
+    /// picker in the "add a rule" row. Fixed-size (`TAB_COLOR_OPTIONS` never changes at
+    /// runtime) so, unlike `color_picker_dot_states`, this never needs resizing.
+    host_footer_color_rule_picker_states: Vec<MouseStateHandle>,
+    /// The color selected for the rule currently being composed in the "add a rule"
+    /// row; applied to the new rule when `AppearancePageAction::AddHostFooterColorRule`
+    /// is dispatched.
+    host_footer_color_rule_pending_color: AnsiColorIdentifier,
+    host_footer_color_rule_pattern_editor: ViewHandle<EditorView>,
+    host_footer_color_rule_name_editor: ViewHandle<EditorView>,
+    add_host_footer_color_rule_button: ViewHandle<ActionButton>,
+    /// One persistent mouse state per `TAB_COLOR_OPTIONS` entry, for the
+    /// `TabSettings::unknown_host_color` picker. Fixed-size, same reasoning as
+    /// `host_footer_color_rule_picker_states`.
+    unknown_host_color_picker_states: Vec<MouseStateHandle>,
     header_toolbar_inline_editor: ViewHandle<HeaderToolbarInlineEditor>,
 
     /// The context chip renderers based on the most recently
@@ -721,6 +743,76 @@ impl TypedActionView for AppearanceSettingsPageView {
                         .value()
                         .with_color(&path, DirectoryTabColor::Suppressed);
                     let _ = settings.directory_tab_colors.set_value(new_value, ctx);
+                });
+                ctx.notify();
+            }
+            SetPendingHostFooterColorRuleColor(color) => {
+                self.host_footer_color_rule_pending_color = *color;
+                ctx.notify();
+            }
+            AddHostFooterColorRule => {
+                let pattern_text = self
+                    .host_footer_color_rule_pattern_editor
+                    .as_ref(ctx)
+                    .buffer_text(ctx);
+                let name_text = self
+                    .host_footer_color_rule_name_editor
+                    .as_ref(ctx)
+                    .buffer_text(ctx);
+                let trimmed_pattern = pattern_text.trim();
+
+                match Regex::new(trimmed_pattern) {
+                    Ok(pattern) if !trimmed_pattern.is_empty() => {
+                        let name = if name_text.trim().is_empty() {
+                            None
+                        } else {
+                            Some(name_text.trim().to_string())
+                        };
+                        let color = self.host_footer_color_rule_pending_color;
+
+                        TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                            let mut new_rules = settings.host_footer_color_rules.to_vec();
+                            new_rules.push(HostFooterColorRule {
+                                pattern,
+                                color,
+                                name,
+                            });
+                            let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+                        });
+
+                        self.host_footer_color_rule_pattern_editor
+                            .update(ctx, |editor, ctx| {
+                                editor.system_reset_buffer_text("", ctx);
+                            });
+                        self.host_footer_color_rule_name_editor
+                            .update(ctx, |editor, ctx| {
+                                editor.system_reset_buffer_text("", ctx);
+                            });
+                        ctx.notify();
+                    }
+                    _ => {
+                        log::warn!(
+                            "Not adding host-color rule: {trimmed_pattern:?} is empty or not a \
+                             valid regex"
+                        );
+                    }
+                }
+            }
+            RemoveHostFooterColorRule(idx) => {
+                let idx = *idx;
+                TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let mut new_rules = settings.host_footer_color_rules.to_vec();
+                    if idx < new_rules.len() {
+                        new_rules.remove(idx);
+                    }
+                    let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+                });
+                ctx.notify();
+            }
+            SetUnknownHostColor(color) => {
+                let color = *color;
+                TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                    let _ = settings.unknown_host_color.set_value(color, ctx);
                 });
                 ctx.notify();
             }
@@ -1369,6 +1461,46 @@ impl AppearanceSettingsPageView {
         let header_toolbar_inline_editor =
             ctx.add_typed_action_view(HeaderToolbarInlineEditor::new);
 
+        let host_footer_color_rule_pattern_editor = {
+            let options = SingleLineEditorOptions {
+                text: TextOptions::ui_font_size(appearance_handle.as_ref(ctx)),
+                ..Default::default()
+            };
+            ctx.add_typed_action_view(|ctx| {
+                let mut editor = EditorView::single_line(options.clone(), ctx);
+                editor.set_placeholder_text(
+                    crate::t!("settings-appearance-host-footer-bar-pattern-placeholder"),
+                    ctx,
+                );
+                editor
+            })
+        };
+        let host_footer_color_rule_name_editor = {
+            let options = SingleLineEditorOptions {
+                text: TextOptions::ui_font_size(appearance_handle.as_ref(ctx)),
+                ..Default::default()
+            };
+            ctx.add_typed_action_view(|ctx| {
+                let mut editor = EditorView::single_line(options.clone(), ctx);
+                editor.set_placeholder_text(
+                    crate::t!("settings-appearance-host-footer-bar-name-placeholder"),
+                    ctx,
+                );
+                editor
+            })
+        };
+        let add_host_footer_color_rule_button = ctx.add_typed_action_view(|_| {
+            ActionButton::new(
+                crate::t!("settings-appearance-host-footer-bar-add-rule"),
+                SecondaryTheme,
+            )
+            .with_icon(Icon::Plus)
+            .with_size(ButtonSize::XSmall)
+            .on_click(|ctx| {
+                ctx.dispatch_typed_action(AppearancePageAction::AddHostFooterColorRule);
+            })
+        });
+
         AppearanceSettingsPageView {
             page: Self::build_page(ctx),
             window_id: ctx.window_id(),
@@ -1416,6 +1548,17 @@ impl AppearanceSettingsPageView {
                 })
                 .collect(),
             directory_tab_color_delete_buttons: build_directory_delete_buttons(ctx),
+            host_footer_color_rule_delete_buttons: build_host_footer_color_rule_delete_buttons(ctx),
+            host_footer_color_rule_picker_states: (0..TAB_COLOR_OPTIONS.len())
+                .map(|_| MouseStateHandle::default())
+                .collect(),
+            host_footer_color_rule_pending_color: AnsiColorIdentifier::Red,
+            host_footer_color_rule_pattern_editor,
+            host_footer_color_rule_name_editor,
+            add_host_footer_color_rule_button,
+            unknown_host_color_picker_states: (0..TAB_COLOR_OPTIONS.len())
+                .map(|_| MouseStateHandle::default())
+                .collect(),
             header_toolbar_inline_editor,
             alt_screen_padding_editor,
             context_chips,
@@ -1481,6 +1624,8 @@ impl AppearanceSettingsPageView {
         {
             window_settings_widgets.push(Box::new(ToolsPanelStateScopeWidget::default()));
         }
+
+        window_settings_widgets.push(Box::new(HostFooterColorRulesWidget));
 
         if !window_settings_widgets.is_empty() {
             categories.push(Category::new(
@@ -3084,6 +3229,14 @@ impl AppearanceSettingsPageView {
             });
             self.directory_tab_color_delete_buttons = build_directory_delete_buttons(ctx);
         }
+        if let TabSettingsChangedEvent::HostFooterColorRuleList { .. } = event {
+            self.host_footer_color_rule_delete_buttons =
+                build_host_footer_color_rule_delete_buttons(ctx);
+        }
+        // `UnknownHostColor` needs no branch here: `HostFooterColorRulesWidget`
+        // reads it fresh from `TabSettings` on every render rather than caching a
+        // selection, so the unconditional `ctx.notify()` below is all a change to
+        // it needs to be reflected in the swatch picker.
         ctx.notify();
     }
 
@@ -5950,6 +6103,306 @@ impl SettingsWidget for DirectoryTabColorsWidget {
                     .finish(),
             );
         }
+
+        Container::new(content.finish())
+            .with_padding_bottom(HEADER_PADDING)
+            .finish()
+    }
+}
+
+fn build_host_footer_color_rule_delete_buttons(
+    ctx: &mut ViewContext<AppearanceSettingsPageView>,
+) -> Vec<ViewHandle<ActionButton>> {
+    (0..TabSettings::as_ref(ctx).host_footer_color_rules.len())
+        .map(|idx| {
+            ctx.add_typed_action_view(move |_| {
+                ActionButton::new("", NakedTheme)
+                    .with_icon(Icon::X)
+                    .with_size(ButtonSize::XSmall)
+                    .on_click(move |ctx| {
+                        ctx.dispatch_typed_action(AppearancePageAction::RemoveHostFooterColorRule(
+                            idx,
+                        ));
+                    })
+            })
+        })
+        .collect()
+}
+
+/// The inline "add a rule" row: pattern + name text inputs, a color swatch picker
+/// (`TAB_COLOR_OPTIONS`, the same six colors the directory-tab-color picker offers),
+/// and an add button.
+///
+/// Deliberately not a modal (contrast `privacy_page`'s `AddRegexModal`): a modal would
+/// need `AppearanceSettingsPageView` wired into
+/// `SettingsPageView::get_modal_content_for_page` (`settings_view/mod.rs`), which no
+/// other widget on this page currently needs, just for one row of input. The
+/// trade-off: unlike `AddRegexModal`, pressing Enter in either field does not submit --
+/// only clicking "Add rule" does.
+fn render_host_footer_color_rule_add_row(
+    view: &AppearanceSettingsPageView,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let theme = appearance.theme();
+
+    let pattern_input =
+        ConstrainedBox::new(ChildView::new(&view.host_footer_color_rule_pattern_editor).finish())
+            .with_width(160.)
+            .finish();
+    let name_input =
+        ConstrainedBox::new(ChildView::new(&view.host_footer_color_rule_name_editor).finish())
+            .with_width(120.)
+            .finish();
+
+    let mut dots_row = Flex::row()
+        .with_spacing(4.)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    for (ansi_id, mouse_state) in TAB_COLOR_OPTIONS
+        .iter()
+        .copied()
+        .zip(view.host_footer_color_rule_picker_states.iter().cloned())
+    {
+        let dot_color: pathfinder_color::ColorU = ansi_id
+            .to_ansi_color(&theme.terminal_colors().normal)
+            .into();
+        let is_selected = view.host_footer_color_rule_pending_color == ansi_id;
+        dots_row.add_child(
+            render_color_dot(
+                mouse_state,
+                dot_color,
+                is_selected,
+                theme.accent().into(),
+                false,
+                theme.foreground(),
+                ansi_id.to_string(),
+                appearance,
+            )
+            .on_click(move |ctx, _, _| {
+                ctx.dispatch_typed_action(
+                    AppearancePageAction::SetPendingHostFooterColorRuleColor(ansi_id),
+                );
+            })
+            .finish(),
+        );
+    }
+
+    Flex::row()
+        .with_spacing(8.)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+        .with_child(pattern_input)
+        .with_child(name_input)
+        .with_child(dots_row.finish())
+        .with_child(ChildView::new(&view.add_host_footer_color_rule_button).finish())
+        .finish()
+}
+
+/// The `TabSettings::unknown_host_color` picker: the color painted when a session
+/// is plausibly remote but its host could not be identified (see
+/// `host_footer_color::ResolvedHost::Unknown`). Selection is immediate -- clicking a
+/// swatch sets the setting directly, unlike the rules list's staged "add a rule"
+/// row, since there is nothing else to compose here.
+fn render_unknown_host_color_row(
+    view: &AppearanceSettingsPageView,
+    appearance: &Appearance,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let theme = appearance.theme();
+    let current = *TabSettings::as_ref(app).unknown_host_color.value();
+
+    let label = Flex::column()
+        .with_spacing(4.)
+        .with_child(
+            Text::new(
+                crate::t!("settings-appearance-host-footer-bar-unknown-color-label"),
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_color(theme.active_ui_text_color().into())
+            .soft_wrap(false)
+            .finish(),
+        )
+        .with_child(
+            Text::new(
+                crate::t!("settings-appearance-host-footer-bar-unknown-color-description"),
+                appearance.ui_font_family(),
+                appearance.ui_font_size(),
+            )
+            .with_color(theme.nonactive_ui_text_color().into())
+            .finish(),
+        )
+        .finish();
+
+    let mut dots_row = Flex::row()
+        .with_spacing(4.)
+        .with_cross_axis_alignment(CrossAxisAlignment::Center);
+    for (ansi_id, mouse_state) in TAB_COLOR_OPTIONS
+        .iter()
+        .copied()
+        .zip(view.unknown_host_color_picker_states.iter().cloned())
+    {
+        let dot_color: pathfinder_color::ColorU = ansi_id
+            .to_ansi_color(&theme.terminal_colors().normal)
+            .into();
+        let is_selected = current == ansi_id;
+        dots_row.add_child(
+            render_color_dot(
+                mouse_state,
+                dot_color,
+                is_selected,
+                theme.accent().into(),
+                false,
+                theme.foreground(),
+                ansi_id.to_string(),
+                appearance,
+            )
+            .on_click(move |ctx, _, _| {
+                if !is_selected {
+                    ctx.dispatch_typed_action(AppearancePageAction::SetUnknownHostColor(ansi_id));
+                }
+            })
+            .finish(),
+        );
+    }
+
+    Container::new(
+        Flex::row()
+            .with_main_axis_size(MainAxisSize::Max)
+            .with_cross_axis_alignment(CrossAxisAlignment::Center)
+            .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+            .with_child(Shrinkable::new(1., label).finish())
+            .with_child(dots_row.finish())
+            .finish(),
+    )
+    .with_horizontal_padding(16.)
+    .with_vertical_padding(8.)
+    .with_background(theme.surface_1())
+    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+    .finish()
+}
+
+/// Widget rendering `TabSettings::host_footer_color_rules` (window-footer-bar host
+/// coloring, see `terminal::host_footer_color`) and the inline row for adding a new
+/// rule. Rules are listed in the order they're stored -- the same order
+/// `host_footer_color::matching_color` checks them in, first match wins. Also
+/// renders the `unknown_host_color` picker (`render_unknown_host_color_row`) --
+/// the color used when a session is plausibly remote but unidentifiable.
+struct HostFooterColorRulesWidget;
+
+impl SettingsWidget for HostFooterColorRulesWidget {
+    type View = AppearanceSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "host color footer bar ssh remote production prod window"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        app: &AppContext,
+    ) -> Box<dyn Element> {
+        let theme = appearance.theme();
+        let rules = TabSettings::as_ref(app).host_footer_color_rules.to_vec();
+
+        let mut content = Flex::column().with_spacing(8.);
+        content.add_child(
+            Flex::column()
+                .with_spacing(4.)
+                .with_child(
+                    Text::new(
+                        crate::t!("settings-appearance-host-footer-bar-colors-label"),
+                        appearance.ui_font_family(),
+                        appearance.ui_font_size(),
+                    )
+                    .with_color(theme.active_ui_text_color().into())
+                    .soft_wrap(false)
+                    .finish(),
+                )
+                .with_child(
+                    Text::new(
+                        crate::t!("settings-appearance-host-footer-bar-colors-description"),
+                        appearance.ui_font_family(),
+                        appearance.ui_font_size(),
+                    )
+                    .with_color(theme.nonactive_ui_text_color().into())
+                    .finish(),
+                )
+                .finish(),
+        );
+
+        content.add_child(render_unknown_host_color_row(view, appearance, app));
+
+        if rules.is_empty() {
+            content.add_child(
+                Text::new(
+                    crate::t!("settings-appearance-host-footer-bar-empty"),
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(theme.nonactive_ui_text_color().into())
+                .finish(),
+            );
+        }
+
+        for (idx, rule) in rules.iter().enumerate() {
+            let swatch_color: pathfinder_color::ColorU = rule
+                .color
+                .to_ansi_color(&theme.terminal_colors().normal)
+                .into();
+            let swatch = ConstrainedBox::new(
+                Container::new(Empty::new().finish())
+                    .with_background_color(swatch_color)
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .finish(),
+            )
+            .with_width(16.)
+            .with_height(16.)
+            .finish();
+
+            let label_text = match &rule.name {
+                Some(name) => format!("{name}  ({})", rule.pattern.as_str()),
+                None => rule.pattern.as_str().to_string(),
+            };
+            let label = Shrinkable::new(
+                1.,
+                Text::new_inline(
+                    label_text,
+                    appearance.ui_font_family(),
+                    appearance.ui_font_size(),
+                )
+                .with_color(theme.nonactive_ui_text_color().into())
+                .soft_wrap(false)
+                .finish(),
+            )
+            .finish();
+
+            let mut row = Flex::row()
+                .with_main_axis_size(MainAxisSize::Max)
+                .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                .with_main_axis_alignment(MainAxisAlignment::SpaceBetween)
+                .with_child(
+                    Flex::row()
+                        .with_spacing(8.)
+                        .with_cross_axis_alignment(CrossAxisAlignment::Center)
+                        .with_child(swatch)
+                        .with_child(label)
+                        .finish(),
+                );
+            if let Some(delete_button) = view.host_footer_color_rule_delete_buttons.get(idx) {
+                row = row.with_child(ChildView::new(delete_button).finish());
+            }
+
+            content.add_child(
+                Container::new(row.finish())
+                    .with_horizontal_padding(16.)
+                    .with_vertical_padding(8.)
+                    .with_background(theme.surface_1())
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .finish(),
+            );
+        }
+
+        content.add_child(render_host_footer_color_rule_add_row(view, appearance));
 
         Container::new(content.finish())
             .with_padding_bottom(HEADER_PADDING)
