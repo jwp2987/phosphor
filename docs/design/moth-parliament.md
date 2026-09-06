@@ -98,11 +98,33 @@ creation, show it in the pane header, spawn there. Fall back to the workspace ro
 **Done when:** a restored conversation with no process still knows where it is, and
 spawning later lands in the right place.
 
-### Step 4 — decide on `channel` (gate, not code)
+### Step 4 — adopt a typed `Surface` on conversations
 
-Whether to adopt a surface field on conversations (see §4) or keep the pane-type
-framing. **This is a decision point, not a task.** Retrofitting it later is the
-expensive path, so it should be made deliberately before step 1 hardens.
+**DECIDED 2026-09-05: adopt it.** Recorded here rather than left as a gate, because
+the reason to decide early is that retrofitting it is the expensive path, and deciding
+late is the same as deciding no.
+
+A conversation carries which of *this app's* surfaces is rendering it, so it is not
+bound to a particular pane and can be reopened or moved between them.
+
+**Two deliberate departures from OpenDev's version:**
+
+- **A typed enum, not `channel: String`.** OpenDev defaults to the string `"cli"`
+  because it delivers to Slack, webhooks and a CLI, and an open set suits that. Here an
+  unknown surface should be a compile error, not a silent mismatch, so: `Surface::Gui`,
+  `Surface::Tui`, extended as surfaces are added.
+- **Named `Surface`, not `Channel`.** "Channel" is right for OpenDev because it is a
+  *delivery destination* — they push to it. Phosphor's conversations are pulled and
+  viewed. Calling it a channel would imply a delivery mechanism that does not exist and
+  invite someone to build against it.
+
+**The honest justification, since an earlier draft used a wrong one:** this is for
+surface independence within the app — Phosphor already ships two surfaces, the GUI and
+`crates/warp_tui`, and a conversation bound to one specific `TerminalView` in one of
+them is the constraint being removed. It is **not** for remote agents; see §4a.
+
+**Done when:** a conversation records its surface, the GUI and TUI both set it, and
+nothing reads a hardcoded assumption about which surface a conversation lives on.
 
 ---
 
@@ -154,15 +176,29 @@ conversation choosing where to run. A conversation on a laptop spawning its term
 on a build box is not a new subsystem; it is the existing one reached through a new
 seam.
 
-With step 4's `channel` field these become two independent axes:
+With step 4's `Surface` field these become two independent axes:
 
 | axis | question it answers |
 |---|---|
 | execution context | where the work runs — local, ssh host, container |
-| channel | where you see and steer it |
+| surface | which of *this app's* surfaces is rendering it — GUI pane, TUI |
 
-Those being separable is what "remote agent" actually means: work running on a machine
-you own, viewed from another, surviving the viewer going away.
+**Correction, 2026-09-05:** an earlier draft of this section claimed those axes being
+separable is "what remote agent actually means: work running on a machine you own,
+viewed from another, surviving the viewer going away." **That was overstated and is
+wrong.** Viewing a conversation that lives on another machine needs a transport, and
+there are only two:
+
+- **SSH in and view it there.** Works today via warpified remote, and needs no surface
+  field at all.
+- **Sync the conversation between machines.** That is precisely the transport dropped
+  with the cloud layer, and nothing on this branch reinstates it.
+
+So the surface field does **not** buy cross-device viewing. It buys surface
+independence *within one running app*. The execution-location argument above stands on
+its own — it is about where the spawned terminal lives, and Phosphor already has
+`SessionType::Remote` for that — but it does not depend on `Surface` and should not be
+justified by it.
 
 ### This is not the cloud orchestration we dropped
 
