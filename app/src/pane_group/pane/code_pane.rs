@@ -85,12 +85,21 @@ impl PaneContent for CodePane {
                 code_pane.file_view(ctx).update(ctx, |code_view, ctx| {
                     code_view.open_or_focus_existing(Some(location.clone()), line_col, ctx);
                 });
+
+                ctx.emit(crate::pane_group::Event::FocusPaneInWorkspace {
+                    locator: existing_locator,
+                });
+                return false;
             }
 
-            ctx.emit(crate::pane_group::Event::FocusPaneInWorkspace {
-                locator: existing_locator,
-            });
-            return false;
+            // The locator named a pane that is no longer in this group. A stale entry means
+            // nothing here is showing the file, which is the same situation as no entry at
+            // all, so fall through and attach. Returning `false` here discarded the pane we
+            // had just built on the strength of an entry we had just proved wrong, and the
+            // click did nothing at all -- no pane, no error. See #645.
+            log::warn!(
+                "Stale code pane locator {existing_locator:?}; attaching a new pane instead"
+            );
         }
 
         #[cfg(any(feature = "local_fs", feature = "local_tty"))]
@@ -188,14 +197,25 @@ impl PaneContent for CodePane {
         ctx.unsubscribe_to_view(&file_view);
         ctx.unsubscribe_to_view(&self.view);
 
-        // Deregister from CodeManager for both HiddenForClose and Closed cases
-        // This ensures files can be opened elsewhere even during the undo grace period
-        if matches!(detach_type, DetachType::HiddenForClose | DetachType::Closed) {
-            let source = self.file_view(ctx).as_ref(ctx).source().clone();
-            CodeManager::handle(ctx).update(ctx, |manager, _ctx| {
-                manager.deregister_pane(&source);
-            });
-        }
+        // Deregister from CodeManager on every detach, `DetachType::Moved` included.
+        //
+        // A move takes the pane out of this pane group, so the registration is wrong the
+        // moment it happens -- and `register_pane` no-ops on an occupied entry, so the
+        // destination's `attach` could not correct it either: the entry went on naming the
+        // pane group the pane had just left. That made the file unopenable in the old tab
+        // (`pre_attach` finds a locator it cannot resolve) and un-deduplicated in the new
+        // one. See #645.
+        //
+        // `HiddenForClose` deregisters for its own reason: the file must be openable
+        // elsewhere during the undo-close grace period.
+        let source = self.file_view(ctx).as_ref(ctx).source().clone();
+        CodeManager::handle(ctx).update(ctx, |manager, _ctx| {
+            manager.deregister_pane(&source);
+        });
+
+        // `detach_type` now selects only the tab cleanup below, which is local-fs only.
+        #[cfg(not(feature = "local_fs"))]
+        let _ = detach_type;
 
         // Only cleanup tabs when the pane is actually being destroyed (not during undo grace period)
         // This preserves the tab state so it can be properly restored via undo-close
