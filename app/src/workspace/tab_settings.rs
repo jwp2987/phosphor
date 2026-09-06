@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use regex::Regex;
 use settings::{
     macros::define_settings_group, RespectUserSyncSetting, SupportedPlatforms, SyncToCloud,
 };
@@ -228,6 +229,41 @@ impl DirectoryTabColors {
         Self(map)
     }
 }
+
+/// A user-configured rule coloring the window footer bar
+/// (`terminal::view::window_footer_bar`) when a terminal session's resolved host
+/// matches `pattern`. See `terminal::host_footer_color` for how the host is resolved
+/// (shell-integration hostname, falling back to a typed `ssh` command's target) and
+/// how rules are matched against it: rules are tried in list order and the first
+/// match wins.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(
+    description = "A rule coloring the window footer bar when a session's resolved host matches."
+)]
+pub struct HostFooterColorRule {
+    #[serde(with = "serde_regex")]
+    #[schemars(
+        with = "String",
+        description = "The regex to match against the session's resolved host."
+    )]
+    pub pattern: Regex,
+    #[schemars(description = "The color applied to the window footer bar when this rule matches.")]
+    pub color: AnsiColorIdentifier,
+    #[serde(default)]
+    #[schemars(description = "Optional display name for this rule.")]
+    pub name: Option<String>,
+}
+
+impl PartialEq for HostFooterColorRule {
+    /// Ignores `color`/`name`, mirroring `CustomSecretRegex`: the same pattern is the same
+    /// rule for duplicate-detection purposes, since a second rule with an identical pattern
+    /// can never match (first match wins) and is always dead configuration.
+    fn eq(&self, other: &Self) -> bool {
+        self.pattern.as_str() == other.pattern.as_str()
+    }
+}
+
+impl settings_value::SettingsValue for HostFooterColorRule {}
 
 #[derive(
     Clone,
@@ -570,6 +606,29 @@ define_settings_group!(TabSettings, settings: [
     workspace_decoration_visibility: WorkspaceDecorationVisibility,
     close_button_position: TabCloseButtonPosition,
     directory_tab_colors: DirectoryTabColors,
+    host_footer_color_rules: HostFooterColorRuleList {
+        type: Vec<HostFooterColorRule>,
+        default: Vec::new(),
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "appearance.window_footer_bar.host_color_rules",
+        description: "Rules coloring the window footer bar by the terminal session's resolved host. Ordered; the first matching rule wins.",
+    },
+    // Always a concrete `AnsiColorIdentifier`, never `Option`, so "no color configured"
+    // can't be mistaken for "render as if safe": there is always a color to paint an
+    // unidentifiable host with. Defaults to yellow, the conventional caution color,
+    // and (like `host_footer_color_rules`) resolves through `to_ansi_color` at paint
+    // time, so it follows the active theme rather than a fixed RGB value.
+    unknown_host_color: UnknownHostColor {
+        type: AnsiColorIdentifier,
+        default: AnsiColorIdentifier::Yellow,
+        supported_platforms: SupportedPlatforms::ALL,
+        sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+        private: false,
+        toml_path: "appearance.window_footer_bar.unknown_host_color",
+        description: "Window footer bar color used when a session is plausibly remote but its host could not be identified.",
+    },
 ]);
 
 #[cfg(test)]

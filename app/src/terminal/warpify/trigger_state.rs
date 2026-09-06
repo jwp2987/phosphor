@@ -330,7 +330,33 @@ impl WarpifyState {
     pub fn clear_pending_ssh_host(&mut self) {
         if let Some(ref mut pending_state) = self.pending_state.as_mut() {
             pending_state.pending_warpify_ssh_host = None;
+            // `pending_command` must be cleared alongside the host: it is the signal
+            // `pending_ssh_target` uses to tell "no interactive-SSH-shaped command is
+            // running" apart from "one is, but its host is unresolved" (see that
+            // method's doc). Leaving it set here would make a later, unrelated
+            // long-running command look like an in-flight, host-unresolved SSH
+            // session to that distinction.
+            pending_state.pending_command = None;
         }
+    }
+
+    /// Tri-state view of the current preexec-detected SSH target, for callers (the
+    /// window-footer-bar host coloring in `host_footer_color`) that need to tell "no
+    /// interactive-SSH-shaped command is in flight" apart from "one is, but its host
+    /// could not be resolved" -- a distinction [`Self::get_pending_ssh_host`] alone
+    /// cannot make, since both cases return `None`.
+    ///
+    /// Returns `None` when no such command is in flight, `Some(None)` when one is but
+    /// its host is unresolved (`gcloud`/Elastic-Beanstalk/DigitalOcean-style commands,
+    /// by design -- see `InteractiveSshCommand`), and `Some(Some(host))` when it was
+    /// resolved.
+    pub fn pending_ssh_target(&self) -> Option<Option<String>> {
+        self.pending_state.as_ref().and_then(|state| {
+            state
+                .pending_command
+                .as_ref()
+                .map(|_| state.pending_warpify_ssh_host.clone())
+        })
     }
 
     pub fn set_pending_ssh_host(&mut self, command: String, ssh_host: Option<String>) {

@@ -52,6 +52,7 @@
 //! it reintroduced a second derivation of one geometry — the hazard
 //! `cell_size_and_padding`'s comment already warns about. One derivation, in layout.
 
+use warp_core::ui::theme::Fill;
 use warpui::elements::{Empty, Point};
 use warpui::event::DispatchedEvent;
 use warpui::geometry::rect::RectF;
@@ -137,13 +138,21 @@ fn reserved_bar_height_px(pane_height_px: f32) -> f32 {
 /// to its parent no matter what the child returns. Content adapts to the bar, never
 /// the reverse; the moment the bar can grow, the row count varies again and every
 /// failure in the §8 table returns.
+///
+/// `background` paints behind `content` across the bar's full reported size (see
+/// [`FixedHeightBar::paint`]) -- this is how the session's resolved host colors the
+/// bar (`terminal::host_footer_color`). It must already be resolved: this function
+/// never evaluates a host-matching regex itself, only paints whatever color the
+/// caller already decided on.
 pub fn render_window_footer_bar(
     content: Option<Box<dyn Element>>,
     pane_height_px: f32,
+    background: Option<Fill>,
 ) -> Box<dyn Element> {
     FixedHeightBar::new(
         content.unwrap_or_else(|| Empty::new().finish()),
         pane_height_px,
+        background,
     )
     .finish()
 }
@@ -213,15 +222,22 @@ struct FixedHeightBar {
     /// `layout` happens to receive, which (as a non-flex `Flex` child) has its
     /// main-axis max widened to infinity before it ever reaches here.
     bar_height_px: f32,
+    /// Painted across the bar's full reported size, underneath `child` -- see
+    /// [`Self::paint`]. Painted here rather than by `child` (the way the CLI-agent
+    /// toolbar paints its own background) so it always covers the full bar
+    /// regardless of what `child` does or doesn't paint, including the common case
+    /// where `child` is empty because nothing currently has anything to say.
+    background: Option<Fill>,
     size: Option<Vector2F>,
     origin: Option<Point>,
 }
 
 impl FixedHeightBar {
-    fn new(child: Box<dyn Element>, pane_height_px: f32) -> Self {
+    fn new(child: Box<dyn Element>, pane_height_px: f32, background: Option<Fill>) -> Self {
         Self {
             child,
             bar_height_px: reserved_bar_height_px(pane_height_px),
+            background,
             size: None,
             origin: None,
         }
@@ -259,6 +275,11 @@ impl Element for FixedHeightBar {
             .start_layer(ClipBounds::BoundedByActiveLayerAnd(RectF::new(
                 origin, size,
             )));
+        if let Some(background) = self.background {
+            ctx.scene
+                .draw_rect_with_hit_recording(RectF::new(origin, size))
+                .with_background(background);
+        }
         self.child.paint(origin, ctx, app);
         ctx.scene.stop_layer();
     }
