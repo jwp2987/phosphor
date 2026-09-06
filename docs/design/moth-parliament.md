@@ -1,0 +1,165 @@
+# moth-parliament — conversations that are not terminals
+
+**Branch:** `moth-parliament`. **Started:** 2026-09-05.
+**Status:** design agreed, implementation not started.
+
+A working name deliberately chosen to say nothing about the contents, because the
+scope of this branch is expected to move and a descriptive name would date badly.
+
+---
+
+## 1. What this branch is for
+
+Today a conversation in Phosphor is a *view onto a terminal's block list*. It cannot
+exist without a pty behind it. This branch makes a conversation a thing in its own
+right, openable as its own pane, spawning a terminal **on demand** the first time it
+actually needs a shell.
+
+The full design rationale is `docs/DESIGN-PHOSPHOR-FORK.md` §9. This file is the
+delivery plan: what gets built, in what order, and what "done" means for each piece.
+
+### Why it is its own branch
+
+This is a new *kind* of work for this fork. Everything to date has been parity
+porting, cloud removal, or bug fixing against a pinned oracle. This adds a pane type
+that upstream does not have, a terminal view that can exist without a process, and
+possibly a surface abstraction on conversations. It should not share a branch with
+parity work, and it should not be reviewed as if it were parity work.
+
+### Why it is possible now and was not before
+
+`ORACLE.md` was revised on 2026-09-05: the pin is a source of **suggestions and
+evidence, not a specification**. Under the old reading, "Warp has no standalone
+conversation pane" was an argument against building one. It is not any more. See
+`AGENTS.md` §5.10 — intentional divergence needs a *record*, not a justification
+against a deficit.
+
+---
+
+## 2. The one architectural decision everything else follows from
+
+**Create the `TerminalView` eagerly. Defer only the pty spawn.**
+
+The obvious design is to make `AgentViewController`'s `terminal_view_id` optional and
+teach every consumer to cope. That is the expensive path and it drags a large amount
+of code into knowing about this feature.
+
+Instead, a conversation pane owns a `TerminalView` from the moment it opens — there
+just is no process behind it yet. Every consumer that needs a `terminal_view_id`
+keeps working unchanged. "Spawn on demand" means spawning the **process**, not the
+view.
+
+`TerminalModel::pending_session_id()` already returns `Option<SessionId>`, so a view
+whose session has not started is a state the code contemplates. What is new is that
+the state persists indefinitely rather than briefly during bootstrap — and that is
+the single riskiest assumption on this branch. See §5.
+
+---
+
+## 3. Delivery order
+
+Each step is independently shippable and independently revertible. Do not start a
+step before its predecessor has been built AND verified on the build box — the
+`top`-clipping saga on `main` produced seven reverted fixes largely because changes
+were stacked faster than they were verified.
+
+### Step 0 — the footer bar (prerequisite, lives on `main`)
+
+`docs/DESIGN-PHOSPHOR-FORK.md` §8. A permanent fixed-height bar on every window, so
+chrome that asks the user something stops taking rows from running programs. A
+conversation pane wants the same bar and gets it free if this lands first.
+
+**Not part of this branch.** Rebase onto it once it is on `main`.
+
+### Step 1 — `TypedPane::Conversation`
+
+A new pane variant and its pane implementation, rendering the existing agent view
+against a `TerminalView` with no process. No spawning yet; tool calls fail loudly
+rather than silently.
+
+**Done when:** a conversation pane opens, holds a conversation, persists and restores,
+and the compiler has been made to account for the new variant everywhere it matches.
+The vertical-tab sectioning work classifies it as `Agent` with no change.
+
+### Step 2 — spawn on demand
+
+The first tool call needing a shell (`run_shell_command`, or a file tool with no
+remote-server extension) spawns the process into a split below the conversation.
+
+**Done when:** a text-only conversation never spawns anything; a conversation that
+runs a command gets a real block list with real output; killing the shell leaves the
+conversation alive and the next command spawns a fresh one.
+
+### Step 3 — working directory
+
+A conversation has a cwd before it has a terminal. Inherit from the active tab at
+creation, show it in the pane header, spawn there. Fall back to the workspace root.
+
+**Done when:** a restored conversation with no process still knows where it is, and
+spawning later lands in the right place.
+
+### Step 4 — decide on `channel` (gate, not code)
+
+Whether to adopt a surface field on conversations (see §4) or keep the pane-type
+framing. **This is a decision point, not a task.** Retrofitting it later is the
+expensive path, so it should be made deliberately before step 1 hardens.
+
+---
+
+## 4. Prior art, and the idea we have not committed to
+
+OpenDev (`opendev-to/opendev`, Rust, MIT) already does the decoupled half. Its
+`Session` has no terminal, view or pty in it — just messages, `context_files`,
+`working_directory`, `parent_id`, `subagent_sessions`, and:
+
+```rust
+pub channel: String,                             // defaults to "cli"
+pub thread_id: Option<String>,
+pub delivery_context: HashMap<String, Value>,
+```
+
+**The surface is a field, not an ancestor.** A session is not *in* a TUI; it *has* a
+delivery channel. That reframes this branch's ask from "add a pane type" to "give
+conversations a surface field, of which the existing terminal pane is one value."
+
+Bigger refactor, better foundation, and explicitly **not committed to** — it is
+step 4's decision. Recorded here so it is a choice rather than an omission.
+
+Also worth taking if local orchestration is ever revisited: `subagent_sessions:
+HashMap<tool_call_id, session_id>` plus `parent_id` means fan-out and forking cost no
+new type.
+
+**Explicitly rejected:** OpenDev's execution model. It runs `Command::new("sh")
+.current_dir(..)` per tool call — no persistent shell, no pty, no surviving `cd`, no
+interactive programs. Correct for a coding agent, wrong here. Phosphor **is** a
+terminal; the block list showing a real pty is the product.
+
+---
+
+## 5. Known risks, stated before they bite
+
+- **"Session pending, indefinitely" is a new state.** `is_input_box_visible`, the
+  block list, warpify detection and the Use Agent bar all reason about session state
+  and were written assuming "pending" is brief. Each needs checking. This is the most
+  likely source of subtle breakage on this branch.
+- **`TypedPane` has many `match` sites.** The compiler finds them, but each is a
+  decision about what a conversation pane should do, not a mechanical fill-in.
+- **Persistence.** Conversations already persist; conversation *panes* do not.
+  Restoring one must not resurrect a shell nobody asked for.
+- **A conversation pane with no process still renders a block list.** What an empty
+  block list looks like, and whether the zero-state is the right surface, is a
+  product question nobody has answered.
+
+---
+
+## 6. Working practice on this branch
+
+- Same rules as `main`: no local builds without the maintainer's say-so, agents never
+  build, `rustfmt --check` is the agent-level gate, and the build box does the real
+  verification.
+- **Refute before building.** Every non-trivial change on this branch gets an
+  adversarial review pass before it goes near the build box. On `main` that process
+  caught a 1-row pty, a viewer resizing the sharer's terminal, frozen auto-follow, and
+  an unreachable ssh prompt — all of which would otherwise have shipped.
+- Divergences from the pin get recorded in `DECLINED.md` under `IMPROVED`, per the
+  revised §5.10. Everything on this branch is a divergence; that is the point.
