@@ -398,9 +398,40 @@ for itself.
 - Current state and gap list: see memory `tui-slash-command-parity`.
 
 ### 5.10 Warp behavioral parity — silent regressions are NOT acceptable
-A user who knows Warp MUST get the same observable behavior in this fork. The
-**only** sanctioned divergences are cloud/collab removal and BYOP additions
-(see the parity principle). Everything else must match Warp.
+A user who knows Warp MUST get the same observable behavior in this fork, **unless
+we decided otherwise and wrote the decision down.**
+
+> **Revised 2026-09-05.** This section used to read "the only sanctioned
+> divergences are cloud/collab removal and BYOP additions; everything else must
+> match Warp." That treated the pin as a specification, and `ORACLE.md` no longer
+> does — see "What the pin is for" there. Two things forced it: ~50% of upstream's
+> current work is cloud- or account-dependent and rising ~5 points a month, so
+> "match Warp" increasingly means matching a product this fork declined to build;
+> and we started finding upstream's own bugs. `ec2e2d227` fixes a defect that is
+> byte-identical at the pin — the pinned snackbar hid only when output was
+> *strictly taller* than the content area, so a program painting exactly `$LINES`
+> had its first rows drawn over. Under the old wording that fix was an
+> unsanctioned divergence. It was the fork being right.
+
+**What changed, precisely: the default disposition, not the rigour.**
+
+- **Unintentional divergence is still a regression, and still unacceptable.**
+  Everything below about dropped flags, collapsed enum payloads and weakened tests
+  stands unaltered. The failure this section exists to prevent — changing observable
+  behavior *by accident* while porting, then documenting it as if it were a choice —
+  is unchanged and is still the most common way this fork breaks.
+- **Intentional divergence needs a RECORD, not a justification against a deficit.**
+  It no longer has to be cloud or BYOP. It has to be a decision someone made, written
+  where the next reader will find it: `DECLINED.md` (with an `IMPROVED` verdict when
+  we are deliberately doing better than upstream), or
+  `docs/DESIGN-PHOSPHOR-FORK.md` for larger product calls. The code comment still has
+  to say *why*, not merely *that*.
+- **Recording it is not optional, and the reason is mechanical.** `docs/pin-migration.md`
+  sequences re-pins, and an unrecorded divergence is exactly what a mechanical re-pin
+  "corrects" back into upstream's behavior. An improvement nobody wrote down is an
+  improvement with a scheduled expiry date.
+- **Absence is not divergence.** A Warp feature or test that simply does not exist here
+  needs no justification for being missing. See `ORACLE.md`.
 
 - **"Simplifying" away a Warp mechanism that changes observable behavior is a
   REGRESSION, not a simplification — and it is not acceptable.** When a Warp

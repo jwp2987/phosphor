@@ -310,6 +310,119 @@ fn oz_icon_fill(theme: &WarpTheme) -> WarpThemeFill {
     theme.main_text_color(theme.background())
 }
 
+/// Which band of the vertical tab list a tab belongs to.
+///
+/// Settings first when open, then agents, then terminals, then anything else. Ordering is by
+/// discriminant, so adding a variant in the right position is all it takes to place it.
+///
+/// A tab's band is derived from live state, not fixed when the tab is created: a terminal that
+/// picks up a CLI agent session becomes `Agent` and moves on the next render. That is the point
+/// -- the list should say what a tab *is*, not what it was opened as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum VerticalTabSection {
+    Settings,
+    Agent,
+    Terminal,
+    Other,
+}
+
+/// The band a single pane implies.
+fn pane_section(typed: &TypedPane<'_>, app: &AppContext) -> VerticalTabSection {
+    match typed {
+        TypedPane::Settings => VerticalTabSection::Settings,
+        TypedPane::Terminal(terminal_pane) => {
+            let terminal_view = terminal_pane.terminal_view(app);
+            let terminal_view = terminal_view.as_ref(app);
+            // Same two signals the kind badge uses (`render_detail_kind_badge_icon`), so the
+            // icon and the band can never disagree about what a tab is.
+            let is_agent = CLIAgentSessionsModel::as_ref(app)
+                .session(terminal_view.id())
+                .is_some()
+                || terminal_view.is_ambient_agent_session(app);
+            if is_agent {
+                VerticalTabSection::Agent
+            } else {
+                VerticalTabSection::Terminal
+            }
+        }
+        _ => VerticalTabSection::Other,
+    }
+}
+
+/// The band a whole tab belongs to: the strongest band any of its visible panes implies.
+///
+/// "Strongest" is the `Ord` minimum, so a split holding Settings sorts as Settings and a split
+/// holding an agent sorts as Agent. A tab is one row in the list, so it needs one answer.
+///
+/// Resolves the pane type directly rather than going through `PaneProps`: that type is a
+/// nineteen-argument render-time construction returning `Option`, and none of what it assembles
+/// -- mouse states, rename editors, hover state -- has any bearing on which band a tab is in.
+fn tab_section(tab: &TabData, app: &AppContext) -> VerticalTabSection {
+    let pane_group = tab.pane_group.as_ref(app);
+    pane_group
+        .visible_pane_ids()
+        .iter()
+        .map(|pane_id| pane_section(&pane_group.resolve_pane_type(*pane_id, app), app))
+        .min()
+        .unwrap_or(VerticalTabSection::Other)
+}
+
+/// Reorders visible tab indices into bands, keeping tab groups intact.
+///
+/// Sorts **units** rather than tabs: an ungrouped tab is its own unit, a tab group is one unit
+/// covering its whole run. `render_vertical_tabs_panel` relies on group members being a
+/// contiguous subslice ("Members are a contiguous subslice of `visible_tabs`"), and sorting
+/// individual tabs would break that the moment a group straddled two bands.
+///
+/// The sort is **stable within a band**, so tabs keep their relative order and only move when
+/// their band actually changes -- a terminal that becomes an agent migrates once, rather than
+/// the list reshuffling as titles or statuses update.
+fn order_tabs_into_sections(
+    indices: Vec<usize>,
+    tabs: &[TabData],
+    app: &AppContext,
+) -> Vec<usize> {
+    // Build units: consecutive entries sharing a `Some(group_id)` form one unit.
+    let mut units: Vec<Vec<usize>> = Vec::new();
+    let mut i = 0;
+    while i < indices.len() {
+        let group_id = tabs.get(indices[i]).and_then(|t| t.group_id);
+        match group_id {
+            Some(id) => {
+                let run: Vec<usize> = indices[i..]
+                    .iter()
+                    .copied()
+                    .take_while(|idx| tabs.get(*idx).and_then(|t| t.group_id) == Some(id))
+                    .collect();
+                i += run.len();
+                units.push(run);
+            }
+            None => {
+                units.push(vec![indices[i]]);
+                i += 1;
+            }
+        }
+    }
+
+    // A group takes the band of its strongest member, so a group containing an agent sorts
+    // with the agents rather than splitting across bands.
+    let mut keyed: Vec<(VerticalTabSection, usize, Vec<usize>)> = units
+        .into_iter()
+        .enumerate()
+        .map(|(order, unit)| {
+            let section = unit
+                .iter()
+                .filter_map(|idx| tabs.get(*idx))
+                .map(|tab| tab_section(tab, app))
+                .min()
+                .unwrap_or(VerticalTabSection::Other);
+            (section, order, unit)
+        })
+        .collect();
+    keyed.sort_by_key(|(section, order, _)| (*section, *order));
+    keyed.into_iter().flat_map(|(_, _, unit)| unit).collect()
+}
+
 fn render_pane_icon_with_status(
     variant: IconWithStatusVariant,
     theme: &WarpTheme,
@@ -1172,7 +1285,7 @@ impl VerticalTabsPanelState {
         app: &AppContext,
     ) -> Vec<usize> {
         if self.search_query.is_empty() {
-            return (0..tabs.len()).collect();
+            return order_tabs_into_sections((0..tabs.len()).collect(), tabs, app);
         }
         let query_lower = self.search_query.to_lowercase();
         let resolved_mode = resolve_vertical_tabs_mode(app);
@@ -1182,7 +1295,8 @@ impl VerticalTabsPanelState {
                 VerticalTabsDisplayGranularity::Tabs
             }
         };
-        tabs.iter()
+        let matched: Vec<usize> = tabs
+            .iter()
             .enumerate()
             .filter(|(tab_index, tab)| {
                 let pane_group = tab.pane_group.as_ref(app);
@@ -1242,7 +1356,11 @@ impl VerticalTabsPanelState {
                 }
             })
             .map(|(i, _)| i)
-            .collect()
+            .collect();
+
+        // Search results are banded too, so filtering never reorders relative to an unfiltered
+        // list -- a tab keeps its place whether or not a query is active.
+        order_tabs_into_sections(matched, tabs, app)
     }
 }
 

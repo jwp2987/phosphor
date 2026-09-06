@@ -536,10 +536,18 @@ default = [
     "code_review_save_changes",
     "create_project_flow",
     "get_started_tab",
-    # Maintainer decision 2026-08-17: default-on. Had 3 call sites
-    # (pane_group/mod.rs:1860, workspace/view.rs:3755, :20067) and was in no
-    # feature list at all, i.e. dark code that shipped disabled.
-    "welcome_tab",
+    # `welcome_tab` was here from 2026-08-17 to 2026-09-05 and is deliberately NOT
+    # default-on any more. It was enabled because it was dark code (in no feature
+    # list at all), which is a good reason to look at dead code and a poor one to
+    # ship a screen: the palette offers exactly two actions ("Add repository",
+    # "Terminal session"), it stands in front of the terminal on an empty
+    # workspace, and its only session action builds a bare
+    # `PanesLayout::SingleTerminal` that never reads `general.default_session_mode`
+    # -- so a user whose default was `Agent` got a welcome window that produced a
+    # terminal tab. Upstream had already reached the same conclusion and removed
+    # the subsystem outright, shipping
+    # `crates/persistence/migrations/2026-06-13-000000_drop_welcome_panes` to purge
+    # its rows. Re-enable only with a product reason, not because the code exists.
     # Maintainer decision 2026-08-17: default-on. Pulls nld_onnx_model ->
     # input_classifier/onnx_candle, which is LOCAL inference (candle), not a
     # provider call -- no BYOP cost implication. Models ship in-repo

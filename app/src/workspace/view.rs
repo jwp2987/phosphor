@@ -3885,7 +3885,7 @@ impl Workspace {
         let open_warp_drive = if !show_warp_home {
             if self.should_trigger_get_started_onboarding(ctx) {
                 self.trigger_get_started_onboarding(ctx);
-            } else if FeatureFlag::WelcomeTab.is_enabled() {
+            } else if Self::should_open_welcome_tab(ctx) {
                 self.add_welcome_tab(ctx);
             } else {
                 self.add_new_session_tab_with_default_mode(
@@ -11334,6 +11334,41 @@ impl Workspace {
             ctx,
         );
         ctx.notify();
+    }
+
+    /// Whether the welcome pane may stand in for a new session.
+    ///
+    /// `FeatureFlag::WelcomeTab` makes the welcome palette the landing pane for a
+    /// new tab or window, but it must not quietly overrule an explicit
+    /// `general.default_session_mode`. The welcome pane is a *terminal* launcher:
+    /// its only session-creating action, `WelcomeViewAction::CreateTerminalSession`,
+    /// builds a bare `PanesLayout::SingleTerminal` through
+    /// `add_tab_with_pane_layout`, which -- unlike
+    /// `add_new_session_tab_with_default_mode` -- never reads the setting. So
+    /// routing a non-terminal default through the welcome pane downgraded the
+    /// user's choice to Terminal with no way back: setting the default to Agent
+    /// produced the welcome palette, and the palette produced a terminal tab.
+    ///
+    /// Only the modes that already land on a plain terminal session stay
+    /// welcome-eligible. `AmbientAgent` is one of them *here*: the ambient-agent
+    /// UI went out with the cloud subsystem and `should_enter_agent_view` fires
+    /// only for `Agent`, so an `AmbientAgent` default already resolves to a plain
+    /// terminal. `Agent`, `TabConfig` and `DockerSandbox` each have real handling
+    /// and must reach it. Note `default_session_mode` has already folded `Agent`
+    /// down to `Terminal` when AI is off, so an AI-disabled user still gets the
+    /// welcome pane.
+    ///
+    /// Fork-local by necessity: the pinned oracle has no welcome pane at all
+    /// (upstream deleted it in the `2026-06-13-000000_drop_welcome_panes`
+    /// migration), so there is no upstream behavior to match. This fork's
+    /// decision to default `welcome_tab` on (`app/Cargo.toml`) revived code that
+    /// had never run against a non-Terminal default.
+    fn should_open_welcome_tab(app: &AppContext) -> bool {
+        FeatureFlag::WelcomeTab.is_enabled()
+            && matches!(
+                AISettings::as_ref(app).default_session_mode(app),
+                DefaultSessionMode::Terminal | DefaultSessionMode::AmbientAgent
+            )
     }
 
     fn add_welcome_tab(&mut self, ctx: &mut ViewContext<Self>) {
@@ -21552,10 +21587,12 @@ impl TypedActionView for Workspace {
                     }
                     // Terminal and Agent are handled by the existing path
                     // (add_terminal_tab applies DefaultSessionMode::Agent internally).
+                    // The welcome pane may only pre-empt that path for the modes it
+                    // can actually deliver -- see `should_open_welcome_tab`.
                     DefaultSessionMode::Terminal
                     | DefaultSessionMode::Agent
                     | DefaultSessionMode::AmbientAgent => {
-                        if FeatureFlag::WelcomeTab.is_enabled() {
+                        if Self::should_open_welcome_tab(ctx) {
                             self.add_welcome_tab(ctx);
                         } else {
                             self.add_terminal_tab(false, ctx);
@@ -26786,6 +26823,119 @@ mod move_tab_gating_tests {
                     "the active tab follows the tab that moved"
                 );
             });
+        });
+    }
+}
+
+/// The welcome pane must not swallow an explicit `general.default_session_mode`.
+///
+/// These live here rather than in `view_test.rs` because `should_open_welcome_tab`
+/// needs only the settings singletons, not the full `initialize_app` /
+/// `mock_workspace` harness that module carries.
+#[cfg(test)]
+mod welcome_tab_default_session_mode_tests {
+    use super::*;
+    use crate::test_util::settings::initialize_settings_for_tests;
+    use warpui::App;
+
+    fn set_default_session_mode(app: &mut App, mode: DefaultSessionMode) {
+        let settings = AISettings::handle(&*app);
+        settings.update(app, |settings, ctx| {
+            settings
+                .default_session_mode_internal
+                .set_value(mode, ctx)
+                .expect("default_session_mode_internal is writable");
+        });
+    }
+
+    fn set_ai_enabled(app: &mut App, enabled: bool) {
+        let settings = AISettings::handle(&*app);
+        settings.update(app, |settings, ctx| {
+            settings
+                .is_any_ai_enabled
+                .set_value(enabled, ctx)
+                .expect("is_any_ai_enabled is writable");
+        });
+    }
+
+    fn should_open_welcome_tab(app: &App) -> bool {
+        app.read(|ctx| Workspace::should_open_welcome_tab(ctx))
+    }
+
+    #[test]
+    fn welcome_tab_yields_to_an_agent_default_session_mode() {
+        // The regression this guards: with `welcome_tab` default-on, a user who
+        // set `general.default_session_mode = "agent"` got the welcome palette,
+        // whose only session action builds a bare terminal -- so the setting was
+        // reachable in Settings and dead in effect.
+        let _welcome_guard = FeatureFlag::WelcomeTab.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            set_ai_enabled(&mut app, true);
+
+            set_default_session_mode(&mut app, DefaultSessionMode::Agent);
+            assert!(
+                !should_open_welcome_tab(&app),
+                "an Agent default must reach the agent-view path, not the welcome pane"
+            );
+
+            // A tab config is likewise a concrete instruction the welcome pane
+            // cannot carry out.
+            set_default_session_mode(&mut app, DefaultSessionMode::TabConfig);
+            assert!(
+                !should_open_welcome_tab(&app),
+                "a TabConfig default must reach `open_tab_config`, not the welcome pane"
+            );
+        });
+    }
+
+    #[test]
+    fn welcome_tab_still_stands_in_for_a_terminal_default_session_mode() {
+        // The other half of the contract: the fork's decision to default
+        // `welcome_tab` on must survive for everyone who never changed the
+        // session-mode setting (`Terminal` is its `#[default]`).
+        let _welcome_guard = FeatureFlag::WelcomeTab.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            set_ai_enabled(&mut app, true);
+            set_default_session_mode(&mut app, DefaultSessionMode::Terminal);
+
+            assert!(should_open_welcome_tab(&app));
+        });
+    }
+
+    #[test]
+    fn welcome_tab_returns_for_an_agent_default_once_ai_is_off() {
+        // `default_session_mode` folds `Agent` down to `Terminal` when AI is
+        // disabled, so the stored Agent value stops being an instruction we owe
+        // the user and the welcome pane is free to stand in again. Asserting it
+        // here pins that this gate consults the *effective* mode, not the raw
+        // stored one.
+        let _welcome_guard = FeatureFlag::WelcomeTab.override_enabled(true);
+
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            set_default_session_mode(&mut app, DefaultSessionMode::Agent);
+
+            set_ai_enabled(&mut app, false);
+            assert!(should_open_welcome_tab(&app));
+
+            set_ai_enabled(&mut app, true);
+            assert!(!should_open_welcome_tab(&app));
+        });
+    }
+
+    #[test]
+    fn welcome_tab_is_never_opened_while_its_flag_is_off() {
+        let _welcome_guard = FeatureFlag::WelcomeTab.override_enabled(false);
+
+        App::test((), |mut app| async move {
+            initialize_settings_for_tests(&mut app);
+            set_default_session_mode(&mut app, DefaultSessionMode::Terminal);
+
+            assert!(!should_open_welcome_tab(&app));
         });
     }
 }
