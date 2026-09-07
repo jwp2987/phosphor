@@ -81,22 +81,63 @@ rather than silently.
 and the compiler has been made to account for the new variant everywhere it matches.
 The vertical-tab sectioning work classifies it as `Agent` with no change.
 
-### Step 2 — spawn on demand
+### Step 2 — no execution, ever
 
-The first tool call needing a shell (`run_shell_command`, or a file tool with no
-remote-server extension) spawns the process into a split below the conversation.
+**DECIDED 2026-09-07, superseding "spawn on demand".** A conversation pane never
+spawns a shell. It is a chat surface with file access: **everything except
+execution.**
 
-**Done when:** a text-only conversation never spawns anything; a conversation that
-runs a command gets a real block list with real output; killing the shell leaves the
-conversation alive and the next command spawns a fresh one.
+The previous plan had the first tool call needing a shell spawn a process into a
+split below the conversation. That is withdrawn. It made a conversation pane an
+agent tab that had not spawned *yet*, which is a state, not a type — and left the
+product question ("what is this pane?") answered by timing.
+
+What this settles, each of which was previously open or fudged:
+
+- **The tool set is the enforcement, not a refusal.** The conversation agent is
+  configured without execution tools, so the model never has the option. A guard
+  that refuses `run_shell_command` at call time is the same defect relocated: the
+  agent still believes it can run commands and still tries.
+- **Terminal mode is removed, not disabled.** `esc` must not offer a terminal
+  prompt in a conversation pane. Offering a mode that cannot work is worse than
+  not offering it — and note the earlier attempt at this hid the *input box*
+  instead, which removed the only way to talk to the agent at all. Suppress the
+  mode switch; never the composer.
+- **`write_to_pty`'s refusal is permanent**, not scaffolding. Paste, Ctrl-C,
+  Ctrl-D and drag-and-drop reach the pty without passing the composer, so the
+  guard stays as the backstop for routes that bypass the UI.
+- **`MockTerminalManager` is permanent.** §2's "create the view eagerly, defer
+  only the pty" stops being a deferral: there is no pty, ever. The eager
+  `TerminalView` still earns its place for the reason §2 gives — every consumer
+  expecting a `terminal_view_id` keeps working — but it is now scaffolding for
+  compatibility rather than a staging state on the way to spawning.
+
+**Done when:** the conversation agent's tool set contains no execution tool; `esc`
+does not offer terminal mode in a conversation pane; and a conversation can read
+and write files without any process existing.
+
+**Consequence for §4a/§4b.** Remote execution was justified partly by conversations
+being unbound from a location. If conversations never execute, that rationale does
+not apply to them: execution location becomes a property of *agent tabs*, not of
+conversations. Revisit those sections before building on them.
 
 ### Step 3 — working directory
 
 A conversation has a cwd before it has a terminal. Inherit from the active tab at
-creation, show it in the pane header, spawn there. Fall back to the workspace root.
+creation, show it in the pane header. Fall back to the workspace root.
 
-**Done when:** a restored conversation with no process still knows where it is, and
-spawning later lands in the right place.
+**Load-bearing after step 2's decision, not preparatory.** File tools resolve
+relative paths against a working directory, so a conversation that can read and
+write files *needs* one. This is no longer groundwork for a future spawn — it is
+what makes the tools a conversation does have work correctly.
+
+**Done when:** a restored conversation with no process still knows where it is, a
+new conversation inherits the active tab's directory, and the pane header shows it.
+
+*Partially built:* `conversation_pane_data` takes a cwd and `TerminalPane::snapshot`
+falls back to `session_startup_path`, so the directory survives a restart. Not done:
+inheriting from the active tab at creation (both live call sites pass `None`), and
+showing it in the pane header.
 
 ### Step 4 — adopt a typed `Surface` on conversations
 
