@@ -1638,26 +1638,42 @@ impl PaneGroup {
                     )
                 };
                 let (pane_data, terminal_view_id) = if terminal_snapshot.is_conversation_only {
-                    // `LeafContents::is_persisted` only persists a conversation-only pane when
-                    // `conversation_ids_to_restore` is non-empty, so `conversation_restoration`
-                    // is normally `Some`. It can still come back `None` if every one of those
-                    // conversations got filtered out just above (no tasks, or entirely
-                    // passive).
+                    // A conversation-only pane with nothing left to restore fails this leaf
+                    // rather than restoring an empty one.
                     //
-                    // Restore an empty conversation pane in that case rather than failing the
-                    // leaf. An `Err` from here is NOT scoped to this pane: the caller
-                    // (`new_with_panes_layout`'s `PanesLayout::Snapshot` arm) catches it and
-                    // replaces the WHOLE tab's pane tree with one fresh terminal, so bailing
-                    // would destroy every sibling pane in the tab -- a split terminal, a file
-                    // pane -- to avoid restoring a conversation that, by definition of the
-                    // filter, held nothing worth restoring. Losing the pane's content here is
-                    // acceptable; losing its siblings is not.
+                    // `conversation_restoration` is normally `Some`, but it can be `None`: the
+                    // filter just above drops a conversation that failed to convert out of
+                    // persistence, has no tasks, or is entirely passive -- and that filtering
+                    // happens at RESTORE time while `conversation_ids_to_restore` is captured at
+                    // SAVE time with no such check, so `is_persisted`'s non-empty test cannot
+                    // prevent it.
+                    //
+                    // An earlier version of this restored an empty conversation pane instead, on
+                    // the reasoning that `Err` here would destroy the tab's other panes. That is
+                    // false: the `Branch` arm above catches each child's `Err` individually and
+                    // only propagates when every child fails, so a failed leaf in a split simply
+                    // drops that leaf. The whole-tab fallback in `new_with_panes_layout` fires
+                    // only when the leaf IS the tab's root -- a single-pane tab, which by
+                    // definition has no siblings to lose, and which then gets a usable terminal.
+                    //
+                    // Both of those beat what restoring empty produced: an inert pane with no
+                    // zero state, no conversation, and no way to start one, where every keystroke
+                    // hits `write_to_pty`'s guard and raises a toast -- and which then silently
+                    // disappears on the following restart, because with no conversations it stops
+                    // being persisted.
+                    let Some(conversation_restoration) = conversation_restoration else {
+                        anyhow::bail!(
+                            "Conversation-only pane {uuid:?} has no restorable conversations \
+                             left after filtering"
+                        );
+                    };
+
                     let (pane_data, view) = Self::conversation_pane_data(
                         resources,
                         view_size,
                         uuid.0,
                         startup_directory,
-                        conversation_restoration,
+                        Some(conversation_restoration),
                         model_event_sender,
                         ctx,
                     );

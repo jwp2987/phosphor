@@ -248,9 +248,15 @@ pub struct TerminalPaneSnapshot {
     ///
     /// A conversation pane is persisted only if `conversation_ids_to_restore` is non-empty --
     /// see `is_persisted`. A conversation pane the user never typed into has nothing worth
-    /// bringing back, and restricting persistence this way lets restoration build the
-    /// `Vec1<AIConversation>` that `ConversationRestorationInNewPaneType::Startup` requires as
-    /// non-empty by construction, rather than unwrapping something that might be empty.
+    /// bringing back.
+    ///
+    /// This does NOT guarantee restoration finds a conversation. An earlier version of this
+    /// comment claimed the check made `ConversationRestorationInNewPaneType::Startup`'s
+    /// `Vec1<AIConversation>` non-empty "by construction"; it does not. The ids are captured
+    /// here at SAVE time with no validity check, while restore filters out conversations that
+    /// fail to convert out of persistence, have no tasks, or are entirely passive. A pane can
+    /// therefore be saved with a non-empty id list and still filter down to nothing on load,
+    /// which the restore arm in `PaneGroup::restore_pane_tree` handles explicitly.
     pub is_conversation_only: bool,
 }
 
