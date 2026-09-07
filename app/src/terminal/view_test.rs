@@ -2657,19 +2657,23 @@ fn write_to_pty_refuses_conversation_only_pane() {
     })
 }
 
-/// Companion to `write_to_pty_refuses_conversation_only_pane`, driving the actual
-/// reported symptom end-to-end: pasting (Ctrl-V or middle-click) into a
-/// conversation-only pane. `paste` computes `should_paste_in_input` from
-/// `is_input_box_visible`, which is already `false` here, so execution falls into the
-/// `else` branch and calls `write_user_bytes_to_pty` -> `write_to_pty` directly --
-/// the exact path the task diagnosis named ("Ctrl+V and middle-click paste vanish
-/// silently").
+/// Pasting into a conversation pane must not reach the (nonexistent) pty.
 ///
-/// Without the `write_to_pty` guard, the `pty_writes` assertion below would fail:
-/// the clipboard text would be forwarded to the pty exactly as for a normal paste,
-/// silently, with the toast never firing.
+/// This asserted a toast until the input box was restored for conversation panes. Now
+/// that `is_input_box_visible` is `true` for them -- the input box being the only way to
+/// send the agent a prompt -- `paste` routes the clipboard into the composer instead,
+/// which is the correct destination: you are pasting a prompt, and it is visible rather
+/// than vanishing. So the toast no longer fires on this path and asserting it would be
+/// asserting the bug.
+///
+/// What still matters, and what this now pins, is that nothing reaches the pty. The
+/// `write_to_pty` guard still covers the routes that bypass the composer entirely
+/// (`write_to_pty_refuses_conversation_only_pane` above covers the primitive directly).
+///
+/// Fails if `paste` regains a path that forwards to `Event::WriteBytesToPty` for a
+/// conversation-only pane.
 #[test]
-fn paste_into_conversation_only_pane_does_not_vanish_silently() {
+fn paste_into_conversation_only_pane_never_reaches_the_pty() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
         app.update(|ctx| {
@@ -2710,12 +2714,10 @@ fn paste_into_conversation_only_pane_does_not_vanish_silently() {
             "a conversation-only pane has no pty behind it; paste must not forward the \
              clipboard contents to Event::WriteBytesToPty, which nothing consumes"
         );
-        assert_eq!(
-            *toast_count.borrow(),
-            1,
-            "paste into a conversation-only pane must surface an ephemeral toast \
-             instead of silently discarding the clipboard contents"
-        );
+        // Deliberately no assertion on `toast_count`: with the input box present the paste
+        // lands in the composer, so there is nothing to warn about. Requiring a toast here
+        // would force the input box back into hiding, which is the defect this replaced.
+        let _ = &toast_count;
     })
 }
 
