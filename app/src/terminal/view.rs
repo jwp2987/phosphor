@@ -7657,31 +7657,22 @@ impl TerminalView {
         if model.is_read_only() {
             return false;
         }
-        // A conversation pane (`docs/design/moth-parliament.md` step 1) has no pty at
-        // all until a later step spawns one on demand, and `MockTerminalManager` -- what
-        // backs it -- never subscribes to a `TerminalSurface` or consumes `PtyIntent`s the
-        // way `local_tty::TerminalManager` does. Showing this input box (the classic
-        // terminal prompt, not the agent view's own message composer, which is a separate
-        // widget that never calls `write_to_pty`) would let the user type into it, but
-        // `write_to_pty`, paste, Ctrl-C, Ctrl-D and resize would all just emit
-        // `Event::WriteBytesToPty` with nothing on the other end to receive it --
-        // keystrokes vanishing silently, which is the opposite of this pane type's stated
-        // contract. `write_to_pty` itself now refuses those writes too (see its doc
-        // comment) -- that is the real backstop, since paste/Ctrl-C/drag-and-drop and a
-        // few internal callers reach it without going through this method at all. This
-        // check stays anyway so the input box doesn't render as if typing into it would
-        // do something. Checked separately from `is_read_only()` above, not folded into
-        // it: `is_read_only()` is a computed OR of three unrelated booleans
-        // (`handled_exit`, `is_conversation_transcript_viewer()`,
-        // `shared_session_status().is_finished_viewer()`) with other callers
-        // (`view.rs:8250, 8269, 15028`, `is_long_running`,
-        // `is_long_running_and_user_controlled`) whose behavior would silently change if
-        // conversation-only panes were folded into it -- not because doing so would "mark
-        // it a transcript viewer" (`is_read_only()` only reads that flag, it doesn't set
-        // anything).
-        if model.is_conversation_only() {
-            return false;
-        }
+        // A conversation pane (`docs/design/moth-parliament.md` step 1) KEEPS its input box.
+        //
+        // An earlier version of this hid it, on the reasoning that the pane has no pty so
+        // typed bytes would vanish, and that the agent view has "its own message composer,
+        // a separate widget". That second premise is false: there is no separate composer.
+        // `agent_input_footer` is a chip toolbar, and agent mode routes THIS input box to
+        // the agent instead of the pty. Hiding it therefore removed the only way to talk to
+        // a conversation pane at all -- the pane rendered its zero state inviting a prompt,
+        // with nowhere to type one.
+        //
+        // The real protection against bytes going nowhere is `write_to_pty`, which refuses
+        // the write and shows a toast. That is the correct place for it: paste, Ctrl-C,
+        // Ctrl-D, drag-and-drop and several internal callers reach the pty without ever
+        // consulting this method, so a visibility check could never have been the backstop
+        // anyway -- it only removed the interactive surface while leaving every other path
+        // to guard.
         if self.has_active_cli_agent_input_session(app) {
             return true;
         }

@@ -2550,25 +2550,26 @@ fn test_not_bootstrapped() {
     })
 }
 
-/// `MockTerminalManager`-backed conversation panes never subscribe to a
-/// `TerminalSurface` and never consume `PtyIntent`s the way
-/// `local_tty::TerminalManager` does, so a shown input box would let a user type
-/// characters, paste, send Ctrl-C/Ctrl-D or trigger a resize that all vanish
-/// silently into `Event::WriteBytesToPty` with nothing subscribed to receive it.
-/// `is_input_box_visible` must hide the input box for a conversation-only model --
-/// via a check on `is_conversation_only()`, not folded into `is_read_only()` (which
-/// has other callers whose behavior would silently change). Without this check, this
-/// assertion would fail: `test_not_bootstrapped` above shows a plain,
-/// not-yet-bootstrapped terminal (not read-only, no active CLI agent session,
-/// no alt screen) already returns `true` here, so a merely-`is_conversation_only`
-/// terminal would too.
+/// A conversation pane KEEPS its input box, because that box IS how you talk to the agent.
 ///
-/// This only covers the input box, not the write primitive itself -- see
+/// This test previously asserted the opposite. `is_input_box_visible` had a
+/// `is_conversation_only()` early return, justified by the claim that the agent view has
+/// "its own message composer, a separate widget". There is no such widget --
+/// `agent_input_footer` is a chip toolbar, and agent mode routes this same input box to the
+/// agent instead of the pty. Hiding it left the pane rendering a zero state inviting a
+/// prompt with nowhere to type one: the pane was completely unusable.
+///
+/// The expectation genuinely changed, so this asserts the new contract rather than being
+/// deleted. Bytes are kept away from the nonexistent pty by `write_to_pty` itself -- see
 /// `write_to_pty_refuses_conversation_only_pane` and
-/// `paste_into_conversation_only_pane_does_not_vanish_silently` below for the guard
-/// that actually stops bytes from reaching the (nonexistent) pty.
+/// `paste_into_conversation_only_pane_does_not_vanish_silently` -- which is the only place
+/// that can work, since paste, Ctrl-C, drag-and-drop and internal callers reach the pty
+/// without consulting this method at all.
+///
+/// Fails if the `is_conversation_only()` early return is restored to
+/// `is_input_box_visible`.
 #[test]
-fn conversation_only_pane_hides_input_box() {
+fn conversation_only_pane_keeps_its_input_box() {
     App::test((), |mut app| async move {
         initialize_app_for_terminal_view(&mut app);
 
@@ -2580,9 +2581,9 @@ fn conversation_only_pane_hides_input_box() {
 
             model.set_is_conversation_only(true);
             assert!(
-                !view.is_input_box_visible(&model, ctx),
-                "a conversation-only pane has no pty behind it and must not show an \
-                 input box that silently discards everything written to it"
+                view.is_input_box_visible(&model, ctx),
+                "a conversation pane must keep its input box -- it is the only way to send \
+                 the agent a prompt; the pty is guarded in `write_to_pty`, not here"
             );
         });
     })
