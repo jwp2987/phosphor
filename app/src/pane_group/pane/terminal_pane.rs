@@ -454,18 +454,33 @@ impl PaneContent for TerminalPane {
                         .active_conversation_id()
                 });
 
+            // Both of these read the terminal model, and both must be taken under a
+            // SINGLE lock, here, rather than inline in the struct literal below.
+            //
+            // A struct literal's temporaries live until the end of the whole statement, so
+            // `is_read_only: view.model.lock().is_read_only()` keeps its guard alive while
+            // the later field is evaluated. `view.is_conversation_pane()` locks the same
+            // mutex, which is not reentrant, so the two inline locks deadlocked the thread
+            // outright -- and since `snapshot` runs on every app-state save, that froze the
+            // whole app the first time it persisted state after a restore. It also hung
+            // five tests, every one of which calls `snapshot`.
+            let (is_read_only, is_conversation_only) = {
+                let model = view.model.lock();
+                (model.is_read_only(), model.is_conversation_only())
+            };
+
             LeafContents::Terminal(TerminalPaneSnapshot {
                 uuid: self.uuid.clone(),
                 cwd: view.pwd_if_local(app),
                 is_active,
-                is_read_only: view.model.lock().is_read_only(),
+                is_read_only,
                 shell_launch_data: view.shell_launch_data_if_local(app),
                 input_config: Some(current_input_config),
                 llm_model_override,
                 active_profile_id,
                 conversation_ids_to_restore,
                 active_conversation_id,
-                is_conversation_only: view.is_conversation_pane(),
+                is_conversation_only,
             })
         }
     }
