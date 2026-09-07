@@ -42,6 +42,7 @@
 //! further down.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use pathfinder_geometry::rect::RectF;
 use pathfinder_geometry::vector::Vector2F;
@@ -950,6 +951,162 @@ fn test_add_conversation_pane_has_no_process_and_enters_agent_view() {
                     .is_fullscreen(),
                 "a conversation pane's entire purpose is the agent view, so it enters it \
                  immediately for a fresh conversation rather than waiting on a setting"
+            );
+        });
+    });
+}
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 3: a conversation pane
+/// split off a base pane that has a known working directory inherits that directory,
+/// rather than leaving `session_startup_path` unset (which `TerminalModel` documents as
+/// falling back to the user's home directory).
+///
+/// The base pane is marked conversation-only with its own `session_startup_path` set,
+/// rather than driving a real shell to report a live pwd -- `startup_path_for_new_session`
+/// (which `conversation_pane_inherited_cwd` delegates to) reads `session_startup_path` as
+/// its fallback regardless of `is_conversation_only`, so this exercises the same read the
+/// production code performs without depending on shell-integration internals this test
+/// module has no access to.
+///
+/// This fails if `add_conversation_pane` regresses to passing `None` for `cwd` (dropping
+/// `conversation_pane_inherited_cwd` entirely, the bug this test exists to catch): the new
+/// pane's `session_startup_path()` would then be `None` instead of `Some(base_pane_cwd)`.
+#[test]
+fn test_add_conversation_pane_inherits_base_pane_directory() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let base_pane_id = get_newly_created_pane_id(panes, &[]);
+            let base_pane_cwd = PathBuf::from("/tmp/moth-parliament-base-pane-cwd");
+
+            let base_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(base_pane_id)
+                .expect("mock_pane_group's initial pane is a TerminalPane");
+            base_pane
+                .terminal_manager(ctx)
+                .update(ctx, |terminal_manager, _ctx| {
+                    let mut model = terminal_manager.model().lock();
+                    model.set_is_conversation_only(true);
+                    model.set_session_startup_path(Some(base_pane_cwd.clone()));
+                });
+
+            let new_pane_id: PaneId = panes
+                .add_conversation_pane(Direction::Right, Some(base_pane_id), ctx)
+                .into();
+
+            let new_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(new_pane_id)
+                .expect("a conversation pane is stored as a TerminalPane (IPaneType::Terminal)");
+            let cwd = new_pane
+                .terminal_manager(ctx)
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .session_startup_path();
+
+            assert_eq!(
+                cwd,
+                Some(base_pane_cwd),
+                "a new conversation pane must inherit its base pane's working directory, \
+                 not fall back to home"
+            );
+        });
+    });
+}
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 3's fallback chain: when
+/// the pane a conversation pane splits off has no working directory to inherit at all (here,
+/// a notebook pane -- not a terminal session, so `conversation_pane_inherited_cwd` has no
+/// `pwd_if_local`/`session_startup_path` to read), the new pane falls back to this process's
+/// own working directory rather than leaving `session_startup_path` unset.
+///
+/// This fails if `conversation_pane_inherited_cwd`'s `.or_else(|| std::env::current_dir()...)`
+/// fallback were dropped: the new pane's `session_startup_path()` would then be `None`
+/// (falling back all the way to the user's home directory) instead of
+/// `Some(std::env::current_dir())`.
+#[test]
+fn test_add_conversation_pane_falls_back_to_process_cwd_with_no_base_directory() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group(&mut app);
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let terminal_id = get_newly_created_pane_id(panes, &[]);
+
+            panes.add_pane_with_direction(
+                Direction::Left,
+                NotebookPane::new(new_notebook(ctx), ctx),
+                true, /* focus_new_pane */
+                ctx,
+            );
+            let notebook_id = get_newly_created_pane_id(panes, &[terminal_id]);
+
+            let new_pane_id: PaneId = panes
+                .add_conversation_pane(Direction::Right, Some(notebook_id), ctx)
+                .into();
+
+            let new_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(new_pane_id)
+                .expect("a conversation pane is stored as a TerminalPane (IPaneType::Terminal)");
+            let cwd = new_pane
+                .terminal_manager(ctx)
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .session_startup_path();
+
+            assert_eq!(
+                cwd,
+                std::env::current_dir().ok(),
+                "with no base-pane directory to inherit, a conversation pane must fall back \
+                 to this process's own working directory (the 'workspace root' stand-in), \
+                 not leave the cwd unset"
+            );
+        });
+    });
+}
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 3's fallback chain at the
+/// *other* conversation-pane call site: `PanesLayout::Conversation`/`initial_conversation_pane`
+/// builds a brand-new tab, where (unlike `add_conversation_pane`'s split) there is no
+/// previously-active pane in this `PaneGroup` to inherit a directory from at all -- see
+/// `initial_conversation_pane`'s doc comment for why that is a structural fact about this
+/// call site, not a gap. It must still fall back to this process's own working directory,
+/// not leave the cwd unset.
+///
+/// This fails if `initial_conversation_pane` regresses to passing `None` instead of
+/// `std::env::current_dir().ok()`: the new tab's sole pane's `session_startup_path()` would
+/// then be `None` instead of `Some(std::env::current_dir())`.
+#[test]
+fn test_conversation_tab_falls_back_to_process_cwd() {
+    App::test((), |mut app| async move {
+        let pane_group = mock_pane_group_with_options(
+            &mut app,
+            MockOptions {
+                layout: PanesLayout::Conversation,
+                ..Default::default()
+            },
+        );
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+
+            let terminal_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(pane_id)
+                .expect("a conversation pane is stored as a TerminalPane (IPaneType::Terminal)");
+            let cwd = terminal_pane
+                .terminal_manager(ctx)
+                .as_ref(ctx)
+                .model()
+                .lock()
+                .session_startup_path();
+
+            assert_eq!(
+                cwd,
+                std::env::current_dir().ok(),
+                "a conversation tab has no prior active tab to inherit a directory from, so \
+                 it must fall back to this process's own working directory, not leave the \
+                 cwd unset"
             );
         });
     });

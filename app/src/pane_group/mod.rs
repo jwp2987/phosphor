@@ -3312,6 +3312,16 @@ impl PaneGroup {
     /// instead, which needs only the `TerminalViewResources` this closure already has in
     /// hand (the same `resources`/`model_event_sender` the sibling `initial_ambient_agent_pane`
     /// takes), not `&self`.
+    ///
+    /// Unlike the split-pane path, there is no "active tab" reachable here to inherit a cwd
+    /// from: this call site only ever builds a brand-new tab (`PanesLayout::Conversation`,
+    /// reached from `WorkspaceView::add_conversation_tab`), and the tab the user was
+    /// previously on is a *different* `PaneGroup` owned by `WorkspaceView`, which is not
+    /// threaded into `new_with_panes_layout`/this closure at all -- doing so would mean
+    /// widening that signature in `app/src/workspace/view.rs`, outside this change's scope.
+    /// So this falls straight to the same "workspace root" stand-in
+    /// `conversation_pane_inherited_cwd` uses when a base pane's cwd is unavailable: this
+    /// process's own working directory (`docs/design/moth-parliament.md` step 3).
     fn initial_conversation_pane(
         resources: TerminalViewResources,
         view_bounds: RectF,
@@ -3324,7 +3334,7 @@ impl PaneGroup {
             resources,
             view_bounds.size(),
             Uuid::new_v4().into_bytes().to_vec(),
-            None,
+            std::env::current_dir().ok(),
             None,
             model_event_sender,
             ctx,
@@ -5984,6 +5994,37 @@ impl PaneGroup {
         (pane_data, view)
     }
 
+    /// Resolves the working directory a new conversation pane created by splitting off
+    /// `base_pane_id` should inherit (`docs/design/moth-parliament.md` step 3), falling back
+    /// to the currently focused pane if no explicit base was given.
+    ///
+    /// Reuses `startup_path_for_new_session` rather than re-deriving this: it already
+    /// resolves exactly this question for spawning a new *terminal* session from a base
+    /// pane -- a running session's live pwd, or (for a base pane with no process of its own,
+    /// e.g. another conversation pane) its `session_startup_path`, with WSL-path translation
+    /// applied. A conversation pane's cwd needs the same answer for the same reason: it is
+    /// the directory a process spawned from this pane would start in, whether or not one
+    /// ever actually spawns.
+    ///
+    /// Falls back further to this process's own working directory when even that resolves to
+    /// nothing -- e.g. the base pane is not a terminal pane at all. `std::env::current_dir()`
+    /// is the closest thing this codebase has to "the workspace root" the design doc's
+    /// fallback chain names: Phosphor has no persistent per-window project-root concept for
+    /// terminal panes distinct from a session's own cwd, and this is the same fallback
+    /// `local_harness_launch.rs` already uses for "no more specific directory is known." If
+    /// even that fails, `None` is returned, and `conversation_pane_data` leaves
+    /// `session_startup_path` unset, which `TerminalModel` documents as falling back to the
+    /// user's home directory.
+    fn conversation_pane_inherited_cwd(
+        &self,
+        base_pane_id: Option<PaneId>,
+        ctx: &AppContext,
+    ) -> Option<PathBuf> {
+        let source_pane_id = base_pane_id.unwrap_or_else(|| self.focused_pane_id(ctx));
+        self.startup_path_for_new_session(source_pane_id.as_terminal_pane_id(), ctx)
+            .or_else(|| std::env::current_dir().ok())
+    }
+
     /// Creates a new conversation pane: a `TerminalPane` whose `TerminalView` has no pty
     /// behind it at all. See `docs/design/moth-parliament.md` step 1 -- the `TerminalView`
     /// is created eagerly; only the pty spawn is deferred, to a later step this branch does
@@ -6075,8 +6116,9 @@ impl PaneGroup {
         // A `None` cwd leaves `session_startup_path` unset, which `TerminalModel` already
         // documents as falling back to the user's home directory -- the same default an
         // ordinary terminal pane gets when it isn't given a startup directory. `Some` cwds
-        // come from either a restored snapshot's stored `cwd` or (once
-        // `docs/design/moth-parliament.md` step 3 lands) an inherited active-tab directory.
+        // come from a restored snapshot's stored `cwd`, an inherited base-pane directory
+        // (`conversation_pane_inherited_cwd`), or this process's own working directory
+        // (`docs/design/moth-parliament.md` step 3).
         terminal_manager.update(ctx, |terminal_manager, _ctx| {
             let mut model = terminal_manager.model().lock();
             model.set_is_conversation_only(true);
@@ -6103,7 +6145,10 @@ impl PaneGroup {
         base_pane_id: Option<PaneId>,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        let (pane_data, view) = self.create_conversation_pane_data(None, None, ctx);
+        // Resolved before `create_conversation_pane_data`/`add_pane` below change what pane
+        // is focused, so this still reads the pane the split is happening *from*.
+        let cwd = self.conversation_pane_inherited_cwd(base_pane_id, ctx);
+        let (pane_data, view) = self.create_conversation_pane_data(cwd, None, ctx);
         let new_pane_id = pane_data.terminal_pane_id();
 
         let _ = self.add_pane(direction, base_pane_id, Box::new(pane_data), true, ctx);
