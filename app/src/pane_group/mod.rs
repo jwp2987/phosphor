@@ -1637,31 +1637,59 @@ impl PaneGroup {
                         },
                     )
                 };
-                let (terminal_view, terminal_manager) = PaneGroup::create_session(
-                    startup_directory,
-                    HashMap::new(),
-                    &uuid.0,
-                    IsSharedSessionCreator::No,
-                    resources,
-                    block_list,
-                    conversation_restoration,
-                    user_default_shell_unsupported_banner_model_handle,
-                    view_size,
-                    model_event_sender.clone(),
-                    chosen_shell,
-                    terminal_snapshot.input_config,
-                    ctx,
-                );
+                let (pane_data, terminal_view_id) = if terminal_snapshot.is_conversation_only {
+                    // `LeafContents::is_persisted` only persists a conversation-only pane when
+                    // `conversation_ids_to_restore` is non-empty, so `conversation_restoration`
+                    // is normally `Some`. It can still come back `None` if every one of those
+                    // conversations got filtered out just above (no tasks, or entirely
+                    // passive).
+                    //
+                    // Restore an empty conversation pane in that case rather than failing the
+                    // leaf. An `Err` from here is NOT scoped to this pane: the caller
+                    // (`new_with_panes_layout`'s `PanesLayout::Snapshot` arm) catches it and
+                    // replaces the WHOLE tab's pane tree with one fresh terminal, so bailing
+                    // would destroy every sibling pane in the tab -- a split terminal, a file
+                    // pane -- to avoid restoring a conversation that, by definition of the
+                    // filter, held nothing worth restoring. Losing the pane's content here is
+                    // acceptable; losing its siblings is not.
+                    let (pane_data, view) = Self::conversation_pane_data(
+                        resources,
+                        view_size,
+                        uuid.0,
+                        startup_directory,
+                        conversation_restoration,
+                        model_event_sender,
+                        ctx,
+                    );
+                    (pane_data, view.id())
+                } else {
+                    let (terminal_view, terminal_manager) = PaneGroup::create_session(
+                        startup_directory,
+                        HashMap::new(),
+                        &uuid.0,
+                        IsSharedSessionCreator::No,
+                        resources,
+                        block_list,
+                        conversation_restoration,
+                        user_default_shell_unsupported_banner_model_handle,
+                        view_size,
+                        model_event_sender.clone(),
+                        chosen_shell,
+                        terminal_snapshot.input_config,
+                        ctx,
+                    );
 
-                let terminal_view_id = terminal_view.id();
+                    let terminal_view_id = terminal_view.id();
 
-                let pane_data = TerminalPane::new(
-                    uuid.0,
-                    terminal_manager,
-                    terminal_view,
-                    model_event_sender,
-                    ctx,
-                );
+                    let pane_data = TerminalPane::new(
+                        uuid.0,
+                        terminal_manager,
+                        terminal_view,
+                        model_event_sender,
+                        ctx,
+                    );
+                    (pane_data, terminal_view_id)
+                };
 
                 let terminal_pane_id = pane_data.terminal_pane_id();
                 let pane_id = terminal_pane_id.into();
@@ -3279,6 +3307,8 @@ impl PaneGroup {
         let (pane_data, view) = Self::conversation_pane_data(
             resources,
             view_bounds.size(),
+            Uuid::new_v4().into_bytes().to_vec(),
+            None,
             None,
             model_event_sender,
             ctx,
@@ -5947,8 +5977,13 @@ impl PaneGroup {
     /// actual work: this just supplies the `TerminalViewResources` and view bounds from
     /// `&self`/`ctx` for the split-pane call sites (`add_conversation_pane`) that already
     /// have a live `PaneGroup` to read them from.
+    ///
+    /// `cwd` is the directory this conversation should know it is in before it ever spawns a
+    /// terminal (`docs/design/moth-parliament.md` step 3). `None` leaves it unset -- see the
+    /// comment where `conversation_pane_data` applies it.
     fn create_conversation_pane_data(
         &self,
+        cwd: Option<PathBuf>,
         conversation_restoration: Option<ConversationRestorationInNewPaneType>,
         ctx: &mut ViewContext<Self>,
     ) -> (TerminalPane, ViewHandle<TerminalView>) {
@@ -5957,10 +5992,13 @@ impl PaneGroup {
             model_event_sender: self.model_event_sender.clone(),
         };
         let view_bounds = Self::estimated_view_bounds(ctx);
+        let uuid = Uuid::new_v4().into_bytes().to_vec();
 
         Self::conversation_pane_data(
             resources,
             view_bounds.size(),
+            uuid,
+            cwd,
             conversation_restoration,
             self.model_event_sender.clone(),
             ctx,
@@ -5974,14 +6012,19 @@ impl PaneGroup {
     /// `TerminalViewResources` from) and from `initial_conversation_pane` (called from the
     /// `initial_layout` closure before the `PaneGroup` exists, which is handed the same
     /// resources as a plain argument instead).
+    ///
+    /// `uuid` is taken rather than generated here so that restoring a persisted conversation
+    /// pane (`restore_pane_leaf`) can reuse the pane's original identity instead of minting a
+    /// new one on every restart.
     fn conversation_pane_data(
         resources: TerminalViewResources,
         view_bounds_size: Vector2F,
+        uuid: Vec<u8>,
+        cwd: Option<PathBuf>,
         conversation_restoration: Option<ConversationRestorationInNewPaneType>,
         model_event_sender: Option<SyncSender<ModelEvent>>,
         ctx: &mut ViewContext<Self>,
     ) -> (TerminalPane, ViewHandle<TerminalView>) {
-        let uuid = Uuid::new_v4();
         // `MockTerminalManager` already is what a "no real session" `TerminalView` looks
         // like here -- it backs the shared-session-viewer and loading panes for exactly the
         // same reason (see `create_conversation_viewer` /
@@ -6013,15 +6056,19 @@ impl PaneGroup {
         // conversation pane does: an explicit, permanent marker that this session was
         // never meant to have a process, rather than merely being mid-bootstrap or an
         // in-progress viewer connection. See `TerminalModel::is_conversation_only`.
+        // A `None` cwd leaves `session_startup_path` unset, which `TerminalModel` already
+        // documents as falling back to the user's home directory -- the same default an
+        // ordinary terminal pane gets when it isn't given a startup directory. `Some` cwds
+        // come from either a restored snapshot's stored `cwd` or (once
+        // `docs/design/moth-parliament.md` step 3 lands) an inherited active-tab directory.
         terminal_manager.update(ctx, |terminal_manager, _ctx| {
-            terminal_manager
-                .model()
-                .lock()
-                .set_is_conversation_only(true);
+            let mut model = terminal_manager.model().lock();
+            model.set_is_conversation_only(true);
+            model.set_session_startup_path(cwd);
         });
 
         let pane_data = TerminalPane::new(
-            uuid.as_bytes().to_vec(),
+            uuid,
             terminal_manager,
             view.clone(),
             model_event_sender,
@@ -6040,7 +6087,7 @@ impl PaneGroup {
         base_pane_id: Option<PaneId>,
         ctx: &mut ViewContext<Self>,
     ) -> TerminalPaneId {
-        let (pane_data, view) = self.create_conversation_pane_data(None, ctx);
+        let (pane_data, view) = self.create_conversation_pane_data(None, None, ctx);
         let new_pane_id = pane_data.terminal_pane_id();
 
         let _ = self.add_pane(direction, base_pane_id, Box::new(pane_data), true, ctx);

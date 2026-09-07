@@ -52,16 +52,22 @@ fn test_has_horizontal_split() {
 }
 
 /// A conversation pane's snapshot (`docs/design/moth-parliament.md` step 1) is skipped
-/// during `save_app_state`'s pane-tree traversal, the same way `LeafContents::Image` is: it
-/// renders for the session but is never written to SQLite, so restoring it can never
-/// resurrect a real shell the user never asked for (there is currently no
-/// `terminal_panes.kind` value for it -- see `TerminalPaneSnapshot::is_conversation_only`'s
-/// doc comment for why). This fails if `is_persisted` stops reading the field at all (either
-/// direction: a conversation pane would start persisting, or an ordinary terminal pane would
-/// stop).
+/// during `save_app_state`'s pane-tree traversal, the same way `LeafContents::Image` is --
+/// but only when it has nothing worth bringing back. `ConversationRestorationInNewPaneType::
+/// Startup` carries a `Vec1<AIConversation>`, which cannot be empty, so a conversation pane
+/// the user never typed into is still skipped; one with at least one conversation now
+/// persists and restores like any other terminal pane (see
+/// `TerminalPaneSnapshot::is_conversation_only`'s doc comment). This fails if `is_persisted`
+/// stops reading either field: dropping the `is_conversation_only` check would persist an
+/// empty conversation pane (there is no `terminal_panes.kind` value for one), and dropping
+/// the `conversation_ids_to_restore` emptiness check would make every conversation pane,
+/// empty or not, behave identically.
 #[test]
-fn conversation_pane_snapshot_is_not_persisted() {
-    fn terminal_snapshot(is_conversation_only: bool) -> LeafContents {
+fn conversation_pane_snapshot_is_persisted_only_with_a_conversation_to_restore() {
+    fn terminal_snapshot(
+        is_conversation_only: bool,
+        conversation_ids_to_restore: Vec<AIConversationId>,
+    ) -> LeafContents {
         LeafContents::Terminal(TerminalPaneSnapshot {
             uuid: vec![],
             cwd: None,
@@ -71,14 +77,24 @@ fn conversation_pane_snapshot_is_not_persisted() {
             input_config: None,
             llm_model_override: None,
             active_profile_id: None,
-            conversation_ids_to_restore: vec![],
+            conversation_ids_to_restore,
             active_conversation_id: None,
             is_conversation_only,
         })
     }
 
-    assert!(!terminal_snapshot(true).is_persisted());
-    assert!(terminal_snapshot(false).is_persisted());
+    assert!(
+        !terminal_snapshot(true, vec![]).is_persisted(),
+        "an empty conversation pane has nothing worth restoring"
+    );
+    assert!(
+        terminal_snapshot(true, vec![AIConversationId::new()]).is_persisted(),
+        "a conversation pane with a conversation to restore persists like any other tab"
+    );
+    assert!(
+        terminal_snapshot(false, vec![]).is_persisted(),
+        "an ordinary terminal pane always persists, regardless of conversation_ids_to_restore"
+    );
 }
 
 #[test]

@@ -1947,6 +1947,19 @@ impl TerminalModel {
         self.session_startup_path.clone()
     }
 
+    /// Sets this session's startup path after construction. A conversation pane's
+    /// `TerminalModel` is built by `MockTerminalManager::create_model`, which always passes
+    /// `None` for `session_startup_path` (there is no session to derive a real one from yet);
+    /// this lets `PaneGroup::conversation_pane_data` apply a known cwd -- e.g. one restored
+    /// from persistence -- to the pane before it has a terminal (see
+    /// `docs/design/moth-parliament.md` step 3, pulled forward for this one field). Mirrors
+    /// `set_is_conversation_only` rather than adding a `startup_directory` parameter to
+    /// `MockTerminalManager::create_model`, which every other caller of that function would
+    /// then also have to thread through.
+    pub fn set_session_startup_path(&mut self, session_startup_path: Option<PathBuf>) {
+        self.session_startup_path = session_startup_path;
+    }
+
     /// Returns the block from which we should be retrieving prompt-related data.
     pub fn prompt_block(&self) -> Option<&Block> {
         self.block_list()

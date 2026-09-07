@@ -50,6 +50,7 @@ use warpui::platform::{WindowBounds, WindowStyle};
 
 use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
 use crate::notebooks::notebook::NotebookView;
+use crate::persistence::model::{AgentConversation, AgentConversationRecord};
 use crate::terminal::shared_session::SharedSessionStatus;
 use warpui::windowing::state::ApplicationStage;
 
@@ -1004,6 +1005,135 @@ fn test_conversation_panes_layout_produces_a_conversation_pane() {
                     .is_fullscreen(),
                 "a conversation tab's entire purpose is the agent view, so it enters it \
                  immediately for a fresh conversation rather than waiting on a setting"
+            );
+        });
+    });
+}
+
+/// Builds a minimal persisted conversation with one task, matching
+/// `ai::restored_conversations_test`'s `persisted_conversation` helper -- a conversation
+/// with no tasks, or only passive ones, is filtered out by `restore_pane_leaf` before it
+/// ever reaches `RestoredAgentConversations::take_conversations`.
+fn persisted_conversation_with_a_task(conversation_id: AIConversationId) -> AgentConversation {
+    AgentConversation {
+        conversation: AgentConversationRecord {
+            id: 0,
+            conversation_id: conversation_id.to_string(),
+            conversation_data: r#"{"server_conversation_token":null}"#.to_string(),
+            last_modified_at: chrono::NaiveDateTime::default(),
+            summary: None,
+        },
+        tasks: vec![warp_multi_agent_api::Task {
+            id: format!("task-{conversation_id}"),
+            messages: vec![],
+            dependencies: None,
+            description: "Test conversation".to_string(),
+            summary: String::new(),
+            server_data: String::new(),
+        }],
+    }
+}
+
+/// Non-vacuous coverage for `docs/design/moth-parliament.md` step 1's restore arm
+/// (`PaneGroup::restore_pane_tree`'s `LeafContents::Terminal` branch): a snapshot marked
+/// `is_conversation_only` must come back as a `MockTerminalManager`-backed pane -- no pty
+/// spawned -- with its conversation restored into fullscreen agent view, not as a real
+/// terminal session.
+///
+/// Fails on the `MockTerminalManager` downcast if the branch fell through to
+/// `PaneGroup::create_session` (a real pty spawn); fails on `is_conversation_only()` if
+/// `conversation_pane_data` were reached without re-marking the model; and fails the
+/// `active_conversation_id`/`is_fullscreen` assertions if the `Startup` conversation
+/// restoration were dropped (e.g. passing `None` instead of the loaded conversations).
+#[test]
+fn test_restore_pane_tree_builds_conversation_pane_with_no_process() {
+    let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        crate::workspace::view::tests::initialize_app(&mut app);
+
+        let conversation_id = AIConversationId::new();
+        app.update(|ctx| {
+            RestoredAgentConversations::handle(ctx).update(ctx, |store, _ctx| {
+                *store = RestoredAgentConversations::new(vec![persisted_conversation_with_a_task(
+                    conversation_id,
+                )])
+                .0;
+            });
+        });
+
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        let snapshot = PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: true,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![9],
+                cwd: None,
+                shell_launch_data: None,
+                is_active: true,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![conversation_id],
+                active_conversation_id: Some(conversation_id),
+                is_conversation_only: true,
+            }),
+        });
+
+        let (_, pane_group) = app.add_window_with_bounds(
+            WindowStyle::NotStealFocus,
+            WindowBounds::ExactPosition(RectF::new(Vector2F::zero(), Vector2F::new(1024., 768.))),
+            |ctx| {
+                PaneGroup::new_with_panes_layout(
+                    global_resource_handles.tips_completed.clone(),
+                    global_resource_handles
+                        .user_default_shell_unsupported_banner_model_handle
+                        .clone(),
+                    PanesLayout::Snapshot(Box::new(snapshot)),
+                    Arc::new(HashMap::new()),
+                    global_resource_handles.model_event_sender.clone(),
+                    ctx,
+                )
+            },
+        );
+
+        pane_group.update(&mut app, |panes, ctx| {
+            let pane_id = get_newly_created_pane_id(panes, &[]);
+
+            let terminal_pane = panes
+                .downcast_pane_by_id::<TerminalPane>(pane_id)
+                .expect("a restored conversation pane is stored as a TerminalPane");
+
+            let manager = terminal_pane.terminal_manager(ctx);
+            let manager_ref = manager.as_ref(ctx);
+            assert!(
+                manager_ref.as_any().is::<MockTerminalManager>(),
+                "a restored conversation pane must not spawn a real (pty-backed) terminal \
+                 manager"
+            );
+            assert!(
+                manager_ref.model().lock().is_conversation_only(),
+                "the restored model must be marked conversation-only"
+            );
+
+            let terminal_view = terminal_pane.terminal_view(ctx);
+            assert!(terminal_view.as_ref(ctx).is_conversation_pane());
+
+            let controller = terminal_view
+                .as_ref(ctx)
+                .agent_view_controller()
+                .as_ref(ctx);
+            assert_eq!(
+                controller.agent_view_state().active_conversation_id(),
+                Some(conversation_id),
+                "the conversation named in the snapshot must actually have been restored, \
+                 not just skipped over"
+            );
+            assert!(
+                controller.is_fullscreen(),
+                "active_conversation_id was set in the snapshot, so restore should reopen \
+                 fullscreen agent view for it"
             );
         });
     });

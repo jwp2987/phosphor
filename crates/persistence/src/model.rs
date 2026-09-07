@@ -524,6 +524,8 @@ pub struct TerminalPane {
     pub conversation_ids: Option<String>,
     /// The active conversation ID if the agent view was open in fullscreen mode.
     pub active_conversation_id: Option<String>,
+    /// Whether this pane's [`TerminalView`] has no pty and exists solely to host a conversation.
+    pub is_conversation_only: bool,
 }
 
 #[derive(Identifiable, Queryable, Selectable)]
@@ -716,6 +718,8 @@ pub struct NewTerminalPane {
     pub conversation_ids: Option<String>,
     /// The active conversation ID if the agent view was open in fullscreen mode.
     pub active_conversation_id: Option<String>,
+    /// Whether this pane's [`TerminalView`] has no pty and exists solely to host a conversation.
+    pub is_conversation_only: bool,
 }
 
 #[derive(Insertable)]

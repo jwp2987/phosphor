@@ -1793,6 +1793,7 @@ fn save_pane_state(
                 active_conversation_id: terminal_snapshot
                     .active_conversation_id
                     .map(|id| id.to_string()),
+                is_conversation_only: terminal_snapshot.is_conversation_only,
             };
 
             diesel::insert_into(schema::terminal_panes::dsl::terminal_panes)
@@ -3303,10 +3304,7 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
                         active_profile_id,
                         conversation_ids_to_restore,
                         active_conversation_id,
-                        // Conversation panes are never written to `terminal_panes` (see
-                        // `TerminalPaneSnapshot::is_conversation_only`), so a row read back from
-                        // here is always a real, restorable terminal.
-                        is_conversation_only: false,
+                        is_conversation_only: terminal_pane.is_conversation_only,
                     })
                 }
                 NOTEBOOK_PANE_KIND => {

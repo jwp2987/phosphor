@@ -464,14 +464,33 @@ impl PaneContent for TerminalPane {
             // outright -- and since `snapshot` runs on every app-state save, that froze the
             // whole app the first time it persisted state after a restore. It also hung
             // five tests, every one of which calls `snapshot`.
-            let (is_read_only, is_conversation_only) = {
+            let (is_read_only, is_conversation_only, conversation_session_startup_path) = {
                 let model = view.model.lock();
-                (model.is_read_only(), model.is_conversation_only())
+                (
+                    model.is_read_only(),
+                    model.is_conversation_only(),
+                    model.session_startup_path(),
+                )
             };
+
+            // A conversation-only pane has no session, so `pwd_if_local` (which reads the
+            // active block's reported cwd) is always `None` for it. Fall back to
+            // `session_startup_path`, the cwd `PaneGroup::conversation_pane_data` applied to
+            // the pane before it ever had a terminal -- otherwise a restored conversation
+            // pane would silently forget where it was (`docs/design/moth-parliament.md`
+            // step 3).
+            let cwd = view.pwd_if_local(app).or_else(|| {
+                is_conversation_only
+                    .then(|| {
+                        conversation_session_startup_path
+                            .map(|path| path.to_string_lossy().into_owned())
+                    })
+                    .flatten()
+            });
 
             LeafContents::Terminal(TerminalPaneSnapshot {
                 uuid: self.uuid.clone(),
-                cwd: view.pwd_if_local(app),
+                cwd,
                 is_active,
                 is_read_only,
                 shell_launch_data: view.shell_launch_data_if_local(app),

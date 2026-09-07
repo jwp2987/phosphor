@@ -7,6 +7,7 @@ use warp_core::HostId;
 use warp_util::standardized_path::StandardizedPath;
 
 use crate::{
+    ai::agent::conversation::AIConversationId,
     app_state::{
         AppState, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents, LeafSnapshot,
         NotebookPaneSnapshot, PaneNodeSnapshot, SettingsPaneSnapshot, TabGroupSnapshot,
@@ -551,29 +552,36 @@ fn test_sqlite_round_trips_remote_notebook_pane() {
 /// `theme_override`) and its `read_sqlite_data(conn, user)` harness.
 /// The most important test in `docs/design/moth-parliament.md` step 1's persistence work.
 ///
-/// A conversation pane is deliberately never persisted (`LeafContents::is_persisted`'s
-/// `LeafContents::Terminal(snapshot) => !snapshot.is_conversation_only` arm) -- there is no
-/// `terminal_panes.kind` value for it and adding one needs a migration this branch does not
-/// attempt. Before this branch, a conversation pane could only exist as a split alongside a
-/// real terminal, so its surrounding tab always had at least one persisted leaf. This branch
-/// makes a conversation pane a whole TAB by itself, which is new: a tab whose *entire* pane
-/// tree is unpersisted.
+/// A conversation-only pane with *no* conversations to restore is deliberately never
+/// persisted (`LeafContents::is_persisted`'s
+/// `LeafContents::Terminal(snapshot) => !snapshot.is_conversation_only ||
+/// !snapshot.conversation_ids_to_restore.is_empty()` arm). Note this is narrower than it once
+/// was: a conversation-only pane that *does* have at least one conversation now persists like
+/// any other tab (see `test_sqlite_round_trips_conversation_pane`) -- an empty one still
+/// doesn't, because `ConversationRestorationInNewPaneType::Startup` carries a
+/// `Vec1<AIConversation>`, which cannot be empty, and a conversation pane the user never typed
+/// into has nothing worth bringing back. Before this branch, a conversation pane could only
+/// exist as a split alongside a real terminal, so its surrounding tab always had at least one
+/// persisted leaf. This branch makes a conversation pane a whole TAB by itself, which is new:
+/// an empty one is a tab whose *entire* pane tree is unpersisted.
 ///
 /// `save_app_state`'s traversal (`persistence/sqlite.rs`) already `continue`s past a
-/// non-persisted leaf before inserting its `pane_nodes` row, so a conversation-only tab gets
-/// zero `pane_nodes` rows at all. On restore, `read_sqlite_data` builds each window's tabs
+/// non-persisted leaf before inserting its `pane_nodes` row, so an empty conversation-only tab
+/// gets zero `pane_nodes` rows at all. On restore, `read_sqlite_data` builds each window's tabs
 /// with `tabs_for_window.into_iter().filter_map(|tab| { let root =
 /// read_root_node(conn, tab.id).ok()?; ... })` -- `read_root_node` fails with `NotFound`
 /// (there is no row to find), `.ok()?` turns that into `None`, and `filter_map` drops just
-/// that one tab, per tab, independently of its siblings. So a conversation-only tab quietly
-/// not coming back is already safe with no extra guard: it disappears without taking any
-/// other tab, or the window, down with it. This test proves that rather than asserting it,
-/// per this branch's brief -- if the guard in `save_app_state` or the per-tab `filter_map` in
-/// `read_sqlite_data` regressed (e.g. an unconditional `pane_nodes` insert, or hoisting the
-/// `?` outside the closure so one bad tab fails the whole window), this would either grow
-/// `windows[0].tabs` back to 2 or shrink it to 0.
+/// that one tab, per tab, independently of its siblings. So an empty conversation-only tab
+/// quietly not coming back is already safe with no extra guard: it disappears without taking
+/// any other tab, or the window, down with it. This test proves that rather than asserting
+/// it, per this branch's brief -- if the guard in `save_app_state`, the per-tab `filter_map`
+/// in `read_sqlite_data`, or the `conversation_ids_to_restore.is_empty()` check in
+/// `is_persisted` regressed (e.g. an unconditional `pane_nodes` insert, hoisting the `?`
+/// outside the closure so one bad tab fails the whole window, or persisting an empty
+/// conversation pane after all), this would either grow `windows[0].tabs` back to 2 or shrink
+/// it to 0.
 #[test]
-fn test_sqlite_conversation_only_tab_does_not_take_the_terminal_tab_down_with_it() {
+fn test_sqlite_empty_conversation_only_tab_does_not_take_the_terminal_tab_down_with_it() {
     let tempdir = tempfile::tempdir().expect("tempdir should be created");
     let database_path = tempdir.path().join("warp.sqlite");
     let mut conn = setup_database(&database_path).expect("database should initialize");
@@ -695,6 +703,152 @@ fn test_sqlite_conversation_only_tab_does_not_take_the_terminal_tab_down_with_it
         }
         other => panic!("expected the surviving tab to be the terminal leaf, got {other:?}"),
     }
+}
+
+/// Round-trip coverage for `docs/design/moth-parliament.md` step 1's "persists and
+/// restores" clause: a conversation pane with a conversation to restore persists through
+/// SQLite alongside an ordinary terminal tab in the same window, and comes back marked
+/// `is_conversation_only` with its `conversation_ids_to_restore` intact.
+///
+/// Fails if `LeafContents::is_persisted` regressed to skipping every conversation-only
+/// pane regardless of `conversation_ids_to_restore` (the tab count would drop from 2 to
+/// 1, as in `test_sqlite_empty_conversation_only_tab_does_not_take_the_terminal_tab_down_
+/// with_it` above), or if the write side (`persistence/sqlite.rs` ~1798) or read side
+/// (~3306) stopped round-tripping `is_conversation_only` / `conversation_ids_to_restore`
+/// (the restored conversation pane would come back indistinguishable from a real
+/// terminal, or with its conversation silently dropped).
+#[test]
+fn test_sqlite_round_trips_conversation_pane() {
+    let tempdir = tempfile::tempdir().expect("tempdir should be created");
+    let database_path = tempdir.path().join("warp.sqlite");
+    let mut conn = setup_database(&database_path).expect("database should initialize");
+
+    let conversation_id = AIConversationId::new();
+
+    let terminal_tab = TabSnapshot {
+        custom_title: None,
+        root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: true,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![1],
+                cwd: Some("/tmp/terminal".to_string()),
+                shell_launch_data: None,
+                is_active: true,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![],
+                active_conversation_id: None,
+                is_conversation_only: false,
+            }),
+        }),
+        default_directory_color: None,
+        selected_color: SelectedTabColor::default(),
+        left_panel: None,
+        right_panel: None,
+        group_id: None,
+        pinned: false,
+    };
+
+    let conversation_tab = TabSnapshot {
+        custom_title: None,
+        root: PaneNodeSnapshot::Leaf(LeafSnapshot {
+            is_focused: false,
+            custom_vertical_tabs_title: None,
+            contents: LeafContents::Terminal(TerminalPaneSnapshot {
+                uuid: vec![2],
+                cwd: Some("/tmp/conversation".to_string()),
+                shell_launch_data: None,
+                is_active: false,
+                is_read_only: false,
+                input_config: None,
+                llm_model_override: None,
+                active_profile_id: None,
+                conversation_ids_to_restore: vec![conversation_id],
+                active_conversation_id: Some(conversation_id),
+                is_conversation_only: true,
+            }),
+        }),
+        default_directory_color: None,
+        selected_color: SelectedTabColor::default(),
+        left_panel: None,
+        right_panel: None,
+        group_id: None,
+        pinned: false,
+    };
+
+    let app_state = AppState {
+        windows: vec![WindowSnapshot {
+            tabs: vec![terminal_tab, conversation_tab],
+            active_tab_index: 0,
+            bounds: None,
+            fullscreen_state: Default::default(),
+            quake_mode: false,
+            universal_search_width: None,
+            warp_ai_width: None,
+            voltron_width: None,
+            warp_drive_index_width: None,
+            left_panel_open: false,
+            vertical_tabs_panel_open: false,
+            left_panel_width: None,
+            right_panel_width: None,
+            cli_subagent_width: None,
+            cli_subagent_height: None,
+            agent_management_filters: None,
+            theme_override: None,
+            tab_groups: vec![],
+        }],
+        active_window_index: Some(0),
+        block_lists: Default::default(),
+        running_mcp_servers: Default::default(),
+    };
+
+    save_app_state(&mut conn, &app_state).expect("app state should save");
+
+    let restored = read_sqlite_data(&mut conn, None)
+        .expect("app state should load")
+        .app_state;
+
+    assert_eq!(restored.windows.len(), 1);
+    let restored_window = &restored.windows[0];
+    assert_eq!(
+        restored_window.tabs.len(),
+        2,
+        "both the terminal tab and the conversation tab (which has a conversation to \
+         restore) must persist"
+    );
+
+    let find_terminal = |uuid: Vec<u8>| {
+        restored_window.tabs.iter().find_map(|tab| match &tab.root {
+            PaneNodeSnapshot::Leaf(LeafSnapshot {
+                contents: LeafContents::Terminal(snapshot),
+                ..
+            }) if snapshot.uuid == uuid => Some(snapshot),
+            _ => None,
+        })
+    };
+
+    let restored_terminal = find_terminal(vec![1]).expect("terminal tab should round-trip");
+    assert!(!restored_terminal.is_conversation_only);
+    assert_eq!(restored_terminal.cwd.as_deref(), Some("/tmp/terminal"));
+
+    let restored_conversation = find_terminal(vec![2]).expect("conversation tab should round-trip");
+    assert!(restored_conversation.is_conversation_only);
+    assert_eq!(
+        restored_conversation.conversation_ids_to_restore,
+        vec![conversation_id],
+        "the conversation to restore must survive the round trip"
+    );
+    assert_eq!(
+        restored_conversation.active_conversation_id,
+        Some(conversation_id)
+    );
+    assert_eq!(
+        restored_conversation.cwd.as_deref(),
+        Some("/tmp/conversation")
+    );
 }
 
 #[test]
