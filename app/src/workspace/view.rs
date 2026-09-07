@@ -3496,6 +3496,14 @@ impl Workspace {
                 self.sync_panel_positions_from_config(ctx);
                 ctx.notify();
             }
+            // The window footer bar's host colouring is owned by `TerminalView`, which
+            // subscribes to these two itself and recomputes its cached colour. The
+            // workspace holds no derived state for them, so there is deliberately nothing
+            // to do here -- but they are listed rather than swept into a `_ =>` arm so the
+            // next setting added to this group still fails to compile here and gets a
+            // decision, which is the only reason this match is exhaustive.
+            TabSettingsChangedEvent::HostFooterColorRuleList { .. }
+            | TabSettingsChangedEvent::UnknownHostColor { .. } => {}
         }
     }
 
