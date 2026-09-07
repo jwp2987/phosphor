@@ -4388,6 +4388,57 @@ fn plan_mode_blocks_tool(plan_mode: bool, tool_name: &str) -> bool {
 /// instead of the redirect. A tool absent from the list cannot produce either.
 const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs", "read_skill"];
 
+/// Execution-class tools withdrawn for a `TypedPane::Conversation`
+/// (`docs/design/moth-parliament.md` step 2, `RequestParams::is_conversation_only`) -- a
+/// pane that never spawns a shell, and never will. "Execution" here means: runs a process,
+/// writes to a pty, or requires a live shell session to mean anything. Explicitly NOT
+/// blocked: `read_files`, `apply_file_diffs`, `read_skill`, `grep`, `file_glob_v2`,
+/// `read_documents` / `edit_documents` / `create_documents` -- the design is "everything
+/// except execution," and file access is the thing that must keep working with no process
+/// behind the pane.
+///
+/// - `run_shell_command` -- spawns the process this pane will never have.
+/// - `write_to_long_running_shell_command` / `read_shell_command_output` -- both operate on
+///   a `command_id` minted by `run_shell_command` (`tools/long_shell.rs`'s module doc); with
+///   that tool gone neither can ever receive a valid one, and both are pty operations by
+///   definition ("write stdin/PTY input" / "grab the current output ... of a command that's
+///   still running").
+/// - `transfer_shell_command_control_to_user` -- hands PTY control of a running command back
+///   to the user (`tools/markers.rs`); there is no PTY to hand back.
+/// - computer use (`request_computer_use` / `use_computer`) -- drives the user's real mouse
+///   and keyboard on the live desktop session. Not file access and not conversation; it acts
+///   on the live system the same way a shell does, just through input injection instead of a
+///   process. `PLAN_MODE_BLOCKED_TOOLS` already treats it as the least-read-only tool in the
+///   registry for the same reason.
+///
+/// Deliberately NOT included: MCP tools. They run through the MCP server's own process,
+/// independent of this pane's (nonexistent) pty, so "no shell for this pane" does not imply
+/// "no MCP" -- and a generic name-based rule cannot tell a read-only MCP tool from one that
+/// shells out on the user's behalf. Left as a judgment call for a future pass if it proves
+/// wrong in practice, not silently folded in here.
+///
+/// `open_code_review` and `suggest_prompt` are also NOT included: both are UI signals with
+/// no process/pty involvement (`tools/markers.rs`'s module doc: "executing them just means
+/// notify the frontend to do something").
+const CONVERSATION_ONLY_BLOCKED_TOOLS: &[&str] = &[
+    "run_shell_command",
+    "write_to_long_running_shell_command",
+    "read_shell_command_output",
+    "transfer_shell_command_control_to_user",
+    tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME,
+    tools::computer::USE_COMPUTER_TOOL_NAME,
+];
+
+/// Whether `tool_name` is withdrawn because this request belongs to a conversation-only
+/// pane. One predicate behind all three halves of the guardrail -- the two tool-array
+/// filters below and the dispatch-site rejection in `generate_byop_output` -- mirroring
+/// `plan_mode_blocks_tool`'s reasoning: three copies of `is_conversation_only &&
+/// CONVERSATION_ONLY_BLOCKED_TOOLS.contains(..)` is how withdrawal and enforcement drift
+/// apart.
+fn conversation_only_blocks_tool(is_conversation_only: bool, tool_name: &str) -> bool {
+    is_conversation_only && CONVERSATION_ONLY_BLOCKED_TOOLS.contains(&tool_name)
+}
+
 /// Whether `name` is one of the two computer-use descriptors.
 ///
 /// Both are gated on `RequestParams::computer_use_enabled`, which `ai/agent/api.rs` already
@@ -4424,6 +4475,7 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
     // was built, because the answer needs the `RemoteServerManager` singleton and there is
     // no `AppContext` here.
     let no_file_route = params.session_context.is_remote_without_file_tools();
+    let is_conversation_only = params.is_conversation_only;
     let mut names: Vec<String> = tools::REGISTRY
         .iter()
         .filter(|t| {
@@ -4456,6 +4508,13 @@ pub fn available_tool_names(params: &RequestParams) -> Vec<String> {
             // reintroducing exactly the failure the withdrawal exists to prevent, by the
             // back door.
             if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // Same allowlist reasoning, for a conversation-only pane: must mirror
+            // `build_tools_array`'s `CONVERSATION_ONLY_BLOCKED_TOOLS` filter, or the
+            // content→tool extraction fallback would let a hand-written "call" through for
+            // a tool that was never advertised.
+            if conversation_only_blocks_tool(is_conversation_only, t.name) {
                 return false;
             }
             true
@@ -4514,6 +4573,9 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
     // was built, because the answer needs the `RemoteServerManager` singleton and there is
     // no `AppContext` here.
     let no_file_route = params.session_context.is_remote_without_file_tools();
+    // `docs/design/moth-parliament.md` step 2: a `TypedPane::Conversation` never spawns a
+    // shell. See `CONVERSATION_ONLY_BLOCKED_TOOLS`.
+    let is_conversation_only = params.is_conversation_only;
     // Zap BYOP: the `suggest_prompt` chip UI has been restored via the view layer
     // subscribing to PromptSuggestionExecutorEvent (see `terminal/view.rs::
     // handle_suggest_prompt_executor_event`), so it can be exposed to the model.
@@ -4577,6 +4639,14 @@ fn build_tools_array(params: &RequestParams, images_supported: bool) -> Vec<Gena
             // are deliberately kept, and why the condition is *not* `is_legacy_ssh()`.
             // Keep in step with `available_tool_names`.
             if no_file_route && NO_FILE_ROUTE_BLOCKED_TOOLS.contains(&t.name) {
+                return false;
+            }
+            // Conversation-only pane: withdraw execution-class tools -- the model must
+            // never be offered a shell it cannot have. Same double-insurance shape as Plan
+            // Mode above: the dispatch-site re-check in `generate_byop_output` is the hard
+            // guardrail; this withdrawal is what keeps the model from believing it can run
+            // commands in the first place. Keep in step with `available_tool_names`.
+            if conversation_only_blocks_tool(is_conversation_only, t.name) {
                 return false;
             }
             true
@@ -5678,6 +5748,10 @@ pub async fn generate_byop_output(
     // Needed at the dispatch site below, not just when building the tools array: see the
     // Plan Mode gate before `parse_incoming_tool_call`.
     let plan_mode = request_plan_mode(&params);
+    // Same reasoning, for `docs/design/moth-parliament.md` step 2: needed at the dispatch
+    // site below, not just when building the tools array. See the conversation-only gate
+    // before `parse_incoming_tool_call`.
+    let is_conversation_only = params.is_conversation_only;
 
     // WARNING: critical to BYOP persistence: under warp's own path, the following
     // ClientActions are all server-side emits that make the client write "non-model-
@@ -7083,6 +7157,61 @@ pub async fn generate_byop_output(
                                 result. Finish investigating with the read-only tools and \
                                 present a plan; the user runs it by re-sending without \
                                 `/plan`.",
+                });
+                let error_content = serde_json::to_string(&error_payload)
+                    .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
+                final_messages.push(make_tool_call_carrier_message(
+                    &current_task_id,
+                    &request_id,
+                    &call.call_id,
+                    &call.fn_name,
+                    &args_str,
+                ));
+                final_messages.push(make_tool_call_result_message(
+                    &current_task_id,
+                    &request_id,
+                    call.call_id.clone(),
+                    error_content,
+                ));
+                continue;
+            }
+
+            // `docs/design/moth-parliament.md` step 2 gate, re-checked at the dispatch site.
+            //
+            // Same reasoning as the Plan Mode gate immediately above: withdrawing
+            // `CONVERSATION_ONLY_BLOCKED_TOOLS` from the advertised tools array only
+            // controls what the model is *told* it can call. `parse_incoming_tool_call`
+            // resolves a name straight out of the full `tools::REGISTRY` with no
+            // `advertised` check, so a model that emits `run_shell_command` by name anyway
+            // -- stale/cached tool definitions, or replaying a tool_call from earlier turns
+            // of the same conversation (e.g. one restored from persistence, or from before
+            // this pane existed) -- would execute normally, and "this pane never spawns a
+            // shell" would be advisory rather than enforced. This is the hard guardrail;
+            // the tool-list withdrawal above is what stops the model from planning around
+            // execution in the first place (`docs/design/moth-parliament.md`: "The tool set
+            // is the enforcement, not a refusal").
+            if conversation_only_blocks_tool(is_conversation_only, &call.fn_name) {
+                let args_str = if call.fn_arguments.is_string() {
+                    call.fn_arguments.as_str().unwrap_or("").to_owned()
+                } else {
+                    call.fn_arguments.to_string()
+                };
+                log::warn!(
+                    "[byop] conversation-only pane: tool call rejected at dispatch: tool={} \
+                     call_id={}",
+                    tool_name_for_log(&call.fn_name),
+                    call.call_id
+                );
+                let error_payload = serde_json::json!({
+                    "status": "error",
+                    "error": "conversation_only_no_execution",
+                    "tool": call.fn_name,
+                    "received_args": &args_str,
+                    "executed": false,
+                    "message": "This conversation has no terminal or shell behind it and \
+                                never will -- NOTHING RAN. Do not retry this or any other \
+                                execution tool here; continue using the read/write file \
+                                tools instead.",
                 });
                 let error_content = serde_json::to_string(&error_payload)
                     .unwrap_or_else(|_| r#"{"status":"error"}"#.to_owned());
@@ -11436,6 +11565,92 @@ mod serializer_readiness_tests {
                  advertised; got {names:?}",
             );
         }
+    }
+
+    /// `docs/design/moth-parliament.md` step 2: a conversation-only pane is a chat surface
+    /// with file access -- everything except execution. The tool set is the enforcement, so
+    /// the advertised list must contain no execution-class tool, and must still contain the
+    /// file tools.
+    ///
+    /// Fails if `build_tools_array` stops consulting `RequestParams::is_conversation_only`
+    /// (the `conversation_only_blocks_tool` filter branch) -- every name in
+    /// `CONVERSATION_ONLY_BLOCKED_TOOLS` would then reappear in `names`.
+    #[test]
+    fn conversation_only_pane_withdraws_execution_tools_but_keeps_file_tools() {
+        let mut params = request_params(vec![], vec![]);
+        params.is_conversation_only = true;
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect();
+
+        for withdrawn in CONVERSATION_ONLY_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !names.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} is execution-class and must not be advertised to a \
+                 conversation-only pane, which never spawns a shell; got {names:?}",
+            );
+        }
+
+        for kept in ["read_files", "apply_file_diffs", "grep", "file_glob"] {
+            assert!(
+                names.iter().any(|n| n.as_str() == kept),
+                "{kept} is file access, not execution, and must stay advertised to a \
+                 conversation-only pane -- \"everything except execution\"; got {names:?}",
+            );
+        }
+    }
+
+    /// A normal (non-conversation-only) pane must not lose these tools -- the withdrawal has
+    /// to be scoped to `is_conversation_only`, not accidentally global.
+    ///
+    /// Fails if `CONVERSATION_ONLY_BLOCKED_TOOLS` were filtered unconditionally instead of
+    /// behind `conversation_only_blocks_tool`'s `is_conversation_only &&` guard.
+    #[test]
+    fn an_ordinary_pane_keeps_the_execution_tools() {
+        let params = request_params(vec![], vec![]);
+        assert!(
+            !params.is_conversation_only,
+            "fixture should not be conversation-only"
+        );
+
+        let names: Vec<String> = build_tools_array(&params, false)
+            .into_iter()
+            .map(|tool| tool.name.as_str().to_owned())
+            .collect();
+
+        assert!(
+            names.iter().any(|n| n.as_str() == "run_shell_command"),
+            "an ordinary pane has a real terminal behind it and must keep run_shell_command; \
+             got {names:?}",
+        );
+    }
+
+    /// `available_tool_names` feeds the content->tool extraction fallback (the same reasoning
+    /// as `the_extraction_allowlist_mirrors_the_legacy_ssh_withdrawal` above): if it did not
+    /// share the withdrawal, a model that wrote `run_shell_command` as plain text on a
+    /// conversation-only pane would have it scraped out and executed anyway.
+    ///
+    /// Fails if `available_tool_names` stops consulting `conversation_only_blocks_tool`.
+    #[test]
+    fn conversation_only_extraction_allowlist_withdraws_execution_tools() {
+        let mut params = request_params(vec![], vec![]);
+        params.is_conversation_only = true;
+
+        let names = available_tool_names(&params);
+
+        for withdrawn in CONVERSATION_ONLY_BLOCKED_TOOLS.iter().copied() {
+            assert!(
+                !names.iter().any(|n| n.as_str() == withdrawn),
+                "{withdrawn} must not be extractable from assistant text on a \
+                 conversation-only pane; got {names:?}",
+            );
+        }
+        assert!(
+            names.iter().any(|n| n.as_str() == "read_files"),
+            "file tools must remain extractable; got {names:?}",
+        );
     }
 
     /// The prompt half of the fix, and its scoping: the non-ssh block renders exactly for

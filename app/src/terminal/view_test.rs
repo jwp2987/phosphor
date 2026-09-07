@@ -1124,6 +1124,48 @@ fn escape_does_not_exit_local_agent_view_with_long_running_command() {
     })
 }
 
+/// Terminal mode must be unreachable from a conversation-only pane
+/// (`docs/design/moth-parliament.md` step 2): there is no pty behind it, so "esc -> back to
+/// terminal" would drop the user into a prompt with nothing on the other end.
+///
+/// Fails if `AgentViewController::can_exit_agent_view` stops checking
+/// `TerminalModel::is_conversation_only` -- Escape would then exit agent view (via
+/// `TerminalView::exit_agent_view`) exactly as it does for an ordinary terminal-backed
+/// agent view, and `view.agent_view_controller().as_ref(ctx).is_active()` would go false.
+#[test]
+fn escape_does_not_exit_agent_view_for_a_conversation_only_pane() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            view.enter_agent_view_for_new_conversation(
+                None,
+                AgentViewEntryOrigin::Input {
+                    was_prompt_autodetected: false,
+                },
+                ctx,
+            );
+            view.model.lock().set_is_conversation_only(true);
+
+            assert!(matches!(
+                view.can_exit_agent_view_for_terminal_view(ctx),
+                Err(ExitAgentViewError::ConversationOnly)
+            ));
+
+            view.handle_input_event(&InputEvent::Escape, ctx);
+
+            assert!(
+                view.agent_view_controller().as_ref(ctx).is_active(),
+                "a conversation-only pane has no terminal to escape to -- Escape must not \
+                 exit agent view"
+            );
+        });
+    })
+}
+
 #[test]
 fn root_ambient_agent_pane_sets_root_ambient_agent_context_key() {
     use crate::settings::import::model::ImportedConfigModel;

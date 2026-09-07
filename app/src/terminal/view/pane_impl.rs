@@ -176,9 +176,20 @@ impl TerminalView {
 
         let ambient_agent_view = self.ambient_agent_view_model.as_ref(app);
         let is_transcript_viewer = self.model.lock().is_conversation_transcript_viewer();
+        // `docs/design/moth-parliament.md` step 2: a conversation-only pane
+        // (`TerminalModel::is_conversation_only`) has no terminal behind it either, for the
+        // same reason a transcript viewer doesn't -- there is nothing for "back" to return
+        // to. Folded into the same boolean as the transcript-viewer case rather than a
+        // parallel branch, since both mean "suppress the back button" identically here;
+        // `can_exit_agent_view` in `ai/blocklist/agent_view/controller.rs` is the other half
+        // of this guard (it keeps Escape/Ctrl-C from acting even if this button were somehow
+        // shown).
+        let is_conversation_only = self.model.lock().is_conversation_only();
         let has_parent_terminal = (ambient_agent_view.is_ambient_agent()
             && ambient_agent_view.has_parent_terminal())
-            || (!ambient_agent_view.is_ambient_agent() && !is_transcript_viewer);
+            || (!ambient_agent_view.is_ambient_agent()
+                && !is_transcript_viewer
+                && !is_conversation_only);
         let is_fullscreen_agent_view = self.agent_view_controller.as_ref(app).is_fullscreen();
 
         if in_nav_stack || (is_fullscreen_agent_view && has_parent_terminal) {

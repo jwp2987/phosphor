@@ -2158,12 +2158,17 @@ impl BlocklistAIController {
             is_auto_resume_after_error: false,
         });
 
+        // Locked and dropped up front (`AGENTS.md` §5.3): `RequestParams::new` below runs a
+        // lot of unrelated singleton lookups, and this keeps the guard from being held as a
+        // temporary across all of it.
+        let is_conversation_only = self.terminal_model.lock().is_conversation_only();
         let request_params = api::RequestParams::new(
             Some(self.terminal_view_id),
             SessionContext::from_session(self.active_session.as_ref(ctx), ctx),
             &request_input,
             conversation_data,
             metadata,
+            is_conversation_only,
             ctx,
         );
 
@@ -2314,12 +2319,16 @@ impl BlocklistAIController {
     ) -> api::RequestParams {
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         let conversation_id = conversation_data.id;
+        // Locked and dropped up front (`AGENTS.md` §5.3): see the matching comment in
+        // `build_passive_suggestions_request_params` above.
+        let is_conversation_only = self.terminal_model.lock().is_conversation_only();
         let mut request_params = api::RequestParams::new(
             Some(self.terminal_view_id),
             SessionContext::from_session(self.active_session.as_ref(ctx), ctx),
             request_input,
             conversation_data,
             query_metadata,
+            is_conversation_only,
             ctx,
         );
         request_params.parent_agent_id = parent_agent_id;

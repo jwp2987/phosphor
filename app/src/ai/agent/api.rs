@@ -201,6 +201,24 @@ pub struct RequestParams {
     /// interceptor has none, and the handle is exactly what lets it query anyway.
     pub codebase_retrieval: Option<crate::ai::codebase_retrieval::CodebaseRetrievalHandle>,
     pub computer_use_enabled: bool,
+    /// `docs/design/moth-parliament.md` step 2: whether this request belongs to a
+    /// `TypedPane::Conversation` (`TerminalModel::is_conversation_only`) -- a pane that
+    /// never spawns a shell, and never will. `chat_stream::build_tools_array` /
+    /// `available_tool_names` withdraw execution-class tools
+    /// (`CONVERSATION_ONLY_BLOCKED_TOOLS`) from the advertised set when this is true, and
+    /// `generate_byop_output`'s dispatch-site re-check rejects them if a model emits one
+    /// anyway -- the same three-part guardrail shape as `plan_mode` /
+    /// `PLAN_MODE_BLOCKED_TOOLS`.
+    ///
+    /// Resolved by the controller from `self.terminal_model` (a per-pane property, not
+    /// derivable from `AppContext` + `terminal_view_id` alone the way the other gates
+    /// above are), at the two `RequestParams::new` call sites in
+    /// `ai/blocklist/controller.rs`. Defaults to `false` here and in `new_for_test`; a
+    /// caller that builds a `RequestParams` without going through the controller (only
+    /// tests do this) gets the safe default of "tools are not withdrawn" -- which is
+    /// correct, since nothing outside the controller is a conversation-only pane's real
+    /// request path.
+    pub is_conversation_only: bool,
     pub ask_user_question_enabled: bool,
     pub research_agent_enabled: bool,
     pub supported_tools_override: Option<Vec<warp_multi_agent_api::ToolType>>,
@@ -399,6 +417,7 @@ impl RequestParams {
             relevant_files: None,
             codebase_retrieval: None,
             computer_use_enabled: false,
+            is_conversation_only: false,
             ask_user_question_enabled: false,
             research_agent_enabled: false,
             supported_tools_override: None,
@@ -420,6 +439,11 @@ impl RequestParams {
         request_input: &RequestInput,
         conversation: ConversationData,
         metadata: Option<RequestMetadata>,
+        // `docs/design/moth-parliament.md` step 2: see `RequestParams::is_conversation_only`.
+        // A plain bool rather than resolved internally, because -- unlike every other gate
+        // `new()` resolves from `app` -- this needs the caller's own `TerminalModel`, which
+        // `new()` has no way to reach from `terminal_view_id` alone.
+        is_conversation_only: bool,
         app: &AppContext,
     ) -> Self {
         let ai_settings = AISettings::as_ref(app);
@@ -648,6 +672,7 @@ impl RequestParams {
             relevant_files,
             codebase_retrieval,
             computer_use_enabled,
+            is_conversation_only,
             ask_user_question_enabled,
             research_agent_enabled,
             supported_tools_override: request_input.supported_tools_override.clone(),

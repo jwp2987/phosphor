@@ -40,6 +40,13 @@ pub enum ExitAgentViewError {
     ConversationViewer,
     #[error("Cannot exit agent.")]
     AmbientAgent,
+    /// `docs/design/moth-parliament.md` step 2: a `TypedPane::Conversation` never spawns a
+    /// shell, so "exit agent view" has no terminal to land on. Distinct from
+    /// `ConversationViewer` (viewing someone else's transcript) even though both currently
+    /// mean "no terminal behind this pane" -- the causes differ and a future reader
+    /// debugging one must not be pointed at the other's message.
+    #[error("This conversation has no terminal to return to.")]
+    ConversationOnly,
 }
 
 /// The display mode for an active agent view.
@@ -482,6 +489,17 @@ impl AgentViewController {
         // so exiting agent view is not allowed.
         if model.is_conversation_transcript_viewer() {
             return Err(ExitAgentViewError::ConversationViewer);
+        }
+
+        // `docs/design/moth-parliament.md` step 2: a conversation-only pane never had a
+        // shell and never will (`TerminalModel::is_conversation_only`) -- "exit agent view"
+        // would otherwise drop the user into a terminal prompt with no process behind it.
+        // This is the single choke point for the mode switch: it also gates
+        // `should_ctrl_c_exit_agent_view` (which calls `can_exit_agent_view` directly) and,
+        // via `can_exit_agent_view_for_terminal_view`, the Escape handler and the
+        // `ExitAgentView` typed action in `terminal/view.rs`.
+        if model.is_conversation_only() {
+            return Err(ExitAgentViewError::ConversationOnly);
         }
 
         Ok(())
