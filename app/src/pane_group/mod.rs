@@ -6120,7 +6120,10 @@ impl PaneGroup {
         // (`conversation_pane_inherited_cwd`), or this process's own working directory
         // (`docs/design/moth-parliament.md` step 3).
         terminal_manager.update(ctx, |terminal_manager, _ctx| {
-            let mut model = terminal_manager.model().lock();
+            // `model()` returns a temporary, so `model().lock()` in one statement drops it
+            // while the guard still borrows it (E0716). Bind it first.
+            let model_handle = terminal_manager.model();
+            let mut model = model_handle.lock();
             model.set_is_conversation_only(true);
             model.set_session_startup_path(cwd);
         });
