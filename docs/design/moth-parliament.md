@@ -213,47 +213,63 @@ terminal; the block list showing a real pty is the product.
 
 ---
 
-## 4a. What this unlocks: execution location becomes a property
+## 4a. Execution location is a session property, not a conversation's
 
-The framing above — and `DESIGN-PHOSPHOR-FORK.md` §9 — describes this as a UI change:
-chat not tied to a terminal. That undersells it. **The same seam makes "where does
-this conversation execute" a question the code can ask.**
+**REWRITTEN 2026-09-07.** The previous version of this section argued that giving
+conversations a lazily-spawned execution context is what makes "where does this run"
+a question the code can ask. That was a category error, and the maintainer caught it.
 
-Today it cannot. A conversation *is* a view onto a local `TerminalView` with a local
-pty; the answer is hardcoded by structure, so there is nowhere to put a different one.
-Once a conversation owns a lazily-spawned execution context instead of being owned by
-a terminal, the target of that spawn is a value.
+Where work runs is a property of the **execution context** — the session and its pty.
+A conversation is chat. Tying a location to a conversation only looked natural because
+the conversation happened to be the thing that had not spawned yet, and an empty object
+is a convenient place to hang a decision. But deferral is not ownership.
 
-**And the remote machinery already exists.** Phosphor knows how to have non-local
-terminals — `SessionType::{Local, Remote, WarpifiedRemote}`, the remote-server
-extension, the ssh wrapper. It is currently reached by the user typing `ssh`, not by a
-conversation choosing where to run. A conversation on a laptop spawning its terminal
-on a build box is not a new subsystem; it is the existing one reached through a new
-seam.
+**Phosphor already models this correctly, in the right place.**
+`SessionType::{Local, Remote, WarpifiedRemote}` is on the *session*, as is
+`set_remote_host_id`. Location is already a session attribute. The old §4a proposed
+moving that decision onto conversations, which would have taken a property off the
+object that owns it and put it on one that does not.
 
-With step 4's `Surface` field these become two independent axes:
+### What is actually missing
 
-| axis | question it answers |
-|---|---|
-| execution context | where the work runs — local, ssh host, container |
-| surface | which of *this app's* surfaces is rendering it — GUI pane, TUI |
+Not an architectural seam — a **session-creation affordance.**
 
-**Correction, 2026-09-05:** an earlier draft of this section claimed those axes being
-separable is "what remote agent actually means: work running on a machine you own,
-viewed from another, surviving the viewer going away." **That was overstated and is
-wrong.** Viewing a conversation that lives on another machine needs a transport, and
-there are only two:
+Today the only way to get a remote session is to type `ssh` inside a local one. There
+is no way to *ask for* a session on a host: no "new tab on build-box". The target is
+decided by what the user types into a shell, after the local session already exists.
 
-- **SSH in and view it there.** Works today via warpified remote, and needs no surface
-  field at all.
-- **Sync the conversation between machines.** That is precisely the transport dropped
-  with the cloud layer, and nothing on this branch reinstates it.
+That belongs next to `PanesLayout::SingleTerminal` and the new-session menu — the
+places a session is created — and it is independent of this branch.
 
-So the surface field does **not** buy cross-device viewing. It buys surface
-independence *within one running app*. The execution-location argument above stands on
-its own — it is about where the spawned terminal lives, and Phosphor already has
-`SessionType::Remote` for that — but it does not depend on `Surface` and should not be
-justified by it.
+### What this means for the conversation work
+
+**Nothing. That is the point.** The two are unrelated, and the previous version of this
+document claimed a dependency that does not exist:
+
+- Step 2's decision (a conversation never executes) does not block remote execution.
+  It removes conversations from the question entirely.
+- Remote execution does not need a deferred spawn. A session created against a remote
+  target from the start is *simpler* than one that spawns locally and redirects.
+- An earlier draft of this rewrite concluded "agent tabs will need deferred spawn
+  instead". That inherited the same mistake. An agent tab does not need to defer
+  anything; it needs to be **created** against a target.
+
+### The surface axis, unchanged
+
+Step 4's `Surface` remains a separate, still-valid axis, and its correction stands:
+
+> Viewing a conversation that lives on another machine needs a transport, and there are
+> only two: SSH in and view it there (works today, needs no surface field), or sync the
+> conversation between machines (precisely the transport dropped with the cloud layer).
+
+So `Surface` buys surface independence *within one running app* — GUI pane vs TUI — and
+must not be justified by remote execution. Two independent axes, neither derived from
+the other:
+
+| axis | question it answers | where it lives |
+|---|---|---|
+| execution target | where the work runs — local, ssh host, container | the session |
+| surface | which of this app's surfaces renders it — GUI pane, TUI | the conversation |
 
 ### This is not the cloud orchestration we dropped
 
@@ -268,23 +284,29 @@ An agent running on a host you own, over your own SSH, with your own provider ke
 squarely BYOP. Do not file it as cloud, and do not let the word "remote" trigger
 `script/check_cloud_boundary` reasoning by reflex.
 
-### What this changes about step 2
+### What this used to impose on step 2, and no longer does
 
-**Design the spawn path to take a target from the start.** Not because remote
-execution is in scope for the first cut — it is not — but because "assume local, add a
-target later" is a retrofit, and this branch already has one retrofit hazard it is
-trying to avoid (the `channel` decision at step 4). A spawn function that takes an
-explicit local target costs nothing now and is the difference between a later feature
-and a later rewrite.
+The previous version added a clause to step 2's "done when": that the spawn entry point
+must name its target explicitly, so remote execution would not be a retrofit.
 
-Concretely, step 2's "done when" gains a clause: the spawn entry point names its
-target explicitly, even though `Local` is the only value it can currently be given.
+**Void.** Step 2 was decided on 2026-09-07 as "no execution, ever" — there is no spawn
+path in a conversation to give a target to. The retrofit hazard it was guarding against
+applies to session creation instead, where the target belongs.
 
 ---
 
 ## 4b. Remote execution: the target, and what it needs
 
 **DECIDED 2026-09-05: Model A is the target. Model B is parked, not rejected.**
+
+**Scope corrected 2026-09-07.** This section previously read as a continuation of the
+conversation work, on §4a's now-withdrawn claim that a conversation's deferred spawn was
+the seam remote execution needed. It is not, and this section does not depend on this
+branch at all: it is about creating a *session* against a remote target, and it could be
+built with the conversation-pane work finished, unfinished, or abandoned.
+
+Everything below stands on its own terms. Read "the agent" here as an agent tab — the
+pane type that executes — not a conversation pane, which by step 2's decision never does.
 
 ### Model A — remote *execution*. The laptop drives.
 
