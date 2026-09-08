@@ -112,6 +112,14 @@ What this settles, each of which was previously open or fudged:
   expecting a `terminal_view_id` keeps working — but it is now scaffolding for
   compatibility rather than a staging state on the way to spawning.
 
+**MCP tools stay available. DECIDED 2026-09-07.** They run in the MCP server's own
+process, so they do not depend on this pane having a pty, and a name-based rule
+cannot tell a read-only MCP tool from one that shells out. That means "no
+execution" is enforced for Phosphor's own tools and not for MCP -- an MCP server
+can still run commands on the user's behalf. Accepted deliberately: MCP is
+configured by the user, per server, and silently withdrawing it from one pane type
+would be more surprising than the gap it closes.
+
 **Done when:** the conversation agent's tool set contains no execution tool; `esc`
 does not offer terminal mode in a conversation pane; and a conversation can read
 and write files without any process existing.
@@ -130,6 +138,12 @@ creation, show it in the pane header. Fall back to the workspace root.
 relative paths against a working directory, so a conversation that can read and
 write files *needs* one. This is no longer groundwork for a future spawn — it is
 what makes the tools a conversation does have work correctly.
+
+**Why the header matters here specifically.** A conversation pane has file tools
+and no shell, so there is no prompt and no `pwd` -- nothing on screen tells the
+user which directory the agent will read and write in. For a terminal the prompt
+answers that; for a conversation the directory is invisible state that affects
+real file writes.
 
 **Done when:** a restored conversation with no process still knows where it is, a
 new conversation inherits the active tab's directory, and the pane header shows it.
