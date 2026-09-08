@@ -27,6 +27,7 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::buttons::icon_button_with_color;
 use crate::ui_components::icons;
 use crate::workspace::tab_settings::TabSettings;
+use std::path::PathBuf;
 use warp_core::ui::Icon as WarpIcon;
 use warpui::elements::{
     ChildAnchor, ConstrainedBox, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize,
@@ -237,11 +238,10 @@ impl TerminalView {
         // block for the same reason.
         let conversation_directory = {
             let model = self.model.lock();
-            if model.is_conversation_only() {
-                model.session_startup_path()
-            } else {
-                None
-            }
+            conversation_directory_to_display(
+                model.is_conversation_only(),
+                model.session_startup_path(),
+            )
         };
 
         let pane_indicator = if should_render_ambient_agent_indicator {
@@ -321,28 +321,51 @@ impl TerminalView {
             center_row.add_child(title_element);
         }
 
-        if let Some(directory) = conversation_directory {
+        // `resolve_conversation_directory_path` applies the "unset path means home" fallback
+        // documented on `TerminalModel::session_startup_path`; only a pane that isn't a
+        // conversation pane at all, or the rare case where even `dirs::home_dir()` fails,
+        // renders nothing here.
+        let home_dir = dirs::home_dir();
+        if let Some(directory) =
+            resolve_conversation_directory_path(conversation_directory, home_dir.clone())
+        {
             // `user_friendly_path` is what the vertical tab list already uses to render a
             // directory, so home collapses to `~` the same way in both places rather than a
             // conversation pane growing its own spelling of the same path.
-            let home_dir = dirs::home_dir();
             let home_str = home_dir.as_ref().and_then(|path| path.to_str());
             let display =
                 warp_util::path::user_friendly_path(&directory.to_string_lossy(), home_str)
                     .to_string();
 
+            // Wrapped in a non-flex `ConstrainedBox` (never `Shrinkable`/`Expanded`, which
+            // attach `FlexParentData` -- the `is_pane_dragging` branch above requires every
+            // child of this row to stay non-flex) rather than left as a bare `Container`.
+            // Without a max width, a Flex child with no `FlexParentData` is laid out with
+            // `SizeConstraint::child_constraint_along_axis`, whose main-axis max is
+            // `f32::INFINITY` regardless of this row's own constraint (`Flex::layout` in
+            // `crates/warpui_core/src/presenter.rs`): the `ClipConfig::start()` below would
+            // never fire (nothing is ever wider than an infinite max), and this child's
+            // unclamped natural width would still count toward the row's `fixed_space`,
+            // shrinking the title's `Shrinkable(1.0)` allocation toward zero in a narrow
+            // pane. `ConstrainedBox::layout` clamps the constraint it passes down to its own
+            // `self.constraint.max` regardless of the (possibly infinite) constraint it is
+            // given, so this reliably caps both the clip and the fixed-space contribution.
             center_row.add_child(
-                Container::new(
-                    Text::new_inline(
-                        display,
-                        appearance.ui_font_family(),
-                        appearance.ui_font_size(),
+                ConstrainedBox::new(
+                    Container::new(
+                        Text::new_inline(
+                            display,
+                            appearance.ui_font_family(),
+                            appearance.ui_font_size(),
+                        )
+                        .with_color(appearance.theme().nonactive_ui_text_color().into())
+                        .with_clip(ClipConfig::start())
+                        .finish(),
                     )
-                    .with_color(appearance.theme().nonactive_ui_text_color().into())
-                    .with_clip(ClipConfig::start())
+                    .with_margin_left(6.)
                     .finish(),
                 )
-                .with_margin_left(6.)
+                .with_max_width(CONVERSATION_DIRECTORY_MAX_WIDTH)
                 .finish(),
             );
         }
@@ -862,3 +885,41 @@ impl TerminalView {
 fn default_agent_conversation_title() -> String {
     crate::t!("terminal-pane-new-agent-conversation-title")
 }
+
+/// Maximum on-screen width, in pixels, of a conversation pane's working-directory text
+/// beside its title. This element is deliberately non-flex (see the comment where it is
+/// constructed), so its width has to be capped by a fixed constant rather than a flex
+/// weight: too small truncates directories a user commonly sees (e.g. `~/git/phosphor`)
+/// well before the header runs out of room; too large lets a long path claim more of the
+/// row's fixed space than the title, starving the title's `Shrinkable` allocation in a
+/// narrow pane -- the exact regression this constant exists to prevent.
+const CONVERSATION_DIRECTORY_MAX_WIDTH: f32 = 160.0;
+
+/// Which directory a conversation pane's header should display, distinguishing three cases
+/// that a single flattened `Option<PathBuf>` cannot: not a conversation pane at all (outer
+/// `None`, render nothing), a conversation pane with no explicit startup path (`Some(None)`,
+/// which `TerminalModel::session_startup_path`'s doc comment says means the user's home
+/// directory), and a conversation pane with an explicit path (`Some(Some(path))`).
+fn conversation_directory_to_display(
+    is_conversation_only: bool,
+    session_startup_path: Option<PathBuf>,
+) -> Option<Option<PathBuf>> {
+    is_conversation_only.then_some(session_startup_path)
+}
+
+/// Resolves the two-level detail from `conversation_directory_to_display` down to the
+/// single path (if any) a conversation pane's header should render, applying the "no
+/// explicit path means home" fallback along the way. Returns `None` when this isn't a
+/// conversation pane, or -- deliberately, rather than by omission -- when it is one with no
+/// explicit path and `home_dir` is also `None`: there is genuinely no path to show, and
+/// rendering nothing is correct.
+fn resolve_conversation_directory_path(
+    directory_to_display: Option<Option<PathBuf>>,
+    home_dir: Option<PathBuf>,
+) -> Option<PathBuf> {
+    directory_to_display?.or(home_dir)
+}
+
+#[cfg(test)]
+#[path = "pane_impl_tests.rs"]
+mod tests;
