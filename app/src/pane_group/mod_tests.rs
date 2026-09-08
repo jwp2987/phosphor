@@ -986,7 +986,11 @@ fn test_add_conversation_pane_inherits_base_pane_directory() {
             base_pane
                 .terminal_manager(ctx)
                 .update(ctx, |terminal_manager, _ctx| {
-                    let mut model = terminal_manager.model().lock();
+                    // Bind the handle before locking: `model()` returns a temporary, and
+                    // `model().lock()` in one statement drops it while the guard still
+                    // borrows it (E0716).
+                    let model_handle = terminal_manager.model();
+                    let mut model = model_handle.lock();
                     model.set_is_conversation_only(true);
                     model.set_session_startup_path(Some(base_pane_cwd.clone()));
                 });
