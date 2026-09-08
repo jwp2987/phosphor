@@ -30,7 +30,7 @@ use crate::workspace::tab_settings::TabSettings;
 use warp_core::ui::Icon as WarpIcon;
 use warpui::elements::{
     ChildAnchor, ConstrainedBox, CrossAxisAlignment, Flex, MainAxisAlignment, MainAxisSize,
-    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Shrinkable, Stack,
+    OffsetPositioning, ParentAnchor, ParentElement, ParentOffsetBounds, Shrinkable, Stack, Text,
 };
 use warpui::prelude::{vec2f, ChildView, Container, Hoverable};
 use warpui::text_layout::ClipConfig;
@@ -227,6 +227,23 @@ impl TerminalView {
                     Some(ConversationTranscriptViewerStatus::ViewingAmbientConversation(_))
                 )
         };
+        // A conversation pane has file tools and no shell, so nothing else on screen says
+        // which directory the agent reads and writes in -- there is no prompt and no `pwd`.
+        // Show it beside the title.
+        //
+        // Taken under its own scoped lock, released before the element tree is built.
+        // `TerminalPane::snapshot` deadlocked earlier on this branch by holding one model
+        // guard while taking a second; keep every model read in this function inside its own
+        // block for the same reason.
+        let conversation_directory = {
+            let model = self.model.lock();
+            if model.is_conversation_only() {
+                model.session_startup_path()
+            } else {
+                None
+            }
+        };
+
         let pane_indicator = if should_render_ambient_agent_indicator {
             Some(self.render_ambient_agent_indicator(app))
         } else if let Some(shared_session) = self.shared_session.as_ref() {
@@ -302,6 +319,32 @@ impl TerminalView {
                     Shrinkable::new(1.0, title_text).finish()
                 };
             center_row.add_child(title_element);
+        }
+
+        if let Some(directory) = conversation_directory {
+            // `user_friendly_path` is what the vertical tab list already uses to render a
+            // directory, so home collapses to `~` the same way in both places rather than a
+            // conversation pane growing its own spelling of the same path.
+            let home_dir = dirs::home_dir();
+            let home_str = home_dir.as_ref().and_then(|path| path.to_str());
+            let display =
+                warp_util::path::user_friendly_path(&directory.to_string_lossy(), home_str)
+                    .to_string();
+
+            center_row.add_child(
+                Container::new(
+                    Text::new_inline(
+                        display,
+                        appearance.ui_font_family(),
+                        appearance.ui_font_size(),
+                    )
+                    .with_color(appearance.theme().nonactive_ui_text_color().into())
+                    .with_clip(ClipConfig::start())
+                    .finish(),
+                )
+                .with_margin_left(6.)
+                .finish(),
+            );
         }
 
         center_row.finish()
