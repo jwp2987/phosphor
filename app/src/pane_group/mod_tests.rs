@@ -1212,6 +1212,11 @@ fn test_restore_pane_tree_builds_conversation_pane_with_no_process() {
 
     App::test((), |mut app| async move {
         crate::workspace::view::tests::initialize_app(&mut app);
+        // Restoring a conversation enters agent view, which reaches `QueuedQueryModel`.
+        // `initialize_app` does not register it, and an unregistered singleton panics rather
+        // than returning `None` -- so without this the restore panics after having already
+        // succeeded. Registered the same way `test_add_conversation_pane_*` does above.
+        app.add_singleton_model(crate::ai::blocklist::QueuedQueryModel::new);
 
         let conversation_id = AIConversationId::new();
         app.update(|ctx| {
