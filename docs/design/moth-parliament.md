@@ -299,6 +299,10 @@ applies to session creation instead, where the target belongs.
 
 **DECIDED 2026-09-05: Model A is the target. Model B is parked, not rejected.**
 
+**Revised 2026-09-07: Model C (a broker, laptop-driven) supersedes A as the target.** It
+does everything A does, adds N x M decoupling, and makes Windows tractable rather than
+excluded. A is not wrong -- C is A with the transport factored out of the panes.
+
 **Scope corrected 2026-09-07.** This section previously read as a continuation of the
 conversation work, on §4a's now-withdrawn claim that a conversation's deferred spawn was
 the seam remote execution needed. It is not, and this section does not depend on this
@@ -343,6 +347,65 @@ the laptop, the laptop must be awake, which is Model A wearing a hat.
 Warp's servers, not about remoteness — `DECLINED.md` is explicit that the remote-server
 daemon is "entirely local. Not Warp's cloud backend, despite the name."
 
+### Model C — a broker. The laptop drives; one component knows the endpoints.
+
+**PROPOSED 2026-09-07 by the maintainer.** Not a variant of B. Topology and control are
+independent axes, and an earlier draft of this section wrongly treated a broker as
+implying remote autonomy:
+
+| | laptop drives | remote drives |
+|---|---|---|
+| **direct (1:1)** | Model A — ssh to a remote pty | Model B — remote owns the loop |
+| **broker (N x M)** | **Model C** | broker + autonomy (still blocked as B is) |
+
+A broker sits between the app's surfaces and its execution endpoints. Terminals, agent
+tabs and conversations dispatch work to it; it knows how to reach a target and route
+the work there. The remote end can be a dumb executor — it does not have to be an
+autonomous agent.
+
+**It inherits none of Model B's blockers**, because the laptop is still driving:
+
+- **No credential distribution.** Keys stay local, exactly as in Model A. Nothing is
+  sent to the remote.
+- **No history reconciliation.** The laptop owns the conversation and its history,
+  because it owns the loop.
+- **cproxy is untouched**, for the reason it is always untouched: it names a tool and
+  stops. Where the client runs that tool is none of its business — local pty, ssh'd
+  pty, or dispatched through a broker, the conversation looks identical. It stays bound
+  to loopback with no tunnel.
+
+**What it buys over Model A** is the N x M decoupling. One component knows about
+endpoints; every surface dispatches through it, instead of each pane owning its own
+transport. That is the difference between adding a second execution target and adding a
+second copy of the transport code.
+
+**It does not require conversations to execute.** Dispatching is not executing, so this
+is compatible with step 2's decision. A conversation asking a broker to run something is
+messaging a peer, not spawning a shell. The line worth drawing explicitly, before anyone
+builds this: the remote end is a peer with its own tools, not a shell we are puppeting.
+If that line blurs, "no execution" becomes execution with extra steps.
+
+### Model C is what makes Windows tractable
+
+This is the strongest argument for it, and it inverts the constraint below.
+
+The tmux/ConPTY problem is about a **pty control channel**. A broker's dispatch path has
+none: it exchanges framed messages with a small binary. DCS never enters the picture, so
+ConPTY's gap stops mattering, and requirement 1 below ("cross-platform, Windows
+included") is satisfied by construction rather than by careful avoidance.
+
+The remote half is also closer to existing code than to anything new. The audit further
+down found `remote_server` already has the framed protocol with size limits, install over
+SSH with a build-time-pinned SHA-256 that fails closed, the proxy/daemon split, and
+preinstall capability detection (`RemoteOs`, `RemoteArch`). What it lacks is session
+ownership — which is exactly what a broker's remote end would add.
+
+**Do not overclaim this.** Dispatch is not an interactive remote terminal. A broker
+cleanly unlocks "run this, stream the output back" on Windows. A shell you *type into*,
+with a live pty and reattach, still needs pty semantics on the remote side — the harder
+problem the tmux constraint was originally about. So this unlocks Windows **agents**, not
+automatically Windows **warpified interactive ssh**.
+
 ### The transport must not be tmux
 
 `DECLINED.md` records keeping the SSH tmux wrapper permanently, and it is a fine
@@ -363,6 +426,12 @@ the app owns**, not a shell the user started.
 
 A lightweight remote agent — a small binary the app can install and speak to over SSH,
 owning the remote side of a session and supporting clean reattach.
+
+**Under Model C this is the broker's remote half**, and the requirements below are
+unchanged by that: they were written for a component that owns the remote side of a
+session, which is exactly what a broker dispatches to. Requirement 1 stops being a
+constraint to design around and becomes a property of the dispatch path -- see "Model C
+is what makes Windows tractable" above.
 
 Requirements, in priority order:
 
