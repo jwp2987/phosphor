@@ -385,6 +385,63 @@ messaging a peer, not spawning a shell. The line worth drawing explicitly, befor
 builds this: the remote end is a peer with its own tools, not a shell we are puppeting.
 If that line blurs, "no execution" becomes execution with extra steps.
 
+### Model C's broker is a local daemon, not an in-app component
+
+**DECIDED 2026-09-08.** The broker runs as a separate local process, on the cproxy
+model: loopback-bound, one user, no tunnel, started and managed by the app.
+
+The alternative -- a model living inside the app that owns endpoint handles -- is
+simpler and wrong. It dies with the app. Closing Phosphor would kill in-flight
+remote work, and each window would hold its own endpoints.
+
+A daemon changes what the model buys, and this is the actual argument for it:
+
+**Remote work survives the app.** Close Phosphor, reopen it, and the remote sessions
+are still there, because the broker held them rather than the GUI process. That is
+most of what people want from "remote agents" -- work that outlives the window --
+**without** Model B's autonomy, and therefore without either of Model B's blockers.
+No credential leaves the machine and no history needs reconciling, because the laptop
+is still driving; it just no longer has to be the same laptop *process*.
+
+It is also the one precedent this fork already runs: cproxy is a local daemon that
+decouples the app from a provider. A broker is the same move on the execution axis.
+
+### Two things the daemon must not break
+
+**Output must stream, incrementally, from day one.** Phosphor's product is the block
+list showing a real pty -- this document rejects OpenDev's execution model on exactly
+that ground ("no persistent shell, no pty, no surviving `cd`, no interactive
+programs"). A broker that collects a command's output and returns it as a completed
+blob would look like it works in a demo and be the wrong architecture. The protocol is
+streaming or it is not this product. `remote_server`'s framed protocol already carries
+size limits and framing, so this is a constraint on the *design*, not a missing
+capability.
+
+**The local endpoint must be a passthrough, not a round trip.** Local execution cannot
+get slower or lose fidelity because a broker exists. If routing local work through the
+same abstraction makes it feel different from today, the abstraction has failed and
+should be reworked rather than shipped.
+
+### Build order: the session target first, the daemon second
+
+Do **not** start with the broker. Start with the session-creation affordance from 4a --
+"new tab on build-box" -- which creates a session whose target is remote from the
+outset, using `SessionType::Remote` and the remote-server extension that already ship.
+
+That first cut proves the two genuinely hard things: the transport, and giving
+`remote_server` the session ownership it currently lacks (it assists a shell; it does
+not own one). The broker is then a refactor of *where the transport lives*, which is
+far easier once one endpoint works than designed in the abstract. With a single
+endpoint and a single surface a broker is indirection for its own sake; it earns its
+keep at N x M.
+
+### Open question: does the broker route file tools, or only execution?
+
+Unsettled, and worth deciding before code exists. If a conversation pane's `read_files`
+against a remote target goes through the broker, then a conversation is reaching a
+remote machine -- and step 2's "dispatch is not execution" line blurs. Either answer is
+defensible; drifting into one by accident is not.
+
 ### Model C is what makes Windows tractable
 
 This is the strongest argument for it, and it inverts the constraint below.
