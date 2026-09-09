@@ -71,7 +71,8 @@ fn main() -> Result<()> {
 // `phosphor`. `zap` is kept alongside it so links already in the wild still
 // open; the app only ever *emits* the first.
 #[cfg(all(not(feature = "extern_plist"), target_os = "macos"))]
-embed_plist::embed_info_plist_bytes!(r#"
+embed_plist::embed_info_plist_bytes!(concat!(
+    r#"
     <?xml version="1.0" encoding="UTF-8"?>
     <!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
     <plist version="1.0">
@@ -97,7 +98,13 @@ embed_plist::embed_info_plist_bytes!(r#"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.1.0</string>
+    <string>"#,
+    // Derived from `app/Cargo.toml`, never hand-written. This was pinned at 0.1.0 while
+    // the crate reached 0.1.3, so macOS -- and Finder, Gatekeeper and anything reading the
+    // bundle -- reported a version two releases stale (#640). `concat!` accepts `env!`
+    // because it expands to a literal at compile time.
+    env!("CARGO_PKG_VERSION"),
+    r#"</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key>
@@ -110,4 +117,6 @@ embed_plist::embed_info_plist_bytes!(r#"
     <string>© 2026, Phosphor</string>
     </dict>
     </plist>
-"#.as_bytes());
+"#
+)
+.as_bytes());
