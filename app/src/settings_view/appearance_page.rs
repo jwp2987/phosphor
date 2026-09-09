@@ -67,7 +67,9 @@ use crate::workspace::WorkspaceAction;
 use crate::{editor::EditorView, themes::theme_chooser::ThemeChooserMode};
 use crate::{
     features::FeatureFlag,
-    view_components::{Dropdown, DropdownItem, FilterableDropdown},
+    view_components::{
+        Dropdown, DropdownItem, FilterableDropdown, SubmittableTextInput, SubmittableTextInputEvent,
+    },
 };
 use crate::{report_error, report_if_error, themes};
 use crate::{send_telemetry_from_ctx, server::telemetry::TelemetryEvent};
@@ -558,10 +560,9 @@ pub struct AppearanceSettingsPageView {
     /// runtime) so, unlike `color_picker_dot_states`, this never needs resizing.
     host_footer_color_rule_picker_states: Vec<MouseStateHandle>,
     /// The color selected for the rule currently being composed in the "add a rule"
-    /// row; applied to the new rule when `AppearancePageAction::AddHostFooterColorRule`
-    /// is dispatched.
+    /// row; applied to the new rule by `commit_host_footer_color_rule`.
     host_footer_color_rule_pending_color: AnsiColorIdentifier,
-    host_footer_color_rule_pattern_editor: ViewHandle<EditorView>,
+    host_footer_color_rule_pattern_editor: ViewHandle<SubmittableTextInput>,
     host_footer_color_rule_name_editor: ViewHandle<EditorView>,
     add_host_footer_color_rule_button: ViewHandle<ActionButton>,
     /// One persistent mouse state per `TAB_COLOR_OPTIONS` entry, for the
@@ -754,49 +755,10 @@ impl TypedActionView for AppearanceSettingsPageView {
                 let pattern_text = self
                     .host_footer_color_rule_pattern_editor
                     .as_ref(ctx)
-                    .buffer_text(ctx);
-                let name_text = self
-                    .host_footer_color_rule_name_editor
+                    .editor()
                     .as_ref(ctx)
                     .buffer_text(ctx);
-                let trimmed_pattern = pattern_text.trim();
-
-                match Regex::new(trimmed_pattern) {
-                    Ok(pattern) if !trimmed_pattern.is_empty() => {
-                        let name = if name_text.trim().is_empty() {
-                            None
-                        } else {
-                            Some(name_text.trim().to_string())
-                        };
-                        let color = self.host_footer_color_rule_pending_color;
-
-                        TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                            let mut new_rules = settings.host_footer_color_rules.to_vec();
-                            new_rules.push(HostFooterColorRule {
-                                pattern,
-                                color,
-                                name,
-                            });
-                            let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
-                        });
-
-                        self.host_footer_color_rule_pattern_editor
-                            .update(ctx, |editor, ctx| {
-                                editor.system_reset_buffer_text("", ctx);
-                            });
-                        self.host_footer_color_rule_name_editor
-                            .update(ctx, |editor, ctx| {
-                                editor.system_reset_buffer_text("", ctx);
-                            });
-                        ctx.notify();
-                    }
-                    _ => {
-                        log::warn!(
-                            "Not adding host-color rule: {trimmed_pattern:?} is empty or not a \
-                             valid regex"
-                        );
-                    }
-                }
+                self.commit_host_footer_color_rule(&pattern_text, ctx);
             }
             RemoveHostFooterColorRule(idx) => {
                 let idx = *idx;
@@ -1461,20 +1423,26 @@ impl AppearanceSettingsPageView {
         let header_toolbar_inline_editor =
             ctx.add_typed_action_view(HeaderToolbarInlineEditor::new);
 
-        let host_footer_color_rule_pattern_editor = {
-            let options = SingleLineEditorOptions {
-                text: TextOptions::ui_font_size(appearance_handle.as_ref(ctx)),
-                ..Default::default()
-            };
-            ctx.add_typed_action_view(|ctx| {
-                let mut editor = EditorView::single_line(options.clone(), ctx);
-                editor.set_placeholder_text(
-                    crate::t!("settings-appearance-host-footer-bar-pattern-placeholder"),
-                    ctx,
-                );
-                editor
-            })
-        };
+        let host_footer_color_rule_pattern_editor = ctx.add_typed_action_view(|ctx| {
+            let mut input = SubmittableTextInput::new(ctx)
+                .validate_on_submit(is_valid_host_footer_color_rule_pattern);
+            input.set_placeholder_text(
+                crate::t!("settings-appearance-host-footer-bar-pattern-placeholder"),
+                ctx,
+            );
+            input
+        });
+        // Enter in the pattern field submits the rule, same as clicking "Add rule" -- gated by
+        // `is_valid_host_footer_color_rule_pattern` so an invalid regex shows an error border
+        // instead of being silently dropped (see `SubmittableTextInput::render`).
+        ctx.subscribe_to_view(
+            &host_footer_color_rule_pattern_editor,
+            |me, _, event, ctx| {
+                if let SubmittableTextInputEvent::Submit(pattern_text) = event {
+                    me.commit_host_footer_color_rule(pattern_text, ctx);
+                }
+            },
+        );
         let host_footer_color_rule_name_editor = {
             let options = SingleLineEditorOptions {
                 text: TextOptions::ui_font_size(appearance_handle.as_ref(ctx)),
@@ -1489,6 +1457,20 @@ impl AppearanceSettingsPageView {
                 editor
             })
         };
+        // The name field has no format to validate, but Enter there is the same logical
+        // "submit this rule" gesture as Enter in the pattern field, so it must not silently do
+        // nothing -- that would be a second, easy-to-hit version of the same papercut.
+        ctx.subscribe_to_view(&host_footer_color_rule_name_editor, |me, _, event, ctx| {
+            if let EditorEvent::Enter = event {
+                let pattern_text = me
+                    .host_footer_color_rule_pattern_editor
+                    .as_ref(ctx)
+                    .editor()
+                    .as_ref(ctx)
+                    .buffer_text(ctx);
+                me.commit_host_footer_color_rule(&pattern_text, ctx);
+            }
+        });
         let add_host_footer_color_rule_button = ctx.add_typed_action_view(|_| {
             ActionButton::new(
                 crate::t!("settings-appearance-host-footer-bar-add-rule"),
@@ -3237,6 +3219,59 @@ impl AppearanceSettingsPageView {
         // reads it fresh from `TabSettings` on every render rather than caching a
         // selection, so the unconditional `ctx.notify()` below is all a change to
         // it needs to be reflected in the swatch picker.
+        ctx.notify();
+    }
+
+    /// Adds a host-footer color rule for `pattern_text` (the name and color come from
+    /// `host_footer_color_rule_name_editor` and `host_footer_color_rule_pending_color`), if
+    /// `pattern_text` is a non-empty valid regex. This is the single place that turns the "add a
+    /// rule" row's inputs into a stored `HostFooterColorRule`, shared by the "Add rule" button,
+    /// pressing Enter in the pattern field, and pressing Enter in the name field, so all three
+    /// entry points produce identical results.
+    fn commit_host_footer_color_rule(&mut self, pattern_text: &str, ctx: &mut ViewContext<Self>) {
+        let trimmed_pattern = pattern_text.trim();
+        if !is_valid_host_footer_color_rule_pattern(trimmed_pattern) {
+            log::warn!(
+                "Not adding host-color rule: {trimmed_pattern:?} is empty or not a valid regex"
+            );
+            return;
+        }
+        let pattern =
+            Regex::new(trimmed_pattern).expect("trimmed_pattern was just validated above");
+
+        let name_text = self
+            .host_footer_color_rule_name_editor
+            .as_ref(ctx)
+            .buffer_text(ctx);
+        let name = if name_text.trim().is_empty() {
+            None
+        } else {
+            Some(name_text.trim().to_string())
+        };
+        let color = self.host_footer_color_rule_pending_color;
+
+        TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+            let mut new_rules = settings.host_footer_color_rules.to_vec();
+            new_rules.push(HostFooterColorRule {
+                pattern,
+                color,
+                name,
+            });
+            let _ = settings.host_footer_color_rules.set_value(new_rules, ctx);
+        });
+
+        let pattern_editor = self
+            .host_footer_color_rule_pattern_editor
+            .as_ref(ctx)
+            .editor()
+            .clone();
+        pattern_editor.update(ctx, |editor, ctx| {
+            editor.system_reset_buffer_text("", ctx);
+        });
+        self.host_footer_color_rule_name_editor
+            .update(ctx, |editor, ctx| {
+                editor.system_reset_buffer_text("", ctx);
+            });
         ctx.notify();
     }
 
@@ -6129,6 +6164,17 @@ fn build_host_footer_color_rule_delete_buttons(
         .collect()
 }
 
+/// Whether `pattern_text`, trimmed, is a pattern `HostFooterColorRule::pattern` can actually
+/// store -- non-empty and a valid regex (the field deserializes via `serde_regex`, see
+/// `crate::workspace::tab_settings`, so an invalid regex can never round-trip through settings).
+/// Shared by the pattern field's `SubmittableTextInput::validate_on_submit` (gates Enter and its
+/// embedded submit button) and `commit_host_footer_color_rule` (gates the "Add rule" button and
+/// Enter in the name field).
+fn is_valid_host_footer_color_rule_pattern(pattern_text: &str) -> bool {
+    let trimmed = pattern_text.trim();
+    !trimmed.is_empty() && Regex::new(trimmed).is_ok()
+}
+
 /// The inline "add a rule" row: pattern + name text inputs, a color swatch picker
 /// (`TAB_COLOR_OPTIONS`, the same six colors the directory-tab-color picker offers),
 /// and an add button.
@@ -6136,18 +6182,22 @@ fn build_host_footer_color_rule_delete_buttons(
 /// Deliberately not a modal (contrast `privacy_page`'s `AddRegexModal`): a modal would
 /// need `AppearanceSettingsPageView` wired into
 /// `SettingsPageView::get_modal_content_for_page` (`settings_view/mod.rs`), which no
-/// other widget on this page currently needs, just for one row of input. The
-/// trade-off: unlike `AddRegexModal`, pressing Enter in either field does not submit --
-/// only clicking "Add rule" does.
+/// other widget on this page currently needs, just for one row of input. Pressing Enter in
+/// either field submits the rule (same as clicking "Add rule"); the pattern field also shows
+/// a `SubmittableTextInput`'s own inline submit button and, on an invalid pattern, an error
+/// border.
 fn render_host_footer_color_rule_add_row(
     view: &AppearanceSettingsPageView,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
 
+    // Wider than `name_input` (160 vs. 120): the pattern field is now a `SubmittableTextInput`,
+    // which draws its own border and an inline submit-button beside the text, so it needs the
+    // extra room the plain text field it replaced did not.
     let pattern_input =
         ConstrainedBox::new(ChildView::new(&view.host_footer_color_rule_pattern_editor).finish())
-            .with_width(160.)
+            .with_width(190.)
             .finish();
     let name_input =
         ConstrainedBox::new(ChildView::new(&view.host_footer_color_rule_name_editor).finish())
