@@ -290,6 +290,41 @@ fn open_worktree_sidecar(workspace: &ViewHandle<Workspace>, app: &mut App) {
     });
 }
 
+#[test]
+fn remote_host_ssh_command_quotes_plain_host() {
+    assert_eq!(
+        remote_host_ssh_command("build-box", ShellType::Bash),
+        "ssh 'build-box'"
+    );
+}
+
+#[test]
+fn remote_host_ssh_command_neutralizes_shell_metacharacters() {
+    // `WarpifySettings::remote_hosts` is a free-text list a user edits directly, so nothing
+    // upstream validates its contents before this reaches the shell. A host string containing
+    // shell metacharacters and an embedded quote must still resolve to a single `ssh` argument
+    // rather than being interpreted as shell syntax -- exactly what `shell_quote_arg` exists to
+    // guarantee. This is the scenario dropping the quoting call would break.
+    let malicious = "host'; rm -rf ~; echo '";
+    let command = remote_host_ssh_command(malicious, ShellType::Bash);
+    assert_eq!(command, r#"ssh 'host'"'"'; rm -rf ~; echo '"'"''"#);
+}
+
+#[test]
+fn remote_host_ssh_command_uses_shell_specific_quoting() {
+    // Fish and PowerShell escape an embedded single quote differently from Bash/Zsh
+    // (`shell_escape_single_quotes`), so the command built here must follow whichever shell
+    // the new tab actually ends up running, not assume Bash unconditionally.
+    assert_eq!(
+        remote_host_ssh_command("o'brien-box", ShellType::Fish),
+        r"ssh 'o\'brien-box'"
+    );
+    assert_eq!(
+        remote_host_ssh_command("o'brien-box", ShellType::PowerShell),
+        "ssh 'o''brien-box'"
+    );
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_hover_takes_precedence_over_selection() {
@@ -1897,13 +1932,13 @@ fn test_view_only_session() {
 
 #[test]
 fn test_server_token_compatibility_finds_restored_local_conversation() {
-    use crate::ai::agent::conversation::AIConversation;
+    use crate::ai::agent::conversation::{AIConversation, Surface};
 
     App::test((), |mut app| async move {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
         let token = ServerConversationToken::new("restored-token".to_string());
         let conversation_id = history_model.update(&mut app, |model, ctx| {
-            let mut conversation = AIConversation::new(false);
+            let mut conversation = AIConversation::new(false, Surface::Gui);
             conversation.set_server_conversation_token(token.as_str().to_string());
             let conversation_id = conversation.id();
             model.restore_conversations(EntityId::new(), vec![conversation], ctx);

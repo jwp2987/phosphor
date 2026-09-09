@@ -282,6 +282,12 @@ pub enum WorkspaceAction {
     AddConversationPane,
     /// Add a new tab running a local Docker sandbox via `sbx`.
     AddDockerSandboxTab,
+    /// Add a new terminal tab and run `ssh <host>` in it, for one of the hosts configured in
+    /// `WarpifySettings::remote_hosts` (`docs/design/moth-parliament.md` §4a's
+    /// session-creation affordance). This is a UX affordance over the existing `ssh`
+    /// warpification flow, not a new execution transport: the same detection that warpifies a
+    /// manually-typed `ssh` command takes over once the command runs.
+    AddRemoteHostTab(String),
     OpenNewSessionMenu {
         anchor: NewSessionMenuAnchor,
     },
@@ -869,6 +875,7 @@ impl WorkspaceAction {
             | AddConversationTab
             | AddSpecificAgentTab(_)
             | AddDockerSandboxTab
+            | AddRemoteHostTab(_)
             | AddWindow
             | AddWindowWithShell { .. }
             | CloseWindow

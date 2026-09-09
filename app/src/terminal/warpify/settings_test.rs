@@ -1,7 +1,7 @@
 use settings::{Setting, SyncToCloud};
 use warpui::{App, SingletonEntity};
 
-use super::{EnableSshWrapper, WarpifySettings};
+use super::{EnableSshWrapper, RemoteHosts, WarpifySettings};
 use crate::test_util::settings::initialize_settings_for_tests;
 
 #[cfg(windows)]
@@ -265,6 +265,48 @@ fn test_enable_ssh_wrapper_default_does_not_affect_enable_ssh_warpification() {
             assert!(
                 *settings.enable_ssh_warpification.value(),
                 "enable_ssh_warpification should remain true when no migration is needed"
+            );
+        });
+    });
+}
+
+/// `remote_hosts` (`docs/design/moth-parliament.md` §4a's session-creation affordance) is
+/// read straight from TOML at this path -- there is no separate registration site to check.
+#[test]
+fn remote_hosts_toml_path() {
+    assert_eq!(RemoteHosts::toml_path(), Some("warpify.ssh.remote_hosts"));
+}
+
+#[test]
+fn remote_hosts_defaults_to_empty() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            assert!(
+                WarpifySettings::as_ref(ctx).remote_hosts.value().is_empty(),
+                "remote_hosts should default to an empty list until the user adds a host"
+            );
+        });
+    });
+}
+
+#[test]
+fn remote_hosts_set_value_round_trips() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        WarpifySettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .remote_hosts
+                .set_value(vec!["build-box".to_string(), "gpu-box".to_string()], ctx)
+                .expect("set_value should succeed for a plain string list");
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                WarpifySettings::as_ref(ctx).remote_hosts.value().as_slice(),
+                ["build-box".to_string(), "gpu-box".to_string()]
             );
         });
     });

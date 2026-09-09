@@ -45,6 +45,16 @@ maybe_define_setting!(SshHostsDenylist, group: WarpifySettings, {
     description: "SSH hosts that should not trigger the warpification prompt.",
 });
 
+maybe_define_setting!(RemoteHosts, group: WarpifySettings, {
+    type: Vec<String>,
+    default: Vec::new(),
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+    private: false,
+    toml_path: "warpify.ssh.remote_hosts",
+    description: "Remote hosts offered as new-session targets in the new-session menu.",
+});
+
 maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
     type: bool,
     default: true,
@@ -211,6 +221,13 @@ pub struct WarpifySettings {
     /// method for how this is done.
     pub parsed_ssh_hosts_denylist: Vec<Result<Regex, regex::Error>>,
 
+    /// Remote hosts the new-session menu offers as targets (`docs/design/moth-parliament.md`
+    /// §4a's session-creation affordance). An explicit, user-edited list -- there is no
+    /// parsing of `~/.ssh/config` here, deliberately: `Include`, `Match` and wildcards make
+    /// that a project of its own, and a wrong entry just fails visibly in the new tab's `ssh`
+    /// invocation rather than needing to be validated up front.
+    pub remote_hosts: RemoteHosts,
+
     /// This setting controls whether we should ever warpify ssh sessions.
     pub enable_ssh_warpification: EnableSshWarpification,
 
@@ -289,6 +306,7 @@ impl WarpifySettings {
             subshell_command_denylist,
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
+            remote_hosts: RemoteHosts::new_from_storage(ctx),
             enable_ssh_warpification: EnableSshWarpification::new_from_storage(ctx),
             enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
@@ -313,6 +331,7 @@ impl WarpifySettings {
             subshell_command_denylist,
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
+            remote_hosts: RemoteHosts::new(None),
             enable_ssh_warpification: EnableSshWarpification::new(None),
             enable_ssh_wrapper: EnableSshWrapper::new(None),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new(None),
@@ -339,6 +358,7 @@ impl WarpifySettings {
                     me.parsed_ssh_hosts_denylist =
                         Self::parse_ssh_hosts_denylist(&me.ssh_hosts_denylist)
                 }
+                WarpifySettingsChangedEvent::RemoteHosts { .. } => {}
                 WarpifySettingsChangedEvent::EnableSshWarpification { .. } => {}
                 WarpifySettingsChangedEvent::EnableSshWrapper { .. } => {}
                 WarpifySettingsChangedEvent::UseSshTmuxWrapper { .. } => {}
@@ -422,9 +442,11 @@ impl WarpifySettings {
             WarpifySettings,
             ssh_hosts_denylist,
             SshHostsDenylist,
-            handle,
+            handle.clone(),
             ctx
         );
+
+        register_settings_events!(WarpifySettings, remote_hosts, RemoteHosts, handle, ctx);
     }
 }
 
@@ -439,6 +461,9 @@ pub enum WarpifySettingsChangedEvent {
         change_event_reason: ChangeEventReason,
     },
     SshHostsDenylist {
+        change_event_reason: ChangeEventReason,
+    },
+    RemoteHosts {
         change_event_reason: ChangeEventReason,
     },
     EnableSshWarpification {

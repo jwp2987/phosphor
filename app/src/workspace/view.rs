@@ -282,6 +282,7 @@ use crate::terminal::model::blockgrid::BlockGrid;
 #[cfg(feature = "local_fs")]
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::SessionId;
+use crate::terminal::model::session::command_executor::shell_quote_arg;
 use crate::terminal::resizable_data::{
     DEFAULT_LEFT_PANEL_WIDTH, DEFAULT_RIGHT_PANEL_WIDTH, ModalSizes, ModalType, ResizableData,
 };
@@ -4226,6 +4227,28 @@ impl Workspace {
         });
     }
 
+    /// Creates a new default terminal tab, then runs `ssh <host>` in it: a session-creation
+    /// affordance over the ssh-warpification flow that already ships, not a new transport
+    /// (`docs/design/moth-parliament.md` §4a).
+    fn add_tab_with_remote_host(&mut self, host: String, ctx: &mut ViewContext<Self>) {
+        self.add_terminal_tab(false, ctx);
+        self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
+            if let Some(terminal_view) = pane_group.active_session_view(ctx) {
+                terminal_view.update(ctx, |view, ctx| {
+                    // The new tab's shell is a local process just starting up, so its type can
+                    // still be unknown here. Bash and Zsh share the same escaping rules in
+                    // `shell_quote_arg`, so defaulting to Bash is only wrong for the rarer
+                    // Fish/PowerShell case.
+                    let shell_type = view
+                        .active_session_shell_type(ctx)
+                        .unwrap_or(ShellType::Bash);
+                    let command = remote_host_ssh_command(&host, shell_type);
+                    view.execute_command_or_set_pending(&command, ctx);
+                });
+            }
+        });
+    }
+
     fn toggle_ai_assistant_panel(&mut self, ctx: &mut ViewContext<Self>) {
         // Now that the user has interacted with the panel, we can close
         // the dialogue and mark it as dismissed.
@@ -6450,6 +6473,25 @@ impl Workspace {
                 docker_item = docker_item.with_key_shortcut_label(shortcut_label.clone());
             }
             menu_items.push(docker_item.into_item());
+        }
+
+        // 7b. Remote hosts -- one flat item per host configured in Settings > Warpify > SSH >
+        // Remote hosts (`WarpifySettings::remote_hosts`,
+        // `docs/design/moth-parliament.md` §4a's session-creation affordance). Flat items,
+        // not a submenu: `MenuItem::submenu` is explicitly marked "not ready for use yet"
+        // (`menu.rs`), so this follows the flat-list precedent set by Coding Agents above
+        // rather than inventing submenu support for a prototype.
+        let remote_hosts: Vec<String> = WarpifySettings::as_ref(ctx).remote_hosts.value().clone();
+        if !remote_hosts.is_empty() {
+            menu_items.push(MenuItem::Separator);
+            for host in remote_hosts {
+                menu_items.push(
+                    MenuItemFields::new(host.clone())
+                        .with_on_select_action(WorkspaceAction::AddRemoteHostTab(host))
+                        .with_icon(icons::Icon::Server01)
+                        .into_item(),
+                );
+            }
         }
 
         // 8. Separator + worktree config entry + new tab config
@@ -21673,6 +21715,7 @@ impl TypedActionView for Workspace {
             AddConversationTab => self.add_conversation_tab(ctx),
             AddSpecificAgentTab(agent) => self.add_tab_with_specific_agent(*agent, ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
+            AddRemoteHostTab(host) => self.add_tab_with_remote_host(host.clone(), ctx),
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)
             }
@@ -26200,6 +26243,16 @@ impl Workspace {
             }
         }
     }
+}
+
+/// Builds the `ssh <host>` command run in a new tab opened from the new-session menu's Remote
+/// Hosts section (`WorkspaceAction::AddRemoteHostTab`, `docs/design/moth-parliament.md` §4a).
+/// `host` comes from user settings (`WarpifySettings::remote_hosts`) rather than from anything
+/// Phosphor generated, so it is quoted with `shell_quote_arg` before being interpolated into
+/// the command string -- the same reason `render_prompt_chip_shell_command` (`terminal/input.rs`)
+/// quotes the branch/directory names it does not control.
+fn remote_host_ssh_command(host: &str, shell_type: ShellType) -> String {
+    format!("ssh {}", shell_quote_arg(host, shell_type))
 }
 
 /// Whether the tab bar must reserve horizontal space for the window's traffic
