@@ -1673,6 +1673,7 @@ impl PaneGroup {
                         view_size,
                         uuid.0,
                         startup_directory,
+                        block_list,
                         Some(conversation_restoration),
                         model_event_sender,
                         ctx,
@@ -3335,6 +3336,7 @@ impl PaneGroup {
             view_bounds.size(),
             Uuid::new_v4().into_bytes().to_vec(),
             std::env::current_dir().ok(),
+            None, // a new conversation tab has no persisted blocks
             None,
             model_event_sender,
             ctx,
@@ -6056,6 +6058,7 @@ impl PaneGroup {
             view_bounds.size(),
             uuid,
             cwd,
+            None, // a freshly-created pane has no persisted blocks
             conversation_restoration,
             self.model_event_sender.clone(),
             ctx,
@@ -6078,6 +6081,7 @@ impl PaneGroup {
         view_bounds_size: Vector2F,
         uuid: Vec<u8>,
         cwd: Option<PathBuf>,
+        restored_blocks: Option<&Vec<SerializedBlockListItem>>,
         conversation_restoration: Option<ConversationRestorationInNewPaneType>,
         model_event_sender: Option<SyncSender<ModelEvent>>,
         ctx: &mut ViewContext<Self>,
@@ -6102,7 +6106,12 @@ impl PaneGroup {
                 shell_type: ShellType::Zsh,
             },
             resources,
-            None,
+            // The pane's persisted block list. Hardcoded `None` here until a restored
+            // conversation came back as an empty tab: the conversation entity restored but
+            // its messages did not, because they live in the block list and it was never
+            // handed over. The terminal branch of `restore_pane_leaf` has always passed
+            // this to `create_session`; the conversation branch dropped it.
+            restored_blocks,
             conversation_restoration,
             view_bounds_size,
             ctx.window_id(),
