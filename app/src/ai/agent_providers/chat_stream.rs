@@ -4427,6 +4427,23 @@ const CONVERSATION_ONLY_BLOCKED_TOOLS: &[&str] = &[
     "transfer_shell_command_control_to_user",
     tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME,
     tools::computer::USE_COMPUTER_TOOL_NAME,
+    // `grep` and `file_glob_v2` read like file tools and are not: both are implemented by
+    // shelling out. `execute/grep.rs` and `execute/file_glob.rs` build a command with
+    // `shell_quote_arg` and run it through `ExecuteCommandOptions` against the pane's
+    // `active_session`. A conversation pane has no session, so they fail at the point of
+    // use rather than being unavailable -- the agent offered to list a directory and came
+    // back with a session error, which is exactly the "believes it can, then cannot"
+    // failure this list exists to prevent.
+    //
+    // This narrows a conversation to reading and writing named files: no search. The
+    // alternative is reimplementing both against the filesystem directly, which is real
+    // work and a separate decision. Withdrawing them is right either way -- a tool that
+    // always fails is worse than one that is absent.
+    "grep",
+    // NOT "file_glob_v2": the static is named `FILE_GLOB_V2` but registers as
+    // `name: "file_glob"` (`tools/search.rs`). Matching is by the registered name, so the
+    // obvious spelling would have withdrawn nothing at all, silently.
+    "file_glob",
 ];
 
 /// Whether `tool_name` is withdrawn because this request belongs to a conversation-only
@@ -11593,11 +11610,27 @@ mod serializer_readiness_tests {
             );
         }
 
-        for kept in ["read_files", "apply_file_diffs", "grep", "file_glob"] {
+        // `grep` and `file_glob` were in this list until a conversation pane was actually
+        // used: both are implemented by shelling out (`execute/grep.rs`,
+        // `execute/file_glob.rs` build a command and run it through the pane's
+        // `active_session`), so they failed with a session error at the point of use. They
+        // are execution tools despite their names, and are now withdrawn above.
+        for kept in ["read_files", "apply_file_diffs"] {
             assert!(
                 names.iter().any(|n| n.as_str() == kept),
                 "{kept} is file access, not execution, and must stay advertised to a \
                  conversation-only pane -- \"everything except execution\"; got {names:?}",
+            );
+        }
+
+        // Pinned by registered name, not by the name of the static that declares it:
+        // `FILE_GLOB_V2` registers as `"file_glob"`, so blocking `"file_glob_v2"` would
+        // withdraw nothing while looking correct. Fails if either drifts.
+        for shell_backed in ["grep", "file_glob"] {
+            assert!(
+                CONVERSATION_ONLY_BLOCKED_TOOLS.contains(&shell_backed),
+                "{shell_backed} shells out, so it must be withdrawn from a conversation \
+                 pane -- a tool that always fails is worse than one that is absent",
             );
         }
     }
