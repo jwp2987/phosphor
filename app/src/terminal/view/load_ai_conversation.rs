@@ -47,7 +47,7 @@ use crate::{
             BlocklistAIActionModel, BlocklistAIController, ClientIdentifiers,
         },
     },
-    persistence::model::AgentConversationData,
+    persistence::model::{AgentConversationData, PersistedSurface},
     terminal::{
         find::TerminalFindModel,
         model::{
@@ -1057,6 +1057,9 @@ impl TerminalView {
 
         let conversation_data = AgentConversationData {
             is_remote_child: false,
+            // `TerminalView` (this method's `impl` type) is the GUI's terminal view; the TUI
+            // has its own `TuiTerminalSessionView` and does not call this.
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,

@@ -142,7 +142,7 @@ fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
     use crate::ai::blocklist::BlocklistAIHistoryModel;
     use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
     use crate::persistence::model::{
-        AgentConversation, AgentConversationData, AgentConversationRecord,
+        AgentConversation, AgentConversationData, AgentConversationRecord, PersistedSurface,
     };
 
     App::test((), |app| async move {
@@ -158,6 +158,7 @@ fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
                     id: 1,
                     conversation_id: child_id.to_string(),
                     conversation_data: serde_json::to_string(&AgentConversationData {
+                        surface: PersistedSurface::Gui,
                         server_conversation_token: Some("child-token".to_string()),
                         conversation_usage_metadata: None,
                         reverted_action_ids: None,
@@ -212,6 +213,7 @@ fn pill_bar_data_layer_finds_restored_children_before_pane_creation() {
                     id: 2,
                     conversation_id: parent_id.to_string(),
                     conversation_data: serde_json::to_string(&AgentConversationData {
+                        surface: PersistedSurface::Gui,
                         server_conversation_token: Some("parent-token".to_string()),
                         conversation_usage_metadata: None,
                         reverted_action_ids: None,

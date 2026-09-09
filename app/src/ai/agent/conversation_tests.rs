@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::{
     artifact_from_fork_proto, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
-    ConversationStatus, RestoreConversationError, TaskId,
+    ConversationStatus, RestoreConversationError, Surface, TaskId,
 };
 use crate::ai::artifacts::Artifact;
 use crate::ai::blocklist::{
@@ -12,7 +12,7 @@ use crate::ai::byop_readiness::{
     InvalidRepairState, RepairRecord, RepairSource, RepairState, RepairStateLoadError,
     RepairStateStatus, ToolCallKey,
 };
-use crate::persistence::model::AgentConversationData;
+use crate::persistence::model::{AgentConversationData, PersistedSurface};
 use crate::persistence::ModelEvent;
 use crate::terminal::model::block::{
     AgentInteractionMetadata, AgentViewVisibility, SerializedAIMetadata, SerializedBlock,
@@ -228,6 +228,7 @@ fn cli_subagent_tool(subtask_id: &str, command_id: &str) -> api::message::tool_c
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
     AgentConversationData {
         is_remote_child: false,
+        surface: PersistedSurface::Gui,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,
@@ -1062,6 +1063,31 @@ fn restored_conversation_uses_persisted_remote_child_marker() {
     let conversation = restored_conversation(Some(conversation_data));
 
     assert!(conversation.is_remote_child());
+}
+
+/// A conversation restored from a row persisted by the TUI comes back reporting the TUI as
+/// its surface, not the GUI default. Breaks if `new_restored_synthesizing_on_empty` stops
+/// reading `data.surface` (e.g. dropping the `let surface = Surface::from(data.surface);`
+/// line, or the `surface` entry in the branch's returned tuple / the final `Self { .. }`).
+#[test]
+fn restored_conversation_uses_persisted_surface() {
+    let conversation_data: AgentConversationData =
+        serde_json::from_str(r#"{"server_conversation_token":null,"surface":"Tui"}"#).unwrap();
+
+    let conversation = restored_conversation(Some(conversation_data));
+
+    assert_eq!(conversation.surface(), Surface::Tui);
+}
+
+/// A conversation restored with no persisted metadata at all (the shape a fresh child
+/// conversation's tasks can have, per `new_restored_synthesizing_on_empty`'s doc comment)
+/// still gets a surface rather than an unset/default-constructed one. Breaks if the `None`
+/// branch's tuple stops supplying `Surface::default()` for this slot.
+#[test]
+fn restored_conversation_with_no_conversation_data_defaults_to_gui_surface() {
+    let conversation = restored_conversation(None);
+
+    assert_eq!(conversation.surface(), Surface::Gui);
 }
 
 #[test]

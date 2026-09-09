@@ -49,6 +49,7 @@ use pathfinder_geometry::vector::Vector2F;
 use warpui::App;
 use warpui::platform::{WindowBounds, WindowStyle};
 
+use crate::ai::agent::conversation::Surface;
 use crate::ai::blocklist::orchestration_topology::descendant_conversation_ids_in_spawn_order;
 use crate::notebooks::notebook::NotebookView;
 use crate::persistence::model::{AgentConversation, AgentConversationRecord};
@@ -149,15 +150,15 @@ fn restore_conversation_for_terminal_view(
     conversation_id
 }
 
-/// Fork drift: `AIConversation::new` takes a single `is_viewing_shared_session`
-/// flag here; the pin's takes two (the second is the dropped cloud
-/// `is_ambient_agent`).
+/// Fork drift: `AIConversation::new` takes `is_viewing_shared_session` and (moth-parliament)
+/// `surface` here; the pin's second parameter is instead the dropped cloud
+/// `is_ambient_agent`.
 fn restore_child_conversation_for_terminal_view(
     terminal_view_id: EntityId,
     parent_conversation_id: AIConversationId,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> AIConversationId {
-    let mut child_conversation = AIConversation::new(false);
+    let mut child_conversation = AIConversation::new(false, Surface::Gui);
     child_conversation.set_parent_conversation_id(parent_conversation_id);
     restore_conversation_for_terminal_view(terminal_view_id, child_conversation, ctx)
 }
@@ -621,8 +622,9 @@ fn test_ensure_hidden_child_agent_pane_skips_child_owned_by_another_pane_group()
 /// child loses the task identity its requests are supposed to carry
 /// (`api::ConversationData::ambient_agent_task_id`).
 ///
-/// Fork drift from the pin: `AIConversation::new` takes one flag here (the
-/// pin's second is the dropped cloud `is_ambient_agent`), and the task id is
+/// Fork drift from the pin: `AIConversation::new` takes `is_viewing_shared_session` and
+/// (moth-parliament) `surface` here (the pin's second parameter is instead the dropped
+/// cloud `is_ambient_agent`), and the task id is
 /// minted with this fork's own `AmbientAgentTaskId::new_local()` rather than
 /// the pin's `new_ambient_agent_task_id` test helper -- both are a
 /// `Uuid::new_v4()`, the fork's just has a production constructor for it.
@@ -655,7 +657,7 @@ fn test_restored_hidden_child_pane_reapplies_ambient_task_id_to_controller() {
             let parent_conversation_id = start_parent_conversation(panes, parent_pane_id, ctx);
             let task_id = AmbientAgentTaskId::new_local();
 
-            let mut child_conversation = AIConversation::new(false);
+            let mut child_conversation = AIConversation::new(false, Surface::Gui);
             child_conversation.set_parent_conversation_id(parent_conversation_id);
             child_conversation.set_task_id(task_id);
             let child_conversation_id = child_conversation.id();
@@ -725,7 +727,7 @@ fn test_pane_group_restore_loop_keeps_orchestration_topology_and_materializes_ch
             // Restore a child conversation into the parent's terminal view --
             // the same code path `RestoredAgentConversations` feeds during
             // pane restoration.
-            let mut child_conversation = AIConversation::new(false);
+            let mut child_conversation = AIConversation::new(false, Surface::Gui);
             child_conversation.set_parent_conversation_id(parent_conversation_id);
             child_conversation.set_agent_name(child_agent_name.clone());
             let child_conversation_id = child_conversation.id();

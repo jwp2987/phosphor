@@ -9,7 +9,7 @@ use crate::{
     ai::{
         agent::{
             api::ServerConversationToken,
-            conversation::{AIConversationId, ConversationStatus, TodoStatus},
+            conversation::{AIConversationId, ConversationStatus, Surface, TodoStatus},
             todos::AIAgentTodoList,
             AIAgentExchange, AIAgentExchangeId, AIAgentInput, AIAgentOutputStatus, AIAgentTodo,
             AIAgentTodoId, FinishedAIAgentOutput, RenderableAIError, Shared,
@@ -27,7 +27,7 @@ use crate::{
     persistence::{
         model::{
             AgentConversation, AgentConversationData, AgentConversationRecord,
-            AgentConversationSummary, PersistedAutoexecuteMode,
+            AgentConversationSummary, PersistedAutoexecuteMode, PersistedSurface,
         },
         ModelEvent,
     },
@@ -121,6 +121,7 @@ fn byop_test_task(task_id: &str, messages: Vec<api::Message>) -> api::Task {
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
     AgentConversationData {
         is_remote_child: false,
+        surface: PersistedSurface::Gui,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,
@@ -640,6 +641,55 @@ fn test_ai_queries_for_terminal_view_up_arrow_history() {
     });
 }
 
+/// A conversation records whichever surface the model that created it is stamped with --
+/// the GUI's `AgentViewController` and the TUI's `TuiConversationSelection` both go
+/// through this same `start_new_conversation`, distinguished only by `set_surface`
+/// (called once at startup by whichever frontend is mounting; see `app/src/lib.rs`'s
+/// `initialize_app`). Breaks if `start_new_conversation` stops passing `self.surface`
+/// into `AIConversation::new`, or if `set_surface` stops updating it.
+#[test]
+fn start_new_conversation_records_the_history_models_surface() {
+    App::test((), |mut app| async move {
+        let history_model =
+            app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
+        let terminal_view_id = EntityId::new();
+
+        let gui_conversation_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let gui_surface = history_model.read(&app, |history_model, _| {
+            history_model
+                .conversation(&gui_conversation_id)
+                .unwrap()
+                .surface()
+        });
+        assert_eq!(gui_surface, Surface::Gui);
+
+        history_model.update(&mut app, |history_model, _| {
+            history_model.set_surface(Surface::Tui);
+        });
+        let tui_conversation_id = history_model.update(&mut app, |history_model, ctx| {
+            history_model.start_new_conversation(terminal_view_id, false, false, ctx)
+        });
+        let tui_surface = history_model.read(&app, |history_model, _| {
+            history_model
+                .conversation(&tui_conversation_id)
+                .unwrap()
+                .surface()
+        });
+        assert_eq!(tui_surface, Surface::Tui);
+
+        // The earlier GUI-surface conversation is unaffected by the later override.
+        let gui_surface_after_override = history_model.read(&app, |history_model, _| {
+            history_model
+                .conversation(&gui_conversation_id)
+                .unwrap()
+                .surface()
+        });
+        assert_eq!(gui_surface_after_override, Surface::Gui);
+    });
+}
+
 #[test]
 fn test_transcript_viewer_terminal_view_is_not_marked_historical() {
     App::test((), |mut app| async move {
@@ -778,10 +828,10 @@ fn test_child_agent_conversations_excluded_from_list_but_accessible_by_id() {
 
         // One child linked via a local parent placeholder, one via the
         // parent's server-side run identifier (driver-hosted processes).
-        let mut local_child = AIConversation::new(false);
+        let mut local_child = AIConversation::new(false, Surface::Gui);
         local_child.set_parent_conversation_id(AIConversationId::new());
         let local_child_id = local_child.id();
-        let mut driver_child = AIConversation::new(false);
+        let mut driver_child = AIConversation::new(false, Surface::Gui);
         driver_child.set_parent_agent_id("parent-run-id".to_string());
         let driver_child_id = driver_child.id();
 
@@ -991,7 +1041,7 @@ fn test_restore_conversations_maintains_children_by_parent() {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = AIConversationId::new();
-        let mut child_conv = AIConversation::new(false);
+        let mut child_conv = AIConversation::new(false, Surface::Gui);
         child_conv.set_parent_conversation_id(parent_id);
         let child_id = child_conv.id();
 
@@ -1014,7 +1064,7 @@ fn test_restore_conversations_dedup_children_by_parent() {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
         let parent_id = AIConversationId::new();
-        let mut child_conv_a = AIConversation::new(false);
+        let mut child_conv_a = AIConversation::new(false, Surface::Gui);
         child_conv_a.set_parent_conversation_id(parent_id);
         let child_id = child_conv_a.id();
         let child_conv_b = child_conv_a.clone();
@@ -1142,7 +1192,7 @@ fn test_find_by_token_after_restore_conversations() {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let terminal_view_id = EntityId::new();
 
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         conversation.set_server_conversation_token("restored-token".to_string());
         let conversation_id = conversation.id();
 
@@ -1176,7 +1226,7 @@ fn test_find_by_token_returns_none_after_remove_conversation() {
 
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         conversation.set_server_conversation_token("removable-token".to_string());
         let conversation_id = conversation.id();
 
@@ -1214,7 +1264,7 @@ fn test_find_by_token_returns_none_after_reset() {
     App::test((), |mut app| async move {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
 
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         conversation.set_server_conversation_token("reset-token".to_string());
         history_model.update(&mut app, |model, ctx| {
             model.restore_conversations(EntityId::new(), vec![conversation], ctx);
@@ -1356,6 +1406,7 @@ fn test_find_by_token_after_insert_forked_conversation_from_tasks() {
         let forked_conversation_id = AIConversationId::new();
         let conversation_data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: Some("forked-token".to_string()),
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1415,7 +1466,7 @@ fn test_find_by_token_after_mark_conversations_historical_for_terminal_view() {
         let terminal_view_id = EntityId::new();
 
         // Needs a real exchange to pass `conversation_would_render_in_blocklist`.
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         conversation.set_server_conversation_token("historical-token".to_string());
         let conversation_id = conversation.id();
 
@@ -1522,7 +1573,7 @@ fn test_fork_conversation_rejects_an_empty_source() {
 
     App::test((), |mut app| async move {
         let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
-        let source = AIConversation::new(false);
+        let source = AIConversation::new(false, Surface::Gui);
 
         let error = history_model.update(&mut app, |model, ctx| {
             model
@@ -3917,11 +3968,11 @@ fn test_restore_conversations_indexes_child_by_parent_agent_id() {
             app.add_singleton_model(|_| BlocklistAIHistoryModel::new(vec![], vec![], &[]));
         let parent_run_id = Uuid::new_v4().to_string();
 
-        let mut parent_conversation = AIConversation::new(false);
+        let mut parent_conversation = AIConversation::new(false, Surface::Gui);
         parent_conversation.set_run_id(parent_run_id.clone());
         let parent_id = parent_conversation.id();
 
-        let mut child_conversation = AIConversation::new(false);
+        let mut child_conversation = AIConversation::new(false, Surface::Gui);
         child_conversation.set_parent_agent_id(parent_run_id);
         let child_id = child_conversation.id();
 

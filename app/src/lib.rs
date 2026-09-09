@@ -222,6 +222,7 @@ use warpui::platform::app::ApproveTerminateResult;
 use window_settings::WindowSettings;
 use workflows::manager::WorkflowManager;
 
+use crate::ai::agent::conversation::Surface;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::facts::manager::AIFactManager;
@@ -2013,7 +2014,22 @@ fn initialize_app(
         // its item 2, and all three are closed. Nothing superseded this read; it was simply
         // unported.
         ctx.add_singleton_model(move |_| {
-            BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations)
+            let mut history_model =
+                BlocklistAIHistoryModel::new(ai_queries, nld_prompts, conversations);
+            // The TUI is the only other surface this fork ships (see
+            // `docs/design/moth-parliament.md` §4); every other `LaunchMode` renders through
+            // the GUI or doesn't render a conversation pane at all. Exhaustive so a new
+            // `LaunchMode` variant forces a decision here rather than silently defaulting.
+            let surface = match launch_mode {
+                LaunchMode::Tui { .. } => Surface::Tui,
+                LaunchMode::App { .. }
+                | LaunchMode::CommandLine { .. }
+                | LaunchMode::Test { .. }
+                | LaunchMode::RemoteServerProxy
+                | LaunchMode::RemoteServerDaemon => Surface::Gui,
+            };
+            history_model.set_surface(surface);
+            history_model
         });
     }
     // Seed the orchestration pin set from persisted conversation data before

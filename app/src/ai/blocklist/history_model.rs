@@ -23,6 +23,7 @@ use diesel::SqliteConnection;
 
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::conversation::ConversationStatus;
+use crate::ai::agent::conversation::Surface;
 use crate::ai::agent::conversation::UpdateConversationError;
 use crate::ai::agent::task::helper::{MessageExt, ToolCallExt};
 use crate::ai::agent::task::TaskId;
@@ -202,6 +203,13 @@ pub(crate) struct PromptHistoryEntry {
 /// Responsible for managing the history of user and AI exchanges.
 #[derive(Default)]
 pub struct BlocklistAIHistoryModel {
+    /// Which of Phosphor's own surfaces this app instance's conversations are created on.
+    /// One process ever runs one surface -- the GUI and the TUI are separate binaries --
+    /// so this is set once (see `set_surface`) rather than threaded through every
+    /// `start_new_conversation` call site. Stamped onto each new conversation it creates;
+    /// see [`crate::ai::agent::conversation::Surface`].
+    surface: Surface,
+
     /// A [`HashMap`] mapping [`crate::terminal::TerminalView`] [`EntityId`]s to a [`Vec`] of
     /// live [`AIConversationId`] in that `TerminalView`.
     ///
@@ -340,6 +348,14 @@ impl BlocklistAIHistoryModel {
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Self {
         Self::default()
+    }
+
+    /// Overrides which surface conversations created via [`Self::start_new_conversation`]
+    /// will record. Called once at startup, by whichever frontend is mounting
+    /// (`app/src/lib.rs`'s `initialize_app`); the GUI keeps the `Surface::default()` this
+    /// model is constructed with.
+    pub(crate) fn set_surface(&mut self, surface: Surface) {
+        self.surface = surface;
     }
 
     /// Returns a flattened and ordered (oldest first) list of live conversations (not cleared) for the given terminal view ID.
@@ -1310,7 +1326,7 @@ impl BlocklistAIHistoryModel {
         is_viewing_shared_session: bool,
         ctx: &mut ModelContext<Self>,
     ) -> AIConversationId {
-        let mut new_conversation = AIConversation::new(is_viewing_shared_session);
+        let mut new_conversation = AIConversation::new(is_viewing_shared_session, self.surface);
         if is_autoexecute_override {
             new_conversation.toggle_autoexecute_override();
         }
@@ -1714,6 +1730,9 @@ impl BlocklistAIHistoryModel {
 
         let conversation_data = AgentConversationData {
             is_remote_child: false,
+            // A fork opens immediately in the same view as its source, so it inherits the
+            // source conversation's surface rather than defaulting.
+            surface: source_conversation.surface().into(),
             server_conversation_token: None,
             conversation_usage_metadata: Some(source_conversation.usage_metadata()),
             reverted_action_ids,
@@ -1914,6 +1933,9 @@ impl BlocklistAIHistoryModel {
         // be recomputed based on the retained exchanges in a follow-up.
         let conversation_data = AgentConversationData {
             is_remote_child: false,
+            // A fork opens immediately in the same view as its source, so it inherits the
+            // source conversation's surface rather than defaulting.
+            surface: conversation.surface().into(),
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids,

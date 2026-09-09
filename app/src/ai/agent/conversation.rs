@@ -54,7 +54,7 @@ use crate::{
         blocklist::{BlocklistAIHistoryEvent, ConversationStatusUpdate},
     },
     persistence::{
-        model::{AgentConversationData, PersistedAutoexecuteMode},
+        model::{AgentConversationData, PersistedAutoexecuteMode, PersistedSurface},
         ModelEvent,
     },
     ui_components::icons::Icon,
@@ -203,6 +203,10 @@ impl<'de> Deserialize<'de> for CliSubagentBlockSnapshot {
 pub struct AIConversation {
     /// Unique ID for this conversation.
     id: AIConversationId,
+
+    /// Which of Phosphor's own surfaces is rendering this conversation. Set at
+    /// creation and not changed afterward; see [`Surface`].
+    surface: Surface,
 
     /// Whether this conversation is being shared from a different warp instance
     /// (i.e. is not a local conversation).
@@ -369,10 +373,11 @@ pub(crate) fn artifact_from_fork_proto(
 }
 
 impl AIConversation {
-    pub fn new(is_viewing_shared_session: bool) -> Self {
+    pub fn new(is_viewing_shared_session: bool, surface: Surface) -> Self {
         let root_task = Task::new_optimistic_root();
         Self {
             id: AIConversationId::new(),
+            surface,
             task_store: TaskStore::with_root_task(root_task),
             optimistic_cli_subagent_subtask_id: None,
             code_review: None,
@@ -589,6 +594,7 @@ impl AIConversation {
             compaction_state,
             byop_repair_state,
             cli_subagent_block_snapshots,
+            surface,
         ) = if let Some(data) = conversation_data {
             let server_conversation_token = data
                 .server_conversation_token
@@ -636,6 +642,7 @@ impl AIConversation {
             let cli_subagent_block_snapshots = Self::cli_subagent_block_snapshots_from_json(
                 data.cli_subagent_block_snapshots_json,
             );
+            let surface = Surface::from(data.surface);
             if let Some(error_category) = byop_repair_state.error_category() {
                 log::error!(
                     "[byop-repair] failed to load repair sidecar category={error_category:?}"
@@ -660,6 +667,7 @@ impl AIConversation {
                 compaction_state,
                 byop_repair_state,
                 cli_subagent_block_snapshots,
+                surface,
             )
         } else {
             (
@@ -680,6 +688,7 @@ impl AIConversation {
                 crate::ai::byop_compaction::state::CompactionState::default(),
                 RepairStateStatus::default(),
                 HashMap::new(),
+                Surface::default(),
             )
         };
 
@@ -695,6 +704,7 @@ impl AIConversation {
 
         Ok(Self {
             id,
+            surface,
             is_viewing_shared_session: false,
             task_store,
             status,
@@ -735,6 +745,10 @@ impl AIConversation {
 
     pub fn id(&self) -> AIConversationId {
         self.id
+    }
+
+    pub fn surface(&self) -> Surface {
+        self.surface
     }
 
     /// Assigns fresh exchange IDs to all exchanges in this conversation.
@@ -3491,6 +3505,7 @@ impl AIConversation {
                 // demotes every remote child across a restart. The pin writes
                 // the field too (`42effe840:app/src/ai/agent/conversation.rs:3619`).
                 is_remote_child: self.is_remote_child,
+                surface: self.surface.into(),
                 server_conversation_token: self
                     .server_conversation_token
                     .clone()
@@ -4794,6 +4809,50 @@ impl From<AIConversationAutoexecuteMode> for PersistedAutoexecuteMode {
     }
 }
 
+/// Which of Phosphor's own surfaces is rendering this conversation: the desktop GUI, or
+/// the TUI (`crates/warp_tui`). A conversation is not bound to one specific `TerminalView`
+/// or pane -- this is what makes it possible to reopen or move it between panes on the
+/// same surface, per `docs/design/moth-parliament.md` §4/§4a.
+///
+/// This is deliberately not about *where a conversation's work runs* (that's
+/// `SessionType`, on the session) and not about remote or cross-device viewing (this
+/// fork has no transport for that; see §4a). An unrecognized surface is a compile
+/// error, not a silently-mismatched string, which is why this is a typed enum rather
+/// than the `channel: String` OpenDev uses for its (unrelated) delivery-destination
+/// concept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    Gui,
+    Tui,
+}
+
+impl Default for Surface {
+    /// The desktop GUI is Phosphor's primary surface. Used as the fallback for launch
+    /// modes that are neither a GUI window nor the TUI (the CLI SDK, tests, the
+    /// remote-server daemon), none of which render a conversation pane at all.
+    fn default() -> Self {
+        Surface::Gui
+    }
+}
+
+impl From<PersistedSurface> for Surface {
+    fn from(value: PersistedSurface) -> Self {
+        match value {
+            PersistedSurface::Gui => Self::Gui,
+            PersistedSurface::Tui => Self::Tui,
+        }
+    }
+}
+
+impl From<Surface> for PersistedSurface {
+    fn from(value: Surface) -> Self {
+        match value {
+            Surface::Gui => Self::Gui,
+            Surface::Tui => Self::Tui,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ConversationStatus {
     /// Agent is running.
@@ -4913,7 +4972,7 @@ mod computer_use_approval_tests {
     use super::super::{AIAgentActionResult, AIAgentActionResultType, RequestComputerUseResult};
     use super::{
         AIAgentActionId, AIAgentContext, AIAgentExchange, AIAgentExchangeId, AIAgentInput,
-        AIAgentOutputStatus, AIConversation, TaskId,
+        AIAgentOutputStatus, AIConversation, Surface, TaskId,
     };
     use crate::ai::llms::LLMId;
 
@@ -4980,7 +5039,7 @@ mod computer_use_approval_tests {
     /// auto-execute. If this ever goes green-by-default the whole gate is decorative.
     #[test]
     fn a_conversation_with_no_approval_has_not_approved_computer_use() {
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         let task_id = root_task_id(&conversation);
         append(
             &mut conversation,
@@ -4998,7 +5057,7 @@ mod computer_use_approval_tests {
     /// being a permanent denial.
     #[test]
     fn an_approval_granted_in_this_session_counts() {
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         let task_id = root_task_id(&conversation);
         append(
             &mut conversation,
@@ -5023,7 +5082,7 @@ mod computer_use_approval_tests {
     /// `has_approved_computer_use`, must turn this red.
     #[test]
     fn an_approval_restored_from_disk_does_not_count() {
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         let task_id = root_task_id(&conversation);
         append(
             &mut conversation,
@@ -5053,7 +5112,7 @@ mod computer_use_approval_tests {
     /// restored set.
     #[test]
     fn re_approving_after_restore_counts_again() {
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         let task_id = root_task_id(&conversation);
         append(
             &mut conversation,
@@ -5078,7 +5137,7 @@ mod computer_use_approval_tests {
     /// to show for it.
     #[test]
     fn rewinding_away_the_approving_exchange_revokes_the_approval() {
-        let mut conversation = AIConversation::new(false);
+        let mut conversation = AIConversation::new(false, Surface::Gui);
         let task_id = root_task_id(&conversation);
         let exchange = exchange_with_result(&task_id, "approval-1", approved_result());
         let exchange_id = exchange.id;

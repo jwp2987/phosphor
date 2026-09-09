@@ -60,7 +60,7 @@ use crate::terminal::block_list_viewport::{ClampingMode, ScrollLines};
 use crate::terminal::session_settings::AgentToolbarChipSelection;
 use crate::view_components::find::FindWithinBlockState;
 
-use crate::persistence::model::AgentConversationData;
+use crate::persistence::model::{AgentConversationData, PersistedSurface};
 use crate::terminal::model::ansi::{self, InitShellValue};
 use crate::terminal::model::ansi::{BootstrappedValue, PreexecValue};
 use crate::terminal::model::block::{
@@ -202,6 +202,7 @@ fn build_restored_conversation_with_cli_subagent_for_test(
 fn empty_agent_conversation_data_for_test() -> AgentConversationData {
     AgentConversationData {
         is_remote_child: false,
+        surface: PersistedSurface::Gui,
         server_conversation_token: None,
         conversation_usage_metadata: None,
         reverted_action_ids: None,
@@ -9217,12 +9218,15 @@ fn cli_session_status_updates_single_child_conversation_without_agent_view() {
                 BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
                     // NOTE(adapted): the oracle passes a 4th `is_cli_agent_transcript: bool`
                     // here, which feeds `AIConversation::new(is_viewing_shared_session,
-                    // is_cli_agent_transcript)`. This fork's constructor is deliberately
-                    // narrower: #107 was closed NOT_PLANNED on 2026-08-06 as a maintainer
+                    // is_cli_agent_transcript)`. This fork's constructor never grew that
+                    // parameter: #107 was closed NOT_PLANNED on 2026-08-06 as a maintainer
                     // KEEP-DROPPED decision ("the wider-arity constructor bits have no
-                    // consumer in the fork"), recorded on #11. The oracle's own call passes
-                    // `false`, which is exactly the behaviour the narrow constructor gives,
-                    // so this is faithful -- NOT a workaround, and NOT blocked on #423.
+                    // consumer in the fork"), recorded on #11. (Its second parameter is now
+                    // `surface`, added by moth-parliament -- unrelated to #107/#423, which are
+                    // both about the oracle's transcript flag specifically.) The oracle's own
+                    // call passes `false` for that flag, which is exactly the behaviour this
+                    // fork's constructor gives by never having it, so this is faithful -- NOT
+                    // a workaround, and NOT blocked on #423.
                     history_model.start_new_conversation(view.view_id, false, false, ctx)
                 });
             let child_conversation_id =
@@ -9325,12 +9329,15 @@ fn cli_session_stop_failure_marks_child_conversation_errored() {
                 BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
                     // NOTE(adapted): the oracle passes a 4th `is_cli_agent_transcript: bool`
                     // here, which feeds `AIConversation::new(is_viewing_shared_session,
-                    // is_cli_agent_transcript)`. This fork's constructor is deliberately
-                    // narrower: #107 was closed NOT_PLANNED on 2026-08-06 as a maintainer
+                    // is_cli_agent_transcript)`. This fork's constructor never grew that
+                    // parameter: #107 was closed NOT_PLANNED on 2026-08-06 as a maintainer
                     // KEEP-DROPPED decision ("the wider-arity constructor bits have no
-                    // consumer in the fork"), recorded on #11. The oracle's own call passes
-                    // `false`, which is exactly the behaviour the narrow constructor gives,
-                    // so this is faithful -- NOT a workaround, and NOT blocked on #423.
+                    // consumer in the fork"), recorded on #11. (Its second parameter is now
+                    // `surface`, added by moth-parliament -- unrelated to #107/#423, which are
+                    // both about the oracle's transcript flag specifically.) The oracle's own
+                    // call passes `false` for that flag, which is exactly the behaviour this
+                    // fork's constructor gives by never having it, so this is faithful -- NOT
+                    // a workaround, and NOT blocked on #423.
                     history_model.start_new_conversation(view.view_id, false, false, ctx)
                 });
             let child_conversation_id =

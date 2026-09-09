@@ -2,6 +2,7 @@ use chrono::NaiveDate;
 use diesel_migrations::MigrationHarness;
 
 use super::*;
+use crate::persistence::model::PersistedSurface;
 
 fn data_with_parent(parent: Option<&str>) -> String {
     match parent {
@@ -265,6 +266,31 @@ fn upsert_writes_summary_and_metadata_read_skips_tasks() {
     assert_eq!(summary.initial_query, "Initial query");
     assert_eq!(summary.title, "Root title");
     assert!(summary.is_restorable);
+}
+
+/// A conversation's surface survives a real sqlite save/restore round trip, not just a
+/// bare JSON serialize/deserialize. Breaks if `upsert_agent_conversation` stopped
+/// serializing the full `AgentConversationData` (surface included) into the
+/// `conversation_data` column, or if reading it back stopped round-tripping that field.
+#[test]
+fn upsert_and_read_roundtrip_surface() {
+    let mut conn = test_connection();
+    let task = task_with_user_query("task-1", "Initial query", "Root title");
+    let conversation_data = AgentConversationData {
+        surface: PersistedSurface::Tui,
+        ..empty_conversation_data()
+    };
+    upsert_agent_conversation(&mut conn, "conv-1", [&task], conversation_data)
+        .expect("upsert should succeed");
+
+    let restored = read_agent_conversation_by_id(&mut conn, "conv-1")
+        .expect("read should succeed")
+        .expect("conversation should exist");
+    let restored_data: AgentConversationData =
+        serde_json::from_str(&restored.conversation.conversation_data)
+            .expect("conversation_data column should hold valid JSON");
+
+    assert_eq!(restored_data.surface, PersistedSurface::Tui);
 }
 
 #[test]

@@ -1288,6 +1288,32 @@ impl<'de> Deserialize<'de> for PersistedAutoexecuteMode {
         })
     }
 }
+
+/// Which of Phosphor's own surfaces a conversation was created on -- the desktop GUI
+/// or the terminal UI (`crates/warp_tui`). See `AIConversation::surface` (app crate)
+/// for the runtime type this round-trips through; kept as a separate persisted enum
+/// (mirroring `PersistedAutoexecuteMode` above) because this crate does not depend on
+/// the app crate's types.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PersistedSurface {
+    #[default]
+    Gui,
+    Tui,
+}
+
+impl<'de> Deserialize<'de> for PersistedSurface {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Ok(match value.as_str() {
+            "Gui" => Self::Gui,
+            "Tui" => Self::Tui,
+            _ => Self::default(),
+        })
+    }
+}
 // Serializes to `conversation_data` column in `agent_conversations`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AgentConversationData {
@@ -1332,6 +1358,12 @@ pub struct AgentConversationData {
     /// comment in `app/src/ai/agent/conversation.rs`).
     #[serde(default, skip_serializing_if = "is_false")]
     pub is_remote_child: bool,
+    /// Which of Phosphor's own surfaces created this conversation -- the desktop GUI
+    /// or the TUI. Rows written before this field existed have no key for it and
+    /// deserialize as `Gui` (the default): this is a guess, not a record, for any
+    /// conversation that was actually created in the TUI before this field shipped.
+    #[serde(default)]
+    pub surface: PersistedSurface,
     /// Legacy marker that previously recorded whether the root task was
     /// still optimistic when this conversation was persisted. Retained on
     /// the struct for backward-compatible deserialization of rows written
@@ -1675,7 +1707,8 @@ mod tests {
     use std::collections::HashMap;
 
     use super::{
-        api, AgentConversation, AgentConversationData, AgentConversationSummary, ModelTokenUsage,
+        AgentConversation, AgentConversationData, AgentConversationSummary, ModelTokenUsage,
+        PersistedSurface, api,
     };
 
     fn parentless_task(id: &str, message_count: usize) -> api::Task {
@@ -1891,6 +1924,7 @@ mod tests {
     fn agent_conversation_data_roundtrips_last_event_sequence() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1933,10 +1967,53 @@ mod tests {
         assert!(!data.pinned);
     }
 
+    /// A row written before `surface` existed has no key for it at all. Removing
+    /// `#[serde(default)]` from the field turns this from "defaults to Gui" into a hard
+    /// deserialize error, which would fail the `expect` below.
+    #[test]
+    fn agent_conversation_data_legacy_rows_default_to_gui_surface() {
+        let legacy_json = r#"{"server_conversation_token":null}"#;
+        let data: AgentConversationData =
+            serde_json::from_str(legacy_json).expect("legacy rows must deserialize");
+        assert_eq!(data.surface, PersistedSurface::Gui);
+    }
+
+    /// Guards against `surface` silently not round-tripping (e.g. a `#[serde(skip)]` typo):
+    /// without it, the field would always come back as the `Gui` default regardless of what
+    /// was written, and this assertion of `Tui` would fail.
+    #[test]
+    fn agent_conversation_data_roundtrips_surface() {
+        let data = AgentConversationData {
+            is_remote_child: false,
+            surface: PersistedSurface::Tui,
+            server_conversation_token: None,
+            conversation_usage_metadata: None,
+            reverted_action_ids: None,
+            forked_from_server_conversation_token: None,
+            artifacts_json: None,
+            parent_agent_id: None,
+            agent_name: None,
+            orchestration_harness_type: None,
+            root_task_is_optimistic: None,
+            parent_conversation_id: None,
+            run_id: None,
+            autoexecute_override: None,
+            last_event_sequence: None,
+            pinned: false,
+            compaction_state_json: None,
+            byop_repair_state_json: None,
+            cli_subagent_block_snapshots_json: None,
+        };
+        let json = serde_json::to_string(&data).expect("serialize");
+        let roundtripped: AgentConversationData = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(roundtripped.surface, PersistedSurface::Tui);
+    }
+
     #[test]
     fn agent_conversation_data_roundtrips_optimistic_root_marker() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1964,6 +2041,7 @@ mod tests {
     fn agent_conversation_data_roundtrips_pinned() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -1991,6 +2069,7 @@ mod tests {
     fn agent_conversation_data_skips_serializing_unpinned() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -2020,6 +2099,7 @@ mod tests {
     fn agent_conversation_data_roundtrips_remote_child_marker() {
         let data = AgentConversationData {
             is_remote_child: true,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -2059,6 +2139,7 @@ mod tests {
     fn agent_conversation_data_skips_serializing_none_last_event_sequence() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -2092,6 +2173,7 @@ mod tests {
     fn agent_conversation_data_roundtrips_byop_repair_sidecar() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
@@ -2124,6 +2206,7 @@ mod tests {
     fn agent_conversation_data_roundtrips_cli_subagent_block_snapshots_sidecar() {
         let data = AgentConversationData {
             is_remote_child: false,
+            surface: PersistedSurface::Gui,
             server_conversation_token: None,
             conversation_usage_metadata: None,
             reverted_action_ids: None,
