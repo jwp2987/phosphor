@@ -42,6 +42,12 @@ const NON_ZERO_EXIT_CODE_ERROR: &str = "Grep command exited with non-zero exit c
 
 /// Information about the Grep call that resulted in an error, used to send
 /// telemetry about the error.
+///
+/// `Debug` so tests can `unwrap()` a `Result<_, GrepError>`; the filesystem-search
+/// tests are the first callers to do so. Note `output` may carry user content, so this
+/// is for test failure messages and developer logging, never for anything user-facing
+/// or telemetry-bound -- `error` is the field deliberately kept free of UGC.
+#[derive(Debug)]
 struct GrepError {
     command: Option<String>,
     output: Option<String>,
@@ -49,6 +55,7 @@ struct GrepError {
     error: GrepErrorType,
 }
 
+#[derive(Debug)]
 enum GrepErrorType {
     NonZeroExitCode,
     Other(String),
