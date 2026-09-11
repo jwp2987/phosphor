@@ -159,8 +159,16 @@ showing it in the pane header.
 the reason to decide early is that retrofitting it is the expensive path, and deciding
 late is the same as deciding no.
 
-A conversation carries which of *this app's* surfaces is rendering it, so it is not
-bound to a particular pane and can be reopened or moved between them.
+A conversation records which of *this app's* surfaces it was **created on**, so it is
+not bound to one `TerminalView` in one frontend.
+
+**"Created on", not "currently rendering". DECIDED 2026-09-10.** An earlier wording here
+said "is rendering it", present tense, which the implementation does not do and should
+not. The GUI and TUI share one conversation database, so a conversation started in the
+GUI and later opened in the TUI still reports `Gui` -- correct under this definition,
+and contradictory under the old one. A field that rewrites itself on every view is
+state, not identity; recording the origin is stable, cheap, and is what the creation
+path can actually know.
 
 **Two deliberate departures from OpenDev's version:**
 
@@ -195,12 +203,28 @@ pub thread_id: Option<String>,
 pub delivery_context: HashMap<String, Value>,
 ```
 
-**The surface is a field, not an ancestor.** A session is not *in* a TUI; it *has* a
-delivery channel. That reframes this branch's ask from "add a pane type" to "give
-conversations a surface field, of which the existing terminal pane is one value."
+**CITATION WITHDRAWN 2026-09-10.** This section credited OpenDev's session shape as
+working prior art. `moth-idea.md` §8 read the code and found it does not hold up:
 
-Bigger refactor, better foundation, and explicitly **not committed to** — it is
-step 4's decision. Recorded here so it is a choice rather than an omission.
+- **`delivery_context` is dead.** No readers and no writers outside `opendev-models`
+  and its own tests. The channel router keeps a separate, in-memory, never-persisted
+  map instead. The field is a transcription artifact from the Python original, not a
+  mechanism.
+- **The claim that OpenDev "delivers to Slack, webhooks and a CLI" is false.** There is
+  exactly one `ChannelAdapter` in the tree -- Telegram. `"cli"` and `"web"` exist only
+  as name strings with no adapter registered.
+- **The router does not use `Session` at all.** `resolve_session` mints its own ad-hoc
+  id rather than going through `SessionManager`, so the router's sessions and the
+  history crate's sessions are different objects.
+
+So the abstraction cited here is not load-bearing even in its own codebase, and none of
+the three fields above should be copied.
+
+**The idea survives the citation, on its own merits.** "The surface is a field, not an
+ancestor" is still right for Phosphor -- a conversation is not *in* a frontend, it
+*records* one -- and step 4 adopted it. It is justified by Phosphor already shipping two
+surfaces (the GUI and `crates/warp_tui`), not by OpenDev having done it. Keep the
+reasoning; drop the evidence.
 
 Also worth taking if local orchestration is ever revisited: `subagent_sessions:
 HashMap<tool_call_id, session_id>` plus `parent_id` means fan-out and forking cost no

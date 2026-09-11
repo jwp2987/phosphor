@@ -394,6 +394,17 @@ pub struct Session {
 }
 ```
 
+**CITATION PARTLY WITHDRAWN 2026-09-10.** `docs/design/moth-idea.md` §8 read OpenDev's
+code and found the delivery-shaped half of the struct above is not a working mechanism:
+`delivery_context` has no readers or writers outside its own crate and tests; there is
+exactly one `ChannelAdapter` (Telegram), so the claim elsewhere that OpenDev "delivers
+to Slack, webhooks and a CLI" is false; and the channel router does not use `Session` at
+all, minting its own ad-hoc ids instead. Do not copy `channel`, `thread_id` or
+`delivery_context`, and do not cite them as evidence that the shape works.
+
+What survives is the structural observation, which stands on Phosphor's own terms: a
+session with no terminal, view or pty in it. That is what the takes below rest on.
+
 Three things to take from it, and one to reject.
 
 **Take: `working_directory` on the session.** Independent arrival at the same
