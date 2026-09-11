@@ -4392,10 +4392,10 @@ const NO_FILE_ROUTE_BLOCKED_TOOLS: &[&str] = &["read_files", "apply_file_diffs",
 /// (`docs/design/moth-parliament.md` step 2, `RequestParams::is_conversation_only`) -- a
 /// pane that never spawns a shell, and never will. "Execution" here means: runs a process,
 /// writes to a pty, or requires a live shell session to mean anything. Explicitly NOT
-/// blocked: `read_files`, `apply_file_diffs`, `read_skill`, `grep`, `file_glob_v2`,
-/// `read_documents` / `edit_documents` / `create_documents` -- the design is "everything
-/// except execution," and file access is the thing that must keep working with no process
-/// behind the pane.
+/// blocked: `read_files`, `apply_file_diffs`, `read_skill`, `grep`, `file_glob` (registered name
+/// of the `FILE_GLOB_V2` static), `read_documents` / `edit_documents` / `create_documents` --
+/// the design is "everything except execution," and file access is the thing that must keep
+/// working with no process behind the pane.
 ///
 /// - `run_shell_command` -- spawns the process this pane will never have.
 /// - `write_to_long_running_shell_command` / `read_shell_command_output` -- both operate on
@@ -4427,23 +4427,13 @@ const CONVERSATION_ONLY_BLOCKED_TOOLS: &[&str] = &[
     "transfer_shell_command_control_to_user",
     tools::computer::REQUEST_COMPUTER_USE_TOOL_NAME,
     tools::computer::USE_COMPUTER_TOOL_NAME,
-    // `grep` and `file_glob_v2` read like file tools and are not: both are implemented by
-    // shelling out. `execute/grep.rs` and `execute/file_glob.rs` build a command with
-    // `shell_quote_arg` and run it through `ExecuteCommandOptions` against the pane's
-    // `active_session`. A conversation pane has no session, so they fail at the point of
-    // use rather than being unavailable -- the agent offered to list a directory and came
-    // back with a session error, which is exactly the "believes it can, then cannot"
-    // failure this list exists to prevent.
-    //
-    // This narrows a conversation to reading and writing named files: no search. The
-    // alternative is reimplementing both against the filesystem directly, which is real
-    // work and a separate decision. Withdrawing them is right either way -- a tool that
-    // always fails is worse than one that is absent.
-    "grep",
-    // NOT "file_glob_v2": the static is named `FILE_GLOB_V2` but registers as
-    // `name: "file_glob"` (`tools/search.rs`). Matching is by the registered name, so the
-    // obvious spelling would have withdrawn nothing at all, silently.
-    "file_glob",
+    // `grep` and `file_glob` (the registered name of the `FILE_GLOB_V2` static --
+    // `tools/search.rs` -- matching is by registered name, not the static's spelling) used to
+    // be listed here: both were implemented only by shelling out (`execute/grep.rs` /
+    // `execute/file_glob.rs` built a command and ran it through `ExecuteCommandOptions`
+    // against the pane's `active_session`), which a conversation pane has none of. Both now
+    // fall back to an in-process filesystem search when `active_session.session(ctx)` is
+    // `None`, so they belong in the "explicitly NOT blocked" list above instead.
 ];
 
 /// Whether `tool_name` is withdrawn because this request belongs to a conversation-only
@@ -11610,27 +11600,21 @@ mod serializer_readiness_tests {
             );
         }
 
-        // `grep` and `file_glob` were in this list until a conversation pane was actually
-        // used: both are implemented by shelling out (`execute/grep.rs`,
-        // `execute/file_glob.rs` build a command and run it through the pane's
-        // `active_session`), so they failed with a session error at the point of use. They
-        // are execution tools despite their names, and are now withdrawn above.
-        for kept in ["read_files", "apply_file_diffs"] {
+        // `grep` and `file_glob` (the registered name of the `FILE_GLOB_V2` static -- matching
+        // is by registered name, not the static's spelling) were withdrawn here briefly: both
+        // were implemented only by shelling out (`execute/grep.rs`, `execute/file_glob.rs`
+        // built a command and ran it through the pane's `active_session`), which a
+        // conversation pane has none of, so they failed with a session error at the point of
+        // use. Both now fall back to an in-process filesystem search when
+        // `active_session.session(ctx)` is `None`, so they belong here with the rest of the
+        // file tools. Fails if either is put back in `CONVERSATION_ONLY_BLOCKED_TOOLS` --
+        // e.g. because the filesystem fallback regresses and someone papers over it by
+        // withdrawing the tool again -- since `names` would then no longer contain it.
+        for kept in ["read_files", "apply_file_diffs", "grep", "file_glob"] {
             assert!(
                 names.iter().any(|n| n.as_str() == kept),
                 "{kept} is file access, not execution, and must stay advertised to a \
                  conversation-only pane -- \"everything except execution\"; got {names:?}",
-            );
-        }
-
-        // Pinned by registered name, not by the name of the static that declares it:
-        // `FILE_GLOB_V2` registers as `"file_glob"`, so blocking `"file_glob_v2"` would
-        // withdraw nothing while looking correct. Fails if either drifts.
-        for shell_backed in ["grep", "file_glob"] {
-            assert!(
-                CONVERSATION_ONLY_BLOCKED_TOOLS.contains(&shell_backed),
-                "{shell_backed} shells out, so it must be withdrawn from a conversation \
-                 pane -- a tool that always fails is worse than one that is absent",
             );
         }
     }

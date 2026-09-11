@@ -1,6 +1,9 @@
+use std::fs;
+
 use super::*;
 use crate::terminal::{model::secrets::regexes::FIREBASE_AUTH_DOMAIN, shell::ShellType};
 use serial_test::serial;
+use tempfile::TempDir;
 
 // This test mutates the process-global secret regexes via
 // `set_user_and_enterprise_secret_regexes`, shared with the other `#[serial]`
@@ -677,4 +680,85 @@ fn parse_grep_content_scan_output_returns_empty_for_empty_output() {
         parse_grep_content_scan_output("", &None, &None),
         Vec::<GrepFileMatch>::new()
     );
+}
+
+/// Conversation-pane fallback (`docs/design/moth-parliament.md` step 2): with no
+/// session, grep must still find a match and report it in the same shape the
+/// shell path uses -- `GrepResult::Success` with a `GrepFileMatch` carrying the
+/// file's absolute path and the matched line number. Fails if the line-number
+/// indexing regresses to 0-based, if the match predicate stops testing every
+/// query (an OR, matching `-e`/`-e`), or if this starts requiring a session again.
+#[test]
+fn grep_filesystem_sync_finds_match_with_line_number() {
+    let dir = TempDir::new().expect("tempdir");
+    let file_path = dir.path().join("needle.txt");
+    fs::write(&file_path, "first line\nneedle here\nlast line\n").expect("write fixture file");
+
+    let result = grep_filesystem_sync(
+        &["needle".to_string()],
+        dir.path().to_str().expect("tempdir path is utf8"),
+    )
+    .expect("grep_filesystem_sync should succeed against a real directory");
+
+    let GrepResult::Success { matched_files } = result else {
+        panic!("expected GrepResult::Success, got {result:?}");
+    };
+    assert_eq!(
+        matched_files,
+        vec![GrepFileMatch {
+            file_path: file_path.to_string_lossy().into_owned(),
+            matched_lines: vec![GrepLineMatch { line_number: 2 }],
+        }]
+    );
+}
+
+/// The shell path reports "no matches" as `GrepResult::Success` with an empty
+/// file list, never as an `Error` (`execute_grep_command`'s POSIX exit-code-1
+/// handling). The filesystem fallback must report it the same way -- a
+/// different representation here would look like it works while quietly
+/// changing what the agent concludes about the search. Fails if a clean "no
+/// matches" run starts returning `GrepResult::Error` instead.
+#[test]
+fn grep_filesystem_sync_reports_no_matches_as_success_with_empty_list() {
+    let dir = TempDir::new().expect("tempdir");
+    fs::write(dir.path().join("file.txt"), "nothing interesting here\n")
+        .expect("write fixture file");
+
+    let result = grep_filesystem_sync(
+        &["needle".to_string()],
+        dir.path().to_str().expect("tempdir path is utf8"),
+    )
+    .expect("grep_filesystem_sync should succeed even when nothing matches");
+
+    assert_eq!(
+        result,
+        GrepResult::Success {
+            matched_files: vec![]
+        }
+    );
+}
+
+/// Wiring test for the `Some(session) = session else { .. }` branch in
+/// `run_grep`: with no session, the top-level entry point must reach the
+/// filesystem path rather than erroring out immediately. Fails if that branch
+/// goes back to returning `GrepError::new("No session provided to grep")`
+/// unconditionally.
+#[tokio::test]
+async fn run_grep_dispatches_to_filesystem_when_there_is_no_session() {
+    let dir = TempDir::new().expect("tempdir");
+    fs::write(dir.path().join("a.txt"), "needle\n").expect("write fixture file");
+
+    let result = run_grep(
+        vec!["needle".to_string()],
+        dir.path().to_string_lossy().into_owned(),
+        None,
+        None,
+    )
+    .await
+    .expect("run_grep should succeed with no session");
+
+    let GrepResult::Success { matched_files } = result else {
+        panic!("expected GrepResult::Success, got {result:?}");
+    };
+    assert_eq!(matched_files.len(), 1);
 }

@@ -207,8 +207,14 @@ async fn run_file_glob(
     if patterns.is_empty() {
         return Err(anyhow::anyhow!("No patterns provided to file_glob"));
     }
+    // A conversation pane has no session -- it never spawns a process, by
+    // design (`docs/design/moth-parliament.md` step 2) -- so none of the
+    // session-driven paths below can run. Glob the filesystem directly
+    // instead of failing outright, which is what let a conversation search
+    // again after `grep`/`file_glob` had their shell-only implementation
+    // withdrawn.
     let Some(session) = session else {
-        return Err(anyhow::anyhow!("No session provided to file_glob"));
+        return run_file_glob_filesystem(patterns, absolute_path).await;
     };
     let shell_type = session.shell().shell_type();
 
@@ -233,6 +239,92 @@ async fn run_file_glob(
     } else {
         run_find_command(&patterns, &absolute_path, session.as_ref(), shell_type).await
     }
+}
+
+/// Filesystem-backed file_glob used when there is no session behind the
+/// pane -- a conversation pane, which never spawns a process
+/// (`docs/design/moth-parliament.md` step 2), so it never has one. This must
+/// not shell out or spawn anything: it runs entirely in this process, on a
+/// blocking-pool thread so it doesn't stall the async executor.
+#[cfg(not(target_family = "wasm"))]
+async fn run_file_glob_filesystem(
+    patterns: Vec<String>,
+    absolute_path: String,
+) -> anyhow::Result<FileGlobV2Result> {
+    match tokio::task::spawn_blocking(move || file_glob_filesystem_sync(&patterns, &absolute_path))
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => Err(anyhow::anyhow!("File glob task panicked: {e}")),
+    }
+}
+
+/// wasm has no blocking thread pool to run [`file_glob_filesystem_sync`] on
+/// and no local filesystem to search in the first place, so a session-less
+/// file_glob there keeps the previous behavior.
+#[cfg(target_family = "wasm")]
+async fn run_file_glob_filesystem(
+    _patterns: Vec<String>,
+    _absolute_path: String,
+) -> anyhow::Result<FileGlobV2Result> {
+    Err(anyhow::anyhow!("No session provided to file_glob"))
+}
+
+/// Synchronous body of [`run_file_glob_filesystem`]. Walks `absolute_path`
+/// in-process (or matches it directly, if it names a single file) and keeps
+/// every file whose path relative to `absolute_path` matches any of
+/// `patterns`. Patterns are matched with `*`/`?`/`[...]` not crossing `/`
+/// and `**` crossing any number of directories, per the tool's own
+/// documented contract (`app/src/ai/agent_providers/tools/search.rs`'s
+/// `glob_parameters`, e.g. `"**/*.rs"`, `"src/**/*.toml"`) -- richer than
+/// `build_find_command`'s basename-only `-name`, which is what the
+/// session-backed non-git path above actually runs.
+#[cfg(not(target_family = "wasm"))]
+fn file_glob_filesystem_sync(
+    patterns: &[String],
+    absolute_path: &str,
+) -> anyhow::Result<FileGlobV2Result> {
+    let root = std::path::Path::new(absolute_path);
+    if !root.exists() {
+        return Err(anyhow::anyhow!("Path does not exist: {absolute_path}"));
+    }
+
+    let mut builder = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()?,
+        );
+    }
+    let glob_set = builder.build()?;
+
+    let mut matched_files = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative_path = entry.path().strip_prefix(root).unwrap_or(entry.path());
+        let relative_path = if relative_path.as_os_str().is_empty() {
+            std::path::Path::new(entry.file_name())
+        } else {
+            relative_path
+        };
+        let relative_path = relative_path.to_string_lossy().replace('\\', "/");
+        if glob_set.is_match(&relative_path) {
+            matched_files.push(FileGlobV2Match {
+                file_path: entry.path().to_string_lossy().into_owned(),
+            });
+        }
+    }
+
+    Ok(FileGlobV2Result::Success {
+        matched_files,
+        warnings: None,
+    })
 }
 
 /// Uses git ls-files to list all files in a git repository and filters them by pattern.

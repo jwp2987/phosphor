@@ -294,6 +294,7 @@ env_logger.workspace = true
 git2 = { version = "0.20.4", default-features = false, features = [
     "vendored-libgit2",
 ] }
+globset.workspace = true
 http_server.workspace = true
 hyper.workspace = true
 libsqlite3-sys = { version = "0.33.0", features = ["bundled"] }

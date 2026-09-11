@@ -352,8 +352,14 @@ async fn run_grep(
     if queries.is_empty() {
         return Err(GrepError::new("No queries provided to grep".to_string()));
     }
+    // A conversation pane has no session -- it never spawns a process, by
+    // design (`docs/design/moth-parliament.md` step 2) -- so none of the
+    // session-driven paths below can run. Search the filesystem directly
+    // instead of failing outright, which is what let a conversation search
+    // again after `grep`/`file_glob` had their shell-only implementation
+    // withdrawn.
     let Some(session) = session else {
-        return Err(GrepError::new("No session provided to grep".to_string()));
+        return run_grep_filesystem(queries, absolute_path).await;
     };
 
     let is_file = is_file_path(&absolute_path, &session).await;
@@ -455,6 +461,102 @@ async fn run_ripgrep(queries: &[String], absolute_path: String) -> Result<GrepRe
         }
         Err(e) => Err(GrepError::new(format!("Ripgrep search failed: {e}"))),
     }
+}
+
+/// Filesystem-backed grep used when there is no session behind the pane --
+/// a conversation pane, which never spawns a process
+/// (`docs/design/moth-parliament.md` step 2), so it never has one. Unlike
+/// [`run_ripgrep`] above, this must not shell out or spawn anything: it runs
+/// entirely in this process, on a blocking-pool thread so it doesn't stall
+/// the async executor.
+#[cfg(not(target_family = "wasm"))]
+async fn run_grep_filesystem(
+    queries: Vec<String>,
+    absolute_path: String,
+) -> Result<GrepResult, GrepError> {
+    match tokio::task::spawn_blocking(move || grep_filesystem_sync(&queries, &absolute_path)).await
+    {
+        Ok(result) => result,
+        Err(e) => Err(GrepError::new(format!("Grep task panicked: {e}"))),
+    }
+}
+
+/// wasm has no blocking thread pool to run [`grep_filesystem_sync`] on and no
+/// local filesystem to search in the first place, so a session-less grep
+/// there keeps the previous behavior.
+#[cfg(target_family = "wasm")]
+async fn run_grep_filesystem(
+    _queries: Vec<String>,
+    _absolute_path: String,
+) -> Result<GrepResult, GrepError> {
+    Err(GrepError::new("No session provided to grep".to_string()))
+}
+
+/// Synchronous body of [`run_grep_filesystem`]. Walks `absolute_path`
+/// in-process (or reads it directly, if it names a single file) and matches
+/// `queries` against every text line as regular expressions, mirroring the
+/// OR-of-`-e`-patterns semantics of [`build_grep_command`]: a line matches
+/// if ANY query matches it, and is reported once even when several queries,
+/// or several occurrences of one query, hit the same line.
+///
+/// Deliberately does not apply `.gitignore` filtering: the shell fallback
+/// this replaces (`run_grep_command`'s plain `grep -r`, reached whenever the
+/// target isn't a git repository) doesn't either, so which files get
+/// searched must not change depending on whether a session happens to be
+/// present.
+#[cfg(not(target_family = "wasm"))]
+fn grep_filesystem_sync(queries: &[String], absolute_path: &str) -> Result<GrepResult, GrepError> {
+    let root = std::path::Path::new(absolute_path);
+    if !root.exists() {
+        return Err(GrepError::new(format!(
+            "Path does not exist: {absolute_path}"
+        )));
+    }
+
+    let patterns = queries
+        .iter()
+        .map(|query| regex::Regex::new(query))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| GrepError::new(format!("Invalid grep pattern: {e}")))?;
+
+    let mut matched_files = Vec::new();
+    for entry in walkdir::WalkDir::new(root)
+        .into_iter()
+        .filter_map(Result::ok)
+    {
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(contents) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        // Mirrors `-I`: a NUL byte anywhere in the file is grep's own
+        // heuristic for "this is binary", so a file containing one never
+        // produces a match.
+        if contents.contains(&0u8) {
+            continue;
+        }
+        let Ok(text) = String::from_utf8(contents) else {
+            continue;
+        };
+
+        let matched_lines: Vec<GrepLineMatch> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, line)| patterns.iter().any(|pattern| pattern.is_match(line)))
+            .map(|(index, _)| GrepLineMatch {
+                line_number: index + 1,
+            })
+            .collect();
+        if !matched_lines.is_empty() {
+            matched_files.push(GrepFileMatch {
+                file_path: entry.path().to_string_lossy().into_owned(),
+                matched_lines,
+            });
+        }
+    }
+
+    Ok(GrepResult::Success { matched_files })
 }
 
 /// The outcome of executing a grep-like command that follows the POSIX
