@@ -1,18 +1,21 @@
 use futures::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
+use crate::RemotePtySessionId;
 use crate::proto::{
     ClientMessage, CodebaseIndexStatus, CodebaseIndexStatusState, CodebaseIndexStatusUpdated,
     CodebaseIndexStatusesSnapshot, ErrorCode, FileSystemEntryKind, GetDiffState,
     GetDiffStateResponse, GitCommitChainMode, GitCommitChainRequest, GitCommitChainResponse,
     GitCommitChainSuccess, GitCreatePrRequest, GitCreatePrResponse, GitOpDelta, GitOpError,
-    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest, InitializeResponse, Notification,
-    OpenBufferResponse, PrInfo, ReadFileChunkResponse, ReadFileChunkSuccess,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, HostScopedRequest,
+    InitializeResponse, Notification, OpenBufferResponse, PrInfo, ReadFileChunkResponse,
+    ReadFileChunkSuccess, ReattachSessionError, ReattachSessionResponse, ReattachSessionSuccess,
     ResolvePathResponse, ResolvePathSuccess, RunCommandResponse, RunCommandSuccess, ServerMessage,
     SessionScopedRequest, WriteFileChunkResponse, WriteFileChunkSuccess, client_message,
-    git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response, host_scoped_request,
-    notification, read_file_chunk_response, resolve_path_response, run_command_response,
-    server_message, session_scoped_request, write_file_chunk_response,
+    git_commit_chain_response, git_create_pr_response, git_pull_response, git_push_response,
+    host_scoped_request, notification, read_file_chunk_response, reattach_session_response,
+    resolve_path_response, run_command_response, server_message, session_scoped_request,
+    write_file_chunk_response,
 };
 use crate::protocol;
 use warp_core::SessionId;
@@ -1053,4 +1056,86 @@ async fn codebase_index_push_messages_become_client_events() {
         }
         other => panic!("Expected CodebaseIndexStatusUpdated, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn reattach_session_round_trip() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
+        let req = match &msg.message {
+            Some(client_message::Message::HostScoped(HostScopedRequest {
+                message: Some(host_scoped_request::Message::ReattachSession(req)),
+            })) => req.clone(),
+            other => panic!("Expected ReattachSession, got {other:?}"),
+        };
+        assert_eq!(req.remote_session_id, "session-abc");
+        server_message::Message::ReattachSessionResponse(ReattachSessionResponse {
+            result: Some(reattach_session_response::Result::Success(
+                ReattachSessionSuccess {
+                    data: b"replayed output".to_vec(),
+                    dropped_bytes_since_ack: 42,
+                },
+            )),
+        })
+    });
+
+    let success = client
+        .reattach_session(RemotePtySessionId::from("session-abc".to_string()))
+        .await
+        .unwrap();
+    assert_eq!(success.data, b"replayed output");
+    assert_eq!(success.dropped_bytes_since_ack, 42);
+}
+
+#[tokio::test]
+async fn reattach_session_error_surfaces_as_err() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|_| {
+        server_message::Message::ReattachSessionResponse(ReattachSessionResponse {
+            result: Some(reattach_session_response::Result::Error(
+                ReattachSessionError {
+                    message: "unknown session".to_string(),
+                },
+            )),
+        })
+    });
+
+    let err = client
+        .reattach_session(RemotePtySessionId::from("session-abc".to_string()))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::SessionOperationFailed(message) => {
+            assert_eq!(message, "unknown session");
+        }
+        other => panic!("Expected SessionOperationFailed, got {other:?}"),
+    }
+}
+
+/// A `ReattachSessionResponse` with no `result` set must be an error, NOT an empty
+/// success -- unlike `list_sessions`, which defaults a missing oneof to an empty
+/// list.
+///
+/// The asymmetry is deliberate. A listing that wrongly reports "no sessions" is
+/// harmless and self-correcting: ask again. A reattach cannot be asked again --
+/// the daemon discards a session's buffered output once it has handed the response
+/// off -- so defaulting here would report "no output, and no gap" for output that
+/// is already gone, losing it and simultaneously asserting nothing was lost. An
+/// empty reattach payload is indistinguishable from a genuinely idle session,
+/// which is exactly why this one cannot be permissive.
+///
+/// Breaks if the `None` arm returns `Ok(ReattachSessionSuccess::default())`, which
+/// is what it did when first written, by analogy to `list_sessions`.
+#[tokio::test]
+async fn reattach_session_with_no_result_is_an_error_not_an_empty_success() {
+    let (client, _disconnect_rx, _executor) = setup_mock_client(|_| {
+        server_message::Message::ReattachSessionResponse(ReattachSessionResponse { result: None })
+    });
+
+    let err = client
+        .reattach_session(RemotePtySessionId::from("session-abc".to_string()))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, ClientError::UnexpectedResponse),
+        "a result-less reattach response must not read as an idle session; got {err:?}"
+    );
 }

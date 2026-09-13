@@ -202,16 +202,7 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::ResizeSession(_) => "client::resize_session",
             M::SignalSession(_) => "client::signal_session",
             M::ListSessions(_) => "client::list_sessions",
-            // Daemon-side only so far: `ReattachSession` has a handler
-            // (`server_model::handle_reattach_session`) and a wire response, but
-            // no `client::` sender yet -- a reattaching client is item 6 in
-            // `docs/design/moth-parliament.md`, and the client half lands with it.
-            // Named here rather than left out because this match exists to make
-            // exactly that gap visible: every host-scoped request must state
-            // where its response is parsed, and "nowhere yet" is an answer the
-            // match should be able to carry without being silently widened to a
-            // `_` arm.
-            M::ReattachSession(_) => "no client sender yet (daemon handler only)",
+            M::ReattachSession(_) => "client::reattach_session",
         }
     }
 

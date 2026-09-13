@@ -20,17 +20,17 @@ use crate::proto::{
     InitializeResponse, ListDirectory, ListDirectoryResponse, ListSessions, ListSessionsResponse,
     LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse, OpenBuffer,
     OpenBufferResponse, ReadFileChunk, ReadFileChunkResponse, ReadFileContextRequest,
-    ReadFileContextResponse, RemoteAgentContextSnapshot, RemoteSessionSignal, ResizeSession,
-    ResizeSessionResponse, ResolveConflict, ResolveConflictResponse, ResolvePath,
-    ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
-    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    SignalSession, SignalSessionResponse, SpawnSession, SpawnSessionResponse, TextEdit,
-    UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
-    UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, WriteSessionStdin,
-    WriteSessionStdinResponse, discard_files_response, git_stage_response, host_scoped_request,
-    list_sessions_response, notification, read_file_chunk_response, resize_session_response,
-    server_message, session_scoped_request, signal_session_response, spawn_session_response,
-    write_session_stdin_response,
+    ReadFileContextResponse, ReattachSession, ReattachSessionSuccess, RemoteAgentContextSnapshot,
+    RemoteSessionSignal, ResizeSession, ResizeSessionResponse, ResolveConflict,
+    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
+    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
+    ServerMessage, SessionBootstrapped, SignalSession, SignalSessionResponse, SpawnSession,
+    SpawnSessionResponse, TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo,
+    UpdateGitStatus, UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse,
+    WriteSessionStdin, WriteSessionStdinResponse, discard_files_response, git_stage_response,
+    host_scoped_request, list_sessions_response, notification, read_file_chunk_response,
+    reattach_session_response, resize_session_response, server_message, session_scoped_request,
+    signal_session_response, spawn_session_response, write_session_stdin_response,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
@@ -924,6 +924,60 @@ impl RemoteServerClient {
             },
             other => {
                 log::error!("Unexpected response variant for ListSessions: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Reattaches to a session the daemon is still holding open across a
+    /// disconnect, returning the output retained for it since the client's
+    /// last successful reattach (or since spawn, for the first) along with
+    /// how many bytes were dropped from the buffer in the meantime.
+    ///
+    /// Returns the generated `ReattachSessionSuccess` directly rather than a
+    /// bespoke owned type: unlike `list_sessions` (which unwraps
+    /// `ListSessionsSuccess` down to its inner `Vec` because that's the
+    /// whole payload callers want), `ReattachSessionSuccess` already *is*
+    /// the flat two-field payload the caller needs (`data`,
+    /// `dropped_bytes_since_ack`), so a hand-rolled wrapper would only
+    /// duplicate it.
+    pub async fn reattach_session(
+        &self,
+        remote_session_id: RemotePtySessionId,
+    ) -> Result<ReattachSessionSuccess, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ReattachSession(ReattachSession {
+                remote_session_id: remote_session_id.clone().into(),
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ReattachSessionResponse(resp)) => match resp.result {
+                Some(reattach_session_response::Result::Success(success)) => Ok(success),
+                Some(reattach_session_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+                // NOT the permissive empty default `list_sessions` uses, and the
+                // difference matters. For a listing, defaulting to "no sessions"
+                // is wrong but harmless and self-correcting -- ask again and you
+                // get the truth. For a reattach it is neither: the daemon
+                // discards a session's buffered output once it has handed the
+                // response off, so a missing oneof here would report "no output,
+                // and no gap" for output that is already gone -- silently losing
+                // it AND asserting nothing was lost. An empty reattach payload is
+                // indistinguishable from a genuinely idle session, so this has to
+                // fail loudly instead.
+                None => {
+                    log::error!(
+                        "ReattachSessionResponse carried no result for {remote_session_id}"
+                    );
+                    Err(ClientError::UnexpectedResponse)
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for ReattachSession: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }
