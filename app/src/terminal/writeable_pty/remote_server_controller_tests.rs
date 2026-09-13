@@ -1,6 +1,6 @@
 use super::*;
 use remote_server::setup::{RemoteArch, RemoteOs};
-use warpui::App;
+use warpui::{App, SingletonEntity};
 
 #[test]
 fn connection_label_prefers_ssh_host_over_reported_hostname() {

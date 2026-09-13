@@ -7,7 +7,7 @@ use smol_str::SmolStr;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use warpui::{
     elements::Empty, platform::WindowStyle, App, AppContext, Element, Entity, ModelHandle,
-    TypedActionView, View, ViewContext,
+    SingletonEntity, TypedActionView, View, ViewContext,
 };
 
 use crate::terminal::shell::{Shell, ShellType};
