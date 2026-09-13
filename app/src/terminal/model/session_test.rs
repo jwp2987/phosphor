@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use settings::Setting as _;
 use smol_str::SmolStr;
 use warp_completer::completer::{CommandExitStatus, CommandOutput};
 use warpui::{
