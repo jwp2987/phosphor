@@ -822,6 +822,43 @@ bookkeeping to get wrong. The first implementation used a byte count, clamped it
 documented the eviction race as the *reason* for clamping; clamping prevents the panic
 and not the misalignment.
 
+### Known gaps from refuting `3d638ad25` — noted 2026-09-13
+
+Three gaps a refutation pass on the daemon-owns-real-ptys commit found and deliberately
+left unfixed. Recorded here rather than silently carried, per the same discipline as
+every other decision on this page.
+
+**Exit codes are wrong on the default production path.** `PtySpawner::new()` on unix
+always constructs a `TerminalServer`, and `spawn_pty` prefers that server-hosted path
+whenever one exists. Its `ServerOwnedPtyHandle` does not override `take_exit_status` --
+there is no exit-code channel in the `TerminalServerClient` protocol to wire one to --
+so every real exit inherits the trait default `None` and gets reported as signalled
+regardless of how the shell actually exited. `DirectPtyHandle` (the fallback, and what
+the only real-pty test forces via `PtySpawner::new_for_test`) is correct. The fix needs
+an exit-status channel added to that protocol; until then, the existing real-pty test
+structurally cannot catch this regression, because it forces `server: None` to stay
+hermetic.
+
+**A shell that writes and immediately exits can lose its last output.** One `poll()`
+wakeup can deliver both the child-exit event and a final readable event together, and
+the exit branch breaks out before the drain runs, discarding whatever was still sitting
+in the read buffer. This is inherited verbatim from `local_tty::event_loop::EventLoop`,
+which has the exact same structure and whose own comments already acknowledge the
+pty-exit-vs-readable race -- so this is a pre-existing accepted risk, not something the
+daemon work introduced. It still deserves fixing on its own schedule: faithful output
+replay is the entire value proposition of a remote pty, and losing the last line of a
+quick command is precisely the kind of loss a user notices immediately.
+
+**The bootstrap injection is unconditional, and that is a feature blocker, not a
+footnote.** `arguments_for_session_spawning_command` always wraps the shell in Warp's
+interactive bootstrap -- rcfile injection, the InitShell OSC handshake, PS1 suppression
+-- and none of the `PtyOptions` flags this daemon sets to `false` (`enable_ssh_wrapper`,
+`shell_debug_mode`, `honor_ps1`, `node_version_chip_enabled`) gate that injection itself.
+Until item 6's client seam understands that handshake, any client that is not itself a
+Zap-aware Warp client sees raw handshake noise inside its session. What is missing is
+squarely a `PtySpawnSpec` gap: it has no "just run this command, no bootstrap" concept
+at all.
+
 ### What the remote-server extension already does — answered 2026-09-05
 
 **It has, and these are the tedious parts:** an install path over SSH that downloads a

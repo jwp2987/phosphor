@@ -1360,7 +1360,8 @@ impl ServerModel {
                     // all five RPCs. Each routes through `self.pty_ops`
                     // (`pty_session_ops::PtySessionOperations`) rather than a real OS
                     // pty directly -- see that module's doc comment for why, and for
-                    // what "real" backend is (not yet) wired behind it.
+                    // what backs it: `LocalTtyPtySessionOperations` on unix, wiring a
+                    // real `local_tty::Pty` behind each session.
                     Some(host_scoped_request::Message::SpawnSession(msg)) => {
                         self.handle_spawn_session(msg, ctx)
                     }

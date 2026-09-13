@@ -121,6 +121,8 @@ pub(super) fn run_daemon_app(
     server_model_init: impl FnOnce(&mut warpui::ModelContext<server_model::ServerModel>) -> server_model::ServerModel
         + 'static,
 ) -> anyhow::Result<()> {
+    #[cfg(feature = "local_tty")]
+    use anyhow::Context as _;
     use warpui::platform::app::AppCallbacks;
     use warpui::platform::AppBuilder;
     use warpui::SingletonEntity;
@@ -135,11 +137,17 @@ pub(super) fn run_daemon_app(
     // open files/watchers/sockets that a later-constructed spawner would
     // otherwise risk leaking into a spawned pty's child process.
     #[cfg(feature = "local_tty")]
-    let pty_spawner = crate::terminal::local_tty::spawner::PtySpawner::new()?;
+    let pty_spawner = crate::terminal::local_tty::spawner::PtySpawner::new()
+        .context("Failed to create pty spawner")?;
 
     AppBuilder::new_headless(AppCallbacks::default(), Box::new(()), None).run(move |ctx| {
-        // See the comment above: registered first, ahead of every other
-        // singleton in this closure.
+        // Registered first in this closure, but that is incidental, not a
+        // mirror of `app/src/lib.rs`'s non-daemon path: there, construction
+        // happens equally early (see the comment above -- that is the part
+        // that matters for fd hygiene), but *registration* happens later,
+        // after the log-rotation spawn and after `AppExecutionMode`. The two
+        // paths deliberately share construction order and do not share
+        // registration order.
         #[cfg(feature = "local_tty")]
         ctx.add_singleton_model(move |_ctx| pty_spawner);
 

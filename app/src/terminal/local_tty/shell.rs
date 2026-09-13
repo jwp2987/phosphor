@@ -191,7 +191,14 @@ impl ShellStarter {
         Self::compute_fallback_shell().map(|fallback_shell| fallback_shell.into())
     }
 
-    fn compute_fallback_shell() -> Option<ShellStarterSource> {
+    /// The fallback shell chain used when nothing more specific (a settings
+    /// override, `$WARP_SHELL_PATH`) picked one: the user's passwd-entry
+    /// shell (`getpwuid`/`getent`/`/etc/passwd`, via
+    /// [`super::unix::resolve_current_user`]), then `zsh`/`bash`/`fish` in
+    /// that order. `pub(crate)` so `remote_server::pty_session_ops`'s daemon
+    /// spawn path can reuse this exact resolution -- see its
+    /// `resolve_shell_starter`'s doc comment for why that matters.
+    pub(crate) fn compute_fallback_shell() -> Option<ShellStarterSource> {
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
                 // Resolving the current user can fail on hosts whose uid only

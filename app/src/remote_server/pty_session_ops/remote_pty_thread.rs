@@ -28,8 +28,7 @@ use warpui::AppContext;
 
 use crate::terminal::SizeInfo;
 use crate::terminal::local_tty::shell::{
-    BASH_SHELL_PATH, DirectShellStarter, FISH_SHELL_PATH, ShellStarter, ZSH_SHELL_PATH,
-    supported_shell_path_and_type,
+    DirectShellStarter, ShellStarter, supported_shell_path_and_type,
 };
 use crate::terminal::local_tty::{ChildEvent, EventedPty, EventedReadWrite, Pty, PtyOptions};
 
@@ -76,6 +75,60 @@ const COMMAND_TOKEN: Token = Token(3);
 /// (`SessionStore`'s ring buffer), which bounds how much is kept, not how
 /// much moves per read.
 const READ_CHUNK_SIZE: usize = 8192;
+
+/// Kills and reaps a spawned pty (`EventedPty::kill`, in `unix.rs`, which
+/// drops the fd and blocks on `Child::wait`) when dropped, unless
+/// [`disarm`](Self::disarm)ed first.
+///
+/// Guards every fallible step in [`LiveSession::spawn_with_shell_starter`]
+/// between a successful `Pty::new` and the point where the dedicated session
+/// thread actually takes ownership of the pty. Neither `Pty` nor
+/// `DirectPtyHandle` has a `Drop` impl -- both are shared with the local
+/// terminal, whose lifecycle differs, so giving them one here would change
+/// shared behavior out of scope for this fix -- and `std::process::Child`
+/// does not kill its child on drop. Without this guard, any of `Poll::new`,
+/// `Waker::new`, `pty.register`, or `thread::Builder::spawn` failing after a
+/// successful spawn would leak a live, never-`wait()`-ed child process
+/// (eventually a zombie) while the caller is told the spawn failed. A guard
+/// that must be explicitly disarmed -- rather than a `kill()` call repeated
+/// in each fallible branch -- means a new early return added later is
+/// cleaned up automatically instead of silently reintroducing the leak.
+struct KillPtyOnDrop(Option<Pty>);
+
+impl KillPtyOnDrop {
+    fn new(pty: Pty) -> Self {
+        Self(Some(pty))
+    }
+
+    fn pty_mut(&mut self) -> &mut Pty {
+        self.0
+            .as_mut()
+            .expect("KillPtyOnDrop is armed until disarmed")
+    }
+
+    /// Hands the pty back, disarming the guard. Call this only once the pty's
+    /// ownership has genuinely transferred to whatever manages its teardown
+    /// from here on -- inside this file, that is the session thread itself,
+    /// via `run_session_loop`'s `force_kill_and_report` or its normal exit
+    /// path.
+    fn disarm(mut self) -> Pty {
+        self.0
+            .take()
+            .expect("KillPtyOnDrop is armed until disarmed")
+    }
+}
+
+impl Drop for KillPtyOnDrop {
+    fn drop(&mut self) {
+        if let Some(pty) = self.0.take() {
+            if let Err(err) = pty.kill() {
+                log::error!(
+                    "failed to kill an orphaned remote pty after an aborted session spawn: {err:#}"
+                );
+            }
+        }
+    }
+}
 
 /// One remote session's live pty: the dedicated thread that owns it, and the
 /// channel used to reach that thread.
@@ -146,15 +199,23 @@ impl LiveSession {
         // suspend_crash_reporting_for_child_spawn`/`resume_crash_reporting_after_child_spawn`
         // both just log and return), so there is nothing to suspend/resume here
         // regardless of which value is passed.
-        let mut pty = Pty::new(options, false, ctx)
+        let pty = Pty::new(options, false, ctx)
             .map_err(|err| PtySessionOpError::new(format!("failed to spawn pty: {err:#}")))?;
         let pid = pty.get_pid();
+
+        // From here on, `pty` is a live child process with nothing yet
+        // `wait()`ing on it. Every remaining fallible step is guarded so an
+        // early return still kills and reaps it instead of leaking it -- see
+        // `KillPtyOnDrop`'s doc comment.
+        let mut pty_guard = KillPtyOnDrop::new(pty);
 
         let poll = Poll::new()
             .map_err(|err| PtySessionOpError::new(format!("failed to create mio poll: {err}")))?;
         let waker = Waker::new(poll.registry(), COMMAND_TOKEN)
             .map_err(|err| PtySessionOpError::new(format!("failed to create mio waker: {err}")))?;
-        pty.register(&poll, Interest::READABLE | Interest::WRITABLE)
+        pty_guard
+            .pty_mut()
+            .register(&poll, Interest::READABLE | Interest::WRITABLE)
             .map_err(|err| PtySessionOpError::new(format!("failed to register pty: {err}")))?;
 
         let commands = Arc::new(CommandChannel {
@@ -165,7 +226,15 @@ impl LiveSession {
 
         let thread = std::thread::Builder::new()
             .name("remote-pty".to_string())
-            .spawn(move || run_session_loop(id, pty, poll, thread_commands, events_tx))
+            .spawn(move || {
+                // Disarmed only here, inside the closure the OS thread
+                // actually runs: if `spawn` below fails to create the
+                // thread, this closure is dropped without ever running, so
+                // `pty_guard` -- still armed -- kills and reaps the pty on
+                // that drop instead of leaking it.
+                let pty = pty_guard.disarm();
+                run_session_loop(id, pty, poll, thread_commands, events_tx)
+            })
             .map_err(|err| {
                 PtySessionOpError::new(format!("failed to spawn pty reader thread: {err}"))
             })?;
@@ -203,15 +272,19 @@ impl LiveSession {
 }
 
 /// Resolves `spec_shell` (the client-requested shell path, if any) to a
-/// `ShellStarter`, falling back to `$SHELL` and then the same bash/zsh/fish
-/// candidates `local_tty::shell::ShellStarter::compute_fallback_shell` tries.
+/// `ShellStarter`, falling back to the same passwd-entry-then-bash/zsh/fish
+/// resolution `local_tty::shell::ShellStarter::compute_fallback_shell` uses
+/// for a local session -- *not* `$SHELL`, which is a materially weaker
+/// signal here: a daemon started by a service manager has no inherited
+/// login shell, so `$SHELL` can be unset or stale in a way it never is for a
+/// terminal spawned from an interactive login.
 ///
-/// Reimplemented rather than called, because that function -- and the
-/// passwd-lookup it also falls back to -- is private to `local_tty`, and
-/// `ShellStarter::init` (the public entry point) needs an `AvailableShells`
-/// model and a settings service, neither of which the daemon has. This is
-/// deliberately a smaller, self-contained subset of that resolution, not a
-/// port of it.
+/// Calls that function directly (widened to `pub(crate)`) rather than
+/// reimplementing it, so this can never again drift from what a local
+/// session resolves. `ShellStarter::init` (`local_tty`'s other, and only
+/// other public, entry point) isn't reusable here -- it needs an
+/// `AvailableShells` model and a settings service, neither of which the
+/// daemon has -- but `compute_fallback_shell` needs neither.
 fn resolve_shell_starter(spec_shell: Option<&str>) -> Result<ShellStarter, PtySessionOpError> {
     if let Some(shell) = spec_shell {
         let (path, shell_type) = supported_shell_path_and_type(shell)
@@ -221,28 +294,14 @@ fn resolve_shell_starter(spec_shell: Option<&str>) -> Result<ShellStarter, PtySe
         ));
     }
 
-    let mut candidates = Vec::new();
-    if let Ok(env_shell) = std::env::var("SHELL") {
-        candidates.push(env_shell);
-    }
-    candidates.extend(
-        [ZSH_SHELL_PATH, BASH_SHELL_PATH, FISH_SHELL_PATH]
-            .into_iter()
-            .map(str::to_owned),
-    );
-
-    for candidate in &candidates {
-        if let Some((path, shell_type)) = supported_shell_path_and_type(candidate) {
-            return Ok(ShellStarter::Direct(
-                DirectShellStarter::for_explicit_shell(path, shell_type),
-            ));
-        }
-    }
-
-    Err(PtySessionOpError::new(
-        "no supported shell found on this host ($SHELL, /bin/zsh, /bin/bash, /bin/fish all \
-         missing or unsupported)",
-    ))
+    ShellStarter::compute_fallback_shell()
+        .map(ShellStarter::from)
+        .ok_or_else(|| {
+            PtySessionOpError::new(
+                "no supported shell found on this host (this user's passwd entry, /bin/zsh, \
+                 /bin/bash, /bin/fish all missing or unsupported)",
+            )
+        })
 }
 
 /// Sends `signal` to the process group headed by `pid`. The spawned shell is
@@ -352,6 +411,13 @@ fn run_session_loop(
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => can_read = false,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                // See `is_benign_pty_hangup_read_error`'s doc comment for why
+                // this is not fatal. Let the loop come back around for the
+                // `SIGCHLD`-driven `Exited` event above instead of
+                // force-killing an already-exiting pty and fabricating a
+                // signalled exit for what may be a clean one.
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                Err(err) if is_benign_pty_hangup_read_error(&err) => {}
                 Err(err) => {
                     log::error!("remote pty session {id}: read error: {err}");
                     break 'session force_kill_and_report(pty);
@@ -402,3 +468,25 @@ fn force_kill_and_report(pty: Pty) -> SessionExitStatus {
     }
     SessionExitStatus::signalled()
 }
+
+/// Whether `err`, from a pty-master `read`, is a benign side effect of the
+/// slave side hanging up rather than a real I/O failure.
+///
+/// On Linux/FreeBSD, reading the master side of a pty commonly fails with
+/// EIO once the slave side hangs up -- e.g. the shell exiting -- and
+/// `io::Error` has no dedicated `Eio` kind, so that surfaces as
+/// `ErrorKind::Other`. Treating it as fatal races the read against the
+/// child's own exit: `run_session_loop` would force-kill an already-exiting
+/// pty and report a fabricated signalled exit, discarding a real exit code
+/// that `take_exit_status` would otherwise have recovered. Mirrors
+/// `local_tty::event_loop::EventLoop::pty_read`'s handling of the same
+/// error, including its platform gate -- this function's `#[cfg]` at its
+/// call site is copied from there, not guessed.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn is_benign_pty_hangup_read_error(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::Other
+}
+
+#[cfg(test)]
+#[path = "remote_pty_thread_tests.rs"]
+mod tests;
