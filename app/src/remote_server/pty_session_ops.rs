@@ -57,6 +57,12 @@ impl PtySessionOpError {
     pub fn unknown_session(id: &RemotePtySessionId) -> Self {
         Self(format!("no session registered under id {id}"))
     }
+
+    /// An error with an arbitrary message, for backends reporting something
+    /// other than an unknown id.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
 }
 
 /// The pty operations the daemon's five session RPCs dispatch through.
@@ -142,13 +148,25 @@ pub fn session_exit_status_from_process(
 ///    already-obtained resources that could leak into forked subprocesses")
 ///    means where in that order it goes is itself a decision, not a
 ///    mechanical addition.
-/// 2. Even with that registered, `Pty::new` needs `ctx`, and this trait is
-///    deliberately ctx-free (see the module doc comment) so the session RPCs
-///    stay testable the way `server_model_tests.rs` already tests everything
-///    else. Threading `ctx` through `spawn`/`write_stdin`/`resize`/`signal`
-///    would mean either breaking that convention or duplicating every
-///    dispatch method into a ctx-free bookkeeping half and a ctx-taking
-///    production wrapper.
+/// 2. Nothing here owns a pty once the client is gone. `Pty::new` returns a
+///    handle whose I/O is driven by a dedicated OS thread and mio event loop
+///    set up by the caller (`terminal_manager.rs`); the daemon has no
+///    equivalent, and a detached session's whole purpose is to keep reading
+///    after its client disconnects. That infrastructure -- who owns the
+///    reader, where output is pumped into `append_output`, what reaps the
+///    child -- is the actual missing piece.
+///
+/// **What is NOT a blocker, despite an earlier version of this comment saying
+/// so:** that `Pty::new` takes `ctx` while this trait is ctx-free. `ctx` is
+/// already in hand at every dispatch site in `server_model.rs` -- the
+/// neighbouring `handle_write_file` arm is passed it two lines away -- and
+/// `ModelContext` derefs to `AppContext`, so `spawn` can simply take one when
+/// item 3 lands. Nor does testability force the issue: `server_model_tests.rs`
+/// routinely drives ctx-taking methods through `App::test`. The ctx-free shape
+/// is a convenience for the four operations that genuinely do not need it
+/// (`write_stdin`/`resize`/`signal`/`kill` act on an already-spawned pty), not
+/// a wall in front of the one that does. Refutation caught the earlier framing
+/// presenting a choice made here as an external constraint.
 ///
 /// `docs/design/moth-parliament.md`'s dependency-ordered work list names this
 /// exact gap as its own, later item -- "3. Remote-side ownership: the daemon
@@ -287,11 +305,23 @@ struct FakeState {
     resizes: Vec<(RemotePtySessionId, u32, u32)>,
     signals: Vec<(RemotePtySessionId, RemoteSessionSignal)>,
     killed: Vec<RemotePtySessionId>,
+    /// When set, `spawn` fails with this message instead of succeeding.
+    ///
+    /// Exists because a double that can only succeed cannot exercise a
+    /// handler's failure path: the store cleanup that runs when a spawn fails
+    /// was correct but unreachable from any test until this was added.
+    spawn_failure: Option<String>,
 }
 
 impl FakePtySessionOperations {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Makes every subsequent `spawn` fail with `message`, so a test can drive
+    /// the handler's spawn-failure path.
+    pub fn fail_spawns_with(&self, message: impl Into<String>) {
+        self.state.lock().unwrap().spawn_failure = Some(message.into());
     }
 
     /// How many times `spawn` actually started a session for `id` -- used to
@@ -363,6 +393,12 @@ impl FakePtySessionOperations {
 impl PtySessionOperations for FakePtySessionOperations {
     fn spawn(&self, id: &RemotePtySessionId, spec: &PtySpawnSpec) -> Result<(), PtySessionOpError> {
         let mut state = self.state.lock().unwrap();
+        if let Some(message) = state.spawn_failure.clone() {
+            // Recorded as an attempt even though it failed: a test asserting a
+            // retry starts exactly one pty needs to see attempts, not successes.
+            state.spawn_calls.push(id.clone());
+            return Err(PtySessionOpError::new(message));
+        }
         state.spawned.insert(id.clone(), spec.clone());
         state.spawn_calls.push(id.clone());
         Ok(())
@@ -409,6 +445,15 @@ impl PtySessionOperations for FakePtySessionOperations {
     }
 }
 
-#[cfg(test)]
+// Unix-gated, not merely `cfg(test)`: these tests build `ExitStatus` values with
+// `std::os::unix::process::ExitStatusExt::from_raw`, which is the only way to
+// exercise the signalled branch without spawning a process, and that trait does
+// not exist off Unix. Without the gate the `check-windows` CI job fails, since it
+// type-checks test code (`cargo check -p warp --features gui --lib --tests`).
+//
+// `session_exit_status_from_process` itself is cross-platform -- it reads only
+// `ExitStatus::code()` -- so what is gated here is the test's construction
+// technique, not the behaviour under test.
+#[cfg(all(test, unix))]
 #[path = "pty_session_ops_tests.rs"]
 mod tests;

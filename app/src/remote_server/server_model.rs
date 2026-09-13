@@ -1788,15 +1788,20 @@ impl ServerModel {
     /// wire's error response, matching `write_stdin` / `resize`.
     fn handle_signal_session(&mut self, msg: SignalSession) -> HandlerOutcome {
         let id = RemotePtySessionId::from(msg.remote_session_id);
+        // `Unspecified` is rejected alongside undecodable values. It is a
+        // defined enum variant, so `try_from` accepts it, but it is also
+        // proto3's default for an omitted field -- a client that forgets to set
+        // `signal` would otherwise have "send no particular signal" dispatched
+        // to the pty as though it were a deliberate choice.
         let signal = match RemoteSessionSignal::try_from(msg.signal) {
-            Ok(signal) => signal,
-            Err(_) => {
+            Ok(RemoteSessionSignal::Unspecified) | Err(_) => {
                 return signal_session_message(signal_session_response::Result::Error(
                     SignalSessionError {
                         message: format!("invalid RemoteSessionSignal value: {}", msg.signal),
                     },
                 ));
             }
+            Ok(signal) => signal,
         };
         match self.pty_ops.signal(&id, signal) {
             Ok(()) => signal_session_message(signal_session_response::Result::Success(

@@ -1405,6 +1405,84 @@ fn signal_on_unknown_session_returns_wire_error() {
     ));
 }
 
+// `REMOTE_SESSION_SIGNAL_UNSPECIFIED` is a defined enum variant, so
+// `try_from` accepts it -- and it is also proto3's default for an omitted
+// field. A client that forgets to set `signal` must be told, not have "no
+// particular signal" dispatched to its pty as though it were a choice.
+//
+// Breaks if: the `Ok(RemoteSessionSignal::Unspecified)` arm in
+// `handle_signal_session` is dropped, letting the value fall through to
+// `pty_ops.signal`.
+#[test]
+fn an_unspecified_signal_is_rejected_rather_than_dispatched() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    let mut model = test_model_with_pty(fake.clone());
+    let id = RemotePtySessionId::from("session-unspecified".to_string());
+    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    let response = model.handle_signal_session(SignalSession {
+        remote_session_id: id.clone().into(),
+        signal: RemoteSessionSignal::Unspecified.into(),
+    });
+
+    let server_message::Message::SignalSessionResponse(response) = response.into_message() else {
+        panic!("expected SignalSessionResponse");
+    };
+    assert!(
+        matches!(
+            response.result,
+            Some(signal_session_response::Result::Error(_))
+        ),
+        "an unset signal must be an error, not a dispatched no-op"
+    );
+    assert!(
+        fake.signals_for(&id).is_empty(),
+        "an unspecified signal must never reach the pty"
+    );
+}
+
+// A spawn that fails must not leave the id registered: a session in the store
+// with no pty behind it would be reported as running by `ListSessions`
+// forever, and nothing would ever record its exit.
+//
+// This path existed but was untestable -- the double could only succeed --
+// which is why `fail_spawns_with` was added. Breaks if the
+// `session_store.remove(&id)` in `handle_spawn_session`'s failure branch is
+// dropped, or if `register` is moved after a successful spawn in a way that
+// leaves the failure branch removing nothing.
+#[test]
+fn a_failed_spawn_leaves_no_session_behind_in_the_store() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    fake.fail_spawns_with("pty allocation refused");
+    let mut model = test_model_with_pty(fake.clone());
+    let id = RemotePtySessionId::from("session-doomed".to_string());
+
+    let response = model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    let server_message::Message::SpawnSessionResponse(response) = response.into_message() else {
+        panic!("expected SpawnSessionResponse");
+    };
+    assert!(
+        matches!(
+            response.result,
+            Some(spawn_session_response::Result::Error(_))
+        ),
+        "a failed spawn must report the failure"
+    );
+
+    let listed = model.handle_list_sessions();
+    let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+        panic!("expected ListSessionsResponse");
+    };
+    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+        panic!("expected a successful listing");
+    };
+    assert!(
+        success.sessions.is_empty(),
+        "a session whose pty never started must not be listed as running"
+    );
+}
+
 #[test]
 fn resize_updates_what_list_sessions_reports() {
     let fake = Arc::new(FakePtySessionOperations::new());
