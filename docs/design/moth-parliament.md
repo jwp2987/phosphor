@@ -740,6 +740,131 @@ far side), and is not answered by the fact that the install path works there. Do
 assume requirement 1 is satisfied for session ownership just because it is satisfied for
 file queries.
 
+### What item 6 actually costs — audited 2026-09-13
+
+Two corrections to item 6's own wording, before the audit: it names a type that does not
+exist, and the difficulty it does name is understated.
+
+**`SessionType::Remote` is proposed, not existing.** `app/src/terminal/model/session.rs:1015`
+declares exactly two variants, `Local` and `WarpifiedRemote { host_id: Option<warp_core::
+HostId> }`. Line 453 of this document already writes "`SessionType::Remote` and the
+remote-server extension that already ship" as though the variant were real; it is not.
+Every occurrence of `SessionType::Remote` in the tree today is a comment anticipating item
+6 (`remote_pty_thread.rs:8,188`) or this document. Introducing it is this audit's subject,
+not its precondition.
+
+**`WarpifiedRemote` is not "genuinely remote" — it is "detected remote after the fact,"
+and a local pty still exists underneath it.** `determine_session_type`
+(`session.rs:833-849`) classifies a session by comparing the *shell's self-reported*
+hostname (`InitShellValue::hostname`, delivered by Warp's own shell-integration handshake)
+against the local machine's hostname; `WarpifiedRemote` is the branch where they differ, or
+where the user is known to have typed an ssh-shaped command. That comparison can only run
+at all because a shell process executed the handshake and reported in -- which means a real
+local pty (the `ssh` client itself, or a container/subshell) is still there, still owned by
+the local `Pty`/`local_tty` machinery, still the thing `Session` was built around. `host_id`
+starts `None` and is filled in later by `set_remote_host_id` once the remote-server
+handshake completes (`session.rs:1121`) -- a second confirmation that `WarpifiedRemote`
+models *discovery*, not *construction*: the session existed, locally, before its remoteness
+was known. A daemon-owned pty with no local process at all (item 6's actual subject) is a
+different construction shape, not a stricter case of the same one. The characterisation in
+the task that prompted this audit was right, and is now on record with the citations.
+
+**So item 6's own phrasing -- "where the terminal model expects a local handle" -- names
+the right difficulty and understates its size.** It reads as one seam: teach the terminal
+model to tolerate a handle with no local pty behind it. It is not one seam. `SessionType`
+is read by name, not behind a trait, at every site that needs to know where a session runs,
+and each read encodes a product decision -- what a remote session shows, completes, or
+does -- that the compiler can locate but cannot answer. The cost is N decisions, not one
+adapter.
+
+**The audit.** Every site matching on `SessionType`, `BootstrapSessionType`, or
+`DiffSessionType` (`SessionType` mentioned 276 times across 50 files; excluded up front,
+71 of those hits belong to `tab_configs::session_config::SessionType` -- `Terminal` /
+`Oz` / `CliAgent(_)`, an unrelated new-tab-kind selector that shares a name and nothing
+else). Of what remained, most were type imports, field declarations, `.session_type()`
+calls, or test-only `with_session_type(..)` constructors -- none of which a new variant
+breaks. Also excluded, and counted separately because they matter for a different reason:
+**14 non-exhaustive predicates** (`matches!(.., SessionType::WarpifiedRemote { .. })`, an
+`if let`, or a wildcard `_` arm) on the real enum, at `context_chips/builtins.rs:95`,
+`ai/blocklist/action_model/execute/read_files.rs:129`, `ai/blocklist/passive_suggestions/
+legacy.rs:394`, `terminal/host_footer_color.rs:95`, `terminal/model/session.rs:521,795,1169`,
+`terminal/input.rs:10750`, `terminal/universal_developer_input.rs:139`,
+`ai/blocklist/controller.rs:215` (`is_remote()`, read by `chat_stream.rs` in six places),
+`ai/blocklist/agent_view/zero_state_block.rs:468`, and `terminal/view.rs:8962,13073,13220`.
+**These are the more dangerous half of the cost, not the safer half.** A new variant does
+not break them -- it silently falls through to `false`, meaning a genuinely-remote session
+reads as an ordinary local one to the SSH chip, the completion-disabling logic, the
+context-menu ssh detection, and `is_remote()` itself, until someone remembers to revisit
+every one of them by hand. Two production sites are the same shape with a wildcard arm
+instead of `matches!`, which is worse because it looks like a decision was made: `ai/
+blocklist/action_model/execute/read_files.rs:117-124`'s `remote_client` lookup and `ai/
+blocklist/action_model/execute/request_file_edits.rs:424-427`'s `DiffSessionType`
+construction both write `_ => None` / `_ => DiffSessionType::Local`, so a genuinely-remote
+session is silently filed as having no remote client and no remote diff backend.
+
+**`DiffSessionType` and `RepoDetectionSessionType` mirror the *concept*, not the type, and
+neither needs a new variant.** `DiffSessionType::{Local, Remote(HostId)}`
+(`ai/blocklist/inline_action/code_diff_view.rs:488`) already generalizes over *how*
+remoteness was learned -- its two exhaustive consumers (`code/inline_diff.rs:129,155`;
+`warp_tui/tui_diff_storage.rs:121-122`) route on "local disk" vs "a host with an id," which
+a genuinely-remote session satisfies exactly like a connected `WarpifiedRemote` one. The
+same is true of `RepoDetectionSessionType::{Local, Remote { session_id }}`
+(`util/repo_detection.rs:25`, exhaustively matched at `:42-49`): its `Remote` arm already
+resolves to `None` because Zap has no remote repo-detection path at all, a fact about the
+feature, not about how the session got classified remote. The only place either type is
+actually *derived* from `SessionType` is the wildcard noted above -- so the type-level
+story is clean; the gap is that one un-forced call site.
+
+That leaves **14 real breaking sites** -- exhaustive matches with no wildcard, across 9
+files -- which is the true cost, not the roughly 31 raw grep hits the brief for this audit
+estimated before exclusions.
+
+| site | what it decides | recommended disposition for `Remote` | confidence |
+|---|---|---|---|
+| `terminal/model/session.rs:670-673` (`From<SessionType> for command_corrections::SessionType`) | maps to the command-correction crate's own, already-generic `Local`/`Remote` | `=> command_corrections::SessionType::Remote` -- the same target `WarpifiedRemote` already maps to | OBVIOUS |
+| `terminal/model/session.rs:679-682` (`From<&SessionType> for ..`) | same conversion, by reference | same as above | OBVIOUS |
+| `terminal/model/session.rs:1031-1034` (`From<BootstrapSessionType> for SessionType`) | what a bootstrap-time classification becomes on the canonical session | depends on whether `BootstrapSessionType` gains a mirror at all (Question C below) | NEEDS A DECISION |
+| `terminal/model/session.rs:1748-1754` (`read_history`) | local history file parse vs. an in-band `history` command over the live shell | no in-band shell to run a command against (Question B) | NEEDS A DECISION |
+| `terminal/bootstrap.rs:101-125` (`should_use_rc_file_bootstrap_method`) | RC-file vs. other client-side bootstrap injection | does the client-side bootstrap pipeline run at all for a byte-passthrough remote pty (Question C) | NEEDS A DECISION |
+| `terminal/view.rs:9402-9405` (`handle_session_bootstrapped`, `warpification_source`) | `WarpificationSource::Ssh` vs. `::Subshell` for the SSH-success banner/telemetry | does this event, and this banner, fire for a `Remote` session at all (Question C) | NEEDS A DECISION |
+| `ai/blocklist/agent_view/zero_state_block.rs:300-303` (`format_session_location`) | bare path vs. `user@host:path` prefix in the zero-state header | same as `WarpifiedRemote`: prefix with host | OBVIOUS |
+| `terminal/prompt/mod.rs:23-26` (`user_and_host_name_string`) | same host-prefix decision, for the prompt | same as above | OBVIOUS |
+| `context_chips/display_chip.rs:1671-1677` (`supports_code_review`) | whether the code-review affordance shows | `false` -- code review is absent as a feature, not gated on detection method | OBVIOUS |
+| `ai/blocklist/controller.rs:168-180` (`has_remote_server_client`) | whether the file tools have any route to the session's filesystem | depends on whether `host_id` is always resolved at construction (Question A) | NEEDS A DECISION |
+| `ai/blocklist/controller.rs:206-208` (`host_id()`) | which host id the session context reports | same as above (Question A) | NEEDS A DECISION |
+| `ai/blocklist/controller.rs:245-252` (`skill_path_origin`) | whether skill paths in prompts resolve locally or remotely | same as above (Question A) | NEEDS A DECISION |
+| `terminal/model/session/active_session.rs:155-169` (`current_working_directory_location`) | whether the active tab's cwd is reported `Local` or `Remote(host_id)` | same as above (Question A) | NEEDS A DECISION |
+| `completer/mod.rs:170-199` (`list_directory_entries_internal`) | `std::fs::read_dir` vs. an `ls` piped through the in-band executor over the live shell | no in-band shell to pipe a command into (Question B) | NEEDS A DECISION |
+
+**What a maintainer must decide before item 6 can start** -- the 9 NEEDS-A-DECISION rows
+collapse into three questions, not nine:
+
+- **Question A -- does `SessionType::Remote` carry `Option<HostId>`, mirroring
+  `WarpifiedRemote`'s "known eventually" state, or is the host resolved at construction and
+  therefore always present?** A session created against a chosen target (per the
+  session-creation affordance in §4a) knows its host from the moment it exists, unlike a
+  session that ssh'd out and is only later discovered to be remote -- so `Option` may be
+  the wrong shape to copy. Four sites (`controller.rs:168`, `:206`, `:245`,
+  `active_session.rs:155`) cannot be filled in, correctly or otherwise, until this is
+  settled; every one of their individual arms is close to obvious once it is.
+- **Question B -- what replaces "run a command in-band over the live shell" for a session
+  with no live shell to address?** `read_history` and `list_directory_entries_internal`
+  both fall back, for `WarpifiedRemote`, to sending a shell command through the same pty
+  the user is typing into. A daemon-owned pty has no such channel from the client's side --
+  the whole point of "Scoping session ownership" above is a purpose-built session protocol,
+  not a shell to puppet. Each of these needs its own answer through that protocol (or an
+  honest "unavailable"), and neither can copy the `WarpifiedRemote` arm verbatim.
+- **Question C -- does the client-side bootstrap/handshake pipeline run for a `Remote`
+  session at all, and does `BootstrapSessionType` need a matching variant?** The gap noted
+  under "Known gaps from refuting `3d638ad25`" above is exactly this: `remote_pty_thread.rs`
+  already sets every `PtyOptions` bootstrap flag to `false` for the daemon-owned pty, because
+  there is no client-side shell integration to run yet. If that stays true through item 6,
+  `should_use_rc_file_bootstrap_method`, the SSH-success `warpification_source`, and the
+  `BootstrapSessionType -> SessionType` conversion may never see a `Remote` session in the
+  first place -- which would mean `BootstrapSessionType` needs no mirror, and three of the
+  fourteen rows above are moot rather than merely small. That must be established, not
+  assumed either way, before touching any of the three.
+
 ### Output buffering while detached — decided 2026-09-12
 
 Item 4 above says decide this before building it, so here it is. It is the one item on
