@@ -75,19 +75,46 @@ pub enum SessionState {
     Exited(SessionExitStatus),
 }
 
-/// Bytes retrieved from a session's output buffer, and how many earlier
-/// bytes were dropped before they could be retrieved.
+/// A session's currently retained output bytes, together with both
+/// dropped-byte figures. Produced by [`SessionStore::peek_output`], which
+/// does not discard anything -- see that method for the two-phase
+/// read/acknowledge contract this store uses.
+///
+/// The two dropped-byte fields are named so a use site cannot confuse a
+/// lifetime figure for a per-gap one: `dropped_bytes_total` is the wrong
+/// number to show next to a specific reattach, and `dropped_bytes_since_ack`
+/// is the wrong number to log as a session-lifetime statistic.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DrainedOutput {
+pub struct PeekedOutput {
+    /// Stream offset of `bytes[0]` -- the count of bytes appended to this
+    /// session before it.
+    pub first_offset: u64,
+    /// Stream offset just past the last byte in `bytes`. Pass this to
+    /// [`SessionStore::acknowledge_output`] once these bytes are delivered.
+    ///
+    /// Acknowledgement is by offset rather than by a count of delivered bytes
+    /// because a count is not stable across eviction: if an `append_output`
+    /// between the peek and the acknowledgement overflows the bound, bytes
+    /// leave the oldest end, and "discard the first N" would then discard N
+    /// bytes starting from a different byte than the one that was peeked --
+    /// silently destroying output that was never delivered. An offset names a
+    /// byte in the stream rather than a position in the buffer, so a stale
+    /// acknowledgement discards less than it asked for instead of the wrong
+    /// bytes.
+    pub next_offset: u64,
     /// The retained bytes, oldest first.
     pub bytes: Vec<u8>,
     /// Total bytes evicted from this session's buffer, because its bound
-    /// was exceeded, since the session was registered.
-    ///
-    /// Cumulative and never reset -- see [`SessionStore::drain_output`] for
-    /// why draining does not clear it. A caller that wants "dropped during
-    /// this detached period" keeps its own watermark and subtracts.
+    /// was exceeded, since the session was registered. Cumulative and never
+    /// reset by anything, including [`SessionStore::acknowledge_output`].
     pub dropped_bytes_total: u64,
+    /// Bytes evicted from this session's buffer since the last
+    /// [`SessionStore::acknowledge_output`] call (or since registration, if
+    /// there has been none) -- the "N KiB dropped while detached" figure a
+    /// reattach wants to show. Derived as `dropped_bytes_total` minus a
+    /// watermark advanced by acknowledgement, not tracked as an
+    /// independent counter, so the two figures cannot drift apart.
+    pub dropped_bytes_since_ack: u64,
 }
 
 /// A session referenced by an id the store has no session registered for.
@@ -140,7 +167,18 @@ pub struct SessionSummary {
 struct OutputRingBuffer {
     bound_bytes: usize,
     bytes: VecDeque<u8>,
+    /// Total bytes ever appended, counting those since evicted or
+    /// acknowledged. Combined with `bytes.len()` this yields the stream
+    /// offset of the oldest retained byte, which is what makes
+    /// acknowledgement safe against eviction -- see
+    /// [`Self::first_retained_offset`].
+    total_appended: u64,
     dropped_bytes: u64,
+    /// The value of `dropped_bytes` as of the last [`Self::acknowledge`]
+    /// call (or `0` if there has been none). `dropped_bytes -
+    /// acknowledged_dropped_bytes` is the "since acknowledged" figure --
+    /// see [`PeekedOutput::dropped_bytes_since_ack`].
+    acknowledged_dropped_bytes: u64,
 }
 
 impl OutputRingBuffer {
@@ -148,11 +186,14 @@ impl OutputRingBuffer {
         Self {
             bound_bytes,
             bytes: VecDeque::new(),
+            total_appended: 0,
             dropped_bytes: 0,
+            acknowledged_dropped_bytes: 0,
         }
     }
 
     fn append(&mut self, data: &[u8]) {
+        self.total_appended += data.len() as u64;
         if data.len() >= self.bound_bytes {
             // `data` alone fills or exceeds the bound: everything
             // currently buffered is superseded, and only the newest
@@ -176,21 +217,67 @@ impl OutputRingBuffer {
         self.bytes.extend(data);
     }
 
-    /// Removes and returns all retained bytes, along with the cumulative
-    /// count of bytes this buffer has ever dropped.
+    /// Returns a copy of all retained bytes, along with both dropped-byte
+    /// figures. Mutates nothing: this is the non-destructive half of the
+    /// read/acknowledge pair, kept non-destructive for exactly the reason
+    /// [`Self::acknowledge`]'s doc comment explains.
+    /// Stream offset of the oldest retained byte.
     ///
-    /// Clears the retained bytes but NOT the dropped count. Draining is
-    /// "remove for use", which is not the same as "delivered": a caller
-    /// that drains, builds a reattach payload, and then fails to deliver it
-    /// would otherwise destroy the only record that a gap existed, and no
-    /// later call could recover it. A monotonic count cannot be lost that
-    /// way, and a caller needing a per-period delta can subtract its own
-    /// watermark.
-    fn drain(&mut self) -> DrainedOutput {
-        DrainedOutput {
-            bytes: self.bytes.drain(..).collect(),
+    /// Derived from `total_appended - bytes.len()` rather than accumulated as
+    /// bytes leave the front, so it is automatically correct however they
+    /// left -- evicted by the bound, in either append branch, or discarded by
+    /// an acknowledgement. There is no per-branch bookkeeping to get wrong.
+    fn first_retained_offset(&self) -> u64 {
+        self.total_appended - self.bytes.len() as u64
+    }
+
+    fn peek(&self) -> PeekedOutput {
+        PeekedOutput {
+            first_offset: self.first_retained_offset(),
+            next_offset: self.total_appended,
+            bytes: self.bytes.iter().copied().collect(),
             dropped_bytes_total: self.dropped_bytes,
+            dropped_bytes_since_ack: self.dropped_bytes - self.acknowledged_dropped_bytes,
         }
+    }
+
+    /// Discards every retained byte before stream offset `through_offset`
+    /// and advances the acknowledged-dropped watermark to the current
+    /// dropped-byte total, so a subsequent [`Self::peek`] reports
+    /// `dropped_bytes_since_ack` as `0` until more is dropped.
+    ///
+    /// This is the only place that discards buffered output. Reading
+    /// (`peek`) never does, precisely so that a caller who peeks, builds a
+    /// reattach payload, and then fails to deliver it (a send error, a
+    /// crash before flush) has lost nothing -- the next peek sees the same
+    /// bytes. Only a confirmed delivery should call this.
+    ///
+    /// Addressed by stream offset, not by a count of delivered bytes,
+    /// because `peek` and `acknowledge` are two separate calls and an
+    /// `append` that overflows the bound in between evicts from the oldest
+    /// end. "Discard the first N" would then discard N bytes starting from a
+    /// different byte than the one that was peeked, silently destroying
+    /// output that was never delivered -- the precise failure this two-phase
+    /// design exists to prevent. An offset names a byte in the stream, so
+    /// the arithmetic below self-corrects: a `through_offset` already passed
+    /// by eviction saturates to zero and discards nothing, and one beyond
+    /// what is buffered clamps to the buffer length. Neither can discard a
+    /// byte the caller did not name, and neither panics.
+    ///
+    /// The watermark advances even when nothing is discarded and even
+    /// if the buffer is already empty. Both are real, non-error calls: a
+    /// reattach whose entire gap was retained-bytes-free (everything since
+    /// the last acknowledgement was evicted, not retained) still delivers
+    /// a gap marker with zero bytes behind it, and that delivery must still
+    /// retire the gap it reported -- otherwise the same dropped span would
+    /// be reported again on the next reattach even though the client has
+    /// already been told about it.
+    fn acknowledge(&mut self, through_offset: u64) {
+        let discard = through_offset
+            .saturating_sub(self.first_retained_offset())
+            .min(self.bytes.len() as u64) as usize;
+        self.bytes.drain(..discard);
+        self.acknowledged_dropped_bytes = self.dropped_bytes;
     }
 
     fn len(&self) -> usize {
@@ -249,15 +336,14 @@ impl SessionStore {
     ///
     /// Idempotent: if `id` is already registered, this is a no-op and the
     /// existing session -- its metadata, buffered output, drop count and
-    /// exit status -- is left untouched, and `metadata` is discarded. Client-minted ids exist so a retried
-    /// spawn after a lost response does not create a second session
-    /// (`pty_session_id.rs`); this is that property applied to
-    /// registration.
+    /// exit status -- is left untouched, and `metadata` is discarded.
+    /// Client-minted ids exist so a retried spawn after a lost response
+    /// does not create a second session (`pty_session_id.rs`); this is
+    /// that property applied to registration.
     pub fn register(&mut self, id: RemotePtySessionId, metadata: SessionSpawnMetadata) {
-        let output_bound_bytes = self.output_bound_bytes;
         self.sessions
             .entry(id)
-            .or_insert_with(|| Session::new(metadata, output_bound_bytes));
+            .or_insert_with(|| Session::new(metadata, self.output_bound_bytes));
     }
 
     /// Records a session's new terminal size, so `ListSessions` reports the
@@ -277,6 +363,12 @@ impl SessionStore {
     /// Removes a session entirely. Returns whether one was present.
     pub fn remove(&mut self, id: &RemotePtySessionId) -> bool {
         self.sessions.remove(id).is_some()
+    }
+
+    fn session(&self, id: &RemotePtySessionId) -> Result<&Session, UnknownSession> {
+        self.sessions
+            .get(id)
+            .ok_or_else(|| UnknownSession(id.clone()))
     }
 
     fn session_mut(&mut self, id: &RemotePtySessionId) -> Result<&mut Session, UnknownSession> {
@@ -314,26 +406,49 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Removes and returns a session's buffered output, for reattach.
+    /// Returns a session's currently retained output, for building a
+    /// reattach payload, without discarding anything.
     ///
-    /// Clears the retained bytes but NOT the dropped-byte count, which is
-    /// cumulative for the life of the session. Draining is "remove for use",
-    /// not "delivered": zeroing the count here would mean a caller that
-    /// drains and then fails to deliver the payload destroys the only record
-    /// that output was ever dropped, leaving a gap nothing can report.
-    pub fn drain_output(
+    /// This is the read half of a two-phase read/acknowledge pair --
+    /// see "Output buffering while detached, two-phase delivery" in
+    /// `docs/design/moth-parliament.md`. Calling this twice with no
+    /// intervening [`Self::acknowledge_output`] returns the same bytes
+    /// both times (plus whatever new output has since arrived): nothing
+    /// is consumed until the caller confirms delivery by acknowledging
+    /// it. A caller that peeks, builds a reattach payload, and then fails
+    /// to deliver it (a send error, a crash before flush) has lost
+    /// nothing -- the bytes are still here on the next peek.
+    pub fn peek_output(&self, id: &RemotePtySessionId) -> Result<PeekedOutput, UnknownSession> {
+        let session = self.session(id)?;
+        Ok(session.output.peek())
+    }
+
+    /// Confirms that a session's peeked output was delivered up to stream
+    /// offset `through_offset` -- pass [`PeekedOutput::next_offset`] from the
+    /// peek whose bytes were delivered. Discards the acknowledged bytes and
+    /// advances the "since acknowledged" dropped-byte watermark so it
+    /// reflects only what drops after this call.
+    ///
+    /// This is the only method that discards buffered output -- see
+    /// [`OutputRingBuffer::acknowledge`] for the full contract, including why
+    /// it is addressed by offset rather than by a count of delivered bytes,
+    /// and why the watermark advances even when nothing is discarded.
+    pub fn acknowledge_output(
         &mut self,
         id: &RemotePtySessionId,
-    ) -> Result<DrainedOutput, UnknownSession> {
+        through_offset: u64,
+    ) -> Result<(), UnknownSession> {
         let session = self.session_mut(id)?;
-        Ok(session.output.drain())
+        session.output.acknowledge(through_offset);
+        Ok(())
     }
 
     /// Lists every registered session for `ListSessions`: id, whether it
     /// is running or exited, and its buffer's current occupancy.
     ///
-    /// Read-only: unlike [`Self::drain_output`], this clears nothing.
-    /// Ordered by id, so callers get a stable listing.
+    /// Read-only: like [`Self::peek_output`] and unlike
+    /// [`Self::acknowledge_output`], this clears nothing. Ordered by id, so
+    /// callers get a stable listing.
     pub fn list(&self) -> Vec<SessionSummary> {
         let mut summaries: Vec<SessionSummary> = self
             .sessions

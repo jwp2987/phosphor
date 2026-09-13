@@ -770,6 +770,58 @@ Not decided here, because it needs the client seam first: whether the *attached*
 shares this buffer or streams straight through. Attached streaming has a live consumer
 and different backpressure, and guessing now would likely be wrong.
 
+#### Delivery is two-phase — decided 2026-09-13
+
+The store's read of a session's buffer is split into a non-destructive `peek` and a
+separate `acknowledge` that is the only thing allowed to discard bytes.
+
+The first implementation had a single destructive `drain_output`: remove the buffered
+bytes and hand them back. That is wrong for exactly the caller this buffer exists to
+serve. A daemon builds a reattach payload from the drained bytes and then tries to send
+it; if the send fails, or the daemon crashes before the write flushes, the store has
+already forgotten the bytes it just handed over. The output survived the client going
+away, which is the entire point of buffering it, and was then lost to a failure in the
+one step -- delivery -- that buffering was supposed to be resilient to. A prior fix made
+the dropped-byte *count* survive a drain for this same reason; leaving the bytes
+themselves destructible was the same bug in the half that matters more, since the bytes
+are what a user is actually waiting to see.
+
+Two-phase delivery treats "read" and "delivered" as different events, because they are:
+a read can be undone by a failure that happens after it, and delivery cannot be known
+until the send actually succeeds. So `peek_output` is repeatable and inert -- calling it
+twice with nothing in between returns the same bytes both times -- and only
+`acknowledge_output`, called once a caller has confirmed the bytes actually reached the
+client, discards the delivered prefix. A caller that never gets to acknowledge (any
+failure, at any point before that call) leaves the buffer exactly as it was.
+
+This also answers a gap the original design left open: the per-gap "N KiB dropped while
+detached" figure the block list wants cannot be computed from a single lifetime counter,
+because a lifetime counter never resets and would over-report on every reattach after the
+first. Acknowledgement is also what advances a per-session watermark, so "dropped since
+the last acknowledgement" is a real, resettable figure, derived from the lifetime total
+rather than tracked as a second counter that could drift from it.
+
+**Acknowledgement names a stream offset, not a number of bytes** -- and this is the part
+that is easy to get wrong, because a byte count looks obviously sufficient. It is not. A
+peek and its acknowledgement are separate calls, and output can arrive in between. If
+that output overflows the bound it evicts from the *oldest* end, which is the same end an
+acknowledgement discards from. The byte at buffer position 0 is then no longer the byte
+that was at position 0 when the caller peeked, so "discard the first N" discards N bytes
+starting from the wrong one -- destroying output that was never delivered. That is the
+exact loss two-phase delivery exists to prevent, reintroduced by the acknowledgement
+itself, and it is invisible: the count is plausible, the length is right, and the bytes
+are simply gone.
+
+An offset names a byte in the session's stream rather than a slot in a buffer, so the
+arithmetic self-corrects: an acknowledgement whose bytes have already been evicted
+saturates to zero and discards nothing, and one reaching past what is buffered clamps.
+The offset of the oldest retained byte is derived as `total_appended - buffered_len`
+rather than accumulated as bytes leave, so it stays correct however they left -- evicted
+by either append branch, or discarded by an acknowledgement -- with no per-branch
+bookkeeping to get wrong. The first implementation used a byte count, clamped it, and
+documented the eviction race as the *reason* for clamping; clamping prevents the panic
+and not the misalignment.
+
 ### What the remote-server extension already does — answered 2026-09-05
 
 **It has, and these are the tedious parts:** an install path over SSH that downloads a
