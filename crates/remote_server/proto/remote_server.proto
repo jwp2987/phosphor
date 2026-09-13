@@ -113,19 +113,24 @@ message HostScopedRequest {
     // git_push/git_pull/git_commit_chain for the same reason: a one-shot,
     // host-local git subprocess. Next free slot in this oneof.
     GitStageRequest git_stage = 24;
-    // Remote pty session lifecycle (session-ownership groundwork; see the
-    // "── Remote pty sessions ──" section below for the full design note).
-    // Host-scoped for the same reason as index_codebase above: a session is
-    // owned by the daemon host and is meant to keep running -- and later be
-    // reattached -- after the connection that spawned it goes away, so it is
-    // not the property of one SSH connection. Groundwork only: no daemon
-    // handler exists yet for any of these five. Next free slots in this
-    // oneof (25-29).
+    // Remote pty session lifecycle; see the "── Remote pty sessions ──"
+    // section below for the full design note. Host-scoped for the same
+    // reason as index_codebase above: a session is owned by the daemon host
+    // and is meant to keep running -- and later be reattached -- after the
+    // connection that spawned it goes away, so it is not the property of one
+    // SSH connection. Next free slots in this oneof (25-30).
     SpawnSession spawn_session = 25;
     WriteSessionStdin write_session_stdin = 26;
     ResizeSession resize_session = 27;
     SignalSession signal_session = 28;
     ListSessions list_sessions = 29;
+    // Reattach across a disconnect, replaying output the daemon buffered
+    // while no client was attached. See "Delivery is two-phase" in the
+    // design doc's "── Remote pty sessions ──" section: the daemon
+    // acknowledges the replayed bytes only after this response has actually
+    // been handed off for delivery, never before, so a failed or interrupted
+    // send leaves them for the next attempt.
+    ReattachSession reattach_session = 30;
   }
 }
 
@@ -256,6 +261,7 @@ message ServerMessage {
     SessionOutputChunkPush session_output_chunk_push = 48;
     // Push (empty request_id): a session's process exited.
     SessionExitedPush session_exited_push = 49;
+    ReattachSessionResponse reattach_session_response = 50;
   }
 }
 
@@ -496,6 +502,36 @@ message ListSessionsResponse {
   oneof result {
     ListSessionsSuccess success = 1;
     ListSessionsError error = 2;
+  }
+}
+
+// Client → server: reattach to a session the daemon is holding across a
+// disconnect. The response replays the output buffered for it since the
+// client's last successful reattach (or since spawn, for the first).
+message ReattachSession {
+  string remote_session_id = 1;
+}
+
+message ReattachSessionError {
+  string message = 1;
+}
+
+message ReattachSessionSuccess {
+  // Output retained for this session, oldest first.
+  bytes data = 1;
+  // Bytes dropped from this session's output buffer since the client's last
+  // successful reattach (or since spawn, for the first) -- the "N KiB
+  // dropped while detached" figure a client renders as an explicit gap. Not
+  // a lifetime total: a lifetime total would over-report on every reattach
+  // after the first. Corresponds to
+  // `remote_server::session_store::PeekedOutput::dropped_bytes_since_ack`.
+  uint64 dropped_bytes_since_ack = 2;
+}
+
+message ReattachSessionResponse {
+  oneof result {
+    ReattachSessionSuccess success = 1;
+    ReattachSessionError error = 2;
   }
 }
 

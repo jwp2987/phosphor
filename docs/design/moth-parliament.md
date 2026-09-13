@@ -889,6 +889,26 @@ the first `Exited`. It is recorded here because a future caller polling that pre
 more than once would see a different answer than it would have before, and nothing in the
 type signals the change.
 
+**Reattach acknowledges a queued send, not a received one — noted 2026-09-13.**
+`handle_reattach_session` peeks, sends, and acknowledges only if the send returned
+success; success there means `try_send` queued the response onto the destination
+connection's outbound channel. That is the outermost point this process can observe, and
+it is strictly better than acknowledging before sending -- an unreachable or closed
+connection now leaves the bytes and the gap figure intact for the next attempt, which is
+the property the two-phase design was built for and which a test pins.
+
+It is not the same as delivery. If the daemon dies, or the socket breaks, after the
+response is queued but before it reaches the client, the output has been discarded and is
+gone. The window is far narrower than "acknowledge before send" and narrower than
+"acknowledge on drain", but it is not closed, and calling this "confirmed delivery" would
+be wrong.
+
+Closing it requires the *client* to acknowledge receipt, and the daemon to discard only
+then -- which makes the two-phase handshake end-to-end rather than local to the daemon.
+That belongs with item 6, because only a real client can send such an acknowledgement, and
+designing the message before there is a client to send it would be guessing. Recorded here
+so the current behaviour is not mistaken for the finished guarantee.
+
 **A shell that writes and immediately exits can lose its last output.** One `poll()`
 wakeup can deliver both the child-exit event and a final readable event together, and
 the exit branch breaks out before the drain runs, discarding whatever was still sitting

@@ -22,13 +22,19 @@ use super::super::proto::{
     list_sessions_response, resize_session_response, signal_session_response,
     spawn_session_response, write_session_stdin_response,
 };
+// `ReattachSession` (`docs/design/moth-parliament.md`, "Delivery is
+// two-phase"): dispatch tests for the sixth session RPC. Unlike its five
+// siblings above, these never go through `FakePtySessionOperations` --
+// reattach only reads and acknowledges `SessionStore`'s output buffer, and
+// never touches `self.pty_ops`.
+use super::super::proto::{ReattachSession, reattach_session_response};
 use super::super::protocol::RequestId;
 use super::super::pty_session_ops::FakePtySessionOperations;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
-use super::{ConnectionId, PendingFileOps, ServerModel};
+use super::{ConnectionId, HandlerOutcome, PendingFileOps, ServerModel};
 use remote_server::RemotePtySessionId;
-use remote_server::session_store::{SessionExitStatus, SessionStore};
+use remote_server::session_store::{SessionExitStatus, SessionSpawnMetadata, SessionStore};
 // SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5): the
 // event-bridge half of the daemon handler, and its pure message-building helpers.
 #[cfg(feature = "local_fs")]
@@ -1676,4 +1682,213 @@ fn pty_exit_by_signal_records_no_code() {
             assert!(status.signal_killed);
         });
     });
+}
+
+// ── ReattachSession (`docs/design/moth-parliament.md`, "Delivery is
+// two-phase") ────────────────────────────────────────────────────────────
+// `handle_reattach_session` cannot just return `HandlerOutcome::Sync` like
+// its five siblings above -- it sends its own response via
+// `send_server_message` and only acknowledges the delivered output if that
+// call reports the send as handed off. These tests drive it directly with a
+// plain `test_model()` -- unlike `handle_spawn_session`, this handler never
+// touches `self.pty_ops` and needs no `ModelContext` -- and inspect the
+// connection's own outbound channel for what was actually sent, since a
+// successful reattach returns `HandlerOutcome::Async(None)` rather than a
+// message `into_message()` can unwrap.
+//
+// Not covered here: an append landing between `peek_output` and
+// `acknowledge_output` inside a single `handle_reattach_session` call.
+// Nothing in this handler yields control between those two calls -- there is
+// no `.await`, and nothing else runs on `model` while one call to it is on
+// the stack -- so that exact race cannot be forced at this layer; it is
+// exhaustively covered, unmodified, by
+// `session_store_tests.rs::an_append_between_peek_and_acknowledge_does_not_discard_undelivered_bytes`,
+// which is the contract this handler is built on. What *is* specific to this
+// handler, and covered below
+// (`second_reattach_returns_only_new_bytes_with_the_gap_figure_reset`), is
+// that it acknowledges by the stream offset `peek_output` returned
+// (`PeekedOutput::next_offset`) and not by the length of what it sent --
+// the two diverge from the very first acknowledgement onward, and confusing
+// them reintroduces the same class of loss one call later instead of
+// mid-call.
+
+fn reattach_test_metadata() -> SessionSpawnMetadata {
+    SessionSpawnMetadata {
+        cwd: "/repo".to_string(),
+        shell: Some("/bin/bash".to_string()),
+        rows: 24,
+        cols: 80,
+    }
+}
+
+fn reattach_request(id: &RemotePtySessionId) -> ReattachSession {
+    ReattachSession {
+        remote_session_id: id.clone().into(),
+    }
+}
+
+// Breaks if: `handle_reattach_session` builds `ReattachSessionSuccess` from
+// `dropped_bytes_total` (the lifetime figure) instead of
+// `dropped_bytes_since_ack`, or stops sending the peeked bytes at all.
+#[test]
+fn reattach_returns_buffered_bytes_and_the_since_ack_drop_figure() {
+    let mut model = test_model();
+    model.session_store = SessionStore::with_output_bound(4);
+    let id = RemotePtySessionId::from("session-a".to_string());
+    model
+        .session_store
+        .register(id.clone(), reattach_test_metadata());
+    model.session_store.append_output(&id, b"abcdefgh").unwrap(); // drops 4, buffers "efgh"
+
+    let conn_id: ConnectionId = uuid::Uuid::new_v4();
+    let (tx, rx) = async_channel::unbounded();
+    model.connection_senders.insert(conn_id, tx);
+
+    let outcome = model.handle_reattach_session(reattach_request(&id), &request_id(), conn_id);
+    assert!(
+        matches!(outcome, HandlerOutcome::Async(None)),
+        "a successful reattach sends its own response; the generic dispatch must not send \
+         a second one"
+    );
+
+    let received = rx.try_recv().expect("reattach response must be sent");
+    let server_message::Message::ReattachSessionResponse(response) =
+        received.message.expect("response must carry a message")
+    else {
+        panic!("expected ReattachSessionResponse");
+    };
+    let Some(reattach_session_response::Result::Success(success)) = response.result else {
+        panic!("expected a successful reattach");
+    };
+    assert_eq!(success.data, b"efgh");
+    assert_eq!(success.dropped_bytes_since_ack, 4);
+
+    // The delivered bytes must now be acknowledged.
+    let peeked = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(peeked.bytes, Vec::<u8>::new());
+    assert_eq!(peeked.dropped_bytes_since_ack, 0);
+}
+
+// THE property two-phase delivery exists for: a failed send must not
+// acknowledge anything, so the next attempt sees the exact same bytes and
+// the exact same drop figure. The receiver is dropped here, so the sender
+// stays in `connection_senders` but `try_send` fails (channel closed) --
+// the same failure `host_scoped_response_fails_over_when_target_send_fails`
+// above uses to simulate a dead connection.
+//
+// Breaks if: `handle_reattach_session` calls `acknowledge_output`
+// unconditionally instead of gating it on `send_server_message`'s return
+// value.
+#[test]
+fn failed_delivery_leaves_buffered_output_and_drop_figure_intact_for_next_attempt() {
+    let mut model = test_model();
+    model.session_store = SessionStore::with_output_bound(4);
+    let id = RemotePtySessionId::from("session-b".to_string());
+    model
+        .session_store
+        .register(id.clone(), reattach_test_metadata());
+    model.session_store.append_output(&id, b"abcdefgh").unwrap(); // drops 4, buffers "efgh"
+
+    let conn_id: ConnectionId = uuid::Uuid::new_v4();
+    let (tx, rx) = async_channel::bounded(1);
+    drop(rx);
+    model.connection_senders.insert(conn_id, tx);
+
+    let before = model.session_store.peek_output(&id).unwrap();
+
+    model.handle_reattach_session(reattach_request(&id), &request_id(), conn_id);
+
+    let after = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(
+        after, before,
+        "a failed send must not discard anything or advance the ack watermark"
+    );
+    assert_eq!(after.bytes, b"efgh");
+    assert_eq!(after.dropped_bytes_since_ack, 4);
+}
+
+// A second reattach must show only what arrived since the first was
+// acknowledged, with the gap figure reset -- and the handler must
+// acknowledge by the stream offset the first peek reported
+// (`PeekedOutput::next_offset`), not by the number of bytes it delivered.
+// The two diverge from the first acknowledgement onward (the offset carries
+// the stream's whole history; a length starts back at zero every call), so
+// this test's second batch is acknowledged well past its own length.
+//
+// Breaks if: `handle_reattach_session` doesn't call `acknowledge_output` at
+// all (the second reattach would repeat the first batch), or if it
+// acknowledges through `success.data.len()` instead of `peeked.next_offset`
+// -- with that bug this test's second ack would land on offset 5 instead of
+// 8, discarding only "de" and leaving "fgh" behind for a third reattach to
+// wrongly redeliver.
+#[test]
+fn second_reattach_returns_only_new_bytes_with_the_gap_figure_reset() {
+    let mut model = test_model();
+    model.session_store = SessionStore::with_output_bound(64);
+    let id = RemotePtySessionId::from("session-c".to_string());
+    model
+        .session_store
+        .register(id.clone(), reattach_test_metadata());
+    model.session_store.append_output(&id, b"abc").unwrap();
+
+    let conn_id: ConnectionId = uuid::Uuid::new_v4();
+    let (tx, rx) = async_channel::unbounded();
+    model.connection_senders.insert(conn_id, tx);
+
+    model.handle_reattach_session(reattach_request(&id), &request_id(), conn_id);
+    let server_message::Message::ReattachSessionResponse(first_response) =
+        rx.try_recv().unwrap().message.unwrap()
+    else {
+        panic!("expected ReattachSessionResponse");
+    };
+    let Some(reattach_session_response::Result::Success(first_success)) = first_response.result
+    else {
+        panic!("expected a successful reattach");
+    };
+    assert_eq!(first_success.data, b"abc");
+
+    model.session_store.append_output(&id, b"defgh").unwrap();
+
+    model.handle_reattach_session(reattach_request(&id), &request_id(), conn_id);
+    let server_message::Message::ReattachSessionResponse(second_response) =
+        rx.try_recv().unwrap().message.unwrap()
+    else {
+        panic!("expected ReattachSessionResponse");
+    };
+    let Some(reattach_session_response::Result::Success(second_success)) = second_response.result
+    else {
+        panic!("expected a successful reattach");
+    };
+    assert_eq!(
+        second_success.data, b"defgh",
+        "a second reattach must show only what arrived since the first, not the first batch again"
+    );
+    assert_eq!(second_success.dropped_bytes_since_ack, 0);
+
+    // Nothing must be left over: if the handler had acknowledged by a byte
+    // count instead of `peeked.next_offset`, this would still hold "fgh".
+    let peeked = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(peeked.bytes, Vec::<u8>::new());
+}
+
+// Breaks if: `handle_reattach_session` doesn't propagate `UnknownSession`
+// from `peek_output` (e.g. `.unwrap()`s it, which would panic instead of
+// answering with the wire's `ReattachSessionError`), or answers with an
+// empty success instead of an error for an id nothing was ever registered
+// under.
+#[test]
+fn reattaching_unknown_session_returns_the_wire_error() {
+    let mut model = test_model();
+    let ghost = RemotePtySessionId::from("ghost".to_string());
+    let conn_id: ConnectionId = uuid::Uuid::new_v4();
+
+    let outcome = model.handle_reattach_session(reattach_request(&ghost), &request_id(), conn_id);
+
+    let server_message::Message::ReattachSessionResponse(response) = outcome.into_message() else {
+        panic!("expected ReattachSessionResponse");
+    };
+    let Some(reattach_session_response::Result::Error(error)) = response.result else {
+        panic!("expected a reattach error for an unregistered id");
+    };
+    assert!(error.message.contains("ghost"));
 }

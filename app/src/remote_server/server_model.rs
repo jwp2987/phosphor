@@ -38,15 +38,16 @@ use super::proto::{
 };
 
 // Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
-// ownership"): the five session RPCs' request/response/push types.
+// ownership"): the six session RPCs' request/response/push types.
 use super::proto::{
-    ListSessions, ListSessionsResponse, ListSessionsSuccess, RemoteSessionSignal,
-    RemoteSessionSummary, ResizeSession, ResizeSessionError, ResizeSessionResponse,
-    ResizeSessionSuccess, SessionExitedPush, SessionOutputChunkPush, SignalSession,
-    SignalSessionError, SignalSessionResponse, SignalSessionSuccess, SpawnSession,
-    SpawnSessionError, SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin,
-    WriteSessionStdinError, WriteSessionStdinResponse, WriteSessionStdinSuccess,
-    list_sessions_response, resize_session_response, signal_session_response,
+    ListSessions, ListSessionsResponse, ListSessionsSuccess, ReattachSession, ReattachSessionError,
+    ReattachSessionResponse, ReattachSessionSuccess, RemoteSessionSignal, RemoteSessionSummary,
+    ResizeSession, ResizeSessionError, ResizeSessionResponse, ResizeSessionSuccess,
+    SessionExitedPush, SessionOutputChunkPush, SignalSession, SignalSessionError,
+    SignalSessionResponse, SignalSessionSuccess, SpawnSession, SpawnSessionError,
+    SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin, WriteSessionStdinError,
+    WriteSessionStdinResponse, WriteSessionStdinSuccess, list_sessions_response,
+    reattach_session_response, resize_session_response, signal_session_response,
     spawn_session_response, write_session_stdin_response,
 };
 use super::pty_session_ops::{
@@ -1357,11 +1358,14 @@ impl ServerModel {
                     })),
                     // Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping
                     // session ownership"): dispatch and `SessionStore` bookkeeping for
-                    // all five RPCs. Each routes through `self.pty_ops`
+                    // all six RPCs. `SpawnSession`/`WriteSessionStdin`/`ResizeSession`/
+                    // `SignalSession` route through `self.pty_ops`
                     // (`pty_session_ops::PtySessionOperations`) rather than a real OS
                     // pty directly -- see that module's doc comment for why, and for
                     // what backs it: `LocalTtyPtySessionOperations` on unix, wiring a
-                    // real `local_tty::Pty` behind each session.
+                    // real `local_tty::Pty` behind each session. `ListSessions` and
+                    // `ReattachSession` read `SessionStore` directly instead, without
+                    // going through the pty backend at all.
                     Some(host_scoped_request::Message::SpawnSession(msg)) => {
                         self.handle_spawn_session(msg, ctx)
                     }
@@ -1376,6 +1380,9 @@ impl ServerModel {
                     }
                     Some(host_scoped_request::Message::ListSessions(ListSessions {})) => {
                         self.handle_list_sessions()
+                    }
+                    Some(host_scoped_request::Message::ReattachSession(msg)) => {
+                        self.handle_reattach_session(msg, &request_id, conn_id)
                     }
                     None => {
                         log::warn!(
@@ -1579,12 +1586,21 @@ impl ServerModel {
     /// Non-host-scoped responses are never failed over; their target
     /// connection owns state (e.g. a subscription) that a sibling
     /// connection does not have.
+    ///
+    /// Returns whether the message was actually handed to some connection's
+    /// outbound channel: `true` for `Some(conn_id)` delivered directly or,
+    /// failing that, via failover; `true` for `None` if at least one
+    /// broadcast recipient accepted it; `false` otherwise.
+    /// `handle_reattach_session` is the one caller that uses this return
+    /// value -- it decides from it whether the output it just sent may be
+    /// acknowledged (discarded from `SessionStore`) or must be left for the
+    /// next attempt.
     fn send_server_message(
         &mut self,
         conn_id: Option<ConnectionId>,
         request_id: Option<&RequestId>,
         message: server_message::Message,
-    ) {
+    ) -> bool {
         // Sending a response is the terminal step of a host-scoped request,
         // so its failover-tracking entry is dropped here regardless of
         // which path below actually delivers it. Whether the request was
@@ -1603,37 +1619,47 @@ impl ServerModel {
         };
         if let Some(target) = conn_id {
             if let Some(conn_tx) = self.connection_senders.get(&target) {
-                if let Err(e) = conn_tx.try_send(msg.clone()) {
-                    log::warn!("Daemon: failed to send to conn {target}: {e}");
-                    if is_host_scoped_response {
-                        self.send_host_scoped_response_via_alternate_connection(target, msg);
+                match conn_tx.try_send(msg.clone()) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        log::warn!("Daemon: failed to send to conn {target}: {e}");
+                        if is_host_scoped_response {
+                            self.send_host_scoped_response_via_alternate_connection(target, msg)
+                        } else {
+                            false
+                        }
                     }
                 }
             } else if is_host_scoped_response {
                 // Target connection is gone. Deliver the host-scoped
                 // response through any other open connection.
-                self.send_host_scoped_response_via_alternate_connection(target, msg);
+                self.send_host_scoped_response_via_alternate_connection(target, msg)
             } else {
                 log::debug!("Daemon: no sender for conn {target} (already disconnected)");
+                false
             }
         } else {
             // Push notification — broadcast to all connections.
+            let mut delivered_to_any = false;
             for (id, conn_tx) in &self.connection_senders {
-                if let Err(e) = conn_tx.try_send(msg.clone()) {
-                    log::warn!("Daemon: failed to send to conn {id}: {e}");
+                match conn_tx.try_send(msg.clone()) {
+                    Ok(()) => delivered_to_any = true,
+                    Err(e) => log::warn!("Daemon: failed to send to conn {id}: {e}"),
                 }
             }
+            delivered_to_any
         }
     }
 
     /// Delivers a host-scoped response through a connected proxy other than
     /// `target`. Used when the original connection has disappeared or its
-    /// outbound channel rejected the response.
+    /// outbound channel rejected the response. Returns whether some
+    /// alternate connection accepted it.
     fn send_host_scoped_response_via_alternate_connection(
         &self,
         target: ConnectionId,
         msg: ServerMessage,
-    ) {
+    ) -> bool {
         for (&alt_id, alt_tx) in &self.connection_senders {
             if alt_id == target {
                 continue;
@@ -1643,7 +1669,7 @@ impl ServerModel {
                 msg.request_id
             );
             match alt_tx.try_send(msg.clone()) {
-                Ok(()) => return,
+                Ok(()) => return true,
                 Err(e) => {
                     log::warn!("Daemon: failover delivery failed to conn {alt_id}: {e}");
                 }
@@ -1654,6 +1680,7 @@ impl ServerModel {
              no alternate connections available",
             msg.request_id
         );
+        false
     }
 
     /// Spawns an abortable future tied to `request_id` and wires up automatic
@@ -1715,7 +1742,7 @@ impl ServerModel {
 
     // ── Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping
     // session ownership") ─────────────────────────────────────────────────
-    // Dispatch and `SessionStore` bookkeeping for the five session RPCs.
+    // Dispatch and `SessionStore` bookkeeping for the six session RPCs.
     // Mostly ctx-free, like `handle_initialize` above -- `handle_spawn_session`
     // is the one exception, since starting a real pty needs `ctx` to reach the
     // `PtySpawner` singleton (see `pty_session_ops`'s module doc comment).
@@ -1858,6 +1885,80 @@ impl ServerModel {
         list_sessions_message(list_sessions_response::Result::Success(
             ListSessionsSuccess { sessions },
         ))
+    }
+
+    /// Handles `ReattachSession`: replays the output `SessionStore` buffered
+    /// for `id` since the client's last successful reattach (or since spawn,
+    /// for the first), together with how many bytes were dropped in that
+    /// span (`docs/design/moth-parliament.md`, "Output buffering while
+    /// detached" and "Delivery is two-phase").
+    ///
+    /// Unlike its five siblings above, this cannot simply return
+    /// `HandlerOutcome::Sync` and let `handle_message`'s central dispatch
+    /// call `send_server_message` on its behalf: the two-phase contract
+    /// `SessionStore::peek_output` / `acknowledge_output` implements requires
+    /// the acknowledge to happen strictly after the peeked bytes are handed
+    /// off for delivery, and `send_server_message` is the only place that
+    /// observes whether that handoff actually succeeded. So this handler
+    /// peeks, sends the response itself via `send_server_message`, and
+    /// acknowledges only if that call reports success.
+    ///
+    /// "Handed off for delivery" here means `send_server_message` queued the
+    /// response on the destination connection's outbound
+    /// `async_channel::Sender` (a successful `try_send`, on the direct
+    /// connection or, for a tracked host-scoped request, a failover one) --
+    /// that is as far as this process can observe delivery; a failure
+    /// between the channel and the socket, or on the wire, is outside what
+    /// any handler in this file can detect, and every other response here
+    /// already accepts that same boundary. On a failed or undeliverable
+    /// send, the peeked bytes and the dropped-byte figure are left
+    /// unacknowledged, so the next `ReattachSession` for `id` sees them
+    /// again. Returns `HandlerOutcome::Async(None)` because the response was
+    /// already sent here -- `handle_message`'s dispatch must not send a
+    /// second one.
+    fn handle_reattach_session(
+        &mut self,
+        msg: ReattachSession,
+        request_id: &RequestId,
+        conn_id: ConnectionId,
+    ) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        let peeked = match self.session_store.peek_output(&id) {
+            Ok(peeked) => peeked,
+            Err(error) => {
+                return HandlerOutcome::Sync(reattach_session_message(
+                    reattach_session_response::Result::Error(ReattachSessionError {
+                        message: error.to_string(),
+                    }),
+                ));
+            }
+        };
+        let message = reattach_session_message(reattach_session_response::Result::Success(
+            ReattachSessionSuccess {
+                data: peeked.bytes,
+                dropped_bytes_since_ack: peeked.dropped_bytes_since_ack,
+            },
+        ));
+        if self.send_server_message(Some(conn_id), Some(request_id), message) {
+            if let Err(UnknownSession(id)) = self
+                .session_store
+                .acknowledge_output(&id, peeked.next_offset)
+            {
+                // Nothing between the peek above and here removes sessions,
+                // so this would mean the session vanished mid-handler --
+                // there is nothing left to acknowledge in that case.
+                log::warn!(
+                    "ReattachSession: session {id} disappeared before its delivered output \
+                     could be acknowledged"
+                );
+            }
+        } else {
+            log::warn!(
+                "ReattachSession: failed to deliver reattach response for {id}; leaving \
+                 buffered output unacknowledged for the next attempt"
+            );
+        }
+        HandlerOutcome::Async(None)
     }
 
     /// Records pty output for `id` and pushes it to every connected client.
@@ -5332,6 +5433,18 @@ fn list_sessions_message(result: list_sessions_response::Result) -> HandlerOutco
             result: Some(result),
         },
     ))
+}
+
+/// Unlike its siblings above, returns the raw `server_message::Message`
+/// rather than a `HandlerOutcome::Sync`: `handle_reattach_session` needs the
+/// message value itself to pass to `send_server_message` directly on its
+/// success path (see that method's doc comment for why), and only wraps it
+/// in `HandlerOutcome::Sync` for its unknown-session error path, where the
+/// generic dispatch in `handle_message` may send it as usual.
+fn reattach_session_message(result: reattach_session_response::Result) -> server_message::Message {
+    server_message::Message::ReattachSessionResponse(ReattachSessionResponse {
+        result: Some(result),
+    })
 }
 
 // ── Remote codebase indexing helpers (Delta D2) ───────────────────────────
