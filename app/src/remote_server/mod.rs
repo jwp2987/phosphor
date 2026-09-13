@@ -43,6 +43,8 @@ pub mod diff_state_tracker;
 #[cfg(not(target_family = "wasm"))]
 pub mod ripgrep_search;
 #[cfg(not(target_family = "wasm"))]
+pub mod pty_session_ops;
+#[cfg(not(target_family = "wasm"))]
 pub mod server_model;
 #[cfg(not(target_family = "wasm"))]
 pub mod ssh_transport;

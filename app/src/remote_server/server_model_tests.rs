@@ -1,22 +1,34 @@
 use std::collections::HashMap;
 
 use std::fs;
+use std::sync::Arc;
 
 use super::super::proto::{
-    list_directory_response, read_file_chunk_response, resolve_path_response, server_message,
-    write_file_chunk_response, write_file_response, Authenticate, CreateDirectory, Initialize,
-    ListDirectory, ReadFileChunk, ResolvePath, ServerMessage, WriteFileChunk, WriteFileResponse,
-    WriteFileSuccess,
+    Authenticate, CreateDirectory, Initialize, ListDirectory, ReadFileChunk, ResolvePath,
+    ServerMessage, WriteFileChunk, WriteFileResponse, WriteFileSuccess, list_directory_response,
+    read_file_chunk_response, resolve_path_response, server_message, write_file_chunk_response,
+    write_file_response,
 };
 #[cfg(feature = "local_fs")]
 use super::super::proto::{
-    remote_skill_proto, BundledSkillMetadata, HomeSkillMetadata, RemoteContextFileProto,
-    RemoteSkillProto,
+    BundledSkillMetadata, HomeSkillMetadata, RemoteContextFileProto, RemoteSkillProto,
+    remote_skill_proto,
+};
+// Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
+// ownership"): dispatch tests for the five session RPCs, driven through
+// `FakePtySessionOperations` rather than a real pty.
+use super::super::proto::{
+    RemoteSessionSignal, ResizeSession, SignalSession, SpawnSession, WriteSessionStdin,
+    list_sessions_response, resize_session_response, signal_session_response,
+    spawn_session_response, write_session_stdin_response,
 };
 use super::super::protocol::RequestId;
+use super::super::pty_session_ops::FakePtySessionOperations;
 #[cfg(feature = "local_fs")]
 use super::super::server_buffer_tracker::ServerBufferTracker;
 use super::{ConnectionId, PendingFileOps, ServerModel};
+use remote_server::RemotePtySessionId;
+use remote_server::session_store::{SessionExitStatus, SessionStore};
 // SearchRemoteCodebase (TODO.md "UNWIRED-CODE AUDIT 2026-08-10" finding #5): the
 // event-bridge half of the daemon handler, and its pure message-building helpers.
 #[cfg(feature = "local_fs")]
@@ -78,7 +90,18 @@ fn test_model() -> ServerModel {
         // receiver is dropped, so any send from a subscriber is a no-op.
         #[cfg(feature = "local_fs")]
         diff_state_watch_tx: async_channel::unbounded().0,
+        session_store: SessionStore::new(),
+        pty_ops: Arc::new(FakePtySessionOperations::new()),
     }
+}
+
+/// Like [`test_model`], but with the model's `pty_ops` swapped for `fake` so
+/// a test can inspect what was called on it afterwards (`test_model` gives
+/// every model its own private fake with no way to reach back in).
+fn test_model_with_pty(fake: Arc<FakePtySessionOperations>) -> ServerModel {
+    let mut model = test_model();
+    model.pty_ops = fake;
+    model
 }
 
 fn request_id() -> RequestId {
@@ -1261,4 +1284,248 @@ fn remote_agent_context_snapshot_broadcasts_replacements_and_initializes_once() 
     ));
     model.send_remote_agent_context_snapshot_to_connection(late_conn);
     assert!(late_rx.try_recv().is_err());
+}
+
+// ── Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
+// ownership") ────────────────────────────────────────────────────────────
+// Dispatch and `SessionStore` bookkeeping for the five session RPCs, driven
+// through `FakePtySessionOperations` rather than a real pty -- see that
+// type's doc comment in `pty_session_ops.rs`.
+
+fn spawn_session_request(id: &RemotePtySessionId, cwd: &str) -> SpawnSession {
+    SpawnSession {
+        remote_session_id: id.clone().into(),
+        cwd: cwd.to_string(),
+        shell: Some("/bin/bash".to_string()),
+        environment_variables: HashMap::new(),
+        rows: 24,
+        cols: 80,
+    }
+}
+
+#[test]
+fn retried_spawn_starts_exactly_one_pty_and_preserves_output() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    let mut model = test_model_with_pty(fake.clone());
+    let id = RemotePtySessionId::from("session-1".to_string());
+
+    let first = model.handle_spawn_session(spawn_session_request(&id, "/first"));
+    let server_message::Message::SpawnSessionResponse(response) = first.into_message() else {
+        panic!("expected SpawnSessionResponse");
+    };
+    assert!(matches!(
+        response.result,
+        Some(spawn_session_response::Result::Success(_))
+    ));
+    assert_eq!(fake.spawn_count(&id), 1);
+
+    model.session_store.append_output(&id, b"hello").unwrap();
+
+    // A retry (same client-minted id, e.g. after a lost response) must
+    // answer success without starting a second pty or disturbing the first
+    // session's state.
+    let retried = model.handle_spawn_session(spawn_session_request(&id, "/second"));
+    let server_message::Message::SpawnSessionResponse(retried_response) = retried.into_message()
+    else {
+        panic!("expected SpawnSessionResponse");
+    };
+    assert!(matches!(
+        retried_response.result,
+        Some(spawn_session_response::Result::Success(_))
+    ));
+    assert_eq!(fake.spawn_count(&id), 1);
+
+    let peeked = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(peeked.bytes, b"hello");
+    let summary = model
+        .session_store
+        .list()
+        .into_iter()
+        .find(|summary| summary.id == id)
+        .expect("session still registered");
+    assert_eq!(summary.metadata.cwd, "/first");
+}
+
+#[test]
+fn write_stdin_on_unknown_session_returns_wire_error() {
+    let mut model = test_model();
+    let id = RemotePtySessionId::from("never-spawned".to_string());
+
+    let response = model.handle_write_session_stdin(WriteSessionStdin {
+        remote_session_id: id.into(),
+        data: b"echo hi\n".to_vec(),
+    });
+
+    let server_message::Message::WriteSessionStdinResponse(response) = response.into_message()
+    else {
+        panic!("expected WriteSessionStdinResponse");
+    };
+    assert!(matches!(
+        response.result,
+        Some(write_session_stdin_response::Result::Error(_))
+    ));
+}
+
+#[test]
+fn resize_on_unknown_session_returns_wire_error() {
+    let mut model = test_model();
+    let id = RemotePtySessionId::from("never-spawned".to_string());
+
+    let response = model.handle_resize_session(ResizeSession {
+        remote_session_id: id.into(),
+        rows: 10,
+        cols: 20,
+    });
+
+    let server_message::Message::ResizeSessionResponse(response) = response.into_message() else {
+        panic!("expected ResizeSessionResponse");
+    };
+    assert!(matches!(
+        response.result,
+        Some(resize_session_response::Result::Error(_))
+    ));
+}
+
+#[test]
+fn signal_on_unknown_session_returns_wire_error() {
+    let mut model = test_model();
+    let id = RemotePtySessionId::from("never-spawned".to_string());
+
+    let response = model.handle_signal_session(SignalSession {
+        remote_session_id: id.into(),
+        signal: RemoteSessionSignal::Interrupt.into(),
+    });
+
+    let server_message::Message::SignalSessionResponse(response) = response.into_message() else {
+        panic!("expected SignalSessionResponse");
+    };
+    assert!(matches!(
+        response.result,
+        Some(signal_session_response::Result::Error(_))
+    ));
+}
+
+#[test]
+fn resize_updates_what_list_sessions_reports() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    let mut model = test_model_with_pty(fake);
+    let id = RemotePtySessionId::from("session-resize".to_string());
+    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    let response = model.handle_resize_session(ResizeSession {
+        remote_session_id: id.clone().into(),
+        rows: 50,
+        cols: 120,
+    });
+    let server_message::Message::ResizeSessionResponse(response) = response.into_message() else {
+        panic!("expected ResizeSessionResponse");
+    };
+    assert!(matches!(
+        response.result,
+        Some(resize_session_response::Result::Success(_))
+    ));
+
+    let server_message::Message::ListSessionsResponse(listed) =
+        model.handle_list_sessions().into_message()
+    else {
+        panic!("expected ListSessionsResponse");
+    };
+    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+        panic!("expected ListSessions success");
+    };
+    let summary = success
+        .sessions
+        .into_iter()
+        .find(|summary| summary.remote_session_id == id.as_str())
+        .expect("resized session listed");
+    assert_eq!(summary.rows, 50);
+    assert_eq!(summary.cols, 120);
+}
+
+#[test]
+fn list_sessions_maps_every_field() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    let mut model = test_model_with_pty(fake);
+    let id = RemotePtySessionId::from("session-fields".to_string());
+    model.handle_spawn_session(SpawnSession {
+        remote_session_id: id.clone().into(),
+        cwd: "/workspace/repo".to_string(),
+        shell: Some("/bin/zsh".to_string()),
+        environment_variables: HashMap::new(),
+        rows: 40,
+        cols: 132,
+    });
+
+    let server_message::Message::ListSessionsResponse(listed) =
+        model.handle_list_sessions().into_message()
+    else {
+        panic!("expected ListSessionsResponse");
+    };
+    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+        panic!("expected ListSessions success");
+    };
+    assert_eq!(success.sessions.len(), 1);
+    let summary = &success.sessions[0];
+    assert_eq!(summary.remote_session_id, id.as_str());
+    assert_eq!(summary.cwd, "/workspace/repo");
+    assert_eq!(summary.shell.as_deref(), Some("/bin/zsh"));
+    assert_eq!(summary.rows, 40);
+    assert_eq!(summary.cols, 132);
+}
+
+#[test]
+fn pty_output_reaches_the_store() {
+    let mut model = test_model();
+    let id = RemotePtySessionId::from("session-output".to_string());
+    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    model.handle_pty_session_output(id.clone(), b"hello from the pty".to_vec());
+
+    let peeked = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(peeked.bytes, b"hello from the pty");
+}
+
+#[test]
+fn pty_exit_with_code_records_it() {
+    let fake = Arc::new(FakePtySessionOperations::new());
+    let mut model = test_model_with_pty(fake.clone());
+    let id = RemotePtySessionId::from("session-exit-code".to_string());
+    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    model.handle_pty_session_exit(id.clone(), SessionExitStatus::exited(42));
+
+    let summary = model
+        .session_store
+        .list()
+        .into_iter()
+        .find(|summary| summary.id == id)
+        .expect("session still listed after exit");
+    assert_eq!(
+        summary.state,
+        remote_server::session_store::SessionState::Exited(SessionExitStatus::exited(42))
+    );
+    // The pty backend's OS resources for this id are released once its exit
+    // is recorded.
+    assert!(fake.was_killed(&id));
+}
+
+#[test]
+fn pty_exit_by_signal_records_no_code() {
+    let mut model = test_model();
+    let id = RemotePtySessionId::from("session-exit-signal".to_string());
+    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+
+    model.handle_pty_session_exit(id.clone(), SessionExitStatus::signalled());
+
+    let summary = model
+        .session_store
+        .list()
+        .into_iter()
+        .find(|summary| summary.id == id)
+        .expect("session still listed after exit");
+    let remote_server::session_store::SessionState::Exited(status) = summary.state else {
+        panic!("expected session to be recorded as exited");
+    };
+    assert_eq!(status.code, None);
+    assert!(status.signal_killed);
 }

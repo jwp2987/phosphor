@@ -37,6 +37,24 @@ use super::proto::{
     SessionScopedRequest, UnsubscribeDiffState, WriteFile, WriteFileResponse, WriteFileSuccess,
 };
 
+// Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
+// ownership"): the five session RPCs' request/response/push types.
+use super::proto::{
+    ListSessions, ListSessionsResponse, ListSessionsSuccess, RemoteSessionSignal,
+    RemoteSessionSummary, ResizeSession, ResizeSessionError, ResizeSessionResponse,
+    ResizeSessionSuccess, SessionExitedPush, SessionOutputChunkPush, SignalSession,
+    SignalSessionError, SignalSessionResponse, SignalSessionSuccess, SpawnSession,
+    SpawnSessionError, SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin,
+    WriteSessionStdinError, WriteSessionStdinResponse, WriteSessionStdinSuccess,
+    list_sessions_response, resize_session_response, signal_session_response,
+    spawn_session_response, write_session_stdin_response,
+};
+use super::pty_session_ops::{LocalTtyPtySessionOperations, PtySessionOperations, PtySpawnSpec};
+use remote_server::RemotePtySessionId;
+use remote_server::session_store::{
+    SessionExitStatus, SessionSpawnMetadata, SessionStore, UnknownSession,
+};
+
 // Remote codebase indexing (Delta D2, remote-daemon leg). Gated `local_fs`
 // because the daemon's index manager is: it walks the host's filesystem and
 // stores its snapshots and vectors there.
@@ -546,6 +564,17 @@ pub struct ServerModel {
         std::path::PathBuf,
         super::diff_state_tracker::DiffStateWatchUpdate,
     )>,
+    /// Bookkeeping for pty sessions this daemon owns across client
+    /// disconnections (`docs/design/moth-parliament.md`, "Scoping session
+    /// ownership" / "Output buffering while detached"). Pure in-memory
+    /// bookkeeping only -- see `remote_server::session_store` for exactly
+    /// what it tracks; it does not itself touch a pty.
+    session_store: SessionStore,
+    /// The pty backend the five session RPCs (`handle_spawn_session` and
+    /// siblings) dispatch through. A trait object so tests can supply
+    /// `pty_session_ops::FakePtySessionOperations` instead of a real OS pty
+    /// -- see that module's doc comment for why the seam is drawn here.
+    pty_ops: Arc<dyn PtySessionOperations>,
 }
 
 impl Entity for ServerModel {
@@ -611,6 +640,8 @@ impl ServerModel {
             diff_state_watches: HashMap::new(),
             #[cfg(feature = "local_fs")]
             diff_state_watch_tx,
+            session_store: SessionStore::new(),
+            pty_ops: Arc::new(LocalTtyPtySessionOperations::new()),
         };
         // Drives granular per-file diff-state pushes (#577). The watches that
         // feed this are established lazily, on the first subscription for a repo.
@@ -1304,25 +1335,27 @@ impl ServerModel {
                         code: ErrorCode::InvalidRequest.into(),
                         message: "Codebase indexing requires the local_fs feature".to_string(),
                     })),
-                    // Remote pty sessions: the wire shape and the client half exist
-                    // (`RemotePtySessionId`, the spawn/stdin/resize/signal/list requests and
-                    // the output/exit pushes), but nothing on this side owns a pty yet. See
-                    // `docs/design/moth-parliament.md`, "Scoping session ownership".
-                    //
-                    // Answered explicitly rather than left to a wildcard: this match is
-                    // deliberately exhaustive, so the next person to add a host-scoped
-                    // request is forced to decide what the daemon does with it instead of
-                    // having it silently fall into a catch-all.
-                    Some(
-                        host_scoped_request::Message::SpawnSession(_)
-                        | host_scoped_request::Message::WriteSessionStdin(_)
-                        | host_scoped_request::Message::ResizeSession(_)
-                        | host_scoped_request::Message::SignalSession(_)
-                        | host_scoped_request::Message::ListSessions(_),
-                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
-                        code: ErrorCode::InvalidRequest.into(),
-                        message: "Remote pty sessions are not implemented yet".to_string(),
-                    })),
+                    // Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping
+                    // session ownership"): dispatch and `SessionStore` bookkeeping for
+                    // all five RPCs. Each routes through `self.pty_ops`
+                    // (`pty_session_ops::PtySessionOperations`) rather than a real OS
+                    // pty directly -- see that module's doc comment for why, and for
+                    // what "real" backend is (not yet) wired behind it.
+                    Some(host_scoped_request::Message::SpawnSession(msg)) => {
+                        self.handle_spawn_session(msg)
+                    }
+                    Some(host_scoped_request::Message::WriteSessionStdin(msg)) => {
+                        self.handle_write_session_stdin(msg)
+                    }
+                    Some(host_scoped_request::Message::ResizeSession(msg)) => {
+                        self.handle_resize_session(msg)
+                    }
+                    Some(host_scoped_request::Message::SignalSession(msg)) => {
+                        self.handle_signal_session(msg)
+                    }
+                    Some(host_scoped_request::Message::ListSessions(ListSessions {})) => {
+                        self.handle_list_sessions()
+                    }
                     None => {
                         log::warn!(
                             "Received HostScopedRequest with no message variant \
@@ -1657,6 +1690,182 @@ impl ServerModel {
                 host_id: self.host_id.clone(),
             },
         ))
+    }
+
+    // ── Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping
+    // session ownership") ─────────────────────────────────────────────────
+    // Dispatch and `SessionStore` bookkeeping for the five session RPCs.
+    // Deliberately ctx-free, like `handle_initialize` above -- see
+    // `pty_session_ops`'s module doc comment for why.
+
+    /// Handles `SpawnSession`.
+    ///
+    /// Idempotent on a retried request: `SessionStore::register` is itself a
+    /// no-op when `id` is already registered, so this only starts a pty the
+    /// first time a given client-minted id is seen. A retry still answers
+    /// with success -- it is not an error, it is the mechanism client-minted
+    /// ids exist for.
+    fn handle_spawn_session(&mut self, msg: SpawnSession) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        // `SessionStore` has no direct "is this id known" query (and adding
+        // one would be modifying a file this branch treats as already
+        // built and green); `list()` is the read-only way to ask the same
+        // question, and spawns are infrequent enough that the scan is cheap.
+        let already_registered = self
+            .session_store
+            .list()
+            .iter()
+            .any(|summary| summary.id == id);
+        let metadata = SessionSpawnMetadata {
+            cwd: msg.cwd.clone(),
+            shell: msg.shell.clone(),
+            rows: msg.rows,
+            cols: msg.cols,
+        };
+        self.session_store.register(id.clone(), metadata);
+        if !already_registered {
+            let spec = PtySpawnSpec {
+                cwd: msg.cwd,
+                shell: msg.shell,
+                environment_variables: msg.environment_variables,
+                rows: msg.rows,
+                cols: msg.cols,
+            };
+            if let Err(error) = self.pty_ops.spawn(&id, &spec) {
+                // Don't leave a phantom entry registered for a pty that
+                // never actually started.
+                self.session_store.remove(&id);
+                return spawn_session_message(spawn_session_response::Result::Error(
+                    SpawnSessionError { message: error.0 },
+                ));
+            }
+        }
+        spawn_session_message(spawn_session_response::Result::Success(
+            SpawnSessionSuccess {},
+        ))
+    }
+
+    /// Handles `WriteSessionStdin`. `id` unknown to `self.pty_ops` produces
+    /// the wire's error response rather than silently dropping the bytes.
+    fn handle_write_session_stdin(&mut self, msg: WriteSessionStdin) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        match self.pty_ops.write_stdin(&id, &msg.data) {
+            Ok(()) => write_session_stdin_message(write_session_stdin_response::Result::Success(
+                WriteSessionStdinSuccess {},
+            )),
+            Err(error) => write_session_stdin_message(write_session_stdin_response::Result::Error(
+                WriteSessionStdinError { message: error.0 },
+            )),
+        }
+    }
+
+    /// Handles `ResizeSession`. Also records the new size in `SessionStore`
+    /// so a subsequent `ListSessions` reports the pty's current size rather
+    /// than the one it was spawned with.
+    fn handle_resize_session(&mut self, msg: ResizeSession) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        if let Err(error) = self.pty_ops.resize(&id, msg.rows, msg.cols) {
+            return resize_session_message(resize_session_response::Result::Error(
+                ResizeSessionError { message: error.0 },
+            ));
+        }
+        if let Err(UnknownSession(id)) = self.session_store.record_resize(&id, msg.rows, msg.cols) {
+            // `self.pty_ops` just accepted a resize for this id, so
+            // `SessionStore` should already have it registered -- spawn
+            // registers both together. Surfacing this to the client would
+            // be misleading (the resize did take effect); log it instead.
+            log::warn!(
+                "ResizeSession: pty backend accepted a resize for {id}, but SessionStore has no \
+                 record of it"
+            );
+        }
+        resize_session_message(resize_session_response::Result::Success(
+            ResizeSessionSuccess {},
+        ))
+    }
+
+    /// Handles `SignalSession`. `id` unknown to `self.pty_ops` produces the
+    /// wire's error response, matching `write_stdin` / `resize`.
+    fn handle_signal_session(&mut self, msg: SignalSession) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        let signal = match RemoteSessionSignal::try_from(msg.signal) {
+            Ok(signal) => signal,
+            Err(_) => {
+                return signal_session_message(signal_session_response::Result::Error(
+                    SignalSessionError {
+                        message: format!("invalid RemoteSessionSignal value: {}", msg.signal),
+                    },
+                ));
+            }
+        };
+        match self.pty_ops.signal(&id, signal) {
+            Ok(()) => signal_session_message(signal_session_response::Result::Success(
+                SignalSessionSuccess {},
+            )),
+            Err(error) => {
+                signal_session_message(signal_session_response::Result::Error(SignalSessionError {
+                    message: error.0,
+                }))
+            }
+        }
+    }
+
+    /// Handles `ListSessions`, answering from `SessionStore::list()`.
+    fn handle_list_sessions(&self) -> HandlerOutcome {
+        let sessions = self
+            .session_store
+            .list()
+            .into_iter()
+            .map(|summary| RemoteSessionSummary {
+                remote_session_id: summary.id.into(),
+                cwd: summary.metadata.cwd,
+                shell: summary.metadata.shell,
+                rows: summary.metadata.rows,
+                cols: summary.metadata.cols,
+            })
+            .collect();
+        list_sessions_message(list_sessions_response::Result::Success(
+            ListSessionsSuccess { sessions },
+        ))
+    }
+
+    /// Records pty output for `id` and pushes it to every connected client.
+    /// Not a request/response RPC -- the pty backend calls this as output
+    /// arrives, so it broadcasts (`conn_id: None`) the same way
+    /// `RepoMetadataUpdate` does above.
+    #[allow(dead_code)] // Not yet called: see `pty_session_ops::LocalTtyPtySessionOperations`.
+    fn handle_pty_session_output(&mut self, id: RemotePtySessionId, data: Vec<u8>) {
+        if self.session_store.append_output(&id, &data).is_err() {
+            log::warn!("Dropping pty output for unknown session {id}");
+            return;
+        }
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::SessionOutputChunkPush(SessionOutputChunkPush {
+                remote_session_id: id.into(),
+                data,
+            }),
+        );
+    }
+
+    /// Records that `id`'s process exited, releases the pty backend's OS
+    /// resources for it, and pushes the exit to every connected client.
+    #[allow(dead_code)] // Not yet called: see `pty_session_ops::LocalTtyPtySessionOperations`.
+    fn handle_pty_session_exit(&mut self, id: RemotePtySessionId, status: SessionExitStatus) {
+        if self.session_store.record_exit(&id, status).is_err() {
+            log::warn!("Dropping exit for unknown session {id}");
+            return;
+        }
+        self.pty_ops.kill(&id);
+        self.send_server_message(
+            None,
+            None,
+            server_message::Message::SessionExitedPush(SessionExitedPush {
+                remote_session_id: id.into(),
+                exit_code: status.code,
+            }),
+        );
     }
 
     // ── Remote codebase indexing (Delta D2, remote-daemon leg) ────────────
@@ -5048,6 +5257,52 @@ fn file_context_result_to_proto(result: ReadFileContextResult) -> ReadFileContex
         file_contexts,
         failed_files,
     }
+}
+
+// ── Remote pty session response helpers ───────────────────────────────────
+// One per RPC, each just wrapping its `oneof result` in the right
+// `server_message::Message` variant -- mirrors `codebase_index_status_response`
+// below, but unlike that helper these are not `local_fs`-gated: pty sessions
+// don't depend on the daemon's local filesystem.
+
+fn spawn_session_message(result: spawn_session_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::SpawnSessionResponse(
+        SpawnSessionResponse {
+            result: Some(result),
+        },
+    ))
+}
+
+fn write_session_stdin_message(result: write_session_stdin_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::WriteSessionStdinResponse(
+        WriteSessionStdinResponse {
+            result: Some(result),
+        },
+    ))
+}
+
+fn resize_session_message(result: resize_session_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::ResizeSessionResponse(
+        ResizeSessionResponse {
+            result: Some(result),
+        },
+    ))
+}
+
+fn signal_session_message(result: signal_session_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::SignalSessionResponse(
+        SignalSessionResponse {
+            result: Some(result),
+        },
+    ))
+}
+
+fn list_sessions_message(result: list_sessions_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::ListSessionsResponse(
+        ListSessionsResponse {
+            result: Some(result),
+        },
+    ))
 }
 
 // ── Remote codebase indexing helpers (Delta D2) ───────────────────────────
