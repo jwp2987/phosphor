@@ -1,4 +1,4 @@
-use std::{collections::HashSet, os::unix::prelude::*, sync::Arc};
+use std::{collections::HashMap, os::unix::prelude::*, sync::Arc};
 
 use anyhow::{bail, Result};
 use parking_lot::Mutex;
@@ -21,16 +21,19 @@ pub struct TerminalServerClient {
     /// of the socket across a send/receive pair (to avoid interference from
     /// other threads).
     socket_fd: Mutex<OwnedFd>,
-    /// The set of process IDs of terminated children which have not yet been
-    /// processed by the pty event loops.
-    terminated_children: Arc<Mutex<HashSet<u32>>>,
+    /// The exit statuses of terminated children which have not yet been
+    /// processed by the pty event loops, keyed by process ID.
+    terminated_children: Arc<Mutex<HashMap<u32, std::process::ExitStatus>>>,
 }
 
 impl TerminalServerClient {
     /// Constructs a new terminal server client which communicates with the
     /// server via the provided Unix domain socket file descriptor and holds
-    /// onto a list of terminated child process IDs.
-    pub fn new(client_fd: OwnedFd, terminated_children: Arc<Mutex<HashSet<u32>>>) -> Self {
+    /// onto a map of terminated children's exit statuses.
+    pub fn new(
+        client_fd: OwnedFd,
+        terminated_children: Arc<Mutex<HashMap<u32, std::process::ExitStatus>>>,
+    ) -> Self {
         Self {
             socket_fd: Mutex::new(client_fd),
             terminated_children,
@@ -111,6 +114,18 @@ impl TerminalServerClient {
     /// Returns whether or not the child process with the given process ID has
     /// terminated.  This will only return true once for each process ID.
     pub fn has_child_terminated(&self, pid: u32) -> bool {
+        self.terminated_children.lock().remove(&pid).is_some()
+    }
+
+    /// Returns and consumes the real exit status the server reported for the
+    /// child process with the given process ID, if it has terminated.  Like
+    /// [`has_child_terminated`](Self::has_child_terminated), this shares the
+    /// same underlying record and will only return `Some(_)` once for each
+    /// process ID -- callers that need the status after observing
+    /// termination (e.g. [`ServerOwnedPtyHandle`](super::ServerOwnedPtyHandle))
+    /// must cache it themselves, the same way `DirectPtyHandle` caches
+    /// `Child::try_wait`'s one-shot result.
+    pub fn take_child_exit_status(&self, pid: u32) -> Option<std::process::ExitStatus> {
         self.terminated_children.lock().remove(&pid)
     }
 }

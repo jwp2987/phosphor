@@ -17,6 +17,39 @@ impl<T> From<anyhow::Result<T>> for Result<T> {
     }
 }
 
+/// A child process's real exit status, made serializable so it can cross the
+/// terminal-server socket.
+///
+/// `std::process::ExitStatus` has no public constructor other than the
+/// platform-specific raw-status decoding `ExitStatusExt` provides, and isn't
+/// itself `Serialize`/`Deserialize`. Rather than pre-extracting a code/signal
+/// pair (which would have to reimplement -- and could drift from -- however
+/// `ExitStatus::code()` decides that split), this carries the raw `wait(2)`
+/// status word. `ExitStatusExt::into_raw`/`from_raw` are exact inverses, so
+/// the receiving side reconstructs precisely what `Child::try_wait` observed
+/// on the server, including `.code()` returning `None` if and only if the
+/// child was terminated by a signal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub(super) struct ChildExitStatus {
+    raw_status: i32,
+}
+
+impl ChildExitStatus {
+    /// Captures `status` in its serializable form.
+    pub(super) fn from_std(status: std::process::ExitStatus) -> Self {
+        use std::os::unix::process::ExitStatusExt;
+        Self {
+            raw_status: status.into_raw(),
+        }
+    }
+
+    /// Reconstructs the `ExitStatus` this was captured from.
+    pub(super) fn into_std(self) -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::ExitStatus::from_raw(self.raw_status)
+    }
+}
+
 /// The API for communication between the terminal client and server.  This is
 /// organized into request/response pairs for the API "methods".
 ///
@@ -54,8 +87,10 @@ pub(super) enum Message {
         message: String,
     },
     /// A message sent from server -> client notifying the client that one or
-    /// more child processes have terminated.  This has no matching response
-    /// message - these requests are fire-and-forget from the server to the
-    /// host application.
-    ChildrenTerminatedRequest { pids: Vec<u32> },
+    /// more child processes have terminated, along with each one's real exit
+    /// status.  This has no matching response message - these requests are
+    /// fire-and-forget from the server to the host application.
+    ChildrenTerminatedRequest {
+        children: Vec<(u32, ChildExitStatus)>,
+    },
 }

@@ -37,18 +37,23 @@ impl Children {
     }
 
     /// Checks all known children to see which have already terminated, returning
-    /// process IDs for children that are no longer running.  Any child returned
-    /// this way is removed from the list of children.
-    fn terminated_children(&mut self) -> Vec<u32> {
+    /// each terminated child's process ID along with its real exit status.  Any
+    /// child returned this way is removed from the list of children.
+    ///
+    /// `Child::try_wait` yields an `Ok(Some(exit_status))` only once per child
+    /// (it reaps the process), so this is the one place that observation can
+    /// happen; the status is captured here and threaded through
+    /// `ChildrenTerminatedRequest` rather than being discarded.
+    fn terminated_children(&mut self) -> Vec<(u32, std::process::ExitStatus)> {
         let mut terminated_children = vec![];
         let keys = self.0.keys().cloned().collect_vec();
         for k in keys {
             let Some(child) = self.0.get_mut(&k) else {
                 continue;
             };
-            if matches!(child.try_wait(), Ok(Some(_))) {
+            if let Ok(Some(status)) = child.try_wait() {
                 self.0.remove(&k);
-                terminated_children.push(k);
+                terminated_children.push((k, status));
             }
         }
         terminated_children
@@ -194,11 +199,18 @@ impl EventLoop {
                     SIGNALS_TOKEN => {
                         for signal in signals.pending() {
                             if signal == signal_hook::consts::SIGCHLD {
-                                let terminated_children_pids = self.children.terminated_children();
+                                let terminated_children = self
+                                    .children
+                                    .terminated_children()
+                                    .into_iter()
+                                    .map(|(pid, status)| {
+                                        (pid, api::ChildExitStatus::from_std(status))
+                                    })
+                                    .collect();
                                 if let Err(err) = protocol::send_message(
                                     *send_socket_fd.lock(),
                                     api::Message::ChildrenTerminatedRequest {
-                                        pids: terminated_children_pids,
+                                        children: terminated_children,
                                     },
                                     Option::<RawFd>::None,
                                 ) {

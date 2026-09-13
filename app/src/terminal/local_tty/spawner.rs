@@ -273,6 +273,7 @@ impl PtySpawner {
         let handle = Box::new(ServerOwnedPtyHandle {
             pid: result.pid,
             client,
+            exit_status: None,
         });
         Ok((result, handle))
     }

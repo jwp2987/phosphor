@@ -25,7 +25,7 @@ mod logging;
 mod protocol;
 
 use command::blocking::Command;
-use std::{collections::HashSet, os::unix::prelude::*, sync::Arc};
+use std::{collections::HashMap, os::unix::prelude::*, sync::Arc};
 
 use anyhow::{Context, Result};
 use cvt::cvt;
@@ -67,7 +67,10 @@ pub fn run_terminal_server(args: &warp_cli::TerminalServerArgs) {
 }
 
 /// Spawns a thread to handle fire-and-forget messages sent back from the server.
-fn spawn_message_receiver_thread(socket_fd: RawFd, terminated_children: Arc<Mutex<HashSet<u32>>>) {
+fn spawn_message_receiver_thread(
+    socket_fd: RawFd,
+    terminated_children: Arc<Mutex<HashMap<u32, std::process::ExitStatus>>>,
+) {
     std::thread::spawn(move || {
         loop {
             match protocol::receive_message(socket_fd).expect("should not fail to receive") {
@@ -78,8 +81,12 @@ fn spawn_message_receiver_thread(socket_fd: RawFd, terminated_children: Arc<Mute
                 }) => {
                     logging::handle_write_log_request(level, target, message);
                 }
-                Some(api::Message::ChildrenTerminatedRequest { pids }) => {
-                    terminated_children.lock().extend(pids);
+                Some(api::Message::ChildrenTerminatedRequest { children }) => {
+                    let mut terminated_children = terminated_children.lock();
+                    for (pid, status) in children {
+                        terminated_children.insert(pid, status.into_std());
+                    }
+                    drop(terminated_children);
                     // Send ourselves a SIGCHLD signal to notify the event loop threads that
                     // they should check to see if their associated shell process has
                     // terminated.
@@ -147,10 +154,10 @@ impl TerminalServer {
         )
         .context("Failed to create Unix domain socket pair")?;
 
-        // Create a concurrency-safe set to track the list of terminated
-        // children that the terminal server has notified us about but
-        // the pty event loops haven't yet processed.
-        let terminated_children = Arc::new(Mutex::new(HashSet::new()));
+        // Create a concurrency-safe map to track the terminated children
+        // (and their real exit statuses) that the terminal server has
+        // notified us about but the pty event loops haven't yet processed.
+        let terminated_children = Arc::new(Mutex::new(HashMap::new()));
 
         // Spawn the message receiver background thread.
         spawn_message_receiver_thread(client_recv_fd, terminated_children.clone());
@@ -222,6 +229,13 @@ impl Drop for TerminalServer {
 pub struct ServerOwnedPtyHandle {
     pub pid: u32,
     pub client: Arc<TerminalServerClient>,
+    /// Cached the first time [`PtyHandle::has_process_terminated`] observes
+    /// a real exit. `TerminalServerClient::take_child_exit_status` yields
+    /// the server-reported status only once (see its doc comment), so --
+    /// mirroring `DirectPtyHandle`'s own `exit_status` field -- this is the
+    /// only chance to capture it, and every later query is answered from
+    /// here instead of the client.
+    exit_status: Option<std::process::ExitStatus>,
 }
 
 impl PtyHandle for ServerOwnedPtyHandle {
@@ -230,10 +244,22 @@ impl PtyHandle for ServerOwnedPtyHandle {
     }
 
     fn has_process_terminated(&mut self) -> Result<bool> {
-        Ok(self.client.has_child_terminated(self.pid))
+        if self.exit_status.is_some() {
+            return Ok(true);
+        }
+        self.exit_status = self.client.take_child_exit_status(self.pid);
+        Ok(self.exit_status.is_some())
     }
 
     fn kill(&mut self) -> Result<()> {
         self.client.kill_child(self.pid())
     }
+
+    fn take_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.exit_status
+    }
 }
+
+#[cfg(test)]
+#[path = "mod_tests.rs"]
+mod tests;
