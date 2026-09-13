@@ -78,15 +78,27 @@ pub fn is_container_subshell(session_info: &SessionInfo) -> bool {
 ///
 /// We use RC-file based bootstrap for MSYS2 because it has slow PTY throughput.
 ///
-/// This matches on `BootstrapSessionType`, which has no `Remote` variant even though
-/// `SessionType` now does (`session.rs`). That omission is deliberate, not an oversight:
-/// giving `BootstrapSessionType` a `Remote` mirror would make
-/// `command_executor.rs`'s wildcard arm route an unwired remote bootstrap into
-/// `InBandCommandExecutor` -- in-band shell injection, which
-/// `docs/design/moth-parliament.md`'s decision B rules out for remote sessions, arriving
-/// silently through a `_`. Adding the mirror is part of wiring remote session spawning,
-/// and this function needs a real answer at that point. Recorded here because the
-/// reasoning otherwise lived only in a commit message.
+/// `BootstrapSessionType::Remote` shares `Local`'s branch here, not
+/// `WarpifiedRemote`'s hardcoded `false`, and the difference is about *whose*
+/// filesystem an RC-file would land on.
+///
+/// `WarpifiedRemote`'s local pty is an ssh client process: the shell it is bootstrapping
+/// is actually running on the far side of that connection, so an RC-file dumped to a
+/// temp path on the local machine could never be `source`d by it -- that path simply
+/// does not exist on the remote filesystem. Direct injection (writing the script's bytes
+/// into the pty, which the ssh client forwards over the wire) is the only option, hence
+/// the unconditional `false`.
+///
+/// `Remote` has no such split. Decision C (`docs/design/moth-parliament.md`, "The three
+/// questions, answered") establishes that the bootstrap/handshake pipeline runs for a
+/// `Remote` session exactly as it does locally, via `arguments_for_session_spawning_command`
+/// -- and whichever process calls this function is, by construction, running on the host
+/// that will actually execute the shell (the daemon, spawning what is from *its own*
+/// vantage point an ordinary local pty on the machine it is running on). So a temp RC-file
+/// on that host's disk is exactly as reachable as it is for a genuinely local session, and
+/// the same shell-specific bugs this function exists to route around -- Fish's output
+/// explosion, PowerShell's dropped characters, poetry/pipenv's blocking-PTY deadlock --
+/// apply identically regardless of which host is running the shell.
 #[cfg(feature = "local_fs")]
 pub fn should_use_rc_file_bootstrap_method(
     shell_type: ShellType,
@@ -109,7 +121,7 @@ pub fn should_use_rc_file_bootstrap_method(
 
     let session_type = &session_info.session_type;
     match session_type {
-        BootstrapSessionType::Local => {
+        BootstrapSessionType::Local | BootstrapSessionType::Remote => {
             let subshell_initialization_info = session_info.subshell_info.as_ref();
             let is_poetry_subshell = subshell_initialization_info
                 .as_ref()

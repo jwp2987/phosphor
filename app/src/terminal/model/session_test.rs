@@ -774,10 +774,9 @@ fn host_reached_with_empty_server_version_records_none() {
 #[test]
 fn remote_session_type_counts_as_subshell_or_ssh() {
     let session = Session::new(
-        SessionInfo::new_for_test(),
+        SessionInfo::new_for_test().with_session_type(BootstrapSessionType::Remote),
         Arc::new(TestCommandExecutor::default()),
     );
-    session.set_session_type_for_test(SessionType::Remote { host_id: None });
     assert!(session.is_subshell_or_ssh());
 }
 
@@ -788,10 +787,9 @@ fn remote_session_type_counts_as_subshell_or_ssh() {
 #[test]
 fn set_remote_host_id_updates_remote_session_type() {
     let session = Session::new(
-        SessionInfo::new_for_test(),
+        SessionInfo::new_for_test().with_session_type(BootstrapSessionType::Remote),
         Arc::new(TestCommandExecutor::default()),
     );
-    session.set_session_type_for_test(SessionType::Remote { host_id: None });
 
     let host_id = warp_core::HostId::new("host-1".to_string());
     session.set_remote_host_id(Some(host_id.clone()));
@@ -813,9 +811,10 @@ fn set_remote_host_id_updates_remote_session_type() {
 fn read_history_for_remote_session_type_injects_no_shell_command() {
     App::test((), |_app| async move {
         let executor = RecordingCommandExecutor::succeeding("some_history_line\n");
-        let info = SessionInfo::new_for_test().with_histfile(Some("/tmp/history".to_string()));
+        let info = SessionInfo::new_for_test()
+            .with_histfile(Some("/tmp/history".to_string()))
+            .with_session_type(BootstrapSessionType::Remote);
         let session = Session::new(info, executor.clone());
-        session.set_session_type_for_test(SessionType::Remote { host_id: None });
 
         let history = session.read_history(false).await;
 

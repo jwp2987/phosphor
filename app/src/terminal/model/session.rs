@@ -330,12 +330,13 @@ impl Sessions {
                 | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
                 | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
                 | RemoteServerManagerEvent::ServerMessageDecodingError { .. } => {}
-                // Remote pty sessions carry no meaning for this consumer, and nothing
-                // implements the daemon side yet -- see
-                // `docs/design/moth-parliament.md`, "Scoping session ownership". Listed
-                // explicitly because this match is exhaustive on purpose: whoever wires
-                // pty output to a block list should be made to come here and decide, not
-                // find a wildcard already swallowing it.
+                // Remote pty sessions carry no meaning for *this* consumer, which tracks
+                // which host a session reached. The daemon does send both pushes now, and
+                // they have a dedicated consumer being built in
+                // `terminal::remote_server_tty::EventLoop`, which addresses them by
+                // (host, session) pair rather than by this app's `SessionId`. Listed
+                // explicitly because this match is exhaustive on purpose: a wildcard here
+                // would swallow a future session-addressed event silently.
                 RemoteServerManagerEvent::SessionOutputChunk { .. }
                 | RemoteServerManagerEvent::SessionExited { .. } => {}
                 RemoteServerManagerEvent::SessionReconnected {
@@ -1013,6 +1014,21 @@ pub enum BootstrapSessionType {
 
     /// The session host is a different host from where Zap is running.
     WarpifiedRemote,
+
+    /// The session was constructed directly against a declared remote target -- the
+    /// daemon on the far side owns the pty, and there is no local shell process to run
+    /// a hostname-comparison handshake on in the first place.
+    ///
+    /// This is [`SessionType::Remote`]'s bootstrap-time counterpart, and it still goes
+    /// through the bootstrap/handshake pipeline (decision C in
+    /// `docs/design/moth-parliament.md`): `arguments_for_session_spawning_command`
+    /// injects the rcfile and the InitShell OSC handshake for a daemon-spawned session
+    /// exactly as it does locally, and our client is Warp, which expects that
+    /// handshake. Unlike `WarpifiedRemote`, which bootstrap classifies by comparing a
+    /// shell's self-reported hostname against the local machine's, a `Remote` session
+    /// is already known to be remote before any shell has reported in -- it was created
+    /// against a chosen target, not discovered.
+    Remote,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1053,6 +1069,11 @@ impl From<BootstrapSessionType> for SessionType {
         match bst {
             BootstrapSessionType::Local => SessionType::Local,
             BootstrapSessionType::WarpifiedRemote => SessionType::WarpifiedRemote { host_id: None },
+            // The host resolves at handshake, not construction (decision A): a `Remote`
+            // bootstrap always becomes `host_id: None` here, exactly as `WarpifiedRemote`
+            // does, and `set_remote_host_id` fills it in once the remote-server handshake
+            // completes.
+            BootstrapSessionType::Remote => SessionType::Remote { host_id: None },
         }
     }
 }
@@ -1146,18 +1167,6 @@ impl Session {
             }
             SessionType::Local => {}
         }
-    }
-
-    /// Test-only seam for constructing a session of a given [`SessionType`] directly,
-    /// bypassing the [`BootstrapSessionType`] -> [`SessionType`] conversion that production
-    /// code goes through at bootstrap time. Needed because [`SessionType::Remote`] has no
-    /// `BootstrapSessionType` mirror to construct one from (see its doc comment: a `Remote`
-    /// session is constructed directly against a declared target, not classified via
-    /// bootstrap), so callers outside this module that need one for a test (e.g.
-    /// `controller_tests.rs`) cannot get there through `SessionInfo::with_session_type`.
-    #[cfg(any(test, feature = "test-util"))]
-    pub fn set_session_type_for_test(&self, session_type: SessionType) {
-        *self.session_type.lock() = session_type;
     }
 
     pub fn shell_family(&self) -> ShellFamily {

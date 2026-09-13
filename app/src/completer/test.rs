@@ -14,8 +14,8 @@ use warpui::App;
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, CommandExecutor, ExecuteCommandOptions,
-    SessionInfo, SessionType,
+    command_executor::testing::TestCommandExecutor, BootstrapSessionType, CommandExecutor,
+    ExecuteCommandOptions, SessionInfo,
 };
 use crate::terminal::shell::Shell;
 use crate::test_util::{Stub, VirtualFS};
@@ -686,8 +686,10 @@ pub fn test_concurrent_directory_refreshes_are_coalesced() {
 fn list_directory_entries_for_remote_session_type_injects_no_shell_command() {
     App::test((), |app| async move {
         let executor = Arc::new(RecordingCommandExecutor::default());
-        let session = Session::new(SessionInfo::new_for_test(), executor.clone());
-        session.set_session_type_for_test(SessionType::Remote { host_id: None });
+        let session = Session::new(
+            SessionInfo::new_for_test().with_session_type(BootstrapSessionType::Remote),
+            executor.clone(),
+        );
         let cwd = working_directory();
         let ctx = test_session_context(session, cwd.clone(), &app);
 

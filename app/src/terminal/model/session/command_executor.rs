@@ -328,7 +328,47 @@ fn new_command_executor_for_local_tty_session(
                 unreachable!("Unreachable because of match! above. Unfortunately if let guards in rust are still experimental.")
             }
         }
-        _ => {
+        // `Remote` has no local pty at all -- the daemon on the far side owns it -- so
+        // there is no live shell to pipe an in-band command into. This arm has no guard,
+        // so `Remote` can never fall through to the `Local | WarpifiedRemote` arm below:
+        // routing an unwired `Remote` bootstrap into `InBandCommandExecutor` would be
+        // exactly the in-band shell injection decision B (`docs/design/moth-parliament.md`)
+        // rules out for remote sessions. That hazard is also why this match ends on an
+        // explicit `Local | WarpifiedRemote` rather than a wildcard `_`: a future variant
+        // added to `BootstrapSessionType` will fail to compile here instead of silently
+        // inheriting whichever fallback the wildcard happened to mean.
+        BootstrapSessionType::Remote => {
+            let session_id = session_info.session_id;
+            let maybe_client = if ctx.has_singleton_model::<RemoteServerManager>() {
+                RemoteServerManager::handle(ctx)
+                    .read(ctx, |mgr, _| mgr.client_for_session(session_id).cloned())
+            } else {
+                None
+            };
+            match maybe_client {
+                Some(client) => {
+                    log::info!(
+                        "creating a remote server executor for constructed-remote session \
+                         {session_id:?}"
+                    );
+                    Arc::new(RemoteServerCommandExecutor::new(session_id, client))
+                }
+                None => {
+                    // Not connected yet -- the handshake hasn't completed, the feature is
+                    // off, or (in a test) no `RemoteServerManager` is registered at all.
+                    // Generators/completions are unavailable until a client exists, but no
+                    // command is ever piped into a shell that does not exist to fill that
+                    // gap.
+                    log::info!(
+                        "no remote-server client yet for constructed-remote session \
+                         {session_id:?}; using a no-op executor rather than falling back to \
+                         in-band injection"
+                    );
+                    Arc::new(NoOpCommandExecutor::new())
+                }
+            }
+        }
+        BootstrapSessionType::Local | BootstrapSessionType::WarpifiedRemote => {
             if *should_force_disable_in_band_generators {
                 // The user has manually disabled in-band generators via command
                 // modifying 'user defaults', so pass a no-op command executor.

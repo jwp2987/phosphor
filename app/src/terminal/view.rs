@@ -9377,14 +9377,57 @@ impl TerminalView {
         self.warpify_state.focus(ctx);
     }
 
+    /// Determines the [`WarpificationSource`] the bootstrap-success banner should
+    /// attribute to a newly bootstrapped session, given its [`BootstrapSessionType`].
+    ///
+    /// A free-standing associated function (rather than logic inlined into
+    /// `add_bootstrap_success_block`) so the `Remote` decision below is directly
+    /// unit-testable without standing up a `TerminalView`.
+    fn warpification_source_for(
+        session_type: BootstrapSessionType,
+        session_id: SessionId,
+    ) -> WarpificationSource {
+        match session_type {
+            BootstrapSessionType::WarpifiedRemote => WarpificationSource::Ssh,
+            BootstrapSessionType::Local => WarpificationSource::Subshell,
+            // Structurally unreachable today: `add_bootstrap_success_block` only runs
+            // when its caller, `handle_session_bootstrapped`, sees
+            // `bootstrap_event.subshell_info.is_some()`, and a `Remote` bootstrap type
+            // is never spawned as a subshell of an existing session -- it is
+            // constructed directly against a declared target
+            // (`BootstrapSessionType::Remote`'s doc comment), so `subshell_info` never
+            // gets populated for one. Decision C (`docs/design/moth-parliament.md`,
+            // "The three questions, answered") says a "warpified!" banner is the wrong
+            // announcement for a session the user explicitly created as remote in the
+            // first place, so this deliberately does NOT reuse `Ssh` if the
+            // unreachable case is ever hit. Log loudly and fall back rather than
+            // panicking in user-facing code -- a wrong banner is recoverable, a crash
+            // on bootstrap success is not.
+            BootstrapSessionType::Remote => {
+                debug_assert!(
+                    false,
+                    "a Remote-bootstrapped session should never reach \
+                     add_bootstrap_success_block, because it never populates \
+                     subshell_info"
+                );
+                log::error!(
+                    "Remote-bootstrapped session {session_id:?} reached \
+                     add_bootstrap_success_block; this was believed unreachable \
+                     because Remote sessions never populate subshell_info"
+                );
+                WarpificationSource::Subshell
+            }
+        }
+    }
+
     fn add_bootstrap_success_block(
         &mut self,
         SessionBootstrappedEvent {
+            session_id,
             spawning_command,
             subshell_info,
             shell,
             session_type,
-            ..
         }: SessionBootstrappedEvent,
         ctx: &mut ViewContext<Self>,
     ) {
@@ -9397,10 +9440,7 @@ impl TerminalView {
             });
         }
 
-        let warpification_source = match session_type {
-            BootstrapSessionType::WarpifiedRemote => WarpificationSource::Ssh,
-            BootstrapSessionType::Local => WarpificationSource::Subshell,
-        };
+        let warpification_source = Self::warpification_source_for(session_type, session_id);
         let disable_tmux = FeatureFlag::SSHTmuxWrapper.is_enabled()
             && matches!(warpification_source, WarpificationSource::Ssh)
             && { !self.model.lock().tmux_control_mode_active() };
