@@ -31,9 +31,41 @@ pub const DEFAULT_OUTPUT_BUFFER_BYTES: usize = 256 * 1024;
 /// exit lived in the byte stream, a chatty process that exited and then
 /// flooded its buffer past the bound could evict its own exit status, and
 /// the session would reattach as "still running" forever.
+///
+/// Shaped to match this crate's existing `RemoteServerExitStatus`
+/// (`manager.rs`) and the wire's `SessionExitedPush.exit_code`, which is an
+/// `optional int32` for the same reason: a process killed by a signal has no
+/// exit code, and `WIFEXITED`/`WIFSIGNALED` are distinct outcomes. A bare
+/// `i32` would force a caller to invent a sentinel and report a fabricated
+/// code for every signalled session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionExitStatus {
-    pub code: i32,
+    /// Process exit code, if the process exited normally. `None` when it
+    /// was killed by a signal, which has no exit code of its own.
+    pub code: Option<i32>,
+    /// True if the process was killed by a signal (Unix only).
+    pub signal_killed: bool,
+}
+
+impl SessionExitStatus {
+    /// A session whose process exited normally with `code`.
+    pub fn exited(code: i32) -> Self {
+        Self {
+            code: Some(code),
+            signal_killed: false,
+        }
+    }
+
+    /// A session whose process was killed by a signal, and so has no exit
+    /// code. `SignalSession` is one of the session RPCs this store serves,
+    /// so this is a state the store must be able to represent rather than
+    /// flatten into a sentinel code.
+    pub fn signalled() -> Self {
+        Self {
+            code: None,
+            signal_killed: true,
+        }
+    }
 }
 
 /// A session's lifecycle state, as reported to a `ListSessions` caller.
@@ -49,26 +81,55 @@ pub enum SessionState {
 pub struct DrainedOutput {
     /// The retained bytes, oldest first.
     pub bytes: Vec<u8>,
-    /// Bytes evicted from the buffer, because its bound was exceeded,
-    /// since the last drain (or since the session was registered, if it
-    /// was never drained before).
-    pub dropped_bytes: u64,
+    /// Total bytes evicted from this session's buffer, because its bound
+    /// was exceeded, since the session was registered.
+    ///
+    /// Cumulative and never reset -- see [`SessionStore::drain_output`] for
+    /// why draining does not clear it. A caller that wants "dropped during
+    /// this detached period" keeps its own watermark and subtracts.
+    pub dropped_bytes_total: u64,
 }
 
 /// A session referenced by an id the store has no session registered for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Error)]
-#[error("no session is registered under this id")]
-pub struct UnknownSession;
+///
+/// Carries the id: the immediate caller already knows it, but this error is
+/// meant to be logged and propagated away from the call site, where "no session
+/// is registered" on its own says nothing about which one.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("no session is registered under id {0}")]
+pub struct UnknownSession(pub RemotePtySessionId);
+
+/// What a session was spawned with, retained so `ListSessions` can answer
+/// for a session whose client has since disconnected.
+///
+/// These are the fields the wire's `RemoteSessionSummary` requires (`cwd`,
+/// `shell`, `rows`, `cols`); without retaining them the daemon could enumerate
+/// only ids, and a reattaching client could not tell two sessions apart. They
+/// come from `SpawnSession`, which carries exactly these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionSpawnMetadata {
+    /// Absolute working directory. Empty means the daemon's default, matching
+    /// `SpawnSession.cwd`.
+    pub cwd: String,
+    /// Shell/command to run. `None` means the daemon's default login shell.
+    pub shell: Option<String>,
+    /// Terminal size, kept current by [`SessionStore::record_resize`] rather
+    /// than frozen at spawn -- a reattaching client needs the size the pty has
+    /// now, not the size it started with.
+    pub rows: u32,
+    pub cols: u32,
+}
 
 /// A summary of one session's state, as reported to a `ListSessions`
-/// caller: id, whether it is running or exited, and its buffer's current
-/// occupancy.
+/// caller: id, what it was spawned with, whether it is running or exited,
+/// and its buffer's current occupancy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: RemotePtySessionId,
+    pub metadata: SessionSpawnMetadata,
     pub state: SessionState,
     pub buffered_bytes: usize,
-    pub dropped_bytes: u64,
+    pub dropped_bytes_total: u64,
 }
 
 /// A bounded, byte-oriented ring buffer for one session's pty output.
@@ -115,20 +176,20 @@ impl OutputRingBuffer {
         self.bytes.extend(data);
     }
 
-    /// Removes and returns all retained bytes, along with the number of
-    /// bytes dropped since the last drain.
+    /// Removes and returns all retained bytes, along with the cumulative
+    /// count of bytes this buffer has ever dropped.
     ///
-    /// Draining clears both the retained bytes and the dropped count: the
-    /// returned [`DrainedOutput`] is a complete report of everything
-    /// buffered since the last drain, and the next detached period starts
-    /// its own count from zero rather than inheriting this one.
+    /// Clears the retained bytes but NOT the dropped count. Draining is
+    /// "remove for use", which is not the same as "delivered": a caller
+    /// that drains, builds a reattach payload, and then fails to deliver it
+    /// would otherwise destroy the only record that a gap existed, and no
+    /// later call could recover it. A monotonic count cannot be lost that
+    /// way, and a caller needing a per-period delta can subtract its own
+    /// watermark.
     fn drain(&mut self) -> DrainedOutput {
-        let bytes = self.bytes.drain(..).collect();
-        let dropped_bytes = self.dropped_bytes;
-        self.dropped_bytes = 0;
         DrainedOutput {
-            bytes,
-            dropped_bytes,
+            bytes: self.bytes.drain(..).collect(),
+            dropped_bytes_total: self.dropped_bytes,
         }
     }
 
@@ -141,13 +202,15 @@ impl OutputRingBuffer {
 /// and how it exited.
 #[derive(Debug)]
 struct Session {
+    metadata: SessionSpawnMetadata,
     output: OutputRingBuffer,
     exit_status: Option<SessionExitStatus>,
 }
 
 impl Session {
-    fn new(output_bound_bytes: usize) -> Self {
+    fn new(metadata: SessionSpawnMetadata, output_bound_bytes: usize) -> Self {
         Self {
+            metadata,
             output: OutputRingBuffer::new(output_bound_bytes),
             exit_status: None,
         }
@@ -185,20 +248,41 @@ impl SessionStore {
     /// Registers `id` as an active session.
     ///
     /// Idempotent: if `id` is already registered, this is a no-op and the
-    /// existing session -- its buffered output, drop count and exit
-    /// status -- is left untouched. Client-minted ids exist so a retried
+    /// existing session -- its metadata, buffered output, drop count and
+    /// exit status -- is left untouched, and `metadata` is discarded. Client-minted ids exist so a retried
     /// spawn after a lost response does not create a second session
     /// (`pty_session_id.rs`); this is that property applied to
     /// registration.
-    pub fn register(&mut self, id: RemotePtySessionId) {
+    pub fn register(&mut self, id: RemotePtySessionId, metadata: SessionSpawnMetadata) {
+        let output_bound_bytes = self.output_bound_bytes;
         self.sessions
             .entry(id)
-            .or_insert_with(|| Session::new(self.output_bound_bytes));
+            .or_insert_with(|| Session::new(metadata, output_bound_bytes));
+    }
+
+    /// Records a session's new terminal size, so `ListSessions` reports the
+    /// size the pty has now rather than the one it was spawned with.
+    pub fn record_resize(
+        &mut self,
+        id: &RemotePtySessionId,
+        rows: u32,
+        cols: u32,
+    ) -> Result<(), UnknownSession> {
+        let session = self.session_mut(id)?;
+        session.metadata.rows = rows;
+        session.metadata.cols = cols;
+        Ok(())
     }
 
     /// Removes a session entirely. Returns whether one was present.
     pub fn remove(&mut self, id: &RemotePtySessionId) -> bool {
         self.sessions.remove(id).is_some()
+    }
+
+    fn session_mut(&mut self, id: &RemotePtySessionId) -> Result<&mut Session, UnknownSession> {
+        self.sessions
+            .get_mut(id)
+            .ok_or_else(|| UnknownSession(id.clone()))
     }
 
     /// Appends output bytes to a session's ring buffer.
@@ -212,7 +296,7 @@ impl SessionStore {
         id: &RemotePtySessionId,
         data: &[u8],
     ) -> Result<(), UnknownSession> {
-        let session = self.sessions.get_mut(id).ok_or(UnknownSession)?;
+        let session = self.session_mut(id)?;
         session.output.append(data);
         Ok(())
     }
@@ -225,22 +309,23 @@ impl SessionStore {
         id: &RemotePtySessionId,
         status: SessionExitStatus,
     ) -> Result<(), UnknownSession> {
-        let session = self.sessions.get_mut(id).ok_or(UnknownSession)?;
+        let session = self.session_mut(id)?;
         session.exit_status = Some(status);
         Ok(())
     }
 
     /// Removes and returns a session's buffered output, for reattach.
     ///
-    /// Draining clears both the retained bytes and the dropped-byte count:
-    /// the returned [`DrainedOutput`] is a complete report of everything
-    /// buffered since the last drain, and the next detached period starts
-    /// its own count from zero rather than inheriting this one.
+    /// Clears the retained bytes but NOT the dropped-byte count, which is
+    /// cumulative for the life of the session. Draining is "remove for use",
+    /// not "delivered": zeroing the count here would mean a caller that
+    /// drains and then fails to deliver the payload destroys the only record
+    /// that output was ever dropped, leaving a gap nothing can report.
     pub fn drain_output(
         &mut self,
         id: &RemotePtySessionId,
     ) -> Result<DrainedOutput, UnknownSession> {
-        let session = self.sessions.get_mut(id).ok_or(UnknownSession)?;
+        let session = self.session_mut(id)?;
         Ok(session.output.drain())
     }
 
@@ -255,12 +340,13 @@ impl SessionStore {
             .iter()
             .map(|(id, session)| SessionSummary {
                 id: id.clone(),
+                metadata: session.metadata.clone(),
                 state: match session.exit_status {
                     Some(status) => SessionState::Exited(status),
                     None => SessionState::Running,
                 },
                 buffered_bytes: session.output.len(),
-                dropped_bytes: session.output.dropped_bytes,
+                dropped_bytes_total: session.output.dropped_bytes,
             })
             .collect();
         summaries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
