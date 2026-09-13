@@ -168,6 +168,9 @@ impl SessionContext {
         let has_remote_server_client = match &session_type {
             Some(SessionType::WarpifiedRemote {
                 host_id: Some(host_id),
+            })
+            | Some(SessionType::Remote {
+                host_id: Some(host_id),
             }) => {
                 app.has_singleton_model::<RemoteServerManager>()
                     && RemoteServerManager::as_ref(app)
@@ -175,6 +178,7 @@ impl SessionContext {
                         .is_some()
             }
             Some(SessionType::WarpifiedRemote { host_id: None })
+            | Some(SessionType::Remote { host_id: None })
             | Some(SessionType::Local)
             | None => false,
         };
@@ -200,11 +204,12 @@ impl SessionContext {
         &self.current_working_directory
     }
 
-    /// Returns the remote host ID if this is a `WarpifiedRemote` session with
+    /// Returns the remote host ID if this is a `WarpifiedRemote` or `Remote` session with
     /// a connected `RemoteServerClient`.
     pub fn host_id(&self) -> Option<&warp_core::HostId> {
         match &self.session_type {
-            Some(SessionType::WarpifiedRemote { host_id }) => host_id.as_ref(),
+            Some(SessionType::WarpifiedRemote { host_id })
+            | Some(SessionType::Remote { host_id }) => host_id.as_ref(),
             Some(SessionType::Local) | None => None,
         }
     }
@@ -212,7 +217,10 @@ impl SessionContext {
     /// Returns `true` if this is a remote session (regardless of whether
     /// the remote server client is connected).
     pub fn is_remote(&self) -> bool {
-        matches!(self.session_type, Some(SessionType::WarpifiedRemote { .. }))
+        match &self.session_type {
+            Some(SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. }) => true,
+            Some(SessionType::Local) | None => false,
+        }
     }
 
     /// Returns `true` if this is a remote session on which the file tools have no route to
@@ -245,10 +253,14 @@ impl SessionContext {
         match &self.session_type {
             Some(SessionType::WarpifiedRemote {
                 host_id: Some(host_id),
+            })
+            | Some(SessionType::Remote {
+                host_id: Some(host_id),
             }) => SkillPathOrigin::Remote {
                 host_id: crate::code::buffer_location::core_host_id_to_util(host_id),
             },
-            Some(SessionType::WarpifiedRemote { host_id: None }) => SkillPathOrigin::Unavailable,
+            Some(SessionType::WarpifiedRemote { host_id: None })
+            | Some(SessionType::Remote { host_id: None }) => SkillPathOrigin::Unavailable,
             Some(SessionType::Local) | None => SkillPathOrigin::Local,
         }
     }

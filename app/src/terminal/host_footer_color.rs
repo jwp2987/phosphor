@@ -81,8 +81,8 @@ pub enum ResolvedHost {
 
 /// Resolves the host a terminal session should be matched against, per the module
 /// doc's precedence: `session_hostname` (source 1) wins whenever `session_type` is
-/// [`SessionType::WarpifiedRemote`]; otherwise `pending_ssh_target` (source 2) is
-/// used.
+/// [`SessionType::WarpifiedRemote`] or [`SessionType::Remote`]; otherwise
+/// `pending_ssh_target` (source 2) is used.
 ///
 /// `pending_ssh_target` is `WarpifyState::pending_ssh_target()`'s tri-state: `None`
 /// when no interactive-SSH-shaped command is currently in flight, `Some(None)` when
@@ -92,7 +92,11 @@ pub fn resolve_host(
     session_hostname: &str,
     pending_ssh_target: Option<Option<String>>,
 ) -> ResolvedHost {
-    if matches!(session_type, SessionType::WarpifiedRemote { .. }) {
+    let is_remote_session = match session_type {
+        SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => true,
+        SessionType::Local => false,
+    };
+    if is_remote_session {
         return if session_hostname.is_empty() {
             ResolvedHost::Unknown
         } else {

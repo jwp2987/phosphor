@@ -91,12 +91,12 @@ pub fn time24_with_seconds(_: &GeneratorContext) -> Option<ChipValue> {
 /// Generator function for SSH session chip.
 pub fn ssh_session(ctx: &GeneratorContext) -> Option<ChipValue> {
     let session = ctx.active_session?;
-    if session.is_legacy_ssh_session()
-        || matches!(
-            session.session_type(),
-            crate::terminal::model::session::SessionType::WarpifiedRemote { .. }
-        )
-    {
+    let is_remote_session = match session.session_type() {
+        crate::terminal::model::session::SessionType::WarpifiedRemote { .. }
+        | crate::terminal::model::session::SessionType::Remote { .. } => true,
+        crate::terminal::model::session::SessionType::Local => false,
+    };
+    if session.is_legacy_ssh_session() || is_remote_session {
         let user = session.user();
         Some(ChipValue::Text(format!("{}@{}", user, session.hostname())))
     } else {

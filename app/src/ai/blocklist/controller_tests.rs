@@ -17,7 +17,85 @@ use crate::ai::blocklist::controller::response_stream::{
 };
 use crate::ai::blocklist::{BlocklistAIHistoryModel, PendingAttachment, PendingFile};
 use crate::ai::llms::LLMId;
+use crate::terminal::model::session::SessionType;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
+use ai::skills::SkillPathOrigin;
+use warp_core::HostId;
+
+use super::SessionContext;
+
+/// A `SessionContext` with every field at its "not remote, nothing special" default,
+/// for tests that only care about overriding `session_type`.
+fn session_context_with_type(session_type: SessionType) -> SessionContext {
+    SessionContext {
+        session_type: Some(session_type),
+        shell: None,
+        current_working_directory: None,
+        ssh_connection_info: None,
+        is_legacy_ssh: false,
+        has_remote_server_client: false,
+    }
+}
+
+/// A connected `Remote` session must be reported as remote, resolve its `host_id`, and
+/// resolve skill paths against that host -- the exact same way a connected
+/// `WarpifiedRemote { host_id: Some(..) }` session does. Breaks if the `SessionType::Remote`
+/// arm is dropped from `is_remote()`/`host_id()`/`skill_path_origin()` (a non-exhaustive-match
+/// compile error) or if it is kept but wired to the wrong result (e.g. `skill_path_origin()`
+/// answering `SkillPathOrigin::Unavailable` for a *resolved* `host_id` instead of
+/// `SkillPathOrigin::Remote`).
+#[test]
+fn connected_remote_session_reports_remote_like_warpified_remote() {
+    let host_id = HostId::new("host-1".to_string());
+
+    let remote = session_context_with_type(SessionType::Remote {
+        host_id: Some(host_id.clone()),
+    });
+    let warpified_remote = session_context_with_type(SessionType::WarpifiedRemote {
+        host_id: Some(host_id.clone()),
+    });
+
+    for context in [&remote, &warpified_remote] {
+        assert!(context.is_remote());
+        assert_eq!(context.host_id(), Some(&host_id));
+        assert_eq!(
+            context.skill_path_origin(),
+            SkillPathOrigin::Remote {
+                host_id: crate::code::buffer_location::core_host_id_to_util(&host_id),
+            }
+        );
+    }
+}
+
+/// A `Remote` session whose `host_id` has not resolved yet (no handshake completed) must be
+/// reported as remote with no usable `host_id`, and with skill paths unavailable rather than
+/// silently resolved against the local filesystem -- again, identically to an unconnected
+/// `WarpifiedRemote { host_id: None }` session. Breaks if the `host_id: None` arm is collapsed
+/// into the `Local`/`None` arm (which would report `is_remote() == false`) or if
+/// `skill_path_origin()` falls back to `SkillPathOrigin::Local` for it.
+#[test]
+fn unconnected_remote_session_reports_remote_with_no_host_id() {
+    let remote = session_context_with_type(SessionType::Remote { host_id: None });
+    let warpified_remote =
+        session_context_with_type(SessionType::WarpifiedRemote { host_id: None });
+
+    for context in [&remote, &warpified_remote] {
+        assert!(context.is_remote());
+        assert_eq!(context.host_id(), None);
+        assert_eq!(context.skill_path_origin(), SkillPathOrigin::Unavailable);
+    }
+}
+
+/// A `Local` session must still report `is_remote() == false` after adding `Remote` --
+/// the whole point of the exhaustive-match conversion is that `Remote` cannot be confused
+/// with `Local`. Breaks if `Local`'s arm is ever merged with a remote one.
+#[test]
+fn local_session_is_not_remote() {
+    let context = session_context_with_type(SessionType::Local);
+    assert!(!context.is_remote());
+    assert_eq!(context.host_id(), None);
+    assert_eq!(context.skill_path_origin(), SkillPathOrigin::Local);
+}
 
 /// Minimal streaming exchange, mirroring `terminal/view_test.rs`'s local `exchange_with_inputs`
 /// helper (not `pub`, so duplicated here rather than shared).

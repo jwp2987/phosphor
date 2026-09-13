@@ -281,6 +281,51 @@ impl SessionContext {
                     vec![]
                 }
             }
+            // No live shell to pipe an `ls` script into -- the daemon owns the pty. List
+            // the directory directly over the `list_directory` remote-server RPC instead
+            // (Question B, `docs/design/moth-parliament.md`).
+            SessionType::Remote { .. } => {
+                let Some(dir_str) = directory.to_str() else {
+                    log::warn!("Non-unicode character found in path: `{directory:?}`");
+                    return Vec::new();
+                };
+                let Some(client) = self.session.remote_server_client() else {
+                    log::warn!(
+                        "No remote-server client available to list directory for a Remote session"
+                    );
+                    return Vec::new();
+                };
+
+                use crate::remote_server::proto::list_directory_response;
+                match client.list_directory(dir_str.to_owned()).await {
+                    Ok(response) => match response.result {
+                        Some(list_directory_response::Result::Success(success)) => success
+                            .entries
+                            .into_iter()
+                            .map(|entry| EngineDirEntry {
+                                file_name: entry.name,
+                                file_type: if entry.is_dir {
+                                    EngineFileType::Directory
+                                } else {
+                                    EngineFileType::File
+                                },
+                            })
+                            .collect(),
+                        Some(list_directory_response::Result::Error(err)) => {
+                            log::warn!(
+                                "Remote ListDirectory failed for `{dir_str}`: {}",
+                                err.message
+                            );
+                            Vec::new()
+                        }
+                        None => Vec::new(),
+                    },
+                    Err(e) => {
+                        log::warn!("Remote ListDirectory RPC failed for `{dir_str}`: {e}");
+                        Vec::new()
+                    }
+                }
+            }
         }
     }
 }

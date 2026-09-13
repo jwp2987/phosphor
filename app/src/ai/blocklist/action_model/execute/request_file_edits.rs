@@ -423,8 +423,14 @@ impl RequestFileEditsExecutor {
         let diff_session_type = match self.active_session.as_ref(ctx).session_type(ctx) {
             Some(SessionType::WarpifiedRemote {
                 host_id: Some(host_id),
+            })
+            | Some(SessionType::Remote {
+                host_id: Some(host_id),
             }) => DiffSessionType::Remote(host_id.clone()),
-            _ => DiffSessionType::Local,
+            Some(SessionType::WarpifiedRemote { host_id: None })
+            | Some(SessionType::Remote { host_id: None })
+            | Some(SessionType::Local)
+            | None => DiffSessionType::Local,
         };
 
         if let Some(storage) = self.tui_diff_storages.get(&id) {

@@ -299,7 +299,9 @@ fn format_session_location(session: &Session, working_directory: Option<&str>) -
     let hostname = session.hostname();
     match session_type {
         SessionType::Local => Some(display_path),
-        SessionType::WarpifiedRemote { .. } => Some(format!("{user}@{hostname}:{display_path}")),
+        SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => {
+            Some(format!("{user}@{hostname}:{display_path}"))
+        }
     }
 }
 

@@ -16,7 +16,7 @@ use crate::terminal::shell::{Shell, ShellType};
 use super::command_executor::testing::TestCommandExecutor;
 use super::{
     BootstrapSessionType, CommandExecutor, ExecuteCommandOptions, Session, SessionId, SessionInfo,
-    Sessions, SessionsEvent,
+    SessionType, Sessions, SessionsEvent,
 };
 
 struct TestView {
@@ -763,5 +763,71 @@ fn host_reached_with_empty_server_version_records_none() {
                 "an empty server_version must record Installed with version: None"
             );
         });
+    });
+}
+
+/// A `Remote` session must be treated the same as `WarpifiedRemote` by
+/// `is_subshell_or_ssh` -- it is exactly as far from "a plain local top-level shell" as a
+/// discovered-remote session is. Breaks if the `SessionType::Remote` arm is dropped from the
+/// match inside `is_subshell_or_ssh` (a non-exhaustive-match compile error) or wired to
+/// `false`.
+#[test]
+fn remote_session_type_counts_as_subshell_or_ssh() {
+    let session = Session::new(
+        SessionInfo::new_for_test(),
+        Arc::new(TestCommandExecutor::default()),
+    );
+    session.set_session_type_for_test(SessionType::Remote { host_id: None });
+    assert!(session.is_subshell_or_ssh());
+}
+
+/// `set_remote_host_id` must update a `Remote` session's `host_id` the same way it already
+/// does a `WarpifiedRemote` session's. Breaks if the `SessionType::Remote` arm is dropped
+/// from its match (a non-exhaustive-match compile error) or left unwired, in which case the
+/// `host_id` would stay `None` forever.
+#[test]
+fn set_remote_host_id_updates_remote_session_type() {
+    let session = Session::new(
+        SessionInfo::new_for_test(),
+        Arc::new(TestCommandExecutor::default()),
+    );
+    session.set_session_type_for_test(SessionType::Remote { host_id: None });
+
+    let host_id = warp_core::HostId::new("host-1".to_string());
+    session.set_remote_host_id(Some(host_id.clone()));
+
+    assert_eq!(
+        session.session_type(),
+        SessionType::Remote {
+            host_id: Some(host_id)
+        }
+    );
+}
+
+/// A `Remote` session's `read_history` must never pipe a command through a live shell to
+/// read history -- there is none to pipe into (the daemon owns the pty). Breaks if the
+/// `SessionType::Remote` arm of `read_history` is changed to call
+/// `read_history_for_remote_session` (the `WarpifiedRemote` in-band `cat` path) instead of
+/// `read_history_for_remote_server_session` (the out-of-band RPC path).
+#[test]
+fn read_history_for_remote_session_type_injects_no_shell_command() {
+    App::test((), |_app| async move {
+        let executor = RecordingCommandExecutor::succeeding("some_history_line\n");
+        let info = SessionInfo::new_for_test().with_histfile(Some("/tmp/history".to_string()));
+        let session = Session::new(info, executor.clone());
+        session.set_session_type_for_test(SessionType::Remote { host_id: None });
+
+        let history = session.read_history(false).await;
+
+        assert!(
+            history.is_empty(),
+            "no remote-server client is wired for this test session, so the RPC read must \
+             fail closed rather than silently succeed"
+        );
+        assert!(
+            executor.recorded().is_empty(),
+            "a Remote session must never pipe a `cat` command through a live shell to read \
+             history"
+        );
     });
 }

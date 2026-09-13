@@ -8958,14 +8958,12 @@ impl TerminalView {
                 self.sessions
                     .as_ref(ctx)
                     .get(session_id)
-                    .is_some_and(|session| {
-                        matches!(
-                            session.session_type(),
-                            SessionType::WarpifiedRemote {
-                                host_id: Some(_),
-                                ..
-                            }
-                        )
+                    .is_some_and(|session| match session.session_type() {
+                        SessionType::WarpifiedRemote { host_id: Some(_) }
+                        | SessionType::Remote { host_id: Some(_) } => true,
+                        SessionType::WarpifiedRemote { host_id: None }
+                        | SessionType::Remote { host_id: None }
+                        | SessionType::Local => false,
                     })
             });
 
@@ -13070,8 +13068,11 @@ impl TerminalView {
         }
 
         let is_subshell_or_ssh = session.is_subshell_or_ssh();
-        let is_ssh_session = matches!(session.session_type(), SessionType::WarpifiedRemote { .. })
-            || session.is_legacy_ssh_session();
+        let is_remote_session = match session.session_type() {
+            SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => true,
+            SessionType::Local => false,
+        };
+        let is_ssh_session = is_remote_session || session.is_legacy_ssh_session();
 
         // Make sure we decorate any text that is already in the input.  We
         // need to make sure external commands have finished loading before

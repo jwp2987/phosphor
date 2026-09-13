@@ -49,6 +49,14 @@ impl RemoteServerCommandExecutor {
     pub fn new(session_id: SessionId, client: Arc<RemoteServerClient>) -> Self {
         Self { session_id, client }
     }
+
+    /// The client this executor sends commands through. Exposed so a `Session` can route
+    /// non-shell RPCs (`read_file_chunk`, `list_directory`) over the same connection
+    /// `run_command` uses, for a `SessionType::Remote` session with no live shell to pipe
+    /// a command into.
+    pub fn client(&self) -> &Arc<RemoteServerClient> {
+        &self.client
+    }
 }
 
 #[async_trait]

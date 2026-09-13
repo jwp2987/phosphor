@@ -138,15 +138,16 @@ impl ActiveSession {
     }
 
     /// Returns the current working directory as a [`LocalOrRemotePath`]: `Remote` when the
-    /// active session is a connected `WarpifiedRemote` (SSH) session, `Local` otherwise.
+    /// active session is a connected `WarpifiedRemote` (SSH) or `Remote` session, `Local`
+    /// otherwise.
     ///
-    /// Returns `None` for a `WarpifiedRemote` session whose `host_id` hasn't resolved yet
-    /// (the remote-server handshake hasn't completed — see [`SessionType::WarpifiedRemote`]'s
-    /// doc comment) rather than falling back to treating the cwd as local: a remote cwd string
-    /// interpreted as a *local* path can spuriously match an unrelated local directory of the
-    /// same name (e.g. `find_rules_with_fast_path` would stat/read local files that have
-    /// nothing to do with the remote session). Used by skill/slash-command surfaces that key
-    /// off the working directory.
+    /// Returns `None` for a `WarpifiedRemote`/`Remote` session whose `host_id` hasn't
+    /// resolved yet (the remote-server handshake hasn't completed — see
+    /// [`SessionType::WarpifiedRemote`]'s doc comment) rather than falling back to treating
+    /// the cwd as local: a remote cwd string interpreted as a *local* path can spuriously
+    /// match an unrelated local directory of the same name (e.g. `find_rules_with_fast_path`
+    /// would stat/read local files that have nothing to do with the remote session). Used by
+    /// skill/slash-command surfaces that key off the working directory.
     pub fn current_working_directory_location(
         &self,
         ctx: &AppContext,
@@ -154,6 +155,9 @@ impl ActiveSession {
         let cwd = self.current_working_directory.as_ref()?;
         match self.session(ctx).as_deref().map(Session::session_type) {
             Some(SessionType::WarpifiedRemote {
+                host_id: Some(host_id),
+            })
+            | Some(SessionType::Remote {
                 host_id: Some(host_id),
             }) => {
                 let path = warp_util::standardized_path::StandardizedPath::try_new(cwd).ok()?;
@@ -164,7 +168,8 @@ impl ActiveSession {
                     ),
                 ))
             }
-            Some(SessionType::WarpifiedRemote { host_id: None }) => None,
+            Some(SessionType::WarpifiedRemote { host_id: None })
+            | Some(SessionType::Remote { host_id: None }) => None,
             Some(SessionType::Local) | None => Some(
                 warp_util::local_or_remote_path::LocalOrRemotePath::Local(cwd.into()),
             ),

@@ -10747,7 +10747,10 @@ impl Input {
             && CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id)
             && !self
                 .active_session(ctx)
-                .is_some_and(|s| matches!(s.session_type(), SessionType::WarpifiedRemote { .. }));
+                .is_some_and(|s| match s.session_type() {
+                    SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => true,
+                    SessionType::Local => false,
+                });
 
         // If the cursor is in a valid completion position, go into CompletionSuggestions mode
         if (is_command_grid_active || is_cli_agent_shell_mode) && self.can_query_history(ctx) {

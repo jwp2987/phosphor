@@ -668,7 +668,9 @@ impl Sessions {
 impl From<SessionType> for command_corrections::SessionType {
     fn from(session_type: SessionType) -> Self {
         match session_type {
-            SessionType::WarpifiedRemote { .. } => command_corrections::SessionType::Remote,
+            SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => {
+                command_corrections::SessionType::Remote
+            }
             SessionType::Local => command_corrections::SessionType::Local,
         }
     }
@@ -677,7 +679,9 @@ impl From<SessionType> for command_corrections::SessionType {
 impl From<&SessionType> for command_corrections::SessionType {
     fn from(session_type: &SessionType) -> Self {
         match session_type {
-            SessionType::WarpifiedRemote { .. } => command_corrections::SessionType::Remote,
+            SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => {
+                command_corrections::SessionType::Remote
+            }
             SessionType::Local => command_corrections::SessionType::Local,
         }
     }
@@ -1024,6 +1028,24 @@ pub enum SessionType {
     /// `None` when the feature flag is off or the connection hasn't been
     /// established yet.
     WarpifiedRemote { host_id: Option<warp_core::HostId> },
+
+    /// The session was constructed directly against a declared remote target, with no
+    /// local pty behind it at all -- the daemon on the far side owns the pty.
+    ///
+    /// This is a different construction shape from [`Self::WarpifiedRemote`], not a
+    /// stricter case of it. `WarpifiedRemote` is *discovered*: a local pty (the `ssh`
+    /// client itself, or a subshell) runs a real shell that reports its own hostname
+    /// through Warp's shell-integration handshake, and only once that reported hostname
+    /// disagrees with the local machine's is the session classified remote -- which
+    /// requires a local pty to have run the handshake at all. `Remote` is *constructed*:
+    /// the session exists from the moment it is created against a chosen host, before any
+    /// handshake, and has no local pty to run one on in the first place.
+    ///
+    /// `host_id` mirrors `WarpifiedRemote`'s shape for the same reason it does there: a
+    /// target is a declared string until a handshake resolves it to a `HostId`, so a
+    /// session can exist against a host that is configured but not yet connected. `None`
+    /// means "not connected yet," not "unknown which session this is."
+    Remote { host_id: Option<warp_core::HostId> },
 }
 
 impl From<BootstrapSessionType> for SessionType {
@@ -1114,13 +1136,28 @@ impl Session {
         self.session_type.lock().clone()
     }
 
-    /// Updates the `host_id` on a `WarpifiedRemote` session type after the
+    /// Updates the `host_id` on a `WarpifiedRemote` or `Remote` session type after the
     /// remote server handshake completes (or clears it on disconnect).
     pub fn set_remote_host_id(&self, host_id: Option<warp_core::HostId>) {
         let mut st = self.session_type.lock();
-        if let SessionType::WarpifiedRemote { host_id: ref mut h } = *st {
-            *h = host_id;
+        match &mut *st {
+            SessionType::WarpifiedRemote { host_id: h } | SessionType::Remote { host_id: h } => {
+                *h = host_id;
+            }
+            SessionType::Local => {}
         }
+    }
+
+    /// Test-only seam for constructing a session of a given [`SessionType`] directly,
+    /// bypassing the [`BootstrapSessionType`] -> [`SessionType`] conversion that production
+    /// code goes through at bootstrap time. Needed because [`SessionType::Remote`] has no
+    /// `BootstrapSessionType` mirror to construct one from (see its doc comment: a `Remote`
+    /// session is constructed directly against a declared target, not classified via
+    /// bootstrap), so callers outside this module that need one for a test (e.g.
+    /// `controller_tests.rs`) cannot get there through `SessionInfo::with_session_type`.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_session_type_for_test(&self, session_type: SessionType) {
+        *self.session_type.lock() = session_type;
     }
 
     pub fn shell_family(&self) -> ShellFamily {
@@ -1166,9 +1203,11 @@ impl Session {
     }
 
     pub fn is_subshell_or_ssh(&self) -> bool {
-        matches!(self.session_type(), SessionType::WarpifiedRemote { .. })
-            || self.is_legacy_ssh_session()
-            || self.subshell_info().is_some()
+        let is_remote_session = match self.session_type() {
+            SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => true,
+            SessionType::Local => false,
+        };
+        is_remote_session || self.is_legacy_ssh_session() || self.subshell_info().is_some()
     }
 
     pub fn is_wsl(&self) -> bool {
@@ -1256,6 +1295,30 @@ impl Session {
     /// backed by the reconnected client.
     pub fn set_command_executor(&self, executor: Arc<dyn CommandExecutor>) {
         *self.command_executor.write() = executor;
+    }
+
+    /// Returns the [`RemoteServerClient`](crate::remote_server::client::RemoteServerClient)
+    /// backing this session's command executor, when the executor is a
+    /// `RemoteServerCommandExecutor` -- i.e. when this session has an active remote-server
+    /// connection. Used to route RPCs (`read_file_chunk`, `list_directory`) that a
+    /// [`SessionType::Remote`] session must use in place of piping a command through a live
+    /// shell, since it has none.
+    #[cfg(feature = "local_tty")]
+    pub(crate) fn remote_server_client(
+        &self,
+    ) -> Option<Arc<crate::remote_server::client::RemoteServerClient>> {
+        self.command_executor
+            .read()
+            .as_any()
+            .downcast_ref::<RemoteServerCommandExecutor>()
+            .map(|executor| executor.client().clone())
+    }
+
+    #[cfg(not(feature = "local_tty"))]
+    pub(crate) fn remote_server_client(
+        &self,
+    ) -> Option<Arc<crate::remote_server::client::RemoteServerClient>> {
+        None
     }
 
     /// Returns true if the session is employing in-band command execution to run generators.
@@ -1745,13 +1808,66 @@ impl Session {
         }
     }
 
+    /// Reads history for a [`SessionType::Remote`] session via the `read_file_chunk`
+    /// remote-server RPC, never by piping a command into a live shell -- there is no live
+    /// shell to pipe into (see [`Self::read_history`]'s doc comment).
+    #[cfg(feature = "local_tty")]
+    async fn read_history_for_remote_server_session(&self) -> Vec<String> {
+        let histfile = &self.info.histfile;
+        let shell_type = self.info.shell.shell_type();
+        let history_files = histfile.as_ref().map_or_else(
+            || shell_type.history_files(),
+            |histfile| vec![histfile.to_string()],
+        );
+
+        let Some(client) = self.remote_server_client() else {
+            log::warn!("No remote-server client available to read history for a Remote session");
+            return Vec::new();
+        };
+
+        for history_file in history_files {
+            match client.read_file_bytes(history_file.clone()).await {
+                Ok(contents) => return shell_type.parse_history(&contents),
+                Err(e) => {
+                    log::info!(
+                        "Failed to read history file {history_file} via remote-server RPC: {e}"
+                    );
+                    continue;
+                }
+            }
+        }
+
+        log::info!(
+            "No history file found for shell {}, starting with empty history",
+            shell_type.name()
+        );
+        Vec::new()
+    }
+
+    #[cfg(not(feature = "local_tty"))]
+    async fn read_history_for_remote_server_session(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Matches on the live, per-session [`SessionType`] rather than the bootstrap-time
+    /// [`BootstrapSessionType`] cached in `self.info.session_type`: only the former can ever
+    /// be `Remote`, since a `Remote` session is constructed directly against a declared
+    /// target rather than classified via the bootstrap handshake (see [`SessionType::Remote`]'s
+    /// doc comment). `Local`/`WarpifiedRemote` partition identically either way, so this is
+    /// behavior-preserving for both.
     pub async fn read_history(&self, is_kaspersky_running: bool) -> Vec<String> {
-        match self.info.session_type {
-            BootstrapSessionType::Local => {
+        match self.session_type() {
+            SessionType::Local => {
                 self.read_history_for_local_session(is_kaspersky_running)
                     .await
             }
-            BootstrapSessionType::WarpifiedRemote => self.read_history_for_remote_session().await,
+            SessionType::WarpifiedRemote { .. } => self.read_history_for_remote_session().await,
+            // No live shell to pipe a `cat` into -- the daemon owns the pty, and this
+            // session has no `RemoteServerCommandExecutor` running one-off commands over
+            // it the way `WarpifiedRemote` does. Read the file directly over the
+            // `read_file_chunk` remote-server RPC instead (Question B,
+            // `docs/design/moth-parliament.md`).
+            SessionType::Remote { .. } => self.read_history_for_remote_server_session().await,
         }
     }
 

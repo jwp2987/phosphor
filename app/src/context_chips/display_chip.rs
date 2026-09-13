@@ -1672,7 +1672,7 @@ impl DisplayChip {
                 SessionType::Local => true,
                 // Remote code review is a cloud feature not present in Zap, so
                 // remote sessions never support the code-review affordance here.
-                SessionType::WarpifiedRemote { .. } => false,
+                SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => false,
             })
             .unwrap_or(false);
 

@@ -391,7 +391,10 @@ impl PassiveSuggestionsModel {
             .active_session
             .as_ref(ctx)
             .session_type(ctx)
-            .map(|session_type| matches!(session_type, SessionType::WarpifiedRemote { .. }))
+            .map(|session_type| match session_type {
+                SessionType::WarpifiedRemote { .. } | SessionType::Remote { .. } => true,
+                SessionType::Local => false,
+            })
             .unwrap_or(true);
         if !can_read_file || should_skip_for_remote {
             let reason = if !can_read_file {

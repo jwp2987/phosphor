@@ -14,9 +14,52 @@ use warpui::App;
 use crate::completer::SessionContext;
 use crate::terminal::model::session::Session;
 use crate::terminal::model::session::{
-    command_executor::testing::TestCommandExecutor, SessionInfo,
+    command_executor::testing::TestCommandExecutor, CommandExecutor, ExecuteCommandOptions,
+    SessionInfo, SessionType,
 };
+use crate::terminal::shell::Shell;
 use crate::test_util::{Stub, VirtualFS};
+
+/// A `CommandExecutor` that records what it was asked to run, so a directory listing can
+/// prove no shell command was ever injected for a `SessionType::Remote` session.
+#[derive(Debug, Default)]
+struct RecordingCommandExecutor {
+    commands: std::sync::Mutex<Vec<String>>,
+}
+
+impl RecordingCommandExecutor {
+    fn recorded(&self) -> Vec<String> {
+        self.commands.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl CommandExecutor for RecordingCommandExecutor {
+    async fn execute_command(
+        &self,
+        command: &str,
+        _shell: &Shell,
+        _current_directory_path: Option<&str>,
+        _environment_variables: Option<HashMap<String, String>>,
+        _execute_command_options: ExecuteCommandOptions,
+    ) -> anyhow::Result<warp_completer::completer::CommandOutput> {
+        self.commands.lock().unwrap().push(command.to_owned());
+        Ok(warp_completer::completer::CommandOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            status: warp_completer::completer::CommandExitStatus::Success,
+            exit_code: None,
+        })
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn supports_parallel_command_execution(&self) -> bool {
+        false
+    }
+}
 
 fn test_session_context(session: Session, cwd: TypedPathBuf, app: &App) -> SessionContext {
     app.read(|ctx| SessionContext::new(session, CommandRegistry::default().into(), cwd, ctx))
@@ -631,6 +674,34 @@ pub fn test_concurrent_directory_refreshes_are_coalesced() {
                      result"
                 );
             },
+        );
+    });
+}
+
+/// A `Remote` session's directory listing must never pipe an `ls` script through a live
+/// shell -- there is none to pipe into (the daemon owns the pty). Breaks if the
+/// `SessionType::Remote` arm of `list_directory_entries_internal` is changed to run the
+/// `WarpifiedRemote` in-band `ls` script instead of the `list_directory` remote-server RPC.
+#[test]
+fn list_directory_entries_for_remote_session_type_injects_no_shell_command() {
+    App::test((), |app| async move {
+        let executor = Arc::new(RecordingCommandExecutor::default());
+        let session = Session::new(SessionInfo::new_for_test(), executor.clone());
+        session.set_session_type_for_test(SessionType::Remote { host_id: None });
+        let cwd = working_directory();
+        let ctx = test_session_context(session, cwd.clone(), &app);
+
+        let entries = ctx.list_directory_entries_internal(&cwd.to_path()).await;
+
+        assert!(
+            entries.is_empty(),
+            "no remote-server client is wired for this test session, so the RPC listing must \
+             fail closed rather than silently succeed"
+        );
+        assert!(
+            executor.recorded().is_empty(),
+            "a Remote session must never pipe an `ls` script through a live shell to list a \
+             directory"
         );
     });
 }
