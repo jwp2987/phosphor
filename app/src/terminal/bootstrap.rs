@@ -77,6 +77,16 @@ pub fn is_container_subshell(session_info: &SessionInfo) -> bool {
 /// bootstrap is the only known way to bootstrap such subshells successfully.
 ///
 /// We use RC-file based bootstrap for MSYS2 because it has slow PTY throughput.
+///
+/// This matches on `BootstrapSessionType`, which has no `Remote` variant even though
+/// `SessionType` now does (`session.rs`). That omission is deliberate, not an oversight:
+/// giving `BootstrapSessionType` a `Remote` mirror would make
+/// `command_executor.rs`'s wildcard arm route an unwired remote bootstrap into
+/// `InBandCommandExecutor` -- in-band shell injection, which
+/// `docs/design/moth-parliament.md`'s decision B rules out for remote sessions, arriving
+/// silently through a `_`. Adding the mirror is part of wiring remote session spawning,
+/// and this function needs a real answer at that point. Recorded here because the
+/// reasoning otherwise lived only in a commit message.
 #[cfg(feature = "local_fs")]
 pub fn should_use_rc_file_bootstrap_method(
     shell_type: ShellType,

@@ -24,17 +24,59 @@ use warp_core::HostId;
 
 use super::SessionContext;
 
-/// A `SessionContext` with every field at its "not remote, nothing special" default,
-/// for tests that only care about overriding `session_type`.
+/// A `SessionContext` for tests that only care about overriding `session_type`.
+///
+/// `has_remote_server_client` is DERIVED from whether the session type carries a
+/// resolved `host_id`, not defaulted to `false`. In production the two cannot vary
+/// independently -- a resolved `host_id` is exactly what having a connected client
+/// means -- and this file's other constructors (`new_legacy_ssh_for_test`,
+/// `new_warpified_remote_for_test`) say so in their own doc comments and couple them
+/// for that reason. A fixture that hard-coded `false` alongside
+/// `Remote { host_id: Some(..) }` would describe a session that cannot exist, and
+/// would read as `is_remote_without_file_tools() == true` for a host that is plainly
+/// connected. No assertion here reads that today, which is precisely why it would
+/// have gone unnoticed until something did.
 fn session_context_with_type(session_type: SessionType) -> SessionContext {
+    let has_remote_server_client = match &session_type {
+        SessionType::WarpifiedRemote { host_id } | SessionType::Remote { host_id } => {
+            host_id.is_some()
+        }
+        SessionType::Local => false,
+    };
     SessionContext {
         session_type: Some(session_type),
         shell: None,
         current_working_directory: None,
         ssh_connection_info: None,
         is_legacy_ssh: false,
-        has_remote_server_client: false,
+        has_remote_server_client,
     }
+}
+
+/// A connected `Remote` session has working file tools, so it must NOT be gated as
+/// "remote without file tools" -- the same as a connected `WarpifiedRemote`. An
+/// unconnected one must be gated.
+///
+/// This is the assertion that makes `session_context_with_type`'s coupling of
+/// `has_remote_server_client` to a resolved `host_id` load-bearing rather than
+/// decorative. Breaks if that helper goes back to hard-coding the flag `false`, which
+/// would report a plainly-connected host as having no file tools, or if the `Remote`
+/// arm is dropped from `is_remote()`.
+#[test]
+fn a_connected_remote_session_is_not_gated_as_lacking_file_tools() {
+    let connected = session_context_with_type(SessionType::Remote {
+        host_id: Some(HostId::new("host-1".to_string())),
+    });
+    assert!(
+        !connected.is_remote_without_file_tools(),
+        "a connected Remote session has working file tools and must not be gated"
+    );
+
+    let unconnected = session_context_with_type(SessionType::Remote { host_id: None });
+    assert!(
+        unconnected.is_remote_without_file_tools(),
+        "a Remote session with no resolved host has no file tools and must be gated"
+    );
 }
 
 /// A connected `Remote` session must be reported as remote, resolve its `host_id`, and
