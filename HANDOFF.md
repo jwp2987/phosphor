@@ -622,6 +622,18 @@ mid-round. rustfmt also comes from apt here (PR #153).
    call sites, leaving `chip_configurator` sub-WCAG-AA (#196). A same-symbol grep
    reports that as covered. This is the "ported but never wired" class in its
    hardest-to-spot form.
+12. **`script/state` reads `HEAD`, not the working tree.** It builds its test map
+   with `git grep ... HEAD`, so running it before committing bakes in the previous
+   commit's count and `precheck` then reports `docs/STATE.md` stale against your own
+   fresh regeneration. Commit first, then run it, then amend or commit the result. The
+   failure is unhelpfully shaped: two machines disagree on the test count, which reads
+   like an environment difference and is not one.
+13. **A precheck that fails to compile tells you nothing about the tests behind it.**
+   Three registry tests on this branch had never once run -- they panicked with
+   "Circular model update" -- because the two prechecks since their introduction both
+   died at the `cargo check` gate, and a single missing trait import reads like a small
+   problem. Treat "failed before the suite ran" as "the suite is unknown", not as "one
+   error to fix".
 
 ---
 
