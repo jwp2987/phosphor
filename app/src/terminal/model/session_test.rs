@@ -511,7 +511,13 @@ fn host_reached_records_host_id_in_registry() {
 
         let sessions_handle = app.add_model(|_| Sessions::new_for_test());
         sessions_handle.update(&mut app, |_sessions, ctx| {
-            super::record_host_reached(&session, host_id.clone(), SessionId::from(1), ctx);
+            super::record_host_reached(
+                &session,
+                host_id.clone(),
+                SessionId::from(1),
+                Some("1.2.3".to_string()),
+                ctx,
+            );
         });
 
         app.read(|ctx| {
@@ -522,6 +528,13 @@ fn host_reached_records_host_id_in_registry() {
             assert!(
                 entry.last_reached_at.is_some(),
                 "record_reached must stamp last_reached_at"
+            );
+            assert_eq!(
+                entry.install_state,
+                crate::remote_server::host_registry::HostInstallState::Installed {
+                    version: Some("1.2.3".to_string())
+                },
+                "a Some(server_version) must be recorded as the real installed version"
             );
 
             // Round-trips through settings, not just `HostRegistryModel`'s
@@ -563,7 +576,7 @@ fn host_reached_is_a_noop_without_a_parsed_ssh_destination() {
 
         let sessions_handle = app.add_model(|_| Sessions::new_for_test());
         sessions_handle.update(&mut app, |_sessions, ctx| {
-            super::record_host_reached(&session, host_id, SessionId::from(1), ctx);
+            super::record_host_reached(&session, host_id, SessionId::from(1), None, ctx);
         });
 
         app.read(|ctx| {
@@ -571,6 +584,122 @@ fn host_reached_is_a_noop_without_a_parsed_ssh_destination() {
                 HostRegistryModel::as_ref(ctx).hosts().count(),
                 0,
                 "a session with no parsed ssh target must not fabricate a registry entry"
+            );
+        });
+    });
+}
+
+/// `record_host_reached(.., None, ..)` -- the `SessionReconnected` call site's shape -- must
+/// still record reachability but must not touch install state at all, since a reconnect
+/// carries no new version information (see the doc comment on `record_host_reached`).
+/// Breaks if a `None` `server_version` were ever recorded as `Installed { version: None }`
+/// (clobbering a previously-known version) rather than leaving `install_state` untouched.
+#[cfg(feature = "local_tty")]
+#[test]
+fn host_reached_without_a_server_version_does_not_touch_install_state() {
+    use crate::remote_server::host_registry::{HostInstallState, HostRegistryModel};
+    use crate::remote_server::manager::RemoteServerManager;
+    use crate::terminal::model::terminal_model::SubshellInitializationInfo;
+    use crate::terminal::ssh::util::InteractiveSshCommand;
+    use warp_core::HostId;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(HostRegistryModel::new);
+        app.add_singleton_model(RemoteServerManager::new);
+
+        let mut session_info = SessionInfo::new_for_test();
+        session_info.subshell_info = Some(SubshellInitializationInfo {
+            spawning_command: "ssh build-box".to_string(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: Some(InteractiveSshCommand {
+                host: Some("build-box".to_string()),
+                port: None,
+            }),
+        });
+        let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
+        let host_id = HostId::new("host-abc".to_string());
+
+        HostRegistryModel::handle(&app).update(&mut app, |registry, ctx| {
+            registry.record_install_state(
+                "build-box",
+                HostInstallState::Installed {
+                    version: Some("9.9.9".to_string()),
+                },
+                ctx,
+            );
+        });
+
+        let sessions_handle = app.add_model(|_| Sessions::new_for_test());
+        sessions_handle.update(&mut app, |_sessions, ctx| {
+            super::record_host_reached(&session, host_id, SessionId::from(1), None, ctx);
+        });
+
+        app.read(|ctx| {
+            let entry = HostRegistryModel::as_ref(ctx)
+                .host("build-box")
+                .expect("recording a reached host must create/update its registry entry");
+            assert_eq!(
+                entry.install_state,
+                HostInstallState::Installed {
+                    version: Some("9.9.9".to_string())
+                },
+                "a None server_version must never clobber a previously-recorded version"
+            );
+        });
+    });
+}
+
+/// An empty `server_version` string (the proto3 default) must record `Installed { version:
+/// None }`, never an empty-string version -- the type's own convention for "installed but
+/// version not known". Breaks if the `is_empty` guard in `record_host_reached` were removed.
+#[cfg(feature = "local_tty")]
+#[test]
+fn host_reached_with_empty_server_version_records_none() {
+    use crate::remote_server::host_registry::{HostInstallState, HostRegistryModel};
+    use crate::remote_server::manager::RemoteServerManager;
+    use crate::terminal::model::terminal_model::SubshellInitializationInfo;
+    use crate::terminal::ssh::util::InteractiveSshCommand;
+    use warp_core::HostId;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(HostRegistryModel::new);
+        app.add_singleton_model(RemoteServerManager::new);
+
+        let mut session_info = SessionInfo::new_for_test();
+        session_info.subshell_info = Some(SubshellInitializationInfo {
+            spawning_command: "ssh build-box".to_string(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: Some(InteractiveSshCommand {
+                host: Some("build-box".to_string()),
+                port: None,
+            }),
+        });
+        let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
+        let host_id = HostId::new("host-abc".to_string());
+
+        let sessions_handle = app.add_model(|_| Sessions::new_for_test());
+        sessions_handle.update(&mut app, |_sessions, ctx| {
+            super::record_host_reached(
+                &session,
+                host_id,
+                SessionId::from(1),
+                Some(String::new()),
+                ctx,
+            );
+        });
+
+        app.read(|ctx| {
+            let entry = HostRegistryModel::as_ref(ctx)
+                .host("build-box")
+                .expect("recording a reached host must create/update its registry entry");
+            assert_eq!(
+                entry.install_state,
+                HostInstallState::Installed { version: None },
+                "an empty server_version must record Installed with version: None"
             );
         });
     });

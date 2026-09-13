@@ -12,7 +12,7 @@
 //! groups: a service is rarely one machine"), and partial-failure handling across a group's
 //! install/upgrade is an open decision this pane does not attempt to resolve.
 //!
-//! # Re-probing on open -- what is wired, and what is not
+//! # Re-probing on open
 //!
 //! `docs/design/moth-parliament.md` decides that this pane re-probes on open rather than
 //! trusting a restored snapshot as fact, because every value it shows is a claim about another
@@ -22,20 +22,17 @@
 //! so any observation recorded elsewhere repaints it immediately, with no need to reopen the
 //! tab.
 //!
-//! What it cannot do from here is **cause** a probe. [`HostRegistryModel`] (`app/src/remote_server
-//! /host_registry.rs`) only exposes `record_reached`/`record_install_state`, which *record* an
-//! observation something else already made; there is no `request_probe`/`refresh` entry point
-//! anywhere this pane is allowed to reach. The only code that talks to a real host is under
-//! `app/src/remote_server/**` and `app/src/terminal/**` (e.g. `remote_server_controller.rs`),
-//! which this change does not own and must not edit -- see this worktree's file-ownership split.
-//! So on open this pane shows the registry's cached values, clearly labeled as last-seen (never
-//! as current), rather than fabricating a probe call that does not exist.
+//! [`RemoteHostsView::new`] additionally calls
+//! [`HostRegistryModel::refresh_from_live_connections`] once, synchronously, before returning --
+//! see that method's doc comment (`app/src/remote_server/host_registry.rs`) for exactly what it
+//! contacts (nothing: it only reads `RemoteServerManager`'s already-in-memory set of
+//! currently-connected hosts) and what it deliberately does not (dial a fresh SSH connection to
+//! a host that is not already connected, which would be worse than no refresh at all). Being
+//! synchronous and free of I/O, this cannot block the pane opening.
 //!
-//! **What a human needs to wire up**: an entry point on [`HostRegistryModel`] (or the
-//! `remote_server` manager) that actively re-probes every known host, and a call to it from
-//! [`RemoteHostsView::new`] in place of the comment marked `TODO(remote-hosts-dashboard)` below.
-//! Once that exists, the subscription already in place means no further UI change is needed for
-//! the result to show up.
+//! Because that refresh only ever touches hosts with a live connection right now, most rows
+//! still show the registry's last cached observation rather than something freshly checked this
+//! moment -- the on-screen caveat reflects that.
 //!
 //! # Never-reached vs. not-installed
 //!
@@ -91,8 +88,9 @@ pub(crate) enum HostInstallDisplay {
     NeverReached,
     /// A probe or install attempt found no remote server installed.
     NotInstalled,
-    /// Installed, as of the last successful handshake.
-    Installed { version: String },
+    /// Installed. `None` when install has completed but no handshake has reported a real
+    /// version yet -- see [`HostInstallState::Installed`]'s doc comment.
+    Installed { version: Option<String> },
     /// A preinstall check classified this host as unable to run the prebuilt binary.
     Unsupported { reason_label: String },
 }
@@ -125,20 +123,22 @@ fn unsupported_reason_label(reason: &UnsupportedReason) -> String {
 /// One-line label for [`HostInstallDisplay`]. Never produces the same text for
 /// `NeverReached` and `NotInstalled` -- that is the property under test.
 ///
-/// `Installed { version }` can carry an empty string: the wiring that records a completed
-/// install currently has no way to read `InitializeResponse::server_version` back out, so it
-/// records `Installed { version: String::new() }` rather than fabricating a number. Rendering
-/// that blank as `"Installed (v)"` would be the same false-confidence trap this pane's brief
-/// warns against for a never-reached host rendered as "not installed" -- a blank presented as
-/// though it were a real value -- so an empty version gets its own label instead.
+/// `Installed { version: None }` is a real value: install can complete before any handshake
+/// has reported a real `InitializeResponse::server_version` (see
+/// `HostInstallState::Installed`'s doc comment). Rendering `None` as though it were a real
+/// version would be the same false-confidence trap this pane's brief warns against for a
+/// never-reached host rendered as "not installed" -- so `None` gets its own label instead of
+/// formatting a version that was never observed.
 pub(crate) fn host_install_label(display: &HostInstallDisplay) -> String {
     match display {
         HostInstallDisplay::NeverReached => "Never reached".to_string(),
         HostInstallDisplay::NotInstalled => "Not installed".to_string(),
-        HostInstallDisplay::Installed { version } if version.is_empty() => {
+        HostInstallDisplay::Installed { version: None } => {
             "Installed (version unknown)".to_string()
         }
-        HostInstallDisplay::Installed { version } => format!("Installed (v{version})"),
+        HostInstallDisplay::Installed {
+            version: Some(version),
+        } => format!("Installed (v{version})"),
         HostInstallDisplay::Unsupported { reason_label } => {
             format!("Unsupported ({reason_label})")
         }
@@ -205,17 +205,19 @@ impl RemoteHostsView {
         let pane_configuration = ctx.add_model(|_ctx| PaneConfiguration::new(HEADER_TEXT));
 
         // Repaint whenever the registry changes -- a fresh observation recorded elsewhere
-        // (including a probe the other agent working in this worktree is wiring up) shows up
-        // here without needing the tab to be reopened. See the module docs.
+        // shows up here without needing the tab to be reopened. See the module docs.
         let registry = HostRegistryModel::handle(ctx);
         ctx.subscribe_to_model(&registry, |_, _, _, ctx| {
             ctx.notify();
         });
 
-        // TODO(remote-hosts-dashboard): there is no reachable entry point to actively re-probe
-        // every known host from here (see the module docs' "Re-probing on open" section) --
-        // call it here once one exists. Until then this view only reads the registry's cached,
-        // last-seen values.
+        // Re-probe on open (module docs' "Re-probing on open" section). Synchronous and free
+        // of any I/O -- see `refresh_from_live_connections`'s own doc comment for exactly what
+        // it contacts -- so this cannot block the pane from opening.
+        registry.update(ctx, |registry, ctx| {
+            registry.refresh_from_live_connections(ctx);
+        });
+
         Self {
             pane_configuration,
             focus_handle: None,
@@ -299,13 +301,14 @@ impl View for RemoteHostsView {
 
         let mut col = Flex::column().with_main_axis_size(MainAxisSize::Min);
 
-        // Explicit, always-visible caveat: everything below is the registry's last-seen state,
-        // not a live re-probe (see the module docs' "Re-probing on open" section). This is the
-        // fallback the design doc calls for when the probe entry point is not reachable from
-        // here -- distinct from the per-row "Never reached" label, which covers the case where
-        // there is no observation at all rather than a stale one.
+        // Explicit, always-visible caveat: opening this pane only refreshes hosts with a live
+        // connection right now (see the module docs' "Re-probing on open" section) -- it does
+        // not dial anything new, so most rows still reflect the registry's last-seen state, not
+        // a check made this moment. Distinct from the per-row "Never reached" label, which
+        // covers the case where there is no observation at all rather than a stale one.
         col.add_child(self.render_section_label(
-            "Showing the registry's last-seen state -- not a live check.",
+            "Currently-connected hosts are refreshed live; others show the registry's \
+             last-seen state.",
             appearance,
         ));
 

@@ -137,7 +137,7 @@ fn unsupported_preinstall_probe_records_reason_not_unknown() {
 /// anything other than `Installed` (e.g. left the prior state untouched, so
 /// a fresh install never showed up as installed at all).
 #[test]
-fn install_complete_records_installed_with_empty_version() {
+fn install_complete_records_installed_with_no_known_version() {
     App::test((), |mut app| async move {
         crate::test_util::settings::initialize_settings_for_tests(&mut app);
         app.add_singleton_model(HostRegistryModel::new);
@@ -152,11 +152,9 @@ fn install_complete_records_installed_with_empty_version() {
                 .expect("a freshly-installed host must appear in the registry");
             assert_eq!(
                 entry.install_state,
-                HostInstallState::Installed {
-                    version: String::new()
-                },
-                "installed-but-unknown-version must be recorded as Installed with an \
-                 empty version, not left as NotInstalled/Unknown and not guessed"
+                HostInstallState::Installed { version: None },
+                "installed-but-unknown-version must be recorded as Installed with \
+                 version: None, not left as NotInstalled/Unknown and not guessed"
             );
         });
     });

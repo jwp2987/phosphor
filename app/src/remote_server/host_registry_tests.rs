@@ -20,7 +20,7 @@ fn declared_targets_gain_stub_entries_and_convergence_is_idempotent() {
 
     // Observing a real fact about the host...
     hosts.get_mut("build-box").unwrap().install_state = HostInstallState::Installed {
-        version: "0.4.2".to_string(),
+        version: Some("0.4.2".to_string()),
     };
 
     // ...must survive re-running convergence with the same declared list.
@@ -32,7 +32,7 @@ fn declared_targets_gain_stub_entries_and_convergence_is_idempotent() {
     assert_eq!(
         hosts["build-box"].install_state,
         HostInstallState::Installed {
-            version: "0.4.2".to_string()
+            version: Some("0.4.2".to_string())
         },
         "re-converging must not clobber an observed install state back to Unknown"
     );
@@ -44,6 +44,55 @@ fn declared_targets_gain_stub_entries_and_convergence_is_idempotent() {
     );
     assert_eq!(added, vec!["gpu-box".to_string()]);
     assert_eq!(hosts.len(), 2);
+}
+
+// --- Pure live-connection refresh rule -----------------------------------
+//
+// `refresh_from_live_connections` itself needs a real `RemoteServerManager` connection to
+// exercise end to end, which requires constructing `RemoteSessionState::Connected` --
+// private to (and only test-supported within) the `remote_server` crate's own
+// `manager_tests.rs`, not reachable from this crate's tests. `live_targets` is the pure
+// decision logic that function delegates to (which targets have a `host_id` currently
+// connected), factored out for exactly this reason, matching
+// `converge_declared_targets`'s precedent above.
+
+/// Breaks if `live_targets` starts including a host with no `host_id` at all, a host whose
+/// `host_id` is not in the connected set, or stops including one that is.
+#[test]
+fn live_targets_selects_only_hosts_with_a_connected_host_id() {
+    let mut hosts = HashMap::new();
+
+    let mut never_reached = RemoteHostEntry::new("never-reached");
+    never_reached.host_id = None;
+    hosts.insert(never_reached.target.clone(), never_reached);
+
+    let mut connected = RemoteHostEntry::new("build-box");
+    connected.host_id = Some(HostId::new("host-connected".to_string()));
+    hosts.insert(connected.target.clone(), connected);
+
+    let mut disconnected = RemoteHostEntry::new("gpu-box");
+    disconnected.host_id = Some(HostId::new("host-disconnected".to_string()));
+    hosts.insert(disconnected.target.clone(), disconnected);
+
+    let connected_host_ids: HashSet<HostId> = [HostId::new("host-connected".to_string())]
+        .into_iter()
+        .collect();
+
+    let mut selected = live_targets(&hosts, &connected_host_ids);
+    selected.sort();
+    assert_eq!(selected, vec!["build-box".to_string()]);
+}
+
+/// No connected hosts at all must select nothing, never panic or fall back to "refresh
+/// everything".
+#[test]
+fn live_targets_is_empty_when_nothing_is_connected() {
+    let mut hosts = HashMap::new();
+    let mut entry = RemoteHostEntry::new("build-box");
+    entry.host_id = Some(HostId::new("host-abc".to_string()));
+    hosts.insert(entry.target.clone(), entry);
+
+    assert!(live_targets(&hosts, &HashSet::new()).is_empty());
 }
 
 // --- RemoteHostEntry <-> PersistedRemoteHost conversion -----------------
@@ -70,8 +119,12 @@ fn install_state_round_trips_through_persisted_conversion_for_every_variant() {
     let cases = [
         HostInstallState::NotInstalled,
         HostInstallState::Installed {
-            version: "0.4.2".to_string(),
+            version: Some("0.4.2".to_string()),
         },
+        // A completed install with no handshake yet to report a real version -- the case
+        // `None` exists for, per the type's own doc comment. Round-tripping this proves the
+        // "unknown version" state survives persistence as `None`, not as an empty string.
+        HostInstallState::Installed { version: None },
         HostInstallState::Unsupported {
             reason: UnsupportedReason::GlibcTooOld {
                 detected: GlibcVersion::new(2, 17),
@@ -196,7 +249,7 @@ fn declared_remote_host_appears_in_the_registry_and_install_state_round_trips() 
             model.record_install_state(
                 "build-box",
                 HostInstallState::Installed {
-                    version: "0.4.2".to_string(),
+                    version: Some("0.4.2".to_string()),
                 },
                 ctx,
             );
@@ -219,7 +272,7 @@ fn declared_remote_host_appears_in_the_registry_and_install_state_round_trips() 
                     .expect("host should still be present")
                     .install_state,
                 HostInstallState::Installed {
-                    version: "0.4.2".to_string()
+                    version: Some("0.4.2".to_string())
                 }
             );
         });

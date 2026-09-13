@@ -39,32 +39,30 @@ fn never_reached_is_distinct_from_not_installed() {
 #[test]
 fn installed_state_carries_its_version_into_the_label() {
     let display = host_install_display(&HostInstallState::Installed {
-        version: "1.2.3".to_string(),
+        version: Some("1.2.3".to_string()),
     });
     assert_eq!(
         display,
         HostInstallDisplay::Installed {
-            version: "1.2.3".to_string()
+            version: Some("1.2.3".to_string())
         }
     );
     assert!(host_install_label(&display).contains("1.2.3"));
 }
 
-/// `HostInstallState::Installed { version: String::new() }` is a real value the wiring records
-/// today (`InitializeResponse::server_version` is not yet surfaced to the app), not a
-/// hypothetical -- see the doc comment on `host_install_label`. Fails if an empty version is
-/// ever rendered as a version (e.g. "Installed (v)") instead of its own "unknown" label, and
-/// fails if that label is ever confused with `NotInstalled`'s or `NeverReached`'s.
+/// `HostInstallState::Installed { version: None }` is a real value: install can complete
+/// before any handshake has reported a real `InitializeResponse::server_version` -- see the
+/// doc comment on `host_install_label`. Fails if a missing version is ever rendered as a
+/// version (e.g. "Installed (v)") instead of its own "unknown" label, and fails if that label
+/// is ever confused with `NotInstalled`'s or `NeverReached`'s.
 #[test]
-fn installed_with_empty_version_reads_as_unknown_not_as_a_blank_version() {
-    let display = host_install_display(&HostInstallState::Installed {
-        version: String::new(),
-    });
+fn installed_with_no_version_reads_as_unknown_not_as_a_blank_version() {
+    let display = host_install_display(&HostInstallState::Installed { version: None });
     let label = host_install_label(&display);
 
     assert!(
         !label.contains("(v)"),
-        "an empty version must never render as though it were a real version: got {label:?}"
+        "a missing version must never render as though it were a real version: got {label:?}"
     );
     assert_ne!(label, host_install_label(&HostInstallDisplay::NotInstalled));
     assert_ne!(label, host_install_label(&HostInstallDisplay::NeverReached));
@@ -121,7 +119,7 @@ fn host_row_text_reflects_install_state_distinctly() {
     let installed = host(
         "build-box",
         HostInstallState::Installed {
-            version: "9.9.9".to_string(),
+            version: Some("9.9.9".to_string()),
         },
     );
 

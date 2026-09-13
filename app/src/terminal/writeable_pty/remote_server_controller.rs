@@ -563,22 +563,20 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 // Host registry: `install_binary()` only returns `Ok(())`
                 // after `verify_installed_binary` has confirmed, over SSH,
                 // that the binary is now present and executable, so
-                // "installed" itself is a verified fact here. The
-                // *version* string is not: it is only known from a real
-                // `InitializeResponse::server_version` at handshake time
-                // (see `host_registry.rs`'s module docs), which no event
-                // reaching `app/` carries today, and `manager.rs`'s
-                // `version_is_compatible` exists precisely because the
-                // locally-built version and the remote-reported one can
-                // disagree -- so this deliberately does not guess this
-                // build's own version as a stand-in. Recorded with an
-                // empty version string instead: known-installed,
-                // unknown-version, the same convention
-                // `RemoteHostEntry::from_persisted` already uses for a
-                // missing version column, rather than a fabricated number.
-                // Extracted to a standalone, generic-over-`M` function (see
-                // its doc comment) so tests can drive it without
-                // constructing a full `RemoteServerController`.
+                // "installed" itself is a verified fact here. The *version*
+                // string is not: it is only known from a real
+                // `InitializeResponse::server_version`, reported at handshake
+                // time (recorded separately in `session.rs`'s
+                // `record_host_reached`, once `connect_session_for_current_identity`
+                // below reaches a successful `SessionConnected`) -- this moment
+                // only knows that install succeeded, not what version was
+                // installed, so it records `version: None` rather than
+                // guessing this build's own version as a stand-in
+                // (`manager.rs`'s `version_is_compatible` exists precisely
+                // because the two can disagree). Extracted to a standalone,
+                // generic-over-`M` function (see its doc comment) so tests
+                // can drive it without constructing a full
+                // `RemoteServerController`.
                 if let Some(target) = registry_target_for_session_info(&session_info) {
                     record_install_complete_registry_observation(&target, ctx);
                 }
@@ -703,19 +701,13 @@ fn record_binary_check_registry_observations<M>(
     }
 }
 
-/// Records that installation completed for `target`, as `Installed` with an
-/// empty version string -- see the call site's comment on why the version is
-/// deliberately absent rather than guessed. Generic over `M` for the same
-/// testability reason as [`record_binary_check_registry_observations`].
+/// Records that installation completed for `target`, as `Installed` with no known version
+/// yet -- see the call site's comment on why the version is deliberately absent rather than
+/// guessed here. Generic over `M` for the same testability reason as
+/// [`record_binary_check_registry_observations`].
 fn record_install_complete_registry_observation<M>(target: &str, ctx: &mut ModelContext<M>) {
     HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
-        registry.record_install_state(
-            target,
-            HostInstallState::Installed {
-                version: String::new(),
-            },
-            ctx,
-        );
+        registry.record_install_state(target, HostInstallState::Installed { version: None }, ctx);
     });
 }
 

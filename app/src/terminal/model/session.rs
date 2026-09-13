@@ -34,7 +34,7 @@ use warpui::{platform::OperatingSystem, Entity, ModelContext, SingletonEntity};
 #[cfg(feature = "local_tty")]
 use crate::features::FeatureFlag;
 #[cfg(feature = "local_tty")]
-use crate::remote_server::host_registry::HostRegistryModel;
+use crate::remote_server::host_registry::{HostInstallState, HostRegistryModel};
 #[cfg(feature = "local_tty")]
 use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use crate::server::telemetry::{BootstrappingInfo, TelemetryEvent};
@@ -206,11 +206,23 @@ impl Entity for Sessions {
 /// The session-scoped events fire on every connection, which is what "last reached"
 /// actually means. Recorded here because a refutation pass reached for `HostConnected`
 /// on the strength of its name and doc before reading its emission condition.
+///
+/// `server_version` is `Some(..)` only from the `SessionConnected` call site, which is the
+/// point the handshake genuinely completes and carries the daemon's own
+/// `InitializeResponse::server_version` (`manager.rs`'s `version_is_compatible` exists
+/// precisely because that can disagree with this build's own version, so it is never
+/// guessed). When given, this also records `HostInstallState::Installed` with the real
+/// version -- `None` when the daemon reported an empty string, matching the type's own
+/// "installed but version not known" convention. The `SessionReconnected` call site passes
+/// `None`: it fires for the very same handshake `SessionConnected` already reported the
+/// version for, so recording install state again there would only risk clobbering it with
+/// an unknown-version write for no new information.
 #[cfg(feature = "local_tty")]
 fn record_host_reached<M>(
     session: &Session,
     host_id: warp_core::HostId,
     session_id: SessionId,
+    server_version: Option<String>,
     ctx: &mut ModelContext<M>,
 ) {
     let Some(target) = session
@@ -226,6 +238,15 @@ fn record_host_reached<M>(
         .map(|platform| (platform.os.clone(), platform.arch.clone()));
     HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
         registry.record_reached(&target, Some(host_id), platform, ctx);
+        if let Some(server_version) = server_version {
+            registry.record_install_state(
+                &target,
+                HostInstallState::Installed {
+                    version: (!server_version.is_empty()).then_some(server_version),
+                },
+                ctx,
+            );
+        }
     });
 }
 
@@ -246,10 +267,17 @@ impl Sessions {
                 RemoteServerManagerEvent::SessionConnected {
                     session_id: sid,
                     host_id,
+                    server_version,
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(Some(host_id.clone()));
-                        record_host_reached(session, host_id.clone(), *sid, ctx);
+                        record_host_reached(
+                            session,
+                            host_id.clone(),
+                            *sid,
+                            Some(server_version.clone()),
+                            ctx,
+                        );
                     }
                 }
                 RemoteServerManagerEvent::SessionDisconnected {
@@ -307,7 +335,10 @@ impl Sessions {
                             Arc::new(RemoteServerCommandExecutor::new(*sid, client.clone()));
                         session.set_command_executor(new_executor);
                         log::info!("Swapped command executor for session {sid:?} after reconnect");
-                        record_host_reached(session, host_id.clone(), *sid, ctx);
+                        // No `server_version` here: `SessionConnected` fires for this same
+                        // handshake and already recorded it -- see `record_host_reached`'s
+                        // doc comment.
+                        record_host_reached(session, host_id.clone(), *sid, None, ctx);
                     }
                 }
             });

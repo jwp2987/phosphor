@@ -324,11 +324,15 @@ pub enum RemoteServerManagerEvent {
     // --- Session-scoped events ---
     /// A connection flow has started for this session.
     SessionConnecting { session_id: SessionId },
-    /// This session's server is connected and ready. Includes the `HostId`
-    /// received from the initialize handshake, for model deduplication.
+    /// This session's server is connected and ready. Includes the `HostId` received from the
+    /// initialize handshake, for model deduplication, and the daemon's own reported
+    /// `InitializeResponse::server_version` -- the only point at which a caller can learn a
+    /// real installed version rather than assuming this build's own (see
+    /// `version_is_compatible`, which exists because the two can disagree).
     SessionConnected {
         session_id: SessionId,
         host_id: HostId,
+        server_version: String,
     },
     /// The remote server launch or handshake failed.
     SessionConnectionFailed {
@@ -865,6 +869,20 @@ impl RemoteServerManager {
             .collect()
     }
 
+    /// Every host with at least one currently-connected session. May yield the same `HostId`
+    /// more than once when several sessions share a host; callers that only care about
+    /// membership should collect into a `HashSet`.
+    ///
+    /// Used by the host registry's dashboard refresh (`docs/design/moth-parliament.md`, "it
+    /// re-probes on open") to tell a host that is live right now from one whose last-known
+    /// state is merely cached, without dialing anything new.
+    pub fn connected_host_ids(&self) -> impl Iterator<Item = &HostId> + '_ {
+        self.sessions.values().filter_map(|state| match state {
+            RemoteSessionState::Connected { host_id, .. } => Some(host_id),
+            _ => None,
+        })
+    }
+
     /// Returns the user-facing connection label for a connected host, if one
     /// has been recorded on any active session for that host.
     pub fn host_label(&self, host_id: &HostId) -> Option<&str> {
@@ -1138,7 +1156,7 @@ impl RemoteServerManager {
                     )
                     .await
                     {
-                        Ok(host_id) => {
+                        Ok((host_id, server_version)) => {
                             let _ = spawner
                                 .spawn(move |me, ctx| {
                                     me.mark_session_connected(
@@ -1146,6 +1164,7 @@ impl RemoteServerManager {
                                         host_id,
                                         identity_key,
                                         transport,
+                                        server_version,
                                         ctx,
                                     );
                                 })
@@ -1184,7 +1203,9 @@ impl RemoteServerManager {
     /// 2. Transitions the session to `Initializing` and starts draining the
     ///    event channel.
     /// 3. Runs the initialize handshake with the current auth token, if any.
-    /// Returns `Ok(host_id)` on success, or a phase-tagged error.
+    /// Returns `Ok((host_id, server_version))` on success -- `server_version` is the daemon's
+    /// own `InitializeResponse::server_version`, forwarded uninterpreted -- or a phase-tagged
+    /// error.
     #[cfg(not(target_family = "wasm"))]
     async fn run_connect_and_handshake(
         session_id: SessionId,
@@ -1192,7 +1213,7 @@ impl RemoteServerManager {
         auth_context: &RemoteServerAuthContext,
         spawner: &ModelSpawner<Self>,
         executor: &Arc<warpui::r#async::executor::Background>,
-    ) -> Result<HostId, ConnectAndHandshakeError> {
+    ) -> Result<(HostId, String), ConnectAndHandshakeError> {
         // Phase 1: Connect (establish streams, create client).
         let Connection {
             client,
@@ -1313,7 +1334,7 @@ impl RemoteServerManager {
             .with_proxy_stderr(&stderr_tail));
         }
 
-        Ok(HostId::new(resp.host_id))
+        Ok((HostId::new(resp.host_id), resp.server_version))
     }
 
     /// Removes a session from the manager and tears down its connection.
@@ -1795,6 +1816,8 @@ impl RemoteServerManager {
 
     /// Transitions a session from `Initializing` to `Connected`. Stores the
     /// `transport` for reconnection support after a spontaneous disconnect.
+    /// `server_version` is forwarded uninterpreted into `SessionConnected` --
+    /// see that event's doc comment.
     #[cfg(not(target_family = "wasm"))]
     fn mark_session_connected(
         &mut self,
@@ -1802,6 +1825,7 @@ impl RemoteServerManager {
         host_id: HostId,
         identity_key: String,
         transport: Arc<dyn RemoteTransport>,
+        server_version: String,
         ctx: &mut ModelContext<Self>,
     ) {
         log::info!("Remote server connected for session {session_id:?}, host {host_id}");
@@ -1844,6 +1868,7 @@ impl RemoteServerManager {
         ctx.emit(RemoteServerManagerEvent::SessionConnected {
             session_id,
             host_id,
+            server_version,
         });
 
         // (Re-)send the SessionBootstrapped notification so the daemon
@@ -2158,7 +2183,7 @@ impl RemoteServerManager {
                 )
                 .await
                 {
-                    Ok(new_host_id) => {
+                    Ok((new_host_id, server_version)) => {
                         let _ = spawner
                             .spawn(move |me, ctx| {
                                 // If the session was deregistered during the
@@ -2175,6 +2200,7 @@ impl RemoteServerManager {
                                     new_host_id.clone(),
                                     identity_key,
                                     transport,
+                                    server_version,
                                     ctx,
                                 );
                                 if let Some(client) = me.client_for_session(session_id).cloned() {

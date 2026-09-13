@@ -585,3 +585,57 @@ fn session_exited_push_is_routed_with_host_and_session_id() {
         }
     });
 }
+
+// ---------------------------------------------------------------------------
+// connected_host_ids (host registry dashboard refresh, "it re-probes on
+// open" -- docs/design/moth-parliament.md)
+// ---------------------------------------------------------------------------
+
+/// Breaks if `connected_host_ids` stops reading `Connected` sessions (e.g. an
+/// empty stub), or starts reporting a session that never reached `Connected`
+/// (nothing populates `sessions` with any other state in this test, so a
+/// false positive here could only come from `connected_host_ids` itself
+/// misreading the map).
+#[cfg(unix)]
+#[test]
+fn connected_host_ids_reports_only_connected_sessions() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+
+        let host_a = HostId::new("host-a".to_string());
+        let host_b = HostId::new("host-b".to_string());
+
+        let _executors = manager.update(&mut app, |manager, _ctx| {
+            let exec_a = insert_connected_session(manager, SessionId::from(1u64), host_a.clone());
+            let exec_b = insert_connected_session(manager, SessionId::from(2u64), host_b.clone());
+            (exec_a, exec_b)
+        });
+
+        manager.read(&app, |manager, _ctx| {
+            let mut connected: Vec<HostId> = manager.connected_host_ids().cloned().collect();
+            connected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+            assert_eq!(connected, vec![host_a.clone(), host_b.clone()]);
+        });
+    });
+}
+
+/// A session that never reached `Connected` (still `Initializing`, or
+/// removed entirely) must not appear. Breaks if `connected_host_ids` widens
+/// its match beyond the `Connected` variant.
+#[cfg(unix)]
+#[test]
+fn connected_host_ids_excludes_non_connected_session_states() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+
+        manager.update(&mut app, |manager, _ctx| {
+            manager
+                .sessions
+                .insert(SessionId::from(3u64), RemoteSessionState::Disconnected);
+        });
+
+        manager.read(&app, |manager, _ctx| {
+            assert_eq!(manager.connected_host_ids().count(), 0);
+        });
+    });
+}

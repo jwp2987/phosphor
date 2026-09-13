@@ -553,6 +553,7 @@ impl RemoteCodebaseIndexModel {
             RemoteServerManagerEvent::SessionConnected {
                 session_id: _,
                 host_id,
+                server_version: _,
             }
             | RemoteServerManagerEvent::SessionReconnected {
                 session_id: _,

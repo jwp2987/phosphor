@@ -87,7 +87,7 @@
 //! comment in `terminal::warpify::settings` for the same point made at the
 //! wire-format level.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use remote_server::setup::{GlibcVersion, RemoteArch, RemoteOs, UnsupportedReason};
@@ -98,6 +98,7 @@ use warpui::{Entity, ModelContext, SingletonEntity};
 // them. Imported anonymously, matching `appearance.rs` and `wasm_nux_dialog.rs`.
 use settings::Setting as _;
 
+use crate::remote_server::manager::RemoteServerManager;
 use crate::terminal::warpify::settings::{
     PersistedHostGroup, PersistedRemoteHost, WarpifySettings, WarpifySettingsChangedEvent,
 };
@@ -109,9 +110,16 @@ use crate::terminal::warpify::settings::{
 pub enum HostInstallState {
     /// No successful install has ever been observed on this host.
     NotInstalled,
-    /// Installed, as of the last successful handshake
-    /// (`InitializeResponse::server_version`).
-    Installed { version: String },
+    /// Installed. `version` is the real value reported by the remote daemon's own
+    /// `InitializeResponse::server_version` once a handshake has completed against it, and
+    /// `None` when installation has completed but no handshake has recorded a version yet --
+    /// two different moments that each know only what they genuinely know (see
+    /// `record_install_complete_registry_observation` in `terminal/writeable_pty/
+    /// remote_server_controller.rs` for the former, and `record_host_reached` in
+    /// `terminal/model/session.rs` for the latter). Never guessed from this build's own
+    /// version: `manager.rs`'s `version_is_compatible` check exists precisely because the
+    /// client's assumed version and the remote's reported one can disagree.
+    Installed { version: Option<String> },
     /// A preinstall check or install attempt classified this host as unable
     /// to run the prebuilt remote-server binary.
     Unsupported { reason: UnsupportedReason },
@@ -204,7 +212,7 @@ impl RemoteHostEntry {
 
         match &self.install_state {
             HostInstallState::Installed { version } => {
-                installed_version = Some(version.clone());
+                installed_version = version.clone();
             }
             HostInstallState::Unsupported { reason } => match reason {
                 UnsupportedReason::GlibcTooOld { detected, required } => {
@@ -251,7 +259,7 @@ impl RemoteHostEntry {
         let install_state = match persisted.install_state.as_str() {
             "not_installed" => HostInstallState::NotInstalled,
             "installed" => HostInstallState::Installed {
-                version: persisted.installed_version.unwrap_or_default(),
+                version: persisted.installed_version,
             },
             "unsupported" => match persisted.unsupported_reason_kind.as_deref() {
                 Some("glibc_too_old") => HostInstallState::Unsupported {
@@ -387,6 +395,35 @@ impl HostRegistryModel {
 
     pub fn group(&self, name: &str) -> Option<&HostGroup> {
         self.groups.get(name)
+    }
+
+    /// Reconciles the registry against `RemoteServerManager`'s live connections
+    /// (`docs/design/moth-parliament.md`, "it re-probes on open"). Called when the dashboard
+    /// pane opens (`RemoteHostsView::new`).
+    ///
+    /// # What this contacts, and what it deliberately does not
+    ///
+    /// This performs **no network I/O and opens no connection**. It reads only
+    /// `RemoteServerManager::connected_host_ids` -- an already-in-memory fact about sessions
+    /// that exist for some other reason -- and, for every registry entry whose `host_id`
+    /// matches one of those, bumps `last_reached_at` to now via the already-tested
+    /// [`Self::record_reached`]. A host that has a live connection right now is, by
+    /// definition, reachable right now, so recording that is a genuine observation, not a
+    /// guess.
+    ///
+    /// A host with no live connection is left untouched. Actively probing it would mean
+    /// dialing a fresh SSH `ControlMaster` the user never asked for, just because a dashboard
+    /// tab happened to open -- exactly the "worse than no refresh" case the design doc warns
+    /// against. Such a host keeps showing its last cached observation, which is what the
+    /// dashboard's last-seen labeling is for.
+    pub fn refresh_from_live_connections(&mut self, ctx: &mut ModelContext<Self>) {
+        let connected_host_ids: HashSet<HostId> = RemoteServerManager::as_ref(ctx)
+            .connected_host_ids()
+            .cloned()
+            .collect();
+        for target in live_targets(&self.hosts, &connected_host_ids) {
+            self.record_reached(&target, None, None, ctx);
+        }
     }
 
     /// Records that `target` answered a probe or connected successfully,
@@ -573,6 +610,26 @@ fn converge_declared_targets(
         }
     }
     newly_added
+}
+
+/// Which registry targets currently have a `host_id` in `connected_host_ids`. Pure and free of
+/// `ModelContext`/`RemoteServerManager` so the filtering rule
+/// [`HostRegistryModel::refresh_from_live_connections`] applies is directly testable without a
+/// live connection -- see `host_registry_tests.rs`.
+fn live_targets(
+    hosts: &HashMap<String, RemoteHostEntry>,
+    connected_host_ids: &HashSet<HostId>,
+) -> Vec<String> {
+    hosts
+        .values()
+        .filter(|entry| {
+            entry
+                .host_id
+                .as_ref()
+                .is_some_and(|host_id| connected_host_ids.contains(host_id))
+        })
+        .map(|entry| entry.target.clone())
+        .collect()
 }
 
 #[cfg(test)]
