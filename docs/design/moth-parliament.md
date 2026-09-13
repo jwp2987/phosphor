@@ -902,6 +902,40 @@ constraint on who may drive a session, not a defect in the session.
   fourteen rows above are moot rather than merely small. That must be established, not
   assumed either way, before touching any of the three.
 
+### Shutdown is two intents wearing one name — found 2026-09-13
+
+Building item 6's transport surfaced a decision that does not exist locally, because
+locally the two readings coincide.
+
+`Message::Shutdown` is what the `PtyController` sends to tear a pty down, and it reaches
+the event loop from four places. `TerminalManager::drop` sends it on tab close, window
+close and app quit alike. `terminal/view.rs`'s autoupdate path sends the same message with
+a different meaning, stated in its own comment: "terminate this shell session so that it
+doesn't come back when we restore sessions after the relaunch." For a local pty those are
+one act -- the process dies either way. For a daemon-owned session they are opposites:
+one means *detach and leave it running*, the other means *kill it*.
+
+**Decided: `Shutdown` detaches.** A daemon-owned session surviving its client is
+requirement 4, and the indiscriminate caller is `Drop` -- so mapping `Shutdown` to a kill
+would mean quitting the app destroys every remote session on every host, which is the
+exact failure reattach exists to prevent. Detaching gets the common case right.
+`remote_tty`'s event loop already ignores `Shutdown` for its own non-local transport, so
+this is also the established shape rather than a new one.
+
+**The cost, unpaid and recorded rather than rounded off.** The autoupdate path is now
+wrong for remote sessions: it asks for a kill, gets a detach, and the session returns after
+the relaunch -- which is what its comment says must not happen. And an ordinary tab close
+leaves a remote session running, discoverable only from the hosts dashboard.
+
+**The fix is not to flip the arm.** Doing that trades one wrong caller for three. What is
+needed is a separate route for the kill intent -- `SignalSession` with
+`RemoteSessionSignal::Kill`, which the protocol already carries for precisely the
+client-visible "kill this session" action, so nothing new is needed on the wire. What is
+missing is a way for a caller to *say* which it means, which is a change to the `Message`
+vocabulary shared with `local_tty` and `remote_tty` and so wants its own increment and its
+own audit of all four senders. Until then the transport pins the detach reading with a
+test, so flipping it has to be deliberate.
+
 ### Output buffering while detached — decided 2026-09-12
 
 Item 4 above says decide this before building it, so here it is. It is the one item on
@@ -983,6 +1017,34 @@ That belongs with item 6, because only a real client can send such an acknowledg
 designing the message before there is a client to send it would be guessing. Recorded here
 so the current behaviour is not mistaken for the finished guarantee.
 
+**Closed 2026-09-13.** `AcknowledgeSessionOutput` (a `Notification`, so fire-and-forget)
+carries `{remote_session_id, through_offset}` back from the client, and
+`ReattachSessionSuccess` gained `next_offset` for it to echo.
+`ServerModel::handle_reattach_session` now discards *nothing* -- it peeks and answers, and
+went back to `HandlerOutcome::Sync` like its five siblings, since it no longer needs to
+observe its own send. `handle_acknowledge_session_output` is the sole caller of
+`SessionStore::acknowledge_output` on the daemon, and the client sends the acknowledgement
+from inside `RemoteServerClient::reattach_session`, immediately after decoding a successful
+response.
+
+**What that bought, and what it cost, stated together because the cost is real.** The
+daemon no longer forgets output because a socket accepted a write; it forgets only when a
+client says the bytes arrived. In exchange, delivery is now explicitly **at-least-once**: a
+reattach whose acknowledgement is lost -- dropped notification, client crash, or a client
+that simply never sends one -- replays the same bytes on the next reattach and keeps
+reporting the same `dropped_bytes_since_ack` until one lands. That is the trade being
+chosen deliberately, because redelivered output is recoverable and lost output is not, and
+a non-acknowledging client is not otherwise harmed: the ring buffer is bounded and evicts
+on its own regardless.
+
+**The window is narrower, not gone, and calling it closed would repeat the mistake this
+entry exists to correct.** The client acknowledges on *receipt* -- response decoded, about
+to be returned -- not on *consumption*. A caller that takes the payload and then drops it
+has lost output the daemon has already been told to forget. Closing that too would mean
+acknowledging only after a terminal has drawn the bytes, which no layer between here and
+there can observe. What changed is which failures lose output: a dead socket or a dead
+daemon no longer do; a client that fails after decoding still does.
+
 **Acknowledgement names a stream offset, not a number of bytes** -- and this is the part
 that is easy to get wrong, because a byte count looks obviously sufficient. It is not. A
 peek and its acknowledgement are separate calls, and output can arrive in between. If
@@ -1008,8 +1070,9 @@ and not the misalignment.
 
 Three gaps a refutation pass on the daemon-owns-real-ptys commit found and deliberately
 left unfixed at the time. Recorded here rather than silently carried, per the same
-discipline as every other decision on this page. Gap 1 is now fixed (see below); the
-other two are still open.
+discipline as every other decision on this page. Gaps 1 and 3 are now fixed (see each);
+gap 2 -- a shell that writes and immediately exits losing its last output -- is still
+open. A fourth, found while fixing gap 3, is recorded at the end of this section.
 
 **Exit codes are wrong on the default production path.** `PtySpawner::new()` on unix
 always constructs a `TerminalServer`, and `spawn_pty` prefers that server-hosted path
@@ -1090,6 +1153,62 @@ Until item 6's client seam understands that handshake, any client that is not it
 Zap-aware Warp client sees raw handshake noise inside its session. What is missing is
 squarely a `PtySpawnSpec` gap: it has no "just run this command, no bootstrap" concept
 at all.
+
+**Fixed 2026-09-13.** `SpawnSession.no_bootstrap` (a `bool`, so proto3 decodes its absence
+as `false` and every existing caller keeps the only behaviour this daemon has ever had)
+threads into `PtySpawnSpec::no_bootstrap` and is read in exactly one place:
+`remote_pty_thread::resolve_shell_starter`, which hands the resolved starter to
+`DirectShellStarter::without_bootstrap`.
+
+**The fix is to empty the argument list, and that is the whole of it.** The bootstrap
+*is* the arguments -- every branch of `arguments_for_session_spawning_command` builds a
+`-c` (or `-EncodedCommand`) wrapper that re-execs the shell with an injected rcfile or
+init-command carrying the InitShell OSC handshake. Emptying `args` leaves
+`local_tty::unix` spawning the shell binary bare through the pty, which is an ordinary
+interactive shell reading the user's own configuration. The three `PtyOptions` booleans
+named above are deliberately *not* touched: they become `WARP_*` environment variables
+that the injected script reads, so with no script they are already inert, and flipping
+them would have changed local behaviour to fix a remote problem.
+
+**Empty rather than a hand-written "plain" argument list per shell**, which is the
+tempting alternative and is wrong. `-NoLogo` for PowerShell, or a leading `-` for a login
+shell via `exec -a`, are Warp's preferences, not the shell's own behaviour; a client that
+asked for no bootstrap asked to see what the shell really does. Every such addition would
+be this fork imposing policy on a session whose entire request was "no policy".
+
+**Where it stops.** Stripping is implemented for `ShellStarter::Direct` only, and the
+other three variants return a `PtySessionOpError` rather than falling through. They are
+unreachable on this backend (the module is `cfg(unix)`, and both resolution branches yield
+`Direct` there), and refusing is the right unreachable-case behaviour: silently spawning a
+bootstrapped shell for a client that cannot read the handshake is the exact failure the
+flag exists to prevent, so failing loudly beats honouring the request in name only.
+
+**Gap 4: a daemon-spawned zsh gets neither its own config nor Warp's — found
+2026-09-13.** Found while fixing gap 3, and *not* caused by it: this is how the daemon has
+behaved since `3d638ad25`, for `no_bootstrap = false`, which is every session spawned so
+far.
+
+bash and fish carry their init inline, in the arguments -- `--rcfile <(echo ...)` and
+`--init-command '...'` respectively -- so spawning them through the daemon bootstraps them
+correctly. zsh does not. `arguments_for_session_spawning_command` gives zsh `--no-rcs`,
+which suppresses the user's own startup files on the understanding that Warp will take
+over, and the taking-over happens somewhere else entirely:
+`TerminalManager::enqueue_init_script` writes the init script *into the pty's input
+stream* immediately after creation, for zsh and MSYS2 only. The daemon never calls it --
+`remote_pty_thread::LiveSession::spawn` builds its pty directly and has no equivalent seam
+-- so a daemon-spawned zsh gets `--no-rcs` and then nothing: no user config, no Warp
+bootstrap, no shell integration. A bare shell.
+
+Not fixed here, because it is a different change with a different shape. The fix is to
+queue the init script as the session's first `PtyCommand::WriteStdin` (followed by the
+shell's `execute_command_bytes`, as `enqueue_init_script` does), which means deciding where
+that belongs: `LiveSession::spawn` knows the shell type but is the wrong place to reach for
+`crate::ASSETS`, and `handle_spawn_session` is the right place but does not see the
+resolved `ShellStarter`. Recorded rather than bolted on.
+
+`no_bootstrap = true` is unaffected and always was: it asks for no bootstrap, and a bare
+zsh with no `--no-rcs` reads the user's `~/.zshrc` exactly as intended. The gap is
+specific to *asking* for the bootstrap and not getting it.
 
 ### What the remote-server extension already does — answered 2026-09-05
 

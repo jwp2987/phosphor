@@ -65,6 +65,11 @@ pub mod profile_model_selector;
 pub mod prompt;
 pub mod prompt_render_helper;
 pub mod recorder;
+// Gated exactly like `writeable_pty::remote_server_controller`, the other app
+// module built on `crate::remote_server::manager`: the remote-server client and
+// its transport are not built for wasm.
+#[cfg(not(target_family = "wasm"))]
+pub mod remote_server_tty;
 pub mod remote_tty;
 pub mod resizable_data;
 pub mod rich_history;

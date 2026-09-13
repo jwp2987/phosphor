@@ -436,10 +436,12 @@ pub enum RemoteServerManagerEvent {
     /// the conflict resolution banner.
     BufferConflictDetected { host_id: HostId, path: String },
 
-    // --- Remote pty session pushes (groundwork; forwarded from ClientEvent) ---
-    // Session-ownership groundwork (`docs/design/moth-parliament.md`,
-    // "Scoping session ownership"). No daemon sends either push yet -- see
-    // `RemoteServerClient::spawn_session` and friends. Both carry
+    // --- Remote pty session pushes (forwarded from ClientEvent) ---
+    // Session ownership (`docs/design/moth-parliament.md`, "Scoping session
+    // ownership"). The daemon sends both: `ServerModel::handle_pty_session_output`
+    // and `handle_pty_session_exit` push them for every session it owns. What is
+    // still missing is a consumer -- `terminal::remote_server_tty::EventLoop` is
+    // the one being built, and nothing constructs it yet. Both carry
     // `remote_pty_session_id` alongside `host_id`, mirroring how
     // `BufferUpdated` above carries `path` alongside `host_id`: a session is
     // one of potentially several open on a host, so `host_id` alone cannot
