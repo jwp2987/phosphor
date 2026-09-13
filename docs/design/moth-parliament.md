@@ -740,6 +740,36 @@ far side), and is not answered by the fact that the install path works there. Do
 assume requirement 1 is satisfied for session ownership just because it is satisfied for
 file queries.
 
+### Output buffering while detached — decided 2026-09-12
+
+Item 4 above says decide this before building it, so here it is. It is the one item on
+the list that cannot be derived from the code.
+
+**Bounded per-session ring buffer, measured in bytes, default 256 KiB.** Bytes and not
+lines because pty output *is* bytes: counting lines means parsing, and a session emitting
+a progress bar with no newline would register as one unbounded line. 256 KiB holds the
+tail of a build comfortably, and twenty detached sessions cost 5 MiB, which is the right
+order of magnitude to stop thinking about.
+
+**On overflow, drop oldest and count what was dropped.** The buffer never silently
+discards. A session that overran its bound carries a dropped-byte count, and reattach
+replays the retained bytes preceded by an explicit gap marker -- the block list says
+"N KiB dropped while detached" rather than presenting a seamless stream that is missing
+its middle. A visible gap is recoverable; an invisible one teaches the user to distrust
+the scrollback.
+
+**Exit status is stored outside the ring buffer and is never evicted.** This is the part
+worth being deliberate about: if the exit code lived in the byte stream it could be
+dropped by a chatty process that exited afterwards, and a session would reattach as
+"still running" forever. Exit is a fact about the session, not a byte in its output.
+
+**The bound is per session, not per host.** A single runaway session must not evict the
+buffered output of its quiet neighbours on the same host.
+
+Not decided here, because it needs the client seam first: whether the *attached* path
+shares this buffer or streams straight through. Attached streaming has a live consumer
+and different backpressure, and guessing now would likely be wrong.
+
 ### What the remote-server extension already does — answered 2026-09-05
 
 **It has, and these are the tedious parts:** an install path over SSH that downloads a
