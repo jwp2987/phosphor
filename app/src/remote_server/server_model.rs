@@ -191,6 +191,17 @@ enum HandlerOutcome {
     /// which `handle_get_diff_state` already tracks in `in_progress`
     /// itself), but it stays abortable via `diff_state_pending_responses`
     /// — see `handle_abort`'s `abort_diff_state_pending_response` fallback.
+    ///
+    /// A third, semantically different case returns `None`: a handler that has
+    /// already sent its own response *synchronously* before returning, so the
+    /// caller must not send a second one. `handle_reattach_session` does this
+    /// because it has to observe whether the send succeeded before it may
+    /// acknowledge the output it just handed over — see "Delivery is two-phase"
+    /// in `docs/design/moth-parliament.md`. Nothing is pending for such a
+    /// request; `None` here means "already answered", not "answer later".
+    /// The dispatch treats all three identically, which is why they can share a
+    /// variant, but an audit of `Async(None)` producers needs to know they are
+    /// not the same thing.
     Async(Option<SpawnedFutureHandle>),
 }
 
