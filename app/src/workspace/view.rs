@@ -4215,6 +4215,21 @@ impl Workspace {
         ctx.notify();
     }
 
+    /// Opens the remote-hosts dashboard as its own tab (`docs/design/moth-parliament.md`, "The
+    /// dashboard: hosts and groups need a surface, not a settings page"). No existing pane group
+    /// to attach to, so this goes straight through `add_tab_with_pane_layout`, the same as
+    /// `add_conversation_tab`/`add_welcome_tab`/`add_get_started_tab`. Unlike Settings, there is
+    /// no "only one per window" dedup: opening it again just adds another tab.
+    fn add_remote_hosts_dashboard_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        self.add_tab_with_pane_layout(
+            PanesLayout::RemoteHostsDashboard,
+            Arc::new(HashMap::new()),
+            None,
+            ctx,
+        );
+        ctx.notify();
+    }
+
     /// Creates a new default terminal tab, then runs the launch command for the given CLI agent.
     fn add_tab_with_specific_agent(&mut self, agent: CLIAgent, ctx: &mut ViewContext<Self>) {
         self.add_terminal_tab(false, ctx);
@@ -6493,6 +6508,19 @@ impl Workspace {
                 );
             }
         }
+
+        // 7c. Remote hosts dashboard: every known host and group, with install state, last
+        // reached, OS and arch (`docs/design/moth-parliament.md`, "The dashboard: hosts and
+        // groups need a surface, not a settings page"). Unconditional -- unlike the flat host
+        // list above, it is useful even with zero hosts configured yet, since it is the
+        // discovery surface for "what do I have installed where".
+        menu_items.push(MenuItem::Separator);
+        menu_items.push(
+            MenuItemFields::new(crate::t!("workspace-new-session-remote-hosts-dashboard"))
+                .with_on_select_action(WorkspaceAction::AddRemoteHostsDashboardTab)
+                .with_icon(icons::Icon::Server01)
+                .into_item(),
+        );
 
         // 8. Separator + worktree config entry + new tab config
         if FeatureFlag::TabConfigs.is_enabled() {
@@ -21716,6 +21744,7 @@ impl TypedActionView for Workspace {
             AddSpecificAgentTab(agent) => self.add_tab_with_specific_agent(*agent, ctx),
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             AddRemoteHostTab(host) => self.add_tab_with_remote_host(host.clone(), ctx),
+            AddRemoteHostsDashboardTab => self.add_remote_hosts_dashboard_tab(ctx),
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)
             }

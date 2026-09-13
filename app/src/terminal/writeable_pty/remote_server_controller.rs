@@ -10,6 +10,7 @@ use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity, WeakModelHandle
 
 use crate::terminal::warpify::settings::SshExtensionInstallMode;
 
+use crate::remote_server::host_registry::{HostInstallState, HostRegistryModel};
 use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use crate::remote_server::ssh_transport::SshTransport;
 // Zap Wave 3-1: `ServerApiProvider` is no longer used by this file — the
@@ -283,6 +284,30 @@ impl<T: EventLoopSender> RemoteServerController<T> {
                 PreinstallStatus::Unsupported { reason } => Some((check, reason.clone())),
                 PreinstallStatus::Supported | PreinstallStatus::Unknown => None,
             });
+
+        // Host registry (`docs/design/moth-parliament.md`, "Requirement 5
+        // needs a surface, and a registry that does not exist"): the
+        // binary/preinstall check round trip just answered a probe over a
+        // live SSH connection, whether or not it ended up classifying the
+        // host as unsupported, so record it as reached along with whatever
+        // platform `detect_platform()` found. A no-op when the session's
+        // bootstrap didn't parse a plain `ssh <target>` invocation (see
+        // `registry_target_for_session_info`) -- there is then no `target`
+        // to key the entry on. Purely observational: nothing below reads
+        // the registry, so this can never change the branching that
+        // follows. Extracted to a standalone, generic-over-`M` function
+        // (see its doc comment) so tests can drive it without constructing
+        // a full `RemoteServerController`.
+        if let Some(target) = registry_target_for_session_info(&session_info) {
+            let unsupported_reason = unsupported.as_ref().map(|(_, reason)| reason);
+            record_binary_check_registry_observations(
+                &target,
+                self.remote_platform.as_ref(),
+                unsupported_reason,
+                ctx,
+            );
+        }
+
         if let Some((check, reason)) = unsupported {
             log::info!(
                 "Preinstall check classified {session_id:?} as unsupported \
@@ -535,6 +560,28 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             };
         match result {
             Ok(()) => {
+                // Host registry: `install_binary()` only returns `Ok(())`
+                // after `verify_installed_binary` has confirmed, over SSH,
+                // that the binary is now present and executable, so
+                // "installed" itself is a verified fact here. The
+                // *version* string is not: it is only known from a real
+                // `InitializeResponse::server_version` at handshake time
+                // (see `host_registry.rs`'s module docs), which no event
+                // reaching `app/` carries today, and `manager.rs`'s
+                // `version_is_compatible` exists precisely because the
+                // locally-built version and the remote-reported one can
+                // disagree -- so this deliberately does not guess this
+                // build's own version as a stand-in. Recorded with an
+                // empty version string instead: known-installed,
+                // unknown-version, the same convention
+                // `RemoteHostEntry::from_persisted` already uses for a
+                // missing version column, rather than a fabricated number.
+                // Extracted to a standalone, generic-over-`M` function (see
+                // its doc comment) so tests can drive it without
+                // constructing a full `RemoteServerController`.
+                if let Some(target) = registry_target_for_session_info(&session_info) {
+                    record_install_complete_registry_observation(&target, ctx);
+                }
                 let socket_path = transport.socket_path().clone();
                 let owns_control_master = transport.owns_control_master();
                 let connection_label = connection_label_for_session_info(&session_info);
@@ -583,6 +630,93 @@ impl<T: EventLoopSender> RemoteServerController<T> {
             );
         });
     }
+}
+
+/// The raw SSH destination parsed from the session's `ssh` invocation
+/// (`InteractiveSshCommand::host`), used as the host registry's `target`
+/// key (`RemoteHostEntry::target`). Deliberately **not**
+/// [`connection_label_for_session_info`]'s stripped, display-formatted
+/// `user@host` string: the registry's `target` is meant to match
+/// `warpify.ssh.remote_hosts` / the new-session menu's declared destination
+/// string (see that field's doc comment for the exact shapes,
+/// e.g. `"user@1.2.3.4"`), and `remote_host_ssh_command`
+/// (`app/src/workspace/view.rs`) builds the `ssh` invocation directly from
+/// that same string, so parsing it back out of the invocation recovers it
+/// unchanged. `None` when the session didn't come up through a plain
+/// interactive `ssh` command the parser recognized.
+fn registry_target_for_session_info(session_info: &SessionInfo) -> Option<String> {
+    session_info
+        .subshell_info
+        .as_ref()
+        .and_then(|info| info.ssh_connection_info.as_ref())
+        .and_then(|ssh| ssh.host.clone())
+}
+
+/// Records the host registry observations from a completed binary/preinstall
+/// check. "Reached" is only recorded when `detect_platform()` (`uname -sm`
+/// over SSH) actually succeeded -- `remote_platform.is_some()` -- rather
+/// than merely because a `BinaryCheckComplete` event fired at all: that
+/// event fires even when every sub-probe failed (a totally unreachable
+/// host), and recording a reach timestamp for a host nothing actually
+/// answered would be a false positive the dashboard would show as real
+/// data. This is also a strictly weaker condition than "unsupported": the
+/// preinstall script that classifies a host as unsupported only ever runs
+/// after `detect_platform()` already succeeded (`manager.rs`'s
+/// `check_binary`), so `unsupported_reason.is_some()` implies
+/// `remote_platform.is_some()`, never the other way around.
+///
+/// Generic over `M` (the caller's own model type) rather than fixed to
+/// `RemoteServerController<T>`, so tests can drive it from any lightweight
+/// singleton's `ModelContext` instead of constructing a full controller
+/// (which needs a `PtyController` and `ModelEventDispatcher`) -- see
+/// `remote_server_controller_tests.rs`. `ModelContext<M>` derefs to
+/// `AppContext` for every `M`, so nothing here depends on which model owns
+/// `ctx`.
+///
+/// Advisory only, per the registry's own module docs: purely observational
+/// bookkeeping called after the check has already completed, and
+/// `HostRegistryModel::record_reached`/`record_install_state` cannot fail
+/// outward (a persistence error is logged inside them, never propagated), so
+/// this cannot block or slow the caller.
+fn record_binary_check_registry_observations<M>(
+    target: &str,
+    remote_platform: Option<&RemotePlatform>,
+    unsupported_reason: Option<&UnsupportedReason>,
+    ctx: &mut ModelContext<M>,
+) {
+    if let Some(platform) = remote_platform {
+        let platform = (platform.os.clone(), platform.arch.clone());
+        HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
+            registry.record_reached(target, None, Some(platform), ctx);
+        });
+    }
+    if let Some(reason) = unsupported_reason {
+        HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
+            registry.record_install_state(
+                target,
+                HostInstallState::Unsupported {
+                    reason: reason.clone(),
+                },
+                ctx,
+            );
+        });
+    }
+}
+
+/// Records that installation completed for `target`, as `Installed` with an
+/// empty version string -- see the call site's comment on why the version is
+/// deliberately absent rather than guessed. Generic over `M` for the same
+/// testability reason as [`record_binary_check_registry_observations`].
+fn record_install_complete_registry_observation<M>(target: &str, ctx: &mut ModelContext<M>) {
+    HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
+        registry.record_install_state(
+            target,
+            HostInstallState::Installed {
+                version: String::new(),
+            },
+            ctx,
+        );
+    });
 }
 
 /// Builds the connection label for a session from its [`SessionInfo`],

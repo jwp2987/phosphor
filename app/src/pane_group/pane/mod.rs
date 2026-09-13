@@ -23,6 +23,7 @@ pub(super) mod image_pane;
 #[cfg(not(target_family = "wasm"))]
 pub(super) mod local_harness_launch;
 pub(super) mod notebook_pane;
+pub(super) mod remote_hosts_pane;
 pub(super) mod settings_pane;
 pub(super) mod terminal_pane;
 pub mod view;
@@ -65,6 +66,7 @@ pub use self::view::PaneHeaderCustomAction;
 pub use self::view::PaneView;
 pub use self::view::PaneViewEvent;
 
+use remote_hosts_pane::RemoteHostsView;
 use welcome_view::WelcomeView;
 
 use super::{ActivationReason, LeafContents, PaneGroup, PaneGroupAction};
@@ -149,6 +151,9 @@ pub(crate) enum IPaneType {
     ExecutionProfileEditor,
     GetStarted,
     Welcome,
+    /// The remote-hosts dashboard (`docs/design/moth-parliament.md`, "The dashboard: hosts
+    /// and groups need a surface, not a settings page").
+    RemoteHostsDashboard,
     DeferredPlaceholder,
     /// A pane type only for tests.
     #[cfg(test)]
@@ -173,6 +178,7 @@ impl Display for IPaneType {
             IPaneType::ExecutionProfileEditor => write!(f, "Execution Profile Editor"),
             IPaneType::GetStarted => write!(f, "GetStarted"),
             IPaneType::Welcome => write!(f, "Welcome"),
+            IPaneType::RemoteHostsDashboard => write!(f, "Remote Hosts Dashboard"),
             IPaneType::DeferredPlaceholder => write!(f, "Placeholder"),
             #[cfg(test)]
             IPaneType::Dummy => write!(f, "Dummy"),
@@ -264,6 +270,11 @@ impl PaneId {
 
     pub fn from_welcome_pane_ctx(ctx: &ViewContext<PaneView<WelcomeView>>) -> Self {
         Self::new_from_ctx(IPaneType::Welcome, ctx)
+    }
+
+    /// Creates a [`PaneId`] from a [`ViewContext<PaneView<RemoteHostsView>>`]
+    pub fn from_remote_hosts_pane_ctx(ctx: &ViewContext<PaneView<RemoteHostsView>>) -> Self {
+        Self::new_from_ctx(IPaneType::RemoteHostsDashboard, ctx)
     }
 
     pub fn from_get_started_pane_ctx(ctx: &ViewContext<PaneView<GetStartedView>>) -> Self {
@@ -360,6 +371,13 @@ impl PaneId {
 
     pub fn from_welcome_pane_view(welcome_pane_view: &ViewHandle<PaneView<WelcomeView>>) -> Self {
         Self::new(IPaneType::Welcome, welcome_pane_view)
+    }
+
+    /// Creates a [`PaneId`] from a [`PaneView<RemoteHostsView>`] entity ID.
+    pub fn from_remote_hosts_pane_view(
+        remote_hosts_pane_view: &ViewHandle<PaneView<RemoteHostsView>>,
+    ) -> Self {
+        Self::new(IPaneType::RemoteHostsDashboard, remote_hosts_pane_view)
     }
 
     #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
@@ -480,6 +498,9 @@ impl PaneId {
             }
             IPaneType::Welcome => {
                 ChildView::<PaneView<WelcomeView>>::with_id(self.0.pane_view_id).finish()
+            }
+            IPaneType::RemoteHostsDashboard => {
+                ChildView::<PaneView<RemoteHostsView>>::with_id(self.0.pane_view_id).finish()
             }
             IPaneType::DeferredPlaceholder => warpui::elements::Empty::new().finish(),
             #[cfg(test)]

@@ -166,6 +166,7 @@ pub use pane::execution_profile_editor_pane::ExecutionProfileEditorPane;
 pub use pane::file_pane::FilePane;
 pub use pane::image_pane::ImagePane;
 pub use pane::notebook_pane::NotebookPane;
+pub use pane::remote_hosts_pane::RemoteHostsPane;
 pub use pane::settings_pane::SettingsPane;
 pub use pane::terminal_pane::TerminalPane;
 pub use pane::workflow_pane::WorkflowPane;
@@ -804,6 +805,9 @@ pub enum PanesLayout {
     /// `PaneGroup::create_conversation_pane_data`, the split-pane path this shares its
     /// pane-construction logic with.
     Conversation,
+    /// A tab whose sole pane is the remote-hosts dashboard (`docs/design/moth-parliament.md`,
+    /// "The dashboard: hosts and groups need a surface, not a settings page").
+    RemoteHostsDashboard,
 }
 
 impl Default for PanesLayout {
@@ -1873,6 +1877,20 @@ impl PaneGroup {
                         ctx,
                     )),
                 };
+
+                let pane_id = pane.as_pane().id();
+                pane_contents.insert(pane_id, pane);
+                let focus = InitialFocus {
+                    focused_pane: leaf.is_focused.then_some(pane_id),
+                    active_session: None,
+                };
+                Ok((PaneData::new(pane_id), focus))
+            }
+            LeafContents::RemoteHostsDashboard => {
+                // No per-instance data to restore -- it always re-reads `HostRegistryModel`
+                // fresh on open rather than restoring a snapshot as fact (see the
+                // `LeafContents` variant's doc comment).
+                let pane: Box<dyn AnyPaneContent + 'static> = Box::new(RemoteHostsPane::new(ctx));
 
                 let pane_id = pane.as_pane().id();
                 pane_contents.insert(pane_id, pane);
@@ -3364,6 +3382,27 @@ impl PaneGroup {
         (PaneData::new(pane_id), focus)
     }
 
+    /// Initial layout for a [`PaneGroup`] with a single remote-hosts dashboard pane
+    /// (`PanesLayout::RemoteHostsDashboard`, `docs/design/moth-parliament.md`). Unlike the
+    /// conversation/ambient-agent siblings above, the dashboard needs no `TerminalViewResources`
+    /// or view size -- it is a plain view over `HostRegistryModel`, the same shape
+    /// `SettingsPane` uses.
+    fn initial_remote_hosts_dashboard_pane(
+        pane_contents: &mut HashMap<PaneId, Box<dyn AnyPaneContent>>,
+        pane_history: &mut Vec<PaneId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> (PaneData, InitialFocus) {
+        let pane: Box<dyn AnyPaneContent + 'static> = Box::new(RemoteHostsPane::new(ctx));
+        let pane_id = pane.as_pane().id();
+        pane_contents.insert(pane_id, pane);
+        pane_history.push(pane_id);
+        let focus = InitialFocus {
+            focused_pane: Some(pane_id),
+            active_session: None,
+        };
+        (PaneData::new(pane_id), focus)
+    }
+
     /// Initial layout for a [`PaneGroup`] with a single terminal pane.
     #[allow(clippy::too_many_arguments)]
     fn initial_single_terminal_pane(
@@ -3506,6 +3545,9 @@ impl PaneGroup {
                     pane_history,
                     ctx,
                 ),
+                PanesLayout::RemoteHostsDashboard => {
+                    Self::initial_remote_hosts_dashboard_pane(pane_contents, pane_history, ctx)
+                }
             }
         };
 

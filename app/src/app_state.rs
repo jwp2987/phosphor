@@ -155,6 +155,10 @@ pub enum LeafContents {
     Workflow(WorkflowPaneSnapshot),
     Settings(SettingsPaneSnapshot),
     AIFact(AIFactPaneSnapshot),
+    /// The remote-hosts dashboard (`docs/design/moth-parliament.md`, "The dashboard: hosts
+    /// and groups need a surface, not a settings page"). No per-instance data: it always
+    /// re-reads `HostRegistryModel` fresh on open rather than restoring a snapshot as fact.
+    RemoteHostsDashboard,
     ExecutionProfileEditor,
     CodeReview(CodeReviewPaneSnapshot),
     AmbientAgent(AmbientAgentPaneSnapshot),
@@ -210,6 +214,7 @@ impl LeafContents {
             | LeafContents::Workflow(_)
             | LeafContents::Settings(_)
             | LeafContents::AIFact(_)
+            | LeafContents::RemoteHostsDashboard
             | LeafContents::ExecutionProfileEditor
             | LeafContents::CodeReview(_)
             | LeafContents::AmbientAgent(_)

@@ -97,6 +97,16 @@ fn conversation_pane_snapshot_is_persisted_only_with_a_conversation_to_restore()
     );
 }
 
+/// The dashboard persists and restores like the settings pane (`docs/design/moth-parliament.md`,
+/// decision 1): it has no per-instance data to lose, since it always re-reads the registry fresh
+/// on open. Fails if `LeafContents::RemoteHostsDashboard` is ever moved out of `is_persisted`'s
+/// `true` group (e.g. grouped with `LeafContents::Image` instead), which would silently stop the
+/// tab from surviving a restart.
+#[test]
+fn remote_hosts_dashboard_snapshot_is_persisted() {
+    assert!(LeafContents::RemoteHostsDashboard.is_persisted());
+}
+
 #[test]
 fn test_code_pane_snapshot_single_tab() {
     let snapshot = CodePaneSnapShot::Local {

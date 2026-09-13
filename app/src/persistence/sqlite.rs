@@ -1713,6 +1713,13 @@ fn save_app_state(conn: &mut SqliteConnection, app_state: &AppState) -> Result<(
     Ok(())
 }
 
+/// `pane_leaves.kind` value for the remote-hosts dashboard pane
+/// (`docs/design/moth-parliament.md`). Local rather than a `crates/persistence::model` constant
+/// like its siblings: it needs no kind-specific table (the pane has no per-instance data --
+/// see `LeafContents::RemoteHostsDashboard`'s doc comment), so there is nothing here that
+/// belongs in the persistence crate.
+const REMOTE_HOSTS_DASHBOARD_PANE_KIND: &str = "remote_hosts_dashboard";
+
 /// Saves the state of an individual pane, after the corresponding `pane_nodes` entry
 /// has been written.
 fn save_pane_state(
@@ -1732,6 +1739,7 @@ fn save_pane_state(
         LeafContents::AIFact(_) => AI_FACT_PANE_KIND,
         LeafContents::CodeReview(_) => CODE_REVIEW_PANE_KIND,
         LeafContents::AmbientAgent(_) => AMBIENT_AGENT_PANE_KIND,
+        LeafContents::RemoteHostsDashboard => REMOTE_HOSTS_DASHBOARD_PANE_KIND,
         LeafContents::ExecutionProfileEditor => EXECUTION_PROFILE_EDITOR_PANE_KIND,
         LeafContents::GetStarted => GET_STARTED_PANE_KIND,
         LeafContents::Welcome { .. } => WELCOME_PANE_KIND,
@@ -1941,6 +1949,10 @@ fn save_pane_state(
         }
         LeafContents::GetStarted => {
             // Stateless
+        }
+        LeafContents::RemoteHostsDashboard => {
+            // Stateless: it always re-reads `HostRegistryModel` fresh on open rather than
+            // restoring anything from this row (see the `LeafContents` variant's doc comment).
         }
         LeafContents::Welcome { startup_directory } => {
             let welcome_pane = model::NewWelcomePane {
@@ -3470,6 +3482,7 @@ fn read_node(conn: &mut SqliteConnection, node: model::PaneNode) -> Result<PaneN
                     }
                 }
                 GET_STARTED_PANE_KIND => LeafContents::GetStarted,
+                REMOTE_HOSTS_DASHBOARD_PANE_KIND => LeafContents::RemoteHostsDashboard,
                 WELCOME_PANE_KIND => {
                     let welcome_pane = schema::welcome_panes::dsl::welcome_panes
                         .find(node.id)

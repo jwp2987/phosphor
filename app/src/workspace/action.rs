@@ -288,6 +288,11 @@ pub enum WorkspaceAction {
     /// warpification flow, not a new execution transport: the same detection that warpifies a
     /// manually-typed `ssh` command takes over once the command runs.
     AddRemoteHostTab(String),
+    /// Opens the remote-hosts dashboard as its own tab: every host and group the registry
+    /// knows about, with install state, last reached, OS and arch
+    /// (`docs/design/moth-parliament.md`, "The dashboard: hosts and groups need a surface, not
+    /// a settings page"). Read and display only -- no install/upgrade/remove actions yet.
+    AddRemoteHostsDashboardTab,
     OpenNewSessionMenu {
         anchor: NewSessionMenuAnchor,
     },
@@ -876,6 +881,7 @@ impl WorkspaceAction {
             | AddSpecificAgentTab(_)
             | AddDockerSandboxTab
             | AddRemoteHostTab(_)
+            | AddRemoteHostsDashboardTab
             | AddWindow
             | AddWindowWithShell { .. }
             | CloseWindow

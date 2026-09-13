@@ -181,6 +181,7 @@ workspace-new-session-terminal = Terminal
 workspace-new-session-conversation = Conversation
 workspace-new-session-cloud-oz = Agent tab
 workspace-new-session-local-docker-sandbox = Local Docker Sandbox
+workspace-new-session-remote-hosts-dashboard = Remote Hosts
 workspace-new-worktree-config = New worktree config
 workspace-new-tab-config = New tab config
 workspace-reopen-closed-session = Reopen closed session

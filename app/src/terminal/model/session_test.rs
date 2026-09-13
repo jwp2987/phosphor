@@ -462,3 +462,115 @@ fn a_failed_enumeration_leaves_the_bootstrap_names_intact() {
         }
     });
 }
+
+// --- Host registry wiring (`docs/design/moth-parliament.md`, "Requirement 5
+// needs a surface, and a registry that does not exist") ---------------------
+
+/// Breaks if the `record_host_reached(session, host_id.clone(), *sid, ctx)`
+/// call were removed from the `SessionConnected`/`SessionReconnected` arms in
+/// `Sessions::new`'s `RemoteServerManager` subscription, or if
+/// `record_host_reached` itself stopped calling
+/// `HostRegistryModel::record_reached` (e.g. passing `None` for `host_id`).
+///
+/// Drives `record_host_reached` directly rather than through a real
+/// `RemoteServerManagerEvent::SessionConnected` dispatch: that would require
+/// forcing `FeatureFlag::SshRemoteServer` on and standing up a real
+/// `RemoteServerManager` connection in a test harness, which nothing else in
+/// this codebase does. `record_host_reached` is generic over the caller's
+/// model type for exactly this reason (see its doc comment), so a `Sessions`
+/// update closure supplies a perfectly good `ModelContext` on its own; the
+/// two call sites themselves are a two-line, directly-inspectable diff.
+#[cfg(feature = "local_tty")]
+#[test]
+fn host_reached_records_host_id_in_registry() {
+    use crate::remote_server::host_registry::HostRegistryModel;
+    use crate::remote_server::manager::RemoteServerManager;
+    use crate::terminal::model::terminal_model::SubshellInitializationInfo;
+    use crate::terminal::ssh::util::InteractiveSshCommand;
+    use crate::terminal::warpify::settings::WarpifySettings;
+    use warp_core::HostId;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(HostRegistryModel::new);
+        app.add_singleton_model(RemoteServerManager::new);
+
+        let mut session_info = SessionInfo::new_for_test();
+        session_info.subshell_info = Some(SubshellInitializationInfo {
+            spawning_command: "ssh build-box".to_string(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: Some(InteractiveSshCommand {
+                host: Some("build-box".to_string()),
+                port: None,
+            }),
+        });
+        let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
+        let host_id = HostId::new("host-abc".to_string());
+
+        let sessions_handle = app.add_model(|_| Sessions::new_for_test());
+        sessions_handle.update(&mut app, |_sessions, ctx| {
+            super::record_host_reached(&session, host_id.clone(), SessionId::from(1), ctx);
+        });
+
+        app.read(|ctx| {
+            let entry = HostRegistryModel::as_ref(ctx)
+                .host("build-box")
+                .expect("recording a reached host must create/update its registry entry");
+            assert_eq!(entry.host_id, Some(host_id.clone()));
+            assert!(
+                entry.last_reached_at.is_some(),
+                "record_reached must stamp last_reached_at"
+            );
+
+            // Round-trips through settings, not just `HostRegistryModel`'s
+            // own in-memory cache.
+            let persisted = WarpifySettings::as_ref(ctx)
+                .remote_host_registry_entries
+                .value()
+                .iter()
+                .find(|entry| entry.target == "build-box")
+                .expect("build-box must have a persisted registry entry")
+                .clone();
+            assert_eq!(persisted.host_id.as_deref(), Some("host-abc"));
+        });
+    });
+}
+
+/// Breaks if `record_host_reached` recorded a target derived from the
+/// reported hostname/user instead of the parsed `ssh` destination (which
+/// would silently create a second, disagreeing entry for a host that
+/// already exists under its `warpify.ssh.remote_hosts` spelling), or if it
+/// stopped being a no-op when the session's bootstrap never parsed an `ssh`
+/// invocation at all.
+#[cfg(feature = "local_tty")]
+#[test]
+fn host_reached_is_a_noop_without_a_parsed_ssh_destination() {
+    use crate::remote_server::host_registry::HostRegistryModel;
+    use crate::remote_server::manager::RemoteServerManager;
+    use warp_core::HostId;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(HostRegistryModel::new);
+        app.add_singleton_model(RemoteServerManager::new);
+
+        // A local (non-SSH) session bootstrap: `subshell_info` stays `None`.
+        let session_info = SessionInfo::new_for_test();
+        let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
+        let host_id = HostId::new("host-abc".to_string());
+
+        let sessions_handle = app.add_model(|_| Sessions::new_for_test());
+        sessions_handle.update(&mut app, |_sessions, ctx| {
+            super::record_host_reached(&session, host_id, SessionId::from(1), ctx);
+        });
+
+        app.read(|ctx| {
+            assert_eq!(
+                HostRegistryModel::as_ref(ctx).hosts().count(),
+                0,
+                "a session with no parsed ssh target must not fabricate a registry entry"
+            );
+        });
+    });
+}

@@ -34,6 +34,8 @@ use warpui::{platform::OperatingSystem, Entity, ModelContext, SingletonEntity};
 #[cfg(feature = "local_tty")]
 use crate::features::FeatureFlag;
 #[cfg(feature = "local_tty")]
+use crate::remote_server::host_registry::HostRegistryModel;
+#[cfg(feature = "local_tty")]
 use crate::remote_server::manager::{RemoteServerManager, RemoteServerManagerEvent};
 use crate::server::telemetry::{BootstrappingInfo, TelemetryEvent};
 use crate::terminal::event::ExecutedExecutorCommandEvent;
@@ -157,6 +159,76 @@ impl Entity for Sessions {
     type Event = SessionsEvent;
 }
 
+/// Records in the host registry (`docs/design/moth-parliament.md`,
+/// "Requirement 5 needs a surface, and a registry that does not exist") that
+/// `host_id` was reached, called from the two `RemoteServerManager` events
+/// that mean exactly that: `SessionConnected` (first handshake) and
+/// `SessionReconnected` (a dropped connection came back). Those are the only
+/// two `RemoteServerManagerEvent` variants documented as meaning "this
+/// session's server is connected and ready" / "a reconnection attempt
+/// succeeded" -- every other variant is either session-lifecycle
+/// bookkeeping that carries no new reachability information (`SessionConnecting`,
+/// `SessionDisconnected`, `SessionDeregistered`, `SessionConnectionFailed`) or
+/// host/content-scoped forwarding that fires only after one of these two
+/// already has (`HostConnected` and friends), so this pair is the complete
+/// list.
+///
+/// A no-op unless the session's bootstrap also parsed a plain `ssh <target>`
+/// invocation (`Session::subshell_info`), because that parsed destination
+/// string is the same shape the registry keys `target` on (see
+/// `RemoteHostEntry::target`'s doc comment) -- e.g. what
+/// `remote_host_ssh_command` writes for `WorkspaceAction::AddRemoteHostTab`.
+/// Without it there is no key to record under.
+///
+/// Advisory only, per the registry's own module docs: this never gates or
+/// delays anything on the connection path, which has already completed (in
+/// both directions) by the time either event fires, and
+/// `HostRegistryModel::record_reached` cannot itself fail outward -- a
+/// settings-persistence error is logged inside it, never propagated -- so
+/// this call cannot block or slow the caller.
+///
+/// Generic over `M` (the caller's own model type) rather than fixed to
+/// `Sessions`, purely so tests can drive it from a `ModelContext` for a
+/// lightweight singleton instead of standing up a full `Sessions` +
+/// `RemoteServerManager` + feature-flag harness -- see
+/// `host_reached_records_host_id_in_registry` in
+/// `session_test.rs`. `ModelContext<M>: Deref<Target = AppContext>` for
+/// every `M`, so `RemoteServerManager::as_ref(ctx)` below works the same
+/// regardless of which model's context is passed in.
+/// **Not hooked to `RemoteServerManagerEvent::HostConnected`, deliberately.** That
+/// event looks like the obvious choice -- it is the host-scoped one and its doc says
+/// "downstream features should create per-host models" -- but it is emitted only when
+/// `is_first_session` is true (`manager.rs`, the `host_to_sessions` insert). It is a
+/// one-time-per-host init signal, so a second or later connection to a host already
+/// known to the manager never re-emits it, and `last_reached_at` would freeze at the
+/// first connection and never move again.
+///
+/// The session-scoped events fire on every connection, which is what "last reached"
+/// actually means. Recorded here because a refutation pass reached for `HostConnected`
+/// on the strength of its name and doc before reading its emission condition.
+#[cfg(feature = "local_tty")]
+fn record_host_reached<M>(
+    session: &Session,
+    host_id: warp_core::HostId,
+    session_id: SessionId,
+    ctx: &mut ModelContext<M>,
+) {
+    let Some(target) = session
+        .subshell_info()
+        .as_ref()
+        .and_then(|info| info.ssh_connection_info.as_ref())
+        .and_then(|ssh| ssh.host.clone())
+    else {
+        return;
+    };
+    let platform = RemoteServerManager::as_ref(ctx)
+        .platform_for_session(session_id)
+        .map(|platform| (platform.os.clone(), platform.arch.clone()));
+    HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
+        registry.record_reached(&target, Some(host_id), platform, ctx);
+    });
+}
+
 impl Sessions {
     pub fn new(
         executor_command_tx: Sender<ExecutorCommandEvent>,
@@ -177,6 +249,7 @@ impl Sessions {
                 } => {
                     if let Some(session) = sessions.sessions.get(sid) {
                         session.set_remote_host_id(Some(host_id.clone()));
+                        record_host_reached(session, host_id.clone(), *sid, ctx);
                     }
                 }
                 RemoteServerManagerEvent::SessionDisconnected {
@@ -225,6 +298,7 @@ impl Sessions {
                 | RemoteServerManagerEvent::SessionExited { .. } => {}
                 RemoteServerManagerEvent::SessionReconnected {
                     session_id: sid,
+                    host_id,
                     client,
                     ..
                 } => {
@@ -233,6 +307,7 @@ impl Sessions {
                             Arc::new(RemoteServerCommandExecutor::new(*sid, client.clone()));
                         session.set_command_executor(new_executor);
                         log::info!("Swapped command executor for session {sid:?} after reconnect");
+                        record_host_reached(session, host_id.clone(), *sid, ctx);
                     }
                 }
             });

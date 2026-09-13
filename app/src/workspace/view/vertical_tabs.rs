@@ -4599,6 +4599,7 @@ impl PaneGroup {
             IPaneType::ImageViewer
             | IPaneType::GetStarted
             | IPaneType::Welcome
+            | IPaneType::RemoteHostsDashboard
             | IPaneType::DeferredPlaceholder => TypedPane::Other,
             #[cfg(test)]
             IPaneType::Dummy => TypedPane::Other,

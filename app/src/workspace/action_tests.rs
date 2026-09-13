@@ -38,6 +38,15 @@ fn add_remote_host_tab_saves_workspace_state() {
 }
 
 #[test]
+fn add_remote_hosts_dashboard_tab_saves_workspace_state() {
+    // Same reasoning as `add_remote_host_tab_saves_workspace_state` just above: opening the
+    // dashboard adds a tab, so it belongs in the "true" arm. Moving this arm into one of the
+    // "false" groups instead (the match has no wildcard, so it stays exhaustive either way) is
+    // exactly the edit this test is meant to catch.
+    assert!(WorkspaceAction::AddRemoteHostsDashboardTab.should_save_app_state_on_action());
+}
+
+#[test]
 fn settings_popup_toggle_does_not_save_workspace_state() {
     assert!(!WorkspaceAction::ToggleVerticalTabsSettingsPopup.should_save_app_state_on_action());
 }
