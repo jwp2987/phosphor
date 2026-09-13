@@ -94,6 +94,10 @@ use remote_server::setup::{GlibcVersion, RemoteArch, RemoteOs, UnsupportedReason
 use warp_core::HostId;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
+// `Setting::value`/`set_value` are trait methods; the trait must be in scope to call
+// them. Imported anonymously, matching `appearance.rs` and `wasm_nux_dialog.rs`.
+use settings::Setting as _;
+
 use crate::terminal::warpify::settings::{
     PersistedHostGroup, PersistedRemoteHost, WarpifySettings, WarpifySettingsChangedEvent,
 };

@@ -215,6 +215,14 @@ impl Sessions {
                 | RemoteServerManagerEvent::CodebaseIndexStatusUpdated { .. }
                 | RemoteServerManagerEvent::CodebaseIndexMutationFailed { .. }
                 | RemoteServerManagerEvent::ServerMessageDecodingError { .. } => {}
+                // Remote pty sessions carry no meaning for this consumer, and nothing
+                // implements the daemon side yet -- see
+                // `docs/design/moth-parliament.md`, "Scoping session ownership". Listed
+                // explicitly because this match is exhaustive on purpose: whoever wires
+                // pty output to a block list should be made to come here and decide, not
+                // find a wildcard already swallowing it.
+                RemoteServerManagerEvent::SessionOutputChunk { .. }
+                | RemoteServerManagerEvent::SessionExited { .. } => {}
                 RemoteServerManagerEvent::SessionReconnected {
                     session_id: sid,
                     client,
