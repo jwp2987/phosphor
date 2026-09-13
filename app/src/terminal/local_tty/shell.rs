@@ -472,6 +472,29 @@ impl DirectShellStarter {
         }
     }
 
+    /// Constructs a `DirectShellStarter` for a shell path the caller already
+    /// resolved and validated itself (typically via
+    /// [`supported_shell_path_and_type`]), for spawning contexts that pick
+    /// their own shell instead of going through `ShellStarter::init`'s
+    /// settings-driven discovery. Currently only the remote-server daemon
+    /// (`docs/design/moth-parliament.md`, "the daemon holds the pty"), which
+    /// has no `AvailableShells` model -- or any settings service at all -- to
+    /// ask.
+    pub(crate) fn for_explicit_shell(shell_path: PathBuf, shell_type: ShellType) -> Self {
+        let session_id = generate_session_id();
+        let args = arguments_for_session_spawning_command(
+            shell_path.to_string_lossy().as_ref(),
+            shell_type,
+            session_id,
+        );
+        Self {
+            shell_type,
+            shell_path,
+            args,
+            session_id,
+        }
+    }
+
     pub fn shell_path(&self) -> &Path {
         &self.shell_path
     }

@@ -7,26 +7,34 @@
 //! the `remote_server::session_store::SessionStore` integration, the
 //! response shapes and the error paths in `server_model.rs` can all be
 //! proven by unit tests that spawn no process -- see
-//! [`FakePtySessionOperations`]. A test that needs a real pty is a test
-//! that will not run (`docs/design/moth-parliament.md`, "Working practice on
-//! this branch"), so the trait exists precisely to keep the dispatch logic
-//! testable without one.
+//! [`FakePtySessionOperations`]. The trait exists precisely to keep that
+//! dispatch logic testable without a real pty. The real backend itself is a
+//! narrow, deliberate exception: `pty_session_ops_tests.rs` has exactly one
+//! test that does spawn a process, because there is no other way to prove
+//! `LocalTtyPtySessionOperations` actually owns one.
 //!
-//! Deliberately ctx-free: no method here takes a `ModelContext` /
-//! `AppContext`. `server_model_tests.rs` has an established convention of
-//! never constructing one for a plain unit test (see its comment on
-//! `subscribe_git_status_records_subscriber_and_current_repo`, which tests a
-//! ctx-free helper for exactly this reason) -- keeping this seam ctx-free
-//! keeps the session RPCs testable the same way. See
-//! [`LocalTtyPtySessionOperations`]'s doc comment for what that costs the
-//! real backend.
+//! Mostly ctx-free: only `spawn` takes a `ModelContext` / `AppContext`, since
+//! starting a real pty needs one (`local_tty::Pty::new` looks up the
+//! `PtySpawner` singleton through it) and nothing else does.
+//! `write_stdin`/`resize`/`signal`/`kill` all act on an already-spawned pty
+//! and stay ctx-free, so most of `server_model_tests.rs`'s dispatch tests
+//! stay plain unit tests with no `App` behind them (see its comment on
+//! `subscribe_git_status_records_subscriber_and_current_repo` for this
+//! fork's established convention there); the tests that exercise `spawn`
+//! wrap in `warpui::App::test` instead, the same way other ctx-taking
+//! handlers in that file already do.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use remote_server::RemotePtySessionId;
+use remote_server::session_store::SessionExitStatus;
+use warpui::AppContext;
 
 use super::proto::RemoteSessionSignal;
+
+#[cfg(all(feature = "local_tty", unix))]
+mod remote_pty_thread;
 
 /// What a session is spawned with -- the daemon-side counterpart of
 /// `SpawnSession`'s fields. Kept as its own type, rather than passing the
@@ -65,6 +73,19 @@ impl PtySessionOpError {
     }
 }
 
+/// Events the real pty backend forwards toward `ServerModel`
+/// (`handle_pty_session_output` / `handle_pty_session_exit`) as they occur.
+///
+/// Defined here, rather than inside the unix-only `remote_pty_thread`
+/// submodule that produces them, so `ServerModel::new` can build the channel
+/// and every `LocalTtyPtySessionOperations` variant -- including the two that
+/// never actually spawn anything -- can share one `new` signature regardless
+/// of platform or the `local_tty` feature.
+pub enum PtySessionEvent {
+    Output(Vec<u8>),
+    Exited(SessionExitStatus),
+}
+
 /// The pty operations the daemon's five session RPCs dispatch through.
 ///
 /// Five methods, not four: `signal` is how the wire asks a *running*
@@ -81,7 +102,19 @@ pub trait PtySessionOperations: Send + Sync {
     /// `ServerModel::handle_spawn_session` gates a retried `SpawnSession` on
     /// `SessionStore` registration before ever reaching here, so this trait
     /// does not need its own idempotency.
-    fn spawn(&self, id: &RemotePtySessionId, spec: &PtySpawnSpec) -> Result<(), PtySessionOpError>;
+    ///
+    /// Takes `ctx` -- unlike the four operations below, which all act on an
+    /// already-spawned pty and need nothing from the entity system -- because
+    /// starting a real one requires it: `local_tty::Pty::new` looks up the
+    /// `PtySpawner` singleton through `ctx`. It is available at every
+    /// dispatch site in `server_model.rs` already (`ModelContext` derefs to
+    /// `AppContext`), so threading it through costs nothing at the call site.
+    fn spawn(
+        &self,
+        id: &RemotePtySessionId,
+        spec: &PtySpawnSpec,
+        ctx: &mut AppContext,
+    ) -> Result<(), PtySessionOpError>;
 
     /// Writes `data` to `id`'s stdin. Errors (rather than silently dropping
     /// the bytes) if `id` names no live session.
@@ -128,81 +161,140 @@ pub fn session_exit_status_from_process(
     }
 }
 
-/// Real backend for [`PtySessionOperations`], backed by
-/// `app::terminal::local_tty`.
+/// Real backend for [`PtySessionOperations`] on unix, backed by
+/// `app::terminal::local_tty`. See `remote_pty_thread` (this module's
+/// unix-only submodule) for the dedicated-OS-thread-per-session mechanism
+/// that owns each spawned pty; this type is just the map from id to a live
+/// session plus the channel new sessions forward events through.
 ///
-/// **Not wired to a live OS pty.** `local_tty::Pty::new(options, _, ctx: &mut
-/// AppContext)` is the only constructor (`app/src/terminal/local_tty/unix.rs`),
-/// and it looks up the `PtySpawner` singleton through `ctx`. Two things stand
-/// between this backend and that call, and both are decisions about daemon
-/// startup and dispatch-context threading, not pty mechanism -- fixing either
-/// alone would be papering over the other:
-///
-/// 1. `PtySpawner` is never registered as a singleton for the daemon binary.
-///    `app/src/remote_server/mod.rs::run_daemon_app` registers
-///    `CodebaseIndexManager`, `GlobalBufferModel`, `WarpManagedPathsWatcher`
-///    and others, each with a comment explaining why it must happen before
-///    `ServerModel` -- `PtySpawner` needs the same treatment, and
-///    `PtySpawner::new`'s own doc comment ("should be called extremely early
-///    in the application startup process ... to minimize the number of
-///    already-obtained resources that could leak into forked subprocesses")
-///    means where in that order it goes is itself a decision, not a
-///    mechanical addition.
-/// 2. Nothing here owns a pty once the client is gone. `Pty::new` returns a
-///    handle whose I/O is driven by a dedicated OS thread and mio event loop
-///    set up by the caller (`terminal_manager.rs`); the daemon has no
-///    equivalent, and a detached session's whole purpose is to keep reading
-///    after its client disconnects. That infrastructure -- who owns the
-///    reader, where output is pumped into `append_output`, what reaps the
-///    child -- is the actual missing piece.
-///
-/// **What is NOT a blocker, despite an earlier version of this comment saying
-/// so:** that `Pty::new` takes `ctx` while this trait is ctx-free. `ctx` is
-/// already in hand at every dispatch site in `server_model.rs` -- the
-/// neighbouring `handle_write_file` arm is passed it two lines away -- and
-/// `ModelContext` derefs to `AppContext`, so `spawn` can simply take one when
-/// item 3 lands. Nor does testability force the issue: `server_model_tests.rs`
-/// routinely drives ctx-taking methods through `App::test`. The ctx-free shape
-/// is a convenience for the four operations that genuinely do not need it
-/// (`write_stdin`/`resize`/`signal`/`kill` act on an already-spawned pty), not
-/// a wall in front of the one that does. Refutation caught the earlier framing
-/// presenting a choice made here as an external constraint.
-///
-/// `docs/design/moth-parliament.md`'s dependency-ordered work list names this
-/// exact gap as its own, later item -- "3. Remote-side ownership: the daemon
-/// holds the pty" -- distinct from "2. Session operations" (the dispatch this
-/// file implements). Closing it is that item, not a bookkeeping fix here.
-///
-/// Until then, every operation below behaves *correctly* for what this
-/// backend actually has: no session was ever spawned, so every id genuinely
-/// is unknown to it.
-#[cfg(feature = "local_tty")]
+/// `docs/design/moth-parliament.md`'s dependency-ordered work list names
+/// this as its own item -- "3. Remote-side ownership: the daemon holds the
+/// pty" -- distinct from "2. Session operations" (the dispatch
+/// `server_model.rs` already does). This is that item.
+#[cfg(all(feature = "local_tty", unix))]
+pub struct LocalTtyPtySessionOperations {
+    sessions: Mutex<HashMap<RemotePtySessionId, remote_pty_thread::LiveSession>>,
+    events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>,
+}
+
+#[cfg(all(feature = "local_tty", unix))]
+impl LocalTtyPtySessionOperations {
+    pub fn new(events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>) -> Self {
+        Self {
+            sessions: Mutex::new(HashMap::new()),
+            events_tx,
+        }
+    }
+}
+
+#[cfg(all(feature = "local_tty", unix))]
+impl PtySessionOperations for LocalTtyPtySessionOperations {
+    fn spawn(
+        &self,
+        id: &RemotePtySessionId,
+        spec: &PtySpawnSpec,
+        ctx: &mut AppContext,
+    ) -> Result<(), PtySessionOpError> {
+        let session =
+            remote_pty_thread::LiveSession::spawn(id.clone(), spec, ctx, self.events_tx.clone())?;
+        self.sessions.lock().unwrap().insert(id.clone(), session);
+        Ok(())
+    }
+
+    fn write_stdin(&self, id: &RemotePtySessionId, data: &[u8]) -> Result<(), PtySessionOpError> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(id)
+            .ok_or_else(|| PtySessionOpError::unknown_session(id))?;
+        session.write_stdin(data.to_vec());
+        Ok(())
+    }
+
+    fn resize(
+        &self,
+        id: &RemotePtySessionId,
+        rows: u32,
+        cols: u32,
+    ) -> Result<(), PtySessionOpError> {
+        let sessions = self.sessions.lock().unwrap();
+        let session = sessions
+            .get(id)
+            .ok_or_else(|| PtySessionOpError::unknown_session(id))?;
+        session.resize(rows, cols);
+        Ok(())
+    }
+
+    fn signal(
+        &self,
+        id: &RemotePtySessionId,
+        signal: RemoteSessionSignal,
+    ) -> Result<(), PtySessionOpError> {
+        let pid = {
+            let sessions = self.sessions.lock().unwrap();
+            let session = sessions
+                .get(id)
+                .ok_or_else(|| PtySessionOpError::unknown_session(id))?;
+            session.pid()
+        };
+        // A running terminal delivers Ctrl-C/Ctrl-\ through the tty driver to
+        // whichever process group currently owns the foreground; sending an
+        // explicit signal to the shell's own process group (see
+        // `remote_pty_thread::send_signal_to_process_group`) is the closest
+        // equivalent available over this wire protocol.
+        let raw_signal = match signal {
+            RemoteSessionSignal::Interrupt => libc::SIGINT,
+            RemoteSessionSignal::Terminate => libc::SIGTERM,
+            RemoteSessionSignal::Kill => libc::SIGKILL,
+            RemoteSessionSignal::Hangup => libc::SIGHUP,
+            // `handle_signal_session` already rejects this before ever
+            // reaching a backend; handled here only to keep the match
+            // exhaustive.
+            RemoteSessionSignal::Unspecified => {
+                return Err(PtySessionOpError::new(
+                    "cannot send an unspecified signal to a pty",
+                ));
+            }
+        };
+        remote_pty_thread::send_signal_to_process_group(pid, raw_signal)
+            .map_err(|err| PtySessionOpError::new(format!("failed to send signal: {err}")))
+    }
+
+    fn kill(&self, id: &RemotePtySessionId) {
+        // `remove` makes this safe to call twice: the first call takes the
+        // only `LiveSession` for `id` out of the map, so a second call (or a
+        // call for an id this backend never spawned) finds nothing and is a
+        // no-op, matching the trait's contract.
+        if let Some(session) = self.sessions.lock().unwrap().remove(id) {
+            session.join();
+        }
+    }
+}
+
+/// Stub backend for `local_tty` builds on a non-unix target. The real
+/// backend (`remote_pty_thread`) registers the pty's raw fd with mio through
+/// `mio::unix::SourceFd`, which has no Windows equivalent here, so this type
+/// exists only so the crate still compiles off unix; it never actually spawns
+/// anything.
+#[cfg(all(feature = "local_tty", not(unix)))]
 pub struct LocalTtyPtySessionOperations;
 
-#[cfg(feature = "local_tty")]
+#[cfg(all(feature = "local_tty", not(unix)))]
 impl LocalTtyPtySessionOperations {
-    pub fn new() -> Self {
+    pub fn new(_events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>) -> Self {
         Self
     }
 }
 
-#[cfg(feature = "local_tty")]
-impl Default for LocalTtyPtySessionOperations {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[cfg(feature = "local_tty")]
+#[cfg(all(feature = "local_tty", not(unix)))]
 impl PtySessionOperations for LocalTtyPtySessionOperations {
     fn spawn(
         &self,
         id: &RemotePtySessionId,
         _spec: &PtySpawnSpec,
+        _ctx: &mut AppContext,
     ) -> Result<(), PtySessionOpError> {
         Err(PtySessionOpError(format!(
-            "remote pty spawning is not wired up yet for session {id} -- see the doc comment on \
-             LocalTtyPtySessionOperations"
+            "remote pty spawning is not implemented on this platform yet for session {id}"
         )))
     }
 
@@ -239,15 +331,8 @@ pub struct LocalTtyPtySessionOperations;
 
 #[cfg(not(feature = "local_tty"))]
 impl LocalTtyPtySessionOperations {
-    pub fn new() -> Self {
+    pub fn new(_events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>) -> Self {
         Self
-    }
-}
-
-#[cfg(not(feature = "local_tty"))]
-impl Default for LocalTtyPtySessionOperations {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -257,6 +342,7 @@ impl PtySessionOperations for LocalTtyPtySessionOperations {
         &self,
         _id: &RemotePtySessionId,
         _spec: &PtySpawnSpec,
+        _ctx: &mut AppContext,
     ) -> Result<(), PtySessionOpError> {
         Err(PtySessionOpError(
             "remote pty sessions require the local_tty feature".to_string(),
@@ -391,7 +477,12 @@ impl FakePtySessionOperations {
 }
 
 impl PtySessionOperations for FakePtySessionOperations {
-    fn spawn(&self, id: &RemotePtySessionId, spec: &PtySpawnSpec) -> Result<(), PtySessionOpError> {
+    fn spawn(
+        &self,
+        id: &RemotePtySessionId,
+        spec: &PtySpawnSpec,
+        _ctx: &mut AppContext,
+    ) -> Result<(), PtySessionOpError> {
         let mut state = self.state.lock().unwrap();
         if let Some(message) = state.spawn_failure.clone() {
             // Recorded as an attempt even though it failed: a test asserting a

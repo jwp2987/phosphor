@@ -29,12 +29,27 @@ pub trait PtyHandle: Send + Sync {
 
     /// Kills the pty process and waits for its successful termination.
     fn kill(&mut self) -> Result<()>;
+
+    /// The process's real exit status, if `has_process_terminated` has
+    /// already observed one. Every caller so far (the terminal model) only
+    /// needed the bool `has_process_terminated` gives, so this defaults to
+    /// `None` for handles that cannot recover it (a server-hosted pty's
+    /// child lives in a different process; Windows' `PseudoConsoleChild`
+    /// isn't wired up here) -- callers needing a real status must be able to
+    /// tolerate that.
+    fn take_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        None
+    }
 }
 
 /// A handle for a pty that is a direct child of the current process.
 #[cfg(unix)]
 struct DirectPtyHandle {
     child: Child,
+    /// Cached by `has_process_terminated` the first time it observes a real
+    /// exit -- `Child::try_wait` reaps the process and returns its
+    /// `ExitStatus` exactly once, so this is the only chance to capture it.
+    exit_status: Option<std::process::ExitStatus>,
 }
 
 #[cfg(unix)]
@@ -44,11 +59,13 @@ impl PtyHandle for DirectPtyHandle {
     }
 
     fn has_process_terminated(&mut self) -> Result<bool> {
+        if self.exit_status.is_some() {
+            return Ok(true);
+        }
         // If the child has exited, try_wait will return Ok(Some(exit_status)).
-        self.child
-            .try_wait()
-            .map(|inner| inner.is_some())
-            .map_err(anyhow::Error::from)
+        let status = self.child.try_wait().map_err(anyhow::Error::from)?;
+        self.exit_status = status;
+        Ok(self.exit_status.is_some())
     }
 
     fn kill(&mut self) -> Result<()> {
@@ -57,6 +74,10 @@ impl PtyHandle for DirectPtyHandle {
             Ok(_) => Ok(()),
             Err(err) => bail!(err),
         }
+    }
+
+    fn take_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.exit_status
     }
 }
 
@@ -234,6 +255,8 @@ impl PtySpawner {
             })?;
         let direct_pty_handle = Box::new(DirectPtyHandle {
             child: pty_spawn_info.child,
+            #[cfg(unix)]
+            exit_status: None,
         });
         Ok((pty_spawn_info.result, direct_pty_handle))
     }

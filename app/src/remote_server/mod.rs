@@ -125,7 +125,24 @@ pub(super) fn run_daemon_app(
     use warpui::platform::AppBuilder;
     use warpui::SingletonEntity;
 
+    // Session ownership (`docs/design/moth-parliament.md`, "the daemon holds
+    // the pty"): constructed before `AppBuilder` even exists, mirroring
+    // `app/src/lib.rs`'s non-daemon `initialize_app`. `PtySpawner::new`'s own
+    // doc comment says it "should be called extremely early in the
+    // application startup process ... to minimize the number of
+    // already-obtained resources that could leak into forked subprocesses" --
+    // earliest here means before every other singleton below, all of which
+    // open files/watchers/sockets that a later-constructed spawner would
+    // otherwise risk leaking into a spawned pty's child process.
+    #[cfg(feature = "local_tty")]
+    let pty_spawner = crate::terminal::local_tty::spawner::PtySpawner::new()?;
+
     AppBuilder::new_headless(AppCallbacks::default(), Box::new(()), None).run(move |ctx| {
+        // See the comment above: registered first, ahead of every other
+        // singleton in this closure.
+        #[cfg(feature = "local_tty")]
+        ctx.add_singleton_model(move |_ctx| pty_spawner);
+
         // Rotate log files from the previous daemon invocation in the background.
         ctx.background_executor()
             .spawn(warp_logging::rotate_log_files())

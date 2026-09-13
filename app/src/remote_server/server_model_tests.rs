@@ -1303,47 +1303,66 @@ fn spawn_session_request(id: &RemotePtySessionId, cwd: &str) -> SpawnSession {
     }
 }
 
+// `handle_spawn_session` takes `ctx` (it needs the entity system to reach
+// `PtySpawner` in the real backend -- see `pty_session_ops`'s module doc
+// comment), so every test below that calls it wraps in `warpui::App::test`
+// and drives the model through a `ModelHandle`, the same way
+// `deregister_connection_cleans_up_diff_state_subscriptions` above does for
+// its own ctx-taking handler. `FakePtySessionOperations` never reads `ctx`,
+// so nothing here needs `PtySpawner` registered.
 #[test]
 fn retried_spawn_starts_exactly_one_pty_and_preserves_output() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    let mut model = test_model_with_pty(fake.clone());
-    let id = RemotePtySessionId::from("session-1".to_string());
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let model_fake = fake.clone();
+        let handle = app.add_model(move |_ctx| test_model_with_pty(model_fake));
+        let id = RemotePtySessionId::from("session-1".to_string());
 
-    let first = model.handle_spawn_session(spawn_session_request(&id, "/first"));
-    let server_message::Message::SpawnSessionResponse(response) = first.into_message() else {
-        panic!("expected SpawnSessionResponse");
-    };
-    assert!(matches!(
-        response.result,
-        Some(spawn_session_response::Result::Success(_))
-    ));
-    assert_eq!(fake.spawn_count(&id), 1);
+        let first = handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/first"), ctx)
+        });
+        let server_message::Message::SpawnSessionResponse(response) = first.into_message() else {
+            panic!("expected SpawnSessionResponse");
+        };
+        assert!(matches!(
+            response.result,
+            Some(spawn_session_response::Result::Success(_))
+        ));
+        assert_eq!(fake.spawn_count(&id), 1);
 
-    model.session_store.append_output(&id, b"hello").unwrap();
+        handle.update(&mut app, |model, _ctx| {
+            model.session_store.append_output(&id, b"hello").unwrap();
+        });
 
-    // A retry (same client-minted id, e.g. after a lost response) must
-    // answer success without starting a second pty or disturbing the first
-    // session's state.
-    let retried = model.handle_spawn_session(spawn_session_request(&id, "/second"));
-    let server_message::Message::SpawnSessionResponse(retried_response) = retried.into_message()
-    else {
-        panic!("expected SpawnSessionResponse");
-    };
-    assert!(matches!(
-        retried_response.result,
-        Some(spawn_session_response::Result::Success(_))
-    ));
-    assert_eq!(fake.spawn_count(&id), 1);
+        // A retry (same client-minted id, e.g. after a lost response) must
+        // answer success without starting a second pty or disturbing the
+        // first session's state.
+        let retried = handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/second"), ctx)
+        });
+        let server_message::Message::SpawnSessionResponse(retried_response) =
+            retried.into_message()
+        else {
+            panic!("expected SpawnSessionResponse");
+        };
+        assert!(matches!(
+            retried_response.result,
+            Some(spawn_session_response::Result::Success(_))
+        ));
+        assert_eq!(fake.spawn_count(&id), 1);
 
-    let peeked = model.session_store.peek_output(&id).unwrap();
-    assert_eq!(peeked.bytes, b"hello");
-    let summary = model
-        .session_store
-        .list()
-        .into_iter()
-        .find(|summary| summary.id == id)
-        .expect("session still registered");
-    assert_eq!(summary.metadata.cwd, "/first");
+        handle.read(&app, |model, _ctx| {
+            let peeked = model.session_store.peek_output(&id).unwrap();
+            assert_eq!(peeked.bytes, b"hello");
+            let summary = model
+                .session_store
+                .list()
+                .into_iter()
+                .find(|summary| summary.id == id)
+                .expect("session still registered");
+            assert_eq!(summary.metadata.cwd, "/first");
+        });
+    });
 }
 
 #[test]
@@ -1415,30 +1434,38 @@ fn signal_on_unknown_session_returns_wire_error() {
 // `pty_ops.signal`.
 #[test]
 fn an_unspecified_signal_is_rejected_rather_than_dispatched() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    let mut model = test_model_with_pty(fake.clone());
-    let id = RemotePtySessionId::from("session-unspecified".to_string());
-    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let model_fake = fake.clone();
+        let handle = app.add_model(move |_ctx| test_model_with_pty(model_fake));
+        let id = RemotePtySessionId::from("session-unspecified".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx);
+        });
 
-    let response = model.handle_signal_session(SignalSession {
-        remote_session_id: id.clone().into(),
-        signal: RemoteSessionSignal::Unspecified.into(),
+        let response = handle.update(&mut app, |model, _ctx| {
+            model.handle_signal_session(SignalSession {
+                remote_session_id: id.clone().into(),
+                signal: RemoteSessionSignal::Unspecified.into(),
+            })
+        });
+
+        let server_message::Message::SignalSessionResponse(response) = response.into_message()
+        else {
+            panic!("expected SignalSessionResponse");
+        };
+        assert!(
+            matches!(
+                response.result,
+                Some(signal_session_response::Result::Error(_))
+            ),
+            "an unset signal must be an error, not a dispatched no-op"
+        );
+        assert!(
+            fake.signals_for(&id).is_empty(),
+            "an unspecified signal must never reach the pty"
+        );
     });
-
-    let server_message::Message::SignalSessionResponse(response) = response.into_message() else {
-        panic!("expected SignalSessionResponse");
-    };
-    assert!(
-        matches!(
-            response.result,
-            Some(signal_session_response::Result::Error(_))
-        ),
-        "an unset signal must be an error, not a dispatched no-op"
-    );
-    assert!(
-        fake.signals_for(&id).is_empty(),
-        "an unspecified signal must never reach the pty"
-    );
 }
 
 // A spawn that fails must not leave the id registered: a session in the store
@@ -1452,158 +1479,201 @@ fn an_unspecified_signal_is_rejected_rather_than_dispatched() {
 // leaves the failure branch removing nothing.
 #[test]
 fn a_failed_spawn_leaves_no_session_behind_in_the_store() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    fake.fail_spawns_with("pty allocation refused");
-    let mut model = test_model_with_pty(fake.clone());
-    let id = RemotePtySessionId::from("session-doomed".to_string());
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        fake.fail_spawns_with("pty allocation refused");
+        let model_fake = fake.clone();
+        let handle = app.add_model(move |_ctx| test_model_with_pty(model_fake));
+        let id = RemotePtySessionId::from("session-doomed".to_string());
 
-    let response = model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+        let response = handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx)
+        });
 
-    let server_message::Message::SpawnSessionResponse(response) = response.into_message() else {
-        panic!("expected SpawnSessionResponse");
-    };
-    assert!(
-        matches!(
-            response.result,
-            Some(spawn_session_response::Result::Error(_))
-        ),
-        "a failed spawn must report the failure"
-    );
+        let server_message::Message::SpawnSessionResponse(response) = response.into_message()
+        else {
+            panic!("expected SpawnSessionResponse");
+        };
+        assert!(
+            matches!(
+                response.result,
+                Some(spawn_session_response::Result::Error(_))
+            ),
+            "a failed spawn must report the failure"
+        );
 
-    let listed = model.handle_list_sessions();
-    let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
-        panic!("expected ListSessionsResponse");
-    };
-    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
-        panic!("expected a successful listing");
-    };
-    assert!(
-        success.sessions.is_empty(),
-        "a session whose pty never started must not be listed as running"
-    );
+        let listed = handle.update(&mut app, |model, _ctx| model.handle_list_sessions());
+        let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+            panic!("expected ListSessionsResponse");
+        };
+        let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+            panic!("expected a successful listing");
+        };
+        assert!(
+            success.sessions.is_empty(),
+            "a session whose pty never started must not be listed as running"
+        );
+    });
 }
 
 #[test]
 fn resize_updates_what_list_sessions_reports() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    let mut model = test_model_with_pty(fake);
-    let id = RemotePtySessionId::from("session-resize".to_string());
-    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let handle = app.add_model(move |_ctx| test_model_with_pty(fake));
+        let id = RemotePtySessionId::from("session-resize".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx);
+        });
 
-    let response = model.handle_resize_session(ResizeSession {
-        remote_session_id: id.clone().into(),
-        rows: 50,
-        cols: 120,
+        let response = handle.update(&mut app, |model, _ctx| {
+            model.handle_resize_session(ResizeSession {
+                remote_session_id: id.clone().into(),
+                rows: 50,
+                cols: 120,
+            })
+        });
+        let server_message::Message::ResizeSessionResponse(response) = response.into_message()
+        else {
+            panic!("expected ResizeSessionResponse");
+        };
+        assert!(matches!(
+            response.result,
+            Some(resize_session_response::Result::Success(_))
+        ));
+
+        let listed = handle.update(&mut app, |model, _ctx| model.handle_list_sessions());
+        let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+            panic!("expected ListSessionsResponse");
+        };
+        let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+            panic!("expected ListSessions success");
+        };
+        let summary = success
+            .sessions
+            .into_iter()
+            .find(|summary| summary.remote_session_id == id.as_str())
+            .expect("resized session listed");
+        assert_eq!(summary.rows, 50);
+        assert_eq!(summary.cols, 120);
     });
-    let server_message::Message::ResizeSessionResponse(response) = response.into_message() else {
-        panic!("expected ResizeSessionResponse");
-    };
-    assert!(matches!(
-        response.result,
-        Some(resize_session_response::Result::Success(_))
-    ));
-
-    let server_message::Message::ListSessionsResponse(listed) =
-        model.handle_list_sessions().into_message()
-    else {
-        panic!("expected ListSessionsResponse");
-    };
-    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
-        panic!("expected ListSessions success");
-    };
-    let summary = success
-        .sessions
-        .into_iter()
-        .find(|summary| summary.remote_session_id == id.as_str())
-        .expect("resized session listed");
-    assert_eq!(summary.rows, 50);
-    assert_eq!(summary.cols, 120);
 }
 
 #[test]
 fn list_sessions_maps_every_field() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    let mut model = test_model_with_pty(fake);
-    let id = RemotePtySessionId::from("session-fields".to_string());
-    model.handle_spawn_session(SpawnSession {
-        remote_session_id: id.clone().into(),
-        cwd: "/workspace/repo".to_string(),
-        shell: Some("/bin/zsh".to_string()),
-        environment_variables: HashMap::new(),
-        rows: 40,
-        cols: 132,
-    });
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let handle = app.add_model(move |_ctx| test_model_with_pty(fake));
+        let id = RemotePtySessionId::from("session-fields".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(
+                SpawnSession {
+                    remote_session_id: id.clone().into(),
+                    cwd: "/workspace/repo".to_string(),
+                    shell: Some("/bin/zsh".to_string()),
+                    environment_variables: HashMap::new(),
+                    rows: 40,
+                    cols: 132,
+                },
+                ctx,
+            );
+        });
 
-    let server_message::Message::ListSessionsResponse(listed) =
-        model.handle_list_sessions().into_message()
-    else {
-        panic!("expected ListSessionsResponse");
-    };
-    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
-        panic!("expected ListSessions success");
-    };
-    assert_eq!(success.sessions.len(), 1);
-    let summary = &success.sessions[0];
-    assert_eq!(summary.remote_session_id, id.as_str());
-    assert_eq!(summary.cwd, "/workspace/repo");
-    assert_eq!(summary.shell.as_deref(), Some("/bin/zsh"));
-    assert_eq!(summary.rows, 40);
-    assert_eq!(summary.cols, 132);
+        let listed = handle.update(&mut app, |model, _ctx| model.handle_list_sessions());
+        let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+            panic!("expected ListSessionsResponse");
+        };
+        let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+            panic!("expected ListSessions success");
+        };
+        assert_eq!(success.sessions.len(), 1);
+        let summary = &success.sessions[0];
+        assert_eq!(summary.remote_session_id, id.as_str());
+        assert_eq!(summary.cwd, "/workspace/repo");
+        assert_eq!(summary.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(summary.rows, 40);
+        assert_eq!(summary.cols, 132);
+    });
 }
 
 #[test]
 fn pty_output_reaches_the_store() {
-    let mut model = test_model();
-    let id = RemotePtySessionId::from("session-output".to_string());
-    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| test_model());
+        let id = RemotePtySessionId::from("session-output".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx);
+        });
 
-    model.handle_pty_session_output(id.clone(), b"hello from the pty".to_vec());
+        handle.update(&mut app, |model, _ctx| {
+            model.handle_pty_session_output(id.clone(), b"hello from the pty".to_vec());
+        });
 
-    let peeked = model.session_store.peek_output(&id).unwrap();
-    assert_eq!(peeked.bytes, b"hello from the pty");
+        handle.read(&app, |model, _ctx| {
+            let peeked = model.session_store.peek_output(&id).unwrap();
+            assert_eq!(peeked.bytes, b"hello from the pty");
+        });
+    });
 }
 
 #[test]
 fn pty_exit_with_code_records_it() {
-    let fake = Arc::new(FakePtySessionOperations::new());
-    let mut model = test_model_with_pty(fake.clone());
-    let id = RemotePtySessionId::from("session-exit-code".to_string());
-    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let model_fake = fake.clone();
+        let handle = app.add_model(move |_ctx| test_model_with_pty(model_fake));
+        let id = RemotePtySessionId::from("session-exit-code".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx);
+        });
 
-    model.handle_pty_session_exit(id.clone(), SessionExitStatus::exited(42));
+        handle.update(&mut app, |model, _ctx| {
+            model.handle_pty_session_exit(id.clone(), SessionExitStatus::exited(42));
+        });
 
-    let summary = model
-        .session_store
-        .list()
-        .into_iter()
-        .find(|summary| summary.id == id)
-        .expect("session still listed after exit");
-    assert_eq!(
-        summary.state,
-        remote_server::session_store::SessionState::Exited(SessionExitStatus::exited(42))
-    );
-    // The pty backend's OS resources for this id are released once its exit
-    // is recorded.
-    assert!(fake.was_killed(&id));
+        handle.read(&app, |model, _ctx| {
+            let summary = model
+                .session_store
+                .list()
+                .into_iter()
+                .find(|summary| summary.id == id)
+                .expect("session still listed after exit");
+            assert_eq!(
+                summary.state,
+                remote_server::session_store::SessionState::Exited(SessionExitStatus::exited(42))
+            );
+        });
+        // The pty backend's OS resources for this id are released once its
+        // exit is recorded.
+        assert!(fake.was_killed(&id));
+    });
 }
 
 #[test]
 fn pty_exit_by_signal_records_no_code() {
-    let mut model = test_model();
-    let id = RemotePtySessionId::from("session-exit-signal".to_string());
-    model.handle_spawn_session(spawn_session_request(&id, "/repo"));
+    warpui::App::test((), |mut app| async move {
+        let handle = app.add_model(|_ctx| test_model());
+        let id = RemotePtySessionId::from("session-exit-signal".to_string());
+        handle.update(&mut app, |model, ctx| {
+            model.handle_spawn_session(spawn_session_request(&id, "/repo"), ctx);
+        });
 
-    model.handle_pty_session_exit(id.clone(), SessionExitStatus::signalled());
+        handle.update(&mut app, |model, _ctx| {
+            model.handle_pty_session_exit(id.clone(), SessionExitStatus::signalled());
+        });
 
-    let summary = model
-        .session_store
-        .list()
-        .into_iter()
-        .find(|summary| summary.id == id)
-        .expect("session still listed after exit");
-    let remote_server::session_store::SessionState::Exited(status) = summary.state else {
-        panic!("expected session to be recorded as exited");
-    };
-    assert_eq!(status.code, None);
-    assert!(status.signal_killed);
+        handle.read(&app, |model, _ctx| {
+            let summary = model
+                .session_store
+                .list()
+                .into_iter()
+                .find(|summary| summary.id == id)
+                .expect("session still listed after exit");
+            let remote_server::session_store::SessionState::Exited(status) = summary.state else {
+                panic!("expected session to be recorded as exited");
+            };
+            assert_eq!(status.code, None);
+            assert!(status.signal_killed);
+        });
+    });
 }

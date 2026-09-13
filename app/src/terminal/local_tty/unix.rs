@@ -650,6 +650,13 @@ impl Pty {
     pub fn get_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
     }
+
+    /// The child process's real exit status, if `next_child_event` has
+    /// already observed it exiting. See `PtyHandle::take_exit_status` for
+    /// why this can be `None` even after exit.
+    pub fn take_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        self.pty_handle.take_exit_status()
+    }
 }
 
 impl EventedReadWrite for Pty {

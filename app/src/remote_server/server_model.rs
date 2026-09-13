@@ -49,7 +49,9 @@ use super::proto::{
     list_sessions_response, resize_session_response, signal_session_response,
     spawn_session_response, write_session_stdin_response,
 };
-use super::pty_session_ops::{LocalTtyPtySessionOperations, PtySessionOperations, PtySpawnSpec};
+use super::pty_session_ops::{
+    LocalTtyPtySessionOperations, PtySessionEvent, PtySessionOperations, PtySpawnSpec,
+};
 use remote_server::RemotePtySessionId;
 use remote_server::session_store::{
     SessionExitStatus, SessionSpawnMetadata, SessionStore, UnknownSession,
@@ -598,6 +600,12 @@ impl ServerModel {
             remote_agent_context_snapshot(1, &bundled_skills, ctx);
         #[cfg(feature = "local_fs")]
         let (diff_state_watch_tx, diff_state_watch_rx) = async_channel::unbounded();
+        // Remote pty sessions (`docs/design/moth-parliament.md`, "the daemon
+        // holds the pty"): each session's dedicated reader thread
+        // (`pty_session_ops::remote_pty_thread`) forwards output/exit here,
+        // the same channel-into-`spawn_stream_local` shape `diff_state_watch_tx`
+        // above uses for its own background producer.
+        let (pty_events_tx, pty_events_rx) = async_channel::unbounded();
         let mut model = Self {
             connection_senders: HashMap::new(),
             snapshot_sent_roots_by_connection: HashMap::new(),
@@ -641,7 +649,7 @@ impl ServerModel {
             #[cfg(feature = "local_fs")]
             diff_state_watch_tx,
             session_store: SessionStore::new(),
-            pty_ops: Arc::new(LocalTtyPtySessionOperations::new()),
+            pty_ops: Arc::new(LocalTtyPtySessionOperations::new(pty_events_tx)),
         };
         // Drives granular per-file diff-state pushes (#577). The watches that
         // feed this are established lazily, on the first subscription for a repo.
@@ -650,6 +658,18 @@ impl ServerModel {
             diff_state_watch_rx,
             |me, (repo_root, update), ctx| {
                 me.handle_diff_state_watch_update(repo_root, update, ctx);
+            },
+            |_, _| {},
+        );
+        // Feeds `handle_pty_session_output` / `handle_pty_session_exit` from
+        // whichever backend `pty_ops` is -- the fake double never sends on
+        // this channel (tests call both handlers directly), so this is a
+        // no-op stream until a real pty backend is spawning sessions.
+        ctx.spawn_stream_local(
+            pty_events_rx,
+            |me, (id, event), _ctx| match event {
+                PtySessionEvent::Output(data) => me.handle_pty_session_output(id, data),
+                PtySessionEvent::Exited(status) => me.handle_pty_session_exit(id, status),
             },
             |_, _| {},
         );
@@ -1342,7 +1362,7 @@ impl ServerModel {
                     // pty directly -- see that module's doc comment for why, and for
                     // what "real" backend is (not yet) wired behind it.
                     Some(host_scoped_request::Message::SpawnSession(msg)) => {
-                        self.handle_spawn_session(msg)
+                        self.handle_spawn_session(msg, ctx)
                     }
                     Some(host_scoped_request::Message::WriteSessionStdin(msg)) => {
                         self.handle_write_session_stdin(msg)
@@ -1695,8 +1715,9 @@ impl ServerModel {
     // ── Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping
     // session ownership") ─────────────────────────────────────────────────
     // Dispatch and `SessionStore` bookkeeping for the five session RPCs.
-    // Deliberately ctx-free, like `handle_initialize` above -- see
-    // `pty_session_ops`'s module doc comment for why.
+    // Mostly ctx-free, like `handle_initialize` above -- `handle_spawn_session`
+    // is the one exception, since starting a real pty needs `ctx` to reach the
+    // `PtySpawner` singleton (see `pty_session_ops`'s module doc comment).
 
     /// Handles `SpawnSession`.
     ///
@@ -1705,7 +1726,11 @@ impl ServerModel {
     /// first time a given client-minted id is seen. A retry still answers
     /// with success -- it is not an error, it is the mechanism client-minted
     /// ids exist for.
-    fn handle_spawn_session(&mut self, msg: SpawnSession) -> HandlerOutcome {
+    fn handle_spawn_session(
+        &mut self,
+        msg: SpawnSession,
+        ctx: &mut ModelContext<Self>,
+    ) -> HandlerOutcome {
         let id = RemotePtySessionId::from(msg.remote_session_id);
         // `SessionStore` has no direct "is this id known" query (and adding
         // one would be modifying a file this branch treats as already
@@ -1731,7 +1756,7 @@ impl ServerModel {
                 rows: msg.rows,
                 cols: msg.cols,
             };
-            if let Err(error) = self.pty_ops.spawn(&id, &spec) {
+            if let Err(error) = self.pty_ops.spawn(&id, &spec, ctx) {
                 // Don't leave a phantom entry registered for a pty that
                 // never actually started.
                 self.session_store.remove(&id);
@@ -1838,7 +1863,6 @@ impl ServerModel {
     /// Not a request/response RPC -- the pty backend calls this as output
     /// arrives, so it broadcasts (`conn_id: None`) the same way
     /// `RepoMetadataUpdate` does above.
-    #[allow(dead_code)] // Not yet called: see `pty_session_ops::LocalTtyPtySessionOperations`.
     fn handle_pty_session_output(&mut self, id: RemotePtySessionId, data: Vec<u8>) {
         if self.session_store.append_output(&id, &data).is_err() {
             log::warn!("Dropping pty output for unknown session {id}");
@@ -1856,7 +1880,6 @@ impl ServerModel {
 
     /// Records that `id`'s process exited, releases the pty backend's OS
     /// resources for it, and pushes the exit to every connected client.
-    #[allow(dead_code)] // Not yet called: see `pty_session_ops::LocalTtyPtySessionOperations`.
     fn handle_pty_session_exit(&mut self, id: RemotePtySessionId, status: SessionExitStatus) {
         if self.session_store.record_exit(&id, status).is_err() {
             log::warn!("Dropping exit for unknown session {id}");
