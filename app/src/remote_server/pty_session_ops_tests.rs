@@ -84,6 +84,12 @@ fn real_pty_backend_runs_a_trivial_command_and_reports_output_and_exit() {
             environment_variables: std::collections::HashMap::new(),
             rows: 24,
             cols: 80,
+            // Irrelevant here either way: this test hands
+            // `spawn_with_shell_starter` an already-resolved starter, which is
+            // downstream of the only place `no_bootstrap` is read
+            // (`resolve_shell_starter`). `false` because that is what an
+            // ordinary request carries.
+            no_bootstrap: false,
         };
         let shell_starter = ShellStarter::Direct(DirectShellStarter::new_for_test(
             ShellType::Bash,

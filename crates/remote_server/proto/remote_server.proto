@@ -170,6 +170,15 @@ message Notification {
     UpdateGitStatus update_git_status = 8;
     UpdateGitHubPrInfo update_github_pr_info = 9;
     UpdateGitHubRepoInfo update_github_repo_info = 10;
+    // Confirms that a `ReattachSession` response actually reached the client,
+    // naming the stream offset it was received through -- see
+    // `AcknowledgeSessionOutput`'s own doc comment and "Reattach acknowledges
+    // a queued send, not a received one" in `docs/design/moth-parliament.md`.
+    // Fire-and-forget like every other notification here: a lost
+    // acknowledgement costs the daemon nothing but holding a session's output
+    // buffer a little longer, so there is nothing to retry and no response to
+    // wait for.
+    AcknowledgeSessionOutput acknowledge_session_output = 11;
   }
 }
 // Top-level envelope for all server → client messages.
@@ -391,6 +400,22 @@ message SpawnSession {
   // Initial terminal size.
   uint32 rows = 5;
   uint32 cols = 6;
+  // Requests a session with none of Warp's interactive shell bootstrap
+  // (rcfile injection, the InitShell OSC handshake, PS1 suppression) --
+  // "just run this command." Absent/false preserves the only behavior this
+  // daemon has ever had: every existing caller, and every daemon that
+  // predates this field, keeps getting the bootstrap. See "The bootstrap
+  // injection is unconditional" in docs/design/moth-parliament.md's "Known
+  // gaps from refuting 3d638ad25" for why a client that cannot interpret the
+  // handshake needs this escape hatch.
+  //
+  // Honored by emptying the shell starter's argument list
+  // (`DirectShellStarter::without_bootstrap`), since those arguments are the
+  // whole of the injection -- the shell is then spawned bare through the pty
+  // and starts as the interactive shell the user configured. Read in exactly
+  // one place, `remote_pty_thread::resolve_shell_starter`, which is unix-only;
+  // a daemon backend that spawns no process has nothing to honor.
+  bool no_bootstrap = 7;
 }
 
 message SpawnSessionError {
@@ -526,6 +551,15 @@ message ReattachSessionSuccess {
   // after the first. Corresponds to
   // `remote_server::session_store::PeekedOutput::dropped_bytes_since_ack`.
   uint64 dropped_bytes_since_ack = 2;
+  // Stream offset one past the last byte in `data` -- corresponds to
+  // `remote_server::session_store::PeekedOutput::next_offset`. The daemon
+  // does not discard `data` (or the dropped-byte watermark it advances) on
+  // its own just because this response was sent; it discards them only once
+  // the client echoes this value back in an `AcknowledgeSessionOutput`
+  // notification, confirming the bytes actually arrived. See "Reattach
+  // acknowledges a queued send, not a received one" in
+  // `docs/design/moth-parliament.md`.
+  uint64 next_offset = 3;
 }
 
 message ReattachSessionResponse {
@@ -533,6 +567,31 @@ message ReattachSessionResponse {
     ReattachSessionSuccess success = 1;
     ReattachSessionError error = 2;
   }
+}
+
+// Client → server: confirms that a previously received `ReattachSessionSuccess`
+// actually reached the client, naming the stream offset it was received
+// through (`ReattachSessionSuccess.next_offset`). This is the only thing that
+// causes the daemon to discard a session's buffered output -- see "Delivery
+// is two-phase" and "Reattach acknowledges a queued send, not a received one"
+// in `docs/design/moth-parliament.md`. A `through_offset` naming bytes the
+// daemon has already evicted (its ring buffer overran its bound) or already
+// discarded (a previous acknowledgement) is not an error: the offset
+// arithmetic in `SessionStore::acknowledge_output` saturates and clamps by
+// design, so a stale or repeated acknowledgement discards nothing live. What
+// it cannot protect against is a client naming an offset past what it
+// actually received -- that is a client-honesty assumption inherent to any
+// receipt acknowledgement, the same boundary every response in this protocol
+// already accepts (the daemon can observe only that a message was handed to
+// its own outbound channel, never that it was read on the other end).
+//
+// No response is defined: like every other `Notification`, a lost
+// acknowledgement is harmless (the daemon just holds the buffer a little
+// longer for the next attempt), so there is nothing worth a round trip to
+// confirm.
+message AcknowledgeSessionOutput {
+  string remote_session_id = 1;
+  uint64 through_offset = 2;
 }
 
 // Server → client push: a chunk of output produced by a session since the

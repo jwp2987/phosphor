@@ -108,12 +108,21 @@ pub struct PeekedOutput {
     /// was exceeded, since the session was registered. Cumulative and never
     /// reset by anything, including [`SessionStore::acknowledge_output`].
     pub dropped_bytes_total: u64,
-    /// Bytes evicted from this session's buffer since the last
-    /// [`SessionStore::acknowledge_output`] call (or since registration, if
-    /// there has been none) -- the "N KiB dropped while detached" figure a
-    /// reattach wants to show. Derived as `dropped_bytes_total` minus a
-    /// watermark advanced by acknowledgement, not tracked as an
-    /// independent counter, so the two figures cannot drift apart.
+    /// Bytes this session produced that the client provably never received
+    /// and never can -- the "N KiB dropped while detached" figure a reattach
+    /// wants to show.
+    ///
+    /// Derived, not counted: it is the span between the highest offset the
+    /// client has acknowledged and the oldest byte still buffered, so it
+    /// cannot drift from the buffer's actual contents and resets exactly when
+    /// an acknowledgement closes that span.
+    ///
+    /// Note what it deliberately does *not* count: bytes evicted after being
+    /// sent but before the acknowledgement came back. Those were delivered --
+    /// they were in the payload -- so dropping the daemon's own copy of them
+    /// loses nothing. Counting evictions instead of unreceived offsets got
+    /// this backwards in both directions, over-reporting delivered-then-evicted
+    /// bytes as lost and under-reporting genuinely lost ones as fine.
     pub dropped_bytes_since_ack: u64,
 }
 
@@ -174,11 +183,20 @@ struct OutputRingBuffer {
     /// [`Self::first_retained_offset`].
     total_appended: u64,
     dropped_bytes: u64,
-    /// The value of `dropped_bytes` as of the last [`Self::acknowledge`]
-    /// call (or `0` if there has been none). `dropped_bytes -
-    /// acknowledged_dropped_bytes` is the "since acknowledged" figure --
-    /// see [`PeekedOutput::dropped_bytes_since_ack`].
-    acknowledged_dropped_bytes: u64,
+    /// The highest stream offset a client has confirmed receiving, via
+    /// [`Self::acknowledge`] (or `0` if there has been none).
+    ///
+    /// An *offset*, not a snapshot of `dropped_bytes`, and the difference is
+    /// the whole correctness of [`PeekedOutput::dropped_bytes_since_ack`].
+    /// Snapshotting `dropped_bytes` at acknowledgement time was right only
+    /// while peek and acknowledge happened in the same call with nothing in
+    /// between (the daemon acknowledging its own send). Once the client became
+    /// the thing that acknowledges, a whole network round trip opened between
+    /// them, and output evicted inside that window would be retired by an
+    /// acknowledgement that never covered it -- the buffer would report "0
+    /// bytes dropped" for bytes no client ever saw. An offset cannot do that:
+    /// it names where the client's knowledge actually ends.
+    acknowledged_through_offset: u64,
 }
 
 impl OutputRingBuffer {
@@ -188,7 +206,7 @@ impl OutputRingBuffer {
             bytes: VecDeque::new(),
             total_appended: 0,
             dropped_bytes: 0,
-            acknowledged_dropped_bytes: 0,
+            acknowledged_through_offset: 0,
         }
     }
 
@@ -237,14 +255,22 @@ impl OutputRingBuffer {
             next_offset: self.total_appended,
             bytes: self.bytes.iter().copied().collect(),
             dropped_bytes_total: self.dropped_bytes,
-            dropped_bytes_since_ack: self.dropped_bytes - self.acknowledged_dropped_bytes,
+            // Everything between where the client's knowledge ends and the
+            // oldest byte still held is, by definition, gone: too old to be
+            // buffered, too new to have been acknowledged. `saturating_sub` is
+            // defensive only -- `acknowledge` never leaves the watermark above
+            // `first_retained_offset` -- and is preferred to an underflow panic
+            // in a daemon if that invariant is ever broken.
+            dropped_bytes_since_ack: self
+                .first_retained_offset()
+                .saturating_sub(self.acknowledged_through_offset),
         }
     }
 
     /// Discards every retained byte before stream offset `through_offset`
-    /// and advances the acknowledged-dropped watermark to the current
-    /// dropped-byte total, so a subsequent [`Self::peek`] reports
-    /// `dropped_bytes_since_ack` as `0` until more is dropped.
+    /// and advances the acknowledged-offset watermark to `through_offset`, so
+    /// a subsequent [`Self::peek`] reports `dropped_bytes_since_ack` as `0`
+    /// until output is evicted that this client never received.
     ///
     /// This is the only place that discards buffered output. Reading
     /// (`peek`) never does, precisely so that a caller who peeks, builds a
@@ -271,13 +297,29 @@ impl OutputRingBuffer {
     /// a gap marker with zero bytes behind it, and that delivery must still
     /// retire the gap it reported -- otherwise the same dropped span would
     /// be reported again on the next reattach even though the client has
-    /// already been told about it.
+    /// already been told about it. That case acknowledges the *response's*
+    /// `next_offset`, which for an empty buffer equals `total_appended`, so
+    /// the watermark lands exactly on the oldest retained offset and the gap
+    /// closes. Acknowledging a literal `0` is a different statement -- "I have
+    /// received nothing" -- and correctly leaves any gap standing.
     fn acknowledge(&mut self, through_offset: u64) {
+        // Clamped to what has actually been appended before it is recorded,
+        // because the watermark is now load-bearing rather than a derived
+        // convenience: an offset past the end of the stream would sit above
+        // `first_retained_offset` indefinitely and suppress every future gap
+        // figure, reporting "nothing dropped" forever. A client cannot have
+        // received bytes that do not exist, so believing it about them is
+        // never right.
+        let through_offset = through_offset.min(self.total_appended);
         let discard = through_offset
             .saturating_sub(self.first_retained_offset())
             .min(self.bytes.len() as u64) as usize;
         self.bytes.drain(..discard);
-        self.acknowledged_dropped_bytes = self.dropped_bytes;
+        // `max`, so a late or duplicated acknowledgement -- ordinary once
+        // acknowledgements travel over a network, and expected given delivery
+        // is at-least-once -- cannot walk the watermark backwards and
+        // resurrect a gap the client has already been told about.
+        self.acknowledged_through_offset = self.acknowledged_through_offset.max(through_offset);
     }
 
     fn len(&self) -> usize {
@@ -423,11 +465,11 @@ impl SessionStore {
         Ok(session.output.peek())
     }
 
-    /// Confirms that a session's peeked output was delivered up to stream
+    /// Confirms that a session's peeked output was received up to stream
     /// offset `through_offset` -- pass [`PeekedOutput::next_offset`] from the
-    /// peek whose bytes were delivered. Discards the acknowledged bytes and
-    /// advances the "since acknowledged" dropped-byte watermark so it
-    /// reflects only what drops after this call.
+    /// peek whose bytes were received. Discards the acknowledged bytes and
+    /// advances the watermark that [`PeekedOutput::dropped_bytes_since_ack`]
+    /// is measured from.
     ///
     /// This is the only method that discards buffered output -- see
     /// [`OutputRingBuffer::acknowledge`] for the full contract, including why

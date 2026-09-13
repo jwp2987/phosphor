@@ -502,6 +502,51 @@ impl DirectShellStarter {
         }
     }
 
+    /// Returns this starter with Warp's interactive bootstrap stripped out --
+    /// the daemon-side answer to `SpawnSession.no_bootstrap`
+    /// (`crates/remote_server/proto/remote_server.proto`), which asks for
+    /// "just run this shell" rather than a Zap-integrated one.
+    ///
+    /// The bootstrap lives entirely in `args`: every branch of
+    /// [`arguments_for_session_spawning_command`] builds a `-c`/`-EncodedCommand`
+    /// wrapper that re-execs the shell with an injected rcfile or init-command
+    /// carrying the InitShell OSC handshake. None of the `PtyOptions` booleans
+    /// gate that -- they gate features the injected script *reads* -- so
+    /// emptying `args` is what actually removes it, and is the whole of the
+    /// change. The `PtyOptions` flags the daemon already sets to `false`
+    /// (`shell_debug_mode`, `honor_ps1`, `node_version_chip_enabled`) stay as
+    /// they are: they set `WARP_*` environment variables, which a shell with no
+    /// bootstrap script simply never reads.
+    ///
+    /// Empty, not a hand-written "plain" argument list per shell type, and that
+    /// is deliberate. A shell binary invoked through a pty with no arguments is
+    /// already the interactive shell the user configured -- bash and zsh source
+    /// the user's own rc files, fish is interactive by default -- so there is
+    /// nothing to add, and anything added would be this fork imposing a policy
+    /// on a session whose entire request was "no policy". In particular this
+    /// does *not* re-add PowerShell's `-NoLogo`: suppressing the version banner
+    /// is Warp's preference, not part of how a plain `pwsh` behaves, and a
+    /// client that asked for no bootstrap asked to see what the shell really
+    /// does. It also does not force a login shell (the leading `-` that
+    /// `arguments_for_session_spawning_command` arranges via `exec -a`), for the
+    /// same reason: which of login/non-login a terminal opens is a policy
+    /// choice, and the shell's own default is the one nobody has to justify.
+    ///
+    /// `session_id` is kept rather than cleared. It is this starter's identity
+    /// for `TerminalManager::enqueue_init_script`, which the daemon never calls;
+    /// dropping it would mean making the field optional across every other
+    /// caller to express something no caller can observe.
+    // The enclosing module is already `#[cfg(feature = "local_tty")]`
+    // (`terminal/mod.rs`), so this only has to add the `unix` half of its one
+    // caller's gate -- `pty_session_ops::LocalTtyPtySessionOperations`, which is
+    // `cfg(all(feature = "local_tty", unix))`. Without it this is dead code on a
+    // `local_tty` Windows build.
+    #[cfg(unix)]
+    pub(crate) fn without_bootstrap(mut self) -> Self {
+        self.args = Vec::new();
+        self
+    }
+
     pub fn shell_path(&self) -> &Path {
         &self.shell_path
     }

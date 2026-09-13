@@ -1058,32 +1058,96 @@ async fn codebase_index_push_messages_become_client_events() {
     }
 }
 
+/// A reattach is two messages, not one: the request, and the
+/// `AcknowledgeSessionOutput` the client sends back once it has the payload.
+/// The daemon discards nothing until that second message arrives
+/// (`ServerModel::handle_reattach_session`), so a client that decodes a
+/// payload and never acknowledges it silently turns every reattach into a
+/// replay of the same bytes.
+///
+/// Hand-rolled over a duplex rather than driven through `setup_mock_client`,
+/// for two reasons: that helper's responder answers *every* client message,
+/// including this notification, which a fire-and-forget message should never
+/// receive a response to; and asserting on the acknowledgement from inside the
+/// responder would race the assertions after `reattach_session` returns.
+/// Reading the two messages in order off the wire makes the sequence
+/// deterministic.
+///
+/// Breaks if: `reattach_session` stops acknowledging, acknowledges the wrong
+/// session, or acknowledges anything other than the `next_offset` it was sent
+/// -- a byte count (`data.len()`, 15 here) being the tempting wrong answer.
 #[tokio::test]
-async fn reattach_session_round_trip() {
-    let (client, _disconnect_rx, _executor) = setup_mock_client(|msg| {
-        let req = match &msg.message {
+async fn reattach_round_trip_acknowledges_the_offset_it_received() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+
+    let mut server_read = server_read.compat();
+    let mut server_write = server_write.compat_write();
+
+    let server = async {
+        let request = protocol::read_client_message(&mut server_read)
+            .await
+            .unwrap();
+        match &request.message {
             Some(client_message::Message::HostScoped(HostScopedRequest {
                 message: Some(host_scoped_request::Message::ReattachSession(req)),
-            })) => req.clone(),
+            })) => assert_eq!(req.remote_session_id, "session-abc"),
             other => panic!("Expected ReattachSession, got {other:?}"),
-        };
-        assert_eq!(req.remote_session_id, "session-abc");
-        server_message::Message::ReattachSessionResponse(ReattachSessionResponse {
-            result: Some(reattach_session_response::Result::Success(
-                ReattachSessionSuccess {
-                    data: b"replayed output".to_vec(),
-                    dropped_bytes_since_ack: 42,
-                },
-            )),
-        })
-    });
-
-    let success = client
-        .reattach_session(RemotePtySessionId::from("session-abc".to_string()))
+        }
+        protocol::write_server_message(
+            &mut server_write,
+            &ServerMessage {
+                request_id: request.request_id.clone(),
+                message: Some(server_message::Message::ReattachSessionResponse(
+                    ReattachSessionResponse {
+                        result: Some(reattach_session_response::Result::Success(
+                            ReattachSessionSuccess {
+                                // 15 bytes, deliberately not 57: the
+                                // acknowledgement must carry the stream offset,
+                                // not the size of this batch.
+                                data: b"replayed output".to_vec(),
+                                dropped_bytes_since_ack: 42,
+                                next_offset: 57,
+                            },
+                        )),
+                    },
+                )),
+            },
+        )
         .await
         .unwrap();
+        protocol::read_client_message(&mut server_read)
+            .await
+            .unwrap()
+    };
+
+    let (result, acknowledgement) = tokio::join!(
+        client.reattach_session(RemotePtySessionId::from("session-abc".to_string())),
+        server
+    );
+
+    let success = result.unwrap();
     assert_eq!(success.data, b"replayed output");
     assert_eq!(success.dropped_bytes_since_ack, 42);
+    assert_eq!(success.next_offset, 57);
+
+    match acknowledgement.message {
+        Some(client_message::Message::Notification(Notification {
+            message: Some(notification::Message::AcknowledgeSessionOutput(ack)),
+        })) => {
+            assert_eq!(ack.remote_session_id, "session-abc");
+            assert_eq!(
+                ack.through_offset, 57,
+                "the acknowledgement must echo ReattachSessionSuccess::next_offset, not the \
+                 length of the delivered batch"
+            );
+        }
+        other => panic!("Expected AcknowledgeSessionOutput, got {other:?}"),
+    }
 }
 
 #[tokio::test]

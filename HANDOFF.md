@@ -634,6 +634,14 @@ mid-round. rustfmt also comes from apt here (PR #153).
    died at the `cargo check` gate, and a single missing trait import reads like a small
    problem. Treat "failed before the suite ran" as "the suite is unknown", not as "one
    error to fix".
+14. **Never `rm` a status log a previous run may still hold, and never wait on a
+   marker in a file when you can wait on the process.** A still-running `mothrun`
+   wrote `BUILD_EXIT=0 DONE` into a freshly-recreated `moth.log`, and a monitor
+   watching for `DONE` reported the *previous* commit's green as the current one.
+   Deleting the path does not revoke the open fd. Wait on `pgrep` showing the
+   process gone, or write each run to a unique filename. The tell that caught it:
+   `BUILD_EXIT=0` with no `PRECHECK_EXIT` line above it and none of the new tests
+   in the log -- an impossible-shaped success is more suspicious than a failure.
 
 ---
 

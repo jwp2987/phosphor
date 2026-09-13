@@ -150,10 +150,10 @@ fn acknowledge_discards_exactly_the_delivered_prefix_and_leaves_the_rest() {
 // "since acknowledged" figure must reset to 0 the moment a delivery is
 // acknowledged, then start climbing again as more is dropped after that.
 //
-// Breaks if: `acknowledge` resets `self.dropped_bytes` instead of
-// `self.acknowledged_dropped_bytes` (the lifetime total would wrongly drop
-// to 0), or if `peek`'s `dropped_bytes_since_ack` is computed some way other
-// than `dropped_bytes - acknowledged_dropped_bytes` that fails to reset.
+// Breaks if: `acknowledge` resets `self.dropped_bytes` instead of advancing
+// `self.acknowledged_through_offset` (the lifetime total would wrongly drop
+// to 0), or if `peek`'s `dropped_bytes_since_ack` stops measuring from the
+// acknowledged offset and so fails to reset.
 #[test]
 fn dropped_bytes_since_ack_resets_on_acknowledgement_but_total_does_not() {
     let mut store = SessionStore::with_output_bound(4);
@@ -197,16 +197,23 @@ fn dropped_bytes_since_ack_resets_on_acknowledgement_but_total_does_not() {
     );
 }
 
-// A `delivered_bytes` larger than what remains buffered must be clamped, not
+// A `through_offset` larger than what remains buffered must be clamped, not
 // treated as an error and not allowed to corrupt the watermark: it must
-// discard everything present (no more, since there is no more) and still
-// advance `acknowledged_dropped_bytes` correctly, so later arithmetic stays
-// consistent instead of drifting or underflowing.
+// discard everything present (no more, since there is no more) and leave the
+// watermark somewhere later arithmetic stays consistent from, instead of
+// drifting or underflowing.
 //
-// Breaks if: `acknowledge` computes `discard` as `delivered_bytes` without
-// the `.min(self.bytes.len())` clamp (this would panic in
-// `VecDeque::drain` on an out-of-range end), or if it skips updating the
-// watermark when the acknowledged offset overshoots what is buffered.
+// The second half of this test is what makes the clamp load-bearing rather
+// than defensive. `acknowledge` records `through_offset.min(total_appended)`,
+// so an offset past the end of the stream is not believed: without that clamp
+// the watermark here would sit at 100 forever, `dropped_bytes_since_ack` would
+// saturate to 0 against every future `first_retained_offset`, and the session
+// would report "nothing dropped" for the rest of its life.
+//
+// Breaks if: `acknowledge` computes `discard` without the
+// `.min(self.bytes.len())` clamp (this would panic in `VecDeque::drain` on an
+// out-of-range end), or records `through_offset` without clamping it to
+// `total_appended`.
 #[test]
 fn acknowledging_more_than_buffered_clamps_without_panicking_or_corrupting_watermark() {
     let mut store = SessionStore::with_output_bound(4);
@@ -246,15 +253,24 @@ fn acknowledging_more_than_buffered_clamps_without_panicking_or_corrupting_water
     );
 }
 
-// Acknowledging zero bytes must not discard anything -- it is a real,
-// meaningful call (e.g. "I delivered a gap marker with no bytes behind it"),
-// not an error, and not equivalent to acknowledging everything.
+// Acknowledging through offset 0 must not discard anything, and must not
+// retire anything either: it is the client saying "I have received nothing",
+// which is a real statement and the opposite of "I have received everything".
 //
-// Breaks if: `acknowledge` treats `delivered_bytes == 0` as "acknowledge
-// everything" (e.g. `if through_offset == 0 { self.bytes.clear() }`), which
-// would empty the buffer instead of leaving it untouched.
+// This test previously expected `dropped_bytes_since_ack` to reset to 0 here,
+// on the reasoning that a delivery with no bytes behind it still retires the
+// gap it reported. That was correct only while the daemon acknowledged its own
+// sends, where "offset 0" could only mean "the response I just sent covered
+// nothing". A client acknowledging offset 0 against a session that has already
+// produced 8 bytes is saying something else entirely, and the 4 bytes evicted
+// before it ever connected are still 4 bytes it will never see. Retiring them
+// would report "nothing was lost" about output that was.
+//
+// Breaks if: `acknowledge` treats `through_offset == 0` as "acknowledge
+// everything" (e.g. `if through_offset == 0 { self.bytes.clear() }`), or if
+// the gap figure is measured from anything other than the acknowledged offset.
 #[test]
-fn acknowledging_offset_zero_discards_nothing_but_still_advances_the_watermark() {
+fn acknowledging_offset_zero_discards_nothing_and_retires_nothing() {
     let mut store = SessionStore::with_output_bound(4);
     let a = id("a");
     store.register(a.clone(), test_metadata());
@@ -269,8 +285,85 @@ fn acknowledging_offset_zero_discards_nothing_but_still_advances_the_watermark()
     );
     assert_eq!(peeked.dropped_bytes_total, 4);
     assert_eq!(
+        peeked.dropped_bytes_since_ack, 4,
+        "a client that has received nothing has still missed the 4 evicted bytes"
+    );
+}
+
+// THE regression the offset-based watermark exists for, and the exact bug
+// moving acknowledgement to the client introduced.
+//
+// While the daemon acknowledged its own send, `peek` and `acknowledge` ran
+// back to back with nothing in between, so "snapshot `dropped_bytes` at
+// acknowledgement time" was indistinguishable from "snapshot it at peek time".
+// Once the client became the acknowledger, a network round trip opened between
+// the two, and anything evicted inside that window got retired by an
+// acknowledgement that never covered it.
+//
+// Here "abcd" is peeked and delivered, then a flood evicts both it (harmless,
+// the client has it) and "efgh" (offsets 4..8, which no client ever saw)
+// before the acknowledgement for offset 4 arrives. The gap that must be
+// reported is exactly 4 -- "efgh" -- and the lifetime total is 8, because
+// "abcd" really was evicted even though it was delivered first.
+//
+// Breaks if: `acknowledge` goes back to `acknowledged_dropped_bytes =
+// self.dropped_bytes`, which reports 0 here -- asserting nothing was lost
+// about output that is gone.
+#[test]
+fn output_evicted_between_a_peek_and_its_acknowledgement_is_still_reported_as_a_gap() {
+    let mut store = SessionStore::with_output_bound(4);
+    let a = id("a");
+    store.register(a.clone(), test_metadata());
+    store.append_output(&a, b"abcd").unwrap();
+
+    let delivered = store.peek_output(&a).unwrap();
+    assert_eq!(delivered.bytes, b"abcd");
+    assert_eq!(delivered.next_offset, 4);
+    assert_eq!(delivered.dropped_bytes_since_ack, 0);
+
+    // In flight: the session floods, evicting the delivered "abcd" and then
+    // "efgh", which was never sent to anyone.
+    store.append_output(&a, b"efghijkl").unwrap();
+
+    store.acknowledge_output(&a, delivered.next_offset).unwrap();
+
+    let peeked = store.peek_output(&a).unwrap();
+    assert_eq!(peeked.bytes, b"ijkl");
+    assert_eq!(
+        peeked.dropped_bytes_since_ack, 4,
+        "\"efgh\" was evicted before any client could receive it and must be reported"
+    );
+    assert_eq!(
+        peeked.dropped_bytes_total, 8,
+        "the lifetime eviction total counts \"abcd\" too -- it was evicted, having been \
+         delivered first"
+    );
+}
+
+// A duplicate or late acknowledgement must not walk the watermark backwards
+// and resurrect a gap the client has already been told about. Delivery is
+// at-least-once now, so a client that reattaches twice before either
+// acknowledgement lands sends two, and they can arrive in either order.
+//
+// Breaks if: `acknowledge` assigns `self.acknowledged_through_offset =
+// through_offset` instead of taking the `max`.
+#[test]
+fn an_out_of_order_acknowledgement_does_not_walk_the_watermark_backwards() {
+    let mut store = SessionStore::with_output_bound(64);
+    let a = id("a");
+    store.register(a.clone(), test_metadata());
+    store.append_output(&a, b"abcdefgh").unwrap();
+
+    store.acknowledge_output(&a, 8).unwrap();
+    // The straggler: an acknowledgement for an earlier reattach, arriving
+    // after the one that superseded it.
+    store.acknowledge_output(&a, 3).unwrap();
+
+    let peeked = store.peek_output(&a).unwrap();
+    assert_eq!(peeked.bytes, Vec::<u8>::new());
+    assert_eq!(
         peeked.dropped_bytes_since_ack, 0,
-        "a 0-byte delivery still retires the gap it reported"
+        "the stale acknowledgement must not reopen a span already confirmed received"
     );
 }
 

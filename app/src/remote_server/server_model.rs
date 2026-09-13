@@ -40,15 +40,15 @@ use super::proto::{
 // Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
 // ownership"): the six session RPCs' request/response/push types.
 use super::proto::{
-    ListSessions, ListSessionsResponse, ListSessionsSuccess, ReattachSession, ReattachSessionError,
-    ReattachSessionResponse, ReattachSessionSuccess, RemoteSessionSignal, RemoteSessionSummary,
-    ResizeSession, ResizeSessionError, ResizeSessionResponse, ResizeSessionSuccess,
-    SessionExitedPush, SessionOutputChunkPush, SignalSession, SignalSessionError,
-    SignalSessionResponse, SignalSessionSuccess, SpawnSession, SpawnSessionError,
-    SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin, WriteSessionStdinError,
-    WriteSessionStdinResponse, WriteSessionStdinSuccess, list_sessions_response,
-    reattach_session_response, resize_session_response, signal_session_response,
-    spawn_session_response, write_session_stdin_response,
+    AcknowledgeSessionOutput, ListSessions, ListSessionsResponse, ListSessionsSuccess,
+    ReattachSession, ReattachSessionError, ReattachSessionResponse, ReattachSessionSuccess,
+    RemoteSessionSignal, RemoteSessionSummary, ResizeSession, ResizeSessionError,
+    ResizeSessionResponse, ResizeSessionSuccess, SessionExitedPush, SessionOutputChunkPush,
+    SignalSession, SignalSessionError, SignalSessionResponse, SignalSessionSuccess, SpawnSession,
+    SpawnSessionError, SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin,
+    WriteSessionStdinError, WriteSessionStdinResponse, WriteSessionStdinSuccess,
+    list_sessions_response, reattach_session_response, resize_session_response,
+    signal_session_response, spawn_session_response, write_session_stdin_response,
 };
 use super::pty_session_ops::{
     LocalTtyPtySessionOperations, PtySessionEvent, PtySessionOperations, PtySpawnSpec,
@@ -1393,7 +1393,7 @@ impl ServerModel {
                         self.handle_list_sessions()
                     }
                     Some(host_scoped_request::Message::ReattachSession(msg)) => {
-                        self.handle_reattach_session(msg, &request_id, conn_id)
+                        self.handle_reattach_session(msg)
                     }
                     None => {
                         log::warn!(
@@ -1502,6 +1502,17 @@ impl ServerModel {
                         self.handle_update_github_repo_info(msg, ctx);
                         return; // fire-and-forget notification
                     }
+                    // Not gated on `local_fs`, unlike its neighbours above and
+                    // below: `session_store` is an unconditional field of
+                    // `ServerModel`, and a pty session needs no host filesystem
+                    // access to buffer its own output. Gating this would leave
+                    // a `local_fs`-less daemon serving `ReattachSession` (also
+                    // ungated) while silently dropping the only message that
+                    // lets it discard what it replayed.
+                    Some(notification::Message::AcknowledgeSessionOutput(msg)) => {
+                        self.handle_acknowledge_session_output(msg);
+                        return; // fire-and-forget notification
+                    }
                     // Without `local_fs` there is no host filesystem to read
                     // git status or run `gh` against, so there is nothing to
                     // create and nothing to push. Dropping is correct for the
@@ -1602,10 +1613,18 @@ impl ServerModel {
     /// outbound channel: `true` for `Some(conn_id)` delivered directly or,
     /// failing that, via failover; `true` for `None` if at least one
     /// broadcast recipient accepted it; `false` otherwise.
-    /// `handle_reattach_session` is the one caller that uses this return
-    /// value -- it decides from it whether the output it just sent may be
-    /// acknowledged (discarded from `SessionStore`) or must be left for the
-    /// next attempt.
+    ///
+    /// **No caller currently reads that value, and one deliberately stopped.**
+    /// `handle_reattach_session` used to, to decide whether the output it had
+    /// just sent could be discarded -- and the lesson of removing it is worth
+    /// keeping next to the return type. "Handed to an outbound channel" is the
+    /// outermost fact this process can establish, and it is not delivery: the
+    /// daemon can die, or the socket break, between the queue and the client.
+    /// Anything whose correctness depends on the difference has to be told by
+    /// the far end, not inferred here (`AcknowledgeSessionOutput`). The value
+    /// is still returned because it is the honest answer to a narrower
+    /// question -- "did this go anywhere at all" -- which a future caller may
+    /// legitimately want for logging or metrics.
     fn send_server_message(
         &mut self,
         conn_id: Option<ConnectionId>,
@@ -1794,6 +1813,13 @@ impl ServerModel {
                 environment_variables: msg.environment_variables,
                 rows: msg.rows,
                 cols: msg.cols,
+                // Deliberately not mirrored into `SessionSpawnMetadata` above:
+                // that type exists to answer `ListSessions`, whose
+                // `RemoteSessionSummary` has no such field, and a retried
+                // `SpawnSession` never re-spawns anyway (see this function's
+                // doc comment), so a stored copy could only ever disagree with
+                // the pty that is actually running.
+                no_bootstrap: msg.no_bootstrap,
             };
             if let Err(error) = self.pty_ops.spawn(&id, &spec, ctx) {
                 // Don't leave a phantom entry registered for a pty that
@@ -1899,77 +1925,91 @@ impl ServerModel {
     }
 
     /// Handles `ReattachSession`: replays the output `SessionStore` buffered
-    /// for `id` since the client's last successful reattach (or since spawn,
-    /// for the first), together with how many bytes were dropped in that
-    /// span (`docs/design/moth-parliament.md`, "Output buffering while
-    /// detached" and "Delivery is two-phase").
+    /// for `id` since the client's last acknowledgement (or since spawn, for
+    /// the first), together with how many bytes were dropped in that span
+    /// (`docs/design/moth-parliament.md`, "Output buffering while detached"
+    /// and "Delivery is two-phase").
     ///
-    /// Unlike its five siblings above, this cannot simply return
-    /// `HandlerOutcome::Sync` and let `handle_message`'s central dispatch
-    /// call `send_server_message` on its behalf: the two-phase contract
-    /// `SessionStore::peek_output` / `acknowledge_output` implements requires
-    /// the acknowledge to happen strictly after the peeked bytes are handed
-    /// off for delivery, and `send_server_message` is the only place that
-    /// observes whether that handoff actually succeeded. So this handler
-    /// peeks, sends the response itself via `send_server_message`, and
-    /// acknowledges only if that call reports success.
+    /// **Discards nothing.** This handler peeks and answers; the only thing
+    /// that discards a session's buffered output is
+    /// [`Self::handle_acknowledge_session_output`], driven by the client
+    /// echoing back the `next_offset` it was sent. That is the whole of
+    /// "Reattach acknowledges a queued send, not a received one" being closed:
+    /// an earlier version of this handler acknowledged as soon as
+    /// `send_server_message` reported the response queued onto the
+    /// connection's outbound channel, which is the outermost point *this*
+    /// process can observe and still not delivery -- a daemon that died, or a
+    /// socket that broke, between the queue and the client took the output
+    /// with it. Only the client can distinguish those, so only the client
+    /// acknowledges.
     ///
-    /// "Handed off for delivery" here means `send_server_message` queued the
-    /// response on the destination connection's outbound
-    /// `async_channel::Sender` (a successful `try_send`, on the direct
-    /// connection or, for a tracked host-scoped request, a failover one) --
-    /// that is as far as this process can observe delivery; a failure
-    /// between the channel and the socket, or on the wire, is outside what
-    /// any handler in this file can detect, and every other response here
-    /// already accepts that same boundary. On a failed or undeliverable
-    /// send, the peeked bytes and the dropped-byte figure are left
-    /// unacknowledged, so the next `ReattachSession` for `id` sees them
-    /// again. Returns `HandlerOutcome::Async(None)` because the response was
-    /// already sent here -- `handle_message`'s dispatch must not send a
-    /// second one.
-    fn handle_reattach_session(
-        &mut self,
-        msg: ReattachSession,
-        request_id: &RequestId,
-        conn_id: ConnectionId,
-    ) -> HandlerOutcome {
+    /// The cost of that, stated plainly: delivery is now at-least-once. A
+    /// reattach whose acknowledgement never arrives -- lost notification,
+    /// client crash, or a client that simply does not send one -- replays the
+    /// same bytes on the next reattach, and keeps reporting the same
+    /// `dropped_bytes_since_ack` figure until one does. Redelivering output is
+    /// the recoverable failure and losing it is not, which is the trade this
+    /// design is choosing; a client that never acknowledges is not harmed
+    /// beyond that, because the ring buffer is bounded either way and evicts
+    /// on its own.
+    ///
+    /// Returns `HandlerOutcome::Sync` like its five siblings now that it no
+    /// longer needs to observe its own send.
+    fn handle_reattach_session(&mut self, msg: ReattachSession) -> HandlerOutcome {
         let id = RemotePtySessionId::from(msg.remote_session_id);
         let peeked = match self.session_store.peek_output(&id) {
             Ok(peeked) => peeked,
             Err(error) => {
-                return HandlerOutcome::Sync(reattach_session_message(
-                    reattach_session_response::Result::Error(ReattachSessionError {
+                return reattach_session_message(reattach_session_response::Result::Error(
+                    ReattachSessionError {
                         message: error.to_string(),
-                    }),
+                    },
                 ));
             }
         };
-        let message = reattach_session_message(reattach_session_response::Result::Success(
+        reattach_session_message(reattach_session_response::Result::Success(
             ReattachSessionSuccess {
                 data: peeked.bytes,
                 dropped_bytes_since_ack: peeked.dropped_bytes_since_ack,
+                next_offset: peeked.next_offset,
             },
-        ));
-        if self.send_server_message(Some(conn_id), Some(request_id), message) {
-            if let Err(UnknownSession(id)) = self
-                .session_store
-                .acknowledge_output(&id, peeked.next_offset)
-            {
-                // Nothing between the peek above and here removes sessions,
-                // so this would mean the session vanished mid-handler --
-                // there is nothing left to acknowledge in that case.
-                log::warn!(
-                    "ReattachSession: session {id} disappeared before its delivered output \
-                     could be acknowledged"
-                );
-            }
-        } else {
+        ))
+    }
+
+    /// Handles `AcknowledgeSessionOutput`: the client confirming it actually
+    /// received a `ReattachSessionSuccess` through stream offset
+    /// `through_offset`. This is the only path that discards a session's
+    /// buffered output.
+    ///
+    /// Fire-and-forget, so there is no response and nothing to fail into. The
+    /// two things that could go wrong are both non-errors by construction:
+    ///
+    /// - An offset naming bytes already evicted or already discarded. The
+    ///   offset arithmetic in `SessionStore::acknowledge_output` saturates and
+    ///   clamps, so a stale or repeated acknowledgement discards nothing live.
+    ///   This is the ordinary case for a client that retried a reattach and
+    ///   then acknowledged both responses, and it must not be treated as
+    ///   suspicious.
+    /// - An unknown session: a client acknowledging output for a session the
+    ///   daemon has since forgotten. Logged, not surfaced -- there is no
+    ///   response channel for a notification, and nothing for the client to do
+    ///   about it anyway.
+    ///
+    /// What this cannot defend against is a client naming an offset past what
+    /// it actually received, which would discard undelivered bytes. That is
+    /// inherent to any receipt acknowledgement and is the same trust boundary
+    /// every other message here already sits behind.
+    fn handle_acknowledge_session_output(&mut self, msg: AcknowledgeSessionOutput) {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        if let Err(UnknownSession(id)) = self
+            .session_store
+            .acknowledge_output(&id, msg.through_offset)
+        {
             log::warn!(
-                "ReattachSession: failed to deliver reattach response for {id}; leaving \
-                 buffered output unacknowledged for the next attempt"
+                "AcknowledgeSessionOutput: no session registered under {id}; nothing to \
+                 acknowledge"
             );
         }
-        HandlerOutcome::Async(None)
     }
 
     /// Records pty output for `id` and pushes it to every connected client.
@@ -1981,6 +2021,18 @@ impl ServerModel {
             log::warn!("Dropping pty output for unknown session {id}");
             return;
         }
+        // Note what this push deliberately does NOT do: advance the session's
+        // acknowledged offset. A live client seeing this chunk has genuinely
+        // received it, so it is tempting to treat a push as a delivery -- but
+        // pushes are broadcast to every connection with no per-client
+        // bookkeeping, so "received" here has no single subject. The
+        // acknowledged offset belongs to one client's reattach conversation
+        // (`AcknowledgeSessionOutput`), and letting a broadcast move it would
+        // let one attached client retire a gap on behalf of another that was
+        // never connected at all. The visible cost is that a client which
+        // streamed live and then reattaches is replayed output it already saw,
+        // and told about a gap it did not experience; the alternative is
+        // telling a different client that nothing was lost when it was.
         self.send_server_message(
             None,
             None,
@@ -5446,16 +5498,12 @@ fn list_sessions_message(result: list_sessions_response::Result) -> HandlerOutco
     ))
 }
 
-/// Unlike its siblings above, returns the raw `server_message::Message`
-/// rather than a `HandlerOutcome::Sync`: `handle_reattach_session` needs the
-/// message value itself to pass to `send_server_message` directly on its
-/// success path (see that method's doc comment for why), and only wraps it
-/// in `HandlerOutcome::Sync` for its unknown-session error path, where the
-/// generic dispatch in `handle_message` may send it as usual.
-fn reattach_session_message(result: reattach_session_response::Result) -> server_message::Message {
-    server_message::Message::ReattachSessionResponse(ReattachSessionResponse {
-        result: Some(result),
-    })
+fn reattach_session_message(result: reattach_session_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::ReattachSessionResponse(
+        ReattachSessionResponse {
+            result: Some(result),
+        },
+    ))
 }
 
 // ── Remote codebase indexing helpers (Delta D2) ───────────────────────────

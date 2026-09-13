@@ -47,6 +47,24 @@ pub struct PtySpawnSpec {
     pub environment_variables: HashMap<String, String>,
     pub rows: u32,
     pub cols: u32,
+    /// Spawn the shell with none of Warp's interactive bootstrap -- no injected
+    /// rcfile, no InitShell OSC handshake, no PS1 suppression. Mirrors
+    /// `SpawnSession.no_bootstrap`.
+    ///
+    /// `false` is the only behaviour this daemon had before the field existed,
+    /// and proto3 decodes an absent `bool` as `false`, so a client that predates
+    /// it keeps getting exactly what it got. The escape hatch exists because the
+    /// bootstrap is not optional otherwise: a client that cannot interpret the
+    /// handshake sees it as raw escape noise inside its own session -- see "The
+    /// bootstrap injection is unconditional" under "Known gaps from refuting
+    /// `3d638ad25`" in `docs/design/moth-parliament.md`.
+    ///
+    /// Honoured by [`LocalTtyPtySessionOperations`] only, via
+    /// `remote_pty_thread::resolve_shell_starter`. The non-unix stub and
+    /// [`FakePtySessionOperations`] spawn no process at all, so there is nothing
+    /// for them to honour -- the fake records the whole spec, which is what lets
+    /// `server_model_tests.rs` prove the flag survives dispatch.
+    pub no_bootstrap: bool,
 }
 
 /// A pty operation failed. Carries only a message because every one of the

@@ -152,7 +152,7 @@ impl LiveSession {
         ctx: &mut AppContext,
         events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>,
     ) -> Result<Self, PtySessionOpError> {
-        let shell_starter = resolve_shell_starter(spec.shell.as_deref())?;
+        let shell_starter = resolve_shell_starter(spec.shell.as_deref(), spec.no_bootstrap)?;
         Self::spawn_with_shell_starter(id, shell_starter, spec, ctx, events_tx)
     }
 
@@ -181,12 +181,20 @@ impl LiveSession {
                 .iter()
                 .map(|(key, value)| (OsString::from(key.clone()), OsString::from(value.clone())))
                 .collect(),
-            // These all gate Warp's *own* shell-integration bootstrap (the
-            // ControlMaster SSH wrapper, shell-debug mode, PS1 honoring, the
-            // Node-version prompt chip). A remote session is a plain
-            // byte-passthrough pty with no client-side shell integration yet
-            // (`SessionType::Remote`, item 6, is out of scope), so none of
-            // it applies.
+            // None of these five removes the bootstrap; `spec.no_bootstrap` is
+            // the only thing that does, and it does it by emptying the shell
+            // starter's args (`DirectShellStarter::without_bootstrap`). Two of
+            // them describe how to *reach* a host -- the ControlMaster SSH
+            // wrapper and its connection reuse -- which is meaningless for a
+            // daemon already running on the host it is spawning on. The other
+            // three (`shell_debug_mode`, `honor_ps1`,
+            // `node_version_chip_enabled`) become `WARP_*` environment
+            // variables that the injected bootstrap script reads, and are
+            // `false` because the daemon has no settings service to ask for a
+            // user's preference -- unlike `terminal_manager.rs`, which reads
+            // each from `SessionSettings`. False is the conservative answer for
+            // all three: each one only ever *adds* per-prompt behaviour. With
+            // `no_bootstrap` set there is no script to read them at all.
             enable_ssh_wrapper: false,
             reuse_ssh_control_master: false,
             shell_debug_mode: false,
@@ -285,23 +293,62 @@ impl LiveSession {
 /// other public, entry point) isn't reusable here -- it needs an
 /// `AvailableShells` model and a settings service, neither of which the
 /// daemon has -- but `compute_fallback_shell` needs neither.
-fn resolve_shell_starter(spec_shell: Option<&str>) -> Result<ShellStarter, PtySessionOpError> {
-    if let Some(shell) = spec_shell {
+///
+/// Then, if the request set `no_bootstrap` (`PtySpawnSpec::no_bootstrap`),
+/// strips Warp's interactive bootstrap from whatever was resolved.
+///
+/// Stripping happens here, after resolution, rather than inside it: both
+/// branches below reach `arguments_for_session_spawning_command` (directly via
+/// `for_explicit_shell`, or inside `compute_fallback_shell`), so a per-branch
+/// opt-out would have to be threaded through `compute_fallback_shell`'s three
+/// fallback paths -- settings-driven discovery shared with every local session
+/// -- to express something only this daemon asks for. Discarding the arguments
+/// afterwards is the same result with none of that reach.
+fn resolve_shell_starter(
+    spec_shell: Option<&str>,
+    no_bootstrap: bool,
+) -> Result<ShellStarter, PtySessionOpError> {
+    let starter = if let Some(shell) = spec_shell {
         let (path, shell_type) = supported_shell_path_and_type(shell)
             .ok_or_else(|| PtySessionOpError::new(format!("unsupported shell: {shell}")))?;
-        return Ok(ShellStarter::Direct(
-            DirectShellStarter::for_explicit_shell(path, shell_type),
-        ));
+        ShellStarter::Direct(DirectShellStarter::for_explicit_shell(path, shell_type))
+    } else {
+        ShellStarter::compute_fallback_shell()
+            .map(ShellStarter::from)
+            .ok_or_else(|| {
+                PtySessionOpError::new(
+                    "no supported shell found on this host (this user's passwd entry, /bin/zsh, \
+                     /bin/bash, /bin/fish all missing or unsupported)",
+                )
+            })?
+    };
+
+    if !no_bootstrap {
+        return Ok(starter);
     }
 
-    ShellStarter::compute_fallback_shell()
-        .map(ShellStarter::from)
-        .ok_or_else(|| {
-            PtySessionOpError::new(
-                "no supported shell found on this host (this user's passwd entry, /bin/zsh, \
-                 /bin/bash, /bin/fish all missing or unsupported)",
-            )
-        })
+    match starter {
+        ShellStarter::Direct(direct) => Ok(ShellStarter::Direct(direct.without_bootstrap())),
+        // Unreachable on this backend: the module is `cfg(unix)`, and on unix
+        // both branches above yield `Direct` (`compute_fallback_shell`'s unix
+        // arm returns `UserDefault`/`Fallback`, and `From<ShellStarterSource>`
+        // maps both to `Direct`). It fails rather than falling through because
+        // the request was specifically "no bootstrap": silently spawning a
+        // bootstrapped shell would hand a client that cannot read the InitShell
+        // handshake a session full of escape noise, which is the exact failure
+        // `no_bootstrap` exists to prevent. Refusing is recoverable and
+        // legible; honouring the request in name only is neither.
+        other => Err(PtySessionOpError::new(format!(
+            "cannot strip the shell bootstrap from a {} starter, which this daemon was not \
+             expected to resolve on unix",
+            match other {
+                ShellStarter::Direct(_) => "direct",
+                ShellStarter::Wsl(_) => "WSL",
+                ShellStarter::MSYS2(_) => "MSYS2",
+                ShellStarter::DockerSandbox(_) => "Docker sandbox",
+            }
+        ))),
+    }
 }
 
 /// Sends `signal` to the process group headed by `pid`. The spawned shell is

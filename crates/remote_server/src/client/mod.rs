@@ -10,27 +10,28 @@ use futures::io::{AsyncRead, AsyncWrite};
 use warpui::r#async::{FutureExt as _, executor};
 
 use crate::proto::{
-    Abort, Authenticate, BufferEdit, ClientMessage, CloseBuffer, CreateDirectory,
-    CreateDirectoryResponse, DeleteFile, DiffStateFileDelta, DiffStateMetadataUpdate,
-    DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches, GetBranchesResponse,
-    GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
-    GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
-    GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush, Initialize,
-    InitializeResponse, ListDirectory, ListDirectoryResponse, ListSessions, ListSessionsResponse,
-    LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse, OpenBuffer,
-    OpenBufferResponse, ReadFileChunk, ReadFileChunkResponse, ReadFileContextRequest,
-    ReadFileContextResponse, ReattachSession, ReattachSessionSuccess, RemoteAgentContextSnapshot,
-    RemoteSessionSignal, ResizeSession, ResizeSessionResponse, ResolveConflict,
-    ResolveConflictResponse, ResolvePath, ResolvePathResponse, RipgrepSearchRequest,
-    RipgrepSearchResponse, RunCommandRequest, RunCommandResponse, SaveBuffer, SaveBufferResponse,
-    ServerMessage, SessionBootstrapped, SignalSession, SignalSessionResponse, SpawnSession,
-    SpawnSessionResponse, TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo,
-    UpdateGitStatus, UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse,
-    WriteSessionStdin, WriteSessionStdinResponse, discard_files_response, git_stage_response,
-    host_scoped_request, list_sessions_response, notification, read_file_chunk_response,
-    reattach_session_response, resize_session_response, server_message, session_scoped_request,
-    signal_session_response, spawn_session_response, write_session_stdin_response,
+    Abort, AcknowledgeSessionOutput, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
+    CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
+    DiffStateMetadataUpdate, DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches,
+    GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
+    GetDiffState, GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse,
+    GitCreatePrRequest, GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush,
+    GitPullRequest, GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest,
+    GitStatusPush, Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
+    ListSessions, ListSessionsResponse, LoadRepoMetadataDirectoryResponse,
+    NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
+    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse, ReattachSession,
+    ReattachSessionSuccess, RemoteAgentContextSnapshot, RemoteSessionSignal, ResizeSession,
+    ResizeSessionResponse, ResolveConflict, ResolveConflictResponse, ResolvePath,
+    ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
+    RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
+    SignalSession, SignalSessionResponse, SpawnSession, SpawnSessionResponse, TextEdit,
+    UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
+    UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, WriteSessionStdin,
+    WriteSessionStdinResponse, discard_files_response, git_stage_response, host_scoped_request,
+    list_sessions_response, notification, read_file_chunk_response, reattach_session_response,
+    resize_session_response, server_message, session_scoped_request, signal_session_response,
+    spawn_session_response, write_session_stdin_response,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
@@ -785,6 +786,7 @@ impl RemoteServerClient {
         environment_variables: HashMap<String, String>,
         rows: u32,
         cols: u32,
+        no_bootstrap: bool,
     ) -> Result<(), ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::host_scoped(
@@ -796,6 +798,7 @@ impl RemoteServerClient {
                 environment_variables,
                 rows,
                 cols,
+                no_bootstrap,
             }),
         );
         let response = self.send_request(request_id, msg).await?;
@@ -930,17 +933,34 @@ impl RemoteServerClient {
     }
 
     /// Reattaches to a session the daemon is still holding open across a
-    /// disconnect, returning the output retained for it since the client's
-    /// last successful reattach (or since spawn, for the first) along with
-    /// how many bytes were dropped from the buffer in the meantime.
+    /// disconnect, returning the output retained for it since this client's
+    /// last acknowledgement (or since spawn, for the first) along with how
+    /// many bytes were dropped from the buffer in the meantime.
+    ///
+    /// **Acknowledges the payload before returning it.** The daemon discards
+    /// nothing on its own -- see `ServerModel::handle_reattach_session` -- so
+    /// without the `AcknowledgeSessionOutput` sent below, the next reattach
+    /// would replay these same bytes. Sending it here, rather than exposing it
+    /// for the caller to send later, keeps one acknowledgement path and makes
+    /// "received" mean something this function can actually attest to: the
+    /// response arrived, decoded, and is about to be handed over.
+    ///
+    /// That is receipt, not consumption, and the difference is the window that
+    /// remains: a caller which takes this payload and then drops it -- panics,
+    /// or fails to render it -- has lost output the daemon has been told to
+    /// forget. What it replaces was strictly worse (the daemon forgot as soon
+    /// as the response was queued onto a socket that may never have been read),
+    /// and closing it entirely would mean acknowledging after the terminal has
+    /// drawn the bytes, which no layer here can observe. Recorded rather than
+    /// glossed, per "Reattach acknowledges a queued send, not a received one"
+    /// in `docs/design/moth-parliament.md`.
     ///
     /// Returns the generated `ReattachSessionSuccess` directly rather than a
     /// bespoke owned type: unlike `list_sessions` (which unwraps
     /// `ListSessionsSuccess` down to its inner `Vec` because that's the
     /// whole payload callers want), `ReattachSessionSuccess` already *is*
-    /// the flat two-field payload the caller needs (`data`,
-    /// `dropped_bytes_since_ack`), so a hand-rolled wrapper would only
-    /// duplicate it.
+    /// the flat payload the caller needs (`data`, `dropped_bytes_since_ack`,
+    /// `next_offset`), so a hand-rolled wrapper would only duplicate it.
     pub async fn reattach_session(
         &self,
         remote_session_id: RemotePtySessionId,
@@ -955,20 +975,24 @@ impl RemoteServerClient {
         let response = self.send_request(request_id, msg).await?;
         match response.message {
             Some(server_message::Message::ReattachSessionResponse(resp)) => match resp.result {
-                Some(reattach_session_response::Result::Success(success)) => Ok(success),
+                Some(reattach_session_response::Result::Success(success)) => {
+                    self.acknowledge_session_output(&remote_session_id, success.next_offset);
+                    Ok(success)
+                }
                 Some(reattach_session_response::Result::Error(e)) => {
                     Err(ClientError::SessionOperationFailed(e.message))
                 }
                 // NOT the permissive empty default `list_sessions` uses, and the
                 // difference matters. For a listing, defaulting to "no sessions"
                 // is wrong but harmless and self-correcting -- ask again and you
-                // get the truth. For a reattach it is neither: the daemon
-                // discards a session's buffered output once it has handed the
-                // response off, so a missing oneof here would report "no output,
-                // and no gap" for output that is already gone -- silently losing
-                // it AND asserting nothing was lost. An empty reattach payload is
-                // indistinguishable from a genuinely idle session, so this has to
-                // fail loudly instead.
+                // get the truth. A reattach defaulting to an empty success would
+                // report "no output, and no gap" for a response whose real
+                // payload it failed to read, which is indistinguishable from a
+                // genuinely idle session. Since the client acknowledges what it
+                // decodes, the default would additionally acknowledge offset 0 --
+                // harmless in itself, but it would mean answering a payload this
+                // client never actually read. Failing loudly leaves the daemon's
+                // buffer untouched and the bytes available to the next attempt.
                 None => {
                     log::error!(
                         "ReattachSessionResponse carried no result for {remote_session_id}"
@@ -1458,6 +1482,32 @@ impl RemoteServerClient {
         self.outbound_tx
             .try_send(msg)
             .map_err(|_| ClientError::Disconnected)
+    }
+
+    /// Confirms to the daemon that this client received a session's replayed
+    /// output through stream offset `through_offset` -- always
+    /// `ReattachSessionSuccess::next_offset` from the response being
+    /// acknowledged, never a byte count, for the reason
+    /// `session_store::PeekedOutput::next_offset` documents.
+    ///
+    /// Best-effort by design, like every other notification: if this is dropped
+    /// the daemon keeps the bytes and replays them on the next reattach, which
+    /// is the failure this whole scheme prefers. Private because
+    /// [`Self::reattach_session`] is the only thing that can honestly send one
+    /// -- an acknowledgement from anywhere else would be attesting to receipt
+    /// of a payload it never saw.
+    fn acknowledge_session_output(
+        &self,
+        remote_session_id: &RemotePtySessionId,
+        through_offset: u64,
+    ) {
+        let msg = ClientMessage::notification(notification::Message::AcknowledgeSessionOutput(
+            AcknowledgeSessionOutput {
+                remote_session_id: remote_session_id.clone().into(),
+                through_offset,
+            },
+        ));
+        self.send_notification(msg);
     }
 
     /// Sends a message without registering a pending request (fire-and-forget).

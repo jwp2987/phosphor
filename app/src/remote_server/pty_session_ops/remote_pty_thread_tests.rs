@@ -168,7 +168,8 @@ fn resolve_shell_starter_fallback_ignores_shell_env_var() {
     let fake_bash = fake_shell_binary(dir.path(), "bash");
     let _guard = ShellEnvGuard::set(fake_bash.as_os_str());
 
-    let resolved = resolve_shell_starter(None).expect("a supported shell should still resolve");
+    let resolved =
+        resolve_shell_starter(None, false).expect("a supported shell should still resolve");
     let expected = ShellStarter::from(ShellStarter::compute_fallback_shell().expect(
         "this host must have at least one fallback shell for the rest of the suite to run at all",
     ));
@@ -188,4 +189,53 @@ fn resolve_shell_starter_fallback_ignores_shell_env_var() {
     );
     assert_eq!(resolved.shell_path(), expected.shell_path());
     assert_eq!(resolved.shell_type(), expected.shell_type());
+}
+
+// `no_bootstrap` is honoured by discarding the shell starter's arguments,
+// because the arguments *are* the bootstrap: every branch of
+// `arguments_for_session_spawning_command` builds a `-c` wrapper that
+// re-execs the shell with an injected rcfile or init-command carrying the
+// InitShell OSC handshake. The two assertions are paired deliberately --
+// proving the args are empty is only meaningful next to proof that the same
+// resolution *does* produce args when the flag is off, since an empty vec is
+// also what a broken resolution would return.
+//
+// Both calls take the explicit-shell branch, so this is hermetic: it never
+// depends on what shell this host's passwd entry names.
+//
+// Breaks if: `resolve_shell_starter` stops calling `without_bootstrap`, or
+// `without_bootstrap` starts substituting a hand-written "plain" argument
+// list instead of leaving the shell to its own defaults.
+#[test]
+fn no_bootstrap_strips_the_shell_starter_arguments() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let fake_bash = fake_shell_binary(dir.path(), "bash");
+    let shell = fake_bash.to_str().expect("temp path is utf-8");
+
+    let ShellStarter::Direct(bootstrapped) = resolve_shell_starter(Some(shell), false)
+        .expect("an explicitly named, resolvable shell must resolve")
+    else {
+        panic!("an explicitly named shell always resolves to ShellStarter::Direct");
+    };
+    assert!(
+        !bootstrapped.args().is_empty(),
+        "the default path must still inject Warp's bootstrap"
+    );
+
+    let ShellStarter::Direct(plain) = resolve_shell_starter(Some(shell), true)
+        .expect("an explicitly named, resolvable shell must resolve")
+    else {
+        panic!("an explicitly named shell always resolves to ShellStarter::Direct");
+    };
+    assert!(
+        plain.args().is_empty(),
+        "no_bootstrap must leave the shell binary to start on its own terms, got {:?}",
+        plain.args()
+    );
+    assert_eq!(
+        plain.shell_path(),
+        bootstrapped.shell_path(),
+        "stripping the bootstrap must not change which shell is spawned"
+    );
+    assert_eq!(plain.shell_type(), bootstrapped.shell_type());
 }
