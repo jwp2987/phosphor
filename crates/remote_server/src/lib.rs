@@ -7,6 +7,7 @@ pub mod manager;
 pub mod protocol;
 pub mod pty_session_id;
 pub mod repo_metadata_proto;
+pub mod session_store;
 pub mod setup;
 #[cfg(not(target_family = "wasm"))]
 pub mod ssh;
