@@ -211,12 +211,18 @@ impl Entity for Sessions {
 /// point the handshake genuinely completes and carries the daemon's own
 /// `InitializeResponse::server_version` (`manager.rs`'s `version_is_compatible` exists
 /// precisely because that can disagree with this build's own version, so it is never
-/// guessed). When given, this also records `HostInstallState::Installed` with the real
-/// version -- `None` when the daemon reported an empty string, matching the type's own
-/// "installed but version not known" convention. The `SessionReconnected` call site passes
-/// `None`: it fires for the very same handshake `SessionConnected` already reported the
-/// version for, so recording install state again there would only risk clobbering it with
-/// an unknown-version write for no new information.
+/// guessed). An empty reported string is normalized to `None`, matching the type's own
+/// "installed but version not known" convention.
+///
+/// Either way this records `HostInstallState::Installed`: completing a handshake is itself
+/// proof the daemon is installed, so a host we are actively talking to never shows as
+/// `Unknown`. A `None` version only writes when no version is already on record -- the
+/// `SessionReconnected` call site passes `None` for the very same handshake
+/// `SessionConnected` already reported, and must not downgrade that to "unknown". Not
+/// relying on the two arriving in order is deliberate: they do today (both are emitted from
+/// `mark_session_connected`, and effects drain FIFO), but that ordering is a property of
+/// code elsewhere, and a future caller passing `None` on its own should still leave the
+/// registry honest rather than silently reintroduce a live-but-`Unknown` host.
 #[cfg(feature = "local_tty")]
 fn record_host_reached<M>(
     session: &Session,
@@ -238,12 +244,20 @@ fn record_host_reached<M>(
         .map(|platform| (platform.os.clone(), platform.arch.clone()));
     HostRegistryModel::handle(ctx).update(ctx, |registry, ctx| {
         registry.record_reached(&target, Some(host_id), platform, ctx);
-        if let Some(server_version) = server_version {
+        let reported = server_version.filter(|version| !version.is_empty());
+        let already_known = matches!(
+            registry.host(&target).map(|entry| &entry.install_state),
+            Some(HostInstallState::Installed { version: Some(_) })
+        );
+        // Reaching the host at all is proof the daemon is installed there, so record
+        // that even with no version to attach. Only a reported version overwrites a
+        // version already on record: the `SessionReconnected` call site passes `None`
+        // for the same handshake `SessionConnected` already reported, and must not
+        // downgrade a known version to "unknown".
+        if reported.is_some() || !already_known {
             registry.record_install_state(
                 &target,
-                HostInstallState::Installed {
-                    version: (!server_version.is_empty()).then_some(server_version),
-                },
+                HostInstallState::Installed { version: reported },
                 ctx,
             );
         }

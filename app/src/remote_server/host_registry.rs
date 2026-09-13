@@ -258,8 +258,17 @@ impl RemoteHostEntry {
     fn from_persisted(persisted: PersistedRemoteHost) -> Self {
         let install_state = match persisted.install_state.as_str() {
             "not_installed" => HostInstallState::NotInstalled,
+            // An empty `installed_version` normalizes to `None`. Builds before
+            // `HostInstallState::Installed` carried an `Option` recorded
+            // "installed, version unknown" as `Some(String::new())`, and the
+            // renderer special-cased the empty string. That special case is gone,
+            // so without this an existing on-disk registry would render
+            // "Installed (v)" -- the exact false-confidence label the `Option`
+            // was introduced to remove.
             "installed" => HostInstallState::Installed {
-                version: persisted.installed_version,
+                version: persisted
+                    .installed_version
+                    .filter(|version| !version.is_empty()),
             },
             "unsupported" => match persisted.unsupported_reason_kind.as_deref() {
                 Some("glibc_too_old") => HostInstallState::Unsupported {

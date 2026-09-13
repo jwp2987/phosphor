@@ -167,6 +167,38 @@ fn install_state_round_trips_through_persisted_conversion_for_every_variant() {
     }
 }
 
+/// A registry persisted by an OLDER build must not read back as a blank version.
+///
+/// Before `HostInstallState::Installed` carried an `Option`, "installed but version not
+/// known" was recorded as `String::new()` and persisted as `Some("")`, and the dashboard
+/// special-cased the empty string when rendering. That special case has been deleted, so
+/// without normalization on the read path an existing on-disk registry renders
+/// "Installed (v)" -- presenting a blank as though it were a real version, which is the
+/// precise false confidence the `Option` was introduced to remove.
+///
+/// This cannot be caught by the round-trip test above: that starts from in-memory state,
+/// and no current code path can produce `Some("")` to round-trip. Only a persisted value
+/// built directly, as legacy data on disk actually looks, reaches it. Breaks if the
+/// `filter(|version| !version.is_empty())` in `from_persisted` is removed.
+#[test]
+fn legacy_empty_installed_version_reads_back_as_no_known_version() {
+    let mut entry = base_entry();
+    entry.install_state = HostInstallState::Installed {
+        version: Some("0.4.2".to_string()),
+    };
+    let mut persisted = entry.to_persisted();
+    // Exactly what a pre-`Option` build wrote for "installed, version unknown".
+    persisted.installed_version = Some(String::new());
+
+    let round_tripped = RemoteHostEntry::from_persisted(persisted);
+
+    assert_eq!(
+        round_tripped.install_state,
+        HostInstallState::Installed { version: None },
+        "a legacy empty installed_version must normalize to None, not Some(\"\")"
+    );
+}
+
 /// An `install_state` value this build does not recognize must fail open to
 /// `Unknown` rather than panicking -- the same fail-open stance
 /// `PreinstallCheckResult::parse` takes on data it cannot classify. This

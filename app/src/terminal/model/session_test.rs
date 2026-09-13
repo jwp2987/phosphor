@@ -651,6 +651,67 @@ fn host_reached_without_a_server_version_does_not_touch_install_state() {
     });
 }
 
+/// A host reached with NO reported version and NO prior install state must still record
+/// `Installed { version: None }`, not stay `Unknown`. Completing the handshake is itself
+/// proof the daemon is installed there, and a dashboard that showed `Unknown` for a host
+/// the app is actively talking to would be lying about a live connection.
+///
+/// This is the ordering the sibling test above does not cover. Today `SessionConnected`
+/// (with a version) always precedes `SessionReconnected` (without one), so the gap is
+/// unreachable in production -- but that is a property of emission order in `manager.rs`,
+/// not of this function, and nothing else asserts it. Breaks if `record_host_reached`
+/// returns to skipping `record_install_state` whenever `server_version` is `None`.
+#[cfg(feature = "local_tty")]
+#[test]
+fn host_reached_without_a_server_version_still_records_installed_when_nothing_is_known() {
+    use crate::remote_server::host_registry::{HostInstallState, HostRegistryModel};
+    use crate::remote_server::manager::RemoteServerManager;
+    use crate::terminal::model::terminal_model::SubshellInitializationInfo;
+    use crate::terminal::ssh::util::InteractiveSshCommand;
+    use warp_core::HostId;
+
+    App::test((), |mut app| async move {
+        crate::test_util::settings::initialize_settings_for_tests(&mut app);
+        app.add_singleton_model(HostRegistryModel::new);
+        app.add_singleton_model(RemoteServerManager::new);
+
+        let mut session_info = SessionInfo::new_for_test();
+        session_info.subshell_info = Some(SubshellInitializationInfo {
+            spawning_command: "ssh build-box".to_string(),
+            was_triggered_by_rc_file_snippet: false,
+            env_var_collection_name: None,
+            ssh_connection_info: Some(InteractiveSshCommand {
+                host: Some("build-box".to_string()),
+                port: None,
+            }),
+        });
+        let session = Session::new(session_info, Arc::new(TestCommandExecutor::default()));
+
+        // Deliberately no `record_install_state` first: this host has never been probed.
+        let sessions_handle = app.add_model(|_| Sessions::new_for_test());
+        sessions_handle.update(&mut app, |_sessions, ctx| {
+            super::record_host_reached(
+                &session,
+                HostId::new("host-abc".to_string()),
+                SessionId::from(1),
+                None,
+                ctx,
+            );
+        });
+
+        app.read(|ctx| {
+            let entry = HostRegistryModel::as_ref(ctx)
+                .host("build-box")
+                .expect("recording a reached host must create/update its registry entry");
+            assert_eq!(
+                entry.install_state,
+                HostInstallState::Installed { version: None },
+                "reaching a host proves the daemon is installed, even with no version"
+            );
+        });
+    });
+}
+
 /// An empty `server_version` string (the proto3 default) must record `Installed { version:
 /// None }`, never an empty-string version -- the type's own convention for "installed but
 /// version not known". Breaks if the `is_empty` guard in `record_host_reached` were removed.

@@ -1,6 +1,22 @@
 use super::*;
 use remote_server::setup::{RemoteArch, RemoteOs};
-use warpui::{App, SingletonEntity};
+use warpui::{App, Entity, SingletonEntity};
+
+/// A stand-in for whatever model actually calls the registry-observation helpers in
+/// production (`RemoteServerController`'s own `ModelContext<M>`).
+///
+/// These helpers are generic over `M` precisely so they can be driven without building a
+/// full `RemoteServerController`, but `M` must not be `HostRegistryModel` itself: each one
+/// does `HostRegistryModel::handle(ctx).update(ctx, ..)` internally, so entering from that
+/// model's own context re-enters a checked-out entity and panics with "Circular model
+/// update" (`warpui_core`'s `update_model`). Production can never do that -- the caller is
+/// always some other model -- so driving these from an unrelated model is what actually
+/// reproduces the production call shape.
+struct RegistryObservationCaller;
+
+impl Entity for RegistryObservationCaller {
+    type Event = ();
+}
 
 #[test]
 fn connection_label_prefers_ssh_host_over_reported_hostname() {
@@ -74,7 +90,8 @@ fn binary_check_probe_records_platform_as_reached() {
             arch: RemoteArch::X86_64,
         };
 
-        HostRegistryModel::handle(&app).update(&mut app, |_registry, ctx| {
+        let caller = app.add_model(|_| RegistryObservationCaller);
+        caller.update(&mut app, |_caller, ctx| {
             record_binary_check_registry_observations("build-box", Some(&platform), None, ctx);
         });
 
@@ -114,7 +131,8 @@ fn unsupported_preinstall_probe_records_reason_not_unknown() {
             name: "musl".to_string(),
         };
 
-        HostRegistryModel::handle(&app).update(&mut app, |_registry, ctx| {
+        let caller = app.add_model(|_| RegistryObservationCaller);
+        caller.update(&mut app, |_caller, ctx| {
             record_binary_check_registry_observations("build-box", None, Some(&reason), ctx);
         });
 
@@ -142,7 +160,8 @@ fn install_complete_records_installed_with_no_known_version() {
         crate::test_util::settings::initialize_settings_for_tests(&mut app);
         app.add_singleton_model(HostRegistryModel::new);
 
-        HostRegistryModel::handle(&app).update(&mut app, |_registry, ctx| {
+        let caller = app.add_model(|_| RegistryObservationCaller);
+        caller.update(&mut app, |_caller, ctx| {
             record_install_complete_registry_observation("build-box", ctx);
         });
 
