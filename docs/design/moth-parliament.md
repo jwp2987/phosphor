@@ -839,6 +839,43 @@ estimated before exclusions.
 **What a maintainer must decide before item 6 can start** -- the 9 NEEDS-A-DECISION rows
 collapse into three questions, not nine:
 
+### The three questions, answered — decided 2026-09-13
+
+**A: yes, `SessionType::Remote` carries `Option<HostId>`, mirroring `WarpifiedRemote`.**
+The host is not always known at construction -- the registry work established that a
+target is a declared string until a handshake resolves it to a `HostId`, and a session can
+exist against a host that is configured but not yet connected. An always-`Some` field would
+force either a fake id or a refusal to construct the session, and the four Question-A sites
+already handle `None` for `WarpifiedRemote`, so they need no new shape.
+
+**B: out-of-band RPCs, never in-band shell injection.** Both sites -- `read_history` and
+`list_directory_entries_internal` -- currently choose between a local filesystem call and
+piping a command through the live shell. For a `Remote` session they do neither: they use the
+remote-server RPCs that already exist for exactly this, `read_file_chunk` for the history
+file and `list_directory` for the listing. `list_directory`'s own doc comment says why it
+exists -- "local sessions do this via `fs::metadata`, but remote files aren't on the local
+disk" -- which is this case verbatim.
+
+In-band injection was rejected rather than overlooked. Writing `ls` or `history` into a
+user's interactive shell means it lands in their session and their shell history, depends on
+their aliases and shell state, and races whatever they are mid-way through typing. That is a
+poor trade even locally; with a clean RPC channel to the same host already open and tested it
+has nothing to recommend it. The daemon owning the pty makes this *easier*, not harder --
+the RPC path does not touch the pty at all.
+
+**C: yes, the bootstrap/handshake pipeline runs for `Remote`.** This also resolves the
+"unconditional bootstrap injection" item recorded under the known gaps as a blocker: it is
+only a blocker for a client that is not Warp. `arguments_for_session_spawning_command`
+injects the rcfile and the InitShell OSC handshake for a daemon-spawned session exactly as
+it does locally, and our client is Warp and expects that handshake -- so the injection is
+required, not incidental. The three Question-C rows therefore stay live rather than becoming
+moot: `should_use_rc_file_bootstrap_method`, `handle_session_bootstrapped`'s
+`warpification_source`, and the SSH-success banner all need a `Remote` answer.
+
+What remains a genuine limitation is narrower than the gap entry claimed: a third-party,
+non-Warp client driving these RPCs would see handshake bytes it cannot interpret. That is a
+constraint on who may drive a session, not a defect in the session.
+
 - **Question A -- does `SessionType::Remote` carry `Option<HostId>`, mirroring
   `WarpifiedRemote`'s "known eventually" state, or is the host resolved at construction and
   therefore always present?** A session created against a chosen target (per the
