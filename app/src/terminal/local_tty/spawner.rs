@@ -270,11 +270,7 @@ impl PtySpawner {
 
         let client = server.client().clone();
         let result = client.spawn_pty(options)?;
-        let handle = Box::new(ServerOwnedPtyHandle {
-            pid: result.pid,
-            client,
-            exit_status: None,
-        });
+        let handle = Box::new(ServerOwnedPtyHandle::new(result.pid, client));
         Ok((result, handle))
     }
 }

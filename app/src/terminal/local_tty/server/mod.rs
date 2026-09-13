@@ -238,6 +238,24 @@ pub struct ServerOwnedPtyHandle {
     exit_status: Option<std::process::ExitStatus>,
 }
 
+impl ServerOwnedPtyHandle {
+    /// A handle to the server-hosted child `pid`, with no exit status observed
+    /// yet.
+    ///
+    /// A constructor rather than a public `exit_status` field: the cache is an
+    /// implementation detail of [`PtyHandle::has_process_terminated`], and a
+    /// caller that could seed it could claim an exit the server never reported.
+    /// `spawner.rs` is a sibling module and so cannot set a private field --
+    /// which is what made this a constructor rather than a wider field.
+    pub fn new(pid: u32, client: Arc<TerminalServerClient>) -> Self {
+        Self {
+            pid,
+            client,
+            exit_status: None,
+        }
+    }
+}
+
 impl PtyHandle for ServerOwnedPtyHandle {
     fn pid(&self) -> u32 {
         self.pid

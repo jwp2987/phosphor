@@ -31,11 +31,7 @@ fn client_with_terminated(
 }
 
 fn handle_for(pid: u32, client: Arc<TerminalServerClient>) -> ServerOwnedPtyHandle {
-    ServerOwnedPtyHandle {
-        pid,
-        client,
-        exit_status: None,
-    }
+    ServerOwnedPtyHandle::new(pid, client)
 }
 
 // The following two tests cover `api::ChildExitStatus`'s reason for existing: carrying a real
@@ -43,7 +39,14 @@ fn handle_for(pid: u32, client: Arc<TerminalServerClient>) -> ServerOwnedPtyHand
 // `bincode::serialize`/`deserialize` directly on `api::Message`, the same (de)serialization
 // `protocol::send_message`/`receive_message` perform, rather than opening a socket, since the
 // framing around that call (the length-prefixed header, the `Message::initialized` sentinel)
-// is exercised elsewhere and isn't what these tests are about.
+// isn't what these tests are about.
+//
+// That framing has NO test anywhere -- `protocol.rs` has no test file, and every test that
+// touches a pty forces `PtySpawner::new_for_test`'s `server: None`, so none of them reach a
+// real `TerminalServer` socket. It is exercised only incidentally, by the app working at all.
+// Said explicitly rather than waved at, because "covered elsewhere" is how an untested path
+// stays untested: the absence of any test on the server-hosted path is exactly what let the
+// exit-status defect these tests pin survive in the first place.
 
 #[test]
 fn children_terminated_request_round_trip_preserves_exit_code() {
