@@ -1304,6 +1304,25 @@ impl ServerModel {
                         code: ErrorCode::InvalidRequest.into(),
                         message: "Codebase indexing requires the local_fs feature".to_string(),
                     })),
+                    // Remote pty sessions: the wire shape and the client half exist
+                    // (`RemotePtySessionId`, the spawn/stdin/resize/signal/list requests and
+                    // the output/exit pushes), but nothing on this side owns a pty yet. See
+                    // `docs/design/moth-parliament.md`, "Scoping session ownership".
+                    //
+                    // Answered explicitly rather than left to a wildcard: this match is
+                    // deliberately exhaustive, so the next person to add a host-scoped
+                    // request is forced to decide what the daemon does with it instead of
+                    // having it silently fall into a catch-all.
+                    Some(
+                        host_scoped_request::Message::SpawnSession(_)
+                        | host_scoped_request::Message::WriteSessionStdin(_)
+                        | host_scoped_request::Message::ResizeSession(_)
+                        | host_scoped_request::Message::SignalSession(_)
+                        | host_scoped_request::Message::ListSessions(_),
+                    ) => HandlerOutcome::Sync(server_message::Message::Error(ErrorResponse {
+                        code: ErrorCode::InvalidRequest.into(),
+                        message: "Remote pty sessions are not implemented yet".to_string(),
+                    })),
                     None => {
                         log::warn!(
                             "Received HostScopedRequest with no message variant \

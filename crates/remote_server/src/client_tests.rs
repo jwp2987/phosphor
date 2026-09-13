@@ -276,6 +276,95 @@ async fn remote_agent_context_snapshot_push_becomes_client_event() {
     }
 }
 
+/// Session-ownership groundwork (`docs/design/moth-parliament.md`): a
+/// `SessionOutputChunkPush` (empty request_id) is converted to a
+/// `ClientEvent::SessionOutputChunkReceived` by `push_message_to_event`. No
+/// daemon sends this push yet -- this only proves the client-side plumbing.
+/// Fails if `push_message_to_event`'s match arm for
+/// `server_message::Message::SessionOutputChunkPush` is removed, or stops
+/// carrying either field.
+#[tokio::test]
+async fn session_output_chunk_push_becomes_client_event() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    drop(server_read);
+
+    let executor = executor::Background::default();
+    let (_client, event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    let mut writer = server_write.compat_write();
+
+    protocol::write_server_message(
+        &mut writer,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::SessionOutputChunkPush(
+                crate::proto::SessionOutputChunkPush {
+                    remote_session_id: "session-abc".to_string(),
+                    data: b"hello".to_vec(),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    writer.flush().await.unwrap();
+
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::SessionOutputChunkReceived {
+            remote_session_id,
+            data,
+        } => {
+            assert_eq!(remote_session_id.as_str(), "session-abc");
+            assert_eq!(data, b"hello");
+        }
+        other => panic!("Expected SessionOutputChunkReceived, got {other:?}"),
+    }
+}
+
+/// Same coverage as above for `SessionExitedPush` ->
+/// `ClientEvent::SessionExitedReceived`.
+#[tokio::test]
+async fn session_exited_push_becomes_client_event() {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    drop(server_read);
+
+    let executor = executor::Background::default();
+    let (_client, event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    let mut writer = server_write.compat_write();
+
+    protocol::write_server_message(
+        &mut writer,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::SessionExitedPush(
+                crate::proto::SessionExitedPush {
+                    remote_session_id: "session-abc".to_string(),
+                    exit_code: Some(1),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+    writer.flush().await.unwrap();
+
+    match event_rx.recv().await.unwrap() {
+        ClientEvent::SessionExitedReceived {
+            remote_session_id,
+            exit_code,
+        } => {
+            assert_eq!(remote_session_id.as_str(), "session-abc");
+            assert_eq!(exit_code, Some(1));
+        }
+        other => panic!("Expected SessionExitedReceived, got {other:?}"),
+    }
+}
+
 /// Direct coverage for #438 dependent feature 5 (manager-layer host-scoped
 /// dispatch): `send_host_scoped` queues the message without registering a
 /// `pending_requests` entry, and it reaches the wire with the host-scoped

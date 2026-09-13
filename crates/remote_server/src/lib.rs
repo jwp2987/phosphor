@@ -5,6 +5,7 @@ pub mod host_id;
 pub mod host_response;
 pub mod manager;
 pub mod protocol;
+pub mod pty_session_id;
 pub mod repo_metadata_proto;
 pub mod setup;
 #[cfg(not(target_family = "wasm"))]
@@ -12,6 +13,7 @@ pub mod ssh;
 pub mod transport;
 
 pub use host_id::HostId;
+pub use pty_session_id::RemotePtySessionId;
 
 #[allow(clippy::large_enum_variant)]
 pub mod proto {

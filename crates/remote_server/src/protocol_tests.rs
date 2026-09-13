@@ -135,6 +135,73 @@ async fn round_trip_remote_agent_context_snapshot() {
     }
 }
 
+/// Session-ownership groundwork (`docs/design/moth-parliament.md`, "Scoping
+/// session ownership"): a `SessionOutputChunkPush` -- a server push with an
+/// empty `request_id`, like `RepoMetadataUpdatePush`/`BufferUpdatedPush` --
+/// survives the length-delimited protobuf round trip with its
+/// `remote_session_id` and `data` intact. Fails if the push's field numbers
+/// (`ServerMessage.session_output_chunk_push = 48`) are ever renumbered or
+/// the message loses a field.
+#[tokio::test]
+async fn round_trip_session_output_chunk_push() {
+    let mut buf = Vec::new();
+    write_server_message(
+        &mut buf,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::SessionOutputChunkPush(
+                crate::proto::SessionOutputChunkPush {
+                    remote_session_id: "session-abc".to_string(),
+                    data: b"hello from the daemon".to_vec(),
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+
+    let decoded = read_server_message(&mut &buf[..]).await.unwrap();
+    assert_eq!(decoded.request_id, "");
+    match decoded.message {
+        Some(server_message::Message::SessionOutputChunkPush(push)) => {
+            assert_eq!(push.remote_session_id, "session-abc");
+            assert_eq!(push.data, b"hello from the daemon");
+        }
+        other => panic!("unexpected message variant: {other:?}"),
+    }
+}
+
+/// Same coverage as above for the other session-shaped push,
+/// `SessionExitedPush`, including the `exit_code` field's `None` case
+/// (the process was killed by a signal rather than exiting normally).
+#[tokio::test]
+async fn round_trip_session_exited_push() {
+    let mut buf = Vec::new();
+    write_server_message(
+        &mut buf,
+        &ServerMessage {
+            request_id: String::new(),
+            message: Some(server_message::Message::SessionExitedPush(
+                crate::proto::SessionExitedPush {
+                    remote_session_id: "session-abc".to_string(),
+                    exit_code: None,
+                },
+            )),
+        },
+    )
+    .await
+    .unwrap();
+
+    let decoded = read_server_message(&mut &buf[..]).await.unwrap();
+    match decoded.message {
+        Some(server_message::Message::SessionExitedPush(push)) => {
+            assert_eq!(push.remote_session_id, "session-abc");
+            assert_eq!(push.exit_code, None);
+        }
+        other => panic!("unexpected message variant: {other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn round_trip_server_message() {
     let msg = ServerMessage {

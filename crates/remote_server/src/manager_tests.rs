@@ -7,10 +7,19 @@
 //! feature (enabled in `Cargo.toml`'s `[dev-dependencies]`) provides a
 //! lightweight headless `App` for exactly this.
 
+use std::sync::Mutex;
+
 use futures::channel::oneshot;
 use warp_core::SessionId;
 use warp_util::standardized_path::StandardizedPath;
-use warpui::App;
+#[cfg(unix)]
+use warpui::r#async::executor;
+use warpui::{App, ModelHandle};
+
+#[cfg(unix)]
+use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
+
+use crate::RemotePtySessionId;
 
 use super::*;
 
@@ -348,5 +357,231 @@ fn handle_host_disconnected_fails_pending_host_requests_for_that_host_only() {
         // (end of test) resolves it with a channel-closed error, which we
         // don't care about here; we only assert it wasn't pre-empted above.
         drop(other_result_rx);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Remote pty session pushes (groundwork; see docs/design/moth-parliament.md,
+// "Scoping session ownership")
+// ---------------------------------------------------------------------------
+
+/// `RemoteTransport` double for constructing a `Connected` session in tests.
+/// None of its methods are exercised: the routing tests below only need a
+/// value of the right type to occupy `RemoteSessionState::Connected`'s
+/// `transport` field.
+#[cfg(unix)]
+#[derive(Debug)]
+struct UnusedTransport;
+
+#[cfg(unix)]
+impl RemoteTransport for UnusedTransport {
+    fn detect_platform(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RemotePlatform, String>> + Send>>
+    {
+        unreachable!("not exercised by this test")
+    }
+
+    fn run_preinstall_check(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<PreinstallCheckResult, String>> + Send>,
+    > {
+        unreachable!("not exercised by this test")
+    }
+
+    fn check_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
+        unreachable!("not exercised by this test")
+    }
+
+    fn check_has_old_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<bool>> + Send>> {
+        unreachable!("not exercised by this test")
+    }
+
+    fn install_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+        unreachable!("not exercised by this test")
+    }
+
+    fn connect(
+        &self,
+        _executor: Arc<executor::Background>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<Connection>> + Send>>
+    {
+        unreachable!("not exercised by this test")
+    }
+
+    fn remove_remote_server_binary(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send>> {
+        unreachable!("not exercised by this test")
+    }
+}
+
+/// Builds a `RemoteServerClient` backed by an already-severed in-memory pipe
+/// (the peer end is dropped immediately). Sufficient for tests that only
+/// need a value of the right type to sit in `RemoteSessionState::Connected`
+/// -- nothing here sends or receives a message. The returned `Background`
+/// must be kept alive for as long as the client is in use, matching
+/// `client_tests.rs`'s `setup_mock_client`.
+#[cfg(unix)]
+fn disconnected_client() -> (Arc<RemoteServerClient>, executor::Background) {
+    let (client_stream, server_stream) = tokio::io::duplex(4096);
+    drop(server_stream);
+    let (client_read, client_write) = tokio::io::split(client_stream);
+    let executor = executor::Background::default();
+    let (client, _event_rx, _host_response_rx) =
+        RemoteServerClient::new(client_read.compat(), client_write.compat_write(), &executor);
+    (Arc::new(client), executor)
+}
+
+/// Inserts a `Connected` session for `session_id`/`host_id` directly into
+/// the manager's session map, bypassing the real connect flow (which needs a
+/// live SSH subprocess). `forward_client_event` only reads this map via
+/// `host_id_for_session`, so a stand-in client/transport/child is enough.
+/// Returns the `Background` backing the stand-in client -- keep it alive for
+/// the rest of the test.
+#[cfg(unix)]
+fn insert_connected_session(
+    manager: &mut RemoteServerManager,
+    session_id: SessionId,
+    host_id: HostId,
+) -> executor::Background {
+    let (client, executor) = disconnected_client();
+    let child = async_process::Command::new("true")
+        .spawn()
+        .expect("short-lived process starts");
+    manager.sessions.insert(
+        session_id,
+        RemoteSessionState::Connected {
+            client,
+            host_id,
+            identity_key: "test-identity".to_string(),
+            _child: child,
+            control_path: None,
+            transport: Arc::new(UnusedTransport),
+        },
+    );
+    executor
+}
+
+/// Collects every `RemoteServerManagerEvent` emitted by `handle`.
+#[cfg(unix)]
+fn subscribe_to_manager_events(
+    app: &mut App,
+    handle: &ModelHandle<RemoteServerManager>,
+) -> Arc<Mutex<Vec<RemoteServerManagerEvent>>> {
+    let received = Arc::new(Mutex::new(Vec::new()));
+    let received_for_subscription = received.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_model(handle, move |_, event, _| {
+            received_for_subscription
+                .lock()
+                .expect("events mutex should not be poisoned")
+                .push(event.clone());
+        });
+    });
+    received
+}
+
+/// Pin-adjacent coverage: a `SessionOutputChunkPush` -- one of the two
+/// session-shaped pushes added for session-ownership groundwork -- is
+/// forwarded by `forward_client_event` into `RemoteServerManagerEvent::
+/// SessionOutputChunk`, carrying both the session's `host_id` and its
+/// `remote_pty_session_id`. Fails if `forward_client_event`'s match arm for
+/// `ClientEvent::SessionOutputChunkReceived` is removed, or if it drops or
+/// swaps either id.
+#[cfg(unix)]
+#[test]
+fn session_output_chunk_push_is_routed_with_host_and_session_id() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let received = subscribe_to_manager_events(&mut app, &manager);
+
+        let session_id = SessionId::from(7u64);
+        let host_id = HostId::new("test-host".to_string());
+        let remote_pty_session_id = RemotePtySessionId::from("session-abc".to_string());
+
+        let _executor = manager.update(&mut app, |manager, ctx| {
+            let executor = insert_connected_session(manager, session_id, host_id.clone());
+            manager.forward_client_event(
+                session_id,
+                ClientEvent::SessionOutputChunkReceived {
+                    remote_session_id: remote_pty_session_id.clone(),
+                    data: b"hello".to_vec(),
+                },
+                ctx,
+            );
+            executor
+        });
+
+        let received = received
+            .lock()
+            .expect("events mutex should not be poisoned");
+        assert_eq!(received.len(), 1);
+        match &received[0] {
+            RemoteServerManagerEvent::SessionOutputChunk {
+                host_id: got_host_id,
+                remote_pty_session_id: got_session_id,
+                data,
+            } => {
+                assert_eq!(*got_host_id, host_id);
+                assert_eq!(*got_session_id, remote_pty_session_id);
+                assert_eq!(data, b"hello");
+            }
+            other => panic!("expected SessionOutputChunk, got {other:?}"),
+        }
+    });
+}
+
+/// Same shape as the output-chunk test above, for the session-exit push.
+/// Fails if `forward_client_event`'s match arm for
+/// `ClientEvent::SessionExitedReceived` is removed, or if it drops or swaps
+/// either id.
+#[cfg(unix)]
+#[test]
+fn session_exited_push_is_routed_with_host_and_session_id() {
+    App::test((), |mut app| async move {
+        let manager = app.add_model(RemoteServerManager::new);
+        let received = subscribe_to_manager_events(&mut app, &manager);
+
+        let session_id = SessionId::from(9u64);
+        let host_id = HostId::new("test-host-2".to_string());
+        let remote_pty_session_id = RemotePtySessionId::from("session-def".to_string());
+
+        let _executor = manager.update(&mut app, |manager, ctx| {
+            let executor = insert_connected_session(manager, session_id, host_id.clone());
+            manager.forward_client_event(
+                session_id,
+                ClientEvent::SessionExitedReceived {
+                    remote_session_id: remote_pty_session_id.clone(),
+                    exit_code: Some(0),
+                },
+                ctx,
+            );
+            executor
+        });
+
+        let received = received
+            .lock()
+            .expect("events mutex should not be poisoned");
+        assert_eq!(received.len(), 1);
+        match &received[0] {
+            RemoteServerManagerEvent::SessionExited {
+                host_id: got_host_id,
+                remote_pty_session_id: got_session_id,
+                exit_code,
+            } => {
+                assert_eq!(*got_host_id, host_id);
+                assert_eq!(*got_session_id, remote_pty_session_id);
+                assert_eq!(*exit_code, Some(0));
+            }
+            other => panic!("expected SessionExited, got {other:?}"),
+        }
     });
 }

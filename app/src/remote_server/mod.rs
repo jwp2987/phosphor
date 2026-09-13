@@ -18,6 +18,13 @@ pub mod codebase_index_store;
 pub mod codebase_index_model;
 #[cfg(not(target_family = "wasm"))]
 pub mod server_buffer_tracker;
+/// The host registry (`docs/design/moth-parliament.md`, "Requirement 5 needs
+/// a surface, and a registry that does not exist"). Model only -- no
+/// settings page, no panel. `wasm`-gated to match every other module in this
+/// directory that reaches into `remote_server::setup` (`RemoteOs`,
+/// `RemoteArch`, `UnsupportedReason`), which this one does too.
+#[cfg(not(target_family = "wasm"))]
+pub mod host_registry;
 #[cfg(not(target_family = "wasm"))]
 pub mod get_branches;
 #[cfg(not(target_family = "wasm"))]

@@ -16,23 +16,25 @@ use crate::proto::{
     GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse, GetDiffState,
     GetDiffStateResponse, GitCommitChainRequest, GitCommitChainResponse, GitCreatePrRequest,
     GitCreatePrResponse, GitHubPrInfoPush, GitHubRepositoryInfoPush, GitPullRequest,
-    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush,
-    Initialize, InitializeResponse, ListDirectory, ListDirectoryResponse,
-    LoadRepoMetadataDirectoryResponse,
-    NavigatedToDirectoryResponse, OpenBuffer, OpenBufferResponse, ReadFileChunk,
-    ReadFileChunkResponse, ReadFileContextRequest, ReadFileContextResponse,
-    RemoteAgentContextSnapshot, ResolveConflict, ResolveConflictResponse, ResolvePath,
+    GitPullResponse, GitPushRequest, GitPushResponse, GitStageRequest, GitStatusPush, Initialize,
+    InitializeResponse, ListDirectory, ListDirectoryResponse, ListSessions, ListSessionsResponse,
+    LoadRepoMetadataDirectoryResponse, NavigatedToDirectoryResponse, OpenBuffer,
+    OpenBufferResponse, ReadFileChunk, ReadFileChunkResponse, ReadFileContextRequest,
+    ReadFileContextResponse, RemoteAgentContextSnapshot, RemoteSessionSignal, ResizeSession,
+    ResizeSessionResponse, ResolveConflict, ResolveConflictResponse, ResolvePath,
     ResolvePathResponse, RipgrepSearchRequest, RipgrepSearchResponse, RunCommandRequest,
     RunCommandResponse, SaveBuffer, SaveBufferResponse, ServerMessage, SessionBootstrapped,
-    TextEdit, UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
-    UpdatePreferences, WriteFile, WriteFileChunk,
-    WriteFileChunkResponse,
-    discard_files_response, git_stage_response, host_scoped_request, notification,
-    read_file_chunk_response,
-    server_message, session_scoped_request,
+    SignalSession, SignalSessionResponse, SpawnSession, SpawnSessionResponse, TextEdit,
+    UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
+    UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, WriteSessionStdin,
+    WriteSessionStdinResponse, discard_files_response, git_stage_response, host_scoped_request,
+    list_sessions_response, notification, read_file_chunk_response, resize_session_response,
+    server_message, session_scoped_request, signal_session_response, spawn_session_response,
+    write_session_stdin_response,
 };
 
 use crate::protocol::{self, ProtocolError, RequestId};
+use crate::pty_session_id::RemotePtySessionId;
 
 use warp_core::SessionId;
 use warp_util::standardized_path::StandardizedPath;
@@ -68,6 +70,9 @@ pub enum ClientError {
 
     #[error("File operation failed: {0}")]
     FileOperationFailed(String),
+
+    #[error("Session operation failed: {0}")]
+    SessionOperationFailed(String),
 }
 
 /// Client-resolved preferences the daemon needs in order to index a codebase
@@ -178,6 +183,19 @@ pub enum ClientEvent {
     GitHubPrInfoPushReceived { push: GitHubPrInfoPush },
     /// The daemon pushed repository name/owner info for one of its repos.
     GitHubRepositoryInfoPushReceived { push: GitHubRepositoryInfoPush },
+    /// The daemon pushed a chunk of a remote pty session's output. Session-
+    /// ownership groundwork (`docs/design/moth-parliament.md`); no daemon
+    /// sends this yet.
+    SessionOutputChunkReceived {
+        remote_session_id: RemotePtySessionId,
+        data: Vec<u8>,
+    },
+    /// The daemon pushed notice that a remote pty session's process exited.
+    /// Session-ownership groundwork; no daemon sends this yet.
+    SessionExitedReceived {
+        remote_session_id: RemotePtySessionId,
+        exit_code: Option<i32>,
+    },
 }
 /// Client for communicating with a `remote_server` process over the remote server protocol.
 ///
@@ -749,6 +767,168 @@ impl RemoteServerClient {
         }
     }
 
+    // ── Remote pty sessions (groundwork; see `docs/design/moth-parliament.md`,
+    // "Scoping session ownership") ──────────────────────────────────────────
+    // Ordinary host-scoped request/response, exactly like `discard_files` and
+    // `git_stage` above. No daemon handler exists yet for any of these; each
+    // call currently returns `ClientError::ServerError` with
+    // `ErrorCode::Internal` once the daemon side is stubbed in
+    // (`app/src/remote_server/server_model.rs`, outside this crate).
+
+    /// Starts a new pty-backed session on the remote host, identified by the
+    /// client-minted `remote_session_id` (see `RemotePtySessionId`).
+    pub async fn spawn_session(
+        &self,
+        remote_session_id: RemotePtySessionId,
+        cwd: String,
+        shell: Option<String>,
+        environment_variables: HashMap<String, String>,
+        rows: u32,
+        cols: u32,
+    ) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::SpawnSession(SpawnSession {
+                remote_session_id: remote_session_id.into(),
+                cwd,
+                shell,
+                environment_variables,
+                rows,
+                cols,
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::SpawnSessionResponse(resp)) => match resp.result {
+                Some(spawn_session_response::Result::Success(_)) | None => Ok(()),
+                Some(spawn_session_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for SpawnSession: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Writes bytes to a session's stdin.
+    pub async fn write_session_stdin(
+        &self,
+        remote_session_id: RemotePtySessionId,
+        data: Vec<u8>,
+    ) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::WriteSessionStdin(WriteSessionStdin {
+                remote_session_id: remote_session_id.into(),
+                data,
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::WriteSessionStdinResponse(resp)) => match resp.result {
+                Some(write_session_stdin_response::Result::Success(_)) | None => Ok(()),
+                Some(write_session_stdin_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for WriteSessionStdin: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Resizes a session's pty.
+    pub async fn resize_session(
+        &self,
+        remote_session_id: RemotePtySessionId,
+        rows: u32,
+        cols: u32,
+    ) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ResizeSession(ResizeSession {
+                remote_session_id: remote_session_id.into(),
+                rows,
+                cols,
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ResizeSessionResponse(resp)) => match resp.result {
+                Some(resize_session_response::Result::Success(_)) | None => Ok(()),
+                Some(resize_session_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for ResizeSession: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Sends a signal to a session's process (group). Also how a session is
+    /// killed (`RemoteSessionSignal::Kill`) -- there is no separate
+    /// kill/terminate-session request.
+    pub async fn signal_session(
+        &self,
+        remote_session_id: RemotePtySessionId,
+        signal: RemoteSessionSignal,
+    ) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::SignalSession(SignalSession {
+                remote_session_id: remote_session_id.into(),
+                signal: signal.into(),
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::SignalSessionResponse(resp)) => match resp.result {
+                Some(signal_session_response::Result::Success(_)) | None => Ok(()),
+                Some(signal_session_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for SignalSession: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Lists the sessions the daemon currently holds open on this host.
+    pub async fn list_sessions(
+        &self,
+    ) -> Result<Vec<crate::proto::RemoteSessionSummary>, ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ListSessions(ListSessions {}),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ListSessionsResponse(resp)) => match resp.result {
+                Some(list_sessions_response::Result::Success(success)) => Ok(success.sessions),
+                None => Ok(Vec::new()),
+                Some(list_sessions_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for ListSessions: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
     /// Zap: lists the immediate children of a directory on the remote host.
     ///
     /// Used by terminal file link detection to precisely validate the shape of
@@ -1057,6 +1237,18 @@ impl RemoteServerClient {
             }
             server_message::Message::GithubRepositoryInfoPush(push) => {
                 Some(ClientEvent::GitHubRepositoryInfoPushReceived { push })
+            }
+            server_message::Message::SessionOutputChunkPush(push) => {
+                Some(ClientEvent::SessionOutputChunkReceived {
+                    remote_session_id: RemotePtySessionId::from(push.remote_session_id),
+                    data: push.data,
+                })
+            }
+            server_message::Message::SessionExitedPush(push) => {
+                Some(ClientEvent::SessionExitedReceived {
+                    remote_session_id: RemotePtySessionId::from(push.remote_session_id),
+                    exit_code: push.exit_code,
+                })
             }
             other => {
                 log::warn!("Unhandled push message variant: {other:?}");

@@ -193,6 +193,15 @@ fn every_host_scoped_request_has_a_response_disposition() {
             // The codebase-index requests that answer directly.
             M::GetFragmentMetadataFromHash(_) => "manager::get_fragment_metadata_from_hash",
             M::SearchRemoteCodebase(_) => "manager::search_remote_codebase",
+            // Remote pty session lifecycle (session-ownership groundwork,
+            // `docs/design/moth-parliament.md`). Each response is parsed
+            // inline at its `client::` call site, same shape as
+            // `discard_files`/`git_stage` above.
+            M::SpawnSession(_) => "client::spawn_session",
+            M::WriteSessionStdin(_) => "client::write_session_stdin",
+            M::ResizeSession(_) => "client::resize_session",
+            M::SignalSession(_) => "client::signal_session",
+            M::ListSessions(_) => "client::list_sessions",
         }
     }
 

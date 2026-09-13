@@ -55,6 +55,117 @@ maybe_define_setting!(RemoteHosts, group: WarpifySettings, {
     description: "Remote hosts offered as new-session targets in the new-session menu.",
 });
 
+/// One host registry entry (`docs/design/moth-parliament.md`, "Requirement 5
+/// needs a surface, and a registry that does not exist"), as read from and
+/// written to settings storage. `app::remote_server::host_registry` owns the
+/// domain-level `RemoteHostEntry`/`HostInstallState` types and the conversion
+/// to/from this shape; this struct only needs to agree with what
+/// `schemars`/`serde` can round-trip through TOML.
+///
+/// **Advisory, not authoritative.** Everything here except `target` is a
+/// cached observation -- install state, when the host was last reached, and
+/// its probed OS/arch. Settings are user-editable and can be hand-edited or
+/// arrive synced from another machine, so a value read from here must never
+/// be trusted for a security-relevant decision (e.g. "skip verifying the
+/// binary because the cache already says Installed"); a fresh probe is the
+/// only source of truth for that. This struct exists so the last known state
+/// survives a restart to *display*, not to skip re-checking it.
+///
+/// `install_state` is one of `not_installed` / `installed` / `unsupported` /
+/// `unknown`, with the remaining fields populated only for the state that
+/// needs them -- `installed_version` for `installed`, the
+/// `unsupported_reason_*` fields for `unsupported`. This mirrors
+/// `remote_server::setup::PreinstallStatus` and reuses
+/// `remote_server::setup::UnsupportedReason`'s two shapes rather than
+/// inventing a parallel vocabulary; see `host_registry::HostInstallState` for
+/// the enum this flattens.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[schemars(description = "Observed state of a remote host known to the host registry.")]
+pub struct PersistedRemoteHost {
+    #[schemars(description = "The target string as configured, e.g. a host alias or user@host.")]
+    pub target: String,
+    #[serde(default)]
+    #[schemars(description = "The identity the remote daemon reported on its last handshake.")]
+    pub host_id: Option<String>,
+    #[serde(default = "default_install_state")]
+    #[schemars(description = "One of not_installed / installed / unsupported / unknown.")]
+    pub install_state: String,
+    #[serde(default)]
+    #[schemars(description = "Installed version, when install_state is installed.")]
+    pub installed_version: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "One of glibc_too_old / non_glibc, when install_state is unsupported."
+    )]
+    pub unsupported_reason_kind: Option<String>,
+    #[serde(default)]
+    pub unsupported_glibc_detected_major: Option<u32>,
+    #[serde(default)]
+    pub unsupported_glibc_detected_minor: Option<u32>,
+    #[serde(default)]
+    pub unsupported_glibc_required_major: Option<u32>,
+    #[serde(default)]
+    pub unsupported_glibc_required_minor: Option<u32>,
+    #[serde(default)]
+    pub unsupported_non_glibc_name: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Unix milliseconds of the last successful probe or connection.")]
+    pub last_reached_at_unix_millis: Option<i64>,
+    #[serde(default)]
+    #[schemars(description = "Probed OS: linux or macos.")]
+    pub os: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Probed architecture: x86_64 or aarch64.")]
+    pub arch: Option<String>,
+}
+
+fn default_install_state() -> String {
+    "unknown".to_string()
+}
+
+impl settings_value::SettingsValue for PersistedRemoteHost {}
+
+/// A named host group (`docs/design/moth-parliament.md`, "Host groups: a
+/// service is rarely one machine") as read from and written to settings
+/// storage. A query target, never a session target -- see
+/// `host_registry::HostGroup`'s doc comment for what that means for the
+/// types. Group *queries* and fan-out are later work; this only persists
+/// membership.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[schemars(
+    description = "A named set of hosts, used as a query target rather than a session target."
+)]
+pub struct PersistedHostGroup {
+    pub name: String,
+    #[serde(default)]
+    #[schemars(description = "Target strings referencing entries in remote_host_registry.")]
+    pub members: Vec<String>,
+}
+
+impl settings_value::SettingsValue for PersistedHostGroup {}
+
+maybe_define_setting!(RemoteHostRegistryEntries, group: WarpifySettings, {
+    type: Vec<PersistedRemoteHost>,
+    default: Vec::new(),
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+    private: false,
+    toml_path: "warpify.ssh.remote_host_registry",
+    description: "Observed state (install state, last reached, platform) for hosts known to the host registry. Advisory -- re-probe before relying on this for anything security-relevant.",
+});
+
+maybe_define_setting!(RemoteHostGroups, group: WarpifySettings, {
+    type: Vec<PersistedHostGroup>,
+    default: Vec::new(),
+    supported_platforms: SupportedPlatforms::ALL,
+    sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
+    private: false,
+    toml_path: "warpify.ssh.remote_host_groups",
+    description: "Named host groups and their membership. A group is a query target, not a session target.",
+});
+
 maybe_define_setting!(EnableSshWarpification, group: WarpifySettings, {
     type: bool,
     default: true,
@@ -228,6 +339,19 @@ pub struct WarpifySettings {
     /// invocation rather than needing to be validated up front.
     pub remote_hosts: RemoteHosts,
 
+    /// Observed state for hosts known to the host registry
+    /// (`docs/design/moth-parliament.md`, "Requirement 5 needs a surface, and
+    /// a registry that does not exist"). Converges with `remote_hosts`:
+    /// `app::remote_server::host_registry::HostRegistryModel` guarantees
+    /// every target declared there has an entry here. Advisory, not
+    /// authoritative -- see `PersistedRemoteHost`'s doc comment.
+    pub remote_host_registry_entries: RemoteHostRegistryEntries,
+
+    /// Named host groups (`docs/design/moth-parliament.md`, "Host groups: a
+    /// service is rarely one machine"). A group is a query target, never a
+    /// session target.
+    pub remote_host_groups: RemoteHostGroups,
+
     /// This setting controls whether we should ever warpify ssh sessions.
     pub enable_ssh_warpification: EnableSshWarpification,
 
@@ -307,6 +431,8 @@ impl WarpifySettings {
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
             remote_hosts: RemoteHosts::new_from_storage(ctx),
+            remote_host_registry_entries: RemoteHostRegistryEntries::new_from_storage(ctx),
+            remote_host_groups: RemoteHostGroups::new_from_storage(ctx),
             enable_ssh_warpification: EnableSshWarpification::new_from_storage(ctx),
             enable_ssh_wrapper: EnableSshWrapper::new_from_storage(ctx),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new_from_storage(ctx),
@@ -332,6 +458,8 @@ impl WarpifySettings {
             parsed_ssh_hosts_denylist: Self::parse_ssh_hosts_denylist(&ssh_hosts_denylist),
             ssh_hosts_denylist,
             remote_hosts: RemoteHosts::new(None),
+            remote_host_registry_entries: RemoteHostRegistryEntries::new(None),
+            remote_host_groups: RemoteHostGroups::new(None),
             enable_ssh_warpification: EnableSshWarpification::new(None),
             enable_ssh_wrapper: EnableSshWrapper::new(None),
             use_ssh_tmux_wrapper: UseSshTmuxWrapper::new(None),
@@ -359,6 +487,8 @@ impl WarpifySettings {
                         Self::parse_ssh_hosts_denylist(&me.ssh_hosts_denylist)
                 }
                 WarpifySettingsChangedEvent::RemoteHosts { .. } => {}
+                WarpifySettingsChangedEvent::RemoteHostRegistryEntries { .. } => {}
+                WarpifySettingsChangedEvent::RemoteHostGroups { .. } => {}
                 WarpifySettingsChangedEvent::EnableSshWarpification { .. } => {}
                 WarpifySettingsChangedEvent::EnableSshWrapper { .. } => {}
                 WarpifySettingsChangedEvent::UseSshTmuxWrapper { .. } => {}
@@ -446,6 +576,22 @@ impl WarpifySettings {
             ctx
         );
 
+        register_settings_events!(
+            WarpifySettings,
+            remote_host_registry_entries,
+            RemoteHostRegistryEntries,
+            handle.clone(),
+            ctx
+        );
+
+        register_settings_events!(
+            WarpifySettings,
+            remote_host_groups,
+            RemoteHostGroups,
+            handle.clone(),
+            ctx
+        );
+
         register_settings_events!(WarpifySettings, remote_hosts, RemoteHosts, handle, ctx);
     }
 }
@@ -464,6 +610,12 @@ pub enum WarpifySettingsChangedEvent {
         change_event_reason: ChangeEventReason,
     },
     RemoteHosts {
+        change_event_reason: ChangeEventReason,
+    },
+    RemoteHostRegistryEntries {
+        change_event_reason: ChangeEventReason,
+    },
+    RemoteHostGroups {
         change_event_reason: ChangeEventReason,
     },
     EnableSshWarpification {

@@ -195,7 +195,8 @@ impl RemoteServerErrorKind {
             ClientError::ServerError { .. } => Self::ServerError,
             ClientError::Protocol(_)
             | ClientError::UnexpectedResponse
-            | ClientError::FileOperationFailed(_) => Self::Other,
+            | ClientError::FileOperationFailed(_)
+            | ClientError::SessionOperationFailed(_) => Self::Other,
         }
     }
 }
@@ -431,6 +432,27 @@ pub enum RemoteServerManagerEvent {
     /// the conflict resolution banner.
     BufferConflictDetected { host_id: HostId, path: String },
 
+    // --- Remote pty session pushes (groundwork; forwarded from ClientEvent) ---
+    // Session-ownership groundwork (`docs/design/moth-parliament.md`,
+    // "Scoping session ownership"). No daemon sends either push yet -- see
+    // `RemoteServerClient::spawn_session` and friends. Both carry
+    // `remote_pty_session_id` alongside `host_id`, mirroring how
+    // `BufferUpdated` above carries `path` alongside `host_id`: a session is
+    // one of potentially several open on a host, so `host_id` alone cannot
+    // address it.
+    /// A chunk of a remote pty session's output was pushed by the daemon.
+    SessionOutputChunk {
+        host_id: HostId,
+        remote_pty_session_id: crate::pty_session_id::RemotePtySessionId,
+        data: Vec<u8>,
+    },
+    /// A remote pty session's process exited, as pushed by the daemon.
+    SessionExited {
+        host_id: HostId,
+        remote_pty_session_id: crate::pty_session_id::RemotePtySessionId,
+        exit_code: Option<i32>,
+    },
+
     // --- Diff-state events (forwarded from ClientEvent push channel) ---
     /// A full diff-state snapshot was pushed by the server for a subscribed
     /// (repo, mode) pair. Carries the raw proto message; the `DiffStateModel`
@@ -600,7 +622,12 @@ impl RemoteServerManagerEvent {
             | RemoteServerManagerEvent::GitHubRepositoryInfoPushReceived { .. }
             // Host-scoped: the agent-context snapshot is keyed by `HostId`, not by
             // any one session on that host.
-            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. } => None,
+            | RemoteServerManagerEvent::RemoteAgentContextSnapshot { .. }
+            // Host-scoped: a remote pty session outlives (and is meant to be
+            // reattached across) any one connection to its host, so it is
+            // keyed by `HostId` + `RemotePtySessionId`, not by a `SessionId`.
+            | RemoteServerManagerEvent::SessionOutputChunk { .. }
+            | RemoteServerManagerEvent::SessionExited { .. } => None,
         }
     }
 }
@@ -1729,6 +1756,26 @@ impl RemoteServerManager {
                     host_id,
                     status,
                     mutation_kind: None,
+                });
+            }
+            ClientEvent::SessionOutputChunkReceived {
+                remote_session_id,
+                data,
+            } => {
+                ctx.emit(RemoteServerManagerEvent::SessionOutputChunk {
+                    host_id,
+                    remote_pty_session_id: remote_session_id,
+                    data,
+                });
+            }
+            ClientEvent::SessionExitedReceived {
+                remote_session_id,
+                exit_code,
+            } => {
+                ctx.emit(RemoteServerManagerEvent::SessionExited {
+                    host_id,
+                    remote_pty_session_id: remote_session_id,
+                    exit_code,
                 });
             }
             ClientEvent::HostScopedDecodeFailed { request_id } => {

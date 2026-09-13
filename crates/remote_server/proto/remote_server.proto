@@ -113,6 +113,19 @@ message HostScopedRequest {
     // git_push/git_pull/git_commit_chain for the same reason: a one-shot,
     // host-local git subprocess. Next free slot in this oneof.
     GitStageRequest git_stage = 24;
+    // Remote pty session lifecycle (session-ownership groundwork; see the
+    // "── Remote pty sessions ──" section below for the full design note).
+    // Host-scoped for the same reason as index_codebase above: a session is
+    // owned by the daemon host and is meant to keep running -- and later be
+    // reattached -- after the connection that spawned it goes away, so it is
+    // not the property of one SSH connection. Groundwork only: no daemon
+    // handler exists yet for any of these five. Next free slots in this
+    // oneof (25-29).
+    SpawnSession spawn_session = 25;
+    WriteSessionStdin write_session_stdin = 26;
+    ResizeSession resize_session = 27;
+    SignalSession signal_session = 28;
+    ListSessions list_sessions = 29;
   }
 }
 
@@ -229,6 +242,20 @@ message ServerMessage {
     // mismatch documented above: an old daemon never sends 42, and an old
     // client drops it as an unknown field.
     GitStageResponse git_stage_response = 42;
+    // Remote pty session lifecycle responses, plus the two session-shaped
+    // pushes (43-49). Groundwork only -- see the "── Remote pty sessions ──"
+    // section below. Additive, so inert under the version-check mismatch
+    // documented above: an old daemon never sends 43-49, and an old client
+    // drops them as unknown fields.
+    SpawnSessionResponse spawn_session_response = 43;
+    WriteSessionStdinResponse write_session_stdin_response = 44;
+    ResizeSessionResponse resize_session_response = 45;
+    SignalSessionResponse signal_session_response = 46;
+    ListSessionsResponse list_sessions_response = 47;
+    // Push (empty request_id): a chunk of a session's output.
+    SessionOutputChunkPush session_output_chunk_push = 48;
+    // Push (empty request_id): a session's process exited.
+    SessionExitedPush session_exited_push = 49;
   }
 }
 
@@ -323,6 +350,170 @@ message RunCommandResponse {
     RunCommandSuccess success = 1;
     RunCommandError error = 2;
   }
+}
+
+// ── Remote pty sessions (session-ownership groundwork) ─────────────
+//
+// Design: docs/design/moth-parliament.md, "Scoping session ownership"
+// (CORRECTION 2026-09-12). This is groundwork only -- the wire shape for
+// session lifecycle plus the two push variants a live pty needs -- not a
+// working remote pty. The daemon does not implement any handler in this
+// section yet; spawning a real pty, reattach, and output buffering while
+// detached are separate, later pieces of work.
+//
+// Identity: `remote_session_id` is an opaque string minted by the *client*
+// (see `RemotePtySessionId` in the Rust crate), not returned by the daemon
+// the way `InitializeResponse.host_id` is. Two existing things in this file
+// are already called "session" and are NOT this:
+//   - `SessionScopedRequest` / the client connection `warp_core::SessionId`:
+//     one per SSH connection.
+//   - `SessionBootstrapped.session_id` / `RunCommandRequest.session_id`: the
+//     same per-connection id, carried as a bare uint64 so the daemon can key
+//     its per-connection shell executor.
+// A remote pty session is neither: it is a daemon-owned process meant to
+// outlive the connection that spawned it, so it gets its own identity
+// dimension rather than reusing either existing "session".
+message SpawnSession {
+  // Client-minted identity for the new session. See the section doc comment
+  // for why the client, not the daemon, mints this.
+  string remote_session_id = 1;
+  // Absolute working directory. Empty means the daemon's default.
+  string cwd = 2;
+  // Shell/command to run. Empty means the daemon's default login shell.
+  optional string shell = 3;
+  map<string, string> environment_variables = 4;
+  // Initial terminal size.
+  uint32 rows = 5;
+  uint32 cols = 6;
+}
+
+message SpawnSessionError {
+  string message = 1;
+}
+
+message SpawnSessionSuccess {}
+
+message SpawnSessionResponse {
+  oneof result {
+    SpawnSessionSuccess success = 1;
+    SpawnSessionError error = 2;
+  }
+}
+
+// Client → server: write bytes to a session's stdin.
+message WriteSessionStdin {
+  string remote_session_id = 1;
+  bytes data = 2;
+}
+
+message WriteSessionStdinError {
+  string message = 1;
+}
+
+message WriteSessionStdinSuccess {}
+
+message WriteSessionStdinResponse {
+  oneof result {
+    WriteSessionStdinSuccess success = 1;
+    WriteSessionStdinError error = 2;
+  }
+}
+
+// Client → server: resize a session's pty.
+message ResizeSession {
+  string remote_session_id = 1;
+  uint32 rows = 2;
+  uint32 cols = 3;
+}
+
+message ResizeSessionError {
+  string message = 1;
+}
+
+message ResizeSessionSuccess {}
+
+message ResizeSessionResponse {
+  oneof result {
+    ResizeSessionSuccess success = 1;
+    ResizeSessionError error = 2;
+  }
+}
+
+// Signals a remote pty session's process (group) can be sent. Mirrors the
+// subset a terminal session needs, not the full POSIX signal set.
+enum RemoteSessionSignal {
+  REMOTE_SESSION_SIGNAL_UNSPECIFIED = 0;
+  REMOTE_SESSION_SIGNAL_INTERRUPT = 1;
+  REMOTE_SESSION_SIGNAL_TERMINATE = 2;
+  REMOTE_SESSION_SIGNAL_KILL = 3;
+  REMOTE_SESSION_SIGNAL_HANGUP = 4;
+}
+
+// Client → server: send a signal to a session's process (group). Also how
+// the client kills a session (REMOTE_SESSION_SIGNAL_KILL) -- there is no
+// separate kill/terminate-session request.
+message SignalSession {
+  string remote_session_id = 1;
+  RemoteSessionSignal signal = 2;
+}
+
+message SignalSessionError {
+  string message = 1;
+}
+
+message SignalSessionSuccess {}
+
+message SignalSessionResponse {
+  oneof result {
+    SignalSessionSuccess success = 1;
+    SignalSessionError error = 2;
+  }
+}
+
+// Client → server: list the sessions the daemon currently holds open on this
+// host. Carries no fields: unlike the other operations above, this is not
+// scoped to one session.
+message ListSessions {}
+
+message ListSessionsError {
+  string message = 1;
+}
+
+// One session as reported by ListSessions.
+message RemoteSessionSummary {
+  string remote_session_id = 1;
+  string cwd = 2;
+  optional string shell = 3;
+  uint32 rows = 4;
+  uint32 cols = 5;
+}
+
+message ListSessionsSuccess {
+  repeated RemoteSessionSummary sessions = 1;
+}
+
+message ListSessionsResponse {
+  oneof result {
+    ListSessionsSuccess success = 1;
+    ListSessionsError error = 2;
+  }
+}
+
+// Server → client push: a chunk of output produced by a session since the
+// last chunk. Stdout and stderr are not distinguished -- the pty already
+// merges them, matching what a local terminal sees.
+message SessionOutputChunkPush {
+  string remote_session_id = 1;
+  bytes data = 2;
+}
+
+// Server → client push: a session's process exited. The daemon stops
+// tracking the session after sending this -- there is no separate teardown
+// request or acknowledgement.
+message SessionExitedPush {
+  string remote_session_id = 1;
+  // Absent when the process was killed by a signal (Unix).
+  optional int32 exit_code = 2;
 }
 
 // ── Shared error response ─────────────────────────────────────────

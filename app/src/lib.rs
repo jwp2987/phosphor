@@ -1646,6 +1646,17 @@ fn initialize_app(
     // removed along with the server API token rotation event and the
     // `wire_auth_token_rotation` function itself.
 
+    // The host registry (`docs/design/moth-parliament.md`, "Requirement 5
+    // needs a surface, and a registry that does not exist"): model only, no
+    // UI yet. Persisted through `WarpifySettings`, not SQLite, so this needs
+    // no persisted-data threading -- it reads its settings directly at
+    // construction, the same way `RemoteCodebaseIndexModel` reads
+    // `CodeSettings` above. Registered after `WarpifySettings` is
+    // registered, which happens during `settings::init` well above this
+    // point.
+    #[cfg(not(target_family = "wasm"))]
+    ctx.add_singleton_model(remote_server::host_registry::HostRegistryModel::new);
+
     log::info!(
         "Starting warp with channel state {} and version {:?}",
         ChannelState::debug_str(),
