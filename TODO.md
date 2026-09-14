@@ -12,6 +12,12 @@ attacked it. **None of this was compiled** — the build gate is shut. Verdicts
 below were checked by the coordinator against the code, and where a measurement
 settled it, that measurement is quoted.
 
+**Follow-up 2026-09-13.** The three items left open in the list below have been re-checked against
+the tree at `3989a4bae`: one is closed (`49017dc6b`), one was **already false when it
+was written** — `5a4f2822d`, an ancestor of the commit that recorded this list, had
+fixed it — and one is `[~]`, its wire half landed in `75f78c6ad` with its only caller
+still uncommitted. Evidence on each item. Nothing here has been compiled either.
+
 - [x] 🔴 **A clean daemon pty exit reported as `signalled()`, and a "livelock"
       that never existed.** `is_benign_pty_hangup_read_error`
       (`app/src/remote_server/pty_session_ops/remote_pty_thread.rs`) tested
@@ -53,16 +59,57 @@ settled it, that measurement is quoted.
       the build dies. Latent until something constructs a remote session.
       Recorded on `remote_server_tty::TerminalManager` and in
       `docs/design/moth-parliament.md`.
-- [ ] 🟡 **Killed sessions are never removed from `SessionStore`.** `record_exit`
+      **CLOSED 2026-09-13 by `49017dc6b`** — not by flipping the guard, which
+      would have traded one wrong caller for another, but by asking. The close
+      confirmation now has a third outcome (cancel / stop session / leave
+      running) with leave-running as the non-destructive default, and
+      `dont_show_again` is deliberately withheld from it because
+      `should_confirm_close_session` is one global boolean whose silent answer
+      would be *kill*. Verified in the tree at this commit:
+      `RemotePtyDisposition::{LeaveRunning, ..}` (`app/src/workspace/view.rs:1131`)
+      and `CloseSessionConfirmationAction::CloseAndLeaveRunning`
+      (`app/src/workspace/close_session_confirmation_dialog.rs:404`). The same
+      commit closed a second route the item did not name — `PaneGroup::close_pane`
+      issued no `shutdown_pty` at all, so closing a *pane* always silently
+      detached — and made Escape map to Cancel, never to either close.
+- [~] 🟡 **Killed sessions are never removed from `SessionStore`.** `record_exit`
       only sets `exit_status`; `SessionStore::remove`'s one caller is the
       spawn-failure rollback. `ListSessions` reports exited and running sessions
       identically (`RemoteSessionSummary` carries no state), so a hosts dashboard
       could not tell them apart. Pre-existing; the new kill route makes it
       routine rather than rare.
-- [ ] 🟡 **`local_tty::event_loop` still carries the original
+      **BOTH DEFECTS FIXED ON THE WIRE 2026-09-13 by `75f78c6ad`; still `[~]`
+      because nothing committed calls the removal.** `RemoteSessionSummary` now
+      carries `exit` — a *message* field, so presence itself is the
+      running/exited distinction and there is no `bool` that could disagree with
+      it (`crates/remote_server/proto/remote_server.proto:541`). `ForgetSession`
+      drops an exited session's record, giving `SessionStore::remove` its second
+      caller (`app/src/remote_server/server_model.rs:2026` in
+      `handle_forget_session`, alongside the spawn-failure rollback at `:1836`;
+      line numbers as of `3989a4bae`). It *refuses* a running session, which
+      is the point: forgetting a live one would discard the only record that the
+      daemon owns its pty and child. An unknown id answers success, not error.
+      What is missing at this commit is a caller: `RemoteServerClient::forget_session`
+      exists (`crates/remote_server/src/client/mod.rs:946`) and `ForgetSession`
+      appears nowhere in `app/` outside the daemon's own handler. **A dashboard control
+      for it is in flight in uncommitted work** (`remote_sessions_model.rs`'s
+      `forget_session` call); close this to `[x]` when that lands, not before.
+- [x] 🟡 **`local_tty::event_loop` still carries the original
       `ErrorKind::Other` EIO check.** Inherited upstream code, and its loop never
       reads an exit status, so the consequence differs — but it is the same
       mismatch, and the two files no longer mirror each other.
+      **This entry was already false when it was written.** `5a4f2822d` — the
+      commit the first two items in this list describe, and an ancestor of the
+      `4c3c9664b` that recorded the list — fixed `local_tty::event_loop` in the
+      same change, and its message says so ("`local_tty::event_loop` carried the
+      same `ErrorKind::Other` check and is fixed too"). The file has had no
+      commit since (`git log -1 -- app/src/terminal/local_tty/event_loop.rs` =
+      `5a4f2822d`) and reads `if err.raw_os_error() == Some(libc::EIO)` at
+      `event_loop.rs:528`, with the correction written up in the comment above
+      it. Filed as open debt because the finding was carried forward from the
+      refutation pass without re-reading the file the fix had already touched —
+      which is precisely the failure mode the header of this section exists to
+      warn about, reproduced inside the section itself.
 
 ## RE-PIN SCOPING ROUND 2026-08-29 — `42effe840` -> `4111d08f9` (CANDIDATE pin)
 
@@ -78,6 +125,16 @@ weak enough to re-check before you act on it.
 |---|---|---|
 | old (current oracle) | `42effe840` | 2026-08-11 17:51 -0700 |
 | new (candidate) | `4111d08f9` | 2026-08-26 04:48 +0000 |
+
+**No longer a candidate — noted 2026-09-13.** `ORACLE.md` has recorded
+`4111d08f9` as *the* pin since 2026-08-29, so the "old (current oracle)" row and
+the heading's "(CANDIDATE pin)" describe the state on the day this round ran, not
+the state now. `ORACLE.md`'s Current pin table is the authority; this section is
+kept as the scoping record for that move. The instruction below to confirm the
+commit against the real release build's version string was written before the
+pin moved and there is no record that it was ever carried out; `ORACLE.md` still
+describes the identification as the dated approximation, so treat the
+confirmation as outstanding rather than done.
 
 `4111d08f9` is the **dated** cut for the `2026.08.26` stable, not a tag — tag
 publication stopped after 2026-06-09, so this is Phase 1's documented

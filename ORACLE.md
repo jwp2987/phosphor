@@ -99,13 +99,31 @@ the treadmill.
 
 Compare against it with `git ... 4111d08f9` in place of `warp/master`.
 
-**On the release string.** `2026-08-12` is a Wednesday and the pin is the tip of
-the preceding evening (Tuesday 20:51 -0400 = Wednesday 00:51 UTC), which is
-exactly the "cut from the previous day's tip" rule below. The `HH.MM` build
-stamp of that release is **not recorded here because it cannot be checked** —
-tag publication stopped 2026-06-09, so there is no artifact to read it from, and
-inventing one would put a number in this table that no one can verify. The
-commit is the authoritative identifier; the release string is the human label.
+**On the release string.** `2026-08-26` is a Wednesday and the pinned commit is
+stamped `2026-08-26 04:48:15 +0000` — the same UTC day as the release string, a
+few hours into it.
+
+**The "cut from the previous day's tip" rule below is not restatable from that
+stamp, and this paragraph used to pretend otherwise.** Until 2026-09-13 it still
+did the arithmetic for the *superseded* pin — "`2026-08-12` is a Wednesday and
+the pin is the tip of the preceding evening (Tuesday 20:51 -0400 = Wednesday
+00:51 UTC)" — two rows under a table that had named a different commit since
+2026-08-29. That arithmetic worked only because `42effe840`'s author stamp
+carries a `-0400` offset, so "the preceding evening" was something *that commit
+itself said*. The current pin's stamp is `+0000` and says nothing about anyone's
+evening. 04:48 UTC is the preceding evening in US Pacific (2026-08-25 21:48
+-0700), which is consistent with the rule, but that is an inference about where
+the cut was taken rather than a fact the commit records — so it is not offered
+here as identification. The lesson generalises past this pin: **an offset-less
+stamp cannot corroborate a "previous day's tip" claim**, so do not rewrite this
+paragraph into one on the next re-pin without checking the new commit's offset
+first.
+
+The `HH.MM` build stamp of that release is **not recorded here because it cannot
+be checked** — tag publication stopped 2026-06-09, so there is no artifact to
+read it from, and inventing one would put a number in this table that no one can
+verify. The commit is the authoritative identifier; the release string is the
+human label.
 
 **On the test count.** 11,655 is `script/state`'s measure at this pin, so the step from
 `42effe840` is **+795**. It was briefly recorded here as 11,228 — a number taken from a
@@ -145,17 +163,30 @@ an approximation.
 
 ## Gap at the pin — 2026-08-06 (measured at the OLD pin `02b53fcd8`)
 
-> **These figures have not been re-derived at `42effe840`.** They come from the
-> per-file SCOPE classification of the 854 test-bearing files at the *old* pin,
-> which is a full reading pass, not a generated number — re-running it is Phase
-> 2/4 work of the next round, not part of moving the pin. They are kept here
+> **These figures have never been re-derived at a later pin** — not at
+> `42effe840`, and not at the pin recorded in the Current pin table above. They
+> come from the per-file SCOPE classification of the 854 test-bearing files at
+> `02b53fcd8`, which is a full reading pass, not a generated number — re-running
+> it is a round of its own, not part of moving the pin. They are kept here
 > because the *shape* they describe (net ≠ workload) is still the point, and
 > deleting them would lose the only written statement of that distinction.
 >
+> *(Corrected 2026-09-13. This banner read "have not been re-derived at
+> `42effe840`" for two pin moves, which is the same defect `CLAUDE.md`'s table
+> kept hitting: a staleness warning that names the pin it is stale relative to
+> goes stale itself. The current pin's **hash** belongs in the Current pin table
+> and the `git ...` line directly under it; nothing else in this file — and no
+> row of `CLAUDE.md`'s table — should repeat it.)*
+>
 > **For current numbers, read `docs/STATE.md`** — it is generated from the tree
-> and the ledger on every run and is the authority when the two disagree. As of
-> the `42effe840` move the ledger carries **2,360 adjudicated rows** with **0
-> unadjudicated**, of which `MISSING-SUBSYSTEM` is **233**.
+> and the ledger on every run and is the authority when the two disagree. **No
+> ledger counts are quoted here any more.** This spot used to carry "as of the
+> `42effe840` move the ledger carries 2,360 adjudicated rows with 0
+> unadjudicated, of which `MISSING-SUBSYSTEM` is 233"; by 2026-09-13 every one
+> of those figures had moved (`MISSING-SUBSYSTEM` is now the empty bucket), and
+> they had gone stale quietly, in the same paragraph whose whole point was to
+> send the reader to the generated file instead. A number `script/state`
+> regenerates on every run does not belong in a file edited by hand.
 
 Measured by **test-function count**, not filename, and classified **per file by
 reading source imports** — not by path. Every test-bearing file at the pin (854)

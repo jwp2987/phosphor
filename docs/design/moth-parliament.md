@@ -14,6 +14,18 @@ tests in the tree -- `TypedPane::Conversation`
 owns ptys and a client transport. A status line saying "not started" is worse than no
 status line, because it tells a reader not to look.
 
+**UPDATE 2026-09-13 (later the same day).** Within §4b, items 1-5 of the
+session-ownership list are built and item 6 is one piece short: the transport
+(`4ef8b6987`), the `TerminalManager` and its witness type (`b12dc2b33`), a kill route
+distinct from `Shutdown` (`253a9c083`), session lifecycle on the wire plus
+`ForgetSession` (`75f78c6ad`), and the sessions half of the hosts dashboard
+(`90784a751`) all exist. What does not exist at this commit is the **session-creation
+path** that issues `SpawnSession` and hands the resulting witness to the manager -- so
+nothing yet constructs a remote session, and every remote-session behaviour described
+below is reachable only from a test. That path and a dashboard control for
+`ForgetSession` were both in flight, uncommitted, when this line was written; check the
+tree rather than trusting it.
+
 A working name deliberately chosen to say nothing about the contents, because the
 scope of this branch is expected to move and a descriptive name would date badly.
 
@@ -672,6 +684,52 @@ list, and the `+` new-session menu.
    currently implicit. If the dashboard is where you install, that is also where partial
    failure across a group has to be legible: N hosts, N outcomes, not one spinner.
 
+**BUILT 2026-09-13 — and it grew a third thing this section does not describe: sessions.**
+Everything above reasons about hosts and groups. The dashboard that exists also shows, per
+host, the sessions that host's daemon owns (`90784a751`): a summary on each host row, and
+once a listing exists, a row per session with its running/exited state. That is the first
+caller `RemoteServerClient::list_sessions` has ever had in `app/`, and it is what
+`75f78c6ad`'s lifecycle-on-the-wire work was for -- until `RemoteSessionSummary` carried
+`exit`, the dashboard could enumerate a host's sessions but not tell a live one from a
+dead one, which is most of why this half went unbuilt.
+
+It holds to decision 1 above rather than inventing a rule of its own: **nothing about a
+session is persisted, and the pane never dials.** The only route to a client is
+`client_for_host`, a pure map lookup, and a `None` short-circuits before any request --
+the same discipline `refresh_from_live_connections` documents, where dialling a host that
+is not already connected "would be worse than no refresh at all". A listing is dropped on
+`HostDisconnected`. Two shapes worth naming, because both are decision 2 in a new place:
+"never fetched" is the *absence* of a map entry rather than a variant, which is also what
+a host looks like after a disconnect drops its listing -- one representation, so there is
+no stale variant to forget to clear -- and "not connected" is not stored at all but
+computed at render time, short-circuiting before any cached listing is consulted, so a
+listing that somehow outlived a disconnect still cannot reach the screen.
+`HostSessionsFetch::InFlight { superseded }`
+(`app/src/remote_server/remote_sessions_model.rs:91`) exists because fetches must not
+stack: two concurrent `list_sessions` calls can complete out of order and let an older
+listing overwrite a newer one, so a session exit landing mid-fetch would show as still
+running until the next connect.
+
+**Two things it deliberately did not have at `90784a751`, both of which are in flight as
+this is written and neither of which should be read here as done:**
+
+- **No control that acts on a session.** `ForgetSession` exists on the wire and as a
+  client method (`75f78c6ad`; `crates/remote_server/src/client/mod.rs:946`) and had no
+  caller anywhere in `app/` -- so the dashboard could show an exited session it had no
+  way to reap. **IN FLIGHT:** a forget control in `remote_sessions_model.rs` and
+  `remote_hosts_pane.rs`, uncommitted at this commit. Question 3 above -- "does it drive
+  install, or only show it?" -- turns out to have a sibling for sessions, and the answer
+  being reached is the same one.
+- **No buffered- or dropped-byte column.** `session_store::SessionSummary` computes both
+  and `RemoteSessionSummary` carried neither, so the dashboard could not show that a
+  detached session was losing output, and inventing a number was not on. **IN FLIGHT:**
+  `optional buffered_bytes` / `optional dropped_bytes_total` on `RemoteSessionSummary`,
+  uncommitted in `crates/remote_server/proto/remote_server.proto`. Read "Output buffering
+  while detached" below before wiring a display to `dropped_bytes_total`: it is the
+  session's *lifetime* eviction count and is **not** the "N KiB dropped while detached"
+  figure, which is `ReattachSessionSuccess.dropped_bytes_since_ack`. Labelling the
+  lifetime total as a detached gap over-reports on every reattach after the first.
+
 ### Host groups: a service is rarely one machine — 2026-09-12
 
 **Proposed by the maintainer.** Hosts are not independent. A service is split across
@@ -857,6 +915,29 @@ bootstrap-time mirror both exist; see the audit below.
 **That `TerminalManager` was in flight as this was written and is not at this commit.**
 Check `app/src/terminal/remote_server_tty/` before quoting item 6 as transport-only;
 this paragraph is the state at `4ef8b6987`, not a forecast.
+
+**UPDATE 2026-09-13 — it landed, and item 6 is now one piece short.**
+`remote_server_tty::TerminalManager` exists (`b12dc2b33`,
+`app/src/terminal/remote_server_tty/terminal_manager.rs`), so the paragraph above is
+the state at `4ef8b6987` and no longer the state of the tree. What it added that is
+worth knowing at this altitude is the **witness type**: an `EventLoop` may only be
+built for a host that has a connected client *and* a session the daemon has already
+spawned, and neither is checkable from inside the loop, so
+`ConnectedRemotePtySession::for_spawned_session` (`terminal_manager.rs:71`) is the
+proof that must be produced to build one. A `None` from the client lookup is a refusal
+to construct rather than a degraded mode -- the failure it prevents is a terminal that
+accepts keystrokes and silently drops every one of them while looking healthy.
+
+A refutation pass then found the witness was bypassable: `mod.rs` re-exported
+`EventLoop` with a `pub start`, so an invariant three doc comments called *structural*
+was a comment. `EventLoop` is now module-private and `start` is `pub(super)`
+(`event_loop.rs:183`), with `mod.rs` exporting only
+`{ConnectedRemotePtySession, TerminalManager}`.
+
+**What remains of item 6 is the session-creation path** -- the caller that issues
+`SpawnSession`, takes the witness from its response, and hands it to the manager.
+**IN FLIGHT, not at this commit:** `remote_server_tty/session_spawn.rs` is untracked
+here. Do not read item 6 as finished until it is committed.
 
 **Already done, and the reason this is an extension rather than a new binary:** install
 over SSH with a build-time-pinned SHA-256 that fails closed, a framed protocol with size
@@ -1146,6 +1227,41 @@ predates the distinction; renaming it touches every surface and is follow-up wor
 window-size changes and nothing else, so a `Kill` there is logged and dropped rather
 than guessed at by closing the socket, which would rest on an unverified assumption
 about what `ssh-proxy-server` then does with the pty.
+
+**UPDATE 2026-09-13 — the `remove_tab` row's verdict was right and its consequence was
+not acceptable; it is now a question, not a verdict.** The table classifies `remove_tab`
+as `Kill` because it selects panes *by having a running process*. True for a local
+shell. For a daemon-owned session that same guard selects precisely the sessions worth
+keeping: close an idle remote tab and it survives, close the one running a two-hour
+build and the build dies. Filed from the refutation round in `TODO.md` and closed by
+`49017dc6b`.
+
+The fix is not a different verdict. `RemotePtyDisposition`
+(`app/src/workspace/view.rs:1119`) makes the close paths *say* which they mean, and
+every path still passes `Kill` -- exactly what `remove_tab` did before -- **except** the
+one produced by the user answering a close-session confirmation with "leave running".
+So the dialog grows a third outcome (cancel / stop session / leave running) with
+leave-running as the non-destructive default. `dont_show_again` is deliberately not
+offered for it: `should_confirm_close_session` is a single global boolean that cannot
+distinguish "stop warning me about ending a share" from "stop warning me about killing a
+remote build", and its silent answer would be *kill*. Escape maps to Cancel and never to
+either close.
+
+`LeaveRunning` is not a second teardown route, and the field doc is emphatic about why:
+**not sending `Message::Kill` is the whole mechanism.** Dropping the manager drops the
+`PtyController` holding the only `Sender<Message>`, `run_outbound`'s `messages.recv()`
+returns `Err`, the loop ends without an RPC, and the daemon keeps the pty. The
+`Shutdown` -> `Detach` mapping this section decided is *not* what does it, because
+nothing sends `Shutdown` on this transport.
+
+`49017dc6b` also closed a route this section never audited, because it is not a
+`Message` sender at all: `PaneGroup::close_pane` issues no `shutdown_pty` whatsoever, so
+closing a *pane* holding a running remote session always detached -- no prompt, no kill,
+and until the sessions half of the dashboard landed, no way to discover what had been
+left behind. It now asks the same question through the same dialog and the same
+detector. "Two routes, not four senders" was the right result for the senders that
+exist; a site that reaches the same outcome by sending *nothing* is invisible to a
+sender audit.
 
 ### Output buffering while detached — decided 2026-09-12
 
