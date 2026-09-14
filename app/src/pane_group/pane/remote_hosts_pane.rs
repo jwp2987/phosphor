@@ -601,6 +601,11 @@ pub struct RemoteHostsView {
     /// gone away are inert -- a `MouseStateHandle` nothing draws is never
     /// updated -- and the map dies with the tab like everything else here.
     reap_button_states: RefCell<HashMap<HostId, MouseStateHandle>>,
+    /// Per-host mouse state for the "New session" button, kept for the same
+    /// reason `reap_button_states` is: a button's hover state must survive the
+    /// repaint that follows every model event.
+    #[cfg(not(target_family = "wasm"))]
+    new_session_button_states: RefCell<HashMap<HostId, MouseStateHandle>>,
 }
 
 impl RemoteHostsView {
@@ -648,6 +653,8 @@ impl RemoteHostsView {
             clipped_scroll_state: Default::default(),
             sessions,
             reap_button_states: Default::default(),
+            #[cfg(not(target_family = "wasm"))]
+            new_session_button_states: Default::default(),
         }
     }
 
@@ -733,6 +740,56 @@ impl RemoteHostsView {
 
     /// The "forget N exited sessions" control for one host.
     ///
+    /// A "New session" button for a connected host: the entry point for item 6's
+    /// session-creation path.
+    ///
+    /// Dispatches `WorkspaceAction::AddRemoteServerSessionTab` directly rather
+    /// than hopping through [`RemoteHostsAction`], because nothing here handles
+    /// it -- the `Workspace` does, and typed actions bubble to the view that
+    /// owns them (`tab.rs` dispatches `WorkspaceAction` the same way from a
+    /// non-workspace view). Adding a local variant that only re-dispatched would
+    /// be a hop with no decision in it.
+    ///
+    /// Offered only for a host with a live client. That is the same condition
+    /// `ConnectedRemotePtySession::for_spawned_session` enforces, so a host
+    /// without one would produce a button whose only outcome is a logged
+    /// failure.
+    #[cfg(not(target_family = "wasm"))]
+    fn render_new_session_button(
+        &self,
+        host_id: &HostId,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let mouse_state = self
+            .new_session_button_states
+            .borrow_mut()
+            .entry(host_id.clone())
+            .or_default()
+            .clone();
+        let host_id = host_id.clone();
+        Container::new(
+            ConstrainedBox::new(
+                appearance
+                    .ui_builder()
+                    .button(ButtonVariant::Text, mouse_state)
+                    .with_text_label("New session".to_string())
+                    .build()
+                    .on_click(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(
+                            crate::workspace::WorkspaceAction::AddRemoteServerSessionTab(
+                                host_id.clone(),
+                            ),
+                        );
+                    })
+                    .finish(),
+            )
+            .with_max_width(260.)
+            .finish(),
+        )
+        .with_margin_left(16.)
+        .finish()
+    }
+
     /// Dispatches [`RemoteHostsAction::ForgetExitedSessions`] and nothing else:
     /// the set of ids is re-read from the model when the action is handled,
     /// rather than captured here, so a listing that changed between the paint
@@ -869,6 +926,22 @@ impl View for RemoteHostsView {
                 {
                     for summary in listed.iter() {
                         col.add_child(self.render_session_row(summary, appearance));
+                    }
+                }
+
+                // "New session", offered only for a host that is actually
+                // connected. `HostSessionsDisplay::NotConnected` is the same
+                // condition `ConnectedRemotePtySession::for_spawned_session`
+                // enforces, so offering it otherwise would produce a button
+                // whose only possible outcome is a logged failure.
+                #[cfg(not(target_family = "wasm"))]
+                if let Some(host_id) = host.host_id.as_ref() {
+                    // `&display`, because `display` is read again by the reap
+                    // section below. A unit-variant pattern would not move it,
+                    // but borrowing says so at a glance instead of resting on
+                    // that rule.
+                    if !matches!(&display, HostSessionsDisplay::NotConnected) {
+                        col.add_child(self.render_new_session_button(host_id, appearance));
                     }
                 }
 

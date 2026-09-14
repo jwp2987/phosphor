@@ -826,6 +826,24 @@ pub enum PanesLayout {
     /// `resolve_conversation_directory_path` in `app/src/terminal/view/pane_impl.rs`,
     /// which both resolve "unset" to home.
     Conversation(Option<PathBuf>),
+    /// A terminal on a pty the `crates/remote_server` daemon owns, on another
+    /// host (`docs/design/moth-parliament.md`, item 6).
+    ///
+    /// Carries the witness rather than a `HostId`, and that is the whole point:
+    /// [`ConnectedRemotePtySession`] can only be obtained from a `SpawnSession`
+    /// the daemon actually answered, so reaching this arm is proof the session
+    /// exists. A `HostId` here would let a layout be built for a session that was
+    /// never spawned, which is the state
+    /// `remote_server_tty::EventLoop` documents as unrecoverable -- a terminal
+    /// that accepts keystrokes and drops every one while looking healthy.
+    ///
+    /// Consequently this layout is only ever constructed from
+    /// `spawn_remote_session`'s success callback, never from restore: a witness
+    /// is not serialisable and a restored one would be a claim about a session
+    /// that may have exited while the app was closed. Re-adopting a session
+    /// across a restart is the reattach increment's problem.
+    #[cfg(not(target_family = "wasm"))]
+    RemoteSession(ConnectedRemotePtySession),
     /// A tab whose sole pane is the remote-hosts dashboard (`docs/design/moth-parliament.md`,
     /// "The dashboard: hosts and groups need a surface, not a settings page").
     RemoteHostsDashboard,
@@ -3572,6 +3590,16 @@ impl PaneGroup {
                     pane_history,
                     ctx,
                 ),
+                #[cfg(not(target_family = "wasm"))]
+                PanesLayout::RemoteSession(session) => Self::initial_remote_session_pane(
+                    session,
+                    resources,
+                    view_bounds,
+                    model_event_sender_clone,
+                    pane_contents,
+                    pane_history,
+                    ctx,
+                ),
                 PanesLayout::RemoteHostsDashboard => {
                     Self::initial_remote_hosts_dashboard_pane(pane_contents, pane_history, ctx)
                 }
@@ -6054,6 +6082,62 @@ impl PaneGroup {
     /// Creates a new terminal session and wraps it in a `TerminalPane`.
     /// This is the shared session-creation boilerplate used by both
     /// `add_session_in_directory` and `insert_terminal_pane_hidden_for_child_agent`.
+    /// Builds the initial pane for a [`PanesLayout::RemoteSession`] tab.
+    ///
+    /// The remote sibling of [`Self::initial_conversation_pane`], and it skips
+    /// [`Self::create_session`] deliberately. That function is the choke point
+    /// for sessions this app *starts* -- it resolves a shell, picks a startup
+    /// directory and spawns a pty through a `cfg_if` over `local_tty` /
+    /// `remote_tty`. None of that applies here: the pty already exists on
+    /// another machine, was started by the daemon, and this side is only
+    /// attaching to it. Threading a witness through `create_session`'s thirteen
+    /// parameters to skip all thirteen steps would be indirection for its own
+    /// sake.
+    #[cfg(not(target_family = "wasm"))]
+    #[allow(clippy::too_many_arguments)]
+    fn initial_remote_session_pane(
+        session: crate::terminal::remote_server_tty::ConnectedRemotePtySession,
+        resources: TerminalViewResources,
+        view_bounds: RectF,
+        model_event_sender: Option<SyncSender<ModelEvent>>,
+        pane_contents: &mut HashMap<PaneId, Box<dyn AnyPaneContent>>,
+        pane_history: &mut Vec<PaneId>,
+        ctx: &mut ViewContext<Self>,
+    ) -> (PaneData, InitialFocus) {
+        let uuid = Uuid::new_v4();
+        let (view, terminal_manager) =
+            crate::terminal::remote_server_tty::TerminalManager::create_model(
+                session,
+                resources,
+                view_bounds.size(),
+                model_event_sender.clone(),
+                ctx.window_id(),
+                None, /* initial_input_config */
+                ctx,
+            );
+
+        let pane_data = TerminalPane::new(
+            uuid.as_bytes().to_vec(),
+            terminal_manager,
+            view,
+            model_event_sender,
+            ctx,
+        );
+        let terminal_pane_id = pane_data.terminal_pane_id();
+        let pane_id = terminal_pane_id.into();
+        pane_contents.insert(pane_id, Box::new(pane_data));
+        pane_history.push(pane_id);
+
+        // No `enter_agent_view_for_new_conversation` here, unlike the
+        // conversation pane: this is a terminal, and its whole point is the
+        // shell on the far side.
+        let focus = InitialFocus {
+            focused_pane: Some(pane_id),
+            active_session: Some(terminal_pane_id),
+        };
+        (PaneData::new(pane_id), focus)
+    }
+
     fn create_terminal_pane_data(
         &self,
         startup_directory: Option<PathBuf>,
@@ -6769,6 +6853,34 @@ impl PaneGroup {
     }
 
     /// Given a pane ID, retrieve its backing terminal pane contents, if the pane is a terminal pane.
+    /// Every pane in this group backed by a terminal, with its manager.
+    ///
+    /// Walks `pane_contents` -- **every** pane, including the ones
+    /// `visible_pane_ids()` leaves out (child-agent-hidden, `FromMove`,
+    /// `FromJob`, `TemporaryReplacement`, `Closed`). That is deliberate and it is
+    /// the point of this method existing: it is the same set
+    /// [`Self::for_all_terminal_panes`] walks, so a caller that decides
+    /// something about a tab's panes and a caller that then acts on them cannot
+    /// disagree about which panes those are.
+    ///
+    /// `Workspace::pane_close_risks` used to walk `visible_pane_ids()` while the
+    /// `shutdown_pty` loop it guards walked `pane_contents`, so a hidden pane
+    /// could be killed without ever being offered to the close prompt. Nothing
+    /// could reach that state while no pane could hold a daemon-owned session;
+    /// one can now.
+    pub fn terminal_managers_by_pane(
+        &self,
+        ctx: &AppContext,
+    ) -> Vec<(PaneId, ModelHandle<Box<dyn TerminalManager>>)> {
+        self.pane_contents
+            .keys()
+            .filter_map(|pane_id| {
+                self.terminal_session_by_id(*pane_id)
+                    .map(|pane| (*pane_id, pane.terminal_manager(ctx)))
+            })
+            .collect()
+    }
+
     fn terminal_session_by_id(&self, pane_id: impl Into<PaneId>) -> Option<&TerminalPane> {
         self.pane_contents
             .get(&pane_id.into())

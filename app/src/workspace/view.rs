@@ -368,6 +368,7 @@ use std::convert::TryFrom;
 use std::time::Duration;
 #[cfg(target_os = "macos")]
 use std::time::{SystemTime, UNIX_EPOCH};
+use warp_core::HostId;
 use warp_core::context_flag::ContextFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_util::path::{LineAndColumnArg, user_friendly_path};
@@ -4375,6 +4376,50 @@ impl Workspace {
     /// to attach to, so this goes straight through `add_tab_with_pane_layout`, the same as
     /// `add_conversation_tab`/`add_welcome_tab`/`add_get_started_tab`. Unlike Settings, there is
     /// no "only one per window" dedup: opening it again just adds another tab.
+    /// Spawns a daemon-owned session on `host_id` and, once the daemon has
+    /// answered, opens a tab on it.
+    ///
+    /// **The tab is created in the callback, not before it.** The alternative --
+    /// open a tab immediately and fill it in when the spawn lands -- would put a
+    /// pane on screen for a session that may not exist, and leave it wired to
+    /// nothing on a refusal. `spawn_remote_session` hands back a
+    /// `ConnectedRemotePtySession` only for a session the daemon confirmed, and
+    /// that witness is the only way to build the terminal, so there is no
+    /// ordering here that can produce a half-built tab.
+    ///
+    /// The cost is latency with no on-screen feedback: the user clicks and
+    /// nothing happens until an SSH round trip completes. Accepted for now
+    /// because the alternative is worse, and noted as the thing to fix first
+    /// when this path gets a real entry point.
+    #[cfg(not(target_family = "wasm"))]
+    fn add_remote_server_session_tab(&mut self, host_id: HostId, ctx: &mut ViewContext<Self>) {
+        use crate::terminal::remote_server_tty::{
+            RemoteSessionSpawnRequest, spawn_remote_session,
+        };
+
+        let request = RemoteSessionSpawnRequest::for_host(host_id.clone());
+        spawn_remote_session(request, ctx, move |workspace, outcome, ctx| match outcome {
+            Ok(session) => {
+                workspace.add_tab_with_pane_layout(
+                    PanesLayout::RemoteSession(session),
+                    Arc::new(HashMap::new()),
+                    None,
+                    ctx,
+                );
+                ctx.notify();
+            }
+            // Logged per variant rather than collapsed to "failed", because the
+            // variants differ in what the *user* should do: a host that is not
+            // connected is a different problem from a daemon that refused, and
+            // `Indeterminate` means a pty may or may not be running on the far
+            // side. Surfacing these in the UI rather than the log is the next
+            // thing this path needs -- see the doc comment above.
+            Err(failure) => {
+                log::error!("could not open a remote session on {host_id:?}: {failure:?}");
+            }
+        });
+    }
+
     fn add_remote_hosts_dashboard_tab(&mut self, ctx: &mut ViewContext<Self>) {
         self.add_tab_with_pane_layout(
             PanesLayout::RemoteHostsDashboard,
@@ -11478,69 +11523,55 @@ impl Workspace {
     /// Each terminal pane of `pane_group`, reduced to the facts a close decision
     /// needs, paired with the pane it came from.
     ///
-    /// Enumerated by pane *index* because that is the only route from a pane to
-    /// its `TerminalManager` that `PaneGroup` exposes (`terminal_manager`), and
-    /// the manager is the only thing that knows whether the pty is local. That
-    /// route walks `visible_pane_ids()`, so a hidden child-agent pane is not
-    /// examined -- those are local agent panes, they cannot hold a daemon-owned
-    /// remote session, and leaving them out keeps this scan and
-    /// `daemon_owned_remote_terminal_views` looking at exactly the same set.
+    /// Enumerated over **every** pane in the group, via
+    /// `PaneGroup::terminal_managers_by_pane`, which walks `pane_contents` --
+    /// hidden panes included.
     ///
-    /// **Two facts behind that "cannot", checked rather than assumed** (a review
-    /// read the `visible_pane_ids()` walk as a hole a hidden child-agent pane
-    /// could hide a running remote session in):
-    ///
-    /// - A child-agent pane's manager comes from exactly two constructors --
-    ///   `insert_terminal_pane_hidden_for_child_agent` -> `create_terminal_pane_data`
-    ///   -> `PaneGroup::create_session`, or `insert_ambient_agent_pane_hidden_for_child_agent`
-    ///   -> `create_ambient_agent_terminal`. The first is the single
-    ///   session-creation choke point, and its `cfg_if` can only yield
-    ///   `remote_tty` / `local_tty` / `MockTerminalManager`; the second is a
-    ///   `MockTerminalManager` outright. Neither can produce a
-    ///   `remote_server_tty::TerminalManager`, and no pane becomes a child-agent
-    ///   pane after the fact: `hide_pane_for_child_agent` is only ever called on
-    ///   a pane already tracked in `child_agent_panes` or created with
-    ///   `NewPaneVisibility::HiddenForChildAgent`.
-    /// - More generally, nothing in the app constructs a
-    ///   `remote_server_tty::TerminalManager` at all yet:
-    ///   `TerminalManager::create_model` is reachable only through
-    ///   `spawn_remote_session`, which has no call sites outside its own module.
-    ///
-    /// **The asymmetry this exclusion will become, recorded because it is not
-    /// visible from here.** The scan is narrower than the act it guards.
+    /// **That is the set the act uses, and the two must not diverge.**
     /// `remove_tab_with_disposition`'s kill loop runs through
-    /// `PaneGroup::for_all_terminal_panes`, which walks `pane_contents.keys()` --
-    /// *every* pane, hidden ones included -- so a hidden pane can be sent
-    /// `shutdown_pty` without ever having been offered to this scan, and is
-    /// likewise absent from `daemon_owned_remote_terminal_views`' spare list on
-    /// the "leave running" answer. That is inert today for the reason above, and
-    /// it is not only child-agent panes: `visible_pane_ids()` also drops panes
-    /// hidden for `FromMove`, `FromJob`, `TemporaryReplacement` (an ordinary
-    /// terminal pane displaced when a child agent is revealed into its slot) and
-    /// `Closed`. Widening the scan now would add panes that cannot be at risk;
-    /// the increment that first gives *any* pane a daemon-owned manager is the
-    /// one that has to make these two sets agree.
+    /// `PaneGroup::for_all_terminal_panes`, which walks the same
+    /// `pane_contents`. This scan previously walked `visible_pane_ids()` instead
+    /// (via `pane_id_by_index`), which drops panes hidden for a child agent,
+    /// `FromMove`, `FromJob`, `TemporaryReplacement` and `Closed` -- so a hidden
+    /// pane holding a running remote session could be sent `shutdown_pty` on tab
+    /// close without ever being offered to the prompt, and would be missing from
+    /// `daemon_owned_remote_terminal_views`' spare list on the "leave running"
+    /// answer.
     ///
-    /// Closing a *pane* needs no equivalent widening, and for a reason that does
-    /// not carry over to closing a tab.
+    /// That was unreachable while nothing could construct a
+    /// `remote_server_tty::TerminalManager`. It stopped being unreachable when
+    /// the session-creation path landed, which is why the two sets were
+    /// reconciled rather than left recorded.
+    ///
+    /// Widening costs nothing for panes that cannot be at risk: a child-agent
+    /// pane's manager comes from `PaneGroup::create_session` (whose `cfg_if`
+    /// yields only `remote_tty` / `local_tty` / `MockTerminalManager`) or from
+    /// `create_ambient_agent_terminal` (a `MockTerminalManager` outright), so
+    /// `is_daemon_owned_remote` is simply false for it and it neither prompts
+    /// nor is spared.
+    ///
+    /// Closing a *pane* still needs no equivalent widening, for a reason that
+    /// does not carry over from closing a tab:
     /// `PaneGroup::close_pane_with_confirmation` early-returns for a child-agent
     /// pane into `close_pane`, which re-hides it rather than removing it -- no
-    /// `shutdown_pty`, and the manager is not even dropped -- so its "it doesn't
-    /// apply" comment stays true however far away the pty lives. Closing the
-    /// *tab* is the other case: the kill loop above reaches that same pane, so a
-    /// hidden child-agent pane running something long would be killed there
-    /// unasked. That is the asymmetry, and it is why the two must be reconciled
-    /// by the increment that makes it reachable rather than left to be
-    /// rediscovered from the pane path's comment.
+    /// `shutdown_pty`, and the manager is not even dropped.
     fn pane_close_risks(
         pane_group: &ViewHandle<PaneGroup>,
         ctx: &AppContext,
     ) -> Vec<(PaneId, PaneCloseRisk)> {
-        let group = pane_group.as_ref(ctx);
-        (0..group.pane_count())
-            .filter_map(|index| {
-                let pane_id = group.pane_id_by_index(index)?;
-                let manager = group.terminal_manager(index, ctx)?;
+        // `terminal_managers_by_pane`, not `pane_id_by_index`: the latter reads
+        // `visible_pane_ids()`, and the `shutdown_pty` loop this scan guards
+        // walks `for_all_terminal_panes`, i.e. `pane_contents` -- every pane,
+        // hidden ones included. While those two disagreed, a hidden pane holding
+        // a running remote session could be killed on tab close without ever
+        // being offered to the prompt, and would be missing from the spare list
+        // on "leave running". Inert until a pane could hold a daemon-owned
+        // manager; live as soon as one could.
+        pane_group
+            .as_ref(ctx)
+            .terminal_managers_by_pane(ctx)
+            .into_iter()
+            .map(|(pane_id, manager)| {
                 let risk = manager.read(ctx, |manager, _ctx| PaneCloseRisk {
                     is_daemon_owned_remote: is_daemon_owned_remote_session(&**manager),
                     has_long_running_command: manager
@@ -11550,7 +11581,7 @@ impl Workspace {
                         .active_block()
                         .is_active_and_long_running(),
                 });
-                Some((pane_id, risk))
+                (pane_id, risk)
             })
             .collect()
     }
@@ -22346,6 +22377,12 @@ impl TypedActionView for Workspace {
             AddDockerSandboxTab => self.add_docker_sandbox_tab(ctx),
             AddRemoteHostTab(host) => self.add_tab_with_remote_host(host.clone(), ctx),
             AddRemoteHostsDashboardTab => self.add_remote_hosts_dashboard_tab(ctx),
+            #[cfg(not(target_family = "wasm"))]
+            AddRemoteServerSessionTab(host_id) => {
+                self.add_remote_server_session_tab(host_id.clone(), ctx)
+            }
+            #[cfg(target_family = "wasm")]
+            AddRemoteServerSessionTab(_) => {}
             StartAgentOnboardingTutorial(tutorial) => {
                 self.start_agent_onboarding_tutorial(tutorial.clone(), ctx)
             }

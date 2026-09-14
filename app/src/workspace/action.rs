@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use warp_core::HostId;
 use warp_util::path::LineAndColumnArg;
 
 use crate::ai::agent::api::ServerConversationToken;
@@ -293,6 +294,19 @@ pub enum WorkspaceAction {
     /// (`docs/design/moth-parliament.md`, "The dashboard: hosts and groups need a surface, not
     /// a settings page"). Read and display only -- no install/upgrade/remove actions yet.
     AddRemoteHostsDashboardTab,
+    /// Spawns a **daemon-owned** pty session on an already-connected host and opens a tab on
+    /// it: item 6 of "Scoping session ownership" in `docs/design/moth-parliament.md`.
+    ///
+    /// **Not `AddRemoteHostTab`, and the difference is the whole point.** That one opens a
+    /// *local* terminal and types `ssh <host>` into it, so the pty is on this machine and dies
+    /// with the connection -- its own commit message says so. This asks the daemon to own the
+    /// pty on the far side, where it outlives both the tab and the app.
+    ///
+    /// Carries a `HostId` rather than a free-text target, because that is what
+    /// `RemoteServerManager::client_for_host` keys connected clients by. A host the app has
+    /// never reached has no `HostId` to name here, which is the right shape: the action is
+    /// unavailable for such a host rather than failing once invoked.
+    AddRemoteServerSessionTab(HostId),
     OpenNewSessionMenu {
         anchor: NewSessionMenuAnchor,
     },
@@ -882,6 +896,7 @@ impl WorkspaceAction {
             | AddDockerSandboxTab
             | AddRemoteHostTab(_)
             | AddRemoteHostsDashboardTab
+            | AddRemoteServerSessionTab(_)
             | AddWindow
             | AddWindowWithShell { .. }
             | CloseWindow

@@ -63,6 +63,7 @@ type PtyController = writeable_pty::PtyController<Sender<Message>>;
 /// drops in between, the slot starts empty and `SessionReconnected` refills it.
 /// What the check rules out is the categorically different case -- construction
 /// for a host that was never connected at all.
+#[derive(Debug)]
 pub struct ConnectedRemotePtySession {
     host_id: HostId,
     session: RemotePtySessionId,
