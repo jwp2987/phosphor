@@ -25,6 +25,12 @@ pub mod server_buffer_tracker;
 /// `RemoteArch`, `UnsupportedReason`), which this one does too.
 #[cfg(not(target_family = "wasm"))]
 pub mod host_registry;
+/// Per-host daemon-owned pty session lists, read by the remote-hosts
+/// dashboard. `wasm`-gated for the same reason `host_registry` above is: it
+/// reads `RemoteServerManager`'s live client set, and its only consumer is the
+/// dashboard pane, which already depends on `host_registry`.
+#[cfg(not(target_family = "wasm"))]
+pub mod remote_sessions_model;
 #[cfg(not(target_family = "wasm"))]
 pub mod get_branches;
 #[cfg(not(target_family = "wasm"))]

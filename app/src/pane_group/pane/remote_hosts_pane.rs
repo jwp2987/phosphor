@@ -41,8 +41,40 @@
 //! [`HostInstallState::NotInstalled`] (a real, negative observation), the same false-safety trap
 //! the footer bar's unknown-host colour exists to avoid. See the doc comment on
 //! [`HostInstallDisplay`].
+//!
+//! # Sessions
+//!
+//! Each host row is followed by that host's daemon-owned pty sessions, read
+//! through [`RemoteSessionsModel`] (`app/src/remote_server/remote_sessions_model.rs`),
+//! which is this file's only new dependency and the first caller
+//! `RemoteServerClient::list_sessions` has ever had in `app`. Three of this
+//! pane's existing rules carry straight over, and the model's own docs say how
+//! it keeps each:
+//!
+//! * **It never dials.** Only hosts that already have a live client are asked.
+//!   A host without one reads "not connected" and no request is made -- never a
+//!   spinner, which would imply a connection attempt that is not happening.
+//! * **Nothing is cached across a disconnect.** A host's listing is dropped on
+//!   `HostDisconnected`, because a list read over a dead connection is the same
+//!   "claim about the past" the re-probing section above rejects.
+//! * **Nothing is persisted.** The model is created by [`RemoteHostsView::new`]
+//!   and dies with the tab.
+//!
+//! [`host_sessions_label`] keeps "not connected" (nothing was asked) separate
+//! from "no sessions" (the host answered and is holding none), the same
+//! distinction [`host_install_display`] draws for install state. And
+//! [`session_run_state`] is where a session's `exit` field becomes
+//! running/exited/signalled -- a signalled process has no exit code of its own,
+//! so it never renders a fabricated `0`.
+//!
+//! **What this pane does not show, on purpose.** `SessionStore::list()` computes
+//! buffered- and dropped-byte figures per session, but `handle_list_sessions`
+//! does not put them on the wire: [`RemoteSessionSummary`] carries no such
+//! field. Rendering a dropped-bytes column would mean inventing the number, so
+//! there is none. Adding one is a protocol change, not a pane change.
 
 use chrono::{DateTime, Utc};
+use remote_server::proto::{RemoteSessionExit, RemoteSessionSummary};
 use remote_server::setup::UnsupportedReason;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
@@ -59,6 +91,9 @@ use crate::{
     pane_group::focus_state::PaneFocusHandle,
     remote_server::host_registry::{
         HostGroup, HostInstallState, HostRegistryModel, RemoteHostEntry,
+    },
+    remote_server::remote_sessions_model::{
+        HostSessionsDisplay, RemoteSessionsModel, host_sessions_display,
     },
     util::time_format::format_approx_duration_from_now_utc,
 };
@@ -181,6 +216,130 @@ pub(crate) fn host_row_text(entry: &RemoteHostEntry) -> String {
     )
 }
 
+/// How one session reported by `ListSessions` should read.
+///
+/// The whole point of `RemoteSessionSummary::exit` being an optional *message*
+/// rather than a `bool` plus a code is that presence alone carries the
+/// running/exited distinction, with no second field to disagree with it. This
+/// enum keeps that: `Running` is the absence of `exit`, and everything else is
+/// a shape of having exited.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SessionRunState {
+    /// No `exit` on the summary: the daemon is still holding a live pty.
+    Running,
+    /// Exited normally, with this code.
+    Exited { code: i32 },
+    /// Killed by a signal. Carries no code, because a signalled process has
+    /// none -- see `SessionExitStatus::signalled` in
+    /// `crates/remote_server/src/session_store.rs`, which exists precisely so
+    /// nothing has to invent one.
+    Signalled,
+    /// Exited, but the summary says neither how. The daemon does not produce
+    /// this today (`SessionExitStatus` is only ever built by `exited(code)` or
+    /// `signalled()`, so one of the two is always set), but the wire admits it:
+    /// both fields of `RemoteSessionExit` default to absent/false under proto3,
+    /// so a peer that sends a bare `exit {}` lands here. It gets its own state
+    /// rather than being folded into `Exited { code: 0 }`, which would report a
+    /// successful exit that nothing observed.
+    ExitedWithUnknownStatus,
+}
+
+/// Maps a summary's `exit` field to a [`SessionRunState`]. Pure and free of
+/// `AppContext`, like [`host_install_display`] above, so the mapping is
+/// testable without a daemon -- see `remote_hosts_pane_tests.rs`.
+///
+/// `signal_killed` wins over a code being present. The two together are
+/// contradictory wire data (a signalled process has no code), and the signal is
+/// the half that is load-bearing: reporting "exited (0)" for a killed session
+/// is the fabrication this pane must not commit.
+pub(crate) fn session_run_state(exit: Option<&RemoteSessionExit>) -> SessionRunState {
+    let Some(exit) = exit else {
+        return SessionRunState::Running;
+    };
+    if exit.signal_killed {
+        return SessionRunState::Signalled;
+    }
+    match exit.exit_code {
+        Some(code) => SessionRunState::Exited { code },
+        None => SessionRunState::ExitedWithUnknownStatus,
+    }
+}
+
+/// One-line label for [`SessionRunState`]. Never produces the same text for a
+/// running session and an exited one -- that is the property under test.
+pub(crate) fn session_run_label(state: &SessionRunState) -> String {
+    match state {
+        SessionRunState::Running => "running".to_string(),
+        SessionRunState::Exited { code } => format!("exited ({code})"),
+        SessionRunState::Signalled => "killed by signal".to_string(),
+        SessionRunState::ExitedWithUnknownStatus => "exited (status unknown)".to_string(),
+    }
+}
+
+/// One display line for a single session under its host.
+///
+/// Shows only fields [`RemoteSessionSummary`] actually carries: id, run state,
+/// cwd, shell and size. See the module docs for why there is no dropped-bytes
+/// column.
+pub(crate) fn session_row_text(summary: &RemoteSessionSummary) -> String {
+    format!(
+        "        {id} \u{2014} {state} \u{2014} {cwd} \u{2014} {shell} \u{2014} {rows}x{cols}",
+        id = summary.remote_session_id,
+        state = session_run_label(&session_run_state(summary.exit.as_ref())),
+        cwd = summary.cwd,
+        // The daemon reports the shell it spawned; `None` means it recorded
+        // none, which is not the same as a shell named "unknown".
+        shell = summary.shell.as_deref().unwrap_or("shell not reported"),
+        rows = summary.rows,
+        cols = summary.cols,
+    )
+}
+
+/// The summary line that sits under a host row, saying what is known about its
+/// sessions.
+///
+/// Deliberately free of any timestamp so it is deterministic under test; the
+/// "checked N ago" suffix is appended at render time from
+/// [`host_sessions_checked_at`].
+///
+/// "Not connected" and "No sessions" are different sentences because they are
+/// different facts: the first means nothing was asked (this pane never dials to
+/// find out), the second means the host answered and is holding none. Rendering
+/// the first as the second would be the same confident lie
+/// [`host_install_label`] avoids for a never-reached host.
+pub(crate) fn host_sessions_label(display: &HostSessionsDisplay<'_>) -> String {
+    match display {
+        HostSessionsDisplay::NotConnected => "Sessions: not connected".to_string(),
+        HostSessionsDisplay::NeverFetched => "Sessions: not checked yet".to_string(),
+        HostSessionsDisplay::Loading => "Sessions: checking\u{2026}".to_string(),
+        HostSessionsDisplay::Fetched { sessions, .. } if sessions.is_empty() => {
+            "Sessions: none".to_string()
+        }
+        HostSessionsDisplay::Fetched { sessions, .. } if sessions.len() == 1 => {
+            "Sessions: 1".to_string()
+        }
+        HostSessionsDisplay::Fetched { sessions, .. } => {
+            format!("Sessions: {}", sessions.len())
+        }
+        HostSessionsDisplay::Failed { reason, .. } => {
+            format!("Sessions: unavailable ({reason})")
+        }
+    }
+}
+
+/// When the listing behind `display` was read, if it was read at all. Drives
+/// the "checked N ago" suffix; separated from [`host_sessions_label`] so that
+/// function stays free of wall-clock time.
+pub(crate) fn host_sessions_checked_at(display: &HostSessionsDisplay<'_>) -> Option<DateTime<Utc>> {
+    match display {
+        HostSessionsDisplay::NotConnected
+        | HostSessionsDisplay::NeverFetched
+        | HostSessionsDisplay::Loading => None,
+        HostSessionsDisplay::Fetched { fetched_at, .. } => Some(*fetched_at),
+        HostSessionsDisplay::Failed { failed_at, .. } => Some(*failed_at),
+    }
+}
+
 /// One display line for a group row: its name and its current membership. Never offers a
 /// session affordance -- a group is a query target, not something `ssh` can open a shell on
 /// (`docs/design/moth-parliament.md`, "Host groups").
@@ -198,6 +357,10 @@ pub struct RemoteHostsView {
     pane_configuration: ModelHandle<PaneConfiguration>,
     focus_handle: Option<PaneFocusHandle>,
     clipped_scroll_state: ClippedScrollStateHandle,
+    /// Per-host pty session listings. Owned by this view rather than taken from
+    /// a singleton, so it dies with the tab -- see the module docs' "Sessions"
+    /// section and the model's own "Why this is a per-pane model".
+    sessions: ModelHandle<RemoteSessionsModel>,
 }
 
 impl RemoteHostsView {
@@ -218,10 +381,32 @@ impl RemoteHostsView {
             registry.refresh_from_live_connections(ctx);
         });
 
+        // Daemon-owned pty sessions per host. Subscribed to for the same reason
+        // the registry is: a listing that lands, fails, or is dropped repaints
+        // this tab without it needing to be reopened.
+        let sessions = ctx.add_model(RemoteSessionsModel::new);
+        ctx.subscribe_to_model(&sessions, |_, _, _, ctx| {
+            ctx.notify();
+        });
+
+        // Fetch on open -- for hosts that already have a live client, and only
+        // those. `fetch_for_connected_hosts` reads `RemoteServerManager`'s
+        // in-memory connected set and asks `client_for_host` for each, which is
+        // a lookup over already-`Connected` sessions; a host with no client is
+        // skipped without a request, exactly as `refresh_from_live_connections`
+        // above skips a host it would have to dial. Each fetch that does happen
+        // is an async RPC over a connection that already exists, so this returns
+        // immediately and the pane opens showing "checking" rather than
+        // blocking.
+        sessions.update(ctx, |sessions, ctx| {
+            sessions.fetch_for_connected_hosts(ctx);
+        });
+
         Self {
             pane_configuration,
             focus_handle: None,
             clipped_scroll_state: Default::default(),
+            sessions,
         }
     }
 
@@ -252,6 +437,52 @@ impl RemoteHostsView {
         };
         Text::new(
             host_row_text(entry),
+            appearance.ui_font_family(),
+            appearance.ui_font_body(),
+        )
+        .with_color(color.into())
+        .finish()
+    }
+
+    /// The summary line under a host row: what is known about its sessions, plus
+    /// how long ago that was read when there is something to have read.
+    fn render_sessions_summary(
+        &self,
+        display: &HostSessionsDisplay<'_>,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let mut text = format!("    {}", host_sessions_label(display));
+        if let Some(checked_at) = host_sessions_checked_at(display) {
+            text.push_str(&format!(
+                " (checked {})",
+                format_approx_duration_from_now_utc(checked_at)
+            ));
+        }
+        Text::new(text, appearance.ui_font_family(), appearance.ui_font_body())
+            .with_color(appearance.theme().disabled_ui_text_color().into())
+            .finish()
+    }
+
+    /// One session under its host. A session that has exited renders
+    /// de-emphasized, the same device `render_host_row` uses for a
+    /// never-reached host: the text already says which it is, and the colour
+    /// stops a wall of finished sessions reading as live ones.
+    fn render_session_row(
+        &self,
+        summary: &RemoteSessionSummary,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let is_running = matches!(
+            session_run_state(summary.exit.as_ref()),
+            SessionRunState::Running
+        );
+        let color = if is_running {
+            appearance.theme().active_ui_text_color()
+        } else {
+            appearance.theme().disabled_ui_text_color()
+        };
+        Text::new(
+            session_row_text(summary),
             appearance.ui_font_family(),
             appearance.ui_font_body(),
         )
@@ -292,6 +523,11 @@ impl View for RemoteHostsView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let registry = HostRegistryModel::as_ref(app);
+        let sessions = self.sessions.as_ref(app);
+        // Read once per render, not per row. This is the manager's in-memory set
+        // of hosts with a live connection right now -- the same read
+        // `refresh_from_live_connections` makes, and equally free of I/O.
+        let connected_host_ids = RemoteSessionsModel::connected_host_ids(app);
 
         let mut hosts: Vec<&RemoteHostEntry> = registry.hosts().collect();
         hosts.sort_by(|a, b| a.target.cmp(&b.target));
@@ -307,8 +543,8 @@ impl View for RemoteHostsView {
         // a check made this moment. Distinct from the per-row "Never reached" label, which
         // covers the case where there is no observation at all rather than a stale one.
         col.add_child(self.render_section_label(
-            "Currently-connected hosts are refreshed live; others show the registry's \
-             last-seen state.",
+            "Currently-connected hosts are refreshed live and are the only ones asked for \
+             their sessions; others show the registry's last-seen state.",
             appearance,
         ));
 
@@ -318,6 +554,29 @@ impl View for RemoteHostsView {
         } else {
             for host in &hosts {
                 col.add_child(self.render_host_row(host, appearance));
+
+                // A host with no resolved `host_id` has never completed a
+                // handshake, so it cannot be in the connected set and cannot be
+                // keyed in the sessions model either: it reads "not connected",
+                // which is the truth.
+                let is_connected = host
+                    .host_id
+                    .as_ref()
+                    .is_some_and(|host_id| connected_host_ids.contains(host_id));
+                let fetch = host
+                    .host_id
+                    .as_ref()
+                    .and_then(|host_id| sessions.fetch_state(host_id));
+                let display = host_sessions_display(is_connected, fetch);
+                col.add_child(self.render_sessions_summary(&display, appearance));
+                if let HostSessionsDisplay::Fetched {
+                    sessions: listed, ..
+                } = &display
+                {
+                    for summary in listed.iter() {
+                        col.add_child(self.render_session_row(summary, appearance));
+                    }
+                }
             }
         }
 
