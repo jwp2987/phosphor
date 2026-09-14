@@ -4,6 +4,7 @@ use async_channel::Receiver;
 use parking_lot::{FairMutex, Mutex};
 use remote_server::RemotePtySessionId;
 use remote_server::client::RemoteServerClient;
+use remote_server::proto::RemoteSessionSignal;
 use warp_core::HostId;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
@@ -16,10 +17,10 @@ use crate::terminal::writeable_pty::Message;
 
 /// What one [`Message`] from the `PtyController` becomes on the wire.
 ///
-/// Extracted from the send loop so the four decisions below are a pure function
-/// of the message -- they are product decisions, not plumbing, and one of them
-/// (`Shutdown`) is genuinely contested. A test can pin each without a client, a
-/// daemon, or a pty.
+/// Extracted from the send loop so the five decisions below are a pure function
+/// of the message -- they are product decisions, not plumbing, and two of them
+/// (`Shutdown` and `Kill`) are the pair this transport exists to tell apart. A
+/// test can pin each without a client, a daemon, or a pty.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum OutboundRpc {
     /// `WriteSessionStdin`.
@@ -28,32 +29,60 @@ pub(super) enum OutboundRpc {
     Resize { rows: u32, cols: u32 },
     /// Stop consuming messages and leave the session running on the daemon.
     Detach,
+    /// `SignalSession` with `RemoteSessionSignal::Kill`, then stop consuming
+    /// messages. The opposite of [`OutboundRpc::Detach`]: the daemon does not
+    /// keep the pty.
+    Kill,
     /// Nothing goes on the wire.
     Ignore,
 }
 
 /// Maps a `PtyController` message onto the session RPC that carries it.
 ///
-/// **`Shutdown` detaches; it does not kill.** This is the one decision here that
-/// is not forced, so it is stated rather than buried. A daemon-owned session
-/// survives its client by design -- requirement 4 of "What is actually needed"
-/// in `docs/design/moth-parliament.md` -- and `Message::Shutdown` reaches this
-/// point from `TerminalManager::drop`, which fires on tab close, window close
-/// and app quit alike. Killing here would mean quitting the app kills every
-/// remote session, which is precisely the failure reattach exists to prevent.
-/// The neighbouring `remote_tty` event loop already ignores `Shutdown` for its
-/// own transport, so this is also the established shape for a non-local pty.
+/// **`Shutdown` detaches; `Kill` kills.** These two arms are the whole reason
+/// `Message` carries two teardown variants, so the split is stated here rather
+/// than buried.
 ///
-/// **Known cost, recorded because it is real and not yet paid.**
-/// `Message::Shutdown` is overloaded: `terminal/view.rs`'s autoupdate path sends
-/// it meaning *kill this shell so it does not come back after the relaunch*, and
-/// under this mapping a remote session would survive that relaunch and return.
-/// The fix is not to flip this arm -- that would break every other caller -- but
-/// to give the kill intent its own route (`SignalSession` with
-/// `RemoteSessionSignal::Kill`, which the protocol already carries for exactly
-/// the client-visible "kill this session" action). Until that exists, closing a
-/// tab leaves a remote session running, discoverable only from the hosts
-/// dashboard. See "Shutdown is two intents wearing one name" in the design doc.
+/// A daemon-owned session survives its client by design -- requirement 4 of
+/// "What is actually needed" in `docs/design/moth-parliament.md` -- so a
+/// teardown that says nothing about the far-end process must not end it.
+///
+/// **`Message::Shutdown` does not currently reach this loop at all, and an
+/// earlier version of this comment claimed it did.** Two refutation agents found
+/// that independently. The only producer of `Shutdown` is
+/// `local_tty::TerminalManager::shutdown_event_loop`, which sends on
+/// `local_tty`'s own `mio_channel` -- physically unable to reach another
+/// transport -- and neither remote `TerminalManager` has a `Drop` impl. So this
+/// arm is currently unreachable, and a detach actually happens by *channel
+/// close*: dropping the manager drops the `PtyController` holding the only
+/// `Sender<Message>`, `messages.recv()` returns `Err`, and `run_outbound` falls
+/// out of its loop leaving the daemon's pty alone. Same observable result, a
+/// different mechanism than the one documented here before.
+///
+/// The mapping stays, and is not dead weight: it is the correct answer the day
+/// this transport grows a `Drop` or any other `Shutdown` sender, and having it
+/// wrong then would be silent. What is *not* true is the argument this decision
+/// was originally sold on -- "quitting the app would destroy every remote
+/// session" was never reachable. The case for the variant is now the narrower
+/// one `message.rs` gives: exhaustive matching forces each transport to answer.
+///
+/// `Message::Kill` is the separate route that decision needed, and the callers
+/// that mean it now say so: the autoupdate relaunch path, whose own comment in
+/// `terminal/view.rs` is "terminate this shell session so that it doesn't come
+/// back when we restore sessions after the relaunch", and `workspace/view.rs`'s
+/// tab close for a pane with a command still running. Both arrive through
+/// `PtyIntent::ShutdownPty` -> `PtyController::kill_pty`. Nothing new is needed
+/// on the wire for it: `SignalSession` with `RemoteSessionSignal::Kill` is
+/// already the protocol's client-visible "kill this session" action.
+///
+/// **What this still does not settle, recorded rather than rounded off.** An
+/// ordinary tab close of a pane with *nothing* running never reaches `kill_pty`
+/// at all -- it is a plain `Drop`, so it detaches, and the remote session keeps
+/// running, discoverable only from the hosts dashboard. That is the decision
+/// working as designed rather than a mapping bug, but whether it is the right
+/// default is a product question about detached-session visibility that this
+/// split does not answer. See "Shutdown is two intents wearing one name" in the
+/// design doc.
 ///
 /// `ChildExited` is ignored rather than forwarded: it is a Windows-only device
 /// for telling the *local* event loop that its own child is gone, and a daemon
@@ -66,6 +95,7 @@ pub(super) fn outbound_rpc_for(message: Message) -> OutboundRpc {
             cols: size_info.columns as u32,
         },
         Message::Shutdown => OutboundRpc::Detach,
+        Message::Kill => OutboundRpc::Kill,
         Message::ChildExited => OutboundRpc::Ignore,
     }
 }
@@ -124,12 +154,13 @@ impl ClientSlot {
 /// arrives as `RemoteServerManagerEvent`s the manager has already demultiplexed
 /// by host.
 ///
-/// **Where this increment stops, stated so the gap is not mistaken for a bug.**
-/// Nothing constructs this yet. The `TerminalManager` that would own it (the
-/// third sibling of `local_tty::TerminalManager` and `remote_tty::
-/// TerminalManager`) and the path that spawns the session in the first place are
-/// separate increments, in that order. The same rhythm as the daemon half, where
-/// `SessionStore` landed before the RPCs that drive it.
+/// **Where this stops, stated so the gap is not mistaken for a bug.**
+/// [`super::TerminalManager`] owns one of these now, and reaches it only through
+/// a [`super::ConnectedRemotePtySession`] witness -- which is how the invariant
+/// below stopped being a comment and became something the type system checks.
+/// What is still missing is the path that *creates* a session: nothing calls
+/// `spawn_session` or mints a `RemotePtySessionId`, so no `EventLoop` is
+/// constructed in production yet. That is the next increment.
 ///
 /// **Input during a disconnect is dropped, deliberately and visibly.** With no
 /// client in the slot there is nowhere for keystrokes to go, and they are logged
@@ -149,7 +180,7 @@ pub struct EventLoop {
 impl EventLoop {
     /// Starts driving `session` on `host_id`: subscribes to the manager for its
     /// output and exit, and spawns the task that carries `messages` out as RPCs.
-    pub fn start(
+    pub(super) fn start(
         host_id: HostId,
         session: RemotePtySessionId,
         terminal_model: Arc<FairMutex<TerminalModel>>,
@@ -304,8 +335,8 @@ impl EventLoop {
         });
     }
 
-    /// Carries `messages` out to the daemon until the controller detaches or the
-    /// channel closes.
+    /// Carries `messages` out to the daemon until the controller detaches, kills
+    /// the session, or the channel closes.
     ///
     /// Sequential, one RPC at a time, and that ordering is load-bearing rather
     /// than incidental: stdin is a byte stream, and two writes racing would
@@ -326,6 +357,36 @@ impl EventLoop {
             match outbound_rpc_for(message) {
                 OutboundRpc::Detach => {
                     log::info!("detaching from remote session {session}; the daemon keeps its pty");
+                    return;
+                }
+                OutboundRpc::Kill => {
+                    // Returns whether or not the signal lands. The client side
+                    // is finished either way -- there is no state left here to
+                    // drive -- and continuing to consume messages for a session
+                    // the daemon has been asked to destroy would only write into
+                    // an id that is about to stop existing.
+                    match client_slot.get() {
+                        Some(client) => {
+                            match client
+                                .signal_session(session.clone(), RemoteSessionSignal::Kill)
+                                .await
+                            {
+                                Ok(()) => log::info!("killed remote session {session}"),
+                                Err(error) => {
+                                    log::warn!("remote session {session} kill failed: {error:?}");
+                                }
+                            }
+                        }
+                        // Not a detach, and not silent: the caller asked for the
+                        // session to end and it did not. With the host gone
+                        // there is nowhere to send the signal, and the daemon
+                        // keeps the pty until someone kills it from the hosts
+                        // dashboard.
+                        None => log::warn!(
+                            "no client for remote session {session}; it was not killed and the \
+                             daemon keeps its pty"
+                        ),
+                    }
                     return;
                 }
                 OutboundRpc::Ignore => {}

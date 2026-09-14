@@ -45,19 +45,43 @@ fn resize_keeps_rows_and_columns_the_right_way_round() {
 
 // The contested decision, pinned so flipping it has to be deliberate.
 //
-// `Message::Shutdown` arrives from `TerminalManager::drop`, which fires on tab
-// close, window close and app quit alike. Mapping it to a kill would mean
-// quitting the app destroys every remote session -- exactly what requirement 4
-// ("survives the client disconnecting") exists to prevent -- so it detaches and
-// the daemon keeps the pty.
+// Note what this no longer rests on. The justification here used to be that
+// `Message::Shutdown` arrives from `local_tty::TerminalManager::shutdown_event_loop`
+// on app quit, so mapping it to a kill would destroy every remote session. That
+// is false, and two refutation agents found it independently: that method sends
+// on `local_tty`'s own `mio_channel`, neither remote manager has a `Drop`, and
+// so no `Shutdown` reaches this transport at all today -- detach actually
+// happens by channel close.
 //
-// Breaks if: someone maps `Shutdown` onto `SignalSession`/`Kill` to make the
-// autoupdate relaunch path behave. That path is genuinely mis-served here, and
-// the fix is a separate kill route, not this arm -- see `outbound_rpc_for`'s doc
-// comment.
+// The mapping is still right, for the reason requirement 4 gives, and is what a
+// future `Shutdown` sender must get. But it is unexercised in production, which
+// makes this test the only thing holding it.
+//
+// Breaks if: someone maps `Shutdown` onto `SignalSession`/`Kill`. The callers
+// that want a kill have their own route now (`Message::Kill`, pinned by the
+// test below), so there is no longer even a mis-served caller to justify it.
 #[test]
 fn shutdown_detaches_rather_than_killing_the_remote_session() {
     assert_eq!(outbound_rpc_for(Message::Shutdown), OutboundRpc::Detach);
+}
+
+// The sibling of the above, and the reason the two exist separately at all. A
+// caller that has decided the shell must stop -- the autoupdate relaunch, a tab
+// closed on a running command -- must reach the daemon's kill, not its detach,
+// or the session comes back after the relaunch, which is the one thing the
+// autoupdate path's own comment says must not happen.
+//
+// Breaks if: `Kill` is collapsed into `Shutdown` (the single-variant world this
+// replaced), or routed to `Ignore` on the grounds that a daemon session always
+// survives its client. The whole point is that this one does not.
+#[test]
+fn kill_ends_the_remote_session_rather_than_detaching_from_it() {
+    assert_eq!(outbound_rpc_for(Message::Kill), OutboundRpc::Kill);
+    assert_ne!(
+        outbound_rpc_for(Message::Kill),
+        outbound_rpc_for(Message::Shutdown),
+        "the two teardown messages exist precisely to differ here"
+    );
 }
 
 // Breaks if: `ChildExited` is forwarded as anything. It is a Windows-only device

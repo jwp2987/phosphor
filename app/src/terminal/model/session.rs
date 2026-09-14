@@ -333,7 +333,9 @@ impl Sessions {
                 // Remote pty sessions carry no meaning for *this* consumer, which tracks
                 // which host a session reached. The daemon does send both pushes now, and
                 // they have a dedicated consumer being built in
-                // `terminal::remote_server_tty::EventLoop`, which addresses them by
+                // `terminal::remote_server_tty` (its event loop, which is module-
+                // private and reached only through that module's
+                // `TerminalManager`), which addresses them by
                 // (host, session) pair rather than by this app's `SessionId`. Listed
                 // explicitly because this match is exhaustive on purpose: a wildcard here
                 // would swallow a future session-addressed event silently.
