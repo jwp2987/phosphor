@@ -27,7 +27,7 @@ any individual test.
 | | count |
 |---|---:|
 | Pin tests | 11655 |
-| Fork tests | 11575 |
+| Fork tests | 11605 |
 | Shared | 8616 |
 | Absent from fork | 3039 |
 
@@ -88,6 +88,6 @@ purpose — if they disagree, the tracker is lying, not the ledger.
 | source | open work | authority |
 |---|---:|---|
 | `docs/sweep-verdict-ledger.tsv` — `MISSING-SUBSYSTEM` | **0 tests** | primary; a test is open until ported/declined/covered/divergent |
-| `TODO.md` checkboxes | **148 open**, 13 in flight | secondary; counts formatting, so it under-reports silently |
+| `TODO.md` checkboxes | **146 open**, 13 in flight | secondary; counts formatting, so it under-reports silently |
 
 > Ledger open bucket is represented in `TODO.md`'s tracked items.
