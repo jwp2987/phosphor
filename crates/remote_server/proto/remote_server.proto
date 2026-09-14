@@ -131,6 +131,10 @@ message HostScopedRequest {
     // been handed off for delivery, never before, so a failed or interrupted
     // send leaves them for the next attempt.
     ReattachSession reattach_session = 30;
+    // Drop the daemon's record of a session that has already exited. Not a
+    // kill: `SignalSession` does that, and this deliberately refuses a session
+    // that is still running -- see `ForgetSession`.
+    ForgetSession forget_session = 31;
   }
 }
 
@@ -271,6 +275,7 @@ message ServerMessage {
     // Push (empty request_id): a session's process exited.
     SessionExitedPush session_exited_push = 49;
     ReattachSessionResponse reattach_session_response = 50;
+    ForgetSessionResponse forget_session_response = 51;
   }
 }
 
@@ -511,12 +516,29 @@ message ListSessionsError {
 }
 
 // One session as reported by ListSessions.
+// How a session ended. Mirrors `remote_server::session_store::SessionExitStatus`:
+// a process killed by a signal has no exit code of its own, so the code is
+// optional rather than a fabricated sentinel.
+message RemoteSessionExit {
+  optional int32 exit_code = 1;
+  bool signal_killed = 2;
+}
+
 message RemoteSessionSummary {
   string remote_session_id = 1;
   string cwd = 2;
   optional string shell = 3;
   uint32 rows = 4;
   uint32 cols = 5;
+  // Absent while the session is still running; present once it has exited.
+  //
+  // A message field, so presence itself carries the running/exited distinction
+  // -- there is no separate `bool exited` that could disagree with it. Without
+  // this the daemon computed `SessionState::Running`/`Exited` in
+  // `SessionStore::list()` and then threw it away building this summary, so a
+  // client could enumerate sessions but not tell a live one from a dead one:
+  // the reattach and hosts-dashboard surfaces both need exactly that.
+  RemoteSessionExit exit = 6;
 }
 
 message ListSessionsSuccess {
@@ -560,6 +582,38 @@ message ReattachSessionSuccess {
   // acknowledges a queued send, not a received one" in
   // `docs/design/moth-parliament.md`.
   uint64 next_offset = 3;
+}
+
+// Client -> server: forget an *exited* session, dropping the daemon's record of
+// it entirely -- its buffered output, its exit status, and its listing.
+//
+// This exists because nothing else removes a session. `record_exit` only sets a
+// status, and `SessionStore::remove`'s one caller is the spawn-failure rollback,
+// so every session a daemon has ever run stays in `ListSessions` forever. That
+// is invisible until a client can enumerate sessions; once one can, an
+// ever-growing list of dead sessions is the first thing a user sees.
+//
+// **Refuses a session that is still running, and that refusal is the point.**
+// Forgetting a live session would not stop it: the daemon would keep the pty and
+// the process, having discarded the only record that it owns them, so nothing
+// would ever reap them and no client could ever reach them again. A caller that
+// wants a running session gone sends `SignalSession` with `KILL` and forgets it
+// after the exit arrives.
+message ForgetSession {
+  string remote_session_id = 1;
+}
+
+message ForgetSessionSuccess {}
+
+message ForgetSessionError {
+  string message = 1;
+}
+
+message ForgetSessionResponse {
+  oneof result {
+    ForgetSessionSuccess success = 1;
+    ForgetSessionError error = 2;
+  }
 }
 
 message ReattachSessionResponse {

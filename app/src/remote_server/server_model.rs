@@ -40,22 +40,24 @@ use super::proto::{
 // Remote pty sessions (`docs/design/moth-parliament.md`, "Scoping session
 // ownership"): the six session RPCs' request/response/push types.
 use super::proto::{
-    AcknowledgeSessionOutput, ListSessions, ListSessionsResponse, ListSessionsSuccess,
+    AcknowledgeSessionOutput, ForgetSession, ForgetSessionError, ForgetSessionResponse,
+    ForgetSessionSuccess, ListSessions, ListSessionsResponse, ListSessionsSuccess,
     ReattachSession, ReattachSessionError, ReattachSessionResponse, ReattachSessionSuccess,
-    RemoteSessionSignal, RemoteSessionSummary, ResizeSession, ResizeSessionError,
-    ResizeSessionResponse, ResizeSessionSuccess, SessionExitedPush, SessionOutputChunkPush,
-    SignalSession, SignalSessionError, SignalSessionResponse, SignalSessionSuccess, SpawnSession,
-    SpawnSessionError, SpawnSessionResponse, SpawnSessionSuccess, WriteSessionStdin,
-    WriteSessionStdinError, WriteSessionStdinResponse, WriteSessionStdinSuccess,
-    list_sessions_response, reattach_session_response, resize_session_response,
-    signal_session_response, spawn_session_response, write_session_stdin_response,
+    RemoteSessionExit, RemoteSessionSignal, RemoteSessionSummary, ResizeSession,
+    ResizeSessionError, ResizeSessionResponse, ResizeSessionSuccess, SessionExitedPush,
+    SessionOutputChunkPush, SignalSession, SignalSessionError, SignalSessionResponse,
+    SignalSessionSuccess, SpawnSession, SpawnSessionError, SpawnSessionResponse,
+    SpawnSessionSuccess, WriteSessionStdin, WriteSessionStdinError, WriteSessionStdinResponse,
+    WriteSessionStdinSuccess, forget_session_response, list_sessions_response,
+    reattach_session_response, resize_session_response, signal_session_response,
+    spawn_session_response, write_session_stdin_response,
 };
 use super::pty_session_ops::{
     LocalTtyPtySessionOperations, PtySessionEvent, PtySessionOperations, PtySpawnSpec,
 };
 use remote_server::RemotePtySessionId;
 use remote_server::session_store::{
-    SessionExitStatus, SessionSpawnMetadata, SessionStore, UnknownSession,
+    SessionExitStatus, SessionSpawnMetadata, SessionState, SessionStore, UnknownSession,
 };
 
 // Remote codebase indexing (Delta D2, remote-daemon leg). Gated `local_fs`
@@ -1395,6 +1397,9 @@ impl ServerModel {
                     Some(host_scoped_request::Message::ReattachSession(msg)) => {
                         self.handle_reattach_session(msg)
                     }
+                    Some(host_scoped_request::Message::ForgetSession(msg)) => {
+                        self.handle_forget_session(msg)
+                    }
                     None => {
                         log::warn!(
                             "Received HostScopedRequest with no message variant \
@@ -1820,6 +1825,10 @@ impl ServerModel {
                 // doc comment), so a stored copy could only ever disagree with
                 // the pty that is actually running.
                 no_bootstrap: msg.no_bootstrap,
+                // No wire field yet, and `None` is not a placeholder: it is the
+                // accurate statement that this daemon cannot tell a client which
+                // session id to register. See `PtySpawnSpec::bootstrap_session_id`.
+                bootstrap_session_id: None,
             };
             if let Err(error) = self.pty_ops.spawn(&id, &spec, ctx) {
                 // Don't leave a phantom entry registered for a pty that
@@ -1917,6 +1926,16 @@ impl ServerModel {
                 shell: summary.metadata.shell,
                 rows: summary.metadata.rows,
                 cols: summary.metadata.cols,
+                // `SessionStore::list()` has always computed this; it used to be
+                // dropped here, leaving callers unable to tell a running session
+                // from an exited one.
+                exit: match summary.state {
+                    SessionState::Running => None,
+                    SessionState::Exited(status) => Some(RemoteSessionExit {
+                        exit_code: status.code,
+                        signal_killed: status.signal_killed,
+                    }),
+                },
             })
             .collect();
         list_sessions_message(list_sessions_response::Result::Success(
@@ -1974,6 +1993,71 @@ impl ServerModel {
                 next_offset: peeked.next_offset,
             },
         ))
+    }
+
+    /// Handles `ForgetSession`: drops the daemon's record of an already-exited
+    /// session.
+    ///
+    /// Nothing else does. `record_exit` only sets a status, and
+    /// `SessionStore::remove`'s only other caller is the spawn-failure rollback
+    /// in `handle_spawn_session`, so without this every session a daemon has ever
+    /// run stays in `ListSessions` for the daemon's lifetime.
+    ///
+    /// **Refuses a session that is still running.** Forgetting one would not stop
+    /// it: this process would keep the pty and the child while discarding the
+    /// only record that it owns them, so `handle_pty_session_exit` would later
+    /// fail to find the session, `pty_ops.kill` would never run, and no client
+    /// could reach it again. A caller that wants a live session gone sends
+    /// `SignalSession` with `Kill` and forgets it once the exit arrives.
+    ///
+    /// Reads state through `SessionStore::list()` rather than a dedicated query,
+    /// matching how `handle_spawn_session` asks the same kind of question; a
+    /// daemon holds few enough sessions for the scan to be irrelevant.
+    fn handle_forget_session(&mut self, msg: ForgetSession) -> HandlerOutcome {
+        let id = RemotePtySessionId::from(msg.remote_session_id);
+        let state = self
+            .session_store
+            .list()
+            .into_iter()
+            .find(|summary| summary.id == id)
+            .map(|summary| summary.state);
+        match state {
+            Some(SessionState::Exited(_)) => {
+                self.session_store.remove(&id);
+                forget_session_message(forget_session_response::Result::Success(
+                    ForgetSessionSuccess {},
+                ))
+            }
+            Some(SessionState::Running) => forget_session_message(
+                forget_session_response::Result::Error(ForgetSessionError {
+                    message: format!(
+                        "session {id} is still running; signal it to exit before forgetting it"
+                    ),
+                }),
+            ),
+            // Success, not an error, and this was the other way round until a
+            // refutation pass caught it. `ForgetSession` travels over a network:
+            // if the response is lost the client retries, and answering the
+            // retry with an error reports failure for an operation that
+            // succeeded -- which a dashboard would surface as "could not forget"
+            // for a session that is demonstrably gone.
+            //
+            // `handle_spawn_session` above already settled this convention for
+            // exactly the same reason ("A retry still answers with success -- it
+            // is not an error"), and forget is the more idempotent of the two:
+            // its desired end state is "not present", which an unknown id
+            // already satisfies.
+            //
+            // The cost is that a genuine id mismatch no longer surfaces on the
+            // wire. That is a developer error, not something a user can act on,
+            // so it is logged here instead.
+            None => {
+                log::info!("ForgetSession: no session registered under {id}; already forgotten");
+                forget_session_message(forget_session_response::Result::Success(
+                    ForgetSessionSuccess {},
+                ))
+            }
+        }
     }
 
     /// Handles `AcknowledgeSessionOutput`: the client confirming it actually
@@ -5493,6 +5577,14 @@ fn signal_session_message(result: signal_session_response::Result) -> HandlerOut
 fn list_sessions_message(result: list_sessions_response::Result) -> HandlerOutcome {
     HandlerOutcome::Sync(server_message::Message::ListSessionsResponse(
         ListSessionsResponse {
+            result: Some(result),
+        },
+    ))
+}
+
+fn forget_session_message(result: forget_session_response::Result) -> HandlerOutcome {
+    HandlerOutcome::Sync(server_message::Message::ForgetSessionResponse(
+        ForgetSessionResponse {
             result: Some(result),
         },
     ))

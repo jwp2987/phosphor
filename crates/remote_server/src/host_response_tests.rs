@@ -203,6 +203,7 @@ fn every_host_scoped_request_has_a_response_disposition() {
             M::SignalSession(_) => "client::signal_session",
             M::ListSessions(_) => "client::list_sessions",
             M::ReattachSession(_) => "client::reattach_session",
+            M::ForgetSession(_) => "client::forget_session",
         }
     }
 

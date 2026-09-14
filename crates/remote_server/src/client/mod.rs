@@ -11,6 +11,7 @@ use warpui::r#async::{FutureExt as _, executor};
 
 use crate::proto::{
     Abort, AcknowledgeSessionOutput, Authenticate, BufferEdit, ClientMessage, CloseBuffer,
+    ForgetSession,
     CreateDirectory, CreateDirectoryResponse, DeleteFile, DiffStateFileDelta,
     DiffStateMetadataUpdate, DiffStateSnapshot, DiscardFilesRequest, ErrorCode, GetBranches,
     GetBranchesResponse, GetCommittedBranchFilesRequest, GetCommittedBranchFilesResponse,
@@ -28,7 +29,8 @@ use crate::proto::{
     SignalSession, SignalSessionResponse, SpawnSession, SpawnSessionResponse, TextEdit,
     UnsubscribeDiffState, UpdateGitHubPrInfo, UpdateGitHubRepoInfo, UpdateGitStatus,
     UpdatePreferences, WriteFile, WriteFileChunk, WriteFileChunkResponse, WriteSessionStdin,
-    WriteSessionStdinResponse, discard_files_response, git_stage_response, host_scoped_request,
+    WriteSessionStdinResponse, discard_files_response, forget_session_response, git_stage_response,
+    host_scoped_request,
     list_sessions_response, notification, read_file_chunk_response, reattach_session_response,
     resize_session_response, server_message, session_scoped_request, signal_session_response,
     spawn_session_response, write_session_stdin_response,
@@ -927,6 +929,47 @@ impl RemoteServerClient {
             },
             other => {
                 log::error!("Unexpected response variant for ListSessions: {other:?}");
+                Err(ClientError::UnexpectedResponse)
+            }
+        }
+    }
+
+    /// Asks the daemon to forget an already-exited session, dropping its record
+    /// entirely -- buffered output, exit status and listing.
+    ///
+    /// The daemon refuses a session that is still running, and surfaces that as
+    /// `ClientError::SessionOperationFailed` rather than silently succeeding: a
+    /// live session forgotten is a pty and a child process this daemon keeps but
+    /// no longer has a record of, which nothing can reach or reap afterwards. To
+    /// be rid of a running session, `signal_session(.., Kill)` first and forget
+    /// it once its exit arrives.
+    pub async fn forget_session(
+        &self,
+        remote_session_id: RemotePtySessionId,
+    ) -> Result<(), ClientError> {
+        let request_id = RequestId::new();
+        let msg = ClientMessage::host_scoped(
+            request_id.to_string(),
+            host_scoped_request::Message::ForgetSession(ForgetSession {
+                remote_session_id: remote_session_id.into(),
+            }),
+        );
+        let response = self.send_request(request_id, msg).await?;
+        match response.message {
+            Some(server_message::Message::ForgetSessionResponse(resp)) => match resp.result {
+                // `None` defaults to success, matching `spawn_session` rather
+                // than `reattach_session`: forgetting is idempotent and carries
+                // no payload, so a result-less response cannot hide lost data
+                // the way an empty reattach can. The daemon likewise answers an
+                // unknown id with success, so a retried forget after a lost
+                // response reports what actually happened.
+                Some(forget_session_response::Result::Success(_)) | None => Ok(()),
+                Some(forget_session_response::Result::Error(e)) => {
+                    Err(ClientError::SessionOperationFailed(e.message))
+                }
+            },
+            other => {
+                log::error!("Unexpected response variant for ForgetSession: {other:?}");
                 Err(ClientError::UnexpectedResponse)
             }
         }

@@ -29,7 +29,8 @@ use super::super::proto::{
 // `FakePtySessionOperations` -- they only read and discard `SessionStore`'s
 // output buffer, and never touch `self.pty_ops`.
 use super::super::proto::{
-    AcknowledgeSessionOutput, ReattachSession, ReattachSessionSuccess, reattach_session_response,
+    AcknowledgeSessionOutput, ForgetSession, ReattachSession, ReattachSessionSuccess,
+    forget_session_response, reattach_session_response,
 };
 use super::super::protocol::RequestId;
 use super::super::pty_session_ops::{FakePtySessionOperations, PtySpawnSpec};
@@ -1429,6 +1430,9 @@ fn spawn_session_forwards_the_whole_spec_including_no_bootstrap() {
                 rows: 24,
                 cols: 80,
                 no_bootstrap: true,
+                // Nothing on the wire can carry one yet, so dispatch must
+                // produce `None` -- see `PtySpawnSpec::bootstrap_session_id`.
+                bootstrap_session_id: None,
             }
         );
     });
@@ -1663,7 +1667,187 @@ fn list_sessions_maps_every_field() {
         assert_eq!(summary.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(summary.rows, 40);
         assert_eq!(summary.cols, 132);
+        assert!(
+            summary.exit.is_none(),
+            "a session that has not exited must report no exit"
+        );
     });
+}
+
+// The other half of "every field": a session that HAS exited must say so, with
+// its real status, and the two cases must be distinguishable from each other.
+//
+// `SessionStore::list()` has always computed `SessionState::Running`/`Exited`;
+// `handle_list_sessions` used to drop it on the way onto the wire, so a client
+// could enumerate sessions but not tell a live one from a dead one. Every
+// surface that wants this -- reattach, the hosts dashboard, and any decision
+// about whether closing a tab would destroy something -- needs exactly this bit.
+//
+// Breaks if: `exit` is populated from anything other than the store's own state
+// (e.g. hardcoded `None`, which is what dropping the field amounted to), or if a
+// signalled exit starts reporting a fabricated code instead of `None`.
+#[test]
+fn list_sessions_distinguishes_an_exited_session_from_a_running_one() {
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let handle = app.add_model(move |_ctx| test_model_with_pty(fake));
+        let running = RemotePtySessionId::from("still-running".to_string());
+        let exited = RemotePtySessionId::from("already-exited".to_string());
+        let signalled = RemotePtySessionId::from("killed-by-signal".to_string());
+
+        handle.update(&mut app, |model, ctx| {
+            for id in [&running, &exited, &signalled] {
+                model.handle_spawn_session(spawn_session_request(id, "/repo"), ctx);
+            }
+            model.handle_pty_session_exit(exited.clone(), SessionExitStatus::exited(3));
+            model.handle_pty_session_exit(signalled.clone(), SessionExitStatus::signalled());
+        });
+
+        let listed = handle.update(&mut app, |model, _ctx| model.handle_list_sessions());
+        let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+            panic!("expected ListSessionsResponse");
+        };
+        let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+            panic!("expected ListSessions success");
+        };
+        let by_id = |wanted: &RemotePtySessionId| {
+            success
+                .sessions
+                .iter()
+                .find(|summary| summary.remote_session_id == wanted.as_str())
+                .unwrap_or_else(|| panic!("{wanted} should be listed"))
+                .clone()
+        };
+
+        assert!(
+            by_id(&running).exit.is_none(),
+            "a running session must report no exit"
+        );
+
+        let exited_summary = by_id(&exited).exit.expect("an exited session reports an exit");
+        assert_eq!(exited_summary.exit_code, Some(3));
+        assert!(!exited_summary.signal_killed);
+
+        let signalled_summary = by_id(&signalled)
+            .exit
+            .expect("a signalled session has still exited");
+        assert_eq!(
+            signalled_summary.exit_code, None,
+            "a process killed by a signal has no exit code of its own"
+        );
+        assert!(signalled_summary.signal_killed);
+    });
+}
+
+// Reaping, and the refusal that makes it safe.
+//
+// Nothing else removes a session: `record_exit` only sets a status and
+// `SessionStore::remove`'s other caller is the spawn-failure rollback, so
+// without `ForgetSession` every session a daemon ever ran stays in
+// `ListSessions` for the daemon's lifetime. Invisible until a client can
+// enumerate sessions; the first thing a user sees once one can.
+//
+// Breaks if: `handle_forget_session` stops checking state before removing. That
+// is the dangerous direction, not the annoying one -- forgetting a *running*
+// session leaves this daemon holding a pty and a child process while discarding
+// the only record that it owns them, so `handle_pty_session_exit` would later
+// find nothing, `pty_ops.kill` would never run, and no client could reach it
+// again. The session would leak for as long as the daemon lives.
+#[test]
+fn forget_removes_an_exited_session_and_refuses_a_running_one() {
+    warpui::App::test((), |mut app| async move {
+        let fake = Arc::new(FakePtySessionOperations::new());
+        let handle = app.add_model(move |_ctx| test_model_with_pty(fake));
+        let running = RemotePtySessionId::from("still-running".to_string());
+        let exited = RemotePtySessionId::from("already-exited".to_string());
+
+        handle.update(&mut app, |model, ctx| {
+            for id in [&running, &exited] {
+                model.handle_spawn_session(spawn_session_request(id, "/repo"), ctx);
+            }
+            model.handle_pty_session_exit(exited.clone(), SessionExitStatus::exited(0));
+        });
+
+        let forget = |model: &mut ServerModel, id: &RemotePtySessionId| {
+            model.handle_forget_session(ForgetSession {
+                remote_session_id: id.clone().into(),
+            })
+        };
+
+        handle.update(&mut app, |model, _ctx| {
+            let outcome = forget(model, &exited);
+            let server_message::Message::ForgetSessionResponse(response) = outcome.into_message()
+            else {
+                panic!("expected ForgetSessionResponse");
+            };
+            assert!(
+                matches!(
+                    response.result,
+                    Some(forget_session_response::Result::Success(_))
+                ),
+                "an exited session must be forgettable"
+            );
+
+            let outcome = forget(model, &running);
+            let server_message::Message::ForgetSessionResponse(response) = outcome.into_message()
+            else {
+                panic!("expected ForgetSessionResponse");
+            };
+            let Some(forget_session_response::Result::Error(error)) = response.result else {
+                panic!("forgetting a running session must be refused, not silently accepted");
+            };
+            assert!(
+                error.message.contains("still running"),
+                "the refusal should say why; got {:?}",
+                error.message
+            );
+
+            // The refusal must also not have removed it as a side effect.
+            let listed: Vec<_> = model.session_store.list();
+            assert!(
+                listed.iter().any(|summary| summary.id == running),
+                "a refused forget must leave the session registered"
+            );
+            assert!(
+                !listed.iter().any(|summary| summary.id == exited),
+                "the forgotten session must be gone from the listing"
+            );
+        });
+    });
+}
+
+// Forgetting something already gone is success, because the request travels over
+// a network and a lost response means a retry.
+//
+// This test asserted the opposite when first written, on the reasoning that an
+// error is the only way a client learns of an id mismatch. That reasoning loses
+// to the retry case: answering a retry with an error reports failure for an
+// operation that succeeded, and a dashboard would show "could not forget" for a
+// session that is demonstrably gone. `handle_spawn_session` settled the same
+// question the same way for the same reason. A mismatch is a developer error and
+// is logged instead.
+//
+// Breaks if: the unknown-id arm goes back to returning an error -- which reads
+// like the more rigorous choice and is why it was written that way first.
+#[test]
+fn forgetting_an_unknown_session_succeeds_because_the_end_state_already_holds() {
+    let mut model = test_model();
+    let ghost = RemotePtySessionId::from("ghost".to_string());
+
+    let outcome = model.handle_forget_session(ForgetSession {
+        remote_session_id: ghost.clone().into(),
+    });
+
+    let server_message::Message::ForgetSessionResponse(response) = outcome.into_message() else {
+        panic!("expected ForgetSessionResponse");
+    };
+    assert!(
+        matches!(
+            response.result,
+            Some(forget_session_response::Result::Success(_))
+        ),
+        "a retried forget must not report failure for work that is already done"
+    );
 }
 
 #[test]
