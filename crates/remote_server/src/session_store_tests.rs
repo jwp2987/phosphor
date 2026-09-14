@@ -467,7 +467,7 @@ fn oversized_append_counts_previously_buffered_bytes_as_dropped_too() {
 
 // Breaks if: `append_output` stops returning `Err` for an unregistered id
 // (e.g. `ok_or(UnknownSession)?` replaced with silently ignoring the
-// missing entry and returning `Ok(())`).
+// missing entry and returning `Ok(0)`).
 #[test]
 fn appending_to_unknown_session_is_an_error() {
     let mut store = SessionStore::new();
@@ -761,4 +761,44 @@ fn an_acknowledgement_whose_bytes_were_already_evicted_discards_nothing() {
         b"efgh",
         "a stale acknowledgement must not discard bytes that outlived it"
     );
+}
+
+// `append_output` reports the stream offset of the bytes it just took, and that
+// return value is load-bearing rather than a convenience: `handle_pty_session_output`
+// stamps it onto every `SessionOutputChunkPush`, which is the only thing a
+// client can splice a `ReattachSession` prime against without duplicating or
+// dropping bytes. Reading it back instead would mean `peek_output`, which clones
+// every retained byte, once per pty chunk.
+//
+// The offset is where the chunk *starts*, not where the stream now ends -- the
+// tempting off-by-one, and the one that would make a client discard the first
+// chunk it primed against.
+//
+// Breaks if: `append_output` returns `total_appended` after the append rather
+// than before, or starts counting from the buffer's retained length (which
+// eviction makes smaller than the stream position).
+#[test]
+fn append_reports_the_offset_the_appended_bytes_start_at() {
+    let mut store = SessionStore::with_output_bound(4);
+    let a = id("a");
+    store.register(a.clone(), test_metadata());
+
+    assert_eq!(
+        store.append_output(&a, b"abc"),
+        Ok(0),
+        "the first chunk starts at the beginning of the stream"
+    );
+    assert_eq!(
+        store.append_output(&a, b"de"),
+        Ok(3),
+        "the second starts where the first ended, not where the stream now ends"
+    );
+    // Past the 4-byte bound: eviction moves the retained window but must not
+    // move the stream position, which is what a client is splicing on.
+    assert_eq!(
+        store.append_output(&a, b"fgh"),
+        Ok(5),
+        "eviction shrinks what is retained, never what has been produced"
+    );
+    assert_eq!(store.peek_output(&a).unwrap().next_offset, 8);
 }

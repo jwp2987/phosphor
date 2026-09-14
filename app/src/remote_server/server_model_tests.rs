@@ -1315,6 +1315,10 @@ fn spawn_session_request(id: &RemotePtySessionId, cwd: &str) -> SpawnSession {
         // `spawn_session_forwards_no_bootstrap_to_the_backend` below, which
         // builds its request explicitly rather than through this helper.
         no_bootstrap: false,
+        // Nothing registers an id in these tests, which is the ordinary case
+        // today: `resolve_shell_starter` then spawns a shell needing an
+        // out-of-band script plainly rather than half-bootstrapped.
+        bootstrap_session_id: None,
     }
 }
 
@@ -1411,6 +1415,7 @@ fn spawn_session_forwards_the_whole_spec_including_no_bootstrap() {
                     rows: 24,
                     cols: 80,
                     no_bootstrap: true,
+                    bootstrap_session_id: None,
                 },
                 ctx,
             );
@@ -1648,6 +1653,7 @@ fn list_sessions_maps_every_field() {
                     rows: 40,
                     cols: 132,
                     no_bootstrap: false,
+                    bootstrap_session_id: None,
                 },
                 ctx,
             );

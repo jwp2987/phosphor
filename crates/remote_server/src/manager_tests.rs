@@ -514,6 +514,7 @@ fn session_output_chunk_push_is_routed_with_host_and_session_id() {
                 ClientEvent::SessionOutputChunkReceived {
                     remote_session_id: remote_pty_session_id.clone(),
                     data: b"hello".to_vec(),
+                    start_offset: Some(12),
                 },
                 ctx,
             );
@@ -529,10 +530,15 @@ fn session_output_chunk_push_is_routed_with_host_and_session_id() {
                 host_id: got_host_id,
                 remote_pty_session_id: got_session_id,
                 data,
+                start_offset,
             } => {
                 assert_eq!(*got_host_id, host_id);
                 assert_eq!(*got_session_id, remote_pty_session_id);
                 assert_eq!(data, b"hello");
+                // Forwarded, not regenerated: a consumer splices its prime
+                // against this, so a manager that dropped or recomputed it
+                // would silently make exactly-once impossible.
+                assert_eq!(*start_offset, Some(12));
             }
             other => panic!("expected SessionOutputChunk, got {other:?}"),
         }

@@ -306,6 +306,7 @@ async fn session_output_chunk_push_becomes_client_event() {
                 crate::proto::SessionOutputChunkPush {
                     remote_session_id: "session-abc".to_string(),
                     data: b"hello".to_vec(),
+                    start_offset: Some(0),
                 },
             )),
         },

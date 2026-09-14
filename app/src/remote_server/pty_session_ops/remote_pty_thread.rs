@@ -332,6 +332,9 @@ fn resolve_shell_starter(
     no_bootstrap: bool,
     bootstrap_session_id: Option<SessionId>,
 ) -> Result<ShellStarter, PtySessionOpError> {
+    // NB: `bootstrap_session_id` is used twice below -- once to decide whether a
+    // shell needing an out-of-band script can be bootstrapped at all, and once to
+    // rebind argv for the shells that carry their init there.
     let starter = if let Some(shell) = spec_shell {
         let (path, shell_type) = supported_shell_path_and_type(shell)
             .ok_or_else(|| PtySessionOpError::new(format!("unsupported shell: {shell}")))?;
@@ -371,7 +374,25 @@ fn resolve_shell_starter(
     let cannot_bootstrap =
         starter.needs_out_of_band_init_script() && bootstrap_session_id.is_none();
     if !no_bootstrap && !cannot_bootstrap {
-        return Ok(starter);
+        // Bind the shell's handshake to the id the *client* registered. This has
+        // to rebuild argv, not just the out-of-band script: bash, fish and
+        // PowerShell carry their init -- and the id inside it -- in their
+        // arguments, so supplying an id only to `init_script_stdin_writes` would
+        // fix zsh and leave those three emitting hooks against an id nothing
+        // knows. `DProtoHook::requires_registered_session` is true for every
+        // hook the bootstrap emits, so those sessions would render as bare
+        // shells with a warning per hook.
+        return Ok(match (starter, bootstrap_session_id) {
+            (ShellStarter::Direct(direct), Some(session_id)) => {
+                ShellStarter::Direct(direct.with_bootstrap_session_id(session_id))
+            }
+            // No id: `cannot_bootstrap` above already sent every shell that
+            // needs an out-of-band script down the plain path, so what reaches
+            // here is bash/fish/PowerShell keeping the id their starter minted.
+            // Their hooks will be rejected until a client supplies one -- the
+            // documented state of a daemon session today, not a new defect.
+            (starter, _) => starter,
+        });
     }
     if cannot_bootstrap && !no_bootstrap {
         log::info!(

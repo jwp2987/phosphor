@@ -259,6 +259,10 @@ impl EventLoop {
                 host_id: event_host,
                 remote_pty_session_id: event_session,
                 data,
+                // Ignored while this loop is live-only. It is what a prime from
+                // `ReattachSession` would splice against -- see `mod.rs`'s note
+                // on a session's first output.
+                start_offset: _,
             } => {
                 if is_for_session(event_host, event_session, &host_id, &session) {
                     event_loop.process_pty_bytes(data);

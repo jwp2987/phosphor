@@ -573,6 +573,15 @@ async fn spawn_and_settle(
             rows,
             cols,
             NO_BOOTSTRAP,
+            // `None` until this path registers an id with the `TerminalModel`
+            // that will render the session. The wire can carry one now
+            // (`SpawnSession.bootstrap_session_id`) and the daemon binds both
+            // argv and the init script to it, but registering has to happen on
+            // the model `create_model` builds -- which does not exist until
+            // after this response lands. Supplying an unregistered id would be
+            // worse than none: every hook the bootstrap emits would be rejected.
+            // Closing this is what flips `NO_BOOTSTRAP` to `false`.
+            None,
         )
         .await
     {

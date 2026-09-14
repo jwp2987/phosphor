@@ -186,15 +186,19 @@ pub enum ClientEvent {
     GitHubPrInfoPushReceived { push: GitHubPrInfoPush },
     /// The daemon pushed repository name/owner info for one of its repos.
     GitHubRepositoryInfoPushReceived { push: GitHubRepositoryInfoPush },
-    /// The daemon pushed a chunk of a remote pty session's output. Session-
-    /// ownership groundwork (`docs/design/moth-parliament.md`); no daemon
-    /// sends this yet.
+    /// The daemon pushed a chunk of a remote pty session's output
+    /// (`docs/design/moth-parliament.md`, "Scoping session ownership").
+    ///
+    /// `start_offset` is the stream position of `data[0]`, or `None` from a
+    /// daemon predating the field. A consumer that primes itself from
+    /// `ReattachSession` needs it to know which of its first live chunks the
+    /// prime already covered; with `None` it cannot tell, and must not prime.
     SessionOutputChunkReceived {
         remote_session_id: RemotePtySessionId,
         data: Vec<u8>,
+        start_offset: Option<u64>,
     },
     /// The daemon pushed notice that a remote pty session's process exited.
-    /// Session-ownership groundwork; no daemon sends this yet.
     SessionExitedReceived {
         remote_session_id: RemotePtySessionId,
         exit_code: Option<i32>,
@@ -770,16 +774,26 @@ impl RemoteServerClient {
         }
     }
 
-    // ── Remote pty sessions (groundwork; see `docs/design/moth-parliament.md`,
-    // "Scoping session ownership") ──────────────────────────────────────────
+    // ── Remote pty sessions (see `docs/design/moth-parliament.md`, "Scoping
+    // session ownership") ───────────────────────────────────────────────────
     // Ordinary host-scoped request/response, exactly like `discard_files` and
-    // `git_stage` above. No daemon handler exists yet for any of these; each
-    // call currently returns `ClientError::ServerError` with
-    // `ErrorCode::Internal` once the daemon side is stubbed in
-    // (`app/src/remote_server/server_model.rs`, outside this crate).
+    // `git_stage` above. Every one of these now has a daemon handler in
+    // `app/src/remote_server/server_model.rs` (outside this crate); an earlier
+    // version of this comment said none did, which was true only while the
+    // client half landed first.
 
     /// Starts a new pty-backed session on the remote host, identified by the
     /// client-minted `remote_session_id` (see `RemotePtySessionId`).
+    ///
+    /// `bootstrap_session_id` is the id this client has **already registered**
+    /// with the `TerminalModel` that will render the session, or `None` if it
+    /// cannot register one. Never invent a value: the daemon bakes it into the
+    /// shell's argv and its init script, and
+    /// `DProtoHook::requires_registered_session` is true for every hook the
+    /// bootstrap emits -- so an id no client knows makes the session render as a
+    /// bare shell with a rejected-hook warning for each one. `None` is the
+    /// honest answer, and the daemon responds to it by spawning a shell that
+    /// needs an out-of-band script plainly rather than half-bootstrapped.
     pub async fn spawn_session(
         &self,
         remote_session_id: RemotePtySessionId,
@@ -789,6 +803,7 @@ impl RemoteServerClient {
         rows: u32,
         cols: u32,
         no_bootstrap: bool,
+        bootstrap_session_id: Option<u64>,
     ) -> Result<(), ClientError> {
         let request_id = RequestId::new();
         let msg = ClientMessage::host_scoped(
@@ -801,6 +816,7 @@ impl RemoteServerClient {
                 rows,
                 cols,
                 no_bootstrap,
+                bootstrap_session_id,
             }),
         );
         let response = self.send_request(request_id, msg).await?;
@@ -1363,6 +1379,7 @@ impl RemoteServerClient {
                 Some(ClientEvent::SessionOutputChunkReceived {
                     remote_session_id: RemotePtySessionId::from(push.remote_session_id),
                     data: push.data,
+                    start_offset: push.start_offset,
                 })
             }
             server_message::Message::SessionExitedPush(push) => {

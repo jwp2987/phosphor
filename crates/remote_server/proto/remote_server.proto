@@ -421,6 +421,27 @@ message SpawnSession {
   // one place, `remote_pty_thread::resolve_shell_starter`, which is unix-only;
   // a daemon backend that spawns no process has nothing to honor.
   bool no_bootstrap = 7;
+  // The session id to bind this shell's InitShell handshake to, minted and
+  // registered by the *client* before this request is sent.
+  //
+  // Optional, and the optionality is load-bearing: proto3 would decode an absent
+  // scalar as `0`, which is a perfectly valid `SessionId` and would have the
+  // daemon bake a real-looking id into the shell's argv that no client has
+  // registered. Absent must mean "I cannot register one", not "id zero".
+  //
+  // **Why the client mints it.** The handshake is validated against ids the
+  // client's `TerminalModel` knows (`Processor::validate_hook_session_id`), and
+  // `DProtoHook::requires_registered_session` is true for every hook the
+  // bootstrap emits. A daemon-minted id cannot cross back -- nothing carries it
+  // -- so every hook would be rejected with a warning and the session would
+  // render as a bare shell with no block detection. With the client minting, it
+  // can register before anything is written back, which is the same ordering
+  // `TerminalManager::enqueue_init_script` relies on locally.
+  //
+  // Absent means the daemon must not half-bootstrap: see
+  // `remote_pty_thread::resolve_shell_starter`, which spawns such a shell
+  // plainly rather than with `--no-rcs` and no script.
+  optional uint64 bootstrap_session_id = 8;
 }
 
 message SpawnSessionError {
@@ -679,6 +700,22 @@ message AcknowledgeSessionOutput {
 message SessionOutputChunkPush {
   string remote_session_id = 1;
   bytes data = 2;
+  // Stream offset of `data[0]` -- the count of bytes this session had produced
+  // before this chunk.
+  //
+  // Exists so a client that *primes* from `ReattachSession` can splice the two
+  // sources without duplicating or dropping a byte. A newly attached client
+  // subscribes one round trip after the daemon starts pushing, so its first
+  // live chunks and the reattach payload overlap; with no offset on a push
+  // there is nothing to compare against `ReattachSessionSuccess.next_offset`
+  // and the overlap can only be guessed at. Same reasoning as
+  // `PeekedOutput::next_offset` in `remote_server::session_store`: a position
+  // in the stream is stable where a byte count is not.
+  //
+  // Optional so a daemon predating it is distinguishable from one reporting
+  // offset 0 -- a client that cannot tell those apart cannot prime safely and
+  // must fall back to live-only.
+  optional uint64 start_offset = 3;
 }
 
 // Server → client push: a session's process exited. The daemon stops

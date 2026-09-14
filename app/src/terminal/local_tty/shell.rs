@@ -635,6 +635,33 @@ impl DirectShellStarter {
         self
     }
 
+    /// Returns this starter rebuilt around `session_id` -- both the id it
+    /// reports and the id baked into its arguments.
+    ///
+    /// **Rebuilding the arguments is the whole point, and doing only half of
+    /// this is the trap.** `arguments_for_session_spawning_command` embeds the id
+    /// directly in argv for bash (`--rcfile`), fish (`--init-command`) and
+    /// PowerShell (`-EncodedCommand`); only zsh and MSYS2 receive theirs
+    /// out-of-band. So a caller that supplies an id to
+    /// [`ShellStarter::init_script_stdin_writes`] and stops there fixes zsh and
+    /// leaves the other three emitting hooks against an id nothing registered --
+    /// which is the state `requires_registered_session` rejects, silently, for
+    /// every hook.
+    ///
+    /// Used by the daemon, where the shell runs on one machine and the id must
+    /// be registered on another, so the id cannot be minted where the starter is
+    /// built.
+    #[cfg(unix)]
+    pub(crate) fn with_bootstrap_session_id(mut self, session_id: SessionId) -> Self {
+        self.args = arguments_for_session_spawning_command(
+            self.shell_path.to_string_lossy().as_ref(),
+            self.shell_type,
+            session_id,
+        );
+        self.session_id = session_id;
+        self
+    }
+
     pub fn shell_path(&self) -> &Path {
         &self.shell_path
     }

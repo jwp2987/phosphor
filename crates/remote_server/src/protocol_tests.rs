@@ -153,6 +153,7 @@ async fn round_trip_session_output_chunk_push() {
                 crate::proto::SessionOutputChunkPush {
                     remote_session_id: "session-abc".to_string(),
                     data: b"hello from the daemon".to_vec(),
+                    start_offset: Some(0),
                 },
             )),
         },

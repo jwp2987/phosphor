@@ -1825,10 +1825,11 @@ impl ServerModel {
                 // doc comment), so a stored copy could only ever disagree with
                 // the pty that is actually running.
                 no_bootstrap: msg.no_bootstrap,
-                // No wire field yet, and `None` is not a placeholder: it is the
-                // accurate statement that this daemon cannot tell a client which
-                // session id to register. See `PtySpawnSpec::bootstrap_session_id`.
-                bootstrap_session_id: None,
+                // Whatever the client minted and registered, or `None` if it
+                // could not -- in which case `resolve_shell_starter` spawns a
+                // shell needing an out-of-band script plainly rather than
+                // half-bootstrapped. See `PtySpawnSpec::bootstrap_session_id`.
+                bootstrap_session_id: msg.bootstrap_session_id.map(SessionId::from),
             };
             if let Err(error) = self.pty_ops.spawn(&id, &spec, ctx) {
                 // Don't leave a phantom entry registered for a pty that
@@ -2121,10 +2122,13 @@ impl ServerModel {
     /// arrives, so it broadcasts (`conn_id: None`) the same way
     /// `RepoMetadataUpdate` does above.
     fn handle_pty_session_output(&mut self, id: RemotePtySessionId, data: Vec<u8>) {
-        if self.session_store.append_output(&id, &data).is_err() {
-            log::warn!("Dropping pty output for unknown session {id}");
-            return;
-        }
+        let start_offset = match self.session_store.append_output(&id, &data) {
+            Ok(start_offset) => start_offset,
+            Err(_) => {
+                log::warn!("Dropping pty output for unknown session {id}");
+                return;
+            }
+        };
         // Note what this push deliberately does NOT do: advance the session's
         // acknowledged offset. A live client seeing this chunk has genuinely
         // received it, so it is tempting to treat a push as a delivery -- but
@@ -2143,6 +2147,10 @@ impl ServerModel {
             server_message::Message::SessionOutputChunkPush(SessionOutputChunkPush {
                 remote_session_id: id.into(),
                 data,
+                // Stamped from the store's own count rather than tracked here,
+                // so the offset a client splices on cannot drift from the
+                // offsets `ReattachSession` reports.
+                start_offset: Some(start_offset),
             }),
         );
     }

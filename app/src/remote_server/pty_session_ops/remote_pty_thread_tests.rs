@@ -775,3 +775,76 @@ fn a_shell_needing_an_init_script_is_spawned_plainly_without_a_session_id() {
         "given an id to bind the handshake to, zsh must get its real bootstrap back"
     );
 }
+
+// The crux of the client-minted bootstrap id, and the half that is easy to get
+// wrong: a supplied id must reach the shell's **argv**, not merely the starter's
+// `session_id()` field.
+//
+// bash, fish and PowerShell embed the id directly in their arguments -- bash via
+// `--rcfile <(echo <script>)`, and the script carries
+// `WARP_SESSION_ID=<id>`. Only zsh and MSYS2 receive theirs out-of-band. So an
+// implementation that stored the supplied id and left `args` alone would satisfy
+// every accessor, pass any test that only reads `session_id()`, and still leave
+// bash emitting every hook against the id its starter minted -- which
+// `DProtoHook::requires_registered_session` rejects for all of them, silently,
+// one warning per hook.
+//
+// Asserted on the id's digits appearing in argv, because that is the substitution
+// `init_shell_script_for_shell` actually performs
+// (`SESSION_ID_PLACEHOLDER` -> `session_id.as_u64().to_string()`).
+//
+// Breaks if: `with_bootstrap_session_id` stops rebuilding `args`, or
+// `resolve_shell_starter` stops calling it for a shell that carries its init in
+// argv.
+#[test]
+#[serial(remote_pty_thread_shell_env)]
+fn a_supplied_bootstrap_id_reaches_the_shells_arguments() {
+    let dir = tempfile::tempdir().expect("create temp dir");
+    let fake_bash = fake_shell_binary(dir.path(), "bash");
+    let shell = fake_bash.to_str().expect("temp path is utf-8");
+    let supplied = warp_core::SessionId::from(4_242_424_242_u64);
+
+    let ShellStarter::Direct(bound) = resolve_shell_starter(Some(shell), false, Some(supplied))
+        .expect("an explicitly named, resolvable shell must resolve")
+    else {
+        panic!("an explicitly named shell always resolves to ShellStarter::Direct");
+    };
+
+    assert_eq!(
+        bound.session_id(),
+        supplied,
+        "the starter must report the supplied id, not one it minted"
+    );
+
+    let argv = bound
+        .args()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        argv.contains(&supplied.as_u64().to_string()),
+        "the supplied id must be baked into argv, where bash actually reads it; got {argv:?}"
+    );
+
+    // And the paired negative: without one, the starter keeps its own minted id,
+    // so argv must NOT carry the supplied one. Without this, an implementation
+    // that ignored the parameter entirely could still pass above by coincidence
+    // only if it minted that exact u64 -- but more usefully, this pins that the
+    // no-id path is genuinely different rather than silently defaulting.
+    let ShellStarter::Direct(unbound) = resolve_shell_starter(Some(shell), false, None)
+        .expect("an explicitly named, resolvable shell must resolve")
+    else {
+        panic!("an explicitly named shell always resolves to ShellStarter::Direct");
+    };
+    let unbound_argv = unbound
+        .args()
+        .iter()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        !unbound_argv.contains(&supplied.as_u64().to_string()),
+        "with no id supplied the starter must use its own, not the one from another call"
+    );
+}

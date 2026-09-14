@@ -425,14 +425,24 @@ impl SessionStore {
     /// process's final output can still arrive after its exit is
     /// recorded, and the buffer's job is to hold output, not to police
     /// lifecycle ordering.
+    /// Appends `data` to a session's buffer, returning the stream offset of
+    /// `data[0]` -- the count of bytes this session had produced before it.
+    ///
+    /// The offset is returned rather than left to be read back because reading
+    /// it back is not cheap: the only other route is [`Self::peek_output`],
+    /// which clones every retained byte, and this is called once per pty chunk.
+    /// It exists so `handle_pty_session_output` can stamp the offset onto the
+    /// push it sends, which is what lets a client splice a `ReattachSession`
+    /// prime against its own live stream without duplicating or dropping bytes.
     pub fn append_output(
         &mut self,
         id: &RemotePtySessionId,
         data: &[u8],
-    ) -> Result<(), UnknownSession> {
+    ) -> Result<u64, UnknownSession> {
         let session = self.session_mut(id)?;
+        let start_offset = session.output.total_appended;
         session.output.append(data);
-        Ok(())
+        Ok(start_offset)
     }
 
     /// Records that a session has exited, storing the status outside the

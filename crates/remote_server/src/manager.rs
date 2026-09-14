@@ -451,6 +451,9 @@ pub enum RemoteServerManagerEvent {
         host_id: HostId,
         remote_pty_session_id: crate::pty_session_id::RemotePtySessionId,
         data: Vec<u8>,
+        /// Stream position of `data[0]`, or `None` from a daemon predating the
+        /// field -- see `ClientEvent::SessionOutputChunkReceived`.
+        start_offset: Option<u64>,
     },
     /// A remote pty session's process exited, as pushed by the daemon.
     SessionExited {
@@ -1784,11 +1787,13 @@ impl RemoteServerManager {
             ClientEvent::SessionOutputChunkReceived {
                 remote_session_id,
                 data,
+                start_offset,
             } => {
                 ctx.emit(RemoteServerManagerEvent::SessionOutputChunk {
                     host_id,
                     remote_pty_session_id: remote_session_id,
                     data,
+                    start_offset,
                 });
             }
             ClientEvent::SessionExitedReceived {
