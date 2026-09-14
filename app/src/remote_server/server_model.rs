@@ -1936,6 +1936,26 @@ impl ServerModel {
                         signal_killed: status.signal_killed,
                     }),
                 },
+                // The other two figures `SessionStore::list()` has always
+                // computed and this handler used to drop. Without them a client
+                // can list a detached session but cannot see that it is losing
+                // output -- the buffer is bounded, so a chatty detached session
+                // evicts silently and the dashboard reads identically whether
+                // nothing or four megabytes went missing.
+                //
+                // Always `Some` here: this daemon knows both numbers for every
+                // session it holds. `None` on the wire means only "the daemon
+                // that answered predates these fields", which is why they are
+                // `optional` -- see the field comments in the proto.
+                //
+                // `dropped_bytes_total` is the lifetime figure, and it is sent
+                // under that name on purpose. The per-gap "dropped while
+                // detached" number is `dropped_bytes_since_ack`, which comes
+                // from `peek_output` and is carried by `ReattachSessionSuccess`;
+                // `SessionSummary` has no per-client watermark to derive it
+                // from, so a listing cannot report it and must not pretend to.
+                buffered_bytes: Some(summary.buffered_bytes as u64),
+                dropped_bytes_total: Some(summary.dropped_bytes_total),
             })
             .collect();
         list_sessions_message(list_sessions_response::Result::Success(

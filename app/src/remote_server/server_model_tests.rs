@@ -2168,3 +2168,80 @@ fn reattaching_unknown_session_returns_the_wire_error() {
     };
     assert!(error.message.contains("ghost"));
 }
+
+// `SessionStore::list()` has always computed `buffered_bytes` and
+// `dropped_bytes_total`; `handle_list_sessions` used to map neither onto
+// `RemoteSessionSummary`, so a client could list a detached session but could
+// not see that it was losing output -- the buffer is bounded, so a chatty
+// detached session evicts silently and every listing read the same whether
+// nothing or four megabytes had gone missing.
+//
+// The second half of this test is the reason the wire carries the LIFETIME
+// figure under that name and not the design doc's "N KiB dropped while
+// detached". The two numbers diverge the moment a client acknowledges: the gap
+// figure resets and the lifetime total does not. A listing has no per-client
+// watermark to derive the gap from, so it reports the total, and anything that
+// labelled the total as a gap would over-report by the session's whole history.
+//
+// Breaks if: either field is dropped on the way onto the wire again, sent as a
+// hardcoded `None` (which is what dropping them amounted to), or populated from
+// `dropped_bytes_since_ack` instead of `dropped_bytes_total`.
+#[test]
+fn list_sessions_reports_buffer_pressure_as_a_lifetime_total() {
+    let mut model = test_model();
+    model.session_store = SessionStore::with_output_bound(4);
+    let id = RemotePtySessionId::from("chatty".to_string());
+    model
+        .session_store
+        .register(id.clone(), reattach_test_metadata());
+    model.session_store.append_output(&id, b"abcdefgh").unwrap(); // drops 4, buffers "efgh"
+
+    let listed = model.handle_list_sessions();
+    let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+        panic!("expected ListSessionsResponse");
+    };
+    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+        panic!("expected ListSessions success");
+    };
+    let summary = &success.sessions[0];
+    assert_eq!(
+        summary.buffered_bytes,
+        Some(4),
+        "the daemon is holding \"efgh\""
+    );
+    assert_eq!(
+        summary.dropped_bytes_total,
+        Some(4),
+        "\"abcd\" was evicted by the bound and must be visible as lost"
+    );
+
+    // Acknowledge everything appended so far. The client now provably has it,
+    // so the per-gap figure goes to zero -- and the lifetime total does not.
+    model.session_store.acknowledge_output(&id, 8).unwrap();
+    let peeked = model.session_store.peek_output(&id).unwrap();
+    assert_eq!(
+        peeked.dropped_bytes_since_ack, 0,
+        "an acknowledgement closes the gap the client never received"
+    );
+
+    let listed = model.handle_list_sessions();
+    let server_message::Message::ListSessionsResponse(listed) = listed.into_message() else {
+        panic!("expected ListSessionsResponse");
+    };
+    let Some(list_sessions_response::Result::Success(success)) = listed.result else {
+        panic!("expected ListSessions success");
+    };
+    let summary = &success.sessions[0];
+    assert_eq!(
+        summary.dropped_bytes_total,
+        Some(4),
+        "the listing carries the lifetime total, which no acknowledgement resets -- if this \
+         ever tracked the gap figure it would now read 0 and the loss would vanish from the \
+         dashboard"
+    );
+    assert_eq!(
+        summary.buffered_bytes,
+        Some(0),
+        "the acknowledged bytes were discarded, so the daemon is holding nothing"
+    );
+}

@@ -12,6 +12,54 @@
 //! groups: a service is rarely one machine"), and partial-failure handling across a group's
 //! install/upgrade is an open decision this pane does not attempt to resolve.
 //!
+//! ## The one exception: forgetting exited sessions
+//!
+//! [`ReapAffordance`] puts a control on this pane, which the rule above otherwise forbids.
+//! It is admitted because it is not an action on a host. Installing, upgrading or removing
+//! the remote server changes what a machine *is*; forgetting an exited session discards a
+//! record -- an id, an exit status and a stale output buffer -- that the daemon is keeping
+//! only so a client can read it, and that this pane is displaying at the moment the control
+//! is clicked. The host is not touched, no process starts or stops, and nothing that was
+//! running is affected. It clears the screen of something the user is already looking at.
+//!
+//! It exists because the alternative is worse: `ForgetSession` is the only thing that removes
+//! a session record (`SessionStore::remove`'s only other caller is the spawn-failure
+//! rollback), so without a caller every session a daemon has ever run stays in every listing
+//! for the daemon's lifetime, and this pane renders an ever-growing wall of dead rows with no
+//! way to clear them.
+//!
+//! **Exited sessions only, and the daemon agrees.** `handle_forget_session`
+//! (`app/src/remote_server/server_model.rs`) refuses a running session -- "session {id} is
+//! still running; signal it to exit before forgetting it" -- because forgetting one would
+//! leave the daemon holding a pty and a child with no record that it owns them. So
+//! [`reap_affordance`] counts only sessions the listing reports as exited, and the control
+//! never names a running one. Offering a button the daemon will reject is worse than offering
+//! none.
+//!
+//! **Why "forget all exited on this host" rather than one button per row.** Three reasons,
+//! in order of weight:
+//!
+//! 1. A per-row control has to be absent or disabled on every running row, so the column
+//!    becomes a mix of rows that offer an action and rows that do not, and a reader has to
+//!    work out which rule is in play. One control per host cannot be pointed at a running
+//!    session at all: the set it acts on is defined by [`exited_session_ids`], not by where
+//!    the pointer happens to be.
+//! 2. The user's intention is "clear the dead records", not "clear session 9f1c". Dead
+//!    sessions accumulate as a class -- a host up for a week has dozens -- and one intention
+//!    should not cost N clicks.
+//! 3. The label states the count before the click ("Forget 3 exited sessions"), so the blast
+//!    radius is visible, and it can only ever be sessions this pane is already showing as
+//!    finished.
+//!
+//! The cost, stated plainly: forgetting an exited session also discards whatever output the
+//! daemon still had buffered for it, for every session in the batch. Today nothing in `app`
+//! can read that -- `RemoteServerClient::reattach_session` has no caller here, which was
+//! checked rather than assumed -- so the batch destroys nothing a user could otherwise reach.
+//! That is what makes the bulk affordance safe *now*. If reattach-to-an-exited-session lands
+//! (`terminal/remote_server_tty/mod.rs` lists it as a later increment), an exited session's
+//! buffer becomes readable and this trade should be revisited then, not assumed to still
+//! hold.
+//!
 //! # Re-probing on open
 //!
 //! `docs/design/moth-parliament.md` decides that this pane re-probes on open rather than
@@ -67,23 +115,47 @@
 //! running/exited/signalled -- a signalled process has no exit code of its own,
 //! so it never renders a fabricated `0`.
 //!
-//! **What this pane does not show, on purpose.** `SessionStore::list()` computes
-//! buffered- and dropped-byte figures per session, but `handle_list_sessions`
-//! does not put them on the wire: [`RemoteSessionSummary`] carries no such
-//! field. Rendering a dropped-bytes column would mean inventing the number, so
-//! there is none. Adding one is a protocol change, not a pane change.
+//! [`session_buffer_label`] renders the buffer-pressure figures
+//! [`RemoteSessionSummary`] now carries. `SessionStore::list()` always computed
+//! them; until the protocol change that added fields 7 and 8 they were dropped
+//! in `handle_list_sessions`, so a detached session could be losing output and
+//! this pane read identically either way.
+//!
+//! **Which dropped figure, and why it is not the one the design doc names.**
+//! The wire carries `dropped_bytes_total`, the session's lifetime eviction
+//! count, and that is what this pane shows -- under the words "dropped in
+//! total", never "dropped while detached". The "N KiB dropped while detached"
+//! figure from `docs/design/moth-parliament.md` is a different number,
+//! `dropped_bytes_since_ack`: the span between what a client has acknowledged
+//! and the oldest byte still buffered, which resets when an acknowledgement
+//! closes it. `SessionSummary` cannot produce it -- `SessionStore::list()` reads
+//! no per-client watermark -- so `ListSessions` cannot report it, and only
+//! `ReattachSessionSuccess` does. `PeekedOutput`'s field docs in
+//! `session_store.rs` are explicit that the lifetime figure "is the wrong number
+//! to show next to a specific reattach"; labelling it as a detached gap here
+//! would be exactly that mistake, so the label says what the number is.
+//!
+//! A missing figure is not a zero. Both fields are `optional` on the wire, so a
+//! daemon built before they existed reports neither, and
+//! [`session_buffer_label`] says "not reported" rather than rendering the `0` a
+//! bare proto3 scalar would have decoded that silence into.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use remote_server::proto::{RemoteSessionExit, RemoteSessionSummary};
 use remote_server::setup::UnsupportedReason;
+use warp_core::HostId;
 use warp_core::ui::appearance::Appearance;
 use warpui::{
     AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
     ViewHandle,
     elements::{
         Align, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox, Container, Flex,
-        MainAxisSize, ParentElement, ScrollbarWidth, Text,
+        MainAxisSize, MouseStateHandle, ParentElement, ScrollbarWidth, Text,
     },
+    ui_components::{button::ButtonVariant, components::UiComponent},
 };
 
 use crate::{
@@ -93,7 +165,8 @@ use crate::{
         HostGroup, HostInstallState, HostRegistryModel, RemoteHostEntry,
     },
     remote_server::remote_sessions_model::{
-        HostSessionsDisplay, RemoteSessionsModel, host_sessions_display,
+        HostSessionsDisplay, ReapState, RemoteSessionsModel, exited_session_ids,
+        host_sessions_display,
     },
     util::time_format::format_approx_duration_from_now_utc,
 };
@@ -276,14 +349,70 @@ pub(crate) fn session_run_label(state: &SessionRunState) -> String {
     }
 }
 
+/// Renders a byte count for a person.
+///
+/// Binary units, because every number it will ever be handed is measured
+/// against a binary bound: `DEFAULT_OUTPUT_BUFFER_BYTES` is `256 * 1024` and
+/// `session_store.rs` calls that "256 KiB". Rendering a 256 KiB buffer as
+/// "262.1 KB" would invite the reader to compare it against a bound written in
+/// the other base. (`settings_view/about_page/autoupdate_ui.rs` has a similar
+/// helper in decimal-ish `KB`/`MB`; it is private, it rounds KB to whole units,
+/// and it is describing download sizes rather than a ring buffer, so it is the
+/// wrong one to reach for even if it were reachable.)
+pub(crate) fn format_byte_count(bytes: u64) -> String {
+    const KIB: f64 = 1024.0;
+    const MIB: f64 = 1024.0 * 1024.0;
+    let b = bytes as f64;
+    if b >= MIB {
+        format!("{:.1} MiB", b / MIB)
+    } else if b >= KIB {
+        format!("{:.1} KiB", b / KIB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
+/// How much output the daemon is holding for one session, and how much it has
+/// had to throw away.
+///
+/// Three rules, each with a way of being wrong that this exists to prevent:
+///
+/// * **The dropped figure is named as a lifetime total, never as a gap.** It is
+///   `dropped_bytes_total`, and the "N KiB dropped while detached" number is
+///   `dropped_bytes_since_ack`, which `ListSessions` does not carry and cannot
+///   derive -- see the module docs. Any wording here that implies "since you
+///   detached" would over-report, by exactly the whole history of the session.
+/// * **`None` is not zero.** A daemon that predates these fields reports
+///   neither, which is why they are `optional` on the wire; saying "0 B
+///   dropped" for a daemon that never told us would be a measurement nobody
+///   made.
+/// * **`Some(0)` gets no clause at all.** A dropped-byte figure is only
+///   interesting when it is non-zero, and "0 B dropped in total" on every
+///   healthy session is noise that trains the reader to skip the field. The
+///   absence of the clause is unambiguous precisely because the unknown case
+///   above says something instead of nothing.
+pub(crate) fn session_buffer_label(buffered: Option<u64>, dropped_total: Option<u64>) -> String {
+    let buffered = match buffered {
+        Some(bytes) => format!("buffered {}", format_byte_count(bytes)),
+        None => "buffered not reported".to_string(),
+    };
+    match dropped_total {
+        None => format!("{buffered}, dropped not reported"),
+        Some(0) => buffered,
+        Some(dropped) => format!(
+            "{buffered}, {} dropped in total",
+            format_byte_count(dropped)
+        ),
+    }
+}
+
 /// One display line for a single session under its host.
 ///
-/// Shows only fields [`RemoteSessionSummary`] actually carries: id, run state,
-/// cwd, shell and size. See the module docs for why there is no dropped-bytes
-/// column.
+/// Shows the fields [`RemoteSessionSummary`] carries: id, run state, cwd, shell,
+/// size, and the buffer-pressure figures via [`session_buffer_label`].
 pub(crate) fn session_row_text(summary: &RemoteSessionSummary) -> String {
     format!(
-        "        {id} \u{2014} {state} \u{2014} {cwd} \u{2014} {shell} \u{2014} {rows}x{cols}",
+        "        {id} \u{2014} {state} \u{2014} {cwd} \u{2014} {shell} \u{2014} {rows}x{cols} \u{2014} {buffer}",
         id = summary.remote_session_id,
         state = session_run_label(&session_run_state(summary.exit.as_ref())),
         cwd = summary.cwd,
@@ -292,6 +421,7 @@ pub(crate) fn session_row_text(summary: &RemoteSessionSummary) -> String {
         shell = summary.shell.as_deref().unwrap_or("shell not reported"),
         rows = summary.rows,
         cols = summary.cols,
+        buffer = session_buffer_label(summary.buffered_bytes, summary.dropped_bytes_total),
     )
 }
 
@@ -340,6 +470,102 @@ pub(crate) fn host_sessions_checked_at(display: &HostSessionsDisplay<'_>) -> Opt
     }
 }
 
+/// Whether this pane should offer to forget a host's exited sessions, and what
+/// the control should say.
+///
+/// See the module docs' "The one exception" for why this pane has a control at
+/// all and why it is per host rather than per row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReapAffordance {
+    /// No control. Either there is nothing this pane has been *told* is exited,
+    /// or it has no listing to take that from.
+    Hidden,
+    /// Offer to forget `count` exited sessions -- the count is stated on the
+    /// control so the blast radius is visible before the click.
+    Offer { count: usize },
+    /// A reap of `count` sessions is already running. The control is replaced,
+    /// not merely disabled, so a second click cannot start an overlapping reap
+    /// over the same ids.
+    Working { count: usize },
+}
+
+/// Decides the reap control from what the pane already knows.
+///
+/// `NotConnected` wins over everything, the same precedence
+/// `host_sessions_display` applies: a host with no live client has nothing that
+/// could carry a `ForgetSession`, so offering to send one would be a control
+/// that cannot work. `Loading`, `NeverFetched` and `Failed` are `Hidden` for a
+/// plainer reason -- there is no listing, so there is no set of exited ids, so
+/// there is no number to put on a button.
+///
+/// The count comes from [`exited_session_ids`], which is also what
+/// `RemoteSessionsModel::forget_exited_sessions` sends. One function, so the
+/// number on the control and the set on the wire cannot drift apart.
+pub(crate) fn reap_affordance(
+    display: &HostSessionsDisplay<'_>,
+    reap: Option<&ReapState>,
+) -> ReapAffordance {
+    if matches!(display, HostSessionsDisplay::NotConnected) {
+        return ReapAffordance::Hidden;
+    }
+    if let Some(ReapState::InFlight { count }) = reap {
+        return ReapAffordance::Working { count: *count };
+    }
+    let HostSessionsDisplay::Fetched { sessions, .. } = display else {
+        return ReapAffordance::Hidden;
+    };
+    match exited_session_ids(sessions).len() {
+        0 => ReapAffordance::Hidden,
+        count => ReapAffordance::Offer { count },
+    }
+}
+
+/// The control's own text. Says the count, and says "exited", because those are
+/// the two things that bound what clicking it will do.
+pub(crate) fn reap_button_label(count: usize) -> String {
+    if count == 1 {
+        "Forget 1 exited session".to_string()
+    } else {
+        format!("Forget {count} exited sessions")
+    }
+}
+
+/// What stands in for the control while a reap is running.
+pub(crate) fn reap_working_label(count: usize) -> String {
+    if count == 1 {
+        "Forgetting 1 exited session\u{2026}".to_string()
+    } else {
+        format!("Forgetting {count} exited sessions\u{2026}")
+    }
+}
+
+/// The line shown when the last reap did not forget everything it was asked to.
+///
+/// `None` for every other state, including a reap that succeeded: the refreshed
+/// listing is the evidence for that one, and a second announcement of it could
+/// only ever disagree with the rows.
+///
+/// A failure has to say something, because the sessions are still listed either
+/// way -- silence would make a reap the daemon rejected look exactly like a
+/// click that did nothing.
+pub(crate) fn reap_error_label(reap: Option<&ReapState>) -> Option<String> {
+    match reap {
+        Some(ReapState::Failed { reason, .. }) => Some(format!("Forget failed: {reason}")),
+        Some(ReapState::InFlight { .. }) | None => None,
+    }
+}
+
+/// When the failure behind [`reap_error_label`] happened, if there is one.
+/// Separated from the label for the same reason [`host_sessions_checked_at`] is
+/// separated from [`host_sessions_label`]: the label stays free of wall-clock
+/// time and so stays deterministic under test.
+pub(crate) fn reap_failed_at(reap: Option<&ReapState>) -> Option<DateTime<Utc>> {
+    match reap {
+        Some(ReapState::Failed { failed_at, .. }) => Some(*failed_at),
+        Some(ReapState::InFlight { .. }) | None => None,
+    }
+}
+
 /// One display line for a group row: its name and its current membership. Never offers a
 /// session affordance -- a group is a query target, not something `ssh` can open a shell on
 /// (`docs/design/moth-parliament.md`, "Host groups").
@@ -361,6 +587,20 @@ pub struct RemoteHostsView {
     /// a singleton, so it dies with the tab -- see the module docs' "Sessions"
     /// section and the model's own "Why this is a per-pane model".
     sessions: ModelHandle<RemoteSessionsModel>,
+    /// Hover/press state for each host's "forget exited sessions" control.
+    ///
+    /// `RefCell` because `View::render` takes `&self` and the set of hosts is
+    /// not known until it runs -- the same shape
+    /// `ai/blocklist/agent_view/orchestration_pill_bar.rs` and
+    /// `settings_view/privacy_page.rs` use for per-row controls over a list
+    /// that is built at render time.
+    ///
+    /// This is hover state, not state about another machine: it holds nothing
+    /// the pane would render as a claim, so keeping it across a disconnect
+    /// breaks none of the rules in the module docs. Entries for hosts that have
+    /// gone away are inert -- a `MouseStateHandle` nothing draws is never
+    /// updated -- and the map dies with the tab like everything else here.
+    reap_button_states: RefCell<HashMap<HostId, MouseStateHandle>>,
 }
 
 impl RemoteHostsView {
@@ -407,6 +647,7 @@ impl RemoteHostsView {
             focus_handle: None,
             clipped_scroll_state: Default::default(),
             sessions,
+            reap_button_states: Default::default(),
         }
     }
 
@@ -487,6 +728,59 @@ impl RemoteHostsView {
             appearance.ui_font_body(),
         )
         .with_color(color.into())
+        .finish()
+    }
+
+    /// The "forget N exited sessions" control for one host.
+    ///
+    /// Dispatches [`RemoteHostsAction::ForgetExitedSessions`] and nothing else:
+    /// the set of ids is re-read from the model when the action is handled,
+    /// rather than captured here, so a listing that changed between the paint
+    /// and the click cannot make this forget something the button was not
+    /// offering.
+    fn render_reap_button(
+        &self,
+        host_id: &HostId,
+        count: usize,
+        appearance: &Appearance,
+    ) -> Box<dyn Element> {
+        let mouse_state = self
+            .reap_button_states
+            .borrow_mut()
+            .entry(host_id.clone())
+            .or_default()
+            .clone();
+        let host_id = host_id.clone();
+        Container::new(
+            ConstrainedBox::new(
+                appearance
+                    .ui_builder()
+                    .button(ButtonVariant::Text, mouse_state)
+                    .with_text_label(reap_button_label(count))
+                    .build()
+                    .on_click(move |ctx, _, _| {
+                        ctx.dispatch_typed_action(RemoteHostsAction::ForgetExitedSessions {
+                            host_id: host_id.clone(),
+                        });
+                    })
+                    .finish(),
+            )
+            .with_max_width(260.)
+            .finish(),
+        )
+        .with_margin_left(16.)
+        .finish()
+    }
+
+    /// A de-emphasized line under a host: the in-progress replacement for the
+    /// reap control, or the reason the last reap did not finish.
+    fn render_reap_note(&self, text: String, appearance: &Appearance) -> Box<dyn Element> {
+        Text::new(
+            format!("    {text}"),
+            appearance.ui_font_family(),
+            appearance.ui_font_body(),
+        )
+        .with_color(appearance.theme().disabled_ui_text_color().into())
         .finish()
     }
 
@@ -577,6 +871,37 @@ impl View for RemoteHostsView {
                         col.add_child(self.render_session_row(summary, appearance));
                     }
                 }
+
+                // The reap control and its aftermath. A host with no resolved
+                // `host_id` has nothing to key either on, and by the same
+                // reasoning as above it reads as not connected -- so it gets
+                // neither.
+                let reap = host
+                    .host_id
+                    .as_ref()
+                    .and_then(|host_id| sessions.reap_state(host_id));
+                if let Some(host_id) = host.host_id.as_ref() {
+                    match reap_affordance(&display, reap) {
+                        ReapAffordance::Hidden => {}
+                        ReapAffordance::Offer { count } => {
+                            col.add_child(self.render_reap_button(host_id, count, appearance));
+                        }
+                        ReapAffordance::Working { count } => {
+                            col.add_child(
+                                self.render_reap_note(reap_working_label(count), appearance),
+                            );
+                        }
+                    }
+                }
+                if let Some(mut text) = reap_error_label(reap) {
+                    if let Some(failed_at) = reap_failed_at(reap) {
+                        text.push_str(&format!(
+                            " ({} ago)",
+                            format_approx_duration_from_now_utc(failed_at)
+                        ));
+                    }
+                    col.add_child(self.render_reap_note(text, appearance));
+                }
             }
         }
 
@@ -611,10 +936,33 @@ impl View for RemoteHostsView {
     }
 }
 
-impl TypedActionView for RemoteHostsView {
-    type Action = ();
+/// The one action this pane can dispatch. See the module docs' "The one
+/// exception" for why a read-and-display pane has one at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RemoteHostsAction {
+    /// Forget every session `host_id`'s daemon currently reports as exited.
+    ///
+    /// Carries the host, not the session ids. The ids are re-read from
+    /// `RemoteSessionsModel` when this is handled, so a listing that was
+    /// refreshed between the paint and the click decides what is forgotten --
+    /// ids captured at paint time could name a session that has since been
+    /// forgotten by someone else, or miss one that has since exited.
+    ForgetExitedSessions { host_id: HostId },
+}
 
-    fn handle_action(&mut self, _action: &(), _ctx: &mut ViewContext<Self>) {}
+impl TypedActionView for RemoteHostsView {
+    type Action = RemoteHostsAction;
+
+    fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
+        match action {
+            RemoteHostsAction::ForgetExitedSessions { host_id } => {
+                let host_id = host_id.clone();
+                self.sessions.update(ctx, |sessions, ctx| {
+                    sessions.forget_exited_sessions(host_id, ctx);
+                });
+            }
+        }
+    }
 }
 
 impl BackingView for RemoteHostsView {

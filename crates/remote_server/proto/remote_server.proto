@@ -539,6 +539,31 @@ message RemoteSessionSummary {
   // client could enumerate sessions but not tell a live one from a dead one:
   // the reattach and hosts-dashboard surfaces both need exactly that.
   RemoteSessionExit exit = 6;
+  // How many bytes of this session's output the daemon is holding right now,
+  // and how many it has had to evict since the session was registered.
+  // Corresponds to `remote_server::session_store::SessionSummary`'s
+  // `buffered_bytes` / `dropped_bytes_total`, which `SessionStore::list()` has
+  // always computed and `handle_list_sessions` used to throw away -- so a
+  // client could not see that a detached session was losing output.
+  //
+  // `dropped_bytes_total` is the session's LIFETIME eviction count, and is
+  // deliberately not the "N KiB dropped while detached" figure. That one is
+  // `ReattachSessionSuccess.dropped_bytes_since_ack` above: the span between
+  // what a client has acknowledged and the oldest byte still buffered, which
+  // resets when an acknowledgement closes it. `SessionSummary` does not carry
+  // it -- `list()` reads no per-client watermark -- so a listing cannot report
+  // it, and a listing that labelled the lifetime total as a detached gap would
+  // over-report every time. See `PeekedOutput`'s field docs in
+  // `session_store.rs`, which are emphatic that the two must not be swapped.
+  //
+  // `optional`, not bare scalars, so absence stays distinguishable from zero.
+  // A daemon built before these fields existed sends neither, and under proto3
+  // a bare `uint64` would decode that silence as a confident `0` -- "this
+  // session is buffering nothing and has lost nothing", a claim about another
+  // machine that nothing observed. A client can and does outlive the daemon
+  // build installed on a host, so that skew is real, not hypothetical.
+  optional uint64 buffered_bytes = 7;
+  optional uint64 dropped_bytes_total = 8;
 }
 
 message ListSessionsSuccess {
