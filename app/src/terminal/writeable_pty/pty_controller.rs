@@ -667,9 +667,21 @@ impl<T: EventLoopSender> PtyController<T> {
         );
     }
 
-    /// Shuts down the pty and event loop.
-    pub fn shutdown_pty(&mut self, ctx: &mut ModelContext<Self>) {
-        self.send_message_to_event_loop(Message::Shutdown, ctx);
+    /// Ends the process on the far end of the pty, then stops the event loop.
+    ///
+    /// [`Message::Kill`] and not [`Message::Shutdown`], which is the audit
+    /// recorded in `terminal_manager_util`'s `PtyIntent::ShutdownPty` arm: every
+    /// caller that reaches a controller asks for this because it has decided the
+    /// shell must stop, not because it is going away. The indiscriminate
+    /// going-away teardown does not come through here at all -- it is
+    /// `local_tty::TerminalManager::shutdown_event_loop`, driven by `Drop`, which
+    /// still sends a bare `Shutdown`.
+    ///
+    /// Locally the two are one act (the event loop reaps its own child either
+    /// way); the distinction exists for a daemon-owned session, which survives a
+    /// `Shutdown` and dies on a `Kill`.
+    pub fn kill_pty(&mut self, ctx: &mut ModelContext<Self>) {
+        self.send_message_to_event_loop(Message::Kill, ctx);
     }
 
     /// Sends a message to the event loop thread requesting a PTY write for the given `bytes`.

@@ -158,3 +158,59 @@ fn rejected_queued_in_band_start_is_cancelled_without_writing_bytes() {
         drop(model_events_tx);
     });
 }
+
+// `kill_pty` is the *only* route from a controller to the event loop's teardown,
+// and which of the two teardown messages it sends is invisible locally: on a
+// local pty `Shutdown` and `Kill` both end the event loop, which then reaps the
+// child, so no local terminal would behave differently either way. It is visible
+// on a daemon-owned session, where a bare `Shutdown` is a detach -- the shell the
+// caller asked to stop keeps running and comes back after an autoupdate relaunch,
+// which is the exact failure the two-variant split exists to fix.
+//
+// Breaks if: `kill_pty` reverts to `Message::Shutdown`, or grows a condition that
+// swallows the message entirely.
+#[test]
+fn kill_pty_sends_kill_and_not_a_bare_shutdown() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.kill_pty(ctx);
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(
+            messages.len(),
+            1,
+            "kill_pty should send exactly one message: {messages:?}"
+        );
+        assert!(
+            matches!(messages[0], Message::Kill),
+            "kill_pty must ask for the process to end, not merely for this side to \
+             let go: {:?}",
+            messages[0]
+        );
+        drop(messages);
+
+        drop(model_events_tx);
+    });
+}

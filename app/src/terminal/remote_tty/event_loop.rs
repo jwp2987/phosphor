@@ -150,7 +150,29 @@ impl EventLoop {
                             };
                         }
                         // TODO(alokedesai): Implement shutdown on the network backed PTY.
-                        EventLoopMessage::Shutdown | EventLoopMessage::ChildExited => {}
+                        // Unchanged: a going-away shutdown is still dropped.
+                        EventLoopMessage::Shutdown => {}
+                        // Deliberately not folded in with `Shutdown` above.
+                        // For this transport the two are different requests --
+                        // a caller sending `Kill` has decided the shell must
+                        // stop, and dropping that is a user-visible failure
+                        // rather than a no-op -- so it is logged where a
+                        // shutdown is not. It is still dropped: the
+                        // ssh-proxy-server websocket protocol carries stdin and
+                        // window-size changes and nothing else, and closing the
+                        // socket as a substitute would rest on an unverified
+                        // assumption about what the proxy then does with the
+                        // pty. The gap is recorded rather than guessed at.
+                        // TODO: give this transport a kill route.
+                        EventLoopMessage::Kill => {
+                            log::warn!(
+                                "kill requested for a network-backed PTY; this transport has no \
+                                 kill route, so the remote shell keeps running"
+                            );
+                        }
+                        // Windows-only, and about a child of *this* process.
+                        // A network-backed PTY has none, so this never arrives.
+                        EventLoopMessage::ChildExited => {}
                     }
                 }
             })

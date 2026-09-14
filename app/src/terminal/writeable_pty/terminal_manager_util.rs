@@ -63,9 +63,27 @@ pub fn wire_up_pty_controller_with_surface<T: EventLoopSender, S: TerminalSurfac
             // that adds interrupt support would wire it here).
             #[cfg(not(target_family = "wasm"))]
             PtyIntent::Interrupt => {}
+            // Audited as a *kill*, not a going-away teardown, and the name is
+            // older than the distinction. Both emitters of this intent are
+            // `TerminalView::shutdown_pty`, and both have decided the shell must
+            // stop: the autoupdate path in `terminal/view.rs` ("terminate this
+            // shell session so that it doesn't come back when we restore
+            // sessions after the relaunch"), and `workspace/view.rs`'s
+            // `remove_tab`, which sends it only for panes whose active block
+            // `is_active_and_long_running()` -- a guard that selects panes by
+            // *having a running process*, and whose panes are detached
+            // `HiddenForClose` and so stay alive, meaning `Drop` does not run
+            // and this is not redundant teardown. The indiscriminate teardown
+            // has its own route and does not pass through here:
+            // `local_tty::TerminalManager::shutdown_event_loop` sends a bare
+            // `Message::Shutdown` from `Drop`.
+            //
+            // Renaming the intent to match would mean editing
+            // `terminal_surface.rs` and every surface that projects it, which
+            // this increment does not own; the mapping is stated here instead.
             PtyIntent::ShutdownPty => {
                 controller.update(ctx, |controller, ctx| {
-                    controller.shutdown_pty(ctx);
+                    controller.kill_pty(ctx);
                 });
             }
             PtyIntent::WriteBytes(bytes) => {
