@@ -24,6 +24,7 @@ use std::thread::JoinHandle;
 use mio::{Events, Interest, Poll, Token, Waker};
 use remote_server::RemotePtySessionId;
 use remote_server::session_store::SessionExitStatus;
+use warp_core::SessionId;
 use warpui::AppContext;
 
 use crate::terminal::SizeInfo;
@@ -152,7 +153,11 @@ impl LiveSession {
         ctx: &mut AppContext,
         events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>,
     ) -> Result<Self, PtySessionOpError> {
-        let shell_starter = resolve_shell_starter(spec.shell.as_deref(), spec.no_bootstrap)?;
+        let shell_starter = resolve_shell_starter(
+            spec.shell.as_deref(),
+            spec.no_bootstrap,
+            spec.bootstrap_session_id,
+        )?;
         Self::spawn_with_shell_starter(id, shell_starter, spec, ctx, events_tx)
     }
 
@@ -171,6 +176,13 @@ impl LiveSession {
         ctx: &mut AppContext,
         events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>,
     ) -> Result<Self, PtySessionOpError> {
+        // Computed here because `shell_starter` moves into `PtyOptions` below.
+        let init_script_writes = session_init_script_writes(
+            &shell_starter,
+            spec.no_bootstrap,
+            spec.bootstrap_session_id,
+        );
+
         let options = PtyOptions {
             size: SizeInfo::new_without_font_metrics(spec.rows as usize, spec.cols as usize),
             window_id: None,
@@ -247,11 +259,22 @@ impl LiveSession {
                 PtySessionOpError::new(format!("failed to spawn pty reader thread: {err}"))
             })?;
 
-        Ok(Self {
+        let session = Self {
             commands,
             pid,
             thread,
-        })
+        };
+
+        // Queued as this session's first stdin writes, before the handle
+        // reaches any caller -- so nothing a client sends can get in front of
+        // the bootstrap. `TerminalManager::enqueue_init_script` has the same
+        // ordering guarantee by construction: it writes into the event loop's
+        // channel before the pty is even created.
+        for write in init_script_writes {
+            session.write_stdin(write);
+        }
+
+        Ok(session)
     }
 
     pub(super) fn write_stdin(&self, data: Vec<u8>) {
@@ -307,6 +330,7 @@ impl LiveSession {
 fn resolve_shell_starter(
     spec_shell: Option<&str>,
     no_bootstrap: bool,
+    bootstrap_session_id: Option<SessionId>,
 ) -> Result<ShellStarter, PtySessionOpError> {
     let starter = if let Some(shell) = spec_shell {
         let (path, shell_type) = supported_shell_path_and_type(shell)
@@ -323,8 +347,37 @@ fn resolve_shell_starter(
             })?
     };
 
-    if !no_bootstrap {
+    // Stripped for two different reasons that reach the same place.
+    //
+    // The first is the request: `no_bootstrap` asked for a plain shell.
+    //
+    // The second is capability, and it is the one that took a refutation pass to
+    // see. A shell needing an out-of-band init script
+    // (`ShellStarter::needs_out_of_band_init_script`) is given `--no-rcs` in
+    // argv, suppressing the user's own startup files on the promise that the
+    // script will arrive and complete a handshake. That handshake is only
+    // answered if the *client* has registered the same session id with its
+    // `TerminalModel` -- and this daemon has no way to tell it one: nothing
+    // carries an id on the wire, and `SpawnSessionSuccess` is empty. So with no
+    // `bootstrap_session_id` in hand, queueing the script would leave zsh with
+    // neither the user's configuration nor Warp's, and with `ZLE` disabled by
+    // the script's first line and re-enabled only by a body that never arrives
+    // -- strictly worse than not bootstrapping at all.
+    //
+    // Spawning plainly instead gives the user a working shell reading their own
+    // `~/.zshrc`, which is what "the daemon cannot bootstrap this shell" should
+    // look like. When the client seam can supply an id, passing one here turns
+    // the real bootstrap back on with no change to this rule.
+    let cannot_bootstrap =
+        starter.needs_out_of_band_init_script() && bootstrap_session_id.is_none();
+    if !no_bootstrap && !cannot_bootstrap {
         return Ok(starter);
+    }
+    if cannot_bootstrap && !no_bootstrap {
+        log::info!(
+            "no bootstrap session id for this daemon-spawned shell; starting it plainly rather \
+             than half-bootstrapped"
+        );
     }
 
     match starter {
@@ -349,6 +402,42 @@ fn resolve_shell_starter(
             }
         ))),
     }
+}
+
+/// The stdin writes that bootstrap this session's shell, in order, or none.
+///
+/// Which shells need one -- and with which session id -- is
+/// [`ShellStarter::init_script_stdin_writes`], which lives beside the argument
+/// builder that creates the asymmetry (zsh gets `--no-rcs` and nothing else;
+/// bash, fish and PowerShell carry the same script in their own argv). This
+/// adds only the one thing that is the daemon's own policy rather than the
+/// shell's: `no_bootstrap`.
+///
+/// `no_bootstrap` suppresses the writes entirely. Such a session asked for a
+/// bare shell, and `DirectShellStarter::without_bootstrap` has already emptied
+/// the arguments -- so its zsh never sees `--no-rcs` either, and reads the
+/// user's own `~/.zshrc` as it would under any other terminal. Writing the
+/// script anyway would put the InitShell handshake into the session as raw
+/// escape noise for a client that cannot read it, which is the exact failure
+/// `no_bootstrap` exists to prevent.
+fn session_init_script_writes(
+    shell_starter: &ShellStarter,
+    no_bootstrap: bool,
+    bootstrap_session_id: Option<SessionId>,
+) -> Vec<Vec<u8>> {
+    if no_bootstrap {
+        return Vec::new();
+    }
+    // No id means `resolve_shell_starter` already stripped the bootstrap for us,
+    // so there is nothing to write and the shell is not expecting anything. The
+    // check is repeated here rather than assumed because the two functions are
+    // reachable independently: `spawn_with_shell_starter` is a test seam that
+    // takes an already-resolved starter and never calls the resolver.
+    let Some(session_id) = bootstrap_session_id else {
+        return Vec::new();
+    };
+
+    shell_starter.init_script_stdin_writes(session_id)
 }
 
 /// Sends `signal` to the process group headed by `pid`. The spawned shell is
@@ -386,13 +475,45 @@ pub(super) fn send_signal_to_process_group(pid: u32, signal: libc::c_int) -> io:
     }
 }
 
+/// Everything [`run_session_loop`] needs from the pty it drives.
+///
+/// Exists only because `take_exit_status` is an inherent method on
+/// `local_tty::Pty` rather than part of `EventedPty`, so a loop written
+/// against the trait alone cannot recover a real exit code. Widening
+/// `EventedPty` itself would change a trait shared with the local terminal
+/// (whose own event loop never reads an exit status at all -- see "Scope of
+/// that fix" in `docs/design/moth-parliament.md`) to serve one caller here;
+/// a local trait with a one-line impl does not.
+///
+/// The generic is load-bearing for tests: `run_session_loop`'s exit/output
+/// ordering is a property of which mio events arrive in the *same* wakeup,
+/// and provoking that with a real pty means racing a real child's write
+/// against its own exit -- exactly the race
+/// `pty_session_ops_tests.rs`'s real-pty test documents itself as avoiding
+/// rather than winning. A fake whose readable and child-exit sources are
+/// both armed before the first `poll()` makes that wakeup deterministic.
+trait SessionPty: EventedPty {
+    fn take_exit_status(&mut self) -> Option<std::process::ExitStatus>;
+}
+
+impl SessionPty for Pty {
+    fn take_exit_status(&mut self) -> Option<std::process::ExitStatus> {
+        // Inherent methods win name resolution, so this is `Pty`'s own
+        // method, not an infinite recursion through the trait.
+        Pty::take_exit_status(self)
+    }
+}
+
 /// The pty thread's body. Mirrors `local_tty::event_loop::EventLoop::spawn`'s
 /// shape (poll, drain commands, read while readable, write while writable,
 /// stop on child-exit or a fatal I/O error) without the ANSI parser or
 /// `TerminalModel` it drives locally.
-fn run_session_loop(
+///
+/// One deliberate divergence from that shape: a child exit does *not* end the
+/// loop on the spot. See `pending_exit` below.
+fn run_session_loop<P: SessionPty>(
     id: RemotePtySessionId,
-    mut pty: Pty,
+    mut pty: P,
     mut poll: Poll,
     commands: Arc<CommandChannel>,
     events_tx: async_channel::Sender<(RemotePtySessionId, PtySessionEvent)>,
@@ -402,6 +523,11 @@ fn run_session_loop(
     let mut can_read = false;
     let mut can_write = false;
     let mut read_buf = [0u8; READ_CHUNK_SIZE];
+    // Set when the child's exit has been observed but not yet honoured: the
+    // loop finishes draining readable output first, so the session's last
+    // bytes are sent before its `Exited` event. See the child-event branch
+    // below.
+    let mut pending_exit: Option<SessionExitStatus> = None;
 
     let exit_status = 'session: loop {
         if let Err(err) = poll.poll(&mut events, None) {
@@ -429,7 +555,27 @@ fn run_session_loop(
                         .take_exit_status()
                         .map(session_exit_status_from_process)
                         .unwrap_or_else(SessionExitStatus::signalled);
-                    break 'session status;
+                    // Recorded, not acted on yet: one `poll()` wakeup can
+                    // carry both this exit and the child's final readable
+                    // output, and breaking here would discard whatever is
+                    // still in the pty's buffer -- a shell that writes and
+                    // immediately exits losing its last line, which is
+                    // exactly the loss faithful output replay exists to
+                    // prevent. The drain below runs first, so the last bytes
+                    // reach `events_tx` before the `Exited` event does.
+                    // (`local_tty::event_loop::EventLoop`, which this
+                    // otherwise mirrors, still breaks here; its own comments
+                    // acknowledge the same race.)
+                    pending_exit = Some(status);
+                    // Drain unconditionally rather than only when this
+                    // wakeup also reported the pty readable: mio registers
+                    // with edge-triggered epoll/kqueue, so readiness that
+                    // was already consumed by an earlier iteration of this
+                    // same wakeup is not reported again. One extra
+                    // non-blocking read is a trivial price for not making
+                    // the last line of a command depend on which readiness
+                    // edges happened to coincide.
+                    can_read = true;
                 }
             } else if token == pty.read_token() || token == pty.write_token() {
                 if event.is_readable() {
@@ -452,8 +598,16 @@ fn run_session_loop(
                     {
                         // The receiving end (`ServerModel`) is gone -- the
                         // daemon is shutting down. Nothing left to forward
-                        // to.
-                        break 'session force_kill_and_report(pty);
+                        // to. (The channel is unbounded, so a failed
+                        // `try_send` means closed, never full.)
+                        break 'session match pending_exit.take() {
+                            // The child already exited on its own and its
+                            // real status is in hand; force-killing an
+                            // already-reaped process to report a fabricated
+                            // signalled exit would throw that away.
+                            Some(status) => status,
+                            None => force_kill_and_report(pty),
+                        };
                     }
                 }
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => can_read = false,
@@ -463,13 +617,50 @@ fn run_session_loop(
                 // `SIGCHLD`-driven `Exited` event above instead of
                 // force-killing an already-exiting pty and fabricating a
                 // signalled exit for what may be a clean one.
+                //
+                // `can_read = false` is what makes "come back around" true:
+                // the EIO a hung-up pty master returns is *persistent*, so
+                // leaving the flag set would keep this inner drain re-reading
+                // the same error without ever reaching `poll()` again.
+                //
+                // It is load-bearing only now. An earlier version of this
+                // comment said, in the past tense, that leaving the flag set
+                // HAD caused a spinning thread. It had not: the classifier
+                // above tested `ErrorKind::Other`, which never matches EIO
+                // (it decodes to `Uncategorized`), so this arm never ran and
+                // control never reached the branch that would have spun. See
+                // `is_benign_pty_hangup_read_error` for the measurement, and
+                // "RETRACTED 2026-09-13" in `docs/design/moth-parliament.md`
+                // for why a plausible, internally-consistent story about a bug
+                // that did not exist is worth recording rather than deleting.
                 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                Err(err) if is_benign_pty_hangup_read_error(&err) => {}
+                Err(err) if is_benign_pty_hangup_read_error(&err) => can_read = false,
                 Err(err) => {
                     log::error!("remote pty session {id}: read error: {err}");
-                    break 'session force_kill_and_report(pty);
+                    // Prefers a held `pending_exit` for the same reason the
+                    // receiver-gone branch above does, and the two were
+                    // asymmetric until a refutation pass caught it: if the
+                    // child has already exited on its own, its real status is
+                    // in hand and `force_kill_and_report` would replace it with
+                    // a fabricated `signalled()` while killing an
+                    // already-reaped process. That asymmetry was not
+                    // theoretical -- with the errno fix above it is only a
+                    // guard, but on macOS the benign arm is `cfg`'d out
+                    // entirely, so this is the *only* thing standing between a
+                    // clean remote exit and a fabricated signalled one there.
+                    break 'session pending_exit
+                        .take()
+                        .unwrap_or_else(|| force_kill_and_report(pty));
                 }
             }
+        }
+
+        // After the drain, so the final output is already queued on
+        // `events_tx` ahead of the `Exited` event sent below; before the
+        // write drain, because there is no longer a process on the other end
+        // of the pty to receive anything queued for it.
+        if let Some(status) = pending_exit.take() {
+            break 'session status;
         }
 
         while can_write {
@@ -509,7 +700,7 @@ fn run_session_loop(
 /// Mirrors `EventLoop::spawn`'s `if !child_exited { pty.kill() }`. The real
 /// exit status can't be recovered here -- the process was killed by us, not
 /// observed exiting on its own -- so this always reports `signalled()`.
-fn force_kill_and_report(pty: Pty) -> SessionExitStatus {
+fn force_kill_and_report<P: EventedPty>(pty: P) -> SessionExitStatus {
     if let Err(err) = pty.kill() {
         log::error!("failed to force-kill a remote pty session: {err:#}");
     }
@@ -520,18 +711,35 @@ fn force_kill_and_report(pty: Pty) -> SessionExitStatus {
 /// slave side hanging up rather than a real I/O failure.
 ///
 /// On Linux/FreeBSD, reading the master side of a pty commonly fails with
-/// EIO once the slave side hangs up -- e.g. the shell exiting -- and
-/// `io::Error` has no dedicated `Eio` kind, so that surfaces as
-/// `ErrorKind::Other`. Treating it as fatal races the read against the
-/// child's own exit: `run_session_loop` would force-kill an already-exiting
-/// pty and report a fabricated signalled exit, discarding a real exit code
-/// that `take_exit_status` would otherwise have recovered. Mirrors
-/// `local_tty::event_loop::EventLoop::pty_read`'s handling of the same
-/// error, including its platform gate -- this function's `#[cfg]` at its
-/// call site is copied from there, not guessed.
+/// EIO once the slave side hangs up -- e.g. the shell exiting. Treating it as
+/// fatal races the read against the child's own exit: `run_session_loop` would
+/// force-kill an already-exiting pty and report a fabricated signalled exit,
+/// discarding a real exit code that `take_exit_status` would otherwise have
+/// recovered.
+///
+/// **Matched on the raw errno, not on `ErrorKind`, and that is a correction.**
+/// This function previously tested `err.kind() == io::ErrorKind::Other`, copied
+/// from `local_tty::event_loop::EventLoop::pty_read` along with a comment
+/// asserting that EIO "has no dedicated `Eio` kind, so that surfaces as
+/// `ErrorKind::Other`". It does not. `std`'s `decode_error_kind` has no mapping
+/// for EIO, so it falls through to `ErrorKind::Uncategorized`, which is not
+/// equal to `Other` -- measured on the pinned toolchain (1.92.0):
+///
+/// ```text
+/// io::Error::from_raw_os_error(5).kind()  ==  Uncategorized
+/// ...                            == Other ==  false
+/// ```
+///
+/// So the arm never fired, and every clean exit fell through to the fatal arm
+/// instead. `Uncategorized` is also explicitly unstable to match on by name,
+/// which is why the errno is the right thing to test rather than a second
+/// `ErrorKind` guess. `local_tty` still has the original check; it is
+/// inherited upstream code, its loop never reads an exit status, and fixing it
+/// is not this module's call -- but it means the two are no longer mirrors,
+/// which is why this says so rather than still claiming to copy it.
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
 fn is_benign_pty_hangup_read_error(err: &io::Error) -> bool {
-    err.kind() == io::ErrorKind::Other
+    err.raw_os_error() == Some(libc::EIO)
 }
 
 #[cfg(test)]

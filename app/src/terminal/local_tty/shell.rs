@@ -303,6 +303,91 @@ impl ShellStarter {
         matches!(self, ShellStarter::DockerSandbox(_))
     }
 
+    /// The session id minted when this starter was constructed: the id the
+    /// InitShell DCS hook carries back, and the one already baked into the
+    /// arguments of every shell whose bootstrap lives there.
+    ///
+    /// The id this starter was built with, as registered with the
+    /// `TerminalModel` before the pty is created so a later DCS hook can be
+    /// checked against it.
+    ///
+    /// Note what this is *not*: for a shell needing an out-of-band init script
+    /// (see [`Self::needs_out_of_band_init_script`]) the id in that script is
+    /// whatever the *caller* passes to [`Self::init_script_stdin_writes`], not
+    /// necessarily this one. They coincide locally, where the same code mints
+    /// and registers both. They do not for the daemon, which spawns the shell on
+    /// one machine while the id must be registered on another.
+    pub fn session_id(&self) -> SessionId {
+        match self {
+            ShellStarter::Direct(starter) | ShellStarter::MSYS2(starter) => starter.session_id(),
+            ShellStarter::DockerSandbox(starter) => starter.session_id(),
+            ShellStarter::Wsl(starter) => starter.session_id(),
+        }
+    }
+
+    /// The bytes that must reach this shell's *stdin*, in order, to bootstrap
+    /// it -- empty for a shell that needs none.
+    ///
+    /// Only zsh and MSYS2 need any, and that asymmetry is created a few
+    /// hundred lines below: `arguments_for_session_spawning_command` puts
+    /// the init script directly in argv for every other shell -- bash via
+    /// `--rcfile <(echo ...)`, fish via `--init-command`, PowerShell via
+    /// `-EncodedCommand` -- so writing it again here would bootstrap them
+    /// twice. zsh instead gets `--no-rcs`, which suppresses the user's own
+    /// startup files on the understanding that something else takes over.
+    /// Whoever owns the pty is that something.
+    ///
+    /// This is the rule `TerminalManager::enqueue_init_script` implements for
+    /// a local terminal, and it lives here rather than there because there is
+    /// now a second pty owner: the remote-server daemon
+    /// (`remote_server::pty_session_ops`), which has no `TerminalManager` to
+    /// implement it. A daemon-spawned zsh consequently got `--no-rcs` and then
+    /// nothing -- neither its own configuration nor Warp's. Keeping the rule
+    /// beside the argument builder that creates the need for it is what stops
+    /// the next pty owner from rediscovering that the hard way.
+    ///
+    /// The session id used is this starter's own, never a freshly minted one:
+    /// it is the id the InitShell hook carries back, and for the shells above
+    /// it is already in argv. A second id would hand the handshake something
+    /// nothing else in the session knows.
+    ///
+    /// MSYS2 is unreachable on unix, but is kept so this reads as the same one
+    /// rule `enqueue_init_script` applies rather than a silently narrowed copy
+    /// of it.
+    pub fn init_script_stdin_writes(&self, session_id: SessionId) -> Vec<Vec<u8>> {
+        if !self.needs_out_of_band_init_script() {
+            return Vec::new();
+        }
+
+        let script = init_shell_script_for_shell(self.shell_type(), &crate::ASSETS, session_id);
+        vec![
+            script.into_bytes(),
+            // The script is inert text until something runs it.
+            self.shell_type().execute_command_bytes().to_vec(),
+        ]
+    }
+
+    /// Whether this shell is bootstrapped by writing a script to its *stdin*
+    /// after spawn, rather than by arguments baked into its argv.
+    ///
+    /// zsh and MSYS2 are the out-of-band pair (for MSYS2's reason see
+    /// <https://linear.app/warpdotdev/issue/CORE-3202>); bash, fish and
+    /// PowerShell carry their init in argv and need nothing written to them.
+    ///
+    /// **This is load-bearing beyond deciding what to write.** An out-of-band
+    /// shell is also given `--no-rcs` (or its equivalent) in argv, suppressing
+    /// the user's own startup files on the promise that the script will arrive.
+    /// So a caller that *cannot* deliver the script must not use this starter as
+    /// it stands -- it would leave the shell with neither the user's
+    /// configuration nor Warp's, and with `ZLE` disabled by an init script whose
+    /// completing half never comes. Such a caller wants
+    /// [`DirectShellStarter::without_bootstrap`] instead, which is what
+    /// `remote_pty_thread::resolve_shell_starter` does when it has no session id
+    /// to bind a handshake to.
+    pub fn needs_out_of_band_init_script(&self) -> bool {
+        self.shell_type() == ShellType::Zsh || self.is_msys2()
+    }
+
     fn display_name(&self) -> &str {
         match self {
             Self::Direct(starter) => starter.display_name(),
@@ -533,9 +618,12 @@ impl DirectShellStarter {
     /// choice, and the shell's own default is the one nobody has to justify.
     ///
     /// `session_id` is kept rather than cleared. It is this starter's identity
-    /// for `TerminalManager::enqueue_init_script`, which the daemon never calls;
-    /// dropping it would mean making the field optional across every other
-    /// caller to express something no caller can observe.
+    /// for the InitShell handshake -- `TerminalManager::enqueue_init_script`
+    /// locally, and [`ShellStarter::init_script_stdin_writes`] on the daemon,
+    /// which does now use it -- and a `no_bootstrap` session performs neither,
+    /// so on *this* starter the id is genuinely never read. Dropping it would
+    /// still mean making the field optional across every other caller to
+    /// express something no caller can observe.
     // The enclosing module is already `#[cfg(feature = "local_tty")]`
     // (`terminal/mod.rs`), so this only has to add the `unix` half of its one
     // caller's gate -- `pty_session_ops::LocalTtyPtySessionOperations`, which is

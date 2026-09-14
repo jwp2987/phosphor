@@ -29,6 +29,7 @@ use std::sync::Mutex;
 
 use remote_server::RemotePtySessionId;
 use remote_server::session_store::SessionExitStatus;
+use warp_core::SessionId;
 use warpui::AppContext;
 
 use super::proto::RemoteSessionSignal;
@@ -59,12 +60,35 @@ pub struct PtySpawnSpec {
     /// bootstrap injection is unconditional" under "Known gaps from refuting
     /// `3d638ad25`" in `docs/design/moth-parliament.md`.
     ///
-    /// Honoured by [`LocalTtyPtySessionOperations`] only, via
-    /// `remote_pty_thread::resolve_shell_starter`. The non-unix stub and
+    /// Honoured by [`LocalTtyPtySessionOperations`] only, at **two** sites in
+    /// `remote_pty_thread`: `resolve_shell_starter`, which strips the bootstrap
+    /// out of the shell's arguments, and `session_init_script_writes`, which
+    /// suppresses the stdin writes some shells need instead. Both matter -- the
+    /// second is reachable without the first, through the
+    /// `spawn_with_shell_starter` test seam. The non-unix stub and
     /// [`FakePtySessionOperations`] spawn no process at all, so there is nothing
     /// for them to honour -- the fake records the whole spec, which is what lets
     /// `server_model_tests.rs` prove the flag survives dispatch.
     pub no_bootstrap: bool,
+
+    /// The session id to bind this shell's InitShell handshake to, if the caller
+    /// can register one.
+    ///
+    /// `None` means the caller cannot, and that is the honest default today:
+    /// nothing on the wire carries an id (`SpawnSessionSuccess` is empty), so a
+    /// daemon-spawned shell's handshake could never be validated by the client
+    /// that has to validate it. A shell that would need an out-of-band init
+    /// script is therefore spawned *plainly* rather than half-bootstrapped --
+    /// see `remote_pty_thread::resolve_shell_starter` for why half is worse than
+    /// none.
+    ///
+    /// Deliberately not yet a `SpawnSession` field. The client that would fill
+    /// it does not exist (see `docs/design/moth-parliament.md`, item 6), and the
+    /// shape it wants is the one `remote_tty` already uses -- the *client* mints
+    /// the id, registers it with its `TerminalModel` before anything can be
+    /// written back, and sends it. Adding the wire field before that caller
+    /// exists would be guessing at which end mints it.
+    pub bootstrap_session_id: Option<SessionId>,
 }
 
 /// A pty operation failed. Carries only a message because every one of the

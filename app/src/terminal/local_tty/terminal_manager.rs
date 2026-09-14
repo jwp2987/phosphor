@@ -573,6 +573,21 @@ impl<S> TerminalManager<S> {
 
     /// Sends a shutdown message to the PTY event loop and waits for it to
     /// process that event.
+    ///
+    /// A bare [`Message::Shutdown`] -- "this client is going away" -- and
+    /// deliberately not [`Message::Kill`]. Both of this method's callers are
+    /// indiscriminate: `Drop` fires on tab close, window close and app quit
+    /// alike, and `shutdown_all_pty_event_loops` runs for every manager at once
+    /// on a Windows quit. Neither has decided that any particular shell should
+    /// stop; they have run out of a place to put it. A caller that *has* decided
+    /// sends `PtyController::kill_pty` instead.
+    ///
+    /// For this manager's own local pty the two are the same act -- the event
+    /// loop reaps its child on the way out either way (`event_loop::spawn`'s
+    /// teardown calls `pty.kill()` unless the child went first), so this
+    /// classification changes nothing here. It is what a transport that can
+    /// leave a session running reads, and getting it wrong there would mean app
+    /// quit destroying every daemon-owned session on every host.
     fn shutdown_event_loop(&mut self) {
         let shutdown_res = self.event_loop_tx.lock().send(Message::Shutdown);
         // Happens normally if the event loop has already been terminated (so the channel is now gone).
@@ -631,22 +646,20 @@ impl<S> TerminalManager<S> {
         shell_starter: &ShellStarter,
         session_id: SessionId,
     ) -> Result<(), SendError<Message>> {
-        let shell_type = shell_starter.shell_type();
-        if shell_type == crate::terminal::shell::ShellType::Zsh
-            // For more on why this is necessary on Git Bash, see https://linear.app/warpdotdev/issue/CORE-3202.
-            || shell_starter.is_msys2()
-        {
-            let init_shell_script = crate::terminal::bootstrap::init_shell_script_for_shell(
-                shell_type,
-                &crate::ASSETS,
-                session_id,
-            );
-            let tx = self.event_loop_tx.lock();
-            tx.send(Message::Input(init_shell_script.into_bytes().into()))?;
-            tx.send(Message::Input(shell_type.execute_command_bytes().into()))
-        } else {
-            Ok(())
+        // Delegates rather than restating the rule. This used to open-code
+        // "zsh or MSYS2, then script-then-newline", and the daemon grew a second
+        // copy of the same rule in `ShellStarter::init_script_stdin_writes`.
+        // Two copies of "which shells need a script written to them" is exactly
+        // the divergence that produced the daemon-zsh gap in the first place.
+        let writes = shell_starter.init_script_stdin_writes(session_id);
+        if writes.is_empty() {
+            return Ok(());
         }
+        let tx = self.event_loop_tx.lock();
+        for write in writes {
+            tx.send(Message::Input(write.into()))?;
+        }
+        Ok(())
     }
 
     fn create_pty(
@@ -849,11 +862,7 @@ fn on_shell_determined<S: TerminalSurface>(
     // before the PTY is created below -- the shell must never be able to write anything
     // back before its session ID is registered, or a real DCS hook could arrive before
     // `is_registered_session` would recognize it.
-    let generated_session_id = match &shell_starter {
-        ShellStarter::Direct(starter) | ShellStarter::MSYS2(starter) => starter.session_id(),
-        ShellStarter::DockerSandbox(starter) => starter.session_id(),
-        ShellStarter::Wsl(starter) => starter.session_id(),
-    };
+    let generated_session_id = shell_starter.session_id();
     manager
         .model()
         .lock()

@@ -131,9 +131,39 @@ impl Writing {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum ChannelResult {
     Continue,
     TerminateLoop { child_exited: bool },
+}
+
+/// Whether a message from the controller ends the event loop, and if so whether
+/// the child process is what ended it.
+///
+/// Pure, and lifted out of `drain_recv_channel` so the one decision here that
+/// could be silently wrong is testable without a pty -- the same shape as
+/// `remote_server_tty::event_loop::outbound_rpc_for`. `child_exited` is not
+/// bookkeeping: `spawn`'s teardown calls `pty.kill()` only when it is false and
+/// reports `ExitReason::ShellProcessExited` only when it is true, so a teardown
+/// that claimed the child had already gone would end the loop and leave an
+/// unreaped shell behind a closed pty.
+fn termination_for(message: &Message) -> ChannelResult {
+    match message {
+        // Both of this side's teardown intents, and they converge *here* --
+        // only here -- because a local pty has no far side to leave anything
+        // running on. The shell is this process's own child, so ending the loop
+        // reaps it either way, and `Shutdown` cannot mean "detach" when there is
+        // nothing left to attach to. The two stay distinct in `Message` because
+        // `remote_server_tty` reads them as opposites: there a `Shutdown`
+        // detaches from a daemon-owned session and a `Kill` ends it.
+        Message::Shutdown | Message::Kill => ChannelResult::TerminateLoop {
+            child_exited: false,
+        },
+        // Windows-only, and the inverse: the child is already gone, so there is
+        // nothing to reap and the exit is reported as the shell's own.
+        Message::ChildExited => ChannelResult::TerminateLoop { child_exited: true },
+        Message::Input(_) | Message::Resize(_) => ChannelResult::Continue,
+    }
 }
 
 impl<T> EventLoop<T>
@@ -162,20 +192,25 @@ where
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Message::Input(input) => state.write_list.push_back(input),
-                Message::Shutdown => {
-                    return ChannelResult::TerminateLoop {
-                        child_exited: false,
-                    }
-                }
                 Message::Resize(size) => self.pty.on_resize(&size),
-                Message::ChildExited => return ChannelResult::TerminateLoop { child_exited: true },
+                // Bound whole rather than matched per variant so the decision
+                // stays in one pure place; still spelled out variant by variant
+                // so a new `Message` fails to compile here instead of silently
+                // joining the teardown arm.
+                teardown @ (Message::Shutdown | Message::Kill | Message::ChildExited) => {
+                    return termination_for(&teardown);
+                }
             }
         }
 
         ChannelResult::Continue
     }
 
-    /// Returns a `bool` indicating whether or not the event loop should continue running.
+    /// Whether the event loop should continue running, and if not, whether the
+    /// child process is what ended it.
+    ///
+    /// (Returned a bare `bool` before `Message::Kill` gave this two distinct
+    /// teardown messages to tell apart from `ChildExited`.)
     #[inline]
     fn channel_event(&mut self, state: &mut State) -> ChannelResult {
         self.drain_recv_channel(state)
@@ -467,8 +502,30 @@ where
                                     // just loop back round for the inevitable `Exited` event.
                                     // This sucks, but checking the process is either racy or
                                     // blocking.
+                                    //
+                                    // Matched on the raw errno. This read `err.kind() ==
+                                    // ErrorKind::Other` until 2026-09-13, which never matched:
+                                    // `std` has no mapping for EIO, so it decodes to
+                                    // `ErrorKind::Uncategorized`, and `Uncategorized != Other`.
+                                    // Measured on the pinned toolchain (1.92.0):
+                                    // `io::Error::from_raw_os_error(5).kind()` is
+                                    // `Uncategorized`.
+                                    //
+                                    // So this arm never ran, and the race the `continue` exists
+                                    // to absorb was never absorbed: when the EIO read won
+                                    // against the `Exited` child event, the loop fell through to
+                                    // `break 'event_loop` with `child_exited` still false --
+                                    // logging a read error, calling `pty.kill()` on an
+                                    // already-exiting child (logging a second error), and
+                                    // reporting `ExitReason::PtyDisconnected` for a shell that
+                                    // exited normally. Intermittent, because it depended on
+                                    // which of the two readiness events was serviced first.
+                                    //
+                                    // `Uncategorized` is deliberately unstable to match on by
+                                    // name, which is why this tests the errno rather than
+                                    // guessing at another `ErrorKind`.
                                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                                    if err.kind() == ErrorKind::Other {
+                                    if err.raw_os_error() == Some(libc::EIO) {
                                         continue;
                                     }
 
@@ -502,5 +559,70 @@ where
                 self.terminal.lock().exit(ExitReason::PtyDisconnected);
             })
             .expect("thread spawn works")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Breaks if: `Message::Kill` stops ending the event loop -- most plausibly
+    // by borrowing `remote_server_tty`'s reading, where the two teardown
+    // messages are opposites. There is nothing to detach from locally: the
+    // shell is this process's own child, and a loop that keeps running holds
+    // the pty open forever.
+    #[test]
+    fn kill_ends_the_local_event_loop() {
+        assert_eq!(
+            termination_for(&Message::Kill),
+            ChannelResult::TerminateLoop {
+                child_exited: false
+            }
+        );
+    }
+
+    // Breaks if: either of this side's teardown messages starts reporting that
+    // the child exited. `spawn`'s teardown skips `pty.kill()` when
+    // `child_exited` is true, so a `Kill` reported that way is the one message
+    // whose whole purpose is to end the process and which would instead leave
+    // it running, unreaped, behind a closed pty -- and it would report
+    // `ShellProcessExited` for a shell that never exited.
+    #[test]
+    fn our_own_teardown_is_never_reported_as_the_child_exiting() {
+        for message in [Message::Shutdown, Message::Kill] {
+            assert_eq!(
+                termination_for(&message),
+                ChannelResult::TerminateLoop {
+                    child_exited: false
+                },
+                "{message:?} is this side tearing down, not the child exiting"
+            );
+        }
+    }
+
+    // Breaks if: `ChildExited` is folded in with the two intent messages. It is
+    // the inverse of them -- the child went first -- and treating it as ours
+    // would make the loop kill an already-dead process and report
+    // `PtyDisconnected` in place of `ShellProcessExited`.
+    #[test]
+    fn child_exited_is_reported_as_the_child_exiting() {
+        assert_eq!(
+            termination_for(&Message::ChildExited),
+            ChannelResult::TerminateLoop { child_exited: true }
+        );
+    }
+
+    // Weaker than its siblings, and labelled so rather than left to look equal.
+    // `termination_for`'s only caller already matched the three teardown
+    // variants before calling it, so this arm is unreachable in production and
+    // flipping it would change no terminal's behaviour. It is kept because the
+    // function is total over `Message` and a reader is entitled to see what it
+    // answers for the other two -- not because it guards a live path.
+    #[test]
+    fn input_does_not_end_the_loop() {
+        assert_eq!(
+            termination_for(&Message::Input(Cow::Borrowed(&b"ls\n"[..]))),
+            ChannelResult::Continue
+        );
     }
 }
