@@ -11386,9 +11386,59 @@ impl Workspace {
         });
     }
 
+    /// Whether closing a tab has to ask about a **shared session** first -- the
+    /// question "you are sharing this session with other people; end the share?".
+    /// Not the remote-pty question; see `tab_close_would_destroy_remote_session`
+    /// below, which is deliberately not routed through here.
+    ///
+    /// **Permanently `false`, and this is an answer rather than an unfinished
+    /// stub.** It reads as one because the body is a dead early return followed
+    /// by a bare `false`; what follows is the evidence, so the next reader does
+    /// not re-derive it.
+    ///
+    /// At the pin this is
+    /// `FeatureFlag::CreatingSharedSessions.is_enabled() && ContextFlag::CreateSharedSession.is_enabled()
+    /// && *SessionSettings::as_ref(ctx).should_confirm_close_session`
+    /// (`42effe840:app/src/workspace/view.rs:12146`). This fork dropped session
+    /// *sharing* as cloud (`DECLINED.md`, "Shared-session heartbeat -- it serves
+    /// a dropped layer", and the agent-session-sharing row it cites), and with it
+    /// both flags: neither `CreatingSharedSessions` nor `CreateSharedSession`
+    /// exists here at all.
+    ///
+    /// **Restoring the setting read would change nothing, which is the decisive
+    /// part.** The only thing the guard protects is `close_tabs_with_disposition`'s
+    /// `is_terminal_pane_being_shared` loop, and that predicate is itself
+    /// permanently false: it resolves to `SharedSessionStatus::is_active_sharer`,
+    /// and outside tests nothing in this fork ever sets the status to
+    /// `ActiveSharer` or `SharePending`. There are exactly two non-test
+    /// `set_shared_session_status` call sites, and they write `NotShared`
+    /// (`terminal/local_tty/terminal_manager.rs`) and `ActiveViewer`
+    /// (`terminal/view/shared_session/view_impl.rs`, itself behind an
+    /// `is_active_viewer()` guard). The route that would have produced a sharer
+    /// is gutted at both ends: `TerminalView::attempt_to_share_session` is an
+    /// empty body taking five underscore-prefixed parameters, and
+    /// `on_session_share_started`, which it would have called, has no callers at
+    /// all. So a "fixed" version would read a live setting, hand it to a loop
+    /// whose body can never run, and reintroduce a prompt for a feature this fork
+    /// does not have. The shared-session close-confirmation tests in
+    /// `view_test.rs` say the same thing from the other side: they are
+    /// `#[ignore]`d as "shared sessions are a stubbed cloud-collab feature in the
+    /// BYOP fork", and they are the tests that would cover this function.
+    ///
+    /// `SessionSettings::should_confirm_close_session` itself stays -- it is a
+    /// user-visible, cloud-synced setting (`terminal/session_settings.rs`), and
+    /// `CloseSessionConfirmationEvent::CloseSession { dont_show_again }` still
+    /// writes it (`handle_close_session_confirmation_dialog_event`). That write
+    /// is what the *remote* dialog deliberately declines to offer, for the reason
+    /// `CloseSessionConfirmationAction`'s doc comment gives: one global boolean
+    /// cannot hold the answer to two different questions, and its silent answer
+    /// would be *kill*.
     fn should_confirm_close_session(&self) -> bool {
         // If we're closing the only remaining tab, we're actually going to close the window.
-        // We don't need a user confirmation here because there's already another one on window close.
+        // We don't need a user confirmation here because there's already another one on window
+        // close. Kept as a separate arm rather than folded into the `false` below because
+        // `tab_close_would_destroy_remote_session` cites it as the precedent for its own
+        // identical early return, and that one is live.
         if self.tab_count() == 1 {
             return false;
         }
@@ -11435,6 +11485,53 @@ impl Workspace {
     /// examined -- those are local agent panes, they cannot hold a daemon-owned
     /// remote session, and leaving them out keeps this scan and
     /// `daemon_owned_remote_terminal_views` looking at exactly the same set.
+    ///
+    /// **Two facts behind that "cannot", checked rather than assumed** (a review
+    /// read the `visible_pane_ids()` walk as a hole a hidden child-agent pane
+    /// could hide a running remote session in):
+    ///
+    /// - A child-agent pane's manager comes from exactly two constructors --
+    ///   `insert_terminal_pane_hidden_for_child_agent` -> `create_terminal_pane_data`
+    ///   -> `PaneGroup::create_session`, or `insert_ambient_agent_pane_hidden_for_child_agent`
+    ///   -> `create_ambient_agent_terminal`. The first is the single
+    ///   session-creation choke point, and its `cfg_if` can only yield
+    ///   `remote_tty` / `local_tty` / `MockTerminalManager`; the second is a
+    ///   `MockTerminalManager` outright. Neither can produce a
+    ///   `remote_server_tty::TerminalManager`, and no pane becomes a child-agent
+    ///   pane after the fact: `hide_pane_for_child_agent` is only ever called on
+    ///   a pane already tracked in `child_agent_panes` or created with
+    ///   `NewPaneVisibility::HiddenForChildAgent`.
+    /// - More generally, nothing in the app constructs a
+    ///   `remote_server_tty::TerminalManager` at all yet:
+    ///   `TerminalManager::create_model` is reachable only through
+    ///   `spawn_remote_session`, which has no call sites outside its own module.
+    ///
+    /// **The asymmetry this exclusion will become, recorded because it is not
+    /// visible from here.** The scan is narrower than the act it guards.
+    /// `remove_tab_with_disposition`'s kill loop runs through
+    /// `PaneGroup::for_all_terminal_panes`, which walks `pane_contents.keys()` --
+    /// *every* pane, hidden ones included -- so a hidden pane can be sent
+    /// `shutdown_pty` without ever having been offered to this scan, and is
+    /// likewise absent from `daemon_owned_remote_terminal_views`' spare list on
+    /// the "leave running" answer. That is inert today for the reason above, and
+    /// it is not only child-agent panes: `visible_pane_ids()` also drops panes
+    /// hidden for `FromMove`, `FromJob`, `TemporaryReplacement` (an ordinary
+    /// terminal pane displaced when a child agent is revealed into its slot) and
+    /// `Closed`. Widening the scan now would add panes that cannot be at risk;
+    /// the increment that first gives *any* pane a daemon-owned manager is the
+    /// one that has to make these two sets agree.
+    ///
+    /// Closing a *pane* needs no equivalent widening, and for a reason that does
+    /// not carry over to closing a tab.
+    /// `PaneGroup::close_pane_with_confirmation` early-returns for a child-agent
+    /// pane into `close_pane`, which re-hides it rather than removing it -- no
+    /// `shutdown_pty`, and the manager is not even dropped -- so its "it doesn't
+    /// apply" comment stays true however far away the pty lives. Closing the
+    /// *tab* is the other case: the kill loop above reaches that same pane, so a
+    /// hidden child-agent pane running something long would be killed there
+    /// unasked. That is the asymmetry, and it is why the two must be reconciled
+    /// by the increment that makes it reachable rather than left to be
+    /// rediscovered from the pane path's comment.
     fn pane_close_risks(
         pane_group: &ViewHandle<PaneGroup>,
         ctx: &AppContext,

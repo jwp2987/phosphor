@@ -6351,3 +6351,98 @@ fn close_and_leave_running_closes_the_tab_it_was_asked_about() {
         });
     });
 }
+
+/// The workspace half of `docs/design/moth-parliament.md` step 3's last call site: a
+/// conversation opened as its own TAB must start in the directory of the tab the user was
+/// on, not the directory the app was launched from.
+///
+/// `app/src/pane_group/mod_tests.rs` already pins the other half --
+/// `test_conversation_tab_uses_the_directory_carried_by_its_layout` asserts that
+/// `initial_conversation_pane` applies whatever `PanesLayout::Conversation` carries. That
+/// test cannot see where the payload came from, because the tab being inherited *from* is a
+/// different `PaneGroup` that only the `Workspace` can reach. This is the only level at
+/// which the two ends meet, and `49017dc6b` changed `add_conversation_tab` without touching
+/// this file, so the join was uncovered.
+///
+/// Non-vacuous: the pre-existing tab's directory is asserted as a precondition before the
+/// conversation tab is opened, so a harness change that stopped
+/// `initial_directory_from_active_session` from seeing it fails here rather than silently
+/// comparing `None` to `None`. The new pane is also asserted to be a conversation pane, so
+/// the read cannot accidentally be of the old tab's terminal.
+///
+/// Breaks if: `add_conversation_tab` stops calling `get_new_tab_startup_directory` (passing
+/// a bare `PanesLayout::Conversation(None)`), or goes back to `std::env::current_dir().ok()`
+/// -- the assertion then sees `None`, or this process's launch directory, instead of the
+/// directory the user was working in. A conversation pane has file tools and no shell, so
+/// nothing on screen but the pane header would reveal the difference.
+#[test]
+fn test_conversation_tab_inherits_the_active_tabs_directory() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+
+        let active_tab_cwd = PathBuf::from("/tmp/moth-parliament-active-tab-cwd");
+
+        // Give the tab the user is on a directory to be inherited. Written to
+        // `session_startup_path` rather than driven through a live shell's pwd because
+        // `startup_path_for_new_session` -- which `initial_directory_from_active_session`
+        // delegates to -- reads exactly this as its fallback when there is no
+        // shell-integration block metadata, which is the state of every session in this
+        // harness (`PtySpawner::new_for_test` spawns no server).
+        let active_terminal = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .active_tab_pane_group()
+                .as_ref(ctx)
+                .active_session_view(ctx)
+                .expect("mock_workspace opens with one terminal pane, and it is the active session")
+        });
+        active_terminal.update(&mut app, |view, _ctx| {
+            view.model
+                .lock()
+                .set_session_startup_path(Some(active_tab_cwd.clone()));
+        });
+
+        // Precondition: the workspace can actually see that directory. Without this the
+        // assertion below would still pass if inheritance were removed *and* the harness
+        // had never supplied a directory in the first place.
+        workspace.update(&mut app, |workspace, ctx| {
+            let seen = workspace.get_new_tab_startup_directory(
+                NewSessionSource::Tab,
+                Some(ctx.window_id()),
+                None,
+                ctx,
+            );
+            assert_eq!(
+                seen,
+                Some(active_tab_cwd.clone()),
+                "precondition: the active tab's directory must be visible to the workspace, \
+                 or this test cannot tell inheritance from its absence"
+            );
+
+            workspace.handle_action(&WorkspaceAction::AddConversationTab, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            let new_pane_group = workspace.active_tab_pane_group().as_ref(ctx);
+            let terminal_view = new_pane_group
+                .focused_session_view(ctx)
+                .expect("the new tab's sole pane should be focused and be a TerminalPane");
+
+            assert!(
+                terminal_view.as_ref(ctx).is_conversation_pane(),
+                "the tab just opened must be the conversation tab, not the terminal tab \
+                 whose directory was seeded"
+            );
+            assert_eq!(
+                terminal_view
+                    .as_ref(ctx)
+                    .model
+                    .lock()
+                    .session_startup_path(),
+                Some(active_tab_cwd.clone()),
+                "a conversation opened as its own tab must land in the directory of the tab \
+                 it was opened from"
+            );
+        });
+    });
+}
