@@ -5,6 +5,65 @@ Added 2026-08-10 after a status report listed four in-flight items as unstarted:
 the assignment lived in the operator's head and not in this file. **Record the
 assignment here when you start work, not when you finish it.**
 
+## Refutation round 2026-09-13 — `moth-parliament` fleet output
+
+Six build agents produced ~1,750 lines; six read-only refutation agents then
+attacked it. **None of this was compiled** — the build gate is shut. Verdicts
+below were checked by the coordinator against the code, and where a measurement
+settled it, that measurement is quoted.
+
+- [x] 🔴 **A clean daemon pty exit reported as `signalled()`, and a "livelock"
+      that never existed.** `is_benign_pty_hangup_read_error`
+      (`app/src/remote_server/pty_session_ops/remote_pty_thread.rs`) tested
+      `err.kind() == io::ErrorKind::Other`. EIO does not decode to `Other` — it
+      falls through to `Uncategorized`. Measured on the pinned 1.92.0:
+      `io::Error::from_raw_os_error(5).kind() == Uncategorized`. So the arm never
+      fired; the reported 100% CPU livelock could not occur, and that finding was
+      accepted in review and written up as verified before anyone checked its
+      premise. The same mismatch caused a real regression in the gap-2 fix: the
+      forced post-exit read hit EIO, fell to the fatal arm, and
+      `force_kill_and_report` discarded the real status held in `pending_exit`.
+      Fixed by matching `raw_os_error() == Some(libc::EIO)` and by making the
+      fatal arm prefer `pending_exit`, as the receiver-gone branch already did.
+      The asymmetry between those two branches was the actual defect, and it bit
+      macOS independently, where the benign arm is `cfg`'d out.
+- [x] 🟠 **A daemon-spawned zsh left with no config and no line editor.** Gap
+      4's first fix queued the InitShell script to zsh's stdin, but the daemon
+      mints the session id and nothing carries it to the client
+      (`SpawnSessionSuccess` is empty), so the client's DCS validation rejects
+      the handshake, the body that runs `setopt ZLE` never arrives, and the
+      script's first line is ` unsetopt ZLE`. Strictly worse than the gap. Now
+      `resolve_shell_starter` spawns such a shell *plainly* when it has no
+      `bootstrap_session_id`, so the user gets their own `~/.zshrc`.
+- [x] 🟠 **Splitting a conversation pane ignored the `working_directory`
+      setting** while splitting a terminal honoured it
+      (`conversation_pane_inherited_cwd`, `app/src/pane_group/mod.rs`). Shipped
+      and user-visible. Both gestures now run through the same filter.
+- [x] 🟡 **The `ConnectedRemotePtySession` witness was bypassable.**
+      `remote_server_tty/mod.rs` re-exported `EventLoop` with a `pub start`, so
+      the invariant three doc comments called structural was not. `EventLoop` is
+      now module-private and `start` is `pub(super)`.
+- [ ] 🟠 **Closing a tab with a running command destroys a daemon-owned remote
+      session.** `workspace/view.rs`'s tab close calls `shutdown_pty` on panes
+      whose active block `is_active_and_long_running()`, which now routes to
+      `Message::Kill` -> `SignalSession`/`Kill`. That guard was written for local
+      shells, where "still running" means "you would orphan a process". For a
+      remote session it selects precisely the sessions worth keeping — close an
+      idle remote tab and it survives; close the one running a two-hour build and
+      the build dies. Latent until something constructs a remote session.
+      Recorded on `remote_server_tty::TerminalManager` and in
+      `docs/design/moth-parliament.md`.
+- [ ] 🟡 **Killed sessions are never removed from `SessionStore`.** `record_exit`
+      only sets `exit_status`; `SessionStore::remove`'s one caller is the
+      spawn-failure rollback. `ListSessions` reports exited and running sessions
+      identically (`RemoteSessionSummary` carries no state), so a hosts dashboard
+      could not tell them apart. Pre-existing; the new kill route makes it
+      routine rather than rare.
+- [ ] 🟡 **`local_tty::event_loop` still carries the original
+      `ErrorKind::Other` EIO check.** Inherited upstream code, and its loop never
+      reads an exit status, so the consequence differs — but it is the same
+      mismatch, and the two files no longer mirror each other.
+
 ## RE-PIN SCOPING ROUND 2026-08-29 — `42effe840` -> `4111d08f9` (CANDIDATE pin)
 
 **This is scope, not work done. Nothing here was compiled.** A 10-agent fleet

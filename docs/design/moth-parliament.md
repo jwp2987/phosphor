@@ -1,7 +1,18 @@
 # moth-parliament — conversations that are not terminals
 
 **Branch:** `moth-parliament`. **Started:** 2026-09-05.
-**Status:** design agreed, implementation not started.
+**Status (2026-09-13):** steps 1-4 are built; §4b's daemon-owned remote pty is the
+live work.
+
+**CORRECTION 2026-09-13.** This line read "design agreed, implementation not started"
+until today, and had been false since step 1 landed. All four steps have code and
+tests in the tree -- `TypedPane::Conversation`
+(`app/src/workspace/view/vertical_tabs.rs:3827`), the withdrawn execution tools
+(`app/src/ai/agent_providers/chat_stream.rs:4391`),
+`PaneGroup::conversation_pane_inherited_cwd` (`app/src/pane_group/mod.rs`), and
+`ai::agent::conversation::Surface` -- and the remote-pty work of §4b has a daemon that
+owns ptys and a client transport. A status line saying "not started" is worse than no
+status line, because it tells a reader not to look.
 
 A working name deliberately chosen to say nothing about the contents, because the
 scope of this branch is expected to move and a descriptive name would date badly.
@@ -148,10 +159,81 @@ real file writes.
 **Done when:** a restored conversation with no process still knows where it is, a
 new conversation inherits the active tab's directory, and the pane header shows it.
 
-*Partially built:* `conversation_pane_data` takes a cwd and `TerminalPane::snapshot`
-falls back to `session_startup_path`, so the directory survives a restart. Not done:
+*Partially built.* `conversation_pane_data` takes a cwd and `TerminalPane::snapshot`
+falls back to `session_startup_path`, so the directory survives a restart.
+
+**CORRECTION 2026-09-13 — the remaining gap is one call site, not two features, and
+there are three call sites rather than two.** This note previously read: "Not done:
 inheriting from the active tab at creation (both live call sites pass `None`), and
-showing it in the pane header.
+showing it in the pane header." That is wrong on both counts. **Done: restoration, the
+header, and split-pane inheritance. Not done: a new conversation *tab* inheriting the
+active tab's directory.** In detail:
+
+- **The pane header shows it** (`8c2a5306c`, "show a conversation pane's working
+  directory in its header"). `TerminalPane::render_header_title`
+  (`app/src/terminal/view/pane_impl.rs:208`) reads `session_startup_path` under its own
+  scoped lock via `conversation_directory_to_display`, applies the "unset means home"
+  fallback in `resolve_conversation_directory_path`, and renders it beside the title
+  through `warp_util::path::user_friendly_path` -- so home collapses to `~` the same
+  way the vertical tab list already spells it.
+- **No live call site passes `None`, and there are three of them** (`32ecb451e`,
+  "step 3 -- a conversation inherits a working directory"):
+  - `restore_pane_leaf` (`app/src/pane_group/mod.rs:1675`) passes the persisted,
+    `is_dir()`-filtered snapshot directory. Restoration correctly does *not* inherit --
+    a restored conversation belongs where it was, not where the user happens to be now.
+  - `add_conversation_pane` (`app/src/pane_group/mod.rs:6204`), the split-pane path,
+    passes `conversation_pane_inherited_cwd`, which reads
+    `startup_path_for_new_session` on the pane being split from. **This path already
+    inherits.**
+  - `initial_conversation_pane` (`app/src/pane_group/mod.rs:3356`), the new-*tab* path
+    reached from `WorkspaceView::add_conversation_tab`, passes
+    `std::env::current_dir().ok()` and is the only one that inherits nothing.
+
+**So what is left is narrower and more specific than "inherit from the active tab".** A
+conversation opened as its own tab inherits the **process's** working directory, not the
+**active tab's**. The reason is structural rather than an oversight, and the call site's
+own comment says so: it runs inside the `initial_layout` closure before the `PaneGroup`
+exists, and the tab the user was previously on is a *different* `PaneGroup` owned by
+`WorkspaceView`, which is not threaded into `new_with_panes_layout` at all.
+
+**A fix for that call site was in flight when this note was written (2026-09-13), and
+this note describes the tree *without* it.** Do not read the list above as the finished
+state, and do not read it as done: check `initial_conversation_pane` before quoting
+either way. That fix is also expected to change the *fallback* for both the tab and the
+split path -- away from `std::env::current_dir()` and towards the working-directory
+setting's answer -- so the `current_dir()` behaviour recorded above is this commit's
+behaviour, not settled design. Do not build on it.
+
+**LANDED 2026-09-13 — step 3 is now complete, and the fallback did change.**
+`PanesLayout::Conversation` gained an `Option<PathBuf>` payload, so the directory travels
+in with the layout instead of being reached for from inside the closure.
+`Workspace::add_conversation_tab` computes it with `get_new_tab_startup_directory(
+NewSessionSource::Tab, ...)` -- the same call new *terminal* tabs already make -- before
+`add_tab_with_pane_layout`, which builds the `PaneGroup` before inserting and activating
+the tab, so the tab being inherited from is still the one the user was on.
+
+**`std::env::current_dir()` is gone from both conversation paths, and that is the part
+worth reading twice.** `None` is not "unknown", it is the answer the working-directory
+setting's home mode gives, and it already means home downstream
+(`TerminalModel::session_startup_path`, `resolve_conversation_directory_path`). Keeping
+`current_dir()` as a last resort would have made the setting a no-op for two of its three
+modes: a user configured for `home` would silently get the app's launch directory. The
+invariant is now: *a conversation pane lands exactly where a terminal session opened by
+the same gesture would land.* That supersedes this section's earlier "Fall back to the
+workspace root".
+
+**A second defect was found and fixed in the same change.** The split-pane path
+(`conversation_pane_inherited_cwd`) called `startup_path_for_new_session` and went
+straight to `current_dir()`, **skipping** the
+`working_directory_config.initial_directory_for_new_session` filter its terminal sibling
+applies. So with `working_directory: home` or a custom directory configured, splitting a
+terminal pane honoured the setting and splitting a conversation pane ignored it. Both
+gestures now run through the same filter. This was user-visible and shipped; it wants an
+issue in `TODO.md` recording it as fixed rather than only a line here.
+
+**Still missing:** no workspace-level test covers the new-tab inheritance end to end.
+The `get_new_tab_startup_directory` call added to `add_conversation_tab` is exercised
+only from `app/src/workspace/view_test.rs`, which that change did not touch.
 
 ### Step 4 — adopt a typed `Surface` on conversations
 
@@ -459,6 +541,17 @@ far easier once one endpoint works than designed in the abstract. With a single
 endpoint and a single surface a broker is indirection for its own sake; it earns its
 keep at N x M.
 
+**UPDATE 2026-09-13 — both halves of that sentence have since been built, so read it as
+history.** `SessionType::Remote` now exists for real (`f8877809a`,
+`app/src/terminal/model/session.rs:1064`), `remote_server`'s daemon owns ptys that
+outlive the client that spawned them (`3d638ad25` and its successors), and the client
+transport exists (`4ef8b6987`, `app/src/terminal/remote_server_tty`). The audit further
+down ("What item 6 actually costs") was written before that landed and corrects this
+paragraph for the state on 2026-09-13; its own corrections are in turn superseded --
+see the dated notes there. What is still outstanding from "that first cut" is the
+`TerminalManager` that wraps the transport and the session-creation affordance itself;
+the broker remains unstarted, as designed.
+
 ### Open question: does the broker route file tools, or only execution?
 
 Unsettled, and worth deciding before code exists. If a conversation pane's `read_files`
@@ -683,6 +776,15 @@ a file query -- `NavigateToDirectory`, `LoadRepoMetadataDirectory`, `IndexCodeba
 (`crates/remote_server/src/manager.rs:111`). Nothing starts a process, writes to one,
 reads its output, or outlives a disconnection.
 
+> **Stale as of 2026-09-13; kept because the scoping argument is what matters.** The
+> last sentence is no longer true: the daemon spawns ptys, writes to them, streams
+> their output back, and keeps them when the client goes away (`3d638ad25` onward).
+> `RemoteServerOperation` itself is genuinely unchanged -- it labels the six *file*
+> operations for reporting, and the session RPCs are a separate set of messages, not
+> new members of that enum -- so quoting it as evidence that "the operation surface is
+> file queries" no longer supports the conclusion it did in 2026-09-12. See "BUILT
+> 2026-09-13" at the end of this subsection.
+
 And the transport is **strictly one request, one response**:
 `pending_host_requests: HashMap<RequestId, PendingHostRequest>` holds a
 `oneshot::Receiver`, and the entry is `remove`d the moment a response arrives
@@ -704,6 +806,17 @@ So there is no protocol redesign to do. What is missing is narrower:
 - **Session-shaped push variants**: output chunk, exit, resize ack.
 - **Session lifecycle operations**, which are ordinary request/response and belong in the
   existing one-shot path: spawn, write stdin, resize, signal, detach, reattach, list.
+
+**BUILT 2026-09-13.** All three exist now, and the paragraphs above are kept for the
+reasoning, not as a to-do list. `SessionOutputChunkPush` and `SessionExitedPush`
+(`crates/remote_server/proto/remote_server.proto:600,608`) are the session-shaped push
+variants, carried on `ServerMessage`'s `oneof` alongside the two repo pushes; they are
+addressed by `remote_session_id`, which is the session identity dimension the first
+bullet asks for. The lifecycle operations are `SpawnSession`, `WriteSessionStdin`,
+`ResizeSession`, `SignalSession`, `ListSessions` and `ReattachSession` (proto lines
+122-133), each with a method on `RemoteServerClient`
+(`crates/remote_server/src/client/mod.rs:781-964`). There is no separate `detach`: per
+"Shutdown is two intents wearing one name" below, `Shutdown` *is* the detach.
 
 That is a meaningfully smaller and better-supported piece of work than "retrofit streaming
 onto a request/response transport", which is what the previous paragraph implied. The
@@ -728,6 +841,23 @@ terminal.
 6. **The client seam**: a `SessionType::Remote` whose pty lives on the far side, where
    the terminal model expects a local handle.
 
+**Where that list stands — 2026-09-13.** Items 1-5 are built; item 6 is half built. The
+streaming channel and the six session operations are cited under "BUILT 2026-09-13"
+above. Remote-side ownership landed with `3d638ad25` ("the daemon owns real ptys,
+outliving the clients that spawned them"). Buffering while detached is
+`SessionStore`'s bounded ring buffer with two-phase `peek`/`acknowledge`
+(`crates/remote_server/src/session_store.rs`), decided and then revised in the two
+subsections below. Reattach landed with `734c0d15d` and had its acknowledgement loop
+closed end to end by `68c30fc49`. Item 6 has its *transport* half --
+`app/src/terminal/remote_server_tty` (`4ef8b6987`), whose module doc names this list
+item explicitly and states where it stops -- and not the `TerminalManager` that wraps
+it or the session-creation path that would spawn one. `SessionType::Remote` and its
+bootstrap-time mirror both exist; see the audit below.
+
+**That `TerminalManager` was in flight as this was written and is not at this commit.**
+Check `app/src/terminal/remote_server_tty/` before quoting item 6 as transport-only;
+this paragraph is the state at `4ef8b6987`, not a forecast.
+
 **Already done, and the reason this is an extension rather than a new binary:** install
 over SSH with a build-time-pinned SHA-256 that fails closed, a framed protocol with size
 limits, the proxy/daemon split with identity-scoped sockets, and preinstall capability
@@ -747,11 +877,22 @@ exist, and the difficulty it does name is understated.
 
 **`SessionType::Remote` is proposed, not existing.** `app/src/terminal/model/session.rs:1015`
 declares exactly two variants, `Local` and `WarpifiedRemote { host_id: Option<warp_core::
-HostId> }`. Line 453 of this document already writes "`SessionType::Remote` and the
-remote-server extension that already ship" as though the variant were real; it is not.
+HostId> }`. The "Build order" subsection of §4b already writes "`SessionType::Remote` and
+the remote-server extension that already ship" as though the variant were real; it is not.
 Every occurrence of `SessionType::Remote` in the tree today is a comment anticipating item
 6 (`remote_pty_thread.rs:8,188`) or this document. Introducing it is this audit's subject,
 not its precondition.
+
+> **No longer true as of 2026-09-13 — the audit's own subject has since landed.**
+> `SessionType::Remote { host_id: Option<warp_core::HostId> }` exists
+> (`f8877809a`, `app/src/terminal/model/session.rs:1064`), as does its bootstrap-time
+> mirror `BootstrapSessionType::Remote` (`a3d454792`, same file, line 1031). The
+> paragraph is kept because the *distinction* it draws -- constructed-remote versus
+> discovered-remote -- is now the doc comment on the variant itself, and because a
+> reader arriving at the table below needs to know the table was written against a tree
+> where the variant did not yet exist. (The line number it cited, `:1015`, now lands on
+> `BootstrapSessionType::WarpifiedRemote`; line numbers in this audit are as-of
+> 2026-09-13 and will drift.)
 
 **`WarpifiedRemote` is not "genuinely remote" — it is "detected remote after the fact,"
 and a local pty still exists underneath it.** `determine_session_type`
@@ -802,6 +943,21 @@ blocklist/action_model/execute/request_file_edits.rs:424-427`'s `DiffSessionType
 construction both write `_ => None` / `_ => DiffSessionType::Local`, so a genuinely-remote
 session is silently filed as having no remote client and no remote diff backend.
 
+> **Closed 2026-09-13** by `f8877809a` ("introduce SessionType::Remote and close the
+> silent-fallthrough sites"), which is why that commit is one change and not two: the
+> variant and the sites it would have silently fallen through are the same piece of
+> work. Every site listed in this paragraph now names `SessionType::Remote` explicitly
+> (`context_chips/builtins.rs:96`, `action_model/execute/read_files.rs:136`,
+> `passive_suggestions/legacy.rs:395`, `terminal/host_footer_color.rs:96`,
+> `terminal/input.rs:10751`, `terminal/universal_developer_input.rs:139`,
+> `ai/blocklist/controller.rs:221`, `agent_view/zero_state_block.rs:302`,
+> `terminal/view.rs:8963,13112`), and the two wildcard arms are now exhaustive matches
+> with a `Remote` arm of their own (`read_files.rs:117-130`,
+> `request_file_edits.rs:423-434`). The paragraph stays because its *argument* is the
+> transferable part: a non-exhaustive predicate is the dangerous half of a new
+> variant's cost precisely because the compiler will not point at it, and the next
+> variant added to this enum will face the same audit.
+
 **`DiffSessionType` and `RepoDetectionSessionType` mirror the *concept*, not the type, and
 neither needs a new variant.** `DiffSessionType::{Local, Remote(HostId)}`
 (`ai/blocklist/inline_action/code_diff_view.rs:488`) already generalizes over *how*
@@ -835,6 +991,18 @@ estimated before exclusions.
 | `ai/blocklist/controller.rs:245-252` (`skill_path_origin`) | whether skill paths in prompts resolve locally or remotely | same as above (Question A) | NEEDS A DECISION |
 | `terminal/model/session/active_session.rs:155-169` (`current_working_directory_location`) | whether the active tab's cwd is reported `Local` or `Remote(host_id)` | same as above (Question A) | NEEDS A DECISION |
 | `completer/mod.rs:170-199` (`list_directory_entries_internal`) | `std::fs::read_dir` vs. an `ls` piped through the in-band executor over the live shell | no in-band shell to pipe a command into (Question B) | NEEDS A DECISION |
+
+**All 14 rows are implemented as of 2026-09-13** (`f8877809a`, `a3d454792`), each with
+the disposition the table recommends and each NEEDS-A-DECISION row filled in per the
+three answers below. Spot-checkable: `session.rs:672,683` (the two
+`command_corrections` conversions), `session.rs:1070-1076` (the `BootstrapSessionType`
+conversion, `host_id: None` per answer A), `session.rs:1873-1880` (`read_history`, the
+out-of-band read per answer B), `bootstrap.rs:124` (`Remote` shares `Local`'s branch),
+`view.rs:9406` (`warpification_source`), `zero_state_block.rs:302`,
+`prompt/mod.rs:25`, `display_chip.rs:1675`, `controller.rs:172,212,257`,
+`active_session.rs:157-172`, and `completer/mod.rs:287`. The table is kept as the
+record of what each site decides and why, which is what a reader needs when revisiting
+one of them -- not as a work queue.
 
 **What a maintainer must decide before item 6 can start** -- the 9 NEEDS-A-DECISION rows
 collapse into three questions, not nine:
@@ -902,6 +1070,15 @@ constraint on who may drive a session, not a defect in the session.
   fourteen rows above are moot rather than merely small. That must be established, not
   assumed either way, before touching any of the three.
 
+**The three bullets above are the questions as first posed, kept for the reasoning.
+They were answered in the subsection immediately above and implemented on 2026-09-13**
+-- A as `Remote { host_id: Option<HostId> }`, B as out-of-band RPCs (and pinned by
+`completer/test.rs:24,683` and `session_test.rs:807`, which exist to prove no shell
+command is ever injected for a `Remote` session), C as "yes, and
+`BootstrapSessionType` does get a mirror" (`a3d454792`,
+`app/src/terminal/model/session.rs:1031`). None of the three rows turned out to be
+moot. Read the bullets for *why* each was open, not as open questions.
+
 ### Shutdown is two intents wearing one name — found 2026-09-13
 
 Building item 6's transport surfaced a decision that does not exist locally, because
@@ -935,6 +1112,40 @@ missing is a way for a caller to *say* which it means, which is a change to the 
 vocabulary shared with `local_tty` and `remote_tty` and so wants its own increment and its
 own audit of all four senders. Until then the transport pins the detach reading with a
 test, so flipping it has to be deliberate.
+
+**LANDED 2026-09-13.** `Message::Kill` sits alongside `Message::Shutdown` -- a variant
+rather than a flag on `Shutdown`, because all three transports match `Message`
+exhaustively with no wildcard, so a variant forces each of them to state an answer
+before it compiles where a field would let one keep its arm and inherit the wrong
+reading silently.
+
+**The audit found two routes, not four senders, and that is the useful result.** Three
+of the four sites converge on `PtyIntent::ShutdownPty`, and all three mean kill:
+
+| sender | verdict | why |
+|---|---|---|
+| `local_tty::TerminalManager::shutdown_event_loop`, from `Drop` and the Windows quit path | bare `Shutdown` | Indiscriminate: fires on tab close, window close and app quit alike, and the Windows path runs for every manager at once. Neither caller has decided anything about a particular shell. |
+| `terminal/view.rs`, autoupdate `FinishUpdate` | `Kill` | Its own comment is a requirement about what must not survive: the app is coming straight back, so "going away" is the wrong reading. |
+| `workspace/view.rs`, `remove_tab` | `Kill` | Guarded on `is_active_and_long_running()` -- it selects panes *by having a running process*. The panes are then detached `HiddenForClose` for undo-close, so `Drop` never runs and this is not redundant teardown. |
+| `PtyIntent::ShutdownPty` via `terminal_manager_util.rs` | `Kill` | Not an independent sender -- it is the relay for the two above, both of which mean kill. |
+
+So bare `Shutdown` now has exactly **one** origin, the `Drop`-driven teardown, which is
+precisely the caller this section's decision was made for. `PtyController::shutdown_pty`
+became `kill_pty` accordingly; `TerminalView::shutdown_pty` deliberately kept its name,
+since renaming it would have reached into `workspace/view.rs`.
+
+**The kill/detach line falls exactly on the `PtyController` / `TerminalManager`
+boundary** -- every controller-driven teardown is deliberate, every manager-driven one is
+incidental. That is why neither `PtyIntent` nor `workspace/view.rs` needed changing. Had
+`remove_tab` classified as detach, the fork would have had to move up into `PtyIntent`
+(`writeable_pty/terminal_surface.rs`) and every surface that projects it.
+
+**Two things left behind.** `PtyIntent::ShutdownPty` now maps to a kill and its name
+predates the distinction; renaming it touches every surface and is follow-up work. And
+`remote_tty` still has no kill route -- its websocket protocol carries stdin and
+window-size changes and nothing else, so a `Kill` there is logged and dropped rather
+than guessed at by closing the socket, which would rest on an unverified assumption
+about what `ssh-proxy-server` then does with the pty.
 
 ### Output buffering while detached — decided 2026-09-12
 
@@ -1073,6 +1284,76 @@ left unfixed at the time. Recorded here rather than silently carried, per the sa
 discipline as every other decision on this page. Gaps 1 and 3 are now fixed (see each);
 gap 2 -- a shell that writes and immediately exits losing its last output -- is still
 open. A fourth, found while fixing gap 3, is recorded at the end of this section.
+
+**Status 2026-09-13 — all four gaps now fixed.** Gaps 1 (`c85381934`) and 3
+(`68c30fc49`, which carried `SpawnSession.no_bootstrap` in alongside the
+reattach-acknowledgement work) landed first. Gaps 2 and 4 followed in the same round:
+
+- **Gap 2** -- `run_session_loop` records a child exit in `pending_exit` instead of
+  breaking on it, honours it *after* the read drain (so the last bytes are queued on
+  `events_tx` ahead of the `Exited` event) and *before* the write drain (a dead child
+  has nothing to receive queued stdin). It sets `can_read = true` on exit deliberately:
+  mio registers edge-triggered, so readiness already consumed earlier in the same wakeup
+  is never reported again. The daemon now knowingly diverges from
+  `local_tty::event_loop::EventLoop`, which still has the original race -- that
+  divergence is load-bearing, not drift.
+- **Gap 4** -- fixed *without* widening `crate::terminal::bootstrap`, which stays
+  private. The rule about which shells need a queued init script lives on
+  `ShellStarter::init_script_stdin_writes` in `local_tty/shell.rs`, beside the argument
+  builder that creates the need for it. Widening the module instead would have exposed
+  `generate_session_id` crate-wide -- one keystroke from the daemon minting a second
+  session id and handing the handshake an id nothing else knows, which is the exact
+  footgun the fix exists to avoid. `enqueue_init_script` is now the *second*
+  implementation of that rule and should become a caller.
+
+**RETRACTED 2026-09-13 — the "third defect" recorded here did not exist, and the entry
+that claimed it was wrong.** This paragraph previously reported a 100% CPU livelock: the
+benign-EIO arm leaving `can_read` true inside a `while can_read` loop, spinning forever
+on a persistent EIO and never reaching the `poll()` that surfaces the exit. The code
+reads that way, the reasoning is internally consistent, and it is false at the root.
+
+`is_benign_pty_hangup_read_error` tested `err.kind() == io::ErrorKind::Other`. EIO does
+not map to `Other` -- `std` has no mapping for it, so it decodes to
+`ErrorKind::Uncategorized`. Measured on the pinned toolchain rather than argued:
+
+```text
+io::Error::from_raw_os_error(5).kind()  ==  Uncategorized
+...                            == Other ==  false
+```
+
+**The arm never fired.** There was no livelock, because control never reached the branch
+that would have caused one.
+
+**What the same mismatch did cause is worse, and was introduced by the gap-2 fix.** With
+the arm inert, the new `can_read = true` forces a post-exit read, that read returns EIO,
+EIO falls past `WouldBlock`/`Interrupted`/benign to the fatal arm, and the fatal arm
+called `force_kill_and_report` unconditionally -- discarding the real status held in
+`pending_exit` and reporting `signalled()` for every clean exit, plus two spurious
+`log::error!`s. The `pending_exit.take()` break was unreachable on Linux for an ordinary
+exit.
+
+**Both are now fixed**: the classifier matches `raw_os_error() == Some(libc::EIO)`, and
+the fatal arm prefers a held `pending_exit` exactly as the receiver-gone branch already
+did. The asymmetry between those two branches was the real defect all along, and it bites
+macOS independently, where the benign arm is `cfg`'d out entirely.
+
+**The process lesson, which is why this is retracted in place rather than deleted.** The
+original finding cited real lines, traced a real control-flow path, and drew a false
+conclusion because nobody checked its premise -- that `ErrorKind::Other` matches EIO. It
+was then accepted in review and written up here as verified. This is the exact failure the
+2026-08-21 refutation round recorded ("cited a real attribute at a real line, compared it
+correctly against the pin, and drew a conclusion that was false"), repeated. A claim about
+what a library call *returns* is measurable in seconds; measure it.
+
+`local_tty::event_loop` still carries the original `ErrorKind::Other` check. Its loop
+never reads an exit status, so the consequence there is different and it is inherited
+upstream code -- noted, not fixed here.
+
+**One consequence recorded for item 6.** Unlike `remote_tty::event_loop`, which calls
+`register_session_id` before writing its init script, the daemon has no `TerminalModel`
+to register with -- nothing on that side parses the DCS hook. The id is used and never
+registered, which is harmless today and will not be once the client seam needs that id
+to reach the client, or the handshake will carry an id the client has never seen.
 
 **Exit codes are wrong on the default production path.** `PtySpawner::new()` on unix
 always constructs a `TerminalServer`, and `spawn_pty` prefers that server-hosted path
@@ -1223,6 +1504,14 @@ identity-scoped sockets (`LaunchMode::RemoteServerProxy` / `RemoteServerDaemon`,
 
 **It lacks session ownership entirely.** The whole operation surface
 (`remote_server/src/manager.rs:111`):
+
+> **Superseded 2026-09-13, and this is the finding this branch set out to close.** The
+> enum below is still exactly what it was, but it is no longer "the whole operation
+> surface": the six session RPCs (`SpawnSession`, `WriteSessionStdin`, `ResizeSession`,
+> `SignalSession`, `ListSessions`, `ReattachSession`) are separate messages on the same
+> protocol, and the daemon owns ptys that outlive their clients. Read this subsection
+> as the 2026-09-05 statement of the gap, not as the current state; "Scoping session
+> ownership" above carries the current one.
 
 ```rust
 pub enum RemoteServerOperation {

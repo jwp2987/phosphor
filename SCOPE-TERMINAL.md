@@ -1,23 +1,60 @@
 # Authoritative scope classification: terminal + warp_tui test gap
 
+> ## STALE PIN WARNING — read this before quoting any number here (2026-09-13)
+>
+> **Every verdict and every count in this file was measured at oracle pin
+> `02b53fcd8`** (Warp `2026.07.29.09.05` stable), against the fork as it stood in
+> early August 2026 — each section below records the exact fork revision it used.
+>
+> **That is not the current pin.** `ORACLE.md` is the authority for the pin and the
+> only place to take it from; it records **`4111d08f9`** (Warp `2026.08.26` stable,
+> pinned 2026-08-29). The pin has moved *twice* since this file was derived:
+> `02b53fcd8` → `42effe840` (2026-08-15) → `4111d08f9` (2026-08-29). Any note further
+> down this file that calls `42effe840` "the current pin" is itself out of date and is
+> superseded by this banner.
+>
+> **What that means for a reader:**
+>
+> - **The per-file verdicts and the quoted import evidence are still good, and are why
+>   this file still exists.** They describe the *shape* of the workload — a net gap is
+>   not a workload — and they record why each file was classified as it was. That
+>   reasoning does not expire when the pin moves.
+> - **The absolute numbers are stale in both directions.** The pin side is missing
+>   every test-bearing file added or changed after `02b53fcd8`: such files have **no
+>   row here at all**, so absence from this file is not evidence of anything. The fork
+>   side is older still, so every `miss` column reads high.
+> - **`docs/STATE.md` is the generated authority for current numbers.** It is
+>   regenerated from the tree and the ledger on every run, and where it disagrees with
+>   this file it is right. For a per-file, per-test breakdown use
+>   `docs/sweep-verdict-ledger.tsv`.
+>
+> **This banner is a staleness label, not a fix.** Re-deriving the classification is a
+> full reading pass over every test-bearing file at the current pin (Phase 2/4 of
+> `docs/pin-migration.md`) and needs the oracle fetched — it is deliberately deferred
+> rather than half-done.
+
 Slice: every test-bearing file under `app/src/terminal/`, `crates/warp_terminal/`,
 and `crates/warp_tui/` **as it exists at the pinned oracle**.
 
 | | |
 |---|---|
-| Oracle pin | `02b53fcd8` — Warp `2026.07.29.09.05` stable (see `ORACLE.md`) |
+| Oracle pin *as derived* | `02b53fcd8` — Warp `2026.07.29.09.05` stable. **Superseded**; `ORACLE.md` now records `4111d08f9`. See the banner above. |
 | Fork side | `origin/main` @ `4f33fcf9c` |
 | Method | test-**function**-name set comparison, file by file. No path matching. |
 
 > **The pin has moved; this file has not been re-derived.** These verdicts
 > classify the 854 test-bearing files as they existed at `02b53fcd8`, which
-> stopped being the pin on 2026-08-15 — `ORACLE.md` now records
-> `42effe840` (Warp `2026.08.12` stable). Re-deriving the classification is a
-> full reading pass (Phase 2/4 of `docs/pin-migration.md`), not part of moving
-> the pin, so it is deliberately deferred rather than half-done. Files added or
-> changed between the two pins have **no row here at all**; for those, and for
+> stopped being the pin on 2026-08-15 — first for `42effe840` (Warp `2026.08.12`
+> stable) and, since 2026-08-29, for `4111d08f9` (Warp `2026.08.26` stable), which
+> is what `ORACLE.md` records today. **This paragraph named `42effe840` as the
+> current pin until 2026-09-13; see the banner at the top of this file.**
+> Re-deriving the classification is a full reading pass (Phase 2/4 of
+> `docs/pin-migration.md`), not part of moving the pin, so it is deliberately
+> deferred rather than half-done. Files added or changed at any pin after
+> `02b53fcd8` have **no row here at all**; for those, and for
 > any current count, use `docs/sweep-verdict-ledger.tsv` (2,360 adjudicated
-> rows at the new pin) and `docs/STATE.md`.
+> rows as of the `42effe840` move; take the current figure from `docs/STATE.md`,
+> which is generated) and `docs/STATE.md`.
 
 
 > **Counts here are stale, and verdict A means less than it looks (2026-08-10, #2 sweep).**
