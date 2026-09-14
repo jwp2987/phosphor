@@ -16,16 +16,35 @@
 //! where the terminal model expects a local handle". This module is the
 //! transport half of that seam, plus the [`TerminalManager`] that owns one.
 //!
-//! **Where this stops.** Nothing creates a session yet. [`TerminalManager`]
-//! attaches to a session that already exists, and it can only be reached through
-//! a [`ConnectedRemotePtySession`] witness, which refuses to exist for a host
-//! with no connected client -- the invariant the event loop records and cannot
-//! check for itself. (`EventLoop` is intentionally not re-exported, so it is not
-//! linkable from here; see the note on the `pub use` below.) The session-creation path that calls `spawn_session`
-//! and mints a `RemotePtySessionId`, and reattach-on-open, are separate
-//! increments.
+//! **How a session comes to exist.** [`spawn_remote_session`] mints a
+//! `RemotePtySessionId`, sends `SpawnSession`, and -- only once the daemon has
+//! answered -- builds the [`ConnectedRemotePtySession`] witness that
+//! [`TerminalManager::create_model`] demands. The witness refuses to exist for a
+//! host with no connected client, which is the invariant the event loop records
+//! and cannot check for itself. (`EventLoop` is intentionally not re-exported,
+//! so it is not linkable from here; see the note on the `pub use` below.)
+//!
+//! **Where this stops.** Three things, none of them hidden:
+//!
+//! - **Nothing here opens a tab.** [`spawn_remote_session`] hands back a
+//!   witness; building a pane needs `TerminalViewResources`, a size and a
+//!   `WindowId`, which only the pane layer has.
+//! - **Reattach-on-open is a separate increment.** Nothing enumerates a host's
+//!   existing sessions on connect or re-adopts one, and nothing subscribes to
+//!   `SessionReconnected` to recover a session that outlived a failed attach.
+//! - **The output a session emits before its `EventLoop` subscribes is not
+//!   replayed.** The daemon pushes output as soon as the pty produces it, and
+//!   the subscription is only established inside `create_model`, one network
+//!   round trip later -- so a shell's first prompt is typically pushed to a
+//!   manager with no subscriber for it and dropped from the live stream. It is
+//!   *not* lost on the far side: nothing acknowledges live pushes
+//!   (`RemoteServerClient::acknowledge_session_output` is sent only from
+//!   `reattach_session`), so those bytes are still in `SessionStore`'s ring
+//!   buffer. Recovering them means a `reattach_session` and a way to prime the
+//!   loop with its payload, which is the reattach increment's shape.
 
 mod event_loop;
+mod session_spawn;
 mod terminal_manager;
 
 // `EventLoop` is deliberately NOT re-exported, matching `remote_tty::mod`, which
@@ -34,4 +53,8 @@ mod terminal_manager;
 // `EventLoop::start` reachable from outside, anyone could build a loop without a
 // `ConnectedRemotePtySession` and the invariant was back to being a comment.
 // Keeping the type module-private is what makes the witness the only door.
+pub use session_spawn::{
+    DEFAULT_SPAWN_COLS, DEFAULT_SPAWN_ROWS, OrphanCleanup, RemoteSessionSpawnFailure,
+    RemoteSessionSpawnRequest, spawn_remote_session,
+};
 pub use terminal_manager::{ConnectedRemotePtySession, TerminalManager};

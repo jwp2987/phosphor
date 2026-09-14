@@ -74,8 +74,13 @@ impl ConnectedRemotePtySession {
     ///
     /// `session` must already have been spawned on `host_id` -- see the type's
     /// doc comment for why that half cannot be checked here. This function never
-    /// spawns anything: it takes an id the caller already owns, and the
-    /// session-creation path that mints one is a separate increment.
+    /// spawns anything: it takes an id the caller already owns.
+    ///
+    /// [`super::spawn_remote_session`] is the caller that discharges the
+    /// obligation properly -- it calls this only from `SpawnSession`'s response
+    /// callback, so the "already spawned" half is true by construction rather
+    /// than by promise. It stays public for the reattach increment, whose ids
+    /// come from `ListSessions` and are equally already-spawned.
     pub fn for_spawned_session(
         host_id: HostId,
         session: RemotePtySessionId,
@@ -159,16 +164,20 @@ impl ConnectedRemotePtySession {
 /// it without preserving `as_any`'s answer would silently turn the prompt off
 /// and put the kill back.
 ///
-/// None of that is reachable end to end yet, for the reason below: nothing
-/// constructs a session, so nothing constructs one of these managers, so no tab
-/// has ever held one.
+/// None of that is reachable end to end yet, and the remaining gap is now the
+/// pane rather than the session: [`super::spawn_remote_session`] constructs
+/// daemon-owned sessions, but nothing calls it, because opening a tab on one
+/// needs `pane_group`/`workspace` to hold the returned pair. Until then no tab
+/// has ever held one of these.
 ///
 /// **This manager does not create sessions.** It takes a
 /// [`ConnectedRemotePtySession`], which can only be obtained by passing the
-/// connected-client check, and attaches to the session it names. The path that
-/// calls `spawn_session` and mints a `RemotePtySessionId` is a separate, later
-/// increment; wiring one up here would be exactly the eager construction
-/// [`EventLoop::start`]'s invariant forbids.
+/// connected-client check, and attaches to the session it names. Creating one is
+/// [`super::spawn_remote_session`]'s job, and it is a separate function rather
+/// than a step inside this one for a reason: `create_model` is synchronous and
+/// `SpawnSession` is an RPC, so a `create_model` that spawned would have to
+/// build its entity graph before the response arrived -- exactly the eager
+/// construction [`EventLoop::start`]'s invariant forbids.
 pub struct TerminalManager {
     model: Arc<FairMutex<TerminalModel>>,
 
@@ -228,11 +237,20 @@ impl TerminalManager {
             None, /* restored_blocks */
             initial_size,
             channel_event_proxy.clone(),
-            // The shell is a placeholder, exactly as it is in `remote_tty`. The
-            // real answer lives in the `SpawnSession` request that started this
-            // session (`PtySpawnSpec::shell`), which this layer never sees --
-            // carrying it here is the session-creation increment's job, not
-            // something to guess at from a session id.
+            // The shell is a placeholder, exactly as it is in `remote_tty`, and
+            // it stays one even now that `session_spawn` exists -- because the
+            // resolved shell is not a fact this client has. A `SpawnSession`
+            // request may carry `shell: None`, in which case the daemon picks
+            // with `ShellStarter::compute_fallback_shell` (the remote user's
+            // passwd entry, then `/bin/zsh`, `/bin/bash`, `/bin/fish`) and
+            // `SpawnSessionSuccess` -- an empty message -- never says which. So
+            // the only honest values here are the blank ones, and they cost
+            // little: every session this path creates is spawned with
+            // `no_bootstrap = true` (see `session_spawn::NO_BOOTSTRAP`), so
+            // there is no shell integration for a shell *type* to configure.
+            // Reporting it properly needs a resolved-shell field on
+            // `SpawnSessionSuccess`, which is the same proto increment that
+            // `no_bootstrap` is waiting on.
             ShellLaunchState::ShellSpawned {
                 available_shell: None,
                 display_name: ShellName::blank(),
