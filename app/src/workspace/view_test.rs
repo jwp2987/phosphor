@@ -6212,3 +6212,142 @@ fn test_reopening_a_file_whose_code_pane_was_moved_away_still_opens_it() {
         });
     });
 }
+
+// ── Closing a tab that would destroy a running remote session ──────────────
+//
+// These cover the decision only -- `tab_close_needs_remote_confirmation` and the
+// `PaneCloseRisk` pair it reads. Everything downstream of the decision (the
+// three-answer dialog, `RemotePtyDisposition::LeaveRunning` actually sparing a
+// pane in `remove_tab_with_disposition`) needs a live daemon-owned session to
+// exercise, and nothing constructs one yet -- `terminal/remote_server_tty/mod.rs`
+// says so in its module comment, and `TerminalManager::create_model` can only be
+// reached through a `ConnectedRemotePtySession`, which refuses to exist without a
+// connected host. A test that faked one would assert on the fake, so those parts
+// are deliberately uncovered rather than covered in name only.
+
+/// A pane whose pty is on this machine, running a command or not.
+fn local_pane(long_running: bool) -> PaneCloseRisk {
+    PaneCloseRisk {
+        is_daemon_owned_remote: false,
+        has_long_running_command: long_running,
+    }
+}
+
+/// A pane backed by a daemon-owned remote session, running a command or not.
+fn remote_pane(long_running: bool) -> PaneCloseRisk {
+    PaneCloseRisk {
+        is_daemon_owned_remote: true,
+        has_long_running_command: long_running,
+    }
+}
+
+#[test]
+fn closing_a_tab_of_local_panes_never_asks_about_a_remote_session() {
+    // Breaks if: the remote arm stops discriminating on the manager type. A
+    // local shell with a command still running is the case `remove_tab` has
+    // always handled by killing it, and putting a three-answer dialog in front
+    // of that would change every ordinary tab close in the app.
+    assert!(!tab_close_needs_remote_confirmation(&[
+        local_pane(true),
+        local_pane(true),
+    ]));
+}
+
+#[test]
+fn closing_a_tab_of_idle_remote_panes_does_not_ask() {
+    // Breaks if: the check drops the `is_active_and_long_running` half and
+    // prompts for any remote pane. An idle remote pane is never passed to
+    // `shutdown_pty` by `remove_tab`, so it detaches and the daemon keeps it
+    // whichever answer the user gives -- the dialog would be asking about a
+    // consequence that cannot happen.
+    assert!(!tab_close_needs_remote_confirmation(&[
+        remote_pane(false),
+        remote_pane(false),
+    ]));
+}
+
+#[test]
+fn closing_a_tab_with_a_running_remote_command_asks() {
+    // Breaks if: the whole prompt stops firing -- which is the state this
+    // change found the code in (`should_confirm_close_session` is a stub that
+    // returns `false`), and it is silent: the tab closes and the session on the
+    // host is killed with it.
+    assert!(tab_close_needs_remote_confirmation(&[remote_pane(true)]));
+}
+
+#[test]
+fn one_at_risk_pane_in_a_split_is_enough_to_ask() {
+    // Breaks if: the scan looks at the active pane only, or stops at the first
+    // pane. A split tab holds several panes and any one of them can be the
+    // remote session with the two-hour build in it.
+    assert!(tab_close_needs_remote_confirmation(&[
+        local_pane(true),
+        remote_pane(true),
+    ]));
+    assert!(tab_close_needs_remote_confirmation(&[
+        remote_pane(true),
+        local_pane(false),
+    ]));
+}
+
+#[test]
+fn a_long_running_local_pane_beside_an_idle_remote_one_does_not_ask() {
+    // Breaks if: the two facts get combined across panes instead of within one
+    // -- "some pane is remote" and "some pane is busy" is true here, and
+    // answering that pair would prompt about a remote session that nothing in
+    // this close was going to touch.
+    assert!(!tab_close_needs_remote_confirmation(&[
+        local_pane(true),
+        remote_pane(false),
+    ]));
+}
+
+#[test]
+fn a_tab_with_no_terminal_panes_does_not_ask() {
+    // Breaks if: the emptiness case inverts -- written as `!panes.iter().all(..)`
+    // this returns `true` for a tab of code or file panes and prompts about a
+    // remote session the tab does not have.
+    assert!(!tab_close_needs_remote_confirmation(&[]));
+}
+
+#[test]
+fn close_and_leave_running_closes_the_tab_it_was_asked_about() {
+    // Breaks if: the third answer is wired to dismiss the dialog without
+    // actually closing anything -- the user clicks "Leave running", the tab
+    // stays, and the only visible result is that the dialog went away. This is
+    // the one part of the new path reachable without a live remote session: the
+    // tab here is an ordinary local one, so nothing is spared and nothing is
+    // killed, and what is under test is purely that the new event routes to a
+    // close and clears the dialog state.
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        app.update(disable_quit_warning);
+
+        let workspace = mock_workspace(&mut app);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            // A second tab, so that closing one closes a tab rather than the window.
+            workspace.add_terminal_tab(false, ctx);
+            assert_eq!(workspace.tab_count(), 2);
+
+            workspace.handle_close_session_confirmation_dialog_event(
+                &CloseSessionConfirmationEvent::CloseAndLeaveRunning {
+                    open_confirmation_source: OpenDialogSource::CloseTab { tab_index: 1 },
+                },
+                ctx,
+            );
+
+            assert_eq!(
+                workspace.tab_count(),
+                1,
+                "\"close and leave the session running\" still has to close the tab"
+            );
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_close_session_confirmation_dialog_open,
+                "the dialog must not be left open after the third answer"
+            );
+        });
+    });
+}

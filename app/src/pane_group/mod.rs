@@ -526,6 +526,14 @@ pub enum Event {
         env_var_collection: Arc<EnvVarCollectionType>,
         in_subshell: bool,
     },
+    /// Closing this pane would destroy a still-running daemon-owned remote
+    /// session. The `Workspace` answers by opening the close confirmation with
+    /// [`CloseSessionConfirmationKind::RunningRemoteSession`]; `PaneGroup` cannot
+    /// open it itself, exactly as with
+    /// [`Self::CloseSharedSessionPaneRequested`] below.
+    CloseRemoteSessionPaneRequested {
+        pane_id: PaneId,
+    },
     CloseSharedSessionPaneRequested {
         pane_id: PaneId,
     },
@@ -804,7 +812,20 @@ pub enum PanesLayout {
     /// process behind it (`docs/design/moth-parliament.md` step 1). See
     /// `PaneGroup::create_conversation_pane_data`, the split-pane path this shares its
     /// pane-construction logic with.
-    Conversation,
+    ///
+    /// The payload is the working directory that conversation starts in
+    /// (`docs/design/moth-parliament.md` step 3). It is resolved by the caller
+    /// (`Workspace::add_conversation_tab`) rather than here because the tab it inherits
+    /// from is a *different* `PaneGroup`, owned by the `Workspace` and not reachable from
+    /// `PaneGroup::new_with_panes_layout`'s `initial_layout` closure -- so the directory
+    /// travels in with the layout instead.
+    ///
+    /// `None` is a meaningful value, not "unknown": it means the user's home directory,
+    /// which is exactly what the `working_directory` setting's home mode (and an unset
+    /// custom directory) asks for. See `TerminalModel::session_startup_path` and
+    /// `resolve_conversation_directory_path` in `app/src/terminal/view/pane_impl.rs`,
+    /// which both resolve "unset" to home.
+    Conversation(Option<PathBuf>),
     /// A tab whose sole pane is the remote-hosts dashboard (`docs/design/moth-parliament.md`,
     /// "The dashboard: hosts and groups need a surface, not a settings page").
     RemoteHostsDashboard,
@@ -3332,16 +3353,21 @@ impl PaneGroup {
     /// hand (the same `resources`/`model_event_sender` the sibling `initial_ambient_agent_pane`
     /// takes), not `&self`.
     ///
-    /// Unlike the split-pane path, there is no "active tab" reachable here to inherit a cwd
-    /// from: this call site only ever builds a brand-new tab (`PanesLayout::Conversation`,
-    /// reached from `WorkspaceView::add_conversation_tab`), and the tab the user was
-    /// previously on is a *different* `PaneGroup` owned by `WorkspaceView`, which is not
-    /// threaded into `new_with_panes_layout`/this closure at all -- doing so would mean
-    /// widening that signature in `app/src/workspace/view.rs`, outside this change's scope.
-    /// So this falls straight to the same "workspace root" stand-in
-    /// `conversation_pane_inherited_cwd` uses when a base pane's cwd is unavailable: this
-    /// process's own working directory (`docs/design/moth-parliament.md` step 3).
+    /// `inherited_cwd` is the directory this conversation starts in
+    /// (`docs/design/moth-parliament.md` step 3), carried in on the
+    /// `PanesLayout::Conversation` payload. It is resolved on the workspace side rather
+    /// than here because the tab it inherits from is a *different* `PaneGroup` owned by
+    /// `Workspace`, which is not threaded into `new_with_panes_layout`/this closure at
+    /// all; and it cannot be resolved by reading the `Workspace` view from in here either,
+    /// because that view is already mutably borrowed while this closure runs.
+    ///
+    /// `None` means the user's home directory, not "unknown" -- see the
+    /// `PanesLayout::Conversation` doc comment. There is deliberately no
+    /// `std::env::current_dir()` last resort: the process's own cwd is not a directory the
+    /// user chose, and using it would silently override the `working_directory` setting's
+    /// home mode, which answers `None` on purpose.
     fn initial_conversation_pane(
+        inherited_cwd: Option<PathBuf>,
         resources: TerminalViewResources,
         view_bounds: RectF,
         model_event_sender: Option<SyncSender<ModelEvent>>,
@@ -3353,7 +3379,7 @@ impl PaneGroup {
             resources,
             view_bounds.size(),
             Uuid::new_v4().into_bytes().to_vec(),
-            std::env::current_dir().ok(),
+            inherited_cwd,
             None, // a new conversation tab has no persisted blocks
             None,
             model_event_sender,
@@ -3537,7 +3563,8 @@ impl PaneGroup {
                     pane_history,
                     ctx,
                 ),
-                PanesLayout::Conversation => Self::initial_conversation_pane(
+                PanesLayout::Conversation(inherited_cwd) => Self::initial_conversation_pane(
+                    inherited_cwd,
                     resources,
                     view_bounds,
                     model_event_sender_clone,
@@ -4403,6 +4430,38 @@ impl PaneGroup {
             }) {
                 ctx.emit(Event::CloseSharedSessionPaneRequested { pane_id });
                 return;
+            }
+
+            // Closing a *pane* used to answer this question differently from
+            // closing a *tab*, silently. `close_pane` sends no `shutdown_pty`, so
+            // a pane holding a running daemon-owned session always detached: no
+            // prompt, no kill, and -- until the sessions dashboard landed -- no
+            // way to discover what had been left behind. The tab path asks. This
+            // asks the same question with the same words.
+            //
+            // Deliberately AFTER the shared-session branch above, which returns:
+            // a sharer pane has its own conversation to have first, and stacking
+            // two modals on one close would be worse than either.
+            #[cfg(not(target_family = "wasm"))]
+            {
+                let is_remote = terminal_manager.read(ctx, |terminal_manager, _ctx| {
+                    crate::workspace::view::is_daemon_owned_remote_session(terminal_manager)
+                });
+                let is_long_running = terminal_manager.read(ctx, |terminal_manager, _ctx| {
+                    terminal_manager
+                        .model()
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running()
+                });
+                // Both halves, matching the tab path: an idle remote pane is not
+                // at risk -- nothing is running to lose -- and prompting for it
+                // would train the user to dismiss the dialog unread.
+                if is_remote && is_long_running {
+                    ctx.emit(Event::CloseRemoteSessionPaneRequested { pane_id });
+                    return;
+                }
             }
         }
 
@@ -6050,23 +6109,48 @@ impl PaneGroup {
     /// the directory a process spawned from this pane would start in, whether or not one
     /// ever actually spawns.
     ///
-    /// Falls back further to this process's own working directory when even that resolves to
-    /// nothing -- e.g. the base pane is not a terminal pane at all. `std::env::current_dir()`
-    /// is the closest thing this codebase has to "the workspace root" the design doc's
-    /// fallback chain names: Phosphor has no persistent per-window project-root concept for
-    /// terminal panes distinct from a session's own cwd, and this is the same fallback
-    /// `local_harness_launch.rs` already uses for "no more specific directory is known." If
-    /// even that fails, `None` is returned, and `conversation_pane_data` leaves
-    /// `session_startup_path` unset, which `TerminalModel` documents as falling back to the
-    /// user's home directory.
+    /// The inherited path is then run through the `working_directory` setting exactly the
+    /// way the terminal sibling of this gesture runs it
+    /// (`add_session_with_default_session_mode_behavior`): same
+    /// `WorkingDirectoryConfig::initial_directory_for_new_session`, same
+    /// `NewSessionSource::SplitPane`. Splitting a terminal pane and splitting a
+    /// conversation pane are the same user gesture, so they must obey the same setting --
+    /// this call site used to skip the filter entirely, which made `working_directory:
+    /// home` and a custom directory apply to one and not the other.
+    ///
+    /// There is deliberately no `std::env::current_dir()` last resort. `None` is a
+    /// meaningful answer meaning the user's home directory -- it is precisely what the
+    /// setting's home mode (and an unset custom directory) returns, and
+    /// `conversation_pane_data` leaves `session_startup_path` unset, which `TerminalModel`
+    /// and `resolve_conversation_directory_path` both resolve to home. Falling back to the
+    /// process's own cwd here would make the settings layer a no-op for two of its three
+    /// modes, silently substituting the app's launch directory for the directory the user
+    /// asked for.
     fn conversation_pane_inherited_cwd(
         &self,
         base_pane_id: Option<PaneId>,
-        ctx: &AppContext,
+        ctx: &ViewContext<Self>,
     ) -> Option<PathBuf> {
         let source_pane_id = base_pane_id.unwrap_or_else(|| self.focused_pane_id(ctx));
-        self.startup_path_for_new_session(source_pane_id.as_terminal_pane_id(), ctx)
-            .or_else(|| std::env::current_dir().ok())
+        let initial_directory_from_current_session =
+            self.startup_path_for_new_session(source_pane_id.as_terminal_pane_id(), ctx);
+
+        // A conversation pane spawns no shell of its own, so there is no chosen shell to
+        // hand the WSL check; it falls through to the user's preferred shell, the same
+        // shell a terminal split from here would have used.
+        let no_chosen_shell: Option<AvailableShell> = None;
+        let ignore_custom_startup_directory =
+            self.should_ignore_custom_startup_directory(&no_chosen_shell, ctx);
+
+        SessionSettings::handle(ctx).read(ctx, |settings, _ctx| {
+            settings
+                .working_directory_config
+                .initial_directory_for_new_session(
+                    NewSessionSource::SplitPane,
+                    initial_directory_from_current_session,
+                    ignore_custom_startup_directory,
+                )
+        })
     }
 
     /// Creates a new conversation pane: a `TerminalPane` whose `TerminalView` has no pty
@@ -6168,7 +6252,9 @@ impl PaneGroup {
         // documents as falling back to the user's home directory -- the same default an
         // ordinary terminal pane gets when it isn't given a startup directory. `Some` cwds
         // come from a restored snapshot's stored `cwd`, an inherited base-pane directory
-        // (`conversation_pane_inherited_cwd`), or this process's own working directory
+        // (`conversation_pane_inherited_cwd`, for a split), or the active tab's directory
+        // (`Workspace::add_conversation_tab`, for a new tab) -- in both live cases already
+        // filtered through the `working_directory` setting
         // (`docs/design/moth-parliament.md` step 3).
         terminal_manager.update(ctx, |terminal_manager, _ctx| {
             // `model()` returns a temporary, so `model().lock()` in one statement drops it

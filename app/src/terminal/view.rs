@@ -7870,6 +7870,32 @@ impl TerminalView {
 
     /// Shuts down the pty and event loop, terminating the shell process.
     /// Also marks this view as manually shut down for telemetry attribution.
+    ///
+    /// Audited as a **kill**, not a going-away teardown. `Event::ShutdownPty`
+    /// reaches `PtyController::kill_pty` (via `PtyIntent::ShutdownPty` in
+    /// `terminal_manager_util`), which sends `Message::Kill`, and both callers
+    /// of this method have decided the shell must stop rather than merely
+    /// noticing that they are going away:
+    ///
+    /// * the autoupdate relaunch below -- "terminate this shell session so that
+    ///   it doesn't come back when we restore sessions after the relaunch";
+    /// * `workspace::view::WorkspaceView::remove_tab`, which calls this only for
+    ///   panes whose active block `is_active_and_long_running()` (in `Workspace`,
+    ///   `app/src/workspace/view.rs` -- there is no `WorkspaceView` type, which an
+    ///   earlier version of this comment named). That guard
+    ///   selects panes by *having a running process*, and those panes are
+    ///   detached `HiddenForClose` and stay alive for an undo-close, so `Drop`
+    ///   does not run and this is not a duplicate of it.
+    ///
+    /// `manual_pty_shutdown_requested` is the same reading in the other
+    /// direction: the resulting `Exit` is attributed to a deliberate act rather
+    /// than to the shell dying on its own.
+    ///
+    /// The indiscriminate teardown has its own route and never comes through
+    /// here: `local_tty::TerminalManager::shutdown_event_loop`, driven by `Drop`
+    /// and by the Windows quit path, sends a bare `Message::Shutdown`. Locally
+    /// the two are one act; they diverge for a daemon-owned remote session,
+    /// which survives a `Shutdown` and dies on a `Kill`.
     pub fn shutdown_pty(&mut self, ctx: &mut ViewContext<Self>) {
         self.manual_pty_shutdown_requested = true;
         ctx.emit(Event::ShutdownPty);
@@ -12023,6 +12049,14 @@ impl TerminalView {
                 if expected_update_id == data.update_id {
                     // Terminate this shell session so that it doesn't come
                     // back when we restore sessions after the relaunch.
+                    //
+                    // A *kill*, and the caller whose intent made that a separate
+                    // message: this is not "the app is going away, let go of the
+                    // pty" -- the app is coming straight back, and the comment
+                    // above is a requirement about what must not survive the
+                    // relaunch. `shutdown_pty` routes to `Message::Kill`, which
+                    // a daemon-owned session reads as `SignalSession`/`Kill`
+                    // rather than as a detach it would return from.
                     self.shutdown_pty(ctx);
                     autoupdate::initiate_relaunch_for_update(ctx);
                 } else {

@@ -79,6 +79,10 @@ use crate::notifications::{
 use crate::pane_group::pane::ActionOrigin;
 use crate::projects::ProjectManagementModel;
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
+// The trait, not a concrete manager: `as_any` is declared on it, and the
+// downcast to `remote_server_tty::TerminalManager` is the only way to ask a
+// boxed manager where its pty lives.
+use crate::terminal::TerminalManager;
 use crate::terminal::model::terminal_model::ConversationTranscriptViewerStatus;
 use crate::terminal::session_settings::SessionSettings;
 use crate::terminal::view::inline_banner::ZeroStatePromptSuggestionType;
@@ -403,7 +407,7 @@ use super::action::{
 // path pointing at the same private submodule.
 pub(crate) use super::close_session_confirmation_dialog::OpenDialogSource;
 use super::close_session_confirmation_dialog::{
-    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent,
+    CloseSessionConfirmationDialog, CloseSessionConfirmationEvent, CloseSessionConfirmationKind,
 };
 use super::delete_conversation_confirmation_dialog::{
     DeleteConversationConfirmationDialog, DeleteConversationConfirmationEvent,
@@ -1101,6 +1105,115 @@ pub struct Workspace {
     /// submenu parent, shared by the single-tab and multi-tab context menus.
     move_to_group_sidecar_menu: ViewHandle<Menu<WorkspaceAction>>,
     show_move_to_group_sidecar: bool,
+}
+
+/// What a close should do to a daemon-owned remote pty session in the tab it is
+/// closing.
+///
+/// Only ever [`RemotePtyDisposition::LeaveRunning`] as the result of the user
+/// answering the close-session confirmation dialog; every other close path
+/// passes [`RemotePtyDisposition::Kill`], which is exactly what `remove_tab` did
+/// before this existed. Local panes are unaffected either way -- `LeaveRunning`
+/// spares only the panes whose manager is a `remote_server_tty::TerminalManager`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum RemotePtyDisposition {
+    /// Kill the pty as part of closing: `shutdown_pty` on every pane whose
+    /// active block `is_active_and_long_running()`, which for a daemon-owned
+    /// remote session means `Message::Kill` -> `SignalSession`/`Kill`.
+    Kill,
+    /// Close without killing the remote session. Not sending `Message::Kill` is
+    /// the whole mechanism: dropping the manager drops the `PtyController` that
+    /// holds the only `Sender<Message>`, `run_outbound`'s `messages.recv()`
+    /// returns `Err`, its loop ends without an RPC, and the daemon keeps the
+    /// pty. (Verified in `terminal/remote_server_tty/event_loop.rs`; the
+    /// `Message::Shutdown` -> `Detach` mapping there is *not* what does it,
+    /// because nothing sends `Shutdown` on this transport.)
+    LeaveRunning,
+}
+
+/// One terminal pane reduced to the two facts that decide whether closing its
+/// tab has to ask the user first.
+///
+/// Extracted from the entity graph on purpose: the decision is then a pure
+/// function of a few booleans, testable without a live remote session -- and
+/// nothing constructs one of those yet (`terminal/remote_server_tty/mod.rs`).
+/// Same shape, and the same reason, as `outbound_rpc_for` / `is_for_session` in
+/// `terminal/remote_server_tty/event_loop.rs`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+struct PaneCloseRisk {
+    /// The pane's terminal manager is a `remote_server_tty::TerminalManager`:
+    /// its pty lives on another host, owned by that host's daemon, and outlives
+    /// this client unless something kills it.
+    is_daemon_owned_remote: bool,
+    /// The pane's active block `is_active_and_long_running()` -- the same
+    /// condition `remove_tab` uses to decide whether to `shutdown_pty`, and so
+    /// the same condition that decides whether closing this tab would send a
+    /// kill.
+    has_long_running_command: bool,
+}
+
+impl PaneCloseRisk {
+    /// True when closing this pane the ordinary way would destroy a session on
+    /// a remote host.
+    ///
+    /// Both halves are required, and the second is not a refinement of the
+    /// first. An *idle* remote pane is not at risk: `remove_tab` never reaches
+    /// `shutdown_pty` for it, so it detaches and the daemon keeps the pty
+    /// whatever the user would have answered. Prompting there would be a dialog
+    /// in front of a close that was already safe.
+    fn would_destroy_remote_session(self) -> bool {
+        self.is_daemon_owned_remote && self.has_long_running_command
+    }
+}
+
+/// Does closing a tab holding these panes have to ask the user first?
+///
+/// The whole decision, as a pure function of pane state. A tab with only local
+/// panes never reaches the dialog no matter what those panes are running: the
+/// local close path is unchanged, and "you would orphan a process in the window
+/// you are closing" is what `is_active_and_long_running()` was written for
+/// there. What is new is the remote case, where the same condition selects
+/// precisely the sessions worth keeping.
+fn tab_close_needs_remote_confirmation(panes: &[PaneCloseRisk]) -> bool {
+    panes.iter().any(|pane| pane.would_destroy_remote_session())
+}
+
+/// True when this manager's pty is owned by a `remote_server` daemon on another
+/// host.
+///
+/// The downcast is the available discriminator, and there is no cheaper one: the
+/// managers are `Box<dyn TerminalManager>`, and that trait says nothing about
+/// where the pty lives -- deliberately, since it also has to cover a TUI-owned
+/// manager with no view at all.
+///
+/// `TerminalModel`'s `SessionType::Remote` names the same idea one layer down
+/// and still cannot stand in for this, for two reasons that were checked rather
+/// than assumed. It is derived from the *bootstrap* handshake, and
+/// `Session::determine_session_type` only ever answers `Local` or
+/// `WarpifiedRemote` -- under `feature = "remote_tty"` it answers
+/// `WarpifiedRemote` unconditionally -- so nothing in the app produces
+/// `SessionType::Remote` today, only `session_test.rs` does. And a handshake
+/// answer describes the shell that reported its hostname, not which transport
+/// would carry a kill; the manager's concrete type is the fact that decides
+/// that.
+// `pub(crate)` so `PaneGroup::close_pane_with_confirmation` asks the same
+// question this file does. Closing a pane and closing a tab must not disagree
+// about what "this holds a remote session" means, and two downcasts would be two
+// chances to drift.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn is_daemon_owned_remote_session(manager: &dyn TerminalManager) -> bool {
+    manager
+        .as_any()
+        .downcast_ref::<crate::terminal::remote_server_tty::TerminalManager>()
+        .is_some()
+}
+
+/// `terminal::remote_server_tty` is gated `#[cfg(not(target_family = "wasm"))]`
+/// -- the remote-server client and its transport are not built for wasm -- so
+/// there is no such manager to find there.
+#[cfg(target_family = "wasm")]
+fn is_daemon_owned_remote_session(_manager: &dyn TerminalManager) -> bool {
+    false
 }
 
 impl Workspace {
@@ -4205,9 +4318,51 @@ impl Workspace {
     /// `add_conversation_pane_in_current_tab`'s split, `PanesLayout::Conversation` needs no
     /// existing pane group to attach to, so this goes straight through
     /// `add_tab_with_pane_layout` the same way `add_welcome_tab`/`add_get_started_tab` do.
+    ///
+    /// The directory the new conversation starts in is resolved *here*, not inside
+    /// `PaneGroup` (`docs/design/moth-parliament.md` step 3): the tab it inherits from is a
+    /// different `PaneGroup` that only the `Workspace` can see, and `PaneGroup`'s
+    /// `initial_layout` closure runs while this view is already mutably borrowed.
     fn add_conversation_tab(&mut self, ctx: &mut ViewContext<Self>) {
+        // A conversation pane has file tools and no shell -- no prompt, no `pwd` -- so this
+        // directory is invisible state, surfaced only in the pane header.
+        //
+        // It is NOT what anchors the agent's file writes, though an earlier version of this
+        // comment claimed it was. Those resolve through
+        // `ActiveSession::current_working_directory`, written only from the
+        // `BlockMetadataReceived` / `BlockWorkingDirectoryUpdated` subscription -- events a
+        // pane with no pty never emits -- so it stays `None` for a conversation pane's whole
+        // life, before and after this change. What this directory really governs is the
+        // header, what a split off this pane inherits, and what gets persisted. Worth
+        // getting right; do not build on the stronger claim.
+        //
+        // Resolve it through the same helper a new *terminal* tab uses
+        // (`add_new_session_tab_internal_with_default_session_mode_behavior` ->
+        // `get_new_tab_startup_directory`), rather than adding a second source of truth.
+        // The invariant: a conversation pane lands exactly where a terminal session opened
+        // by the same gesture would land.
+        //
+        // Read before `add_tab_with_pane_layout`, which builds the new `PaneGroup` and only
+        // then inserts and activates the tab -- so the active tab this inherits from is
+        // still the one the user was on.
+        //
+        // No `std::env::current_dir()` fallback: `None` is the answer the setting's home
+        // mode gives, and it means "home" to the consumers that resolve it
+        // (`TerminalModel::session_startup_path`, `resolve_conversation_directory_path`, and
+        // the pty itself, which `chdir`s to home when `start_dir` is `None`). Substituting
+        // the process's launch directory would make the setting a no-op for two of its three
+        // modes. One consumer does read `None` as "no directory" rather than home --
+        // `current_working_directory_for_zero_state`, which then renders no recents section
+        // -- which matches what a terminal pane in home mode already does, but means the
+        // "always means home" shorthand is not literally true everywhere.
+        let inherited_cwd = self.get_new_tab_startup_directory(
+            NewSessionSource::Tab,
+            Some(ctx.window_id()),
+            None, /* chosen_shell: a conversation pane has no shell */
+            ctx,
+        );
         self.add_tab_with_pane_layout(
-            PanesLayout::Conversation,
+            PanesLayout::Conversation(inherited_cwd),
             Arc::new(HashMap::new()),
             None,
             ctx,
@@ -10375,6 +10530,36 @@ impl Workspace {
     // The flow is:
     // - User closes pane in pane group, which emits event to workspace
     // - Workspace shows confirmation dialog, and calls back into pane group to close pane here if user confirms
+    /// Closes a pane after ending the pty behind it, for the "stop session"
+    /// answer to the remote close prompt.
+    ///
+    /// Separate from [`Self::close_pane`] rather than a flag on it because every
+    /// other caller of that method means "detach": `close_pane` has never issued
+    /// a `shutdown_pty` and the local panes that reach it are torn down by
+    /// `Drop` instead. Only this path has been told to end something.
+    fn close_pane_killing_remote_session(
+        &mut self,
+        pane_group_id: EntityId,
+        pane_id: PaneId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let Some(pane_group_view) = self.get_pane_group_view_with_id(pane_group_id) else {
+            log::error!("Could not close pane because pane group doesn't exist");
+            return;
+        };
+        pane_group_view.update(ctx, |pane_group, ctx| {
+            if let Some(terminal_pane) = pane_group.downcast_pane_by_id::<TerminalPane>(pane_id) {
+                let terminal_view = terminal_pane.terminal_view(ctx);
+                terminal_view.update(ctx, |terminal_view, ctx| {
+                    // Routes to `Message::Kill` -> `SignalSession`/`Kill`, the
+                    // same act the tab path's "stop session" performs.
+                    terminal_view.shutdown_pty(ctx);
+                });
+            }
+            pane_group.close_pane(pane_id, ctx);
+        });
+    }
+
     fn close_pane(
         &mut self,
         pane_group_id: EntityId,
@@ -10422,7 +10607,12 @@ impl Workspace {
                         pane_group_id,
                         pane_id,
                     } => {
-                        self.close_pane(pane_group_id, pane_id, ctx);
+                        // "Stop session" has to send the kill itself.
+                        // `PaneGroup::close_pane` issues no `shutdown_pty` -- that
+                        // is the whole reason a pane close used to detach
+                        // silently -- so closing alone would answer "stop" with a
+                        // detach, which is the opposite of what was clicked.
+                        self.close_pane_killing_remote_session(pane_group_id, pane_id, ctx);
                     }
                     OpenDialogSource::CloseTabsDirection {
                         tab_index,
@@ -10432,6 +10622,65 @@ impl Workspace {
                     }
                     OpenDialogSource::CloseOtherTabs { tab_index } => {
                         self.close_other_tabs(tab_index, true, ctx);
+                    }
+                }
+                self.current_workspace_state
+                    .is_close_session_confirmation_dialog_open = false;
+                ctx.notify();
+            }
+            CloseSessionConfirmationEvent::CloseAndLeaveRunning {
+                open_confirmation_source,
+            } => {
+                // No `dont_show_again` handling, and no setting write: this
+                // answer is never remembered. `CloseSessionConfirmationAction`'s
+                // doc comment says why -- one global boolean cannot hold an
+                // answer to two different questions, and with three answers
+                // there is no single thing "don't ask again" would mean.
+                match *open_confirmation_source {
+                    OpenDialogSource::CloseTab { tab_index } => {
+                        self.remove_tab_and_sync_agent_conversations_with_disposition(
+                            tab_index,
+                            true,
+                            true,
+                            RemotePtyDisposition::LeaveRunning,
+                            ctx,
+                        );
+                    }
+                    OpenDialogSource::ClosePane {
+                        pane_group_id,
+                        pane_id,
+                    } => {
+                        // A plain close IS the detach: `PaneGroup::close_pane`
+                        // issues no `shutdown_pty`, so dropping the manager ends
+                        // `run_outbound` by closing its channel and the daemon
+                        // keeps the pty.
+                        //
+                        // This was written when the pane path could not reach
+                        // this dialog and the two answers were therefore the same
+                        // act. They are not any more -- "stop session" goes
+                        // through `close_pane_killing_remote_session`, which
+                        // sends the kill this arm deliberately does not.
+                        self.close_pane(pane_group_id, pane_id, ctx);
+                    }
+                    OpenDialogSource::CloseTabsDirection {
+                        tab_index,
+                        direction,
+                    } => {
+                        self.close_tabs_direction_with_disposition(
+                            tab_index,
+                            direction,
+                            true,
+                            RemotePtyDisposition::LeaveRunning,
+                            ctx,
+                        );
+                    }
+                    OpenDialogSource::CloseOtherTabs { tab_index } => {
+                        self.close_other_tabs_with_disposition(
+                            tab_index,
+                            true,
+                            RemotePtyDisposition::LeaveRunning,
+                            ctx,
+                        );
                     }
                 }
                 self.current_workspace_state
@@ -10974,6 +11223,28 @@ impl Workspace {
         detach_panes_for_close: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        // Every caller that has not been through the close-session confirmation
+        // dialog means the historical thing by "close": kill what is running.
+        self.remove_tab_with_disposition(
+            index,
+            add_to_undo_stack,
+            detach_panes_for_close,
+            RemotePtyDisposition::Kill,
+            ctx,
+        )
+    }
+
+    /// `remove_tab`, plus what to do with a daemon-owned remote session in the
+    /// tab. Split out rather than added to `remove_tab` so that every existing
+    /// caller keeps the signature -- and the behaviour -- it already had.
+    fn remove_tab_with_disposition(
+        &mut self,
+        index: usize,
+        add_to_undo_stack: bool,
+        detach_panes_for_close: bool,
+        remote_disposition: RemotePtyDisposition,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let Some(tab_data) = self.tabs.get(index) else {
             debug_assert!(false, "Tried to remove a tab with an invalid index");
             return false;
@@ -10998,9 +11269,29 @@ impl Workspace {
 
         if detach_panes_for_close {
             let working_directories_model = self.working_directories_model.clone();
+            // The terminal views whose pty must survive this close. Empty for
+            // every `Kill` close, which is what keeps the local path exactly
+            // what it was: with nothing to spare, the loop below is the loop
+            // that was here before.
+            let views_to_leave_running = match remote_disposition {
+                RemotePtyDisposition::Kill => Vec::new(),
+                RemotePtyDisposition::LeaveRunning => {
+                    Self::daemon_owned_remote_terminal_views(&tab_data.pane_group, ctx)
+                }
+            };
             tab_data.pane_group.update(ctx, |pane_group, ctx| {
                 pane_group.for_all_terminal_panes(
                     |terminal_view, ctx| {
+                        // Identified by view id because `for_all_terminal_panes`
+                        // hands out a `TerminalView` and nothing else -- a
+                        // `TerminalView` cannot name its own manager, which is
+                        // the thing that knows where the pty lives.
+                        if views_to_leave_running.contains(&ctx.view_id()) {
+                            // Deliberately no `shutdown_pty`: not sending
+                            // `Message::Kill` *is* the detach. See
+                            // `RemotePtyDisposition::LeaveRunning`.
+                            return;
+                        }
                         if terminal_view
                             .model
                             .lock()
@@ -11061,7 +11352,30 @@ impl Workspace {
         detach_panes_for_close: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.remove_tab(index, add_to_undo_stack, detach_panes_for_close, ctx) {
+        self.remove_tab_and_sync_agent_conversations_with_disposition(
+            index,
+            add_to_undo_stack,
+            detach_panes_for_close,
+            RemotePtyDisposition::Kill,
+            ctx,
+        )
+    }
+
+    fn remove_tab_and_sync_agent_conversations_with_disposition(
+        &mut self,
+        index: usize,
+        add_to_undo_stack: bool,
+        detach_panes_for_close: bool,
+        remote_disposition: RemotePtyDisposition,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.remove_tab_with_disposition(
+            index,
+            add_to_undo_stack,
+            detach_panes_for_close,
+            remote_disposition,
+            ctx,
+        ) {
             self.sync_agent_conversations(ctx);
         }
     }
@@ -11081,6 +11395,93 @@ impl Workspace {
         false
     }
 
+    /// True when closing the tab at `index` would destroy a running session on a
+    /// remote host.
+    ///
+    /// Not gated on `should_confirm_close_session` (nor on the setting behind
+    /// it), and that is the point: that setting answers "warn me before I end a
+    /// share", a question about other people seeing a session. This one asks
+    /// "kill the command running over there, or leave it?", and its wrong answer
+    /// is unrecoverable work. See `CloseSessionConfirmationAction`'s doc comment
+    /// for the full argument.
+    fn tab_close_would_destroy_remote_session(&self, index: usize, ctx: &AppContext) -> bool {
+        // Closing the only remaining tab closes the *window* instead:
+        // `remove_tab` returns before it reaches the `shutdown_pty` loop, so no
+        // kill is sent and there is nothing here to ask about. The window close
+        // has its own confirmation. Same reasoning, and the same early return,
+        // as `should_confirm_close_session` above.
+        if self.tab_count() == 1 {
+            return false;
+        }
+
+        let Some(pane_group) = self.get_pane_group_view(index) else {
+            return false;
+        };
+
+        let risks = Self::pane_close_risks(pane_group, ctx)
+            .into_iter()
+            .map(|(_pane_id, risk)| risk)
+            .collect_vec();
+        tab_close_needs_remote_confirmation(&risks)
+    }
+
+    /// Each terminal pane of `pane_group`, reduced to the facts a close decision
+    /// needs, paired with the pane it came from.
+    ///
+    /// Enumerated by pane *index* because that is the only route from a pane to
+    /// its `TerminalManager` that `PaneGroup` exposes (`terminal_manager`), and
+    /// the manager is the only thing that knows whether the pty is local. That
+    /// route walks `visible_pane_ids()`, so a hidden child-agent pane is not
+    /// examined -- those are local agent panes, they cannot hold a daemon-owned
+    /// remote session, and leaving them out keeps this scan and
+    /// `daemon_owned_remote_terminal_views` looking at exactly the same set.
+    fn pane_close_risks(
+        pane_group: &ViewHandle<PaneGroup>,
+        ctx: &AppContext,
+    ) -> Vec<(PaneId, PaneCloseRisk)> {
+        let group = pane_group.as_ref(ctx);
+        (0..group.pane_count())
+            .filter_map(|index| {
+                let pane_id = group.pane_id_by_index(index)?;
+                let manager = group.terminal_manager(index, ctx)?;
+                let risk = manager.read(ctx, |manager, _ctx| PaneCloseRisk {
+                    is_daemon_owned_remote: is_daemon_owned_remote_session(&**manager),
+                    has_long_running_command: manager
+                        .model()
+                        .lock()
+                        .block_list()
+                        .active_block()
+                        .is_active_and_long_running(),
+                });
+                Some((pane_id, risk))
+            })
+            .collect()
+    }
+
+    /// The ids of the terminal views in `pane_group` backed by a daemon-owned
+    /// remote session.
+    ///
+    /// Every such pane, not only the ones with something running: "leave the
+    /// remote sessions running" is the user's answer about this tab, and an idle
+    /// remote pane is one `is_active_and_long_running()` would have spared
+    /// anyway. Filtering on the narrower condition would make the spared set
+    /// depend on a race with the command finishing.
+    fn daemon_owned_remote_terminal_views(
+        pane_group: &ViewHandle<PaneGroup>,
+        ctx: &AppContext,
+    ) -> Vec<EntityId> {
+        let group = pane_group.as_ref(ctx);
+        Self::pane_close_risks(pane_group, ctx)
+            .into_iter()
+            .filter(|(_pane_id, risk)| risk.is_daemon_owned_remote)
+            .filter_map(|(pane_id, _risk)| {
+                group
+                    .terminal_view_from_pane_id(pane_id, ctx)
+                    .map(|view| view.id())
+            })
+            .collect()
+    }
+
     /// Checks if the provided tab indices need to be confirmed before closing, unless skip_confirmation is true.
     /// If none of them need confirmation (or the confirm setting is turned off), we close all the provided tabs.
     /// Returns true iff all of the tabs were closed.
@@ -11095,6 +11496,28 @@ impl Workspace {
         add_to_undo_stack: bool,
         ctx: &mut ViewContext<Self>,
     ) -> bool {
+        self.close_tabs_with_disposition(
+            tab_indices,
+            dialog_source,
+            skip_confirmation,
+            add_to_undo_stack,
+            RemotePtyDisposition::Kill,
+            ctx,
+        )
+    }
+
+    /// `close_tabs`, plus what a close means for a daemon-owned remote session.
+    /// Only the close-session confirmation dialog passes anything but
+    /// [`RemotePtyDisposition::Kill`].
+    fn close_tabs_with_disposition(
+        &mut self,
+        tab_indices: impl Iterator<Item = usize>,
+        dialog_source: OpenDialogSource,
+        skip_confirmation: bool,
+        add_to_undo_stack: bool,
+        remote_disposition: RemotePtyDisposition,
+        ctx: &mut ViewContext<Self>,
+    ) -> bool {
         let tab_indices_vec = tab_indices.collect_vec();
         // Check if there are any tabs that can't be closed without confirmation
         if !skip_confirmation && self.should_confirm_close_session() {
@@ -11103,7 +11526,31 @@ impl Workspace {
                     .get_pane_group_view(*i)
                     .is_some_and(|view| view.as_ref(ctx).is_terminal_pane_being_shared(ctx));
                 if is_tab_shared {
-                    self.show_close_session_confirmation_dialog(dialog_source, ctx);
+                    self.show_close_session_confirmation_dialog(
+                        dialog_source,
+                        CloseSessionConfirmationKind::SharedSession,
+                        ctx,
+                    );
+                    return false;
+                }
+            }
+        }
+
+        // A daemon-owned remote session with a command still running is a
+        // different question from a shared one, asked under different rules: not
+        // gated on `should_confirm_close_session`, and answerable three ways.
+        // One at-risk tab is enough to ask about the whole batch, matching the
+        // shared-session loop above -- the answer then applies to every tab the
+        // dialog's `OpenDialogSource` names, because that is what the user was
+        // shown ("close these tabs") and what the close paths can act on.
+        if !skip_confirmation {
+            for i in tab_indices_vec.iter() {
+                if self.tab_close_would_destroy_remote_session(*i, ctx) {
+                    self.show_close_session_confirmation_dialog(
+                        dialog_source,
+                        CloseSessionConfirmationKind::RunningRemoteSession,
+                        ctx,
+                    );
                     return false;
                 }
             }
@@ -11129,11 +11576,12 @@ impl Workspace {
                     .on_confirm(move |ctx| {
                         if let Some(workspace) = confirm_self.upgrade(ctx) {
                             workspace.update(ctx, |workspace, ctx| {
-                                workspace.close_tabs(
+                                workspace.close_tabs_with_disposition(
                                     confirm_tabs.into_iter(),
                                     dialog_source,
                                     true,
                                     add_to_undo_stack,
+                                    remote_disposition,
                                     ctx,
                                 );
                             });
@@ -11184,7 +11632,13 @@ impl Workspace {
         // Remove the tabs in reverse order to avoid indexing OOB.
         let mut should_sync_agent_conversations = false;
         for i in tab_indices_vec.into_iter().sorted().rev() {
-            should_sync_agent_conversations |= self.remove_tab(i, add_to_undo_stack, true, ctx);
+            should_sync_agent_conversations |= self.remove_tab_with_disposition(
+                i,
+                add_to_undo_stack,
+                true,
+                remote_disposition,
+                ctx,
+            );
         }
         if should_sync_agent_conversations {
             self.sync_agent_conversations(ctx);
@@ -11234,14 +11688,30 @@ impl Workspace {
         skip_confirmation: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.close_other_tabs_with_disposition(
+            index,
+            skip_confirmation,
+            RemotePtyDisposition::Kill,
+            ctx,
+        );
+    }
+
+    fn close_other_tabs_with_disposition(
+        &mut self,
+        index: usize,
+        skip_confirmation: bool,
+        remote_disposition: RemotePtyDisposition,
+        ctx: &mut ViewContext<Self>,
+    ) {
         // Figure out what indices we want to delete for the "other tabs" case.
         let indices_to_remove = (0..self.tabs.len()).filter(|i| *i != index);
 
-        let tabs_closed = self.close_tabs(
+        let tabs_closed = self.close_tabs_with_disposition(
             indices_to_remove,
             OpenDialogSource::CloseOtherTabs { tab_index: index },
             skip_confirmation,
             true,
+            remote_disposition,
             ctx,
         );
 
@@ -11265,11 +11735,28 @@ impl Workspace {
         skip_confirmation: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        self.close_tabs_direction_with_disposition(
+            index,
+            direction,
+            skip_confirmation,
+            RemotePtyDisposition::Kill,
+            ctx,
+        );
+    }
+
+    fn close_tabs_direction_with_disposition(
+        &mut self,
+        index: usize,
+        direction: TabMovement,
+        skip_confirmation: bool,
+        remote_disposition: RemotePtyDisposition,
+        ctx: &mut ViewContext<Self>,
+    ) {
         let indices_to_remove = match direction {
             TabMovement::Left => 0..index,
             TabMovement::Right => (index + 1)..self.tabs.len(),
         };
-        let tabs_closed = self.close_tabs(
+        let tabs_closed = self.close_tabs_with_disposition(
             indices_to_remove,
             OpenDialogSource::CloseTabsDirection {
                 tab_index: index,
@@ -11277,6 +11764,7 @@ impl Workspace {
             },
             skip_confirmation,
             true,
+            remote_disposition,
             ctx,
         );
 
@@ -14831,6 +15319,20 @@ impl Workspace {
             pane_group::Event::CloseSharedSessionPaneRequested { pane_id } => {
                 self.close_pane(pane_group.id(), *pane_id, ctx);
             }
+            // `PaneGroup` decided this pane holds a running daemon-owned remote
+            // session; only the `Workspace` owns the dialog, so the answer comes
+            // back through `handle_close_session_confirmation_dialog_event`'s
+            // `ClosePane` arms.
+            pane_group::Event::CloseRemoteSessionPaneRequested { pane_id } => {
+                self.show_close_session_confirmation_dialog(
+                    OpenDialogSource::ClosePane {
+                        pane_group_id: pane_group.id(),
+                        pane_id: *pane_id,
+                    },
+                    CloseSessionConfirmationKind::RunningRemoteSession,
+                    ctx,
+                );
+            }
             pane_group::Event::MaximizePaneToggled => {
                 ctx.notify();
             }
@@ -17038,11 +17540,13 @@ impl Workspace {
     fn show_close_session_confirmation_dialog(
         &mut self,
         source: OpenDialogSource,
+        kind: CloseSessionConfirmationKind,
         ctx: &mut ViewContext<Self>,
     ) {
         self.close_session_confirmation_dialog
             .update(ctx, |view, _| {
                 view.set_open_confirmation_source(source);
+                view.set_confirmation_kind(kind);
             });
         self.current_workspace_state
             .is_close_session_confirmation_dialog_open = true;
