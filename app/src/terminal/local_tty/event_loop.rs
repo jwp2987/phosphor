@@ -467,8 +467,13 @@ where
                                     // just loop back round for the inevitable `Exited` event.
                                     // This sucks, but checking the process is either racy or
                                     // blocking.
+                                    //
+                                    // `io::Error::kind()` cannot be used here: EIO maps to
+                                    // `ErrorKind::Uncategorized`, which is unstable and
+                                    // deliberately unmatchable from outside std. Compare the
+                                    // raw errno instead.
                                     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-                                    if err.kind() == ErrorKind::Other {
+                                    if err.raw_os_error() == Some(libc::EIO) {
                                         continue;
                                     }
 

@@ -394,8 +394,8 @@ impl<T: EventLoopSender> PtyController<T> {
 
         if let Some(write) = self.pending_writes.pop_front() {
             let is_command = matches!(write, PtyWrite::Command { .. });
-            self.send_write_to_event_loop(write, ctx);
-            if !is_command {
+            let did_write = self.send_write_to_event_loop(write, ctx);
+            if !is_command || !did_write {
                 self.execute_next_queued_write(ctx);
             }
         }
