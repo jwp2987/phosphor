@@ -448,3 +448,76 @@ upstream's behavior is actually a defect rather than a preference.
   binding (losing the keystroke hint the palette renders) or splitting the button action from
   the new-tab action — a UI call left open.
 
+- **A benign PTY hangup no longer tears down the event loop** (2026-09-19,
+  `app/src/terminal/local_tty/event_loop.rs`). **Upstream:** guards the EIO
+  hangup path with `err.kind() == ErrorKind::Other`, intending to `continue` and
+  let the inevitable `Exited` event arrive. **The defect:** that comparison can
+  never be true. `io::Error::from_raw_os_error(EIO).kind()` is
+  `ErrorKind::Uncategorized`, which is unstable and deliberately unmatchable from
+  outside std; `ErrorKind::Other` is reserved for errors constructed via
+  `io::Error::new`. So the `continue` is unreachable and a normal client-side
+  hangup falls through to `error!` + `break 'event_loop` -- the exact outcome the
+  comment above it says must not happen. Verified with a direct rustc probe.
+  **Confirmed present at the pin** (`4111d08f9:crates/warp_terminal/src/local_tty/event_loop.rs:463`,
+  byte-identical). **We do:** compare the raw errno, `err.raw_os_error() == Some(libc::EIO)`.
+
+- **SSH login detection scans incrementally instead of re-rendering the whole
+  block on every PTY chunk** (2026-09-19, `app/src/terminal/model/{terminal_model,blockgrid,block}.rs`).
+  **Upstream:** `check_for_end_of_ssh_login` calls `active_block.output_to_string()`,
+  which passes `max_rows: None` and therefore renders the entire output grid from
+  row 0 into a fresh `String` -- on every chunk, while the reader thread holds the
+  terminal model's `FairMutex`. **The defect:** the work is quadratic in session
+  output and is discarded immediately; the predicate only needs "does any line
+  start with `Last login:`" plus the last line. **Measured on the build box:** 2.66 ms
+  at 500 rows, 33.3 ms at 5k, **140.6 ms at 20k rows** (3.8 MB), ~37 ns/byte --
+  all of it blocking the lock every keystroke needs, which is why the symptom is
+  keystroke lag on remote sessions specifically. The per-block cap is 50,000 rows,
+  so 20k is not the ceiling. **Confirmed present at the pin** (byte-identical).
+  **We do:** keep a scan cursor over rows already examined, capped at
+  `history_size()` so on-screen rows are always re-scanned (a row can only be
+  rewritten while still on screen); rebase on truncation, invalidate on resize,
+  fall back to a full rescan if out of bounds. **Measured after: flat ~67 us**
+  regardless of block size.
+
+- **`filtered_blocks()` does not scan all history on every render** (2026-09-19,
+  `app/src/terminal/model/blocks.rs`). **Upstream:** iterates every block in the
+  session and collects a `HashSet` each call, from `view.rs`'s render path, to
+  answer a question only ever asked of *visible* blocks -- and in the common case
+  the result is empty. **The defect:** unbounded growth for the life of a session
+  with no upper bound tied to what is on screen. Honest magnitude, measured: 38 us
+  at 10,000 blocks, i.e. ~0.2% of a frame -- real but not perceptible, recorded
+  here so nobody re-litigates it as a cause. **Confirmed present at the pin.**
+  **We do:** maintain `active_filter_count` at every site that can change whether a
+  block has an *active* filter, and return an empty set immediately when it is zero;
+  the original scan still runs whenever it is non-zero, so the result is unchanged.
+
+- **The slash-menu disabled state is cached instead of re-notifying two views per
+  keystroke** (2026-09-19, `app/src/terminal/input.rs`). **Upstream:**
+  `check_slash_menu_disabled_state` runs on every editor event and calls
+  `set_disabled` unconditionally, which `ctx.notify()`s both the button and the
+  button-bar view whether or not the value changed -- and `Presenter::invalidate`
+  renders a notified view even when it is off screen. **The defect is local
+  inconsistency, not preference:** the very next call in the same file,
+  `set_is_in_active_terminal`, *does* guard on a cached value. **Confirmed present
+  at the pin.** **We do:** cache the last computed value and skip when unchanged.
+
+- **`Event::SelectedBlocksChanged` is removed** (2026-09-19,
+  `app/src/terminal/view.rs`). **Upstream:** emits it from `change_block_selections`
+  -- which is on the per-keystroke path via `write_user_bytes_to_pty` -- and consumes
+  it in `local_tty/terminal_view_adaptor.rs` and
+  `shared_session/viewer/terminal_manager.rs`. **Why it is dead here rather than
+  merely unused:** both of those files exist at the pin and **neither exists in this
+  fork**; they belong to subsystems already dropped, the same shape as the existing
+  `shared_session/network/heartbeat.rs` entry above. Verified repo-wide: exactly
+  three occurrences before removal (the variant and two emits), and the one external
+  matcher on this `Event` ends in a wildcard arm. **We do:** delete the variant and
+  both emits.
+
+- **A glyph bitmap is not deep-copied on every rasterizer cache miss** (2026-09-19,
+  `crates/warpui/src/windowing/winit/fonts/swash_rasterizer.rs`). **Upstream:**
+  calls `.clone()` on the result of `SwashCache::get_image_uncached`. **The defect:**
+  that method returns an **owned** `Option<SwashImage>` (its sibling `get_image`
+  is the one returning `&Option<SwashImage>`), so the clone deep-copies the glyph's
+  `data: Vec<u8>` only for the original to be dropped on the same line. Verified
+  against the vendored source. **Confirmed present at the pin** (file otherwise
+  byte-identical modulo import order). **We do:** drop the two `.clone()` calls.
