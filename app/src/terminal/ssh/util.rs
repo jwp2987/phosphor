@@ -28,6 +28,7 @@ pub fn convert_script_to_one_line(script: &str) -> String {
     script
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum SshLoginState {
     LastLogin,
     NonSshOutput,

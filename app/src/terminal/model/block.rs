@@ -33,7 +33,7 @@ use crate::{
         event_listener::ChannelEventListener,
         model::{
             ansi::{self, Handler as _, PrecmdValue, PreexecValue, Processor, PromptMetadata},
-            blockgrid::BlockGrid,
+            blockgrid::{BlockGrid, SshLoginScanCursor},
             grid::grid_handler::TermMode,
             index::{Point, VisibleRow},
             iterm_image::ITermImage,
@@ -2349,6 +2349,16 @@ impl Block {
     pub fn output_to_string_force_full_grid_contents(&self) -> String {
         self.output_grid()
             .contents_to_string_force_full_grid_contents(false, None)
+    }
+
+    /// See [`BlockGrid::tail_for_ssh_login_check`]. Used by
+    /// `TerminalModel::check_for_end_of_ssh_login` so SSH login detection doesn't have
+    /// to re-render the whole (potentially very large) output grid on every PTY chunk.
+    pub fn output_to_string_tail_for_ssh_login_check(
+        &self,
+        cursor: SshLoginScanCursor,
+    ) -> (String, SshLoginScanCursor) {
+        self.output_grid().tail_for_ssh_login_check(cursor)
     }
 
     pub fn command_and_output_to_string(&self) -> String {

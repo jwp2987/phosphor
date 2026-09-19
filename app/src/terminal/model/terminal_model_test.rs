@@ -2341,3 +2341,100 @@ fn sharer_rejects_dcs_hook_with_unregistered_session_id() {
         None
     );
 }
+
+// Fork-only regression coverage (no pin equivalent): `check_for_end_of_ssh_login` used to
+// re-stringify and re-scan the *entire* output grid from row 0 on every PTY chunk while SSH
+// login was being monitored -- expensive once the block scrolled any significant amount, and
+// done while holding the model's lock (see the "SSH login detection" perf fix). The fix scans
+// only the rows that could plausibly have changed since the last check instead. These tests
+// exist to prove that change doesn't alter what gets detected -- in particular, that it doesn't
+// fall into the trap of only ever looking at the last few rows, which would silently stop seeing
+// "Last login:" once it scrolls out of a fixed window.
+
+/// "Last login:" appears near the very start of a real SSH session, before the bulk of any
+/// MOTD/banner output. A naive "only look at the last N rows" optimization would stop being able
+/// to see it once enough further output scrolls it out of that window. This test feeds enough
+/// filler output first to force the incremental scan to advance its "already confirmed clean"
+/// boundary at least once (asserted below, so the test would fail loudly if it stopped doing
+/// so), and only then introduces "Last login:" -- proving detection still fires even though the
+/// line is nowhere near the tail of the accumulated output by the time it arrives.
+#[test]
+fn ssh_login_detects_last_login_after_scan_cursor_has_advanced() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+
+    // The test terminal is only a few rows tall (see `block_size()`), so a few dozen lines is
+    // more than enough to scroll rows into history and advance the scan cursor.
+    for i in 0..50 {
+        model.process_bytes(format!("filler output line {i}\r\n").as_str());
+    }
+
+    let scan_cursor_before = model
+        .notify_on_end_of_ssh_login
+        .as_ref()
+        .expect("still monitoring: filler output matches no known SSH pattern")
+        .scan_cursor;
+    assert!(
+        scan_cursor_before.scanned_rows_for_test() > 0,
+        "test setup didn't advance the scan cursor, so it wouldn't have caught a regression \
+         to the naive last-N-rows bug this guards against"
+    );
+
+    model.process_bytes("Last login: Tue Jan 1 00:00:00 2030 on ttys000\r\n");
+
+    let ssh_login = model
+        .notify_on_end_of_ssh_login
+        .as_ref()
+        .expect("ssh login tracking is still present");
+    assert_eq!(
+        ssh_login.notification_state,
+        SshLoginNotificationState::Completed,
+        "Last login: must still be detected once it appears in a later PTY chunk, even though \
+         earlier filler output already advanced the scan cursor past the start of the block"
+    );
+}
+
+/// The other half of `check_ssh_login_state` -- classifying `Authenticating` /
+/// `NonSshOutput` / `PromptDetected` off of the current last line -- depends on always seeing
+/// the block's true last line, not a stale one. This test grows the block first (advancing the
+/// scan cursor, as above) and then checks that a fresh chunk whose content matches none of the
+/// known authentication-prompt patterns is still classified as `NonSshOutput` (i.e. the last
+/// line seen is the new content, not something left over from before the cursor advanced).
+#[test]
+fn ssh_login_classifies_current_last_line_after_scan_cursor_has_advanced() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("ssh myhost", "");
+    model.start_notify_on_end_of_ssh_login();
+
+    for i in 0..50 {
+        model.process_bytes(format!("filler output line {i}\r\n").as_str());
+    }
+    assert!(
+        model
+            .notify_on_end_of_ssh_login
+            .as_ref()
+            .expect("still monitoring")
+            .scan_cursor
+            .scanned_rows_for_test()
+            > 0,
+        "test setup didn't advance the scan cursor"
+    );
+
+    // A line matching none of `check_ssh_login_state`'s authentication patterns and no shell
+    // prompt character is `NonSshOutput`, which -- on this initial (non-confirmation) check --
+    // sends `RecheckBeforeWarpifying` and moves to `SentInitialNotification` rather than
+    // completing outright.
+    model.process_bytes("some ordinary banner text\r\n");
+
+    let ssh_login = model
+        .notify_on_end_of_ssh_login
+        .as_ref()
+        .expect("ssh login tracking is still present");
+    assert_eq!(
+        ssh_login.notification_state,
+        SshLoginNotificationState::SentInitialNotification,
+        "the freshly-written last line must still drive classification after the scan cursor \
+         has advanced"
+    );
+}

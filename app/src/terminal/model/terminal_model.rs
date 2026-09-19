@@ -32,7 +32,7 @@ use super::block::{
     AgentInteractionMetadata, Block, BlockId, BlockMetadata, BlockSize, BlockState,
     BlocklistEnvVarMetadata, SerializedBlock,
 };
-use super::blockgrid::BlockGrid;
+use super::blockgrid::{BlockGrid, SshLoginScanCursor};
 use super::blocks::ActiveBlockCompletion;
 use super::grid::grid_handler::{
     ContainsPoint, FragmentBoundary, GridHandler, Link, PossiblePath, TermMode,
@@ -623,6 +623,10 @@ pub struct SshLogin {
     /// The block id of the ssh session we're tracking
     block_id: BlockId,
     notification_state: SshLoginNotificationState,
+    /// Incremental-scan bookkeeping so `check_for_end_of_ssh_login` doesn't have to
+    /// re-render the whole (potentially very large) output grid on every PTY chunk.
+    /// See [`crate::terminal::model::blockgrid::BlockGrid::tail_for_ssh_login_check`].
+    scan_cursor: SshLoginScanCursor,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2417,6 +2421,7 @@ impl TerminalModel {
         self.notify_on_end_of_ssh_login = Some(SshLogin {
             block_id: id_of_ssh_block,
             notification_state: SshLoginNotificationState::Monitoring,
+            scan_cursor: SshLoginScanCursor::default(),
         });
     }
 
@@ -2453,7 +2458,13 @@ impl TerminalModel {
         }
 
         let is_initial_check = !confirmation_check;
-        let block_output = active_block.output_to_string();
+        // Scan only the rows that could have changed since the last check (new rows,
+        // plus any still-mutable on-screen rows) instead of re-rendering the whole
+        // block every PTY chunk -- see `BlockGrid::tail_for_ssh_login_check` for why
+        // this produces the same result as scanning the full output every time.
+        let (block_output, scan_cursor) =
+            active_block.output_to_string_tail_for_ssh_login_check(ssh_login_state.scan_cursor);
+        ssh_login_state.scan_cursor = scan_cursor;
         match ssh::util::check_ssh_login_state(&block_output) {
             SshLoginState::LastLogin | SshLoginState::PromptDetected => {
                 self.event_proxy

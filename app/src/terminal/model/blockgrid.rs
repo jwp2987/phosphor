@@ -86,6 +86,27 @@ impl std::fmt::Debug for BlockGrid {
     }
 }
 
+/// Incremental-scan bookkeeping for [`BlockGrid::tail_for_ssh_login_check`]. Opaque
+/// to callers other than that method and its own `Default`; see its doc comment for
+/// what each field means and why it's safe to carry across calls.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SshLoginScanCursor {
+    scanned_rows: usize,
+    truncated_rows: u64,
+    columns: usize,
+    visible_rows: usize,
+}
+
+#[cfg(test)]
+impl SshLoginScanCursor {
+    /// Rows already confirmed to contain no `Last login:` line. Test-only: lets a
+    /// test confirm the incremental path (not just the first, full-scan call) is
+    /// actually being exercised.
+    pub fn scanned_rows_for_test(&self) -> usize {
+        self.scanned_rows
+    }
+}
+
 impl BlockGrid {
     pub fn new(
         size_info: SizeInfo,
@@ -453,6 +474,107 @@ impl BlockGrid {
             false,
             RespectDisplayedOutput::Yes,
         )
+    }
+
+    /// Returns the grid's contents from `start_row` (inclusive, clamped to the grid's
+    /// bounds) through the end, as plain text with secrets obfuscated -- the same
+    /// rendering as [`Self::contents_to_string`] with `max_rows: None`, but addressed
+    /// by an explicit start row instead of "last N rows". See
+    /// [`Self::tail_for_ssh_login_check`], the only caller.
+    fn contents_to_string_from_row(&self, start_row: usize) -> String {
+        if self.is_empty() {
+            String::new()
+        } else {
+            let row_start_bound = start_row.min(self.len() - 1);
+            self.grid_handler.bounds_to_string(
+                Point::new(row_start_bound, 0),
+                self.end_point(),
+                false, /* include_esc_sequences */
+                RespectObfuscatedSecrets::Yes,
+                false, /* force_secrets_obfuscated */
+                RespectDisplayedOutput::Yes,
+            )
+        }
+    }
+
+    /// Incremental support for SSH login detection
+    /// (`ssh::util::check_ssh_login_state`, called from
+    /// `TerminalModel::check_for_end_of_ssh_login`).
+    ///
+    /// That check runs once per PTY chunk for as long as SSH login is being
+    /// monitored, and used to do so by re-stringifying the *entire* block from row 0
+    /// every time (`output_to_string()` with `max_rows: None`) -- expensive once the
+    /// block has scrolled any significant amount, since the default per-block scroll
+    /// cap is 50,000 rows, and done while holding the model's lock.
+    ///
+    /// This is safe to avoid because of how terminal cursor addressing works: a
+    /// running program can only rewrite rows that are still on-screen. Once a row has
+    /// scrolled off the top of the screen into `history_size()`, its content cannot
+    /// change again until it is permanently evicted from the grid (tracked by
+    /// `num_lines_truncated()`, which only ever grows). So a prior "no line in
+    /// `[0, scanned_rows)` starts with `Last login:`" conclusion remains valid, as
+    /// long as `scanned_rows <= history_size()` at the time it was recorded -- only
+    /// rows from `scanned_rows` onward can possibly have changed or been added, and
+    /// only those need to be re-rendered and re-scanned.
+    ///
+    /// That invariant depends on row numbering being stable, which the cap-driven
+    /// eviction above accounts for but a resize does not: a column-width change can
+    /// rewrap/reflow existing rows, and while a row/height-only change shouldn't
+    /// reorder rows, this function does not carry a detailed enough proof of that to
+    /// rely on it. So a dimension change since the last call invalidates the cursor
+    /// outright and forces a full re-scan, same as the very first call.
+    ///
+    /// `cursor` should be whatever this returned on the previous call (`Default` for
+    /// the first call). Returns `(tail, new_cursor)`: `tail` is the plain-text suffix
+    /// to run `check_ssh_login_state` on in place of the full block output -- it
+    /// always extends through the grid's true last row, so the "last line" half of
+    /// that check sees exactly what a full scan would show -- and `new_cursor` is
+    /// what the caller should pass back in next time (regardless of what
+    /// `check_ssh_login_state` returns for `tail`, since once it reports `Last
+    /// login:`/a completed prompt, monitoring stops and `new_cursor` is never
+    /// consulted again anyway).
+    pub fn tail_for_ssh_login_check(
+        &self,
+        cursor: SshLoginScanCursor,
+    ) -> (String, SshLoginScanCursor) {
+        let columns = self.grid_handler.columns();
+        let visible_rows = self.grid_handler.visible_rows();
+        let truncated_rows_now = self.grid_handler.num_lines_truncated();
+
+        let scanned_rows = if cursor.columns != columns || cursor.visible_rows != visible_rows {
+            0
+        } else {
+            // Rows that were already confirmed clean and have since been
+            // permanently truncated out of the grid no longer exist. Row numbering
+            // shifts down by exactly the newly-truncated count, so rebase the
+            // confirmed-clean boundary by the same amount to keep it valid.
+            let newly_truncated = truncated_rows_now.saturating_sub(cursor.truncated_rows);
+            cursor.scanned_rows.saturating_sub(newly_truncated as usize)
+        };
+
+        let len = self.len();
+        // Defensive fallback: under ordinary growth (plus the rebases above), this
+        // should never happen. If it does anyway -- e.g. an explicit "erase saved
+        // lines" escape sequence cleared history outright, which unlike the cases
+        // above leaves no trace this function knows to check for -- row numbering
+        // has shifted in a way this function can't account for, so fall back to a
+        // full re-scan rather than risk silently skipping rows.
+        let scanned_rows = if scanned_rows < len { scanned_rows } else { 0 };
+
+        let tail = self.contents_to_string_from_row(scanned_rows);
+
+        // Only rows that have actually scrolled into history are guaranteed
+        // immutable; rows still on-screen (from history_size() through the end)
+        // must always be re-examined on the next call, so the confirmed-clean
+        // boundary can only advance up to the current history_size().
+        let new_cursor = SshLoginScanCursor {
+            scanned_rows: self.grid_handler.history_size().min(len),
+            truncated_rows: truncated_rows_now,
+            columns,
+            visible_rows,
+        };
+
+        (tail, new_cursor)
     }
 
     /// Returns a string containing a summary of the block's contents.
