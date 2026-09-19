@@ -403,6 +403,16 @@ pub struct BlockList {
     /// return users to their original position when the filter is removed.
     scroll_position_before_filter: Option<BlockScrollPosition>,
 
+    /// Count of blocks currently in `blocks` whose `current_filter()` has
+    /// `is_active == true` -- kept in sync at every site that can change that
+    /// (`filter_output`/`clear_filter` and block removal; a newly-added `Block`
+    /// always starts with no filter, so insertion never needs to touch this). Lets
+    /// [`Self::filtered_blocks`] skip its O(blocks) scan-and-allocate in the common
+    /// case where no filter is active at all, without changing its result: this is
+    /// purely a fast-path count, [`Self::filtered_blocks`] still does the real scan
+    /// whenever it's nonzero.
+    active_filter_count: usize,
+
     /// Whether the blocklist is inverted (i.e. the input is pinned to the top). This is
     /// relevant wherever we're traversing the blocklist's sumtree (i.e. in clamp_to_grid_points)
     is_inverted: bool,
@@ -734,6 +744,7 @@ impl BlockList {
             obfuscate_secrets,
             is_ai_ugc_telemetry_enabled,
             scroll_position_before_filter: None,
+            active_filter_count: 0,
             is_inverted,
             agent_view_state: AgentViewState::Inactive,
             transcript_scope: TranscriptScope::Terminal,
@@ -1647,6 +1658,9 @@ impl BlockList {
         let block_index = self.background_block_mut()?.index();
 
         let block = self.blocks.remove(block_index.0);
+        if block.current_filter().is_some_and(|query| query.is_active) {
+            self.active_filter_count = self.active_filter_count.saturating_sub(1);
+        }
         self.block_id_to_block_index.remove(block.id());
         // Shift down the index of any blocks after the removed one.
         for index in BlockIndex::range_as_iter(block_index..BlockIndex(self.blocks.len())) {
@@ -1676,6 +1690,9 @@ impl BlockList {
         debug_assert!(block_index != self.active_block_index());
 
         let block = self.blocks.remove(block_index.0);
+        if block.current_filter().is_some_and(|query| query.is_active) {
+            self.active_filter_count = self.active_filter_count.saturating_sub(1);
+        }
         self.block_id_to_block_index.remove(block.id());
 
         // Shift down the index of any blocks after the removed one.
@@ -3737,6 +3754,15 @@ impl BlockList {
     }
 
     pub fn filtered_blocks(&self) -> HashSet<BlockIndex> {
+        // Fast path: this is called from the view on every render, and the
+        // overwhelmingly common case is that no block has an active filter at all,
+        // in which case there's no need to scan `self.blocks` (which only grows for
+        // the life of a session) or allocate a `HashSet` at all. `active_filter_count`
+        // is exactly the count this scan would otherwise find, kept in sync at every
+        // site that can change it -- see its doc comment.
+        if self.active_filter_count == 0 {
+            return HashSet::new();
+        }
         self.blocks
             .iter()
             .filter(|&block| block.current_filter().is_some_and(|query| query.is_active))
@@ -3752,7 +3778,16 @@ impl BlockList {
             .get_mut(block_index.0)
             .filter(|block| !block.is_empty(&self.transcript_scope));
         if let Some(block) = block_to_filter {
+            let was_active = block.current_filter().is_some_and(|query| query.is_active);
             block.filter_output(filter_query);
+            let is_active_now = block.current_filter().is_some_and(|query| query.is_active);
+            match (was_active, is_active_now) {
+                (false, true) => self.active_filter_count += 1,
+                (true, false) => {
+                    self.active_filter_count = self.active_filter_count.saturating_sub(1)
+                }
+                _ => {}
+            }
             self.update_block_height_at_idx(block_index);
         }
         self.clear_selection();
@@ -3771,7 +3806,11 @@ impl BlockList {
             .get_mut(block_index.0)
             .filter(|block| !block.is_empty(&self.transcript_scope));
         if let Some(block) = block_to_clear {
+            let was_active = block.current_filter().is_some_and(|query| query.is_active);
             block.clear_filter();
+            if was_active {
+                self.active_filter_count = self.active_filter_count.saturating_sub(1);
+            }
             self.update_block_height_at_idx(block_index);
         }
     }
@@ -4141,7 +4180,14 @@ impl ansi::Handler for BlockList {
         match mode {
             ClearMode::ResetAndClear => {
                 // Clear all the blocks except the current block.
-                self.blocks.drain(0..self.blocks.len() - 1);
+                let removed_active_filters = self
+                    .blocks
+                    .drain(0..self.blocks.len() - 1)
+                    .filter(|block| block.current_filter().is_some_and(|query| query.is_active))
+                    .count();
+                self.active_filter_count = self
+                    .active_filter_count
+                    .saturating_sub(removed_active_filters);
                 // Make sure we actually reduce the _capacity_ of self.blocks,
                 // not just its length.
                 self.blocks.shrink_to_fit();

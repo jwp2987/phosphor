@@ -2545,3 +2545,76 @@ fn agent_transcript_navigable_items_include_prompts_and_user_shell_blocks() {
         ]
     );
 }
+
+// Fork-only regression coverage (no pin equivalent): `filtered_blocks()` used to do an
+// O(blocks) scan-and-`HashSet`-allocate on every call regardless of whether any filter was
+// active, and it's called from the view on every render. `active_filter_count` lets it return
+// an empty set immediately when no block has an active filter, without changing what it
+// returns. These tests exercise every site that can change whether a filter is active --
+// activating, deactivating (`is_active: false`, which is *not* the same as clearing --
+// `current_filter()` stays `Some`), explicitly clearing, and removing the block outright -- and
+// check `filtered_blocks()` against what a full scan would report at each step.
+#[test]
+fn filtered_blocks_tracks_activation_deactivation_and_removal() {
+    let mut block_list =
+        new_bootstrapped_block_list(None, None, ChannelEventListener::new_for_test());
+
+    assert!(
+        block_list.filtered_blocks().is_empty(),
+        "no filters have been set yet"
+    );
+
+    let block_a = insert_block(&mut block_list, "echo a", "a-output");
+    let block_b = insert_block(&mut block_list, "echo b", "b-output");
+
+    assert!(block_list.filtered_blocks().is_empty());
+
+    block_list.filter_block_output(block_a, BlockFilterQuery::new_for_test("a".to_owned()));
+    assert_eq!(
+        block_list.filtered_blocks(),
+        HashSet::from([block_a]),
+        "activating a filter on block_a must be reflected immediately"
+    );
+
+    block_list.filter_block_output(block_b, BlockFilterQuery::new_for_test("b".to_owned()));
+    assert_eq!(
+        block_list.filtered_blocks(),
+        HashSet::from([block_a, block_b]),
+        "a second active filter must add to, not replace, the first"
+    );
+
+    // A query with `is_active: false` leaves `current_filter()` as `Some` (this is exactly
+    // what `has_active_filter()`/`filter_for_block()` get wrong relative to `filtered_blocks()`
+    // -- see the doc comment on `Block::filter_output`), so this must be tracked as
+    // deactivation, not as "no change".
+    block_list.filter_block_output(
+        block_a,
+        BlockFilterQuery {
+            is_active: false,
+            ..BlockFilterQuery::new_for_test("a".to_owned())
+        },
+    );
+    assert_eq!(
+        block_list.filtered_blocks(),
+        HashSet::from([block_b]),
+        "an inactive filter query must not count, even though current_filter() is still Some"
+    );
+
+    block_list.clear_filter_on_block(block_b);
+    assert!(
+        block_list.filtered_blocks().is_empty(),
+        "explicitly clearing the last active filter must take the count back to zero"
+    );
+
+    // Re-activate a filter on block_a, then remove that block outright. If removal didn't
+    // decrement the count, every filter on every other block would be undercounted forever
+    // afterwards -- silently hiding filtered content, which is the dangerous direction here.
+    block_list.filter_block_output(block_a, BlockFilterQuery::new_for_test("a".to_owned()));
+    assert_eq!(block_list.filtered_blocks(), HashSet::from([block_a]));
+
+    block_list.remove_block_at_index(block_a);
+    assert!(
+        block_list.filtered_blocks().is_empty(),
+        "removing a block with an active filter must decrement the tracked count"
+    );
+}
