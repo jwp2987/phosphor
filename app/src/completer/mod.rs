@@ -187,8 +187,39 @@ impl SessionContext {
                 // It's possible that it would be better to use
                 // `async_fs::read_dir` if the directory is on a network mount,
                 // but I don't think it's worth optimizing for that case.
-                let Some(read_dir) = std::fs::read_dir(dir.as_path()).ok() else {
-                    return vec![];
+                //
+                // A failed listing and an empty directory are the same thing to
+                // every caller above this point -- both are "no path
+                // completions" -- so a failure here is invisible unless it is
+                // logged. `NotFound` is the ordinary case while a path is
+                // half-typed and is deliberately not logged; `PermissionDenied`
+                // is the one worth a line, because it is how a session that
+                // escalated to another user (`sudo su -`, `ksu`) presents.
+                // Such a session keeps the same hostname, so
+                // `determine_session_type` classifies it `Local` (see
+                // `terminal/model/session.rs`, "Ensures subshells are treated as
+                // local") and we read the directory with the Zap *process's*
+                // uid, which is not the uid the session's shell now runs as.
+                // Nothing downstream can recover from that; the point of the
+                // log is that the user's log says so instead of the feature
+                // silently doing nothing.
+                let read_dir = match std::fs::read_dir(dir.as_path()) {
+                    Ok(read_dir) => read_dir,
+                    Err(err) => {
+                        if err.kind() != std::io::ErrorKind::NotFound {
+                            safe_warn!(
+                                safe: (
+                                    "Failed to list a local directory for completions: {:?}",
+                                    err.kind()
+                                ),
+                                full: (
+                                    "Failed to list `{}` for completions: {err}",
+                                    dir.display()
+                                )
+                            );
+                        }
+                        return vec![];
+                    }
                 };
 
                 read_dir

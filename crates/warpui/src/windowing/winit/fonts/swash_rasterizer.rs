@@ -50,7 +50,8 @@ impl FontDB {
                 )
                 .0,
             )
-            .clone()
+            // `get_image_uncached` already returns an owned `SwashImage`; cloning it here
+            // would deep-copy the glyph bitmap (`data: Vec<u8>`) only to drop the original.
             .ok_or_else(|| anyhow!("Failed to get raster image"))?;
 
         let origin = vec2i(image.placement.left, -image.placement.top);
@@ -93,7 +94,7 @@ impl FontDB {
                 )
                 .0,
             )
-            .clone()
+            // Owned already -- see the note in `glyph_raster_bounds`.
             .unwrap();
 
         let (original_format, is_color) = match image.content {
