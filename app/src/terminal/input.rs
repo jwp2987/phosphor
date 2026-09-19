@@ -1637,6 +1637,12 @@ pub struct Input {
     /// Cached hint key to ensure it remains stable during shell initialization hooks.
     cached_agent_mode_hint_key: Option<&'static str>,
 
+    /// Cached result of the last `check_slash_menu_disabled_state` computation, so we can
+    /// skip re-notifying the slash button / button bar when the disabled state hasn't
+    /// actually changed. Without this, every editor event (including each typed character)
+    /// re-renders both views regardless of whether anything visible changed.
+    cached_slash_menu_disabled: Option<bool>,
+
     predict_am_queries_future_handle: Option<SpawnedFutureHandle>,
 
     attachment_chips: Vec<AttachmentChip>,
@@ -3319,6 +3325,7 @@ impl Input {
             inline_history_menu_view,
             inline_terminal_menu_positioner,
             cached_agent_mode_hint_key: None,
+            cached_slash_menu_disabled: None,
             is_editor_empty_on_last_edit: is_editor_empty,
             weak_view_handle: ctx.handle(),
             agent_status_view,
@@ -3418,6 +3425,12 @@ impl Input {
     fn check_slash_menu_disabled_state(&mut self, ctx: &mut ViewContext<Self>) {
         let should_disable =
             !self.editor().as_ref(ctx).is_empty(ctx) || self.is_locked_in_shell_mode(ctx);
+
+        if self.cached_slash_menu_disabled == Some(should_disable) {
+            return;
+        }
+        self.cached_slash_menu_disabled = Some(should_disable);
+
         self.universal_developer_input_button_bar
             .update(ctx, |button_bar, ctx| {
                 button_bar.set_slash_button_disabled(should_disable, ctx);

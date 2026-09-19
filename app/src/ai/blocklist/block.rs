@@ -4802,7 +4802,17 @@ impl AIBlock {
         ctx.notify();
     }
 
-    fn collapse_requested_command_view(
+    /// Force-collapses the requested-command view for `action_id`, if this block has one.
+    ///
+    /// Public (like its `expand_requested_command_view` sibling) so callers outside this module
+    /// can finalize a view that has no other way to collapse: the normal collapse paths are
+    /// `FinishedAction` (`requested_commands_to_auto_collapse`, above) and `FinishedSubagent`
+    /// (below), both of which require either the action or the CLI subagent to resolve. Neither
+    /// resolves when the shell dies before a subagent for this command has spawned -- the action
+    /// never gets a result and no subagent was ever tracked -- so `ModelEvent::Exit`
+    /// (`view.rs`) calls this directly to collapse a view stuck open by a shell that no longer
+    /// exists.
+    pub fn collapse_requested_command_view(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,

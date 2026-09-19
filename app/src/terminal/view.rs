@@ -1747,7 +1747,6 @@ pub enum Event {
     FocusSession,
     /// Emitted when the guided onboarding tutorial callout is completed or dismissed.
     OnboardingTutorialCompleted,
-    SelectedBlocksChanged,
     SelectedTextChanged,
     /// Emitted when a shared session sharer updates a viewer's role and
     /// needs to notify the server of a role change.
@@ -6885,12 +6884,43 @@ impl TerminalView {
                 self.redetermine_terminal_focus(ctx);
                 ctx.notify();
             }
-            BlocklistAIActionEvent::FinishedAction { action_id, .. } => {
+            BlocklistAIActionEvent::FinishedAction {
+                action_id,
+                conversation_id,
+                ..
+            } => {
                 // Refresh git line changes when files are potentially updated by an action
                 let action_result = action_model
                     .as_ref(ctx)
                     .get_action_result(action_id)
                     .cloned();
+
+                // For a long-running command, this action result IS the snapshot: the exact
+                // moment `handle_action_result` (action_model.rs) drops the action out of
+                // `running_actions` and fires this event. That snapshot is also the sole thing
+                // `queued_for_pending_lrc` (input.rs) waits on before it will let a prompt queued
+                // during the command send at all -- `QueuedQuery::is_locked()` locks the row
+                // (Send Now disabled) precisely to keep it from racing that snapshot. The three
+                // other `unlock_pending_lrc_rows` call sites in this file are reachable only
+                // through a CLI subagent finishing or the conversation's own turn completing, so
+                // a prompt queued while no subagent was ever involved never reached any of them
+                // and stayed locked for the life of the block. Unlock here instead of sending:
+                // this only restores the Send Now affordance (and drain eligibility) for rows
+                // whose lock condition just cleared, it does not submit anything, so unlike
+                // calling `send_lrc_queued_prompts` from this handler it cannot abort the agent's
+                // still-running turn (`submit_queued_prompt_for_active_pane` opens with
+                // `cancel_conversation_progress`) or re-enter `BlocklistAIActionModel` while it is
+                // mid-emit.
+                if action_result.as_ref().is_some_and(|result| {
+                    matches!(
+                        result.result,
+                        AIAgentActionResultType::RequestCommandOutput(_)
+                    )
+                }) {
+                    QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.unlock_pending_lrc_rows(*conversation_id, ctx)
+                    });
+                }
 
                 let maybe_modified_files = action_result
                     .as_ref()
@@ -10784,6 +10814,43 @@ impl TerminalView {
         conversation_id.map(|conversation_id| (conversation_id, command))
     }
 
+    /// The action id and conversation id of the agent-requested command active when the shell
+    /// exited, if any.
+    ///
+    /// Deliberately independent of `maybe_send_agent_exited_shell_telemetry` above, which runs
+    /// this same two-case lookup but only when telemetry is due
+    /// (`!manual_pty_shutdown_requested`). The requested-command view this backs needs
+    /// finalizing on every shell exit, manual or not -- see the `ModelEvent::Exit` arm in
+    /// `handle_terminal_event`, the sole caller.
+    ///
+    /// Mirrors the same two cases: the agent's command may have directly exited the shell
+    /// (e.g. `exit 1`, in which case it's the active block), or the shell may have chosen to
+    /// exit itself after the command finished (e.g. earlier under `set -euo pipefail`, in which
+    /// case it's the block preceding the active one).
+    fn agent_requested_command_action_at_exit(
+        &self,
+    ) -> Option<(AIConversationId, AIAgentActionId)> {
+        let model = self.model.lock();
+        let block_list = model.block_list();
+        let blocks = block_list.blocks();
+        let active_block_index = block_list.active_block_index().0;
+
+        let agent_block = blocks
+            .get(active_block_index)
+            .filter(|b| b.requested_command_action_id().is_some())
+            .or_else(|| {
+                active_block_index.checked_sub(1).and_then(|prev_idx| {
+                    blocks
+                        .get(prev_idx)
+                        .filter(|b| b.requested_command_action_id().is_some())
+                })
+            })?;
+
+        let action_id = agent_block.requested_command_action_id()?.clone();
+        let conversation_id = agent_block.ai_conversation_id()?;
+        Some((conversation_id, action_id))
+    }
+
     /// Updates the agent view back button's disabled state, tooltip and label.
     /// For child agents ESC navigates one level up instead of exiting in place,
     /// so the label names the direct parent (see [`agent_view_back_button_label`]);
@@ -10878,6 +10945,39 @@ impl TerminalView {
                 ctx.request_user_attention();
             }
             ModelEvent::Exit { reason } => {
+                // Collapse any requested-command view left expanded by the command active when
+                // the shell died. `Block::finish()` -- called by `TerminalModel::exit()` before
+                // this event is even sent -- already drops that block out of
+                // active-and-long-running, which is what keeps `is_agent_in_control()` from
+                // latching PTY input forever (see `write_user_bytes_to_pty`'s
+                // `is_agent_in_control()` guard): a dead shell can never receive more output, so
+                // there is nothing left for the agent to be "in control" of. But `finish()`
+                // doesn't touch `AIBlock::requested_commands`' own expanded/collapsed state, and
+                // that view normally collapses only when the requested-command action resolves
+                // (`FinishedAction`) or the CLI subagent monitoring it finishes
+                // (`FinishedSubagent`, itself driven by the same `BlockCompleted` `finish()`
+                // fires). Neither fires when the shell dies before a subagent for this command
+                // ever spawned: the action never gets a result, and no subagent was ever tracked
+                // for the block. Finalize it here instead -- unconditionally, unlike the
+                // telemetry/failure-conversation path below, because a shell that no longer
+                // exists must not leave the view with no user-driven way to collapse it, whether
+                // the crash is later attributed to the user or the agent.
+                if let Some((conversation_id, action_id)) =
+                    self.agent_requested_command_action_at_exit()
+                {
+                    let ai_block_handle = self.rich_content_views.iter().find_map(|rich_content| {
+                        let ai_metadata = rich_content.ai_block_metadata()?;
+                        (ai_metadata.ai_block_handle.as_ref(ctx).conversation_id()
+                            == conversation_id)
+                            .then(|| ai_metadata.ai_block_handle.clone())
+                    });
+                    if let Some(ai_block_handle) = ai_block_handle {
+                        ai_block_handle.update(ctx, |ai_block, ctx| {
+                            ai_block.collapse_requested_command_view(&action_id, ctx);
+                        });
+                    }
+                }
+
                 if !self.manual_pty_shutdown_requested
                     && let Some((conversation_id, command)) =
                         self.maybe_send_agent_exited_shell_telemetry(ctx)
@@ -17371,7 +17471,6 @@ impl TerminalView {
         // In AI mode, selected blocks also serve as context. When we change the block
         // selections, we must also update the context
         self.sync_pending_context_block_ids(ctx);
-        ctx.emit(Event::SelectedBlocksChanged);
     }
 
     // Additionally handles side effects of changing block selections (i.e. CMD + F results, etc.),
@@ -17387,8 +17486,6 @@ impl TerminalView {
     {
         change_selection(&mut self.selected_blocks);
         self.update_find_selection(ctx);
-
-        ctx.emit(Event::SelectedBlocksChanged);
     }
 
     pub fn integration_test_change_block_selection_to_single(
