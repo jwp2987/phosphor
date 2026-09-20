@@ -1443,8 +1443,25 @@ impl BlocklistAIActionModel {
                 RequestCommandOutputResult::LongRunningCommandSnapshot { .. }
             )
         ) {
+            // Deliberately `None` rather than `cancellation_reason`. These actions are
+            // collateral -- they are cancelled because the *other* action went long-running,
+            // not because anything about them succeeded. Propagating the originating reason
+            // stranded the whole conversation: a long-running command completes with
+            // `OptimisticCLISubagentCompletion`, whose `conversation_outcome()` is
+            // `Succeeded`, and `BlocklistAIController`'s `FinishedAction` subscriber reads the
+            // reason off the *last* `FinishedAction` to compute `treat_as_success`. With the
+            // reason inherited, that last event was a collateral cancellation claiming success,
+            // so `should_trigger_follow_up_request` was false, no follow-up request was sent,
+            // and the block below left the conversation `InProgress` with nothing pending,
+            // nothing running and nothing in flight -- permanently. Observed live as 2m36s of
+            // dead air with two prompts stuck in the queued-prompts panel, which drains only on
+            // `FinishReason::Complete` and so never fired; the user had to send both by hand.
+            //
+            // `None` maps to `treat_as_success == false`, handing the follow-up decision back
+            // to its real question: did any non-cancelled result finish? It does not force a
+            // follow-up, so a turn in which everything was cancelled still ends quietly.
             for action in self.drain_pending_request_command_actions(conversation_id) {
-                self.cancel_pending_action(conversation_id, action, cancellation_reason, ctx);
+                self.cancel_pending_action(conversation_id, action, None, ctx);
             }
         }
 

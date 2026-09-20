@@ -835,7 +835,9 @@ impl RequestedCommandView {
                     action_id: show_for_action_id,
                     shown,
                 },
-            ) if show_for_action_id == &self.action_id => {
+            ) if show_for_action_id == &self.action_id
+                && self.is_awaiting_execution_decision(app) =>
+            {
                 *shown.lock() = true;
                 Some(Self::render_profile_autoexecution_info_footer(
                     self.manage_autonomy_settings_link_handle.clone(),
@@ -844,6 +846,31 @@ impl RequestedCommandView {
             }
             _ => None,
         }
+    }
+
+    /// Whether this action is still waiting on a decision about whether to execute.
+    ///
+    /// The profile-autoexecution footer tells the user their profile "is set to always ask
+    /// for permission to execute commands". That sentence is only true while the decision is
+    /// still open. The Accept/Cancel/Edit buttons, however, are attached in `render_header`
+    /// under `Some(AIActionStatus::Blocked)` alone -- a completely separate condition -- so
+    /// the two could disagree, and did: a command cancelled out from under the user by the
+    /// long-running-command drain (`BlocklistAIActionModel::handle_action_result`) kept
+    /// rendering the footer while every button was gone, leaving the app demanding a
+    /// permission it offered no way to grant. The only remaining affordance was a link to the
+    /// settings editor, which does not resolve the action either.
+    ///
+    /// `Queued` is included deliberately: such an action is waiting behind another and will
+    /// become actionable on its own, so the footer is early rather than false. `Finished`
+    /// (including cancelled), `Preprocessing` and the statusless/orphaned case are all
+    /// excluded -- for those, no decision is pending and the sentence is simply wrong.
+    fn is_awaiting_execution_decision(&self, app: &AppContext) -> bool {
+        matches!(
+            self.action_model
+                .as_ref(app)
+                .get_action_status(&self.action_id),
+            Some(AIActionStatus::Blocked) | Some(AIActionStatus::Queued)
+        )
     }
 
     fn render_profile_autoexecution_info_footer(
@@ -1368,6 +1395,32 @@ impl RequestedCommandView {
                 config = config.with_interaction_mode(InteractionMode::ActionButtons {
                     action_buttons,
                     size_switch_threshold,
+                });
+            }
+            Some(AIActionStatus::Queued) => {
+                // A requested command that is not at the head of the pending queue, or whose
+                // conversation still has something running, reports `Queued` rather than
+                // `Blocked` -- see `BlocklistAIActionModel::get_action_status`, where `Blocked`
+                // additionally requires `!running_actions.contains_key(conversation_id)`.
+                //
+                // That suppression is correct and deliberately left alone: only one command may
+                // be active at a time (the invariant the long-running-command drain in
+                // `handle_action_result` exists to hold), so offering Accept here would let a
+                // second command start alongside the first. What was wrong is that `Queued` fell
+                // through to the `_` arm below and attached NO interaction mode at all, so the
+                // row carried no buttons whatsoever. An agent that requests a second command
+                // while a long-running one is still going -- the common case, because a
+                // long-running command hands the agent a snapshot seconds into a command that
+                // runs for minutes, and it keeps reasoning -- produced a row the user could
+                // neither accept, nor edit, nor dismiss, while the conversation went on waiting.
+                //
+                // Cancel only: it is the one decision that is always safe to honour here, and it
+                // gives the user a way out that does not depend on the other command finishing.
+                let action_buttons: Vec<Rc<dyn RenderCompactibleActionButton>> =
+                    vec![Rc::new(self.cancel_button.clone())];
+                config = config.with_interaction_mode(InteractionMode::ActionButtons {
+                    action_buttons,
+                    size_switch_threshold: SMALL_SIZE_SWITCH_THRESHOLD,
                 });
             }
             Some(AIActionStatus::RunningAsync) if self.action_type.is_requested_command() => {
