@@ -11106,7 +11106,7 @@ claim, which was wrong by four.
 
       **CLOSED 2026-08-21 as latent-and-documented, no behaviour change — and that is the right answer.** Caller sweep over ~200 sites found **no reachable duplicate registration in production**: every non-test registration is one-shot inside `initialize_app` (`lib.rs:1268`, once per `App` — extra windows re-register nothing) or inside `run_daemon_app` (`remote_server/mod.rs:118-296`), which builds its **own** `App` in a separate process, so its overlap with `lib.rs` is across instances not within one; the four `secure_storage::register*` variants are an if/else chain (`lib.rs:1310-1320`); `init_and_register_user_preferences` is `#[cfg(any(test, feature = "test-util"))]`. The duplicates that do occur are test-harness-only, and tests always build with debug assertions on, so the panic still fires exactly where it matters (`tui_test_support.rs:98-99`, `test_util/settings.rs:14-19`, both of which already document the "was called twice" failure). **The pin is byte-identical** (`42effe840:crates/warpui_core/src/core/app.rs:2266-2278`, comment included), so promoting to `assert!` would be a deliberate divergence adding a release-mode panic to a path that has never fired, to catch a bug the debug path already catches in the only place it occurs; `Result` would ripple through ~200 call sites for the same non-event; first-wins-plus-log would silently change release semantics away from the pin. **Fixed the misleading comment instead** (`core/app.rs:2300-2318`): it now states that duplicates are *reported, not prevented*, that release keeps the replacement and strands earlier `ModelHandle`s, and why it stays a `debug_assert!`. The old inline comment ("Panic in debug mode if this is the second time…") let a reader believe the assert prevented the duplicate; the insert has already replaced the previous handle by the time it runs.
 
-- [ ] **A second agent command requested while a first is still running is
+- [x] **A second agent command requested while a first is still running is
       un-approvable, and every prompt queued behind it waits forever.**
       Observed live 2026-09-20 with a local Ollama provider (gpt-oss:20b), and
       reproduced from the session log rather than inferred. Four separable
@@ -11190,3 +11190,78 @@ claim, which was wrong by four.
       at snapshot time aborts the agent's still-running turn and re-enters
       `BlocklistAIActionModel` while it is mid-emit. See commit 6856c32a7, which
       deliberately only *unlocks* at `FinishedAction`.
+
+      **FIXED 2026-09-20 (e2b587a3b), defects 1-3; defect 4 left as designed.**
+      (1) The profile-autoexecution footer is now gated on the action still
+      awaiting a decision, so it can no longer outlive the buttons that would
+      satisfy it. (2) Collateral cancellations no longer inherit the originating
+      action's reason -- a long-running command completes with
+      `OptimisticCLISubagentCompletion` (outcome `Succeeded`), and propagating
+      that onto the actions it cancelled made the controller's `FinishedAction`
+      subscriber compute `treat_as_success`, suppress the follow-up, and leave
+      the conversation `InProgress` with nothing in flight. Passing `None`
+      restores the real question: did any non-cancelled result finish? (3) A
+      `Queued` requested-command row now offers Cancel; the `Blocked`
+      suppression itself is deliberately unchanged, because only one command may
+      be active at a time and offering Accept would break that invariant -- the
+      defect was that `Queued` fell through to the catch-all arm and attached no
+      interaction mode at all. **The open question is now resolved:**
+      `cancel_pending_action` routes through `handle_action_result` into
+      `finished_action_results`, so the action was `Finished(cancelled)`, not
+      orphaned -- both render the same dim slashed-circle icon, which is why the
+      screenshot could not separate them.
+
+- [x] **The shell lockup: an unanswered completions handshake wedges the pane
+      permanently.** Root-caused 2026-09-20. This is the "shell just locked up"
+      report that three earlier theories failed to explain -- the pane accepts
+      keystrokes and commands, writes none of them to the PTY, and cannot be
+      recovered from the UI.
+
+      **Mechanism.** `PtyWrite::RunNativeShellCompletions`
+      (`writeable_pty/pty_controller.rs`) sets
+      `in_flight_native_completions_state` to `AwaitingPrompt` and sends a bare
+      `^Y` (0x19) to trigger a shell bindkey, then waits for the Phosphor shell
+      hooks to answer with an OSC sequence (`ModelEvent::SendCompletionsPrompt`)
+      before sending the text to complete. **Nothing bounded that wait.**
+
+      `AwaitingPrompt` is one of the two gates in `can_write_to_pty`, and
+      `execute_next_queued_write` returns early whenever that gate is shut. So
+      every subsequent keystroke and command accumulated in `pending_writes` and
+      none was ever written. **Recovery was impossible from the UI**: the only
+      thing that re-drives the drain is `LineEditorStatusEvent::Active`, which
+      calls straight back into `execute_next_queued_write` and re-checks the same
+      gate. A fresh prompt did not help. Closing the pane was the only way out.
+
+      **Why the reply never comes.** The hooks answer in milliseconds when they
+      are installed. In a shell that was never warpified -- entered via `su`,
+      `sudo su -` or `ksu` -- there are no hooks at all and `^Y` is simply
+      readline's yank, so nothing ever replies. That is the *same*
+      un-warpified-subshell condition already on file as the stale-cwd
+      completion bug, which is why both were seen in the same area. It is also
+      reachable whenever the hooks are absent or wedged, including remote
+      sessions that lost them.
+
+      **Second unbounded wait, same bug.** The requester at
+      `terminal/input.rs:10862` is `async move { results_rx.recv().await.ok() }`
+      -- no timeout either. So a handshake that died in the results phase leaked
+      the channel and hung that future forever. It does not gate PTY writes, so
+      it is a leak rather than a lockup, but it is the same defect.
+
+      **FIXED** by a generation-tagged watchdog armed at each phase: 2s for the
+      OSC reply (a liveness bound, not a work budget -- the hooks answer in
+      milliseconds or never), 15s for results (real work, e.g. globbing a large
+      directory). On expiry the state is dropped and `execute_next_queued_write`
+      is re-driven so queued writes flow again; dropping the state also drops
+      `results_tx`, which is what lets the requester's future resolve to `None`
+      instead of leaking. The generation counter means a timer armed for one
+      phase can never tear down a later one, so a slow-but-successful handshake
+      survives its own predecessor's timeout.
+
+      **Supersedes three refuted theories**, which should not be re-raised: the
+      EIO teardown (the event loop still calls `TerminalModel::exit`, so it was
+      never a stuck-pane cause); the keystroke latch after shell death
+      (`TerminalModel::exit` finishes the block first, so `is_agent_in_control`
+      cannot survive it); and `filtered_blocks` (38 us at 10k blocks, ~0.2% of a
+      frame). The `did_write` drain guard restored in 8d0c3b630 is real and
+      adjacent -- it stalls the same queue -- but it self-clears on the next
+      `LineEditorStatus` transition, so it could not produce a permanent wedge.
