@@ -521,3 +521,86 @@ upstream's behavior is actually a defect rather than a preference.
   `data: Vec<u8>` only for the original to be dropped on the same line. Verified
   against the vendored source. **Confirmed present at the pin** (file otherwise
   byte-identical modulo import order). **We do:** drop the two `.clone()` calls.
+
+- **Natural-language autodetection is on by default** (2026-09-20,
+  `app/src/settings/ai.rs`). **Upstream:** `ai_autodetection_enabled_internal`
+  is `default: false` (`4111d08f9:app/src/ai_settings.rs`, and the fork had
+  matched it since `5eb6c0e80`, "NLD autodetection defaults to opt-in, matching
+  the pin"). **The defect:** opt-in is defensible upstream, where cloud
+  onboarding introduces the feature and a fullscreen AgentView entry point
+  surfaces the toggle. This fork has neither. The observable result is that a
+  user types a plain-English question, it is executed as a shell command, it
+  fails, and nothing anywhere says the routing feature exists -- reported from
+  live use, and the classifier itself was separately verified correct in
+  isolation (8/8), so the routing was never the problem. The terminal message
+  bar already carries a `terminal-message-autodetected` string that only ever
+  renders when the setting is on, i.e. the UI was built expecting it. **We do:**
+  default `true`.
+
+  **This is the second half of a pair.** `nld_in_terminal_enabled_internal`
+  already diverges the same way and for the same reason (see the NLD-in-terminal
+  migration row above); the fork now diverges on both halves, in the same
+  direction.
+
+  **An explicit user `false` still wins** -- verified through both paths:
+  `Setting::new(Some(v))` marks `is_explicitly_set` and never consults
+  `default_value()` (`crates/settings/src/macros.rs:247-266`), and
+  `reload_all_public_settings` prefers `read_value` over `serialized_default`
+  (`crates/settings/src/manager.rs:386-391`).
+
+  **The startup migration is unaffected but its blast radius moved**, which is
+  the part to remember. `app/src/settings/initializer.rs` gates the
+  `nld_in_terminal_enabled` carry-over on
+  `ai_autodetection_enabled_internal.is_value_explicitly_set()`, and a default
+  change is not an explicit set, so an untouched user still gets no write and
+  the fork's `true` default still applies -- the property the
+  `untouched_user_keeps_the_fork_nld_default_and_gets_no_explicit_write` test
+  pins. What changed is WHO reaches the carry-over branch: opting out of
+  autodetection now requires writing `false` explicitly, and that branch
+  explicitly writes `nld_in_terminal_enabled = false`, taking CJK terminal input
+  with it. The coupling is intended -- the two settings are the same feature on
+  different surfaces -- but it has moved from a rare path to the common one, and
+  is now stated at the migration site.
+
+- **Privilege-escalation shells are warpified** (2026-09-20,
+  `app/src/terminal/warpify/settings.rs`). **Upstream:**
+  `SUBSHELL_COMMAND_REGEXES` has exactly seven entries (direct shell, docker
+  run, docker exec, poetry, pipenv, aws-vault, flox) and no pattern for `su`,
+  `sudo su`, `sudo -i/-s` or `ksu` -- a case-insensitive search of
+  `4111d08f9:app/src/terminal/warpify/settings.rs` for any of them returns zero
+  hits. **The defect:** a shell entered by escalating privileges is a subshell
+  like any other, but goes unwarpified, so it gets no hooks. Two confirmed
+  user-visible consequences. Directory completion returns stale results, because
+  the cached cwd is never updated. Worse, the pane can lock up **permanently**:
+  `PtyWrite::RunNativeShellCompletions` sends a bare `^Y` and waits for the
+  hooks to answer with an OSC sequence, and with no hooks there is no answer and
+  `^Y` is merely readline's yank -- so `in_flight_native_completions_state`
+  stays `AwaitingPrompt`, which gates `can_write_to_pty`, and every subsequent
+  keystroke queues unwritten with no path to recovery. (A watchdog now bounds
+  that wait; this entry removes the condition that triggers it.) **We do:** add
+  two regexes covering `su`/`ksu` and `sudo`-into-a-shell.
+
+  **The risk here is false positives, not false negatives**, so both patterns
+  are deliberately narrow and anchored: the command word must be the whole word,
+  and nothing may follow the shell. `sudo systemctl restart foo`, `sudo apt
+  install subversion`, `sudo -u deploy git pull`, `sudo journalctl -u fish`,
+  `su -c whoami` and `sudo bash -c '...'` all correctly do not match -- the
+  last two because a trailing command means no interactive subshell to warpify.
+  The bare-short-flag class excludes sudo's value-taking flags (`ugCp`) so a
+  lone `-u` cannot be re-read as a bundled flag, which would otherwise let
+  `sudo -u fish` mistake the username for the shell.
+
+  **Validated against the actual Rust regex engine**, not a Python stand-in:
+  both patterns were run through ripgrep (same `regex` crate) over 20 positive
+  and 26 negative cases plus 14 adversarial ones, with zero misses and zero
+  false positives. This matters because the patterns are built by
+  `Regex::new(..).expect(..)` inside a `LazyLock`, so a malformed pattern is a
+  runtime panic that no compile would catch.
+
+  **Deliberately not covered** (all safe false negatives): `doas`, `pkexec`,
+  `machinectl shell`, `sudo docker run ... bash`, and `su -s <shell>`. Each
+  needs grammar that could not be validated as tightly. Users can add any of
+  them through the existing `warpify.subshells.added_subshell_commands`, which
+  is a separate list that is never merged with or shadowed by the built-ins, and
+  can suppress the new built-ins through
+  `warpify.subshells.subshell_commands_denylist`.
