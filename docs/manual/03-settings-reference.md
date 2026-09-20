@@ -259,7 +259,7 @@ you configure yourself.
 
 | TOML path | Type | Default | What it does |
 |---|---|---|---|
-| `agents.warp_agent.input.ai_auto_detection_enabled` | boolean | `false` | Whether typed input is automatically classified as natural language rather than a command. Opt-in. |
+| `agents.warp_agent.input.ai_auto_detection_enabled` | boolean | `true` | Whether typed input is automatically classified as natural language rather than a command. On by default (upstream ships it off). Setting it to `false` explicitly also turns off `nld_in_terminal_enabled` via a first-launch migration. |
 | `agents.warp_agent.input.nld_in_terminal_enabled` | boolean | `true` | Whether that classification runs in the terminal input specifically. On by default here (upstream defaults it off) so that typing a non-English sentence in the terminal switches to AI input rather than being run as a command. |
 | `agents.warp_agent.input.ai_command_denylist` | string | `""` | Commands to exclude from natural-language autodetection. |
 | `agents.warp_agent.input.include_agent_commands_in_history` | boolean | `false` | Whether commands the agent ran appear in your shell history (up-arrow, Ctrl-R, the history menu). |

@@ -1348,18 +1348,26 @@ fn submission_mode_file_value_uses_snake_case() {
 }
 
 #[test]
-fn ai_autodetection_defaults_to_opt_in() {
+fn ai_autodetection_defaults_to_on() {
     App::test((), |mut app| async move {
         initialize_settings_for_tests(&mut app);
 
         AISettings::handle(&app).read(&app, |settings, ctx| {
-            // NLD is opt-in: a fresh user who never touched the setting has it off.
-            // This fails before the default flip (default was `true`) and passes after.
-            assert!(!*settings.ai_autodetection_enabled_internal.value());
-            // AI is enabled by default, so the getter reflects the opt-in setting
-            // rather than a disabled-AI state.
+            // NLD is on by default in this fork (the pin has it opt-in). A fresh user
+            // who never touched the setting gets their plain-English input classified
+            // and routed to the agent instead of executed by the shell.
+            assert!(*settings.ai_autodetection_enabled_internal.value());
+            // ...and it is a default, not an explicit write, so the settings file is
+            // untouched and a later default change is still free to move.
+            assert!(
+                !settings
+                    .ai_autodetection_enabled_internal
+                    .is_value_explicitly_set()
+            );
+            // AI is enabled by default, so the getter reflects the setting rather
+            // than a disabled-AI state.
             assert!(settings.is_any_ai_enabled(ctx));
-            assert!(!settings.is_ai_autodetection_enabled(ctx));
+            assert!(settings.is_ai_autodetection_enabled(ctx));
         });
     });
 }

@@ -1871,9 +1871,18 @@ define_settings_group!(AISettings, settings: [
     // `is_ai_autodetection_enabled()` getter.
     ai_autodetection_enabled_internal: AIAutoDetectionEnabled {
         type: bool,
-        // Opt-in, matching the pinned oracle. A fresh user who has never touched
-        // this has natural-language detection OFF; the fork had drifted to `true`.
-        default: false,
+        // openWarp: on by default, deliberately diverging from the pin's `false`.
+        // Upstream can afford opt-in because its onboarding and cloud AgentView
+        // surface the toggle; this fork has neither, so a fresh user's plain-English
+        // question is silently handed to the shell and fails, with nothing anywhere
+        // telling them a setting exists. Defaulting on makes the classifier -- which
+        // is the thing that decides prompt-vs-command -- actually run out of the box.
+        // An explicit `false` in the settings file still wins: `Setting::new`/
+        // `load_value` only fall back to this default when the key is absent.
+        //
+        // Deliberate reversal of 5eb6c0e80 ("NLD autodetection defaults to opt-in,
+        // matching the pin"). This is an IMPROVED-style divergence, not drift.
+        default: true,
         supported_platforms: SupportedPlatforms::ALL,
         sync_to_cloud: SyncToCloud::Globally(RespectUserSyncSetting::Yes),
         private: false,

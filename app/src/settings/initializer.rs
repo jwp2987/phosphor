@@ -97,8 +97,12 @@ impl SettingsInitializer {
         //    Chinese straight into the terminal and have the heuristic classifier
         //    route it to the agent. The fork has no cloud AgentView fullscreen entry
         //    point, so the terminal is the primary input surface.
-        // 3. `ai_autodetection_enabled_internal` defaults to `false`, matching the
-        //    pin (`app/src/settings/ai.rs:1872-1876`).
+        // 3. `ai_autodetection_enabled_internal` defaults to `true` here and `false`
+        //    at the pin (`app/src/settings/ai.rs`) -- a second deliberate divergence,
+        //    made so a plain-English question reaches the agent instead of being run
+        //    as a shell command. The pin's expression is wrong here either way; what
+        //    follows does not depend on which value the default takes, because it
+        //    keys off explicitness rather than truthiness.
         //
         // Combine (1)-(3) and the pin's expression evaluates to `false && true ==
         // false` for every user who has never touched either setting -- so on the
@@ -120,6 +124,14 @@ impl SettingsInitializer {
         //     intended for the users it could identify. Note that a user who
         //     explicitly turned the old flag off asked for exactly this: "do not
         //     auto-detect natural language in my input".
+        //
+        // What the `true` default in (3) changed: not this mechanism, but WHO meets
+        // it. Opting out now requires an explicit `false`, and that is precisely the
+        // branch that carries over and explicitly writes `nld_in_terminal_enabled =
+        // false`, taking CJK terminal input with it. The opt-out population used to
+        // leave the default alone and never reach this code at all. The coupling is
+        // intended -- both settings are the same feature on different surfaces -- but
+        // it now sits on the common path rather than a rare one, so say so here.
         //
         // TODO(zachbai): Remove this approximately 6 weeks from 2/5/26.
         if FeatureFlag::AgentView.is_enabled() {
@@ -386,8 +398,9 @@ mod tests {
                     "precondition: this fork defaults nld_in_terminal_enabled to true"
                 );
                 assert!(
-                    !*ai_settings.ai_autodetection_enabled_internal,
-                    "precondition: ai_autodetection_enabled defaults to false (pin-aligned)"
+                    *ai_settings.ai_autodetection_enabled_internal,
+                    "precondition: this fork defaults ai_autodetection_enabled to true, \
+                     diverging from the pin"
                 );
                 assert!(
                     !ai_settings

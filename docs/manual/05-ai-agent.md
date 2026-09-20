@@ -200,10 +200,20 @@ the AI group. In the TUI the agent input is the default input — there is no mo
 to switch into.
 
 Phosphor can also route a plain-English line typed into the terminal input to
-the agent automatically. That is **off by default**
-(`agents.warp_agent.input.ai_auto_detection_enabled = false`); the related
-in-terminal natural-language detection is on
-(`agents.warp_agent.input.nld_in_terminal_enabled = true`).
+the agent automatically. That is **on by default**
+(`agents.warp_agent.input.ai_auto_detection_enabled = true`), as is the related
+in-terminal natural-language detection
+(`agents.warp_agent.input.nld_in_terminal_enabled = true`). Both diverge from
+upstream Warp, which ships them off; see `DECLINED.md`.
+
+Note that the two are linked on first launch. Setting
+`ai_auto_detection_enabled = false` explicitly also writes
+`nld_in_terminal_enabled = false`, because a one-time migration carries your
+choice across to the per-surface setting. That is intended -- they are the same
+feature on the terminal and agent surfaces -- but it means opting out of
+autodetection also turns off typing non-Latin text (for example Chinese)
+directly into the terminal as a prompt. To keep that, set
+`nld_in_terminal_enabled = true` explicitly as well.
 
 ### Slash commands
 
@@ -883,7 +893,7 @@ Per-model fields: `name`, `id`, `context_window` (0 = unknown),
 
 | TOML path | type | default |
 |---|---|---|
-| `agents.warp_agent.input.ai_auto_detection_enabled` | bool | `false` |
+| `agents.warp_agent.input.ai_auto_detection_enabled` | bool | `true` |
 | `agents.warp_agent.input.nld_in_terminal_enabled` | bool | `true` |
 | `agents.warp_agent.input.ai_command_denylist` | string | empty |
 | `agents.warp_agent.input.include_agent_commands_in_history` | bool | `false` |
