@@ -107,6 +107,26 @@ const COMMAND_BLOCKED_ON_INPUT_MESSAGE: &str = "Command needs your input. User i
 const AGENT_ERRORED_COMMAND_MESSAGE: &str = "Agent ran into an issue. Take over control.";
 pub const VIEWING_COMMAND_DETAIL_MESSAGE: &str = "Viewing command detail";
 const VIEWING_MCP_TOOL_DETAIL_MESSAGE: &str = "Viewing MCP tool call detail";
+/// Shown in place of the command text on a requested-command row that the app -- not the user
+/// -- cancelled, because another command was already running when this one was requested. Only
+/// one command may be active at a time, so the long-running-command drain in
+/// `BlocklistAIActionModel::handle_action_result` (and the `is_active_and_long_running` guard in
+/// `action_model/execute/shell_command.rs`) resolve the newcomer as `CancelledBeforeExecution`
+/// before it ever runs. Without this the row was a dim slashed-circle next to a command that
+/// looks like it just failed, with nothing to distinguish "I cancelled this" from "it failed"
+/// from "the app dropped it".
+const COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE: &str =
+    "Cancelled -- another command was already running.";
+
+/// The profile-autoexecution footer's sentence, shown only when the Accept/Edit/Cancel buttons
+/// are on the same row -- see [`RequestedCommandView::execution_decision_footer_message`].
+const PROFILE_ALWAYS_ASK_FOOTER_MESSAGE: &str =
+    "Your profile is set to always ask for permission to execute commands.";
+/// The same footer's sentence for a command that cannot be answered yet because another command
+/// is still running. The row's only affordance in that state is Cancel, so the sentence must not
+/// imply a permission prompt is on screen -- it says what is being waited on instead.
+const QUEUED_BEHIND_RUNNING_COMMAND_FOOTER_MESSAGE: &str =
+    "Waiting for the running command to finish -- you will be asked before this one runs.";
 
 const EDIT_COMMAND_ACTION_NAME: &str = "requested_command:edit";
 
@@ -325,6 +345,18 @@ pub struct RequestedCommandView {
     header_mouse_state: MouseStateHandle,
     is_editing: bool,
 
+    /// Whether this action was cancelled by the app because another command was already
+    /// running, rather than by anything the user or the conversation did.
+    ///
+    /// The stored result cannot answer this on its own: every one of those paths lands on the
+    /// same `RequestCommandOutput(CancelledBeforeExecution)`, whether the user pressed Cancel,
+    /// the conversation was reverted, or the long-running-command drain took it out. The one
+    /// thing that separates them is the `cancellation_reason` on
+    /// `BlocklistAIActionEvent::FinishedAction`, which is live only at the moment the event
+    /// arrives -- so it is captured there and remembered here. A row restored from a previous
+    /// session never sees that event and so keeps the old, unlabelled rendering.
+    cancelled_by_running_command: bool,
+
     // A requested command can either be copied directly off of one citation (such as a Zap Drive
     // object), derived from one or more citations, or be unrelated to any citations.
     // A given citation should only appear once per block.
@@ -478,7 +510,11 @@ impl RequestedCommandView {
                         }
                         ctx.notify();
                     }
-                    BlocklistAIActionEvent::FinishedAction { action_id, .. } => {
+                    BlocklistAIActionEvent::FinishedAction {
+                        action_id,
+                        cancellation_reason,
+                        ..
+                    } => {
                         let Some(action_result) = me
                             .action_model
                             .as_ref(ctx)
@@ -504,16 +540,35 @@ impl RequestedCommandView {
                                     command_result,
                                     RequestCommandOutputResult::CancelledBeforeExecution
                                 ) {
-                                    let terminal_model = me.terminal_model.lock();
-                                    if terminal_model
-                                        .block_list()
-                                        .block_for_ai_action_id(&me.action_id)
-                                        .is_none_or(|block| block.finished())
-                                    {
-                                        drop(terminal_model);
-                                        if me.is_header_expanded {
-                                            me.set_is_header_expanded(false, ctx);
-                                        }
+                                    let (has_command_block, block_absent_or_finished) = {
+                                        let terminal_model = me.terminal_model.lock();
+                                        let block = terminal_model
+                                            .block_list()
+                                            .block_for_ai_action_id(&me.action_id);
+                                        (
+                                            block.is_some(),
+                                            block.is_none_or(|block| block.finished()),
+                                        )
+                                    };
+
+                                    // A cancellation nobody asked for. Every user- and
+                                    // conversation-driven cancellation carries a
+                                    // `CancellationReason` (`ManuallyCancelled` from the row's
+                                    // own Cancel button, `FollowUpSubmitted`, `Reverted`,
+                                    // `Deleted`, `AgentExitedShell`); the one path that passes
+                                    // `None` for a command that never got as far as a block is
+                                    // the "another command is already running" path -- the
+                                    // long-running-command drain in
+                                    // `BlocklistAIActionModel::handle_action_result` and the
+                                    // `is_active_and_long_running` guard it exists to uphold.
+                                    // Requiring the block to be absent as well keeps the label
+                                    // off rows whose command actually started and was then torn
+                                    // down some other way.
+                                    me.cancelled_by_running_command =
+                                        cancellation_reason.is_none() && !has_command_block;
+
+                                    if block_absent_or_finished && me.is_header_expanded {
+                                        me.set_is_header_expanded(false, ctx);
                                     }
                                 }
                                 ctx.notify();
@@ -576,6 +631,7 @@ impl RequestedCommandView {
             autonomy_setting_speedbump,
             is_header_expanded: false,
             header_mouse_state: Default::default(),
+            cancelled_by_running_command: false,
             copied_from_citation: None,
             derived_from_citations: Default::default(),
             citation_state_handles: Default::default(),
@@ -835,45 +891,57 @@ impl RequestedCommandView {
                     action_id: show_for_action_id,
                     shown,
                 },
-            ) if show_for_action_id == &self.action_id
-                && self.is_awaiting_execution_decision(app) =>
-            {
-                *shown.lock() = true;
-                Some(Self::render_profile_autoexecution_info_footer(
-                    self.manage_autonomy_settings_link_handle.clone(),
-                    app,
-                ))
+            ) if show_for_action_id == &self.action_id => {
+                self.execution_decision_footer_message(app).map(|message| {
+                    *shown.lock() = true;
+                    Self::render_execution_decision_info_footer(
+                        message,
+                        self.manage_autonomy_settings_link_handle.clone(),
+                        app,
+                    )
+                })
             }
             _ => None,
         }
     }
 
-    /// Whether this action is still waiting on a decision about whether to execute.
+    /// The execution-decision footer's sentence for this action's current status, or `None`
+    /// when there is no pending decision to describe.
     ///
-    /// The profile-autoexecution footer tells the user their profile "is set to always ask
-    /// for permission to execute commands". That sentence is only true while the decision is
-    /// still open. The Accept/Cancel/Edit buttons, however, are attached in `render_header`
-    /// under `Some(AIActionStatus::Blocked)` alone -- a completely separate condition -- so
-    /// the two could disagree, and did: a command cancelled out from under the user by the
-    /// long-running-command drain (`BlocklistAIActionModel::handle_action_result`) kept
-    /// rendering the footer while every button was gone, leaving the app demanding a
-    /// permission it offered no way to grant. The only remaining affordance was a link to the
-    /// settings editor, which does not resolve the action either.
+    /// This is the footer's half of a rule the two halves used to break independently: the
+    /// explanation and the affordance that answers it must always agree. The buttons are
+    /// attached in `render_header` from a `match` on the very same `AIActionStatus`, so this
+    /// function is written as the mirror of those arms:
     ///
-    /// `Queued` is included deliberately: such an action is waiting behind another and will
-    /// become actionable on its own, so the footer is early rather than false. `Finished`
-    /// (including cancelled), `Preprocessing` and the statusless/orphaned case are all
-    /// excluded -- for those, no decision is pending and the sentence is simply wrong.
-    fn is_awaiting_execution_decision(&self, app: &AppContext) -> bool {
-        matches!(
-            self.action_model
-                .as_ref(app)
-                .get_action_status(&self.action_id),
-            Some(AIActionStatus::Blocked) | Some(AIActionStatus::Queued)
-        )
+    /// * `Blocked` -- Cancel, Edit and the Accept split button are on the row, so the footer may
+    ///   say the profile asks for permission: the permission is grantable right there.
+    /// * `Queued` -- only Cancel is on the row. `get_action_status` reports `Queued` rather than
+    ///   `Blocked` while `running_actions` holds this conversation, because only one command may
+    ///   be active at a time, and that suppression is deliberate. So the permission sentence
+    ///   would describe a prompt the user cannot answer; the footer says what is actually being
+    ///   waited on instead, which the Cancel button *does* answer.
+    /// * everything else (`Finished`, including cancelled, `Preprocessing`, and the
+    ///   statusless/orphaned case) -- no decision is pending, no buttons, no footer.
+    ///
+    /// The historical failure this replaces: the footer was keyed on `action_id` alone, so a
+    /// command cancelled out from under the user by the long-running-command drain
+    /// (`BlocklistAIActionModel::handle_action_result`) kept demanding a permission it offered
+    /// no way to grant -- the only affordance left being a settings link, which does not resolve
+    /// the action either.
+    fn execution_decision_footer_message(&self, app: &AppContext) -> Option<&'static str> {
+        match self
+            .action_model
+            .as_ref(app)
+            .get_action_status(&self.action_id)
+        {
+            Some(AIActionStatus::Blocked) => Some(PROFILE_ALWAYS_ASK_FOOTER_MESSAGE),
+            Some(AIActionStatus::Queued) => Some(QUEUED_BEHIND_RUNNING_COMMAND_FOOTER_MESSAGE),
+            _ => None,
+        }
     }
 
-    fn render_profile_autoexecution_info_footer(
+    fn render_execution_decision_info_footer(
+        message: &'static str,
         settings_link_handle: MouseStateHandle,
         app: &AppContext,
     ) -> Box<dyn Element> {
@@ -903,14 +971,10 @@ impl RequestedCommandView {
                     .finish(),
                 )
                 .with_child(
-                    Text::new(
-                        "Your profile is set to always ask for permission to execute commands.",
-                        appearance.ui_font_family(),
-                        font_size,
-                    )
-                    .with_color(blended_colors::text_sub(theme, theme.surface_1()))
-                    .with_selectable(false)
-                    .finish(),
+                    Text::new(message, appearance.ui_font_family(), font_size)
+                        .with_color(blended_colors::text_sub(theme, theme.surface_1()))
+                        .with_selectable(false)
+                        .finish(),
                 )
                 .with_child(
                     Expanded::new(
@@ -1186,6 +1250,14 @@ impl RequestedCommandView {
             RequestedActionViewType::McpTool => None,
         };
 
+        // Computed up here rather than bound inside the `match` arm: `action_status` is matched
+        // a second time further down (to attach the interaction mode), so the first `match` must
+        // not move it, and `AIActionStatus::Finished` owns its result.
+        let was_cancelled_for_running_command = self.cancelled_by_running_command
+            && action_status
+                .as_ref()
+                .is_some_and(|status| status.is_cancelled());
+
         match action_status {
             Some(AIActionStatus::Preprocessing) => {
                 title = self.get_header_title_text(app).into();
@@ -1213,6 +1285,18 @@ impl RequestedCommandView {
                     RequestedActionViewType::Command => COMMAND_WAITING_FOR_USER_MESSAGE.into(),
                     RequestedActionViewType::McpTool => self.mcp_blocked_title(app).into(),
                 };
+            }
+            // Placed ahead of the expanded-header arm on purpose: a command cancelled before it
+            // ever executed is never expandable (`should_be_expandable` is false for
+            // `CancelledBeforeExecution` with no finished block), so there is no "Viewing
+            // command detail" state for this arm to steal. Styled like `Queued` -- dim, and no
+            // monospace override, because the text is prose rather than a command.
+            Some(AIActionStatus::Finished(..)) if was_cancelled_for_running_command => {
+                title = COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE.into();
+                font_color_override = Some(blended_colors::text_disabled(
+                    appearance.theme(),
+                    appearance.theme().surface_2(),
+                ));
             }
             Some(AIActionStatus::RunningAsync) | Some(AIActionStatus::Finished(..))
                 if self.is_header_expanded =>

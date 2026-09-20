@@ -1460,6 +1460,18 @@ impl BlocklistAIActionModel {
             // `None` maps to `treat_as_success == false`, handing the follow-up decision back
             // to its real question: did any non-cancelled result finish? It does not force a
             // follow-up, so a turn in which everything was cancelled still ends quietly.
+            //
+            // LOAD-BEARING FOR THE UI, so do not "improve" this into a real reason without
+            // reading the other end first. `RequestedCommandView` (inline_action/
+            // requested_command.rs) distinguishes a drain cancellation from every other kind
+            // by exactly this absence -- `cancellation_reason.is_none()` plus the action never
+            // having reached a block -- because `AIAgentActionResult` carries no reason of its
+            // own: every cancel path stores the same `CancelledBeforeExecution`. That is what
+            // lets the row say "Cancelled -- another command was already running" instead of
+            // looking identical to a user-pressed Cancel. Giving this call site a reason would
+            // silently revert the row to an unexplained cancel, and no test would fail. If a
+            // reason is ever wanted here, thread it through `AIAgentActionResult` and switch
+            // the view to read it, in that order.
             for action in self.drain_pending_request_command_actions(conversation_id) {
                 self.cancel_pending_action(conversation_id, action, None, ctx);
             }

@@ -27,6 +27,8 @@ use crate::terminal::{
     SizeUpdate, TerminalModel,
 };
 use crate::SessionSettings;
+use crate::view_components::DismissibleToast;
+use crate::workspace::ToastStack;
 
 use super::Message;
 
@@ -54,6 +56,18 @@ const NATIVE_COMPLETIONS_PROMPT_TIMEOUT: Duration = Duration::from_secs(2);
 /// say -- so it is far more generous. It does not gate PTY writes; it exists so the completions
 /// request cannot leak its channel and hang the requester's future forever.
 const NATIVE_COMPLETIONS_RESULTS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Shown once per pane when the shell never answers the `^Y` completions trigger.
+///
+/// Until this existed the timeout was recovered from silently: the watchdog dropped the wedged
+/// state, PTY writes resumed, and a `log::warn!` went to the log file -- so from the user's side
+/// Tab simply did nothing, every time, with no explanation anywhere they would look. The wording
+/// hedges on the cause because the handshake can also go unanswered when the hooks are present
+/// but wedged (a remote session that lost them, say); an un-phosphorized shell is only the
+/// dominant case, not the only one.
+const NATIVE_COMPLETIONS_UNAVAILABLE_MESSAGE: &str = "Tab completions aren't available in this \
+     shell -- it has no Phosphor shell integration to answer them. This is usual for a shell \
+     entered with su, sudo su - or ksu.";
 
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
@@ -130,6 +144,11 @@ pub struct PtyController<T: EventLoopSender> {
     /// timer armed for one phase cannot clear the state belonging to a later one. Without it a
     /// slow-but-successful handshake would be torn down by its own predecessor's timeout.
     native_completions_generation: u64,
+    /// Whether the user has already been told that this shell does not answer completion
+    /// requests. A `PtyController` is per-pane, so this bounds the toast to once per pane for
+    /// the life of the shell -- the un-phosphorized shell that causes this answers no Tab, ever,
+    /// and a toast on every keystroke would be worse than the silence it replaces.
+    has_reported_native_completions_unavailable: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -290,6 +309,7 @@ impl<T: EventLoopSender> PtyController<T> {
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
             native_completions_generation: 0,
+            has_reported_native_completions_unavailable: false,
         }
     }
 
@@ -399,8 +419,6 @@ impl<T: EventLoopSender> PtyController<T> {
         self.execute_next_queued_write(ctx);
     }
 
-    /// Returns whether we can currently write to the pty, or if we need to
-    /// enqueue writes for later.
     /// Arms a watchdog that abandons an in-flight native-completions handshake if the shell
     /// never answers.
     ///
@@ -455,10 +473,55 @@ impl<T: EventLoopSender> PtyController<T> {
                 // Only the prompt phase gates writes, but draining unconditionally is harmless
                 // and keeps the recovery path identical for both.
                 me.execute_next_queued_write(ctx);
+                // Only the prompt phase is reported. That phase timing out means the shell never
+                // acknowledged the trigger at all, which is what an un-phosphorized shell looks
+                // like; a results-phase timeout means the hooks did answer and then the work
+                // outran its budget, for which "no shell integration" would simply be untrue.
+                if expect_awaiting_prompt {
+                    me.report_native_completions_unavailable(ctx);
+                }
             },
         );
     }
 
+    /// Tells the user -- at most once per pane -- that this shell will not answer completion
+    /// requests, so a dead Tab key has an explanation instead of looking like a hang.
+    ///
+    /// Reuses the workspace toast stack, the same path an OSC 9 notification from the shell
+    /// takes on its way to the screen (`ModelEvent::PluggableNotification` ->
+    /// `pane_group::Event::ShowToast`), reached here the way `MCPTemplatableManager` reaches it
+    /// from a model: active window first, then the `ToastStack` singleton. Emitting
+    /// `ModelEvent::PluggableNotification` directly was the other candidate and was rejected --
+    /// every such event is fed to the CLI-agent listeners' `try_parse`
+    /// (`terminal/cli_agent_sessions/listener/mod.rs`), so an internal diagnostic sent that way
+    /// can mutate CLI-agent session state, and one with no title is silently swallowed whenever
+    /// the pane already has an OSC 9 listener.
+    ///
+    /// `active_window()` is checked before anything else on purpose: it is `None` in headless
+    /// and `App::test` apps, where the `ToastStack` singleton is never registered, so the guard
+    /// both scopes the toast to a real window and keeps this recovery path away from a singleton
+    /// lookup that has nothing to find there. The "already reported" flag is only set once a
+    /// toast has actually been handed over, so a timeout that lands with no window does not
+    /// consume the one notification the pane gets.
+    fn report_native_completions_unavailable(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.has_reported_native_completions_unavailable {
+            return;
+        }
+        let Some(window_id) = ctx.windows().active_window() else {
+            return;
+        };
+        self.has_reported_native_completions_unavailable = true;
+        ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            toast_stack.add_ephemeral_toast(
+                DismissibleToast::default(NATIVE_COMPLETIONS_UNAVAILABLE_MESSAGE.to_owned()),
+                window_id,
+                ctx,
+            );
+        });
+    }
+
+    /// Returns whether we can currently write to the pty, or if we need to
+    /// enqueue writes for later.
     fn can_write_to_pty(&self, ctx: &mut ModelContext<Self>) -> bool {
         self.line_editor_status.as_ref(ctx).is_line_editor_active()
             // If we're in the middle of a native completions request, we should not send any more
