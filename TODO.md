@@ -11022,6 +11022,61 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21 — and a mechanical port of the pin would have been ACTIVELY WRONG.** At the pin the *GUI* presenter reports its layout embeddings into `view_parents`, so `view_ancestors` is the single answer for every view and `get_responder_chain` is a one-liner. **In this fork `view_parents` is written only by the TUI render path** (`presenter/tui.rs:202`), so porting that one-liner would collapse **every GUI responder chain to one element**. Fork-introduced split, fork-correct answer required. There were **three** copies of the correct rule and two of the wrong one; all now route through one `responder_chain_for_view` helper. **An in-family site named in no ledger entry:** `dispatch_action_for_view` routed on presenter presence and returned `false` outright, so the same action reached a TUI view *by type* and vanished *by name*. Also fixed a stranded doc comment — `get_responder_chain`'s docs were sitting on `view_ancestors`, leaving one function with none and the other with two.
 
+- [ ] **Remote-session setup degrades silently; every precondition fails without a
+      signal.** Measured 2026-09-19 by driving the same SSH flow through Phosphor and
+      upstream Warp on the same host, same commands, same harness.
+
+      **The capability is at parity.** Once phosphorized, Phosphor produced per-command
+      blocks with timings, a `little-thing:/etc` tab title, `winters@little-thing` / `ssh`
+      / `/etc` context chips, cwd tracked through `cd`, working `sudo -n whoami`, and a
+      "Session Phosphorized" banner with a snippet to automate it next time. Warp's
+      output was equivalent. This is NOT a capability gap.
+
+      **The gap is that Phosphor never says when it has degraded.** Warp blocks with a
+      labelled modal -- "Choose your experience for this remote session:" -- naming both
+      options, marking one Recommended, stating what declining costs, plus "Don't ask me
+      this again" and a settings link. Phosphor offers a `Phosphorize SSH session  Ctrl I`
+      chip in the footer and, if it is not pressed, proceeds into a legacy session that
+      looks identical to a working one.
+
+      **Seven consecutive silent failures** were hit getting this flow to work, each
+      producing a plausible shell and no error: (1) legacy SSH fallback instead of
+      remote-server, (2) `WarpifiedRemote { host_id: None }` rendered the same as
+      `Some(..)`, (3) remote binary expected at `~/.phosphor/remote-server/<bin>` but a
+      copy at `~/.phosphor/<bin>` silently ignored, (4) install refused because
+      `option_env!("PHOSPHOR_CLI_SHA256_*")` is empty in a dev build -- correct fail-closed
+      behaviour, but the only surfacing is one log line, (5) the phosphorize chip never
+      accepted, (6) no `/agent` conversation opened, so agent questions went nowhere,
+      (7) `agents.byop.last_used_model_id` pointing at an unreachable provider
+      (`127.0.0.1:8787`) while a working one was configured.
+
+      **The states already exist internally** -- `host_id`, legacy-vs-remote-server
+      executor, `completion_session_context`'s `.zip()` outcome, classifier decisions --
+      they are computed and then not surfaced. Three throwaway debug probes had to be
+      added during this investigation purely because the app was silent where it should
+      have spoken.
+
+      **Related, measured the same day:** shell-vs-agent autodetection is wrong in both
+      directions. Off (the default) every command goes to the model; on, 43 of 43
+      classifier decisions were `Shell`, including "What kind of files live in /etc?" --
+      nine direct questions in a ten-minute session, zero reached the agent. Classifier
+      latency median 298us, p90 8.45ms.
+
+      **A question typed without an open agent conversation is silently lost.** In Warp
+      the agent is reachable inline -- type a question in the session and it is answered.
+      In Phosphor an agent conversation must first be opened explicitly (`ctrl-shift-Return`
+      or `/agent`); a question typed without one is submitted as a shell command. The
+      autodetection that exists to cover exactly this case is the same one measured at
+      43/43 `Shell` above, so the automatic path does not rescue the manual one. The two
+      defects compound: the explicit step is required AND the fallback that would make it
+      unnecessary is broken, and neither failure is reported to the user.
+
+      **Fix shape:** surface the degradation, not fewer steps. A labelled prompt at the
+      point of choice (Warp's shape), a visible indicator of whether the live session is
+      warpified/remote-server or legacy, and either a working classifier or an inline
+      agent path that does not require opening a conversation first.
+
+
 - [x] **Panic on TUI-only windows.** `core/app.rs:1911` and `:1963` `.expect("Invalid
       window id")` on a presenter that `add_tui_window` never inserts.
       **VERDICT PARTIAL — latent (independent verifier, 2026-08-21):** Both `.expect("Invalid window id")` sites are real (`core/app.rs:1913`, `:1963`) and `add_tui_window` (`core/app/tui.rs:150`) inserts a `Window::default()` with no presenter; the pin cannot panic here because `42effe840:app.rs:1945,1992` use `view_ancestors`. **But no TUI caller reaches them** — the only callers are GUI-only (`app_menus.rs:1115`, `command_palette/new_session/data_source.rs:118`, `search/action/data_source.rs:87`).
@@ -11050,3 +11105,88 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `crates/warpui_core/src/core/app.rs:2311` is `debug_assert!(prev_value.is_none(), ...)` and the `singleton_models.insert` at `:2306-2308` PRECEDES it, so in release the entry is already replaced and only a debug build panics. The line cited earlier (`:2309`) is the "Panic in debug mode" comment, not the assert.
 
       **CLOSED 2026-08-21 as latent-and-documented, no behaviour change — and that is the right answer.** Caller sweep over ~200 sites found **no reachable duplicate registration in production**: every non-test registration is one-shot inside `initialize_app` (`lib.rs:1268`, once per `App` — extra windows re-register nothing) or inside `run_daemon_app` (`remote_server/mod.rs:118-296`), which builds its **own** `App` in a separate process, so its overlap with `lib.rs` is across instances not within one; the four `secure_storage::register*` variants are an if/else chain (`lib.rs:1310-1320`); `init_and_register_user_preferences` is `#[cfg(any(test, feature = "test-util"))]`. The duplicates that do occur are test-harness-only, and tests always build with debug assertions on, so the panic still fires exactly where it matters (`tui_test_support.rs:98-99`, `test_util/settings.rs:14-19`, both of which already document the "was called twice" failure). **The pin is byte-identical** (`42effe840:crates/warpui_core/src/core/app.rs:2266-2278`, comment included), so promoting to `assert!` would be a deliberate divergence adding a release-mode panic to a path that has never fired, to catch a bug the debug path already catches in the only place it occurs; `Result` would ripple through ~200 call sites for the same non-event; first-wins-plus-log would silently change release semantics away from the pin. **Fixed the misleading comment instead** (`core/app.rs:2300-2318`): it now states that duplicates are *reported, not prevented*, that release keeps the replacement and strands earlier `ModelHandle`s, and why it stays a `debug_assert!`. The old inline comment ("Panic in debug mode if this is the second time…") let a reader believe the assert prevented the duplicate; the insert has already replaced the previous handle by the time it runs.
+
+- [ ] **A second agent command requested while a first is still running is
+      un-approvable, and every prompt queued behind it waits forever.**
+      Observed live 2026-09-20 with a local Ollama provider (gpt-oss:20b), and
+      reproduced from the session log rather than inferred. Four separable
+      defects; the first two are the ones a user sees.
+
+      **Timeline (from the log, times UTC).** `15:09:03` the agent requests
+      `run_shell_command` (`call_syvvcxbr`, a 40-second sleep); it matches the
+      profile allowlist and runs -- `Agent command auto-executed, reason:
+      ExplicitlyAllowlisted`. `15:09:05` it returns a
+      `LongRunningCommandSnapshot`, so the agent gets a result two seconds into a
+      forty-second command and keeps reasoning. `15:09:32` it requests a second
+      `run_shell_command` (`call_3thge1tt`) -- **no autonomy line is logged at
+      all**, so it neither auto-executed nor recorded a decision. Then nothing
+      happens for **2m36s**. `15:12:08` the user drags a queued row; `15:12:10`
+      and `15:12:12` they hit **Send Now** on each of the two queued prompts by
+      hand. The tool response for `call_3thge1tt` (71 bytes) appears only at
+      `15:12:10`, as a side effect of that forced send. Nothing drained on its
+      own.
+
+      **1. The permission footer is rendered independently of the buttons that
+      would let you act on it.** `requested_command.rs:832-844` matches the
+      `AutonomySettingSpeedbump::ShouldShowForProfileCommandAutoexecution` arm on
+      `show_for_action_id == &self.action_id` **and nothing else** -- no status
+      guard -- and renders
+      `render_profile_autoexecution_info_footer` (`:849`), which is an icon, the
+      text "Your profile is set to always ask for permission to execute
+      commands.", and a link to the settings editor. The Accept/Cancel/Edit
+      buttons are attached in a different place, `match action_status { Some(
+      AIActionStatus::Blocked) => ... }` (`:1339-1367`). Because the two
+      conditions are independent, there is a reachable state -- the one in the
+      screenshot -- where the app tells you it needs your permission and offers
+      no affordance to grant it. Every other arm (`Queued`, `Preprocessing`, and
+      the `None`/orphaned case) falls through to `_` at `:1421`, which attaches
+      an interaction mode only if a finished command block exists, i.e. **no
+      buttons**.
+
+      **2. "(queued until the command finishes)" is not what the rows wait on.**
+      The suffix is `LRC_AUTO_QUEUE_ROW_SUFFIX`
+      (`queued_prompts_panel.rs:58`, applied at `:1129-1133` for both
+      `LrcAutoQueue` and `PendingLrcAutoQueue`). The rows are actually drained by
+      `view.rs::drain_queued_prompts`, which acts only under
+      `FinishReason::Complete` -- **turn** completion, not command completion. A
+      turn parked on an un-actionable permission prompt never completes, so the
+      rows never fire. The label promises a trigger that is not the trigger, and
+      the failure is silent: the panel keeps saying "2 queued" indefinitely.
+
+      **3. `Blocked` -- the only status that grows buttons -- is suppressed while
+      any action is running.** `action_model.rs:651-658`: the head pending action
+      reports `Blocked` only when `index == 0 && !self.is_view_only &&
+      !self.running_actions.contains_key(conversation_id)`; otherwise `Queued`.
+      So a command requested while an earlier one is still running is
+      un-approvable *by construction* for as long as that first command runs --
+      which, for a long-running command, is exactly the window in which an agent
+      is most likely to request a second one. Note this is `contains_key`, not
+      "non-empty", but the stale-empty-entry reading is **refuted**:
+      `handle_action_result` (`:1414-1424`) removes the key when the set empties.
+
+      **4. A long-running snapshot cancels every other pending command action.**
+      `handle_action_result` (`:1440-1449`) drains and cancels all pending
+      `RequestCommandOutput` actions whenever a result is a
+      `LongRunningCommandSnapshot`, under the documented policy "Only one command
+      can be active at a time, and the server can only spawn one CLI subagent."
+      That policy is defensible; what is not handled is the UI and queue state it
+      leaves behind -- a cancelled action still carrying a permission footer
+      (defect 1) and a queue still waiting on a turn that will not complete
+      (defect 2).
+
+      **Not yet established:** exactly which status `call_3thge1tt` held at
+      render time. The icon is the dim slashed circle, which `action_icon`
+      (`view_impl/output.rs:3189-3211`) produces for *either* the orphaned case
+      (`is_orphaned_by_finished_output`: no status and the block has stopped
+      streaming) *or* `Finished(cancelled)` -- and those two are not
+      distinguishable from the screenshot. Defects 1 and 2 hold either way, since
+      neither depends on which of the two it was. Resolve this before fixing 3
+      or 4, not after.
+
+      **Do not "fix" this by auto-firing the queue at snapshot time.** That was
+      tried in this branch and reverted:
+      `submit_queued_prompt_for_active_pane` (`input.rs:12557`) opens with
+      `cancel_conversation_progress(..., FollowUpSubmitted, ...)`, so delivering
+      at snapshot time aborts the agent's still-running turn and re-enters
+      `BlocklistAIActionModel` while it is mid-emit. See commit 6856c32a7, which
+      deliberately only *unlocks* at `FinishedAction`.
