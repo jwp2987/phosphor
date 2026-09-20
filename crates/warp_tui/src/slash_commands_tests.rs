@@ -239,6 +239,19 @@ fn slash_command_menu_renders_natural_language_detection_row() {
                     .iter()
                     .any(|line| line.contains("/natural-language-detection"))
             );
+
+            // Establish the OFF state explicitly rather than leaning on the default, then
+            // re-render. The property under test is that the row REFLECTS the setting in both
+            // states; depending on the default made it a test of the default too, and it broke
+            // when `ai_autodetection_enabled_internal` flipped to `true` (see DECLINED.md).
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .ai_autodetection_enabled_internal
+                    .set_value(false, ctx)
+                    .expect("natural language detection setting should persist");
+            });
+            let element = menu.render(ctx).expect("slash command menu should render");
+            let lines = render_menu_lines(element, ctx);
             assert!(lines.iter().any(|line| {
                 line.contains("Toggle natural language detection (currently off)")
             }));

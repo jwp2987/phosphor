@@ -1465,6 +1465,20 @@ fn nld_slash_command_toggles_and_reports_its_effects() {
         let fixture = focus_test_fixture(&mut app);
         let (view, _) = add_focus_test_session(&mut app, &fixture, true);
 
+        // Start from a known OFF state instead of the default. The property under test is that
+        // the command toggles and reports each transition; depending on the default made it a
+        // test of the default too, and it broke when `ai_autodetection_enabled_internal`
+        // flipped to `true` (see DECLINED.md). Setting it explicitly keeps the
+        // off -> on -> off sequence below meaningful whatever the default is.
+        app.update(|ctx| {
+            AISettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings
+                    .ai_autodetection_enabled_internal
+                    .set_value(false, ctx)
+                    .expect("natural language detection setting should persist");
+            });
+        });
+
         view.update(&mut app, |view, ctx| {
             view.input_view.update(ctx, |input, ctx| {
                 input.set_text("/natural-language-detection", ctx);
