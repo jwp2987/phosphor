@@ -1,4 +1,5 @@
 use settings::{Setting, SyncToCloud};
+use warp_util::path::ShellFamily;
 use warpui::{App, SingletonEntity};
 
 use super::{EnableSshWrapper, WarpifySettings};
@@ -57,6 +58,168 @@ fn test_wsl_subshell_detection_fail() {
             "{} accidentally matched",
             *cmd
         )
+    });
+}
+
+/// Privilege-escalation shells must be warpified. Without hooks in the escalated shell,
+/// directory completion answers from a stale cached cwd, and
+/// `PtyWrite::RunNativeShellCompletions` locks the pane: it writes a bare ^Y and waits
+/// forever for an OSC reply that only the hooks can send, leaving the controller in
+/// `AwaitingPrompt` so no further keystroke is ever written to the pty.
+///
+/// These entries do not exist upstream at the pin; they are a deliberate fork divergence.
+#[test]
+fn test_privilege_escalation_subshell_detection_success() {
+    [
+        // Bare su, with and without a login flag and/or a target user.
+        "su",
+        "su -",
+        "su -l",
+        "su --login",
+        "su someuser",
+        "su - someuser",
+        "su -l someuser",
+        "su --login someuser",
+        "/bin/su",
+        "/bin/su -",
+        "/usr/bin/su - operator",
+        // Kerberos su.
+        "ksu",
+        "ksu alice",
+        "ksu alice@EXAMPLE.COM",
+        "/usr/bin/ksu",
+        // sudo su, with and without sudo options.
+        "sudo su",
+        "sudo su -",
+        "sudo su - root",
+        "sudo su root",
+        "sudo su -l",
+        "sudo -H su -",
+        "sudo -E -H su",
+        "/usr/bin/sudo su -",
+        "sudo /usr/bin/su - operator",
+        // sudo's own login/shell flags.
+        "sudo -i",
+        "sudo -s",
+        "sudo --login",
+        "sudo --shell",
+        "sudo -u www-data -s",
+        "sudo -u postgres -i",
+        "sudo -H -u deploy -s",
+        // sudo invoking a shell directly.
+        "sudo bash",
+        "sudo zsh",
+        "sudo fish",
+        "sudo /bin/bash",
+        "sudo -u root /usr/bin/zsh",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} failed to match",
+            *cmd
+        )
+    });
+}
+
+/// The false-positive guard for the privilege-escalation entries above. Matching any of
+/// these would pop the warpify banner (or auto-bootstrap) on a command that never spawns
+/// an interactive shell.
+#[test]
+fn test_privilege_escalation_subshell_detection_fail() {
+    [
+        // Ordinary privileged commands -- by far the most common input starting with sudo.
+        "sudo systemctl restart foo",
+        "sudo systemctl status sshd",
+        "sudo apt install subversion",
+        "sudo apt-get update",
+        "sudo apt -y install fish",
+        "sudo make install",
+        "sudo ls -la",
+        "sudo docker ps",
+        "sudo pip install zsh",
+        "sudo -E pip install fish",
+        "sudo journalctl -u fish",
+        "sudo rm -rf /tmp/su",
+        "sudo -u deploy git pull",
+        "sudo -u www-data ls",
+        "sudo chmod +s /usr/bin/foo",
+        // sudo without a shell of any kind.
+        "sudo",
+        "sudo -l",
+        "sudo -v",
+        "sudo --version",
+        // A command argument means the shell is not interactive, so there is nothing to
+        // warpify and no prompt will ever come back.
+        "su -c 'rm -rf /'",
+        "su - root -c whoami",
+        "sudo su -c id",
+        "sudo -i systemctl restart nginx",
+        "sudo -s -c 'echo hi'",
+        "sudo bash -c 'echo hi'",
+        // Longer words that merely begin with "su", and su-like binaries that are not su.
+        "subversion",
+        "sushi",
+        "sudoku",
+        "summary",
+        "subl .",
+        "su-exec nobody id",
+        "sudo su-exec nobody id",
+        // "su" appearing somewhere other than as the command word.
+        "git submodule update",
+        "echo su",
+        "ls /usr/bin/su",
+    ]
+    .iter()
+    .for_each(|cmd| {
+        assert!(
+            !WarpifySettings::is_built_in_subshell_match(cmd),
+            "{} accidentally matched",
+            *cmd
+        )
+    });
+}
+
+/// Built-in subshell regexes and the user's `warpify.subshells.added_subshell_commands`
+/// are two separate lists that `is_compatible_subshell_command` consults in turn, so
+/// adding built-ins can neither shadow nor duplicate a user's own entries.
+#[test]
+fn test_privilege_escalation_builtins_coexist_with_added_subshell_commands() {
+    App::test((), |mut app| async move {
+        initialize_settings_for_tests(&mut app);
+
+        app.read(|ctx| {
+            let settings = WarpifySettings::as_ref(ctx);
+            // The new built-ins match with no user entries configured at all.
+            assert!(settings.is_compatible_subshell_command("sudo su -", ShellFamily::Posix));
+            assert!(
+                !settings.is_compatible_subshell_command("my-custom-shell", ShellFamily::Posix),
+                "unconfigured custom command must not match a built-in"
+            );
+        });
+
+        WarpifySettings::handle(&app).update(&mut app, |settings, ctx| {
+            settings
+                .added_subshell_commands
+                .set_value(vec!["^my-custom-shell$".to_string()], ctx)
+                .unwrap();
+        });
+
+        app.read(|ctx| {
+            let settings = WarpifySettings::as_ref(ctx);
+            // The user's own entry still matches...
+            assert!(settings.is_compatible_subshell_command("my-custom-shell", ShellFamily::Posix));
+            // ...and the built-ins are unaffected by its presence.
+            assert!(settings.is_compatible_subshell_command("su -", ShellFamily::Posix));
+            assert!(settings.is_compatible_subshell_command("sudo -i", ShellFamily::Posix));
+            // The stored user list is untouched -- built-ins are never merged into it.
+            assert_eq!(
+                settings.added_subshell_commands.to_vec(),
+                vec!["^my-custom-shell$".to_string()],
+                "built-ins must not be written into the user's setting"
+            );
+        });
     });
 }
 

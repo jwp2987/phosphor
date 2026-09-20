@@ -266,6 +266,56 @@ lazy_static! {
         // https://flox.dev/docs/reference/command-reference/flox-activate/
         // https://github.com/flox/flox/issues/2784
         Regex::new(r"^flox\s+(-\S+\s+)*activate\b").expect("flox activate regex invalid"),
+
+        // Privilege-escalation shells. These replace the foreground process with a brand new
+        // interactive shell that does not inherit Phosphor's hooks. Two user-visible defects
+        // follow from leaving them unwarpified: directory completion keeps answering from the
+        // now-stale cached cwd, and `PtyWrite::RunNativeShellCompletions` hard-locks the pane --
+        // it writes a bare ^Y expecting the hooks to reply with an OSC sequence, and with no
+        // hooks installed ^Y is just readline's yank, so the controller never leaves
+        // `AwaitingPrompt` and every subsequent keystroke queues forever.
+        //
+        // Upstream Warp has no equivalent entries at the pin; these are a deliberate divergence.
+
+        // Matches an interactive `su`/`ksu` that has no command attached:
+        //   "su", "su -", "su -l", "su --login", "su bob", "su - bob", "su -l bob",
+        //   "ksu", "ksu alice", "ksu alice@EXAMPLE.COM", and path forms like "/bin/su -".
+        // Deliberately does NOT match:
+        //   - "su -c '<cmd>'" / "su - bob -c '<cmd>'": those run one command and exit, so there
+        //     is no interactive subshell to warpify. Only a login flag and/or a user name may
+        //     follow, and the trailing anchor rejects anything else.
+        //   - "su-exec nobody id": an argument must be preceded by whitespace, and "-exec" is
+        //     glued to "su".
+        //   - "subversion", "sushi", "sudoku", "sudo ...": "su"/"ksu" must be the whole command
+        //     word, so a longer word that merely starts with "su" cannot match here.
+        //   - "su -s /bin/bash bob": not matched (false negative, kept out on purpose to keep
+        //     the argument grammar small and auditable).
+        Regex::new(r"^/?([\w\.-]+/)*(su|ksu)(\s+(--login|-l|-))?(\s+[A-Za-z_][\w\.@-]*)?\s*$").expect("su/ksu regex invalid"),
+
+        // Matches `sudo` forms that end in an interactive shell, after an optional run of sudo
+        // options (bundled short flags like "-H"/"-EH", value-taking short flags "-u"/"-g"/"-C"/
+        // "-p", and long flags with an optional "=value"):
+        //   - a login/shell flag as the final argument: "sudo -i", "sudo -s", "sudo --login",
+        //     "sudo --shell", "sudo -u www-data -s", "sudo -H -u deploy -i".
+        //   - `su` as the command: "sudo su", "sudo su -", "sudo su - root", "sudo su -l bob",
+        //     "sudo /usr/bin/su -".
+        //   - a shell as the command: "sudo bash", "sudo zsh", "sudo fish", "sudo /bin/bash",
+        //     "sudo -u root /usr/bin/zsh".
+        // Deliberately does NOT match:
+        //   - "sudo systemctl restart foo", "sudo apt install subversion", "sudo make install",
+        //     "sudo docker ps": the option run only consumes tokens that begin with "-", so a
+        //     non-option command word stops it, and the command word must then be exactly
+        //     su/bash/zsh/fish (optionally path-qualified) with nothing after it.
+        //   - "sudo -i systemctl restart nginx", "sudo bash -c '<cmd>'", "sudo su -c id": the
+        //     trailing anchor rejects a command argument, so these stay non-interactive.
+        //   - "sudo -l", "sudo -v", "sudo --version", "sudo -u www-data ls": no shell is spawned.
+        //   - "sudo -u fish", "sudo -u bash": a *user* named fish/bash and no command. The
+        //     bare-short-flag class deliberately excludes the value-taking flags "ugCp", so a
+        //     lone "-u" cannot be re-read as a bundled flag and leave the username to be
+        //     mistaken for the shell. Bundles of non-value flags ("-EH", "-bE") still match.
+        //   - "sudo journalctl -u fish", "sudo pip install zsh", "sudo rm -rf /tmp/su": the shell
+        //     name has to be the first non-option word, not an argument buried later.
+        Regex::new(r"^/?([\w\.-]+/)*sudo(\s+(-[ugCp]\s+[\w\.@-]+|-[AbEHKknPSsVvilh]+|--[\w-]+(=\S+)?))*\s+(-i|-s|--login|--shell|/?([\w\.-]+/)*(su(\s+(--login|-l|-))?(\s+[A-Za-z_][\w\.@-]*)?|bash|zsh|fish))\s*$").expect("sudo shell regex invalid"),
     ];
 }
 
