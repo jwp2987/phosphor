@@ -1,9 +1,9 @@
-use std::{borrow::Cow, collections::VecDeque, sync::Arc};
+use std::{borrow::Cow, collections::VecDeque, sync::Arc, time::Duration};
 
 use async_channel::{Receiver, Sender};
 use parking_lot::FairMutex;
 use thiserror::Error;
-use warpui::r#async::block_on;
+use warpui::r#async::{block_on, Timer};
 use warpui::{Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use crate::ai::agent::AIAgentPtyWriteMode;
@@ -38,6 +38,22 @@ const SWITCH_TO_PS1_ESCAPE_SEQUENCE: &[u8] = &[escape_sequences::C0::ESC, b'p'];
 /// Used to let the shell know we are switching to the Zap prompt via a bindkey \ew. This will
 /// unset the PS1 to ensure we don't have a double prompt (PS1 and Zap prompt).
 const SWITCH_TO_WARP_PROMPT_ESCAPE_SEQUENCE: &[u8] = &[escape_sequences::C0::ESC, b'w'];
+
+/// How long to wait for the shell's OSC reply to the `^Y` completions trigger before giving up.
+///
+/// The reply is emitted by the Phosphor shell hooks the instant they see the control code, so
+/// this is a liveness bound, not a work budget: either the hooks are installed and it returns in
+/// milliseconds, or they are not installed and it never returns at all. The latter is the common
+/// case in an escalated or otherwise un-warpified shell (`su`, `sudo su -`, `ksu`), where `^Y` is
+/// just readline's yank and nothing answers.
+const NATIVE_COMPLETIONS_PROMPT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How long to wait for completion results once the prompt has been sent.
+///
+/// Unlike the prompt handshake this covers real work in the shell -- globbing a large directory,
+/// say -- so it is far more generous. It does not gate PTY writes; it exists so the completions
+/// request cannot leak its channel and hang the requester's future forever.
+const NATIVE_COMPLETIONS_RESULTS_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
@@ -110,6 +126,10 @@ pub struct PtyController<T: EventLoopSender> {
     bootstrap_file: Option<TempBootstrapFile>,
     tmux_control_mode: Option<TmuxControlMode>,
     in_flight_native_completions_state: Option<NativeShellCompletionsState>,
+    /// Incremented every time a native-completions handshake starts or advances a phase, so a
+    /// timer armed for one phase cannot clear the state belonging to a later one. Without it a
+    /// slow-but-successful handshake would be torn down by its own predecessor's timeout.
+    native_completions_generation: u64,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -190,6 +210,11 @@ impl<T: EventLoopSender> PtyController<T> {
                     return;
                 };
                 me.in_flight_native_completions_state = Some(NativeShellCompletionsState::AwaitingResults { results_tx });
+                me.arm_native_completions_watchdog(
+                    NATIVE_COMPLETIONS_RESULTS_TIMEOUT,
+                    false,
+                    ctx,
+                );
 
                 let mut bytes = buffer_text.into_bytes();
                 // We use the EOT character to signal the end of the prompt.
@@ -264,6 +289,7 @@ impl<T: EventLoopSender> PtyController<T> {
             bootstrap_file: None,
             tmux_control_mode: None,
             in_flight_native_completions_state: None,
+            native_completions_generation: 0,
         }
     }
 
@@ -375,6 +401,64 @@ impl<T: EventLoopSender> PtyController<T> {
 
     /// Returns whether we can currently write to the pty, or if we need to
     /// enqueue writes for later.
+    /// Arms a watchdog that abandons an in-flight native-completions handshake if the shell
+    /// never answers.
+    ///
+    /// This exists because `AwaitingPrompt` gates `can_write_to_pty`, and nothing else could
+    /// ever clear it. The handshake is: send `^Y`, wait for the shell hooks to reply with an OSC
+    /// sequence (`ModelEvent::SendCompletionsPrompt`), then send the text to complete. If that
+    /// reply never comes -- which is exactly what happens in a shell that was never warpified,
+    /// such as one entered via `su`, `sudo su -` or `ksu`, where `^Y` is just readline's yank --
+    /// then `in_flight_native_completions_state` stays `AwaitingPrompt` forever.
+    ///
+    /// The consequence was a hard, permanent lockup of the pane, not a missing popup:
+    /// `execute_next_queued_write` returns early whenever `can_write_to_pty` is false, so every
+    /// subsequent keystroke and command queued into `pending_writes` and none of them were ever
+    /// written. Recovery was impossible from the UI -- the only thing that re-drives the drain
+    /// is `LineEditorStatusEvent::Active`, and that calls straight back into
+    /// `execute_next_queued_write`, which re-checks the same gate and returns early again. A new
+    /// prompt therefore did not help; the pane was dead until it was closed.
+    ///
+    /// Dropping `results_tx` (by dropping the state) is deliberate and load-bearing: the
+    /// requester at `terminal/input.rs` awaits `results_rx.recv()` with no timeout of its own, so
+    /// closing the channel is what lets that future resolve to `None` instead of leaking.
+    fn arm_native_completions_watchdog(
+        &mut self,
+        timeout: Duration,
+        expect_awaiting_prompt: bool,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.native_completions_generation = self.native_completions_generation.wrapping_add(1);
+        let generation = self.native_completions_generation;
+        ctx.spawn(
+            async move {
+                Timer::after(timeout).await;
+            },
+            move |me, _, ctx| {
+                // A later phase (or a later request entirely) has superseded this timer.
+                if me.native_completions_generation != generation {
+                    return;
+                }
+                let still_in_expected_phase = me
+                    .in_flight_native_completions_state
+                    .as_ref()
+                    .is_some_and(|state| state.is_awaiting_prompt() == expect_awaiting_prompt);
+                if !still_in_expected_phase {
+                    return;
+                }
+                // Never log the buffer text -- it is whatever the user was typing.
+                log::warn!(
+                    "Native shell completions timed out after {timeout:?} (awaiting_prompt={expect_awaiting_prompt}); \
+                     abandoning the request so PTY writes can resume."
+                );
+                me.in_flight_native_completions_state = None;
+                // Only the prompt phase gates writes, but draining unconditionally is harmless
+                // and keeps the recovery path identical for both.
+                me.execute_next_queued_write(ctx);
+            },
+        );
+    }
+
     fn can_write_to_pty(&self, ctx: &mut ModelContext<Self>) -> bool {
         self.line_editor_status.as_ref(ctx).is_line_editor_active()
             // If we're in the middle of a native completions request, we should not send any more
@@ -725,6 +809,7 @@ impl<T: EventLoopSender> PtyController<T> {
             }
             PtyWrite::RunNativeShellCompletions(state) => {
                 self.in_flight_native_completions_state = Some(state);
+                self.arm_native_completions_watchdog(NATIVE_COMPLETIONS_PROMPT_TIMEOUT, true, ctx);
 
                 // Send a ^Y control code to trigger the right bindkey.  We
                 // then wait for an OSC-based signal from the shell before we
