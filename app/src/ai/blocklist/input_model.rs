@@ -573,14 +573,12 @@ impl BlocklistAIInputModel {
     /// When AgentView is enabled, this checks whether we're in agent view or terminal mode
     /// and returns the appropriate setting.
     pub fn is_autodetection_enabled_for_current_context(&self, app: &AppContext) -> bool {
-        // If the agent is in control or tagged in, don't run autodetection.
-        if self
-            .model
-            .lock()
-            .block_list()
-            .active_block()
-            .is_agent_in_control_or_tagged_in()
-        {
+        // If the agent is driving a command (in control, or its requested command is waiting for
+        // the CLI subagent), is tagged in, or can be handed control back, don't run
+        // autodetection. This must be the broader `is_terminal_use_active_or_pending` (as at the
+        // pin), not `is_agent_in_control_or_tagged_in`: otherwise NLD can classify a line meant
+        // for the agent as Shell and it gets queued as a shell command.
+        if self.is_terminal_use_active_or_pending() {
             return false;
         }
 
@@ -617,15 +615,12 @@ impl BlocklistAIInputModel {
 
     /// Handles the input buffer being submitted.
     pub fn handle_input_buffer_submitted(&mut self, ctx: &mut ModelContext<Self>) {
-        // If the agent is still in control of a long-running command, keep the input locked to AI mode.
-        let is_agent_in_control_or_tagged_in = self
-            .model
-            .lock()
-            .block_list()
-            .active_block()
-            .is_agent_in_control_or_tagged_in();
+        // If the agent is still driving (or can be handed back) a long-running command, keep the
+        // input locked to AI mode. See `is_autodetection_enabled_for_current_context` for why this
+        // is the broader check.
+        let is_terminal_use_active_or_pending = self.is_terminal_use_active_or_pending();
 
-        let new_config = if is_agent_in_control_or_tagged_in {
+        let new_config = if is_terminal_use_active_or_pending {
             InputConfig {
                 input_type: InputType::AI,
                 is_locked: true,

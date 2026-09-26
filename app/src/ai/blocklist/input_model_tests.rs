@@ -195,6 +195,7 @@ const SHELL_UNLOCKED: InputConfig = InputConfig {
 struct StubPolicy {
     initial: InputConfig,
     allows_locked_ai: bool,
+    autodetection_enabled: bool,
     on_conversation_activated: Option<InputConfig>,
     on_conversation_deactivated: Option<InputConfig>,
     on_settings_changed: Option<InputConfig>,
@@ -207,6 +208,7 @@ impl StubPolicy {
         Self {
             initial,
             allows_locked_ai: true,
+            autodetection_enabled: false,
             on_conversation_activated: None,
             on_conversation_deactivated: None,
             on_settings_changed: None,
@@ -224,7 +226,7 @@ impl InputModePolicy for StubPolicy {
     }
 
     fn is_autodetection_enabled(&self, _app: &AppContext) -> bool {
-        false
+        self.autodetection_enabled
     }
 
     fn config_on_conversation_selection_changed(
@@ -419,6 +421,71 @@ fn settings_change_applies_policy_update() {
 
         input_model.read(&app, |model, _| {
             assert_eq!(model.input_config(), SHELL_LOCKED);
+        });
+    });
+}
+
+/// Puts the input model's active block into the "agent-requested command, CLI subagent not yet
+/// spawned" state: `is_agent_driving_command()` is true, but `is_agent_in_control_or_tagged_in()`
+/// is false because no `long_running_control_state` has been set yet.
+fn mark_active_block_as_agent_requested_command(
+    app: &mut App,
+    input_model: &ModelHandle<BlocklistAIInputModel>,
+) {
+    input_model.update(app, |model, _| {
+        let mut terminal = model.model.lock();
+        let block = terminal.block_list_mut().active_block_mut();
+        block.set_agent_interaction_mode_for_requested_command(
+            String::from("requested-command").into(),
+            None,
+            AIConversationId::new(),
+        );
+        assert!(block.is_agent_driving_command());
+        assert!(!block.is_agent_in_control_or_tagged_in());
+    });
+}
+
+#[test]
+fn submission_keeps_ai_locked_while_agent_drives_requested_command() {
+    App::test((), |mut app| async move {
+        // Regression: the GUI's submit handler used the narrower
+        // `is_agent_in_control_or_tagged_in()`, so a submission made while an agent-requested
+        // command was waiting for its CLI subagent fell through to the unlock branch and left
+        // the input in Shell mode -- a follow-up meant for the agent could then be queued as a
+        // shell command. The pin keeps the input locked to AI via
+        // `is_terminal_use_active_or_pending()`.
+        let (input_model, _) = build_input_model(&mut app, StubPolicy::inert(SHELL_UNLOCKED));
+        mark_active_block_as_agent_requested_command(&mut app, &input_model);
+
+        input_model.update(&mut app, |model, ctx| {
+            model.handle_input_buffer_submitted(ctx);
+        });
+        input_model.read(&app, |model, _| {
+            assert_eq!(model.input_config(), AI_LOCKED);
+        });
+    });
+}
+
+#[test]
+fn autodetection_disabled_while_agent_drives_requested_command() {
+    App::test((), |mut app| async move {
+        let policy = StubPolicy {
+            autodetection_enabled: true,
+            ..StubPolicy::inert(SHELL_UNLOCKED)
+        };
+        let (input_model, _) = build_input_model(&mut app, policy);
+
+        // Control: with no agent involvement, the policy's setting decides.
+        input_model.read(&app, |model, ctx| {
+            assert!(model.is_autodetection_enabled_for_current_context(ctx));
+        });
+
+        // Regression: NLD must stay off while the agent drives a command, even before the CLI
+        // subagent has taken formal control, so it cannot reclassify a line meant for the agent
+        // as Shell.
+        mark_active_block_as_agent_requested_command(&mut app, &input_model);
+        input_model.read(&app, |model, ctx| {
+            assert!(!model.is_autodetection_enabled_for_current_context(ctx));
         });
     });
 }
