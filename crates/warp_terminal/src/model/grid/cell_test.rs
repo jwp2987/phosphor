@@ -63,9 +63,11 @@ fn push_zerowidth_caps_accumulated_grapheme() {
     let zwj = '\u{200D}';
     let zwj_bytes = zwj.len_utf8();
     let pushes = (MAX_GRAPHEME_BYTES * 10) / zwj_bytes;
+    let mut rejected_push = false;
     for _ in 0..pushes {
-        cell.push_zerowidth(zwj, /* log_long_grapheme_warnings */ true);
+        rejected_push |= !cell.push_zerowidth(zwj, /* log_long_grapheme_warnings */ true);
     }
+    assert!(rejected_push);
 
     let CharOrStr::Str(content) = cell.raw_content() else {
         panic!("cell should have accumulated zero-width content as a string");
@@ -154,4 +156,23 @@ fn keycap_sequence_width_rejects_partial_sequence() {
 fn keycap_sequence_width_rejects_trailing_content() {
     // Anything after the keycap sequence means this is not (just) a keycap grapheme.
     assert_eq!(super::keycap_sequence_width("1\u{FE0F}\u{20E3}a"), None);
+}
+
+#[test]
+fn pop_zerowidth_restores_previous_cell_content() {
+    let mut cell = Cell {
+        c: 'x',
+        ..Cell::default()
+    };
+    let original_cell = cell.clone();
+
+    assert!(cell.push_zerowidth('\u{0301}', /* log_long_grapheme_warnings */ true));
+    let cell_with_first_zerowidth = cell.clone();
+    assert!(cell.push_zerowidth('\u{200D}', /* log_long_grapheme_warnings */ true));
+
+    assert_eq!(cell.pop_zerowidth(), Some('\u{200D}'));
+    assert_eq!(cell, cell_with_first_zerowidth);
+    assert_eq!(cell.pop_zerowidth(), Some('\u{0301}'));
+    assert_eq!(cell, original_cell);
+    assert_eq!(cell.pop_zerowidth(), None);
 }
