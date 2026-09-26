@@ -2299,6 +2299,84 @@ type TerminalViewCallback = Box<dyn FnOnce(&mut TerminalView, &mut ViewContext<T
 type ConversationFinishedCallback =
     Box<dyn FnOnce(&mut TerminalView, FinishReason, &mut ViewContext<TerminalView>)>;
 
+/// A turn-end queue drain that `FinishedReceivingOutput` skipped because the conversation still
+/// had an active subagent. Cleared by the conversation's next `FinishedReceivingOutput`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SkippedTurnEndDrain {
+    /// Nothing has delivered the queue since; the drain is still owed.
+    Owed,
+    /// The owed drain has been replayed and delivered or restored a row. Nothing more may fire
+    /// until the next turn end, or two paths that both observe the subagent finishing (the
+    /// `FinishedSubagent` event and the handoff retry) would each fire a row.
+    Replayed,
+}
+
+/// What [`TerminalView::deliver_queued_prompts_after_subagent_finished`] does with the queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SubagentFinishedQueueDelivery {
+    /// Hand the queue to `send_lrc_queued_prompts`, which fires the leading `LrcAutoQueue` rows
+    /// (the upstream "queued until the command finishes" design) or, while a subagent is still
+    /// active, defers them to the handoff retry.
+    SendLrcRows,
+    /// Re-run the turn-end drain that was skipped, with the finish reason that turn end had.
+    ReplaySkippedTurnEnd(FinishReason),
+    /// The conversation was cancelled and its turn end already drained with cancel semantics:
+    /// release locked rows but never auto-fire.
+    UnlockOnly,
+    /// Deliver nothing now: either a skipped drain was already replayed, or the auto-resume
+    /// `on_user_block_completed` sent for this very block completion is in progress and its own
+    /// end owns the queue.
+    Nothing,
+}
+
+/// Decides how to deliver a conversation's queue once its subagent may have finished. Split out
+/// of [`TerminalView::deliver_queued_prompts_after_subagent_finished`] so the three cases (turn
+/// cancelled, turn already finished, turn still in progress) can be read -- and tested -- here.
+///
+/// `auto_resumed_on_block_completion` is true only when `on_user_block_completed` sent an
+/// auto-resume for the block completion that finished this subagent; see
+/// [`TerminalView::block_completion_auto_resumes`].
+fn subagent_finished_queue_delivery(
+    has_active_subagent: bool,
+    skipped_turn_end: Option<SkippedTurnEndDrain>,
+    conversation_cancelled: bool,
+    turn_in_progress: bool,
+    auto_resumed_on_block_completion: bool,
+    last_finish_reason: Option<FinishReason>,
+) -> SubagentFinishedQueueDelivery {
+    use SubagentFinishedQueueDelivery::*;
+    if has_active_subagent {
+        return SendLrcRows;
+    }
+    match skipped_turn_end {
+        Some(SkippedTurnEndDrain::Replayed) => Nothing,
+        // The user pressed Stop. Checked on the conversation status rather than the block's
+        // finish reason: a Stop after the turn already ended leaves that block `Complete`.
+        _ if conversation_cancelled => match skipped_turn_end {
+            Some(SkippedTurnEndDrain::Owed) => ReplaySkippedTurnEnd(FinishReason::Cancelled),
+            _ => UnlockOnly,
+        },
+        // The running turn is the auto-resume `on_user_block_completed` sent a moment ago, for
+        // this same block completion, for a take-over that auto-resumes (Manual, a
+        // live-interrupt Stop, TransferFromAgent, a post-snapshot BlockedOnInput). Firing
+        // `LrcAutoQueue` rows now would submit a same-conversation follow-up that cancels that
+        // resume and loses the command output it carries. Leave the queue to that turn's own
+        // end, which drains now that the flag is clear. This deviates from the pin, which calls
+        // `send_lrc_queued_prompts` after the subagent hand-off whatever the turn state.
+        _ if turn_in_progress && auto_resumed_on_block_completion => Nothing,
+        // Any other turn in progress (the agent mid-turn, a transient error waiting out its
+        // backoff, a stranded `InProgress`): the legacy delivery. Deferring there could strand
+        // the rows -- a Stop during an error backoff, or a stranded status, leaves no turn end
+        // to drain them.
+        _ if turn_in_progress => SendLrcRows,
+        Some(SkippedTurnEndDrain::Owed) => match last_finish_reason {
+            Some(reason) => ReplaySkippedTurnEnd(reason),
+            None => SendLrcRows,
+        },
+        None => SendLrcRows,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AgentTranscriptNavigationDirection {
     Previous,
@@ -2798,6 +2876,19 @@ pub struct TerminalView {
     /// last observed history event. Used to detect the subagent active->inactive handoff so
     /// LRC-auto-queued prompts deferred by `send_lrc_queued_prompts` can be delivered.
     last_observed_active_subagent: HashMap<AIConversationId, bool>,
+    /// Conversations whose turn-end queue drain (and the pane's conversation-finished callbacks)
+    /// `FinishedReceivingOutput` skipped because a subagent was still active. See
+    /// [`SkippedTurnEndDrain`] and [`Self::deliver_queued_prompts_after_subagent_finished`].
+    skipped_turn_end_drains: HashMap<AIConversationId, SkippedTurnEndDrain>,
+    /// Conversations `on_user_block_completed` just auto-resumed on a block completion while a
+    /// subagent was active, i.e. whose subagent finish for that same block is about to be
+    /// delivered. Tells [`subagent_finished_queue_delivery`] that the in-progress turn is that
+    /// resume, which a queued follow-up would cancel. Read but NOT removed by
+    /// [`Self::deliver_queued_prompts_after_subagent_finished`], because one block completion
+    /// reaches it twice (the handoff retry, then `FinishedSubagent`); it is removed only by the
+    /// conversation's next `FinishedReceivingOutput` -- the resumed turn's end, which drains the
+    /// queue -- so it cannot outlive that turn or suppress a later, unrelated delivery.
+    block_completion_auto_resumes: HashSet<AIConversationId>,
 
     /// Per-session PTY recorder for writing PTY bytes to a file.
     pty_recorder: ModelHandle<PtyRecorder>,
@@ -4176,6 +4267,8 @@ impl TerminalView {
             pending_user_query_view_id: None,
             queued_prompt_callback: None,
             last_observed_active_subagent: Default::default(),
+            skipped_turn_end_drains: Default::default(),
+            block_completion_auto_resumes: Default::default(),
             pty_recorder: ctx
                 .add_model(|ctx| PtyRecorder::new(inactive_pty_reads_rx, window_id, ctx)),
             active_viewer_driven_size: None,
@@ -5046,10 +5139,14 @@ impl TerminalView {
         }
     }
 
-    /// Delivers LRC-auto-queued prompts that [`Self::send_lrc_queued_prompts`] deferred because a
-    /// subagent was still active. Detects the subagent active->inactive transition per
-    /// conversation and, on handoff, retries delivery. No-ops unless the queue head is an
-    /// `LrcAutoQueue` row.
+    /// Delivers queued prompts whose delivery was deferred because a subagent was still active:
+    /// LRC-auto-queued rows [`Self::send_lrc_queued_prompts`] parked, or a turn-end drain
+    /// `FinishedReceivingOutput` skipped. Detects the subagent active->inactive transition per
+    /// conversation and, on handoff, retries delivery through
+    /// [`Self::deliver_queued_prompts_after_subagent_finished`] -- the same path the
+    /// `FinishedSubagent` event takes, so whichever observes the handoff first delivers and the
+    /// other finds nothing owed. No-ops unless the queue head is an `LrcAutoQueue` row or a
+    /// turn-end drain is owed.
     fn maybe_send_lrc_queued_prompts_after_subagent_handoff(
         &mut self,
         conversation_id: AIConversationId,
@@ -5059,7 +5156,9 @@ impl TerminalView {
             .queue(conversation_id)
             .first()
             .is_some_and(|row| row.origin() == QueuedQueryOrigin::LrcAutoQueue);
-        if !has_lrc_queued_prompt {
+        let owes_turn_end_drain =
+            self.skipped_turn_end_drains.get(&conversation_id) == Some(&SkippedTurnEndDrain::Owed);
+        if !has_lrc_queued_prompt && !owes_turn_end_drain {
             return;
         }
         let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
@@ -5070,8 +5169,141 @@ impl TerminalView {
             .insert(conversation_id, has_active_subagent)
             .unwrap_or(false);
         if previously_had_active_subagent && !has_active_subagent {
-            self.send_lrc_queued_prompts(conversation_id, ctx);
+            self.deliver_queued_prompts_after_subagent_finished(conversation_id, ctx);
         }
+    }
+
+    /// Delivers `conversation_id`'s queue when its subagent finishes (the `FinishedSubagent`
+    /// event, or the handoff retry above).
+    ///
+    /// This path must re-run the drain a turn end skipped. `FinishedReceivingOutput` skips its
+    /// queue drain and the conversation-finished callbacks while `has_active_subagent()` is true,
+    /// and with a BYOP long-running command the agent's turn usually ends while the command is
+    /// still running. Nothing else drains the queue afterwards, and
+    /// `send_lrc_queued_prompts` alone only fires leading `LrcAutoQueue` rows, so a `/queue` or
+    /// auto-queue-toggle head was stranded -- and blocked every row behind it -- while a turn the
+    /// user had stopped still auto-fired its LRC rows. See [`subagent_finished_queue_delivery`]
+    /// for the three cases.
+    fn deliver_queued_prompts_after_subagent_finished(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let (has_active_subagent, conversation_cancelled, status_in_progress) =
+            BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .map_or((false, false, false), |conversation| {
+                    let status = conversation.status();
+                    (
+                        conversation.has_active_subagent(),
+                        status.is_cancelled(),
+                        status.is_in_progress() || status.is_transient_error(),
+                    )
+                });
+        let last_finish_reason = self.finish_reason_for_conversation(conversation_id, ctx);
+        let skipped_turn_end = self.skipped_turn_end_drains.get(&conversation_id).copied();
+        // Read, NOT consumed. One block completion reaches this function twice: the resume's
+        // `UpdatedConversationStatus` drives the handoff retry first, then `FinishedSubagent`
+        // arrives (both queued by the same `BlockCompleted`, in that FIFO order). Consuming the
+        // record on the first read made the second see no record and fire `LrcAutoQueue` rows
+        // into the resume -- the exact bug the record exists to prevent. Only the resumed turn's
+        // own `FinishedReceivingOutput` clears it, and that turn end drains the queue.
+        let auto_resumed_on_block_completion =
+            !has_active_subagent && self.block_completion_auto_resumes.contains(&conversation_id);
+        let delivery = subagent_finished_queue_delivery(
+            has_active_subagent,
+            skipped_turn_end,
+            conversation_cancelled,
+            // A status, not the block's finish reason: a block whose finish reason has not
+            // landed yet (the inline optimistic-completion ordering) is NOT a running turn.
+            status_in_progress,
+            auto_resumed_on_block_completion,
+            last_finish_reason,
+        );
+        log::debug!(
+            "Queued prompts after subagent finished: conversation={conversation_id} \
+             auto_resumed={auto_resumed_on_block_completion} delivery={delivery:?}"
+        );
+        // Keep the handoff retry's transition detector in step, so it does not treat this
+        // already-handled finish as a fresh handoff.
+        self.last_observed_active_subagent
+            .insert(conversation_id, has_active_subagent);
+        // Once the flag is clear an `Owed` entry is either replayed below or, for a turn still
+        // in progress, handed to that turn's own end: its `FinishedReceivingOutput` drains
+        // unconditionally when no subagent is active, and re-records `Owed` when one is.
+        if !has_active_subagent && skipped_turn_end == Some(SkippedTurnEndDrain::Owed) {
+            self.skipped_turn_end_drains.remove(&conversation_id);
+        }
+        match delivery {
+            SubagentFinishedQueueDelivery::SendLrcRows => {
+                self.send_lrc_queued_prompts(conversation_id, ctx);
+            }
+            SubagentFinishedQueueDelivery::UnlockOnly => {
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_lrc_rows(conversation_id, ctx)
+                });
+            }
+            SubagentFinishedQueueDelivery::Nothing => {}
+            SubagentFinishedQueueDelivery::ReplaySkippedTurnEnd(reason) => {
+                // In the order `FinishedReceivingOutput` would have run them: the pane's one-shot
+                // callbacks, then this conversation's drain. After a Stop the callbacks get the
+                // cancel reason too, so a `/compact-and` follow-up restores rather than sends.
+                if self.active_ai_block(ctx).is_none() {
+                    let pane_finish_reason = if reason == FinishReason::Complete {
+                        self.last_ai_block()
+                            .and_then(|block| block.as_ref(ctx).finish_reason())
+                    } else {
+                        Some(reason)
+                    };
+                    if let Some(pane_finish_reason) = pane_finish_reason {
+                        self.fire_conversation_finished_callbacks(pane_finish_reason, ctx);
+                    }
+                }
+                let queue_len = |ctx: &ViewContext<Self>| {
+                    QueuedQueryModel::as_ref(ctx).queue(conversation_id).len()
+                };
+                let len_before = queue_len(ctx);
+                self.drain_queued_prompts(conversation_id, reason, ctx);
+                // Only a drain that fired or restored a row blocks further delivery; one that
+                // left the queue untouched owes nothing and must not suppress a later delivery.
+                if queue_len(ctx) != len_before {
+                    self.skipped_turn_end_drains
+                        .insert(conversation_id, SkippedTurnEndDrain::Replayed);
+                }
+            }
+        }
+    }
+
+    /// Commits the queued-prompts panel's in-progress inline edit of `query_id` into the queue
+    /// model and returns the row's text afterwards. Returns `None` -- leaving the caller's
+    /// committed text in force -- when `query_id` is not the row being edited, or when the panel
+    /// is showing a different conversation, whose editor buffer belongs to another row.
+    ///
+    /// An edit that commits to empty text is cancelled by the model, so the row's original text
+    /// is what comes back rather than an empty string.
+    fn commit_live_queued_prompt_edit(
+        &mut self,
+        conversation_id: AIConversationId,
+        query_id: QueuedQueryId,
+        ctx: &mut ViewContext<Self>,
+    ) -> Option<String> {
+        let panel_shows_conversation = BlocklistAIHistoryModel::as_ref(ctx)
+            .active_conversation_id(self.view_id)
+            == Some(conversation_id);
+        let is_editing_row =
+            QueuedQueryModel::as_ref(ctx).editing_row(conversation_id) == Some(query_id);
+        if !panel_shows_conversation || !is_editing_row {
+            return None;
+        }
+        let queued_prompts_panel = self.input.as_ref(ctx).queued_prompts_panel().cloned()?;
+        queued_prompts_panel.update(ctx, |panel, ctx| {
+            panel.commit_edit(ctx);
+        });
+        QueuedQueryModel::as_ref(ctx)
+            .queue(conversation_id)
+            .iter()
+            .find(|row| row.id() == query_id)
+            .map(|row| row.text().to_owned())
     }
 
     /// Drains the head of `conversation_id`'s queued-prompts queue when its turn finishes.
@@ -5147,6 +5379,14 @@ impl TerminalView {
                         attachments,
                         is_command,
                     }) => {
+                        // `text` is the row's last *committed* text, captured by
+                        // `peek_autofire`. The user's in-progress edit lives only in the panel's
+                        // inline editor, and `remove_fired_row` below clears the edit state, so
+                        // the editor's later blur-commit finds no editing row and the edit was
+                        // silently dropped. Commit it first, as `send_lrc_queued_prompts` does.
+                        let text = self
+                            .commit_live_queued_prompt_edit(conversation_id, query_id, ctx)
+                            .unwrap_or(text);
                         if self.input.as_ref(ctx).buffer_text(ctx).is_empty() {
                             self.input.update(ctx, |input, ctx| {
                                 input.replace_buffer_content(&text, ctx);
@@ -5283,6 +5523,23 @@ impl TerminalView {
             let has_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
                 .conversation(conversation_id)
                 .is_some_and(|c| c.has_active_subagent());
+            if has_active_subagent {
+                // The drain below is skipped, so it is owed once the subagent finishes; see
+                // `deliver_queued_prompts_after_subagent_finished`. Recording the subagent as
+                // observed lets the handoff retry notice it going inactive.
+                self.skipped_turn_end_drains
+                    .insert(*conversation_id, SkippedTurnEndDrain::Owed);
+                self.last_observed_active_subagent
+                    .insert(*conversation_id, true);
+            } else {
+                // This turn end drains (or a turn is still going and its own end will), which
+                // supersedes an owed or already-replayed drain.
+                self.skipped_turn_end_drains.remove(conversation_id);
+            }
+            // A stream end means the auto-resume record, if any, is no longer about the
+            // subagent finish that follows its block completion; see
+            // `block_completion_auto_resumes`.
+            self.block_completion_auto_resumes.remove(conversation_id);
 
             let mut pane_finish_reason: Option<FinishReason> = None;
             if let Some(active_ai_block) = self.active_ai_block(ctx) {
@@ -6331,14 +6588,14 @@ impl TerminalView {
                 self.cli_subagent_views.remove(block_id);
 
                 // The command ended — drop any LRC-scoped auto-queue override so the conversation
-                // reverts to its pre-command queue state, then try to deliver the prompts queued
-                // for this LRC. Delivery defers until subagent handoff if a subagent is still
-                // active.
+                // reverts to its pre-command queue state, then deliver the prompts queued for this
+                // LRC and any turn-end drain skipped while it ran. Delivery defers until subagent
+                // handoff if a subagent is still active.
                 if let Some(conversation_id) = conversation_id {
                     QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                         model.clear_queue_next_lrc_prompt_override(*conversation_id, ctx);
                     });
-                    self.send_lrc_queued_prompts(*conversation_id, ctx);
+                    self.deliver_queued_prompts_after_subagent_finished(*conversation_id, ctx);
                 }
 
                 // After an interactive CLI subagent session (e.g. SSH) ends, the Live
@@ -10583,6 +10840,23 @@ impl TerminalView {
                     ctx,
                 );
             });
+
+            // The CLI subagent controller's `BlockCompleted` hook runs after this one and emits
+            // `FinishedSubagent` for this block; tell its queue delivery that the running turn is
+            // this resume. Only while a subagent is active -- otherwise no subagent finish follows
+            // for the record to inform. The record is read (not consumed) by that delivery and by
+            // the handoff retry, and cleared by the resumed turn's `FinishedReceivingOutput`.
+            // `is_in_progress()` is an approximation of "the resume started": a take-over whose
+            // own action has no result yet is also InProgress, in which case a queued row simply
+            // waits one stream end longer; nothing is stranded.
+            let resumed_with_active_subagent = BlocklistAIHistoryModel::as_ref(ctx)
+                .conversation(&conversation_id)
+                .is_some_and(|conversation| {
+                    conversation.has_active_subagent() && conversation.status().is_in_progress()
+                });
+            if resumed_with_active_subagent {
+                self.block_completion_auto_resumes.insert(conversation_id);
+            }
         }
     }
 

@@ -23,7 +23,7 @@ use crate::{
         },
     },
     terminal::{
-        model::block::BlockId,
+        model::block::{Block, BlockId},
         model_events::{ModelEvent, ModelEventDispatcher},
         TerminalModel,
     },
@@ -328,9 +328,7 @@ impl CLISubagentController {
                 let upgrade_target = snapshot_block_id.as_ref().and_then(|block_id| {
                     let terminal_model = me.terminal_model.lock();
                     let block = terminal_model.block_list().block_with_id(block_id)?;
-                    if !block.is_agent_driving_command()
-                        || block.long_running_control_state().is_some()
-                    {
+                    if !needs_byop_monitor_upgrade(block) {
                         return None;
                     }
                     let conversation_id = block.ai_conversation_id()?;
@@ -487,6 +485,24 @@ impl CLISubagentController {
                 }
 
                 if let Some(task_id) = removed_subagent_state.and_then(|state| state.task_id) {
+                    // Zap BYOP: a silent subtask from the snapshot upgrade above has no
+                    // ToolCallResult to finish it, so record its completion here, before
+                    // `FinishedSubagent` lets the view re-check `has_active_subagent()` and
+                    // deliver queued prompts. No-op for server-backed subagents.
+                    if let Some(conversation_id) = conversation_id {
+                        BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _| {
+                            if let Some(conversation) =
+                                history_model.conversation_mut(&conversation_id)
+                                && conversation.finish_byop_silent_cli_subtask(&task_id)
+                            {
+                                log::info!(
+                                    "[byop] BYOP LRC monitor fallback: silent subtask finished \
+                                     block={block_id:?} task={task_id:?}"
+                                );
+                            }
+                        });
+                    }
+
                     let is_inline_agent_view =
                         me.agent_view_controller.as_ref().is_some_and(|controller| {
                             controller.read(ctx, |controller, _| controller.is_inline())
@@ -961,6 +977,39 @@ fn snapshot_block_id_for_action_result(result: &AIAgentActionResultType) -> Opti
         ) => Some(block_id),
         _ => None,
     }
+}
+
+/// Zap BYOP: whether a snapshot of `block` should upgrade it to an agent-monitored command
+/// (silent subtask + `SpawnedSubagent`) in the `FinishedAction` fallback above.
+///
+/// Only an agent-requested command that is still running and has no control state yet
+/// qualifies -- the original pre-snapshot window.
+///
+/// A block that already has a control state is deliberately NOT upgraded, even when that state
+/// is a password-prompt hand-over (`User { BlockedOnInput }`) or its hand-back (`Agent` with no
+/// subagent). Upgrading those was tried and reverted after review, because giving such a block
+/// a subagent task breaks the auto-resume `BlockedOnInput` exists for: on completion the
+/// `BlockCompleted` hook below runs after `TerminalView::on_user_block_completed` has already
+/// sent the resume, and (a) in the inline agent view it cancels that resume with
+/// `OptimisticCLISubagentCompletion` (marking the conversation Success -- the agent never sees
+/// the command's output), and (b) the resulting `FinishedSubagent` fires any
+/// `LrcAutoQueue` rows, whose `FollowUpSubmitted` cancels the same resume. After a hand-back the
+/// agent's follow-ups would also be routed into the hidden silent subtask. Without a subagent
+/// none of that happens and the block simply auto-resumes on completion, which is what the
+/// hand-over needs. The cost is cosmetic: no floating CLI subagent view for that block.
+///
+/// Scope: this only protects a hand-over that happens BEFORE the first snapshot. A block that
+/// was already upgraded (agent in control, subagent present) and later hits a second password
+/// prompt is handed over with its subagent still attached, so the completion hazards above
+/// still apply to it. That case is unchanged from upstream and is not addressed here.
+///
+/// `!block.finished()` covers a snapshot whose `FinishedAction` is handled after the block's
+/// own `BlockCompleted`: upgrading then would create a silent subtask that nothing ever
+/// finishes, leaving `has_active_subagent()` stuck true -- the stuck-queue defect again.
+fn needs_byop_monitor_upgrade(block: &Block) -> bool {
+    block.is_agent_driving_command()
+        && block.long_running_control_state().is_none()
+        && !block.finished()
 }
 
 #[cfg(test)]

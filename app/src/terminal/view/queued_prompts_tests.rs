@@ -17,10 +17,12 @@ use warpui::{App, SingletonEntity, TypedActionView, ViewHandle};
 use super::queued_prompts_panel::{
     QueuedPromptsPanelAction, QueuedPromptsPanelEvent, QueuedPromptsPanelView,
 };
-use crate::ai::agent::conversation::AIConversationId;
+use crate::ai::agent::conversation::{AIConversationId, ConversationStatus};
+use crate::ai::agent::task::TaskId;
 use crate::ai::agent::ImageContext;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
 use crate::ai::blocklist::block::FinishReason;
+use crate::ai::blocklist::block::cli_controller::CLISubagentEvent;
 use crate::ai::blocklist::{
     AutofireAction, BlocklistAIControllerEvent, BlocklistAIHistoryModel, PendingAttachment,
     QueuedQuery, QueuedQueryId, QueuedQueryModel, QueuedQueryOrigin, ResponseStreamId,
@@ -28,6 +30,7 @@ use crate::ai::blocklist::{
 use crate::features::FeatureFlag;
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::terminal::input::{Event as InputEvent, Input};
+use crate::terminal::model::block::BlockId;
 use crate::test_util::settings::initialize_settings_for_tests;
 use crate::test_util::terminal::{add_window_with_terminal, initialize_app_for_terminal_view};
 
@@ -1280,5 +1283,568 @@ fn a_pending_head_no_longer_blocks_the_rows_queued_behind_it() {
                  and neither fired"
             );
         });
+    });
+}
+
+/// Queues one prompt in a fresh active conversation, puts it into inline edit mode, types
+/// `live_edit` into the panel's edit editor without committing, then finishes the turn cleanly.
+/// Returns the text restored into the input and whether the queue ended up empty.
+fn drain_head_row_mid_edit(app: &mut App, live_edit: &str) -> (String, bool) {
+    initialize_app_for_terminal_view(app);
+    let _queue_flag = FeatureFlag::QueueSlashCommand.override_enabled(true);
+
+    let terminal = add_window_with_terminal(app, None);
+    let terminal_view_id = terminal.read(&*app, |view, _| view.view_id);
+    let conversation_id = BlocklistAIHistoryModel::handle(&*app).update(app, |history, ctx| {
+        let id = history.start_new_conversation(terminal_view_id, false, false, ctx);
+        history.set_active_conversation_id(id, terminal_view_id, ctx);
+        id
+    });
+    QueuedQueryModel::handle(&*app).update(app, |model, ctx| {
+        let query_id = model.append(conversation_id, user_query("stale committed"), ctx);
+        model.enter_edit_mode(conversation_id, query_id, ctx);
+    });
+    let queued_prompts_panel = terminal.read(&*app, |view, ctx| {
+        view.input()
+            .as_ref(ctx)
+            .queued_prompts_panel()
+            .cloned()
+            .expect("queue panel should exist")
+    });
+    queued_prompts_panel.update(app, |panel, ctx| {
+        panel.set_edit_buffer_text_for_test(live_edit, ctx);
+    });
+
+    terminal.update(app, |view, ctx| {
+        view.drain_queued_prompts(conversation_id, FinishReason::Complete, ctx);
+    });
+
+    let restored = terminal.read(&*app, |view, ctx| view.input().as_ref(ctx).buffer_text(ctx));
+    let queue_is_empty = QueuedQueryModel::handle(&*app)
+        .read(&*app, |model, _| model.queue(conversation_id).is_empty());
+    (restored, queue_is_empty)
+}
+
+/// A clean finish pops a row that is being edited back into the input. It must restore what the
+/// user has typed, not the row's last committed text.
+///
+/// Fails without the fix: `peek_autofire` captures the committed text ("stale committed"),
+/// `remove_fired_row` then clears the edit state, and the edit editor's later blur-commit finds
+/// no editing row -- so the input receives the stale text and the edit is silently lost.
+#[test]
+fn complete_drain_of_edited_row_restores_the_live_edit() {
+    App::test((), |mut app| async move {
+        let (restored, queue_is_empty) = drain_head_row_mid_edit(&mut app, "edited before finish");
+        assert_eq!(restored, "edited before finish");
+        assert!(queue_is_empty, "the restored row must leave the queue");
+    });
+}
+
+/// An edit cleared to nothing is a cancelled edit (`QueuedQueryModel::commit_edit`), so the
+/// committed text is restored rather than an empty input. Guards the fix against restoring the
+/// raw editor buffer.
+#[test]
+fn complete_drain_of_row_with_emptied_edit_restores_the_committed_text() {
+    App::test((), |mut app| async move {
+        let (restored, queue_is_empty) = drain_head_row_mid_edit(&mut app, "   ");
+        assert_eq!(restored, "stale committed");
+        assert!(queue_is_empty, "the restored row must leave the queue");
+    });
+}
+
+/// Counts `ExecuteAIQuery` events from `terminal`'s input: one per queued prompt actually sent.
+fn count_ai_queries(
+    app: &mut App,
+    terminal: &ViewHandle<super::TerminalView>,
+) -> Rc<RefCell<usize>> {
+    let count = Rc::new(RefCell::new(0));
+    let input = terminal.read(app, |view, _| view.input().clone());
+    let count_for_subscription = count.clone();
+    app.update(|ctx| {
+        ctx.subscribe_to_view(&input, move |_, event: &InputEvent, _| {
+            if matches!(event, InputEvent::ExecuteAIQuery) {
+                *count_for_subscription.borrow_mut() += 1;
+            }
+        });
+    });
+    count
+}
+
+/// Drives the real `FinishedSubagent` handler for a BYOP long-running command's CLI subagent.
+fn finish_cli_subagent(
+    app: &mut App,
+    terminal: &ViewHandle<super::TerminalView>,
+    conversation_id: AIConversationId,
+    command_block_id: &BlockId,
+    task_id: &TaskId,
+) {
+    terminal.update(app, |view, ctx| {
+        view.handle_cli_subagent_controller_event(
+            view.cli_subagent_controller.clone(),
+            &CLISubagentEvent::FinishedSubagent {
+                block_id: command_block_id.clone(),
+                task_id: task_id.clone(),
+                conversation_id: Some(conversation_id),
+                initial_requested_command_action_id: None,
+            },
+            ctx,
+        );
+    });
+}
+
+/// Ends the agent's turn (`FinishedReceivingOutput`) while its CLI subagent is still active, which
+/// is what a BYOP long-running command looks like: the turn ends, the command keeps running.
+fn finish_turn(
+    app: &mut App,
+    terminal: &ViewHandle<super::TerminalView>,
+    conversation_id: AIConversationId,
+) {
+    terminal.update(app, |view, ctx| {
+        view.handle_ai_controller_event(
+            view.ai_controller.clone(),
+            &BlocklistAIControllerEvent::FinishedReceivingOutput {
+                stream_id: ResponseStreamId::new_for_test(),
+                conversation_id,
+            },
+            ctx,
+        );
+    });
+}
+
+#[test]
+fn subagent_finish_fires_a_queue_slash_command_head_whose_turn_end_drain_was_skipped() {
+    // The turn ended while the BYOP long-running command's subagent was active, so
+    // `FinishedReceivingOutput` skipped its drain. When the subagent finished, the view only ran
+    // `send_lrc_queued_prompts`, whose `take_while(origin == LrcAutoQueue)` stops at a `/queue`
+    // head: that row was never delivered and it stranded the `LrcAutoQueue` row behind it. The
+    // subagent finishing must replay the skipped drain -- firing exactly one row, since each
+    // submit cancels the request before it.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        // Firing the queued prompt goes through the provider's model-event sender.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let command_block_id = BlockId::new();
+
+        // The agent's turn is over (block `Complete`, conversation `Success`) but the command it
+        // started is still running under a CLI subagent.
+        let (conversation_id, task_id) = terminal.update(&mut app, |view, ctx| {
+            let block = view.insert_dummy_ai_block(
+                "start the dev server".to_owned(),
+                "started".to_owned(),
+                ctx,
+            );
+            let conversation_id = block.as_ref(ctx).conversation_id();
+            let terminal_view_id = view.view_id;
+            let task_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let conversation = history
+                    .conversation_mut(&conversation_id)
+                    .expect("dummy block creates its conversation");
+                conversation.update_status(ConversationStatus::Success, terminal_view_id, ctx);
+                conversation.create_optimistic_cli_subagent_task_for_test(&command_block_id)
+            });
+            (conversation_id, task_id)
+        });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(conversation_id, user_query("queued with /queue"), ctx);
+            model.append(
+                conversation_id,
+                lrc_auto_query("queued during the command"),
+                ctx,
+            );
+        });
+
+        finish_turn(&mut app, &terminal, conversation_id);
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "precondition: the turn-end drain is skipped while the subagent is active"
+        );
+
+        // `Conversation::finish_byop_silent_cli_subtask` clears the flag in the `BlockCompleted`
+        // hook just before `FinishedSubagent` is emitted.
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .clear_optimistic_cli_subagent_task_for_test();
+        });
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+
+        assert_eq!(
+            *ai_query_count.borrow(),
+            1,
+            "the `/queue` head fires once the subagent finishes"
+        );
+        let remaining = |app: &App| {
+            QueuedQueryModel::handle(app).read(app, |model, _| {
+                model
+                    .queue(conversation_id)
+                    .iter()
+                    .map(|row| row.text().to_owned())
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            remaining(&app),
+            vec!["queued during the command".to_owned()]
+        );
+
+        // A second finish signal for the same handoff (the `FinishedSubagent` event and the
+        // handoff retry both observe it) must not fire the next row on top of the first.
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+        assert_eq!(*ai_query_count.borrow(), 1, "single delivery");
+        assert_eq!(
+            remaining(&app),
+            vec!["queued during the command".to_owned()]
+        );
+    });
+}
+
+#[test]
+fn subagent_finish_after_stop_restores_the_head_instead_of_firing_it() {
+    // The user pressed Stop while the BYOP long-running command ran. The cancelled stream's
+    // `FinishedReceivingOutput` skipped the cancel drain (which restores the head into the input)
+    // because the subagent was still active, and when the command then died `FinishedSubagent`
+    // ran `send_lrc_queued_prompts`, firing the auto-queued row as if the turn had completed:
+    // the agent restarted on a prompt the user had just stopped. The skipped cancel drain must
+    // run instead.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let _agent_view = FeatureFlag::AgentView.override_enabled(true);
+        // Registered so the pre-fix code fails on the assertion below rather than on a missing
+        // provider when it fires the row.
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let command_block_id = BlockId::new();
+
+        // The cancel restore only runs for the conversation the user is viewing in agent view.
+        let conversation_id = terminal.update(&mut app, |view, ctx| {
+            view.agent_view_controller().update(ctx, |controller, ctx| {
+                controller
+                    .try_enter_agent_view(
+                        None,
+                        AgentViewEntryOrigin::Input {
+                            was_prompt_autodetected: false,
+                        },
+                        ctx,
+                    )
+                    .expect("should enter agent view")
+            })
+        });
+        let task_id = terminal.update(&mut app, |view, ctx| {
+            let terminal_view_id = view.view_id;
+            BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let conversation = history
+                    .conversation_mut(&conversation_id)
+                    .expect("entering agent view creates the conversation");
+                let task_id =
+                    conversation.create_optimistic_cli_subagent_task_for_test(&command_block_id);
+                // What Stop (`CancellationReason::ManuallyCancelled`) leaves behind.
+                conversation.update_status(ConversationStatus::Cancelled, terminal_view_id, ctx);
+                task_id
+            })
+        });
+
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                lrc_auto_query("queued during the command"),
+                ctx,
+            );
+        });
+
+        finish_turn(&mut app, &terminal, conversation_id);
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert_eq!(
+                model.queue(conversation_id).len(),
+                1,
+                "precondition: the cancel drain is skipped while the subagent is active"
+            );
+        });
+
+        BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .clear_optimistic_cli_subagent_task_for_test();
+        });
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "nothing auto-fires after the user pressed Stop"
+        );
+        terminal.read(&app, |view, ctx| {
+            assert_eq!(
+                view.input().as_ref(ctx).buffer_text(ctx),
+                "queued during the command",
+                "the head is restored into the empty input, as the cancel drain does"
+            );
+        });
+        QueuedQueryModel::handle(&app).read(&app, |model, _| {
+            assert!(model.queue(conversation_id).is_empty());
+        });
+    });
+}
+
+#[test]
+fn subagent_finished_queue_delivery_covers_each_case() {
+    // The decision table behind the end-to-end tests above, including the cases they cannot
+    // reach end-to-end without changing behaviour the pre-fix code already had right.
+    use super::{SkippedTurnEndDrain as Skipped, SubagentFinishedQueueDelivery as Delivery};
+    // Arguments: has_active_subagent, skipped_turn_end, conversation_cancelled,
+    // turn_in_progress, auto_resumed_on_block_completion, last_finish_reason.
+    let decide = super::subagent_finished_queue_delivery;
+    let owed = Some(Skipped::Owed);
+    let complete = Some(FinishReason::Complete);
+
+    // Still active: defer through `send_lrc_queued_prompts`, whatever is owed.
+    for auto_resumed in [false, true] {
+        assert_eq!(
+            decide(true, owed, true, false, auto_resumed, complete),
+            Delivery::SendLrcRows
+        );
+        assert_eq!(
+            decide(true, None, false, true, auto_resumed, complete),
+            Delivery::SendLrcRows
+        );
+    }
+    // Cancelled: replay the skipped drain with cancel semantics, or -- if the turn end already
+    // drained -- only unlock. Never fire, even though the block itself completed.
+    assert_eq!(
+        decide(false, owed, true, false, false, complete),
+        Delivery::ReplaySkippedTurnEnd(FinishReason::Cancelled)
+    );
+    assert_eq!(
+        decide(false, None, true, false, false, complete),
+        Delivery::UnlockOnly
+    );
+    // The in-progress turn is the auto-resume `on_user_block_completed` just sent for this
+    // block completion: deliver nothing now -- firing `LrcAutoQueue` rows would cancel that
+    // resume -- and leave the queue to that turn's own end.
+    for skipped in [owed, None] {
+        for reason in [None, complete] {
+            assert_eq!(
+                decide(false, skipped, false, true, true, reason),
+                Delivery::Nothing
+            );
+        }
+    }
+    // Any other turn in progress -- the agent mid-turn, a transient error waiting out its
+    // backoff, a stranded `InProgress` -- keeps the legacy LRC delivery: deferring there could
+    // strand the rows with no turn end left to drain them.
+    for skipped in [owed, None] {
+        for reason in [None, complete] {
+            assert_eq!(
+                decide(false, skipped, false, true, false, reason),
+                Delivery::SendLrcRows
+            );
+        }
+    }
+    // A record with no turn in progress changes nothing.
+    assert_eq!(
+        decide(false, owed, false, false, true, complete),
+        Delivery::ReplaySkippedTurnEnd(FinishReason::Complete)
+    );
+    assert_eq!(
+        decide(false, None, false, false, true, complete),
+        Delivery::SendLrcRows
+    );
+    // Not in progress, but the block's finish reason has not landed yet (the inline
+    // optimistic-completion ordering): no turn is running, so the legacy LRC delivery stands.
+    assert_eq!(
+        decide(false, owed, false, false, false, None),
+        Delivery::SendLrcRows
+    );
+    // Turn finished: replay the skipped drain with the reason it would have had.
+    assert_eq!(
+        decide(false, owed, false, false, false, complete),
+        Delivery::ReplaySkippedTurnEnd(FinishReason::Complete)
+    );
+    assert_eq!(
+        decide(false, owed, false, false, false, Some(FinishReason::Error)),
+        Delivery::ReplaySkippedTurnEnd(FinishReason::Error)
+    );
+    // Nothing owed: unchanged behaviour.
+    assert_eq!(
+        decide(false, None, false, false, false, complete),
+        Delivery::SendLrcRows
+    );
+    // Already replayed: a second observer of the same finish delivers nothing.
+    for cancelled in [false, true] {
+        assert_eq!(
+            decide(
+                false,
+                Some(Skipped::Replayed),
+                cancelled,
+                false,
+                false,
+                complete
+            ),
+            Delivery::Nothing
+        );
+    }
+}
+
+#[test]
+fn subagent_finish_mid_turn_defers_only_for_the_block_completion_auto_resume() {
+    // A subagent finishing while the conversation is `InProgress` deferred every time, so an
+    // agent mid-turn (or a transient error in backoff, or a stranded `InProgress`) left the
+    // `LrcAutoQueue` row with nothing to deliver it. Only the auto-resume
+    // `on_user_block_completed` sent for this same block completion may defer: firing the row
+    // then would cancel that resume and lose the command output it carries.
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let global_resource_handles = crate::GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(move |_| {
+            crate::GlobalResourceHandlesProvider::new(global_resource_handles.clone())
+        });
+
+        let terminal = add_window_with_terminal(&mut app, None);
+        let ai_query_count = count_ai_queries(&mut app, &terminal);
+        let command_block_id = BlockId::new();
+
+        // The agent is mid-turn while the command it started runs under a CLI subagent.
+        let (conversation_id, task_id) = terminal.update(&mut app, |view, ctx| {
+            let block = view.insert_dummy_ai_block(
+                "start the dev server".to_owned(),
+                "started".to_owned(),
+                ctx,
+            );
+            let conversation_id = block.as_ref(ctx).conversation_id();
+            let terminal_view_id = view.view_id;
+            let task_id = BlocklistAIHistoryModel::handle(ctx).update(ctx, |history, ctx| {
+                let conversation = history
+                    .conversation_mut(&conversation_id)
+                    .expect("dummy block creates its conversation");
+                conversation.update_status(ConversationStatus::InProgress, terminal_view_id, ctx);
+                conversation.create_optimistic_cli_subagent_task_for_test(&command_block_id)
+            });
+            (conversation_id, task_id)
+        });
+        QueuedQueryModel::handle(&app).update(&mut app, |model, ctx| {
+            model.append(
+                conversation_id,
+                lrc_auto_query("queued during the command"),
+                ctx,
+            );
+        });
+        let queue_len = |app: &App| {
+            QueuedQueryModel::handle(app).read(app, |model, _| model.queue(conversation_id).len())
+        };
+        let clear_subagent_flag = |app: &mut App| {
+            BlocklistAIHistoryModel::handle(app).update(app, |history, _| {
+                history
+                    .conversation_mut(&conversation_id)
+                    .expect("conversation exists")
+                    .clear_optimistic_cli_subagent_task_for_test();
+            });
+        };
+
+        // First, the block completion auto-resumed the conversation: what
+        // `on_user_block_completed` records just before the subagent finish is delivered. The
+        // turn end that went before had skipped its drain, which also marks the subagent as
+        // observed active -- the state the handoff retry's transition detector reads.
+        terminal.update(&mut app, |view, _| {
+            view.block_completion_auto_resumes.insert(conversation_id);
+            view.last_observed_active_subagent
+                .insert(conversation_id, true);
+        });
+        clear_subagent_flag(&mut app);
+        // One block completion reaches the delivery TWICE, in this order: the resume's
+        // `UpdatedConversationStatus` drives the handoff retry, then `FinishedSubagent`
+        // arrives. Replay both. A record consumed by the first would let the second fire the
+        // row into the resume.
+        terminal.update(&mut app, |view, ctx| {
+            view.maybe_send_lrc_queued_prompts_after_subagent_handoff(conversation_id, ctx);
+        });
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "the handoff retry must not fire into the auto-resume"
+        );
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+        assert_eq!(
+            *ai_query_count.borrow(),
+            0,
+            "a queued follow-up would cancel the auto-resume"
+        );
+        assert_eq!(
+            queue_len(&app),
+            1,
+            "the row waits for the resumed turn's end"
+        );
+        terminal.read(&app, |view, _| {
+            assert!(
+                view.block_completion_auto_resumes
+                    .contains(&conversation_id),
+                "the record survives both deliveries; only the resumed turn's end clears it"
+            );
+        });
+        // The resumed turn's `FinishedReceivingOutput` clears the record (and drains the queue).
+        // Model just the clearing here so the next case starts from a state with no record.
+        terminal.update(&mut app, |view, _| {
+            view.block_completion_auto_resumes.remove(&conversation_id);
+        });
+
+        // Later the agent is mid-turn and another command's subagent finishes, with no
+        // auto-resume behind it: the legacy delivery fires the LRC row.
+        let task_id = BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, _| {
+            history
+                .conversation_mut(&conversation_id)
+                .expect("conversation exists")
+                .create_optimistic_cli_subagent_task_for_test(&command_block_id)
+        });
+        clear_subagent_flag(&mut app);
+        finish_cli_subagent(
+            &mut app,
+            &terminal,
+            conversation_id,
+            &command_block_id,
+            &task_id,
+        );
+        assert_eq!(
+            *ai_query_count.borrow(),
+            1,
+            "an agent mid-turn does not strand the LRC row"
+        );
+        assert_eq!(queue_len(&app), 0);
     });
 }

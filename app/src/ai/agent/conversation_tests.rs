@@ -1205,3 +1205,88 @@ fn test_new_restored_prefers_parentless_task_with_messages_over_empty_stub() {
         );
     }
 }
+
+// A BYOP long-running command gets a silent CLI subagent task from the snapshot upgrade. Its
+// tool call id is synthetic and appears nowhere in the root task, so no ToolCallResult can ever
+// finish it, and the silent path also parks it in `optimistic_cli_subagent_subtask_id`. Before
+// `finish_byop_silent_cli_subtask` existed nothing cleared either, so `has_active_subagent()`
+// stayed true for the rest of the conversation and every queued prompt gated on it was stuck
+// at "queued until the command finishes" long after the command had finished.
+#[test]
+fn byop_silent_cli_subtask_stops_counting_as_active_once_its_block_completes() {
+    let mut conversation = restored_conversation(None);
+    assert!(!conversation.has_active_subagent());
+
+    let block_id = BlockId::from("byop-lrc-block".to_string());
+    let task_id = conversation.create_optimistic_cli_subagent_task_silent(&block_id);
+    assert!(
+        conversation.has_active_subagent(),
+        "the silent subtask is active while its command runs"
+    );
+    assert!(matches!(
+        conversation.is_subagent_task_finished(&task_id),
+        Ok(false)
+    ));
+
+    assert!(conversation.finish_byop_silent_cli_subtask(&task_id));
+    assert!(
+        !conversation.has_active_subagent(),
+        "a completed silent subtask must not keep the conversation's subagent active"
+    );
+    assert!(matches!(
+        conversation.is_subagent_task_finished(&task_id),
+        Ok(true)
+    ));
+
+    // Finishing is idempotent and a second call reports that there was nothing left to do.
+    assert!(!conversation.finish_byop_silent_cli_subtask(&task_id));
+    assert!(!conversation.has_active_subagent());
+}
+
+// The completion hook runs for every CLI subagent whose block completes. A server-backed
+// subagent takes its finish from the ToolCallResult the server writes into the parent task, so
+// the BYOP completion record must not touch it.
+#[test]
+fn finishing_a_byop_silent_subtask_leaves_server_backed_subagents_alone() {
+    let cli_task_id = TaskId::new("server-cli-task".to_string());
+    let mut conversation = AIConversation::new_restored(
+        AIConversationId::new(),
+        vec![
+            api::Task {
+                id: "root-task".to_string(),
+                messages: vec![tool_call_message_with_tool(
+                    "subagent-call-1",
+                    "subagent-call-1",
+                    cli_subagent_tool(&String::from(cli_task_id.clone()), "cli-block-1"),
+                )],
+                dependencies: None,
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            },
+            api::Task {
+                id: String::from(cli_task_id.clone()),
+                messages: vec![],
+                dependencies: Some(api::task::Dependencies {
+                    parent_task_id: "root-task".to_string(),
+                }),
+                description: String::new(),
+                summary: String::new(),
+                server_data: String::new(),
+            },
+        ],
+        None,
+    )
+    .unwrap();
+    assert!(conversation.has_active_subagent());
+
+    assert!(!conversation.finish_byop_silent_cli_subtask(&cli_task_id));
+    assert!(
+        conversation.has_active_subagent(),
+        "a server-backed subagent stays active until its ToolCallResult arrives"
+    );
+    assert!(matches!(
+        conversation.is_subagent_task_finished(&cli_task_id),
+        Ok(false)
+    ));
+}

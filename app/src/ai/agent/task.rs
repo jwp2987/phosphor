@@ -209,9 +209,13 @@ impl Task {
     /// `subagent_params` uses a synthetic `Subagent { command_id, ... }`, so that queries
     /// like `is_subagent_task_finished` don't all fall into the `SubagentTaskNotFound`
     /// branch. `tool_call_id` uses a new uuid; there is in fact no corresponding ToolCall
-    /// in root.messages, so `is_subagent_task_finished` keeps returning `Ok(false)`
-    /// (not finished) — which is semantically correct while the LRC is running, and the
-    /// `BlockCompleted` hook cleans it up once the LRC truly finishes.
+    /// in root.messages, so no ToolCallResult can ever finish this task and
+    /// `is_subagent_task_finished` reports `Ok(false)` (not finished) while the LRC is
+    /// running. Completion has to be recorded explicitly instead: the `BlockCompleted` hook
+    /// in `cli_controller.rs` calls `AIConversation::finish_byop_silent_cli_subtask`, which
+    /// clears `optimistic_cli_subagent_subtask_id` and makes `is_subagent_task_finished`
+    /// report `Ok(true)`. Nothing else does; without it `has_active_subagent()` stays true
+    /// for the rest of the conversation.
     pub(super) fn new_byop_silent_cli_subtask(block_id: BlockId, parent_task_id: String) -> Self {
         let task_id_str = Uuid::new_v4().to_string();
         let subagent_call = api::message::tool_call::Subagent {
