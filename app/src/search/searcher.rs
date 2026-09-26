@@ -1172,6 +1172,15 @@ pub enum SearcherEvent {
     IndexCleared,
 }
 
+/// An item on [`AsyncSearcher`]'s write channel.
+enum QueuedItem {
+    /// A write operation to batch and commit.
+    Event(SearcherEvent),
+    /// A barrier: signalled once every item queued before it has been committed and the reader
+    /// reloaded. See [`AsyncSearcher::wait_for_pending_writes`].
+    Flush(async_channel::Sender<()>),
+}
+
 const SEARCH_ASYNC_BATCH_INTERVAL: Duration = Duration::from_millis(75);
 const SEARCH_ASYNC_MAX_BATCH_SIZE: usize = 100;
 /// If this amount of time passes without any events, we will join with the
@@ -1179,12 +1188,13 @@ const SEARCH_ASYNC_MAX_BATCH_SIZE: usize = 100;
 const SEARCH_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn process_searcher_events(
-    rx: async_channel::Receiver<SearcherEvent>,
+    rx: async_channel::Receiver<QueuedItem>,
     writer_handle: SearcherWriterHandle,
 ) {
     let mut running = true;
     while running {
         let mut batch = vec![];
+        let mut flushes = vec![];
 
         let mut timer = Timer::never().fuse();
         let mut idle_timer = Timer::at(Instant::now() + SEARCH_IDLE_TIMEOUT).fuse();
@@ -1192,7 +1202,13 @@ async fn process_searcher_events(
             futures::select! {
                 event = rx.recv().fuse() => {
                     match event {
-                        Ok(event) => {
+                        Ok(QueuedItem::Flush(done)) => {
+                            // Commit what we have now rather than waiting out the batch timer;
+                            // the caller is blocked on this barrier.
+                            flushes.push(done);
+                            break;
+                        }
+                        Ok(QueuedItem::Event(event)) => {
                             if batch.is_empty() {
                                 // If we're starting a batch, set a timer to cut off the batch after
                                 // a period of time.
@@ -1228,11 +1244,19 @@ async fn process_searcher_events(
             }
         }
         // Process the batch of events.
-        if batch.is_empty() {
-            continue;
-        }
-        if let Err(e) = writer_handle.lock().execute_operations(batch) {
+        let result = if batch.is_empty() {
+            Ok(())
+        } else {
+            writer_handle.lock().execute_operations(batch)
+        };
+        if let Err(e) = result {
             log::error!("Failed to execute search events: {e}");
+        }
+        // `execute_operations` commits and then reloads the reader synchronously, so by now every
+        // item queued before these barriers is visible to searches. The channel is FIFO with a
+        // single consumer, so anything queued earlier was in this batch or an earlier one.
+        for done in flushes {
+            let _ = done.try_send(());
         }
     }
 }
@@ -1241,7 +1265,7 @@ async fn process_searcher_events(
 // All search (read) operations remain synchronous and blocking.
 pub struct AsyncSearcher<C: SearchSchemaConfig> {
     searcher: SimpleFullTextSearcher<C>,
-    tx: async_channel::Sender<SearcherEvent>,
+    tx: async_channel::Sender<QueuedItem>,
 }
 
 impl<C: SearchSchemaConfig> AsyncSearcher<C> {
@@ -1280,7 +1304,7 @@ impl<C: SearchSchemaConfig> AsyncSearcher<C> {
 
     // Async write operations
     pub fn clear_search_index_async(&self) -> anyhow::Result<()> {
-        block_on(self.tx.send(SearcherEvent::IndexCleared))
+        block_on(self.tx.send(QueuedItem::Event(SearcherEvent::IndexCleared)))
             .map_err(|e| anyhow::anyhow!("Failed to send clear index event: {}", e))
     }
 
@@ -1297,16 +1321,37 @@ impl<C: SearchSchemaConfig> AsyncSearcher<C> {
     pub fn insert_document_async(&self, entry: C::SearchDocEntry) -> anyhow::Result<()> {
         block_on(
             self.tx
-                .send(SearcherEvent::DocumentInserted(entry.into_document_entry())),
+                .send(QueuedItem::Event(SearcherEvent::DocumentInserted(
+                    entry.into_document_entry(),
+                ))),
         )
         .map_err(|e| anyhow::anyhow!("Failed to send document insertion event: {}", e))
     }
 
     pub fn delete_document_async(&self, identifying_entry: C::SearchIdEntry) -> anyhow::Result<()> {
-        block_on(self.tx.send(SearcherEvent::DocumentDeleted(
-            identifying_entry.into_identifying_entry(),
-        )))
+        block_on(
+            self.tx
+                .send(QueuedItem::Event(SearcherEvent::DocumentDeleted(
+                    identifying_entry.into_identifying_entry(),
+                ))),
+        )
         .map_err(|e| anyhow::anyhow!("Failed to send document deletion event: {}", e))
+    }
+
+    /// Blocks until every write queued before this call has been committed and made visible to
+    /// searches on this searcher.
+    ///
+    /// The `*_async` writes are fire-and-forget: they are batched for up to
+    /// `SEARCH_ASYNC_BATCH_INTERVAL` and then committed on the background executor, so a search
+    /// issued right after one may still see the pre-write index. This is the barrier for callers
+    /// that need read-your-writes. A write that fails to commit is logged and still releases the
+    /// barrier. Must not be called from the background executor that drives this searcher.
+    pub fn wait_for_pending_writes(&self) -> anyhow::Result<()> {
+        let (done_tx, done_rx) = async_channel::bounded(1);
+        block_on(self.tx.send(QueuedItem::Flush(done_tx)))
+            .map_err(|e| anyhow::anyhow!("Failed to send flush event: {}", e))?;
+        block_on(done_rx.recv())
+            .map_err(|e| anyhow::anyhow!("Search writer stopped before flushing: {}", e))
     }
 }
 

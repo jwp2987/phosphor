@@ -206,7 +206,7 @@ fn test_searcher_async() {
                 }),
         )
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    searcher_async.wait_for_pending_writes().unwrap();
 
     let result = searcher_async.get_all_doc_ids().unwrap();
     assert_eq!(
@@ -245,7 +245,7 @@ fn test_searcher_async() {
             id: 10,
         })
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    searcher_async.wait_for_pending_writes().unwrap();
 
     let result = searcher_async.search_id("Fix clippy formatting").unwrap();
     assert!(result.is_empty(), "the document should be deleted");
@@ -284,7 +284,7 @@ fn test_searcher_async() {
             id: 4,
         })
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    searcher_async.wait_for_pending_writes().unwrap();
 
     let result = searcher_async
         .get_all_documents()
@@ -299,7 +299,7 @@ fn test_searcher_async() {
     );
 
     searcher_async.clear_search_index_async().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(200));
+    searcher_async.wait_for_pending_writes().unwrap();
 
     let result = searcher_async.get_all_doc_ids().unwrap();
     assert_eq!(
