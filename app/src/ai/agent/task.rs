@@ -212,8 +212,9 @@ impl Task {
     /// in root.messages, so no ToolCallResult can ever finish this task and
     /// `is_subagent_task_finished` reports `Ok(false)` (not finished) while the LRC is
     /// running. Completion has to be recorded explicitly instead: the `BlockCompleted` hook
-    /// in `cli_controller.rs` calls `AIConversation::finish_byop_silent_cli_subtask`, which
-    /// clears `optimistic_cli_subagent_subtask_id` and makes `is_subagent_task_finished`
+    /// in `cli_controller.rs` calls `AIConversation::finish_cli_subagent_task_for_completed_block`,
+    /// which for this task delegates to `finish_byop_silent_cli_subtask`; that clears
+    /// `optimistic_cli_subagent_subtask_id` and makes `is_subagent_task_finished`
     /// report `Ok(true)`. Nothing else does; without it `has_active_subagent()` stays true
     /// for the rest of the conversation.
     pub(super) fn new_byop_silent_cli_subtask(block_id: BlockId, parent_task_id: String) -> Self {

@@ -485,18 +485,19 @@ impl CLISubagentController {
                 }
 
                 if let Some(task_id) = removed_subagent_state.and_then(|state| state.task_id) {
-                    // Zap BYOP: a silent subtask from the snapshot upgrade above has no
-                    // ToolCallResult to finish it, so record its completion here, before
-                    // `FinishedSubagent` lets the view re-check `has_active_subagent()` and
-                    // deliver queued prompts. No-op for server-backed subagents.
+                    // Zap BYOP: no ToolCallResult will ever finish this subagent (the
+                    // snapshot upgrade's silent subtask or a tag-in subtask), so record its
+                    // completion here, before `FinishedSubagent` lets the view re-check
+                    // `has_active_subagent()` and deliver queued prompts.
                     if let Some(conversation_id) = conversation_id {
                         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, _| {
                             if let Some(conversation) =
                                 history_model.conversation_mut(&conversation_id)
-                                && conversation.finish_byop_silent_cli_subtask(&task_id)
+                                && conversation
+                                    .finish_cli_subagent_task_for_completed_block(&task_id)
                             {
                                 log::info!(
-                                    "[byop] BYOP LRC monitor fallback: silent subtask finished \
+                                    "[byop] CLI subagent finished with its block \
                                      block={block_id:?} task={task_id:?}"
                                 );
                             }

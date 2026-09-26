@@ -1243,13 +1243,13 @@ fn byop_silent_cli_subtask_stops_counting_as_active_once_its_block_completes() {
     assert!(!conversation.has_active_subagent());
 }
 
-// The completion hook runs for every CLI subagent whose block completes. A server-backed
-// subagent takes its finish from the ToolCallResult the server writes into the parent task, so
-// the BYOP completion record must not touch it.
-#[test]
-fn finishing_a_byop_silent_subtask_leaves_server_backed_subagents_alone() {
-    let cli_task_id = TaskId::new("server-cli-task".to_string());
-    let mut conversation = AIConversation::new_restored(
+/// A restored conversation whose root task holds a subagent call (with `metadata`) that never got
+/// a result, and the subagent's task.
+fn restored_conversation_with_unanswered_subagent(
+    subtask_id: &TaskId,
+    tool: api::message::tool_call::Tool,
+) -> AIConversation {
+    AIConversation::new_restored(
         AIConversationId::new(),
         vec![
             api::Task {
@@ -1257,7 +1257,7 @@ fn finishing_a_byop_silent_subtask_leaves_server_backed_subagents_alone() {
                 messages: vec![tool_call_message_with_tool(
                     "subagent-call-1",
                     "subagent-call-1",
-                    cli_subagent_tool(&String::from(cli_task_id.clone()), "cli-block-1"),
+                    tool,
                 )],
                 dependencies: None,
                 description: String::new(),
@@ -1265,7 +1265,7 @@ fn finishing_a_byop_silent_subtask_leaves_server_backed_subagents_alone() {
                 server_data: String::new(),
             },
             api::Task {
-                id: String::from(cli_task_id.clone()),
+                id: String::from(subtask_id.clone()),
                 messages: vec![],
                 dependencies: Some(api::task::Dependencies {
                     parent_task_id: "root-task".to_string(),
@@ -1277,16 +1277,48 @@ fn finishing_a_byop_silent_subtask_leaves_server_backed_subagents_alone() {
         ],
         None,
     )
-    .unwrap();
-    assert!(conversation.has_active_subagent());
+    .unwrap()
+}
 
-    assert!(!conversation.finish_byop_silent_cli_subtask(&cli_task_id));
-    assert!(
-        conversation.has_active_subagent(),
-        "a server-backed subagent stays active until its ToolCallResult arrives"
+// No command outlives the session that ran it, so a CLI subagent in a restored conversation is
+// never live. A tag-in subagent's synthetic call on the root task never gets a result (every
+// request in this fork is BYOP, so no server writes one); before restore recorded it as
+// finished, a conversation that had ever tagged in came back after a restart with
+// `has_active_subagent()` stuck true and its queued prompts stuck with it.
+#[test]
+fn a_restored_cli_subagent_never_counts_as_active() {
+    let cli_task_id = TaskId::new("tag-in-cli-task".to_string());
+    let mut conversation = restored_conversation_with_unanswered_subagent(
+        &cli_task_id,
+        cli_subagent_tool(&String::from(cli_task_id.clone()), "cli-block-1"),
     );
+    assert!(!conversation.has_active_subagent());
     assert!(matches!(
         conversation.is_subagent_task_finished(&cli_task_id),
+        Ok(true)
+    ));
+    // It is not a silent-path subtask, so the silent-path hook still reports nothing to do.
+    assert!(!conversation.finish_byop_silent_cli_subtask(&cli_task_id));
+}
+
+// The restore rule covers CLI subagents only; any other subagent without a result is still
+// active after a restore, as upstream.
+#[test]
+fn a_restored_non_cli_subagent_without_a_result_stays_active() {
+    let research_task_id = TaskId::new("research-task".to_string());
+    let conversation = restored_conversation_with_unanswered_subagent(
+        &research_task_id,
+        api::message::tool_call::Tool::Subagent(api::message::tool_call::Subagent {
+            task_id: String::from(research_task_id.clone()),
+            payload: String::new(),
+            metadata: Some(api::message::tool_call::subagent::Metadata::Research(
+                Default::default(),
+            )),
+        }),
+    );
+    assert!(conversation.has_active_subagent());
+    assert!(matches!(
+        conversation.is_subagent_task_finished(&research_task_id),
         Ok(false)
     ));
 }

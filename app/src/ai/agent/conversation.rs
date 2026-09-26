@@ -214,11 +214,13 @@ pub struct AIConversation {
     /// `create_optimistic_cli_subagent_task_silent` whose block has not completed yet.
     byop_silent_cli_subtask_ids: HashSet<TaskId>,
 
-    /// Zap BYOP: silent CLI subagent tasks whose block has completed. They have no ToolCall
-    /// (and so never a ToolCallResult) in the root task, so this is the only record that
-    /// `is_subagent_task_finished` can read for them. Runtime-only: a restored silent task has
-    /// no subagent params and is never counted as active anyway.
-    finished_byop_silent_cli_subtask_ids: HashSet<TaskId>,
+    /// Zap BYOP: CLI subagent tasks recorded as finished locally, because no ToolCallResult will
+    /// ever finish them: every agent request in this fork is BYOP, so no server writes the
+    /// result that finishes a CLI subagent upstream. Filled when a subagent's block completes
+    /// (`finish_cli_subagent_task_for_completed_block`) and, for a restored conversation, with
+    /// every CLI subagent it contains, since no command outlives the session that ran it. This is
+    /// the record `is_subagent_task_finished` reads for them.
+    finished_cli_subagent_task_ids: HashSet<TaskId>,
 
     /// TODO lists created during the conversation, ordered by creation time. The last list (if any) is the active list.
     todo_lists: Vec<AIAgentTodoList>,
@@ -386,7 +388,7 @@ impl AIConversation {
             task_store: TaskStore::with_root_task(root_task),
             optimistic_cli_subagent_subtask_id: None,
             byop_silent_cli_subtask_ids: HashSet::new(),
-            finished_byop_silent_cli_subtask_ids: HashSet::new(),
+            finished_cli_subagent_task_ids: HashSet::new(),
             code_review: None,
             is_viewing_shared_session,
             todo_lists: vec![],
@@ -705,6 +707,16 @@ impl AIConversation {
         let restored_computer_use_approval_ids =
             Self::snapshot_computer_use_approvals(task_store.all_exchanges());
 
+        // No command outlives the session that ran it, so no CLI subagent in a restored (or
+        // forked) conversation is live. Without this, a tag-in subtask -- whose synthetic
+        // subagent call on the root task never gets a result -- would count as active forever
+        // after a restart; see `finish_cli_subagent_task_for_completed_block`.
+        let finished_cli_subagent_task_ids = task_store
+            .tasks()
+            .filter(|task| !task.is_root_task() && task.cli_subagent_block_id().is_some())
+            .map(|task| task.id().clone())
+            .collect();
+
         Ok(Self {
             id,
             is_viewing_shared_session: false,
@@ -731,7 +743,7 @@ impl AIConversation {
             total_token_usage_by_model: Default::default(),
             optimistic_cli_subagent_subtask_id: None,
             byop_silent_cli_subtask_ids: HashSet::new(),
-            finished_byop_silent_cli_subtask_ids: HashSet::new(),
+            finished_cli_subagent_task_ids,
             fallback_display_title: None,
             artifacts,
             parent_agent_id,
@@ -3346,7 +3358,8 @@ impl AIConversation {
     /// conversation-finished callbacks, both gated on it, never fired again in the conversation.
     ///
     /// No-op, returning `false`, for any task this conversation did not create through the
-    /// silent path, so server-backed subagents keep taking their finish from the server.
+    /// silent path; `finish_cli_subagent_task_for_completed_block` handles the other CLI
+    /// subagents.
     pub fn finish_byop_silent_cli_subtask(&mut self, task_id: &TaskId) -> bool {
         if !self.byop_silent_cli_subtask_ids.remove(task_id) {
             return false;
@@ -3354,9 +3367,50 @@ impl AIConversation {
         if self.optimistic_cli_subagent_subtask_id.as_ref() == Some(task_id) {
             self.optimistic_cli_subagent_subtask_id = None;
         }
-        self.finished_byop_silent_cli_subtask_ids
-            .insert(task_id.clone());
+        self.finished_cli_subagent_task_ids.insert(task_id.clone());
         true
+    }
+
+    /// Records that the block behind a CLI subagent task has completed, so the task stops
+    /// counting as an active subagent. Called from the `BlockCompleted` hook in
+    /// `cli_controller.rs` for whatever task the block's subagent had.
+    ///
+    /// Upstream a CLI subagent finishes when the server writes a ToolCallResult for its call into
+    /// the parent task. Every agent request in this fork is BYOP (`response_stream.rs` has no
+    /// hosted path), so that never happens, and each of the three ways a live CLI subagent comes
+    /// to exist would otherwise leave `has_active_subagent()` true for the rest of the
+    /// conversation -- the stuck-queue defect:
+    /// - the snapshot upgrade's silent subtask (`finish_byop_silent_cli_subtask`);
+    /// - the tag-in subtask, which `chat_stream.rs` creates with a synthetic `Tool::Subagent`
+    ///   call on the root task that nothing ever answers;
+    /// - an optimistic tag-in subtask whose `CreateTask` never arrived, which is counted
+    ///   through `optimistic_cli_subagent_subtask_id` alone.
+    ///
+    /// Not covered: a `CreateTask` that arrives only after the block completed. It is then no
+    /// longer upgraded into the optimistic task; it creates a fresh subtask bound to the
+    /// finished block, which no later `BlockCompleted` finishes. That race stuck the
+    /// conversation the same way before this existed.
+    ///
+    /// Returns whether anything changed. A task that is not a CLI subagent is left alone.
+    pub fn finish_cli_subagent_task_for_completed_block(&mut self, task_id: &TaskId) -> bool {
+        if self.finish_byop_silent_cli_subtask(task_id) {
+            return true;
+        }
+        let mut changed = false;
+        if self.optimistic_cli_subagent_subtask_id.as_ref() == Some(task_id) {
+            self.optimistic_cli_subagent_subtask_id = None;
+            changed = true;
+        }
+        let is_unfinished_cli_subagent = self
+            .task_store
+            .get(task_id)
+            .is_some_and(|task| !task.is_root_task() && task.cli_subagent_block_id().is_some())
+            && !matches!(self.is_subagent_task_finished(task_id), Ok(true));
+        if is_unfinished_cli_subagent {
+            self.finished_cli_subagent_task_ids.insert(task_id.clone());
+            changed = true;
+        }
+        changed
     }
 
     /// Marks an optimistic CLI subagent active without emitting UI events.
@@ -3389,7 +3443,7 @@ impl AIConversation {
             .get(subagent_task_id)
             .ok_or(SubagentTaskNotFound)?;
         if self
-            .finished_byop_silent_cli_subtask_ids
+            .finished_cli_subagent_task_ids
             .contains(subagent_task_id)
         {
             return Ok(true);

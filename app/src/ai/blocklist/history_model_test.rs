@@ -5181,3 +5181,225 @@ fn test_fork_conversation_title_override_replaces_prefix() {
         });
     });
 }
+
+/// Applies one client action to the conversation the way a response stream does.
+fn apply_client_action_for_test(
+    history_model: &mut BlocklistAIHistoryModel,
+    conversation_id: AIConversationId,
+    stream_id: &ResponseStreamId,
+    terminal_view_id: EntityId,
+    action: api::client_action::Action,
+    ctx: &mut warpui::ModelContext<BlocklistAIHistoryModel>,
+) {
+    use ai::skills::SkillPathOrigin;
+
+    history_model
+        .conversation_mut(&conversation_id)
+        .expect("conversation should exist")
+        .apply_client_action(
+            stream_id,
+            terminal_view_id,
+            action,
+            &SkillPathOrigin::Unavailable,
+            ctx,
+        )
+        .unwrap_or_else(|e| panic!("applying the client action should succeed: {e:?}"));
+}
+
+/// Drives a conversation through the client actions `chat_stream.rs` emits for an LRC tag-in
+/// (server root, then a synthetic `Tool::Subagent` call on the root, then `CreateTask` for the
+/// subtask) and returns the subtask's id. `metadata` picks the subagent kind.
+fn tag_in_subtask_via_client_actions(
+    history_model: &mut BlocklistAIHistoryModel,
+    conversation_id: AIConversationId,
+    terminal_view_id: EntityId,
+    metadata: api::message::tool_call::subagent::Metadata,
+    ctx: &mut warpui::ModelContext<BlocklistAIHistoryModel>,
+) -> crate::ai::agent::task::TaskId {
+    use crate::test_util::ai_agent_tasks::{
+        create_api_subtask, create_api_task, create_subagent_tool_call_message,
+    };
+
+    let root_id = "tag-in-root";
+    let subtask_id = "tag-in-subtask";
+    let stream_id = ResponseStreamId::new_for_test();
+    prime_request_on_root_task(
+        history_model,
+        conversation_id,
+        &stream_id,
+        terminal_view_id,
+        "what is this command doing?",
+        ctx,
+    );
+    // The stream's `StreamInit` comes first in production, and initializes the exchange output
+    // the later messages are appended to.
+    history_model.initialize_output_for_response_stream(
+        &stream_id,
+        conversation_id,
+        terminal_view_id,
+        api::response_event::StreamInit {
+            request_id: String::new(),
+            conversation_id: String::new(),
+            run_id: String::new(),
+        },
+        ctx,
+    );
+    upgrade_optimistic_root_via_create_task(
+        history_model,
+        conversation_id,
+        &stream_id,
+        terminal_view_id,
+        create_api_task(root_id, vec![]),
+        ctx,
+    );
+    apply_client_action_for_test(
+        history_model,
+        conversation_id,
+        &stream_id,
+        terminal_view_id,
+        api::client_action::Action::AddMessagesToTask(api::client_action::AddMessagesToTask {
+            task_id: root_id.to_string(),
+            messages: vec![create_subagent_tool_call_message(
+                "virtual-subagent-call",
+                root_id,
+                subtask_id,
+                Some(metadata),
+            )],
+        }),
+        ctx,
+    );
+    apply_client_action_for_test(
+        history_model,
+        conversation_id,
+        &stream_id,
+        terminal_view_id,
+        api::client_action::Action::CreateTask(api::client_action::CreateTask {
+            task: Some(create_api_subtask(subtask_id, root_id, vec![])),
+        }),
+        ctx,
+    );
+    crate::ai::agent::task::TaskId::new(subtask_id.to_string())
+}
+
+// The BYOP tag-in path creates a CLI subagent with a synthetic subagent call on the root task.
+// Every request in this fork is BYOP, so nothing ever writes the ToolCallResult that would
+// finish it upstream; before `finish_cli_subagent_task_for_completed_block` covered it,
+// `has_active_subagent()` stayed true after the command ended and every prompt queued later in
+// the conversation was stuck -- the same defect the snapshot-upgrade path had.
+#[test]
+fn a_tag_in_cli_subagent_stops_counting_as_active_once_its_block_completes() {
+    App::test((), |mut app| async move {
+        // `prime_request_on_root_task` persists the conversation, which reads settings and the
+        // global resource handles.
+        initialize_settings_for_tests(&mut app);
+        let global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        history_model.update(&mut app, |history_model, ctx| {
+            let conversation_id =
+                history_model.start_new_conversation(terminal_view_id, false, false, ctx);
+            let subtask_id = tag_in_subtask_via_client_actions(
+                history_model,
+                conversation_id,
+                terminal_view_id,
+                api::message::tool_call::subagent::Metadata::Cli(
+                    api::message::tool_call::subagent::CliSubagent {
+                        command_id: "tagged-in-block".to_string(),
+                    },
+                ),
+                ctx,
+            );
+
+            let conversation = history_model.conversation_mut(&conversation_id).unwrap();
+            assert_eq!(
+                conversation
+                    .get_task(&subtask_id)
+                    .and_then(|task| task.cli_subagent_block_id()),
+                Some(crate::terminal::model::block::BlockId::from(
+                    "tagged-in-block".to_string()
+                )),
+                "precondition: the tag-in subtask is a CLI subagent bound to its block"
+            );
+            assert!(
+                conversation.has_active_subagent(),
+                "precondition: the tag-in subagent is active while its command runs"
+            );
+
+            assert!(conversation.finish_cli_subagent_task_for_completed_block(&subtask_id));
+            assert!(
+                !conversation.has_active_subagent(),
+                "a tag-in subagent whose block completed must not keep the conversation's \
+                 subagent active"
+            );
+            assert!(matches!(
+                conversation.is_subagent_task_finished(&subtask_id),
+                Ok(true)
+            ));
+            assert!(
+                !conversation.finish_cli_subagent_task_for_completed_block(&subtask_id),
+                "finishing is idempotent and a second call reports nothing left to do"
+            );
+        });
+    });
+}
+
+// A tag-in whose `CreateTask` never arrived leaves only the optimistic subtask, which counts
+// through `optimistic_cli_subagent_subtask_id` alone. Its block completing must clear that too.
+#[test]
+fn an_optimistic_cli_subagent_stops_counting_as_active_once_its_block_completes() {
+    App::test((), |mut app| async move {
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        history_model.update(&mut app, |history_model, ctx| {
+            let conversation_id =
+                history_model.start_new_conversation(terminal_view_id, false, false, ctx);
+            let task_id = history_model
+                .create_cli_subagent_task_for_conversation(
+                    crate::terminal::model::block::BlockId::from("pre-empted-block".to_string()),
+                    conversation_id,
+                    terminal_view_id,
+                    ctx,
+                )
+                .unwrap();
+
+            let conversation = history_model.conversation_mut(&conversation_id).unwrap();
+            assert!(conversation.has_active_subagent());
+            assert!(conversation.finish_cli_subagent_task_for_completed_block(&task_id));
+            assert!(!conversation.has_active_subagent());
+        });
+    });
+}
+
+// Only CLI subagents are bound to a block. Any other subagent keeps waiting for its own result.
+#[test]
+fn block_completion_does_not_finish_a_non_cli_subagent() {
+    App::test((), |mut app| async move {
+        // `prime_request_on_root_task` persists the conversation, which reads settings and the
+        // global resource handles.
+        initialize_settings_for_tests(&mut app);
+        let global_resource_handles = GlobalResourceHandles::mock(&mut app);
+        app.add_singleton_model(|_| GlobalResourceHandlesProvider::new(global_resource_handles));
+        let terminal_view_id = EntityId::new();
+        let history_model = app.add_singleton_model(|_| BlocklistAIHistoryModel::new_for_test());
+        history_model.update(&mut app, |history_model, ctx| {
+            let conversation_id =
+                history_model.start_new_conversation(terminal_view_id, false, false, ctx);
+            let subtask_id = tag_in_subtask_via_client_actions(
+                history_model,
+                conversation_id,
+                terminal_view_id,
+                api::message::tool_call::subagent::Metadata::Research(Default::default()),
+                ctx,
+            );
+
+            let conversation = history_model.conversation_mut(&conversation_id).unwrap();
+            assert!(conversation.has_active_subagent());
+            assert!(!conversation.finish_cli_subagent_task_for_completed_block(&subtask_id));
+            assert!(
+                conversation.has_active_subagent(),
+                "a non-CLI subagent is not finished by a block completing"
+            );
+        });
+    });
+}
