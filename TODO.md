@@ -11231,6 +11231,17 @@ claim, which was wrong by four.
       finished when the block completed), the prompt queued behind `sleep 15`
       was sent exactly once, 15 s after queueing -- at the turn end. The fresh
       conversation control also sent exactly once.
+      **Tag-in variant fixed 2026-09-26.** The note above placed the remaining
+      hole in `chat_stream.rs`; it is actually in the finish bookkeeping. The tag-in
+      subtask is created from a synthetic `Tool::Subagent` call on the root task,
+      and every request in this fork is BYOP, so no ToolCallResult ever finishes
+      it. `finish_cli_subagent_task_for_completed_block` now finishes any CLI
+      subagent (silent, tag-in, or still-optimistic) when its block completes, and
+      a restored conversation records its CLI subagents as finished. Reproduced
+      live on v0.1.6 (after tagging in to `top`, a prompt queued behind `sleep 15`
+      was never sent) and verified on the fixed build (sent once, at the turn
+      end). Known residual: a `CreateTask` that lands only after the block
+      completed binds a fresh subtask to the finished block (pre-existing race).
 
 - [ ] **The shell lockup: an unanswered completions handshake wedges the pane
       permanently.** Root-caused 2026-09-20. This is the "shell just locked up"

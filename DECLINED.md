@@ -661,3 +661,16 @@ upstream's behavior is actually a defect rather than a preference.
   queue), and otherwise keep upstream's `send_lrc_queued_prompts`. The BYOP
   silent-subtask fix that makes this reachable (`finish_byop_silent_cli_subtask`)
   is fork-only code and needs no entry.
+
+- **A restored conversation never counts a CLI subagent as active** (2026-09-26,
+  `app/src/ai/agent/conversation.rs`, restore constructor). **Upstream:** a
+  subagent without a ToolCallResult in its parent task is active, restored or
+  not. **The defect here:** every agent request in this fork is BYOP, so the
+  LRC tag-in's synthetic subagent call never gets a result; a conversation that
+  had ever tagged in came back after a restart with `has_active_subagent()`
+  stuck true, and its queued prompts stuck with it. No command outlives the
+  session that ran it, so no restored CLI subagent can be live. **We do:** seed
+  the finished set with every restored CLI subagent; other subagent kinds keep
+  upstream's rule. The live-session half of the same fix
+  (`finish_cli_subagent_task_for_completed_block`) is fork-only BYOP code and
+  needs no entry.
