@@ -3536,6 +3536,7 @@ impl AIBlock {
                 document.title.clone()
             };
 
+            let will_auto_open = !opened_first;
             let (document_id, created_new) = model_handle.update(ctx, |model, model_ctx| {
                 let (document_id, created_new) = model
                     .get_or_create_streaming_document_for_create_documents(
@@ -3545,6 +3546,7 @@ impl AIBlock {
                         &title,
                         document.content.clone(),
                         file_link_resolution_context.clone(),
+                        will_auto_open,
                         model_ctx,
                     );
                 if !created_new {
@@ -3558,7 +3560,7 @@ impl AIBlock {
                 (document_id, created_new)
             });
 
-            if created_new && !opened_first {
+            if created_new && will_auto_open {
                 ctx.emit(AIBlockEvent::OpenAIDocumentPane {
                     document_id,
                     document_version: AIDocumentVersion::default(),

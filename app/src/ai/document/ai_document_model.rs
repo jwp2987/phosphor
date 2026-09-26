@@ -26,6 +26,7 @@ use crate::{
         model::{FileLinkResolutionContext, NotebooksEditorModel, RichTextEditorModelEvent},
         rich_text_styles,
     },
+    notebooks::file::MarkdownDisplayMode,
     settings::FontSettings,
     terminal::{
         model::session::{active_session::ActiveSession, Session},
@@ -136,6 +137,15 @@ pub enum AIDocumentUpdateSource {
     Restoration,
 }
 
+/// Whether a document's editor lays its content out up front or on first render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutTiming {
+    /// Lay out whenever the content changes.
+    Eager,
+    /// Defer layout to the first render, so content that is never opened is never font-shaped.
+    Lazy,
+}
+
 #[derive(Debug, Clone)]
 pub struct AIDocumentModel {
     documents: HashMap<AIDocumentId, AIDocument>,
@@ -215,6 +225,7 @@ impl AIDocumentModel {
             conversation_id,
             file_link_resolution_context,
             Local::now(),
+            LayoutTiming::Eager,
             ctx,
         );
         id
@@ -243,6 +254,9 @@ impl AIDocumentModel {
             conversation_id,
             file_link_resolution_context,
             Local::now(),
+            // Agent-context hydration does not open a document view, so skip font shaping until
+            // a view actually renders it.
+            LayoutTiming::Lazy,
             ctx,
         );
     }
@@ -256,9 +270,11 @@ impl AIDocumentModel {
         conversation_id: AIConversationId,
         file_link_resolution_context: Option<FileLinkResolutionContext>,
         created_at: DateTime<Local>,
+        layout_timing: LayoutTiming,
         ctx: &mut ModelContext<Self>,
     ) {
-        let editor = Self::create_editor_model(content, file_link_resolution_context, ctx);
+        let editor =
+            Self::create_editor_model(content, file_link_resolution_context, layout_timing, ctx);
 
         // Subscribe to editor content changes
         ctx.subscribe_to_model(&editor, move |me, event, ctx| {
@@ -296,6 +312,8 @@ impl AIDocumentModel {
     ///
     /// This is keyed by (conversation_id, action_id, document_index) so that streaming updates
     /// for the same tool call map to the same document.
+    ///
+    /// `will_auto_open` is true when the caller is about to open this document's pane.
     pub fn get_or_create_streaming_document_for_create_documents(
         &mut self,
         conversation_id: AIConversationId,
@@ -304,6 +322,7 @@ impl AIDocumentModel {
         title: impl Into<String>,
         initial_content: impl Into<String>,
         file_link_resolution_context: Option<FileLinkResolutionContext>,
+        will_auto_open: bool,
         ctx: &mut ModelContext<Self>,
     ) -> (AIDocumentId, bool) {
         let key = (conversation_id, action_id.clone(), document_index);
@@ -320,6 +339,12 @@ impl AIDocumentModel {
             conversation_id,
             file_link_resolution_context,
             Local::now(),
+            // The caller auto-opens only the first newly created streaming document.
+            if will_auto_open {
+                LayoutTiming::Eager
+            } else {
+                LayoutTiming::Lazy
+            },
             ctx,
         );
         self.streaming_create_documents.insert(key, id);
@@ -569,6 +594,8 @@ impl AIDocumentModel {
                 AIConversationId::new(),
                 None,
                 Local::now(),
+                // Restored plans are often never opened; skip font shaping until first display.
+                LayoutTiming::Lazy,
                 ctx,
             );
             return;
@@ -623,6 +650,7 @@ impl AIDocumentModel {
     fn create_editor_model(
         content: impl Into<String>,
         file_link_resolution_context: Option<FileLinkResolutionContext>,
+        layout_timing: LayoutTiming,
         ctx: &mut ModelContext<Self>,
     ) -> ModelHandle<NotebooksEditorModel> {
         ctx.add_model(|ctx| {
@@ -632,7 +660,11 @@ impl AIDocumentModel {
             // Use the same rich text styles as notebooks for consistency
             let styles = rich_text_styles(appearance, font_settings);
 
-            let mut model = NotebooksEditorModel::new_unbound(styles, ctx);
+            let mut model = match layout_timing {
+                LayoutTiming::Eager => NotebooksEditorModel::new_unbound(styles, ctx),
+                LayoutTiming::Lazy => NotebooksEditorModel::new_unbound_lazy(styles, ctx),
+            };
+            model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
             model.set_file_link_resolution_context(file_link_resolution_context);
 
             let content = content.into();
@@ -659,9 +691,11 @@ impl AIDocumentModel {
             .as_ref(ctx)
             .file_link_resolution_context()
             .cloned();
+        // Archived revisions are reachable only through version history, and are rarely opened.
         let editor = Self::create_editor_model(
             doc.editor.as_ref(ctx).markdown_unescaped(ctx),
             file_link_resolution_context,
+            LayoutTiming::Lazy,
             ctx,
         );
 
@@ -729,6 +763,8 @@ impl AIDocumentModel {
             conversation_id,
             None,
             created_at,
+            // Conversation restore replays every revision, including ones never opened.
+            LayoutTiming::Lazy,
             ctx,
         );
 
