@@ -66,7 +66,8 @@ use crate::{
     CurrentRenderWindowGuard, Effect, Element, Entity, EntityId, Event, GetSingletonModelHandle,
     ModelAsRef, ModelContext, ModelHandle, NextNewWindowsHasThisWindowsBoundsUponClose, Presenter,
     ReadModel, ReadView, SingletonEntity, SpawnedFuture, TaskId, TypedActionView, UpdateModel,
-    UpdateView, View, ViewAsRef, ViewContext, ViewHandle, WindowId, WindowInvalidation,
+    UpdateView, View, ViewAsRef, ViewContext, ViewHandle, ViewUpdateError, WindowId,
+    WindowInvalidation,
 };
 
 use super::{
@@ -501,6 +502,18 @@ impl UpdateView for App {
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
         self.as_mut().update_view(handle, update)
+    }
+
+    fn try_update_view<T, F, S>(
+        &mut self,
+        handle: &ViewHandle<T>,
+        update: F,
+    ) -> Result<S, ViewUpdateError>
+    where
+        T: Entity,
+        F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
+    {
+        self.as_mut().try_update_view(handle, update)
     }
 }
 
@@ -3853,6 +3866,11 @@ impl AppContext {
             .handled
     }
 
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn simulate_window_closed(&mut self, window_id: WindowId) {
+        let _ = self.handle_window_closed(window_id);
+    }
+
     fn handle_window_event(
         &mut self,
         mut event: Event,
@@ -5177,7 +5195,22 @@ impl UpdateView for AppContext {
         T: Entity,
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
-        self.pending_flushes += 1;
+        match self.try_update_view(handle, update) {
+            Ok(result) => result,
+            Err(ViewUpdateError::WindowClosed) => panic!("Window does not exist"),
+            Err(ViewUpdateError::CircularUpdate) => panic!("Circular view update"),
+        }
+    }
+
+    fn try_update_view<T, F, S>(
+        &mut self,
+        handle: &ViewHandle<T>,
+        update: F,
+    ) -> Result<S, ViewUpdateError>
+    where
+        T: Entity,
+        F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
+    {
         let window_id = handle.window_id(self);
         let view_id = handle.id();
 
@@ -5190,10 +5223,9 @@ impl UpdateView for AppContext {
         #[cfg(feature = "tui")]
         let mut tui_view: Option<Box<dyn crate::core::view::AnyTuiView>> = None;
         {
-            let window = self
-                .windows
-                .get_mut(&window_id)
-                .unwrap_or_else(|| panic!("Window does not exist"));
+            let Some(window) = self.windows.get_mut(&window_id) else {
+                return Err(ViewUpdateError::WindowClosed);
+            };
             gui_view = window.views.remove(&view_id);
             #[cfg(feature = "tui")]
             if gui_view.is_none() {
@@ -5205,8 +5237,11 @@ impl UpdateView for AppContext {
         #[cfg(not(feature = "tui"))]
         let is_tui = false;
         if gui_view.is_none() && !is_tui {
-            panic!("Circular view update");
+            return Err(ViewUpdateError::CircularUpdate);
         }
+        // Counted only once the view is checked out: an early `Err` above must not leave a
+        // pending flush that nothing will ever balance.
+        self.pending_flushes += 1;
 
         let mut ctx = ViewContext::new(self, window_id, view_id);
         let any: &mut dyn std::any::Any = if let Some(view) = gui_view.as_mut() {
@@ -5243,7 +5278,7 @@ impl UpdateView for AppContext {
                 .insert(view_id);
         }
         self.flush_effects();
-        result
+        Ok(result)
     }
 }
 

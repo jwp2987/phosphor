@@ -31,7 +31,9 @@ use crate::{
 use crate::{GetSingletonModelHandle, ReadModel};
 
 use super::{
-    handle::{AnyViewHandle, ReadView, UpdateView, ViewAsRef, ViewHandle, WeakViewHandle},
+    handle::{
+        AnyViewHandle, ReadView, UpdateView, ViewAsRef, ViewHandle, ViewUpdateError, WeakViewHandle,
+    },
     TypedActionView, View,
 };
 
@@ -879,6 +881,18 @@ impl<V: Entity> UpdateView for ViewContext<'_, V> {
         F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
     {
         self.app.update_view(handle, update)
+    }
+
+    fn try_update_view<T, F, S>(
+        &mut self,
+        handle: &ViewHandle<T>,
+        update: F,
+    ) -> Result<S, ViewUpdateError>
+    where
+        T: Entity,
+        F: FnOnce(&mut T, &mut ViewContext<T>) -> S,
+    {
+        self.app.try_update_view(handle, update)
     }
 }
 
