@@ -508,32 +508,39 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
           WARP_INPUT_REPORTING_SUPPORTED=$(warp_input_reporting_supported)
         fi
 
-        # If we haven't already, cache information about supported features.
-        if [[ -z $WARP_PS1_EXPANSION_SUPPORTED ]]; then
-          WARP_PS1_EXPANSION_SUPPORTED=$(warp_ps1_expanding_supported)
-        fi
-
-        if [[ $WARP_PS1_EXPANSION_SUPPORTED  == "1" ]]; then
-          # When evaluating the PS1, we want to ensure that it's aware of the last exit code.
-          # Since we captured it already and executed multiple other commands, the actual
-          # last exit code has changed. So before the evaluation, we want to trick the shell
-          # into returning the correct value for the $? that may be in PS1
-          exit_code_hack() {
-            return $1
-          }
-          exit_code_hack $exit_code
-          deref_ps1=${WARP_PS1@P}
+        local honor_ps1
+        local deref_ps1=""
+        local escaped_ps1=""
+        if [[ "$WARP_HONOR_PS1" == "1" ]]; then
+          honor_ps1="true"
         else
-          # Tricking the shell into rendering the prompt
-          # Note that in more modern versions of bash we could use ${PS1@P} to achieve the same,
-          # but MacOS comes by default with a much older version of bash, and we want to be compatible.
-          deref_ps1=$(echo -e "\n" | PS1="$WARP_PS1" BASH_SILENCE_DEPRECATION_WARNING=1 "$BASH" --norc -i 2>&1 | command -p head -2 | command -p tail -1)
-        fi
+          honor_ps1="false"
 
-        # Escaped PS1 variable
-        local escaped_ps1
-        if [ "$WARP_IN_MSYS2" = false ]; then
-          escaped_ps1=$(warp_escape_ps1 "$(echo "$deref_ps1")")
+          # If we haven't already, cache information about supported features.
+          if [[ -z $WARP_PS1_EXPANSION_SUPPORTED ]]; then
+            WARP_PS1_EXPANSION_SUPPORTED=$(warp_ps1_expanding_supported)
+          fi
+
+          if [[ $WARP_PS1_EXPANSION_SUPPORTED  == "1" ]]; then
+            # When evaluating the PS1, we want to ensure that it's aware of the last exit code.
+            # Since we captured it already and executed multiple other commands, the actual
+            # last exit code has changed. So before the evaluation, we want to trick the shell
+            # into returning the correct value for the $? that may be in PS1
+            exit_code_hack() {
+              return $1
+            }
+            exit_code_hack $exit_code
+            deref_ps1=${WARP_PS1@P}
+          else
+            # Tricking the shell into rendering the prompt
+            # Note that in more modern versions of bash we could use ${PS1@P} to achieve the same,
+            # but MacOS comes by default with a much older version of bash, and we want to be compatible.
+            deref_ps1=$(echo -e "\n" | PS1="$WARP_PS1" BASH_SILENCE_DEPRECATION_WARNING=1 "$BASH" --norc -i 2>&1 | command -p head -2 | command -p tail -1)
+          fi
+
+          if [ "$WARP_IN_MSYS2" = false ]; then
+            escaped_ps1=$(warp_escape_ps1 "$(echo "$deref_ps1")")
+          fi
         fi
 
         # Flush history
@@ -676,15 +683,6 @@ if [ -z "$WARP_BOOTSTRAPPED" ]; then
         # Note WARP_SESSION_ID doesn't need to be escaped since it's a number
         # We also pass the shell's notion of `honor_ps1` to ensure it's synced correctly on the Warp-side for prompt handling.
         # This is passed as a "real boolean" via the JSON payload (string interpolated into JSON string below).
-        local honor_ps1
-        if [[ "$WARP_HONOR_PS1" == "1" ]]; then
-          honor_ps1="true"
-          # The Warp prompt preview can be rendered using the active prompt in this case (which uses prompt markers).
-          escaped_ps1=""
-          deref_ps1=""
-        else
-          honor_ps1="false"
-        fi
         # We send the escaped PS1, if we are in active Warp prompt mode, for prompt preview rendering (note the shell's PS1 is unset in this case).
         if [ "$WARP_IN_MSYS2" = true ]; then
           warp_send_hook_via_kv_pairs_start "Precmd"
@@ -1446,8 +1444,10 @@ esac
           shell_plugins+=("starship")
         fi
 
+        local shell_plugins_list="$(printf '%s\n' "${shell_plugins[@]}")"
+
         if [ "$WARP_IN_MSYS2" = false ]; then
-          local escaped_shell_plugins=$(warp_escape_json "$shell_plugins")
+          local escaped_shell_plugins=$(warp_escape_json "$shell_plugins_list")
           local escaped_path="$(warp_escape_json "$PATH")"
           local escaped_shell_options=$(warp_escape_json "$shell_options")
         fi
@@ -1469,7 +1469,7 @@ esac
           warp_send_hook_kv_pair_escaped "function_names" "$function_names"
           warp_send_hook_kv_pair_escaped "builtins" "$builtins"
           warp_send_hook_kv_pair_escaped "keywords" "$keywords"
-          warp_send_hook_kv_pair "shell_plugins" "$shell_plugins"
+          warp_send_hook_kv_pair_escaped "shell_plugins" "$shell_plugins_list"
           warp_send_hook_kv_pair "shell_version" "$BASH_VERSION"
           warp_send_hook_kv_pair "shell_options" "$shell_options"
           warp_send_hook_kv_pair "rcfiles_start_time" "$rcfiles_start_time"
@@ -1483,7 +1483,7 @@ esac
         else
           local escaped_editor="$(warp_escape_json "$EDITOR")"
           local escaped_shell_path="$(warp_escape_json "$BASH")"
-          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\",  \"home_dir\": \"$HOME\", \"user\":\"$_user\", \"host\":\"$_hostname\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$BASH_VERSION\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$linux_distribution\", \"wsl_name\": \"$WSL_DISTRO_NAME\", \"shell_path\": \"$escaped_shell_path\"}}"
+          local escaped_json="{\"hook\": \"Bootstrapped\", \"value\": {\"histfile\": \"$escaped_histfile\", \"session_id\": $WARP_SESSION_ID, \"shell\": \"bash\",  \"home_dir\": \"$HOME\", \"user\":\"$_user\", \"host\":\"$_hostname\", \"path\": \"$escaped_path\", \"editor\": \"$escaped_editor\", \"env_var_names\": \"$escaped_env_var_names\", \"abbreviations\": \"$escaped_abbrs\", \"aliases\": \"$escaped_aliases\", \"function_names\": \"$escaped_function_names\", \"builtins\": \"$escaped_builtins\", \"keywords\": \"$escaped_keywords\", \"shell_version\": \"$BASH_VERSION\", \"shell_options\": \"$escaped_shell_options\", \"rcfiles_start_time\": \"$rcfiles_start_time\", \"rcfiles_end_time\": \"$rcfiles_end_time\", \"shell_plugins\": \"$escaped_shell_plugins\", \"vi_mode_enabled\": \"$vi_mode_enabled\", \"os_category\": \"$os_category\", \"linux_distribution\": \"$linux_distribution\", \"wsl_name\": \"$WSL_DISTRO_NAME\", \"shell_path\": \"$escaped_shell_path\"}}"
           warp_send_json_message "$escaped_json"
         fi
     }
