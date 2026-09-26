@@ -160,18 +160,32 @@ impl Block {
     /// Hands control to the user with a non-resuming `Stop`. Used by teardown paths (rewind,
     /// stop) where the conversation has been cancelled and must not resume when the command
     /// completes.
+    ///
+    /// An agent-requested command with no control state yet (before its first snapshot --
+    /// the whole life of a `wait_until_completion` command) gets the `Stop` installed too,
+    /// not just rewritten. Leaving it `None` left the teardown with no durable record:
+    /// `is_agent_driving_command` stayed true, so if the process survived the Ctrl-C (a REPL)
+    /// a later password prompt could still take it over with `BlockedOnInput` -- which the
+    /// `None` arm of `take_over_for_user` admits -- and that reason's `should_auto_resume()`
+    /// then resumed the conversation the user had just cancelled once the command completed.
+    /// With `Stop` in place the take-over is refused, as it is for any user-held state.
     pub fn set_user_control_with_stop_reason(&mut self) {
-        if let InteractionMode::Agent(AgentInteractionMetadata {
-            long_running_control_state: Some(ref mut state),
+        let InteractionMode::Agent(AgentInteractionMetadata {
+            requested_command_action_id,
+            long_running_control_state,
             ..
-        }) = self.interaction_mode
-        {
-            *state = LongRunningCommandControlState::User {
-                reason: UserTakeOverReason::Stop {
-                    should_auto_resume: false,
-                },
-            };
+        }) = &mut self.interaction_mode
+        else {
+            return;
+        };
+        if long_running_control_state.is_none() && requested_command_action_id.is_none() {
+            return;
         }
+        *long_running_control_state = Some(LongRunningCommandControlState::User {
+            reason: UserTakeOverReason::Stop {
+                should_auto_resume: false,
+            },
+        });
     }
 
     /// Returns `true` if agent responses should be hidden in the UI.
@@ -350,24 +364,43 @@ impl InteractionMode {
         task_id: &TaskId,
         conversation_id: AIConversationId,
     ) -> Result<Self, UpdateInteractionModeError> {
-        let requested_command_action_id = match self {
-            InteractionMode::User(_) => None,
+        let (requested_command_action_id, existing_control_state) = match self {
+            InteractionMode::User(_) => (None, None),
             InteractionMode::Agent(metadata) => {
                 if metadata.conversation_id != conversation_id {
                     return Err(UpdateInteractionModeError::UnexpectedConversationId);
                 }
-                metadata.requested_command_action_id.clone()
+                (
+                    metadata.requested_command_action_id.clone(),
+                    metadata.long_running_control_state.clone(),
+                )
             }
+        };
+
+        // Spawning the subagent does not imply seizing control, so a hand-over the user
+        // already holds survives it. `CreatedSubtask` is asynchronous and can land *after*
+        // the PTY was handed over: `BlockedOnInput` fires about a second into the block,
+        // which is exactly the window before any control state exists -- that is why
+        // `take_over_for_user` admits it with `long_running_control_state: None`. Stamping
+        // `Agent` over it here erased the hand-over silently, and since `should_auto_resume()`
+        // is `false` for `Agent`, `on_user_block_completed` then never resumed the
+        // conversation: the user answered the password prompt, the command succeeded, and the
+        // agent sat waiting on a result that never arrived until the tab was killed. Because
+        // the take-over is only legal in the pre-`CreatedSubtask` window, that clobber was the
+        // expected continuation of the path rather than a rare interleaving.
+        let long_running_control_state = match existing_control_state {
+            Some(state @ LongRunningCommandControlState::User { .. }) => state,
+            _ => LongRunningCommandControlState::Agent {
+                is_blocked: false,
+                should_hide_responses: false,
+            },
         };
 
         Ok(Self::Agent(AgentInteractionMetadata {
             requested_command_action_id,
             conversation_id,
             subagent_task_id: Some(task_id.clone()),
-            long_running_control_state: Some(LongRunningCommandControlState::Agent {
-                is_blocked: false,
-                should_hide_responses: false,
-            }),
+            long_running_control_state: Some(long_running_control_state),
             has_agent_written_to_block: false,
             should_hide_block: false,
         }))
@@ -436,11 +469,13 @@ impl InteractionMode {
         // starts, so a hand-over can be attempted before a control state is installed, and
         // requiring one would reject exactly what `BlockedOnInput` exists for.
         //
-        // Widening this to *any* reason was tried and reverted. It was the escape hatch for a
-        // warpified agent command that never received a control state at all, but
-        // `AgentInteractionMetadata::new_hidden` now installs one at the source, so the hatch
-        // is unnecessary -- and `terminal_use_tests.rs:413` correctly guards the property it
-        // gave up: a manual take-over should still require the agent to actually hold control.
+        // Widening this to *any* reason was tried and reverted. It was meant as the escape hatch
+        // for a warpified agent command that never receives a control state at all -- and
+        // `AgentInteractionMetadata::new_hidden` still leaves that state `None` (installing one
+        // there was also tried and reverted; see its doc comment) -- but the hatch gave up a
+        // property `blocked_on_input_takes_over_before_the_subagent_has_control` in
+        // `terminal_use_tests.rs` correctly guards: a manual take-over should still require
+        // the agent to actually hold control.
         let is_valid_take_over = match long_running_control_state.as_ref() {
             Some(state) => state.is_agent_in_control(),
             None => reason.is_blocked_on_input() && requested_command_action_id.is_some(),

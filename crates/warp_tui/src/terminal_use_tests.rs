@@ -435,3 +435,136 @@ fn blocked_on_input_takes_over_before_the_subagent_has_control() {
         "the agent gets the command back once the user has answered the prompt"
     );
 }
+
+// The regression the test above could not see. `blocked_on_input_takes_over_before_the_subagent_has_control`
+// stops at the take-over, but the take-over is only legal in the window *before* `CreatedSubtask`
+// installs a control state -- so the subagent landing afterwards is not a rare interleaving, it is
+// the expected continuation of that exact path. `to_agent_monitored` used to rebuild the metadata
+// from scratch with an unconditional `Agent` state, erasing the hand-over with no error and no log.
+// `should_auto_resume()` is `false` for `Agent`, so `on_user_block_completed` then resumed nothing:
+// the user answered the password prompt, `gcloud auth login` succeeded, and the agent waited on a
+// result that never arrived until the tab was killed.
+#[test]
+fn a_late_subagent_does_not_seize_a_command_already_handed_to_the_user() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("gcloud auth login", "Please enter your password:");
+    let conversation_id = AIConversationId::new();
+    let task_id = TaskId::new("late-subagent-task".to_owned());
+    let block_id = {
+        let block = model.block_list_mut().active_block_mut();
+        // The pre-`CreatedSubtask` window: agent-requested, no control state yet.
+        block.set_agent_interaction_mode_for_requested_command(
+            AIAgentActionId::from("requested-command".to_owned()),
+            None,
+            conversation_id,
+        );
+        block
+            .take_over_control_for_user(UserTakeOverReason::BlockedOnInput)
+            .expect("the password-prompt hand-over must succeed");
+        block.id().clone()
+    };
+
+    // `CreatedSubtask` finally fires, after the PTY is already the user's.
+    model
+        .block_list_mut()
+        .active_block_mut()
+        .set_agent_interaction_mode_for_agent_monitored_command(&task_id, conversation_id)
+        .expect("the subagent should still install");
+
+    assert_eq!(
+        model
+            .block_list()
+            .active_block()
+            .long_running_control_state(),
+        Some(&LongRunningCommandControlState::User {
+            reason: UserTakeOverReason::BlockedOnInput
+        }),
+        "spawning the subagent must not take back a hand-over the user is mid-way through"
+    );
+    assert!(
+        inline_process_owns_input(&model),
+        "the user must still be able to type the password after the subagent lands"
+    );
+    assert_eq!(
+        terminal_use_conversation_to_resume(&model, &block_id),
+        Some(conversation_id),
+        "the agent must still get the command back once the prompt is answered"
+    );
+}
+
+// Stop and rewind tear down through `set_user_control_with_stop_reason`, which used to rewrite
+// only a control state that already existed. An agent-requested command has none until its first
+// snapshot -- the whole life of a `wait_until_completion` command -- so stopping it then left no
+// record: the agent still counted as driving it, and if the process survived the Ctrl-C (a REPL)
+// the password-prompt poller could still hand it over with `BlockedOnInput`, whose
+// `should_auto_resume()` resumed the very conversation the user had cancelled once the command
+// completed. The teardown must install its `Stop` even when there was nothing to rewrite.
+#[test]
+fn stopping_a_command_before_the_subagent_has_control_prevents_a_later_auto_resume() {
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("python3", ">>> ");
+    let conversation_id = AIConversationId::new();
+    let block_id = {
+        let block = model.block_list_mut().active_block_mut();
+        block.set_agent_interaction_mode_for_requested_command(
+            AIAgentActionId::from("requested-command".to_owned()),
+            None,
+            conversation_id,
+        );
+        assert!(block.long_running_control_state().is_none());
+        block.set_user_control_with_stop_reason();
+        block.id().clone()
+    };
+
+    let block = model.block_list().active_block();
+    assert_eq!(
+        block.long_running_control_state(),
+        Some(&LongRunningCommandControlState::User {
+            reason: UserTakeOverReason::Stop {
+                should_auto_resume: false
+            }
+        }),
+        "the stop must leave a durable record even with no prior control state"
+    );
+    assert!(
+        !block.is_agent_driving_command(),
+        "the agent no longer drives a command the user stopped"
+    );
+    assert!(
+        inline_process_owns_input(&model),
+        "a process that survived the Ctrl-C belongs to the user"
+    );
+
+    // The surviving REPL later turns echo off (e.g. `getpass()`).
+    assert!(
+        model
+            .block_list_mut()
+            .active_block_mut()
+            .take_over_control_for_user(UserTakeOverReason::BlockedOnInput)
+            .is_err(),
+        "a password prompt must not re-take a command the user has already stopped"
+    );
+    assert_eq!(
+        terminal_use_conversation_to_resume(&model, &block_id),
+        None,
+        "completing a stopped command must not resume the cancelled conversation"
+    );
+
+    // A block the agent neither requested nor controls has nothing to tear down.
+    let mut model = TerminalModel::mock(None, None);
+    model.simulate_long_running_block("python3", ">>> ");
+    let block = model.block_list_mut().active_block_mut();
+    block.set_agent_interaction_mode(AgentInteractionMetadata::new(
+        None,
+        conversation_id,
+        None,
+        None,
+        false,
+        false,
+    ));
+    block.set_user_control_with_stop_reason();
+    assert!(
+        block.long_running_control_state().is_none(),
+        "stop must not invent a control state for a block the agent never requested"
+    );
+}
