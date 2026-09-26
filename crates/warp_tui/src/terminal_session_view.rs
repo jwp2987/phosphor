@@ -5190,10 +5190,20 @@ impl TuiView for TuiTerminalSessionView {
                 .set
                 .insert(SESSION_CAN_DETACH_AGENT_FROM_RUNNING_COMMAND_FLAG);
         }
-        if self.active_agent_blocked_target(ctx).is_some() {
-            context
-                .set
-                .insert(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG);
+        if let Some(target) = self.active_agent_blocked_target(ctx) {
+            // Arm ctrl-o only for an action a plain accept can confirm. A blocked
+            // `ask_user_question` is confirmed by its answer, which only the question UI collects;
+            // accepting it here would run it with no answer and hang the turn (the view's
+            // `execute_blocked_action` refuses it too, so this keeps the key from being a silent
+            // no-op). Reject stays available either way.
+            let can_allow = self
+                .blocked_action_for_target(&target, ctx)
+                .is_none_or(|blocked| blocked.action.can_be_accepted_without_its_own_ui());
+            if can_allow {
+                context
+                    .set
+                    .insert(SESSION_CAN_ALLOW_BLOCKED_LRC_ACTION_FLAG);
+            }
             context
                 .set
                 .insert(SESSION_CAN_REJECT_BLOCKED_LRC_ACTION_FLAG);

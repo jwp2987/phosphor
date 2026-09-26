@@ -271,17 +271,40 @@ impl ActionInitiator {
     ///   manufacture the very `RequestComputerUseResult::Approved` record the gate reads, so
     ///   excluding only `UseComputer` would leave a one-hop laundering path.
     ///
-    /// The cost is bounded: on this path a blocked computer-use action stays pending and the
-    /// turn waits, rather than the machine being driven with no prompt. Neither action is a
-    /// shell command, so neither is the thing holding the alt screen.
+    /// Nor for any action `AIAgentActionType::can_be_accepted_without_its_own_ui` rejects --
+    /// today `AskUserQuestion` -- for a different reason: its confirmation is not an approval
+    /// at all, it IS the user's answer. The same predicate gates every plain accept (the AI
+    /// block's Enter via `execute_next_action_for_user`, the CLI subagent views), so the
+    /// override and the keypresses cannot drift apart. The inline question view collects the answers,
+    /// writes them to `AskUserQuestionExecutor`'s channel, and only then executes the
+    /// action, whose execution is a bare `recv()` on that channel. Auto-accepting it
+    /// executes with nothing on the channel, and the view does not render for a running
+    /// action, so the question is never shown and the turn hangs forever. Worse, the
+    /// orphaned `recv()` shares the channel with every later question in the view and can
+    /// swallow the next properly answered one. Nothing can stand in for an answer except
+    /// the user giving it.
+    ///
+    /// The cost is bounded: on this path a blocked action stays pending and the turn waits,
+    /// rather than the machine being driven with no prompt or a question being answered by
+    /// no one. None of these actions is a shell command, so none is the thing holding the
+    /// alt screen.
+    ///
+    /// Checked and deliberately NOT excluded, because their execution completes without
+    /// input from the Blocked UI: `SuggestNewConversation` (the executor pre-sends `Reject`
+    /// to its own channel), `SuggestPrompt` (always auto-executes; the chip is driven by an
+    /// executor event), `RequestFileEdits` (execution itself calls `accept_and_save` on the
+    /// diff view), and `TransferShellCommandControlToUser` (resolves on hand-back or when the
+    /// block finishes, neither of which is the confirmation UI).
     pub(super) fn can_stand_in_for_confirmation(self, action: &AIAgentActionType) -> bool {
         match self {
             Self::Agent => false,
             Self::User => true,
-            Self::AutoAcceptedTagIn => !matches!(
-                action,
-                AIAgentActionType::UseComputer(_) | AIAgentActionType::RequestComputerUse(_)
-            ),
+            Self::AutoAcceptedTagIn => {
+                !matches!(
+                    action,
+                    AIAgentActionType::UseComputer(_) | AIAgentActionType::RequestComputerUse(_)
+                ) && action.can_be_accepted_without_its_own_ui()
+            }
         }
     }
 }
@@ -1398,6 +1421,14 @@ mod initiator_tests {
         })
     }
 
+    /// The questions are irrelevant to the verdict: what matters is that the action's
+    /// "confirmation" is the user's answer, whatever it asks.
+    fn ask_user_question() -> AIAgentActionType {
+        AIAgentActionType::AskUserQuestion {
+            questions: Vec::new(),
+        }
+    }
+
     fn shell_command() -> AIAgentActionType {
         AIAgentActionType::RequestCommandOutput {
             command: "free -h".to_owned(),
@@ -1456,6 +1487,27 @@ mod initiator_tests {
                 .can_stand_in_for_confirmation(&request_computer_use()),
             "auto-accepting the approval prompt would forge the approval record itself"
         );
+    }
+
+    /// Auto-accepting `ask_user_question` executes a bare `recv()` on the executor's answer
+    /// channel with nothing written to it, and the question view does not render for a
+    /// running action, so the question is never shown and the turn hangs forever. The
+    /// answer IS the confirmation; the override must leave the action blocked so the view
+    /// can collect it.
+    ///
+    /// Red without the `AskUserQuestion` arm in `can_stand_in_for_confirmation`: the
+    /// override then answers `true` for it, as it does for every non-computer-use action.
+    #[test]
+    fn the_tag_in_override_cannot_answer_a_question() {
+        assert!(
+            !ActionInitiator::AutoAcceptedTagIn.can_stand_in_for_confirmation(&ask_user_question()),
+            "auto-accepting a question runs it with no answer on the channel and hangs the turn"
+        );
+        assert!(
+            ActionInitiator::User.can_stand_in_for_confirmation(&ask_user_question()),
+            "the question view submits the answers and then executes as the user"
+        );
+        assert!(!ActionInitiator::Agent.can_stand_in_for_confirmation(&ask_user_question()));
     }
 
     /// Both out-of-band initiators dequeue one specific action rather than draining the queue,

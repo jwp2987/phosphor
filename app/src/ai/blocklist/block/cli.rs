@@ -987,6 +987,28 @@ impl CLISubagentView {
         is_autoexecuted: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Accept (enter) and auto-approve are bound for ANY blocked action, because the
+        // keymap context only knows that the agent is blocked, not on what. Refuse here for an
+        // action whose confirmation a keypress cannot give: see
+        // `can_accept_blocked_action_from_cli_subagent`. Checked against the queue front
+        // because that is what `execute_next_action_for_user` runs. The action stays pending
+        // and can still be rejected from this view or answered once the user leaves the alt
+        // screen.
+        //
+        // `execute_next_action_for_user` refuses the same action itself, so this is not what
+        // keeps the question from running. It is kept because the rest of this handler assumes
+        // something was accepted: without it, auto-approve would still switch on the
+        // conversation's autoexecute override, and the speedbump and the
+        // `CLISubagentActionExecuted` telemetry would record an accept that never happened.
+        if self
+            .action_model
+            .as_ref(ctx)
+            .get_pending_actions_for_conversation(&self.conversation_id)
+            .next()
+            .is_some_and(|action| !can_accept_blocked_action_from_cli_subagent(&action.action))
+        {
+            return;
+        }
         self.execute_pending_action(ctx);
         if is_autoexecuted {
             self.enable_autoexecute_override(ctx);
@@ -2629,6 +2651,19 @@ fn render_transfer_control_reason(reason: &str, app: &AppContext) -> Box<dyn Ele
         .finish()
 }
 
+/// Whether accepting from the CLI subagent view (enter, the Allow menu, or auto-approve) may
+/// execute this blocked action as `ActionInitiator::User`.
+///
+/// Not for `AskUserQuestion`: its confirmation is the user's answer, which the inline question
+/// view writes to `AskUserQuestionExecutor`'s channel before executing the action, and whose
+/// execution is a bare `recv()` on that channel. This view renders no question and collects no
+/// answer, so executing it here would `recv()` on an empty channel: the turn hangs forever and
+/// the orphaned `recv()` can swallow the next properly answered question. Pressing enter is not
+/// an answer.
+fn can_accept_blocked_action_from_cli_subagent(action: &AIAgentActionType) -> bool {
+    action.can_be_accepted_without_its_own_ui()
+}
+
 fn get_blocked_action_header(action: AIAgentActionType) -> Option<String> {
     match action {
         AIAgentActionType::WriteToLongRunningShellCommand { .. } => {
@@ -2891,6 +2926,25 @@ mod tests {
         AIAgentTextSection::PlainText {
             text: AgentOutputText::from(text.to_string()),
         }
+    }
+
+    #[test]
+    fn cli_subagent_accept_refuses_ask_user_question() {
+        // Enter in the CLI subagent view reaches `handle_execute_blocked_action` for any
+        // blocked action. Before this guard it executed a blocked `AskUserQuestion` as `User`,
+        // which runs `recv()` on the empty answer channel and hangs the turn.
+        assert!(!can_accept_blocked_action_from_cli_subagent(
+            &AIAgentActionType::AskUserQuestion { questions: vec![] }
+        ));
+    }
+
+    #[test]
+    fn cli_subagent_accept_still_allows_actions_it_renders() {
+        assert!(can_accept_blocked_action_from_cli_subagent(
+            &AIAgentActionType::TransferShellCommandControlToUser {
+                reason: String::new(),
+            }
+        ));
     }
 
     #[test]

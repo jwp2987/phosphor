@@ -194,6 +194,18 @@ pub enum StartAgentExecutionMode {
 }
 
 impl AIAgentActionType {
+    /// Whether a blocked instance of this action may be approved by a plain accept (Enter, an
+    /// Allow button, ctrl-o) rather than through its own UI.
+    ///
+    /// `AskUserQuestion` may not: its "confirmation" IS the user's answer, which only the
+    /// question UI collects. Executing it with no answer runs its executor's `recv()` on an
+    /// empty answer channel shared by every question in the view, so the turn waits forever --
+    /// and the orphaned receiver can later swallow a properly answered question. Rejecting it is
+    /// still fine; only accepting is refused.
+    pub fn can_be_accepted_without_its_own_ui(&self) -> bool {
+        !matches!(self, Self::AskUserQuestion { .. })
+    }
+
     pub fn is_request_command_output(&self) -> bool {
         matches!(self, Self::RequestCommandOutput { .. })
     }
@@ -764,6 +776,65 @@ impl FileEdit {
             Self::Edit(diff) => diff.file().map(|s| s.as_str()),
             Self::Create { file, .. } => file.as_deref(),
             Self::Delete { file } => file.as_deref(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod accept_without_own_ui_tests {
+    use super::*;
+
+    /// A blocked `ask_user_question` is confirmed by its answer, which only the question UI
+    /// collects. Every plain accept (the AI block's Enter, the CLI subagent views' accept and
+    /// ctrl-o, the tag-in override) is gated on this predicate; if it said `true` here they
+    /// would all run the question with an empty answer channel and hang the turn. The number
+    /// of questions is irrelevant: a BYOP model can emit an empty list, and that must not
+    /// open a hole.
+    #[test]
+    fn a_question_cannot_be_accepted_without_its_own_ui() {
+        let question = AskUserQuestionItem {
+            question_id: "q1".to_owned(),
+            question: "Which branch?".to_owned(),
+            question_type: AskUserQuestionType::MultipleChoice {
+                is_multiselect: false,
+                options: vec![AskUserQuestionOption {
+                    label: "main".to_owned(),
+                    recommended: true,
+                }],
+                supports_other: true,
+            },
+        };
+        assert!(
+            !AIAgentActionType::AskUserQuestion {
+                questions: vec![question],
+            }
+            .can_be_accepted_without_its_own_ui()
+        );
+        assert!(
+            !AIAgentActionType::AskUserQuestion { questions: vec![] }
+                .can_be_accepted_without_its_own_ui()
+        );
+    }
+
+    /// The predicate is narrow: actions whose confirmation is a plain approval stay
+    /// acceptable, so the gate does not strand them.
+    #[test]
+    fn ordinary_actions_can_be_accepted_without_their_own_ui() {
+        for action in [
+            AIAgentActionType::TransferShellCommandControlToUser {
+                reason: "needs a password".to_owned(),
+            },
+            AIAgentActionType::RequestCommandOutput {
+                command: "free -h".to_owned(),
+                is_read_only: None,
+                is_risky: None,
+                wait_until_completion: true,
+                uses_pager: None,
+                rationale: None,
+                citations: vec![],
+            },
+        ] {
+            assert!(action.can_be_accepted_without_its_own_ui(), "{action:?}");
         }
     }
 }

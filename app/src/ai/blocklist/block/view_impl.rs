@@ -1293,11 +1293,20 @@ impl View for AIBlock {
     fn keymap_context(&self, app: &AppContext) -> warpui::keymap::Context {
         let mut context = Self::default_keymap_context();
 
+        // `HAS_PENDING_ACTION` arms only the Enter bindings for `ExecuteNextPendingAction`, a plain
+        // accept. A pending `ask_user_question` cannot be confirmed that way -- its confirmation is
+        // the answer, collected by the question view -- and `execute_next_action_for_user` refuses
+        // it, so the binding would only ever be a no-op there; this simply does not arm it. (The
+        // question view handles its own Enter when focused, and `focus_subview_if_necessary`
+        // moves focus to it while it is editing.)
         if self
             .action_model
             .as_ref(app)
             .get_pending_action(app)
-            .is_some_and(|action| self.requested_action_ids.contains(&action.id))
+            .is_some_and(|action| {
+                self.requested_action_ids.contains(&action.id)
+                    && action.action.can_be_accepted_without_its_own_ui()
+            })
         {
             context.set.insert(HAS_PENDING_ACTION);
         }

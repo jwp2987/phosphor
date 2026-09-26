@@ -41,10 +41,14 @@ pub(super) const ALLOW_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-o";
 /// and friends above for what's already taken).
 pub(super) const REJECT_BLOCKED_ACTION_KEY_BINDING: &str = "ctrl-r";
 
+/// `can_allow_blocked_action` is whether the blocked action (if any) may be approved by a
+/// plain accept -- see [`can_allow_blocked_action`]. When it may not, the hint does not offer
+/// `ctrl-o` (which would do nothing) and says where the action is actually resolved.
 fn terminal_use_status_text(
     control_state: &LongRunningCommandControlState,
     command_finished: bool,
     output_streaming: bool,
+    can_allow_blocked_action: bool,
 ) -> String {
     if command_finished {
         return "Command finished".to_owned();
@@ -53,6 +57,12 @@ fn terminal_use_status_text(
         is_blocked: true, ..
     } = control_state
     {
+        if !can_allow_blocked_action {
+            return format!(
+                "Agent is waiting for your answer in the conversation \u{b7} \
+                 {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject"
+            );
+        }
         return format!(
             "Agent needs your input · {ALLOW_BLOCKED_ACTION_KEY_BINDING} to allow · \
              {REJECT_BLOCKED_ACTION_KEY_BINDING} to reject"
@@ -204,16 +214,34 @@ fn blocked_action_presentation(action: &AIAgentActionType) -> BlockedActionPrese
     BlockedActionPresentation { summary, detail }
 }
 
+/// Whether the view offers [Allow] / `ctrl-o` for `blocked_action`. `None` (the blocked
+/// action is not known yet) keeps the offer, as before.
+///
+/// Not for an action that `AIAgentActionType::can_be_accepted_without_its_own_ui` rejects
+/// (a blocked `ask_user_question`): [`execute_blocked_action`] refuses it, so offering Allow
+/// would be a button that does nothing. Reject stays offered.
+fn can_allow_blocked_action(blocked_action: Option<&AIAgentActionType>) -> bool {
+    blocked_action.is_none_or(AIAgentActionType::can_be_accepted_without_its_own_ui)
+}
+
 /// Executes exactly the displayed blocked action, rather than whichever
 /// action happens to be first in the conversation's pending queue -- the two
 /// can differ if more than one action is pending, which previously risked
 /// approving a different action than the one the user was shown.
+///
+/// Refuses an action that cannot be accepted without its own UI (see
+/// `AIAgentActionType::can_be_accepted_without_its_own_ui`): ctrl-o or [Allow] on a blocked
+/// `ask_user_question` would run it as the user with no answer and hang the turn forever. The
+/// question stays pending and can still be rejected.
 pub(super) fn execute_blocked_action(
     action_model: &mut BlocklistAIActionModel,
     conversation_id: AIConversationId,
     blocked_action: &AIAgentAction,
     ctx: &mut ModelContext<BlocklistAIActionModel>,
 ) {
+    if !blocked_action.action.can_be_accepted_without_its_own_ui() {
+        return;
+    }
     action_model.execute_action(&blocked_action.id, conversation_id, ctx);
 }
 
@@ -364,13 +392,19 @@ impl TuiCLISubagentView {
             .is_none_or(|block| block.finished())
     }
 
-    fn status_text(&self, target: &CLISubagentTarget, app: &AppContext) -> String {
+    fn status_text(
+        &self,
+        target: &CLISubagentTarget,
+        can_allow_blocked_action: bool,
+        app: &AppContext,
+    ) -> String {
         terminal_use_status_text(
             &target.control_state,
             self.command_finished(),
             self.model
                 .as_ref()
                 .is_some_and(|model| model.status(app).is_streaming()),
+            can_allow_blocked_action,
         )
     }
 
@@ -455,7 +489,14 @@ impl TuiCLISubagentView {
 
     fn render_content(&self, target: &CLISubagentTarget, app: &AppContext) -> Box<dyn TuiElement> {
         let builder = TuiUiBuilder::from_app(app);
-        let status = self.status_text(target, app);
+        let blocked_action = target
+            .control_state
+            .is_agent_blocked()
+            .then(|| self.blocked_action(app))
+            .flatten();
+        let can_allow =
+            can_allow_blocked_action(blocked_action.as_ref().map(|action| &action.action));
+        let status = self.status_text(target, can_allow, app);
         let countdown = self
             .next_check_remaining(target, app)
             .map(format_next_check_remaining)
@@ -475,7 +516,7 @@ impl TuiCLISubagentView {
             );
         }
         if target.control_state.is_agent_blocked() {
-            if let Some(action) = self.blocked_action(app) {
+            if let Some(action) = blocked_action {
                 let presentation = blocked_action_presentation(&action.action);
                 content.add_child(
                     TuiText::new(presentation.summary)
@@ -494,29 +535,29 @@ impl TuiCLISubagentView {
                     );
                 }
             }
-            content.add_child(
-                TuiFlex::row()
-                    .with_spacing(1)
-                    .child(
-                        TuiContainer::new(Self::render_action(
-                            "Allow",
-                            &self.allow_mouse_state,
-                            TuiCLISubagentViewAction::Allow,
-                            app,
-                        ))
-                        .finish(),
-                    )
-                    .child(
-                        TuiContainer::new(Self::render_action(
-                            "Reject",
-                            &self.reject_mouse_state,
-                            TuiCLISubagentViewAction::Reject,
-                            app,
-                        ))
-                        .finish(),
-                    )
+            // [Allow] only when it would do something: see `can_allow_blocked_action`.
+            let mut actions = TuiFlex::row().with_spacing(1);
+            if can_allow {
+                actions.add_child(
+                    TuiContainer::new(Self::render_action(
+                        "Allow",
+                        &self.allow_mouse_state,
+                        TuiCLISubagentViewAction::Allow,
+                        app,
+                    ))
                     .finish(),
+                );
+            }
+            actions.add_child(
+                TuiContainer::new(Self::render_action(
+                    "Reject",
+                    &self.reject_mouse_state,
+                    TuiCLISubagentViewAction::Reject,
+                    app,
+                ))
+                .finish(),
             );
+            content.add_child(actions.finish());
         }
         content.finish()
     }

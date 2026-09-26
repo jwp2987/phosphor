@@ -202,6 +202,72 @@ enum StartedAction {
     Async { phase: RunningActionPhase },
 }
 
+/// What one step of the tag-in auto-accept batch did with its action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AutoAcceptOutcome {
+    /// The action started (sync or async).
+    Started,
+    /// The action did not start and is still pending: it is blocked (an action the tag-in
+    /// override may not stand in for, such as `AskUserQuestion`), or another action is still
+    /// running (the override is out-of-band and runs one action at a time).
+    LeftPending,
+    /// The action did not start because it is no longer pending: an earlier step's drain
+    /// (`try_to_execute_available_actions`, after a sync action) already dequeued it.
+    AlreadyTaken,
+}
+
+/// Runs the tag-in auto-accept over `action_ids` in order, stopping at the first action that
+/// is left pending. Returns how many actions were attempted.
+///
+/// Stop at a pending one: the ordinary drain never runs past a blocked front action, and this
+/// path must not either. If an `ask_user_question` blocks, running the actions queued after it
+/// would act before the user has answered, and a still-running one would make
+/// `start_pending_action_by_id` refuse the answer's own `execute_action` (out-of-band, one at a
+/// time) while the answer sat unread on the executor's channel. Actions left here are picked
+/// up by the ordinary drain once the blocking or running action finishes.
+///
+/// Do NOT stop at one that was already taken. A sync action's drain runs as
+/// `ActionInitiator::Agent`, so it can dequeue and run the next action and then leave a later
+/// one blocked on a confirmation only the override could give. Stopping at the taken action
+/// would strand that later one in the alt screen, where the CLI subagent view renders no
+/// Accept for most action types; continuing reaches it and auto-accepts it.
+fn run_auto_accept_batch<Id>(
+    action_ids: &[Id],
+    mut auto_accept: impl FnMut(&Id) -> AutoAcceptOutcome,
+) -> usize {
+    let mut attempted = 0;
+    for action_id in action_ids {
+        attempted += 1;
+        if auto_accept(action_id) == AutoAcceptOutcome::LeftPending {
+            break;
+        }
+    }
+    attempted
+}
+
+/// The id of the action `BlocklistAIActionModel::execute_next_action_for_user` may run: the
+/// front of the conversation's pending queue, or `None` if the queue is empty or its front
+/// cannot be accepted without its own UI (`AIAgentActionType::can_be_accepted_without_its_own_ui`).
+///
+/// This is the choke point for every accept that does not know what it is accepting (the AI
+/// block's Enter key, the CLI subagent view's accept and auto-approve). Running a blocked
+/// `ask_user_question` from there executes it as the user with no answer written to
+/// `AskUserQuestionExecutor`'s channel: its bare `recv()` waits forever, and the orphaned
+/// receiver, which shares the channel with every later question in the view, can swallow the
+/// next properly answered one. The question UIs write the answer first and then call
+/// `execute_action` by id, which does not come through here.
+///
+/// Returns `None` rather than skipping to a later action: the ordinary drain never runs past a
+/// blocked front action, and nothing queued after the question may run before it is answered.
+fn next_action_acceptable_by_plain_accept(
+    queue: Option<&VecDeque<AIAgentAction>>,
+) -> Option<&AIAgentActionId> {
+    queue
+        .and_then(|queue| queue.front())
+        .filter(|action| action.action.can_be_accepted_without_its_own_ui())
+        .map(|action| &action.id)
+}
+
 /// Returns whether another action may join the currently running phase.
 ///
 /// Parallel phases only admit additional actions that classify into the same group and
@@ -711,16 +777,21 @@ impl BlocklistAIActionModel {
     }
 
     /// Attempts to execute the next pending action for the active conversation.
+    ///
+    /// This is the "accept whatever is blocked" path: the AI block's Enter key
+    /// (`AIBlockAction::ExecuteNextPendingAction`, bound whenever any action is pending) and the
+    /// CLI subagent view's accept / auto-approve. None of them knows what it is accepting, so
+    /// this refuses a front action that a plain accept cannot confirm -- see
+    /// `next_action_acceptable_by_plain_accept`. The action stays pending; it can still be
+    /// answered through its own UI (which calls `execute_action` by id) or rejected.
     pub fn execute_next_action_for_user(
         &mut self,
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
     ) {
-        let Some(pending_action_id) = self
-            .pending_actions
-            .get(&conversation_id)
-            .and_then(|queue| queue.front())
-            .map(|action| action.id.clone())
+        let Some(pending_action_id) =
+            next_action_acceptable_by_plain_accept(self.pending_actions.get(&conversation_id))
+                .cloned()
         else {
             return;
         };
@@ -768,23 +839,28 @@ impl BlocklistAIActionModel {
     /// inherited a click's authority over every action type. `ActionInitiator::AutoAcceptedTagIn`
     /// carries the same deadlock-breaking power for ordinary actions and none of it for
     /// computer use — see `ActionInitiator::can_stand_in_for_confirmation`.
+    ///
+    /// Returns whether the action started. `false` means it was left pending: it is blocked
+    /// (an action the override may not stand in for, such as `AskUserQuestion`), or another
+    /// action is still running, or an earlier drain already took it.
     fn auto_accept_action(
         &mut self,
         action_id: &AIAgentActionId,
         conversation_id: AIConversationId,
         ctx: &mut ModelContext<Self>,
-    ) {
-        if self
-            .start_pending_action_by_id(
-                action_id,
-                conversation_id,
-                ActionInitiator::AutoAcceptedTagIn,
-                ctx,
-            )
-            .is_some_and(|result| matches!(result, StartedAction::Sync))
-        {
+    ) -> bool {
+        let Some(started) = self.start_pending_action_by_id(
+            action_id,
+            conversation_id,
+            ActionInitiator::AutoAcceptedTagIn,
+            ctx,
+        ) else {
+            return false;
+        };
+        if matches!(started, StartedAction::Sync) {
             self.try_to_execute_available_actions(conversation_id, ctx);
         }
+        true
     }
 
     /// Gets the active conversation ID for this terminal view.
@@ -1133,9 +1209,19 @@ impl BlocklistAIActionModel {
                  invoking auto_accept_action for {} action(s)",
                 auto_accept_ids.len()
             );
-            for action_id in auto_accept_ids {
-                self.auto_accept_action(&action_id, conversation_id, ctx);
-            }
+            run_auto_accept_batch(&auto_accept_ids, |action_id| {
+                if self.auto_accept_action(action_id, conversation_id, ctx) {
+                    AutoAcceptOutcome::Started
+                } else if self
+                    .pending_actions
+                    .get(&conversation_id)
+                    .is_some_and(|queue| queue.iter().any(|action| &action.id == action_id))
+                {
+                    AutoAcceptOutcome::LeftPending
+                } else {
+                    AutoAcceptOutcome::AlreadyTaken
+                }
+            });
         } else {
             self.try_to_execute_available_actions(conversation_id, ctx);
         }
