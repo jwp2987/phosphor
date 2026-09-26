@@ -422,3 +422,106 @@ fn optimistic_cli_subagent_completion_with_in_flight_stream_reports_success() {
         });
     });
 }
+
+/// Scheduling an auto-resume for a conversation that already has one armed must abort
+/// the old one. `SpawnedFutureHandle` does not abort on drop, so the old `insert`
+/// silently orphaned the first resume: it stayed armed, fired after its replacement,
+/// and was out of reach of `cancel_conversation_progress` (which only aborts the handle
+/// still in the map). The stream-finished handler could reach this with one stream
+/// (the BYOP local resume plus the stream's own `pending_resume`).
+///
+/// Fails without the fix: the first handle's abort flag is never set.
+#[test]
+fn rescheduling_auto_resume_aborts_the_replaced_handle() {
+    use crate::ai::agent::conversation::AIConversationId;
+
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        // An ID with no backing conversation: if a scheduled wait ever completes,
+        // the resume is a harmless no-op.
+        let conversation_id = AIConversationId::new();
+
+        terminal.update(&mut app, |terminal, ctx| {
+            terminal.ai_controller().update(ctx, |controller, ctx| {
+                controller.schedule_auto_resume_after_error(
+                    conversation_id,
+                    PendingResume::immediate(RecoveryBudget::fresh()),
+                    ctx,
+                );
+                let first = controller
+                    .pending_auto_resume_handles
+                    .get(&conversation_id)
+                    .cloned()
+                    .expect("first resume should be scheduled");
+
+                controller.schedule_auto_resume_after_error(
+                    conversation_id,
+                    PendingResume::immediate(RecoveryBudget::fresh()),
+                    ctx,
+                );
+                let second = controller
+                    .pending_auto_resume_handles
+                    .get(&conversation_id)
+                    .cloned()
+                    .expect("second resume should be scheduled");
+
+                assert_ne!(first.future_id(), second.future_id());
+                assert!(
+                    first.abort_handle().is_aborted(),
+                    "the replaced auto-resume must be aborted, not orphaned"
+                );
+                assert!(!second.abort_handle().is_aborted());
+
+                // The surviving handle is still the one the cancel path reaches.
+                controller.cancel_conversation_progress(
+                    conversation_id,
+                    CancellationReason::ManuallyCancelled,
+                    ctx,
+                );
+                assert!(second.abort_handle().is_aborted());
+            });
+        });
+    });
+}
+
+/// Only a real cancellation hands Classic input back to the shell. The fork had dropped the
+/// pin's `CancellationOutcome::Cancelled` gate and flipped input on every cancel reason, so a
+/// same-conversation follow-up dropped the user out of AI mode mid-conversation.
+///
+/// This tests the gate directly. An end-to-end version was tried and abandoned: in the test
+/// harness a Classic input set to AI does not survive its own effects flushing (a precondition
+/// assert after the flush fails with and without the fix), so it could not observe the gate.
+/// An earlier version asserted inside the update, before the queued `AfterStreamFinished`
+/// handler ran, and so passed without the fix.
+#[test]
+fn only_a_real_cancellation_switches_input_to_shell() {
+    use super::cancellation_switches_input_to_shell as switches;
+
+    // Real cancellations do (outcome `Cancelled`).
+    assert!(switches(false, CancellationReason::ManuallyCancelled));
+    assert!(switches(false, CancellationReason::UserCommandExecuted));
+    assert!(switches(false, CancellationReason::Deleted));
+    assert!(switches(
+        false,
+        CancellationReason::FollowUpSubmitted {
+            is_for_same_conversation: false,
+        }
+    ));
+
+    // The turn goes on, or ended well, or is finalized elsewhere: input stays put. Each of
+    // these returned `true` before the fix.
+    assert!(!switches(
+        false,
+        CancellationReason::FollowUpSubmitted {
+            is_for_same_conversation: true,
+        }
+    ));
+    assert!(!switches(false, CancellationReason::OptimisticCLISubagentCompletion));
+    assert!(!switches(false, CancellationReason::Reverted));
+    assert!(!switches(false, CancellationReason::AgentExitedShell));
+
+    // A passive request never changes the input mode.
+    assert!(!switches(true, CancellationReason::ManuallyCancelled));
+}

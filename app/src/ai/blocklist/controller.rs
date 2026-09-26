@@ -1998,8 +1998,19 @@ impl BlocklistAIController {
                 ctx,
             );
         });
-        self.pending_auto_resume_handles
-            .insert(conversation_id, handle);
+        // At most one scheduled auto-resume per conversation. `SpawnedFutureHandle` does
+        // not abort on drop, so overwriting an entry without aborting it would orphan a
+        // still-armed resume that no cancel path can reach any more: it would fire after
+        // the one that replaced it (a duplicate request, or a `send_request_input` into a
+        // still-streaming conversation) and could restart a conversation the user had
+        // just cancelled, since `cancel_conversation_progress` only aborts the handle it
+        // finds in this map.
+        if let Some(previous) = self
+            .pending_auto_resume_handles
+            .insert(conversation_id, handle)
+        {
+            previous.abort();
+        }
     }
 
     pub fn send_passive_code_diff_request(
@@ -3988,6 +3999,8 @@ impl BlocklistAIController {
                     return;
                 };
                 let new_exchange_ids = conversation.new_exchange_ids_for_response(&stream_id);
+                let pending_resume = response_stream.as_ref(ctx).pending_resume();
+                let has_pending_resume = pending_resume.is_some();
                 let mut was_passive_request = false;
                 let mut is_any_exchange_unfinished = false;
                 let mut actions_to_queue = vec![];
@@ -4029,7 +4042,15 @@ impl BlocklistAIController {
                         );
                     });
 
-                    if !was_passive_request {
+                    // Only a real cancellation hands the input back to the shell. The
+                    // other outcomes are not the user stopping the agent: a same-conversation
+                    // `FollowUpSubmitted` keeps the turn in progress, and a successful
+                    // completion or externally finalized failure must not flip Classic input
+                    // to shell mid-flow. Matches the pin's gate.
+                    if cancellation_switches_input_to_shell(
+                        was_passive_request,
+                        stream_cancellation.reason,
+                    ) {
                         self.set_input_mode_for_cancellation(ctx);
                     }
                 } else if is_any_exchange_unfinished {
@@ -4150,7 +4171,16 @@ impl BlocklistAIController {
                                         .contains(r#""_byop_intercepted":true"#))
                         })
                     });
-                    if needs_byop_local_resume {
+                    // Defer to the stream's own `pending_resume` when it has one (checked
+                    // below): scheduling both would arm two resumes for one stream. The
+                    // stream's resume wins because it is the bounded one -- it carries the
+                    // failed request's budget with this resume already charged, plus a
+                    // backoff -- while this path would hand out a fresh budget immediately,
+                    // letting a provider that keeps dropping the stream mid tool-call loop
+                    // unboundedly. Nothing is lost: the resumed request carries the same
+                    // conversation, including the synthetic error tool_result the model
+                    // needs to see.
+                    if needs_byop_local_resume && !has_pending_resume {
                         log::info!(
                             "[byop] detected synthetic local tool_result (invalid_arguments \
                              or _byop_intercepted) without queued action → schedule auto-resume. \
@@ -4172,7 +4202,7 @@ impl BlocklistAIController {
                 // Before cleaning up the response stream, check if we should attempt to
                 // resume. The resume inherits the failed request's remaining recovery
                 // budget, so the chain stays bounded by MAX_RECOVERY_ATTEMPTS in total.
-                if let Some(resume) = response_stream.as_ref(ctx).pending_resume() {
+                if let Some(resume) = pending_resume {
                     self.schedule_auto_resume_after_error(conversation_id, resume, ctx);
                 }
 
@@ -4658,6 +4688,22 @@ fn byop_get_running_command_for_lrc(terminal_model: &TerminalModel) -> Option<Ru
         requested_command_id: active_block.requested_command_action_id().cloned(),
         is_alt_screen_active,
     })
+}
+
+/// Whether a cancelled response stream should hand Classic input back to the shell.
+///
+/// Only a real cancellation does. A same-conversation follow-up (`KeepInProgress`), an
+/// optimistic long-running-command completion or a revert (`Succeeded`), and a shell exit
+/// (`FinalizedExternally`) all leave the turn meaningful to the agent, so flipping the input to
+/// shell there would drop the user out of AI mode mid-conversation. This matches the pin's gate
+/// in the `AfterStreamFinished` handler; the fork had dropped the outcome check. A passive
+/// request (e.g. a suggestion) never changes the input mode.
+fn cancellation_switches_input_to_shell(
+    was_passive_request: bool,
+    reason: CancellationReason,
+) -> bool {
+    !was_passive_request
+        && matches!(reason.conversation_outcome(), CancellationOutcome::Cancelled)
 }
 
 #[cfg(test)]
