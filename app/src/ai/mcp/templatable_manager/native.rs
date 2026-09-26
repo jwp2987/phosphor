@@ -1968,9 +1968,9 @@ async fn spawn_server(
     let server_info = service.peer_info();
     logger.log(format!("[info] MCP: Connected to server: {server_info:#?}"));
 
-    // `peer_info()` returns an owned `Option<ServerInfo>` in rmcp 1.6, so `map` would move
-    // `info` into the closure and the borrow of its field could not escape. `as_ref()` keeps
-    // the owned value in `server_info` (a local that outlives both queries below) and yields
+    // `peer_info()` returns an owned `Option<Arc<InitializeResult>>` (rmcp 1.8 and 2.x), so
+    // `map` would move the `Arc` into the closure and the borrow of its field could not escape.
+    // `as_ref()` keeps the `Arc` in `server_info` (a local that outlives both queries below) and yields
     // the `Option<&ServerCapabilities>` that `query_resources_for`/`query_tools_for` take.
     let capabilities = server_info.as_ref().map(|info| &info.capabilities);
     let resources =

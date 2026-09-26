@@ -319,7 +319,8 @@ rmcp = { workspace = true, features = [
     "transport-child-process",
 ] }
 # Required by the vendored legacy SSE transport (`ai::mcp::sse_transport`).
-sse-stream = "0.2"
+# 0.2.6 floor: `SseStream::from_bytes_stream` (used here and by rmcp 2.x) needs >= 0.2.2.
+sse-stream = "0.2.6"
 notify-debouncer-full.workspace = true
 rquickjs = { workspace = true, optional = true }
 rustls.workspace = true

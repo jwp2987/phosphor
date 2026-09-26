@@ -6,11 +6,11 @@
 //! Anthropic will judge the tools field to have changed and invalidate every
 //! cache layer.
 //!
-//! Note: `rmcp::model::Tool` and `rmcp::model::Resource` (=
-//! `Annotated<RawResource>`) come from an upstream vendor crate; here we only use
-//! their public construction paths (`Tool::new` / `RawResource::new`).
+//! Note: `rmcp::model::Tool` and `rmcp::model::Resource` come from an upstream
+//! vendor crate; here we only use their public construction paths (`Tool::new` /
+//! `Resource::new`).
 
-use rmcp::model::{AnnotateAble, RawResource, Tool};
+use rmcp::model::{Resource, Tool};
 use serde_json::json;
 use std::sync::Arc;
 
@@ -51,10 +51,11 @@ fn mk_server(
     }
 }
 
-fn mk_resource(uri: &str, name: &str) -> rmcp::model::Resource {
-    // RawResource → Annotated<RawResource> (with no annotation).
-    // The safe conversion entry point upstream provides is `AnnotateAble::no_annotation`.
-    RawResource::new(uri, name).no_annotation()
+fn mk_resource(uri: &str, name: &str) -> Resource {
+    // rmcp 2.x folded `RawResource` into `Resource` and removed the
+    // `Annotated`/`AnnotateAble` wrapper; `Resource::new` leaves annotations
+    // unset, exactly as `RawResource::new(..).no_annotation()` did.
+    Resource::new(uri, name)
 }
 
 /// Building twice from the same ctx must produce byte-equal (name, description,

@@ -852,8 +852,7 @@ mod server_key_encoding_tests {
     }
 
     fn mk_resource(uri: &str) -> rmcp::model::Resource {
-        use rmcp::model::AnnotateAble;
-        rmcp::model::RawResource::new(uri, "r").no_annotation()
+        rmcp::model::Resource::new(uri, "r")
     }
 
     fn mk_ctx(servers: Vec<MCPServer>) -> MCPContext {
