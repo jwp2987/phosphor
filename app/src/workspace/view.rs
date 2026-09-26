@@ -1391,10 +1391,15 @@ impl Workspace {
             .is_any_tab_group_being_renamed()
         {
             match event {
-                EditorEvent::Blurred | EditorEvent::Enter => {
+                EditorEvent::Enter => {
                     self.finish_tab_group_rename(ctx);
                 }
-                EditorEvent::Escape => {
+                // Blur discards rather than commits. Focus can leave this editor without
+                // the user ever ending the rename — warpdotdev/warp#14241 is one such case — and
+                // committing then writes a half-typed fragment as the group's real,
+                // persisted name. Discarding loses nothing the user cannot retype, and
+                // Enter remains the way to confirm.
+                EditorEvent::Blurred | EditorEvent::Escape => {
                     self.cancel_tab_group_rename(ctx);
                 }
                 _ => {}
@@ -6744,7 +6749,9 @@ impl Workspace {
     fn save_current_tab_as_new_config(&mut self, tab_index: usize, ctx: &mut ViewContext<Self>) {
         use crate::tab_configs::session_config::{tab_config_from_pane_snapshot, write_tab_config};
 
-        let tab = &self.tabs[tab_index];
+        let Some(tab) = self.tabs.get(tab_index) else {
+            return;
+        };
         let snapshot = tab.pane_group.as_ref(ctx).snapshot(ctx);
         let custom_title = tab.pane_group.as_ref(ctx).custom_title(ctx);
         let color = tab.color();
@@ -8897,6 +8904,7 @@ impl Workspace {
                 self.show_tab_group_right_click_menu = None;
                 self.show_tab_selection_right_click_menu = None;
                 self.hide_move_to_group_sidecar(ctx);
+                self.focus_active_tab(ctx);
                 ctx.notify();
             }
             MenuEvent::ItemHovered | MenuEvent::ItemSelected => {
@@ -11725,6 +11733,18 @@ impl Workspace {
         if let Some(group) = self.tab_groups.get_mut(&group_id) {
             group.collapsed = false;
             ctx.notify();
+        }
+    }
+
+    pub(crate) fn is_inline_rename_editor_focused(&self, ctx: &AppContext) -> bool {
+        match ctx.focused_view_id(self.window_id) {
+            Some(id) if id == self.tab_rename_editor.id() => {
+                self.current_workspace_state.is_tab_being_renamed()
+            }
+            Some(id) if id == self.tab_group_rename_editor.id() => self
+                .current_workspace_state
+                .is_any_tab_group_being_renamed(),
+            _ => false,
         }
     }
 
