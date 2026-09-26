@@ -8904,7 +8904,18 @@ impl Workspace {
                 self.show_tab_group_right_click_menu = None;
                 self.show_tab_selection_right_click_menu = None;
                 self.hide_move_to_group_sidecar(ctx);
-                self.focus_active_tab(ctx);
+                // Only reclaim focus the hidden menu would otherwise keep. When an
+                // item is chosen with Enter, its action runs before this Close and
+                // may already have focused something else (a rename editor, a
+                // confirmation dialog); taking focus back here would blur it, which
+                // cancels the rename or commits the untouched auto title as a
+                // custom pane name. Diverges from upstream 43eae5e08, which
+                // refocuses unconditionally.
+                let window_id = ctx.window_id();
+                let focused = ctx.focused_view_id(window_id);
+                if focused.is_none() || focused == Some(self.tab_right_click_menu.id()) {
+                    self.focus_active_tab(ctx);
+                }
                 ctx.notify();
             }
             MenuEvent::ItemHovered | MenuEvent::ItemSelected => {

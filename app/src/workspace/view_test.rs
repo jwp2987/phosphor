@@ -1572,6 +1572,38 @@ fn test_closing_tab_context_menu_restores_active_tab_focus() {
     });
 }
 
+/// Choosing a menu item with Enter runs the item's action before the menu's
+/// Close event. If the action focused something (here the tab rename editor),
+/// closing the menu must not take focus back: that blur would cancel the rename.
+#[test]
+fn test_closing_tab_context_menu_keeps_focus_taken_by_the_selected_item() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let (window_id, editor_id) = workspace.update(&mut app, |workspace, ctx| {
+            workspace.show_tab_right_click_menu =
+                Some((0, TabContextMenuAnchor::Pointer(Vector2F::zero())));
+            ctx.focus(&workspace.tab_right_click_menu);
+            // What the selected item's action does before Close arrives.
+            ctx.focus(&workspace.tab_rename_editor);
+            (ctx.window_id(), workspace.tab_rename_editor.id())
+        });
+        assert_eq!(app.focused_view_id(window_id), Some(editor_id));
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_tab_right_click_menu_event(
+                &MenuEvent::Close {
+                    via_select_item: true,
+                },
+                ctx,
+            );
+        });
+
+        assert_eq!(app.focused_view_id(window_id), Some(editor_id));
+    });
+}
+
 #[test]
 #[ignore = "close-confirmation for shared-session tabs; shared sessions are a stubbed cloud-collab feature in the BYOP fork"]
 fn test_close_tabs_right_confirmation_dialog() {
