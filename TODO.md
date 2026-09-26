@@ -11211,7 +11211,28 @@ claim, which was wrong by four.
       orphaned -- both render the same dim slashed-circle icon, which is why the
       screenshot could not separate them.
 
-- [x] **The shell lockup: an unanswered completions handshake wedges the pane
+      **CORRECTION 2026-09-25 -- the stuck queue had a second, independent and
+      more direct cause, which the fix above did not touch.** After any BYOP
+      long-running command, the silent CLI subtask sets
+      `optimistic_cli_subagent_subtask_id` and nothing ever cleared it, so
+      `Conversation::has_active_subagent()` stayed true for the rest of the
+      conversation, and `view.rs` skips `drain_queued_prompts` /
+      `send_lrc_queued_prompts` while it is true. Confirmed live with a clean A/B
+      on the same build and model: in a fresh conversation a prompt queued behind
+      a `sleep 15` fired the instant the turn ended; in a conversation that had
+      earlier run a long-running `sleep 40`, the identical prompt was still
+      unsent 61 s after the turn ended. Fixed on `fix/review-findings`
+      (`Conversation::finish_byop_silent_cli_subtask`, called from the
+      `BlockCompleted` hook in `cli_controller.rs`). The tag-in path can reach
+      the same state and still needs a fix in `chat_stream.rs`.
+      **Verified live 2026-09-26** on the fixed release build, same model and
+      script as the failing A/B: after priming the conversation with the same
+      long-running `sleep 40` (log shows the silent subtask created, then
+      finished when the block completed), the prompt queued behind `sleep 15`
+      was sent exactly once, 15 s after queueing -- at the turn end. The fresh
+      conversation control also sent exactly once.
+
+- [ ] **The shell lockup: an unanswered completions handshake wedges the pane
       permanently.** Root-caused 2026-09-20. This is the "shell just locked up"
       report that three earlier theories failed to explain -- the pane accepts
       keystrokes and commands, writes none of them to the PTY, and cannot be
@@ -11265,3 +11286,24 @@ claim, which was wrong by four.
       frame). The `did_write` drain guard restored in 8d0c3b630 is real and
       adjacent -- it stalls the same queue -- but it self-clears on the next
       `LineEditorStatus` transition, so it could not produce a permanent wedge.
+
+      **CORRECTION 2026-09-25 -- REOPENED. The watchdog is real but it is NOT the
+      reported lockup; that lockup is still unexplained.** A later review
+      established that the handshake this entry describes cannot run in the
+      reporter's setup: `PtyWrite::RunNativeShellCompletions` is only issued when
+      `FeatureFlag::NativeShellCompletions` is enabled or the private pref
+      `ForceNativeShellCompletions` is set (`terminal/input.rs` ~`:10804-10818`),
+      and the shell supports native completions (zsh only). The flag has no
+      enabler anywhere -- it is defined at `crates/warp_features/src/lib.rs:154`
+      and appears in no flag list or Cargo feature -- the pref was not set, and the
+      reporter's shell is bash. So the "root-caused" claim above, and the same
+      claim in commit 2100b49f1's message, were wrong for the observed lockup. The
+      watchdog stays: it correctly bounds a wait that is otherwise unbounded for
+      anyone who does enable the feature. Two follow-ups from that review, both
+      gated behind the same flag: (1) `pty_controller.rs` handlers `take()` the
+      completions state before matching it, so a late `CompletionsFinished` for
+      request A destroys an in-flight request B and leaves zsh inside `read -d
+      $'\4'` (identical at the pin); (2) the fork's 2s watchdog can abandon a
+      request whose OSC reply is merely slow, after which the late reply is
+      ignored and no EOT is sent -- a narrower hazard the watchdog introduced.
+      The actual lockup needs a fresh capture at the time it happens.

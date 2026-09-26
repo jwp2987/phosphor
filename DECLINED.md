@@ -164,6 +164,7 @@ unrelated to voice and is not declined — see the issue for its state.
 
 | what | issue | note |
 |---|---|---|
+| **The agent can still write into a command the user currently controls** | — | **MAINTAINER DECISION 2026-09-25: keep pin parity (no guard). Do not re-add the `Cancelled` refusal.** `write_user_bytes_to_pty` (`app/src/terminal/view.rs`) refuses user keystrokes while the agent is in control, but `write_agent_bytes_to_pty` and the `WriteToLongRunningShellCommand` executor (`app/src/ai/blocklist/action_model/execute/shell_command.rs`) check only conversation-level PTY permission, never control state. Behaviour-identical at the pin (no control-state check); `write_agent_bytes_to_pty` is byte-identical, while the executor has since gained a fork-only `write_skips_pty_permission_check`. It is more reachable here because the fork's `BlockedOnInput` password-prompt hand-over moves control to the user while deliberately leaving the conversation live, so a model that chooses to write during the hand-over types into the prompt. **Tried and reverted after adversarial review (2026-09-25):** refusing the write with `WriteToLongRunningShellCommandResult::Cancelled`. An all-cancelled batch sets `ConversationStatus::Cancelled` and posts a "Task was cancelled" notification while the user is typing their password (and it stays cancelled for commands that never finish, such as `ssh` or `sudo -i`, until the user hands back); a headless `agent run` that sends Ctrl-C to escape an unanswerable prompt ends as cancelled; the model sees a bare `cancelled` it cannot tell from a real one; and a write the user explicitly approved was still refused. **Options if revisited**, in order of preference: (C) park printable writes until control returns or the block finishes, then return a fresh snapshot without sending, reusing the wait mechanism `transfer_shell_command_control_to_user` already has; (D) always let interrupt keys (Ctrl-C/Ctrl-D) through; (E) let an explicit user approval override; (B) a dedicated non-cancel "user has control" result in `crates/ai` (`action_result/mod.rs`, `convert.rs`) and `agent_providers/tools/long_shell.rs` -- rejected alone because a non-cancel result triggers a follow-up and the model may retry in a loop. Recommended combination if revisited: C + D + E. |
 | **Credits round to 1dp per agent before the orchestration rollup sums them** | — | **MAINTAINER DECISION 2026-08-19: keep pin parity. Do not "fix" this.** `AIConversation::credits_spent()` rounds to one decimal place *before* `compute_orchestration_rollup` sees the value, so spend below 0.05 per agent is erased per-agent rather than at the total. Three agents at 0.04 each (0.12 real) report as nothing spent. **Corrected 2026-08-20: the trailing clause "and the usage footer never appears at all" was false and has been removed.** The footer is opened by an explicit user toggle with no credit gate — the credit chip dispatches `AIBlockAction::ToggleIsUsageFooterExpanded` unconditionally (`app/src/ai/blocklist/block/view_impl/output.rs:2875-2877`), and `TerminalView::handle_usage_footer_toggled` (`app/src/terminal/view.rs:6377-6446`) inserts the `ConversationUsageView` rich-content row regardless of the credit total. What a `None` rollup actually suppresses is only the *drill-down*: `render_total_credits_value_row` returns the bare value with no "View details" link when `rollup.is_none()` (`app/src/ai/blocklist/usage/conversation_usage_view.rs:558-560`), and `append_per_agent_rows` early-returns (`:590-592`). The footer still shows, reading 0. The rounding half of this row is unaffected and stands. Identical at the pin (`42effe840:app/src/ai/agent/conversation.rs:769-773`), which is why it was pinned as a characterization test rather than changed. **The argument for changing it was considered and rejected:** this fork is BYOP, so the user pays their provider directly and sub-5c spend vanishing is a real accounting question -- but diverging from the pin on money arithmetic creates a permanent reconciliation difference against upstream for a rounding artifact, and the tests that pin it now make the behaviour explicit rather than silent. Covered by characterization tests in `app/src/ai/blocklist/usage/rollup_tests.rs` which document rather than endorse it. |
 | **`AIConversation::update_for_new_request_input` persists at turn start** | — | **DELIBERATE fork divergence, recorded 2026-08-18 so a parity sweep does not "fix" it back.** The fork's `update_for_new_request_input` ends with `self.write_updated_conversation_state(ctx);` (`app/src/ai/agent/conversation.rs:1774`, landed in `bf191b510`). **The pin's version of that function ends at `Ok(())`** — verified directly against `42effe840:app/src/ai/agent/conversation.rs`. The intent is turn-start durability: the user's query is written the moment it is submitted, so it survives a force-quit mid-stream. **Consequence for tests, which is why this row exists:** every test that drives a request through `update_conversation_for_new_request_input` sees an *extra* persist event before the one it usually cares about. A test written against the pin's single-persist assumption will read the priming event instead of the event under assertion and fail for a reason that looks like a production bug but is not. Drain it first — `sync_channel(16)` plus `drain_conversation_persist_events(&receiver)`, the pattern already used by `test_truncate_from_exchange_to_empty_persist_event_has_empty_updated_tasks` and, since 2026-08-18, by `test_initialize_output_for_response_stream_persists_updated_conversation_state`. This cost one agent a full investigation before the cause was found. |
 | **`ef4b562191` / `eab3b3fa9` — `pwsh.ps1` `$corePsModules` bootstrap narrowing** | #586 | **DECIDED — deliberate PARTIAL port.** Both commits' Rust halves are ported (`shell_command_to_get_all_functions` / `shell_command_to_get_all_builtins`, `crates/warp_terminal/src/shell/mod.rs:777-806`, wired through `Session::load_all_function_names`). The pin's other half — narrowing bootstrap enumeration to `Get-Command -CommandType Function -Module $corePsModules` (`42effe840:app/assets/bundled/bootstrap/pwsh.ps1:148-165`) — is **omitted on purpose**. Chain verified end to end: `Session::load_deferred_name_set` → `execute_command` → `LocalCommandExecutor::execute_local_command`, which passes **`-NoProfile`** (`local_command_executor.rs:229`), so the deferred pass provably cannot see profile-defined functions. Narrowing the bootstrap would drop those from completions **permanently, with no recovery path**, in exchange for a perf win. The fork's loader is therefore additive-only and usually finds nothing new locally. Reverse only once profile-defined functions are recoverable in the deferred pass. Documented in place at `app/src/terminal/model/session.rs:1145-1162`. Related and NOT declined: `ebedb9fd` (non-UTF8 executable-name mojibake) **is** ported (`shell/mod.rs:644-648` + regression test `mod_tests.rs:371`). **This row exists because the decision lived only in a code comment and was re-discovered as debt twice.** |
@@ -604,3 +605,59 @@ upstream's behavior is actually a defect rather than a preference.
   is a separate list that is never merged with or shadowed by the built-ins, and
   can suppress the new built-ins through
   `warpify.subshells.subshell_commands_denylist`.
+
+- **An `ask_user_question` action is never started without an answer**
+  (2026-09-25, `crates/ai/src/agent/action/mod.rs`,
+  `app/src/ai/blocklist/{action_model.rs,block/view_impl.rs,block/cli.rs}`,
+  `crates/warp_tui/src/{tui_cli_subagent_view.rs,terminal_session_view.rs}`).
+  **Upstream:** the plain "accept the pending action" paths --
+  `execute_next_action_for_user`, the `HAS_PENDING_ACTION` Enter binding, and the
+  CLI subagent's `handle_execute_blocked_action` -- start whatever action is at
+  the front of the queue. **The defect:** for `AskUserQuestion` that starts
+  `AskUserQuestionExecutor` with no decision, and the executor then waits on
+  `receiver.recv()` for an answer nothing will ever send, so the turn hangs with
+  the question view unanswerable. **Confirmed present at the pin**
+  (`4111d08f9:app/src/ai/blocklist/action_model.rs:790-810`, no action-type
+  check; executor `4111d08f9:.../execute/ask_user_question.rs:67`). **We do:**
+  `AIAgentActionType::can_be_accepted_without_its_own_ui()` is false for a
+  question; every plain-accept path, auto-accept batch and the TUI [Allow]
+  affordance consult it and leave the question pending for its own view.
+
+- **Rescheduling an auto-resume aborts the one it replaces** (2026-09-25,
+  `app/src/ai/blocklist/controller.rs`). **Upstream:**
+  `schedule_auto_resume_after_error` does
+  `pending_auto_resume_handles.insert(conversation_id, handle)` and discards the
+  previous handle. **The defect:** `SpawnedFutureHandle` does not abort on drop,
+  so the replaced resume stays armed and unreachable -- `cancel_conversation_progress`
+  only aborts the handle in the map -- and fires later as a duplicate request,
+  or restarts a conversation the user just cancelled. **Confirmed present at the
+  pin** (`4111d08f9:app/src/ai/blocklist/controller.rs:2134-2135`). **We do:**
+  abort the previous handle on insert. Fork-only companion: the BYOP synthetic
+  tool-result resume is skipped when the stream already carries a bounded
+  `pending_resume`, so one stream never arms two.
+
+- **Draining a queued prompt that is being edited restores the live edit**
+  (2026-09-25, `app/src/terminal/view.rs`, `commit_live_queued_prompt_edit`).
+  **Upstream:** `AutofireAction::PopFromEditMode` restores the row's committed
+  `text` into the input. **The defect:** the row's in-progress edit exists only
+  in the inline editor, so the user's edit is silently discarded when the row
+  pops. **Confirmed present at the pin**
+  (`4111d08f9:app/src/terminal/view.rs:5571-5596`). **We do:** commit the live
+  edit first (falling back to the committed text when the edit is empty), then
+  restore it.
+
+- **Queue delivery when a CLI subagent finishes depends on the turn's state**
+  (2026-09-25, `app/src/terminal/view.rs`,
+  `subagent_finished_queue_delivery`). **Upstream:** `FinishedSubagent` always
+  calls `send_lrc_queued_prompts`. **The defects:** (1) a turn end that happened
+  while the subagent was still active skipped `drain_queued_prompts`, and nothing
+  ever replayed it, so a `/queue` head waited until some later turn end;
+  (2) after a stop, delivery could fire a row the cancel path should only have
+  unlocked; (3) delivering while the block-completion auto-resume was streaming
+  cancelled that resume. **Confirmed at the pin** (`4111d08f9:app/src/terminal/view.rs:6791-6806`,
+  unconditional). **We do:** replay a skipped turn-end drain with its original
+  finish reason, only unlock after a cancel, defer while the auto-resume for
+  this very block completion is in progress (its own turn end then owns the
+  queue), and otherwise keep upstream's `send_lrc_queued_prompts`. The BYOP
+  silent-subtask fix that makes this reachable (`finish_byop_silent_cli_subtask`)
+  is fork-only code and needs no entry.
