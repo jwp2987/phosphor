@@ -1044,6 +1044,7 @@ pub fn init(app: &mut AppContext) {
             WorkspaceAction::TerminateApp,
         )
         .with_context_predicate(id!("Workspace"))
+        .with_linux_or_windows_key_binding(bindings::LINUX_OR_WINDOWS_QUIT_KEYSTROKE)
         .with_group(bindings::BindingGroup::Close.as_str())
         .with_enabled(|| ContextFlag::CloseWindow.is_enabled()),
         EditableBinding::new(
