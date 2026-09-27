@@ -191,8 +191,16 @@ impl SettingsWidget for AboutPageWidget {
         // alpha rendered as a hard rectangle instead of sitting on the settings background.
         let image_path = "bundled/svg/phosphor-logo.svg";
 
-        // GIT_RELEASE_TAG injected -> shows the tag; otherwise falls into Dev development mode
-        let version = ChannelState::app_version().unwrap_or("Dev");
+        // GIT_RELEASE_TAG injected -> shows the tag; otherwise falls back to
+        // `v{app version}-dev` (issue #640) rather than the bare word "Dev",
+        // so an untagged build still shows a real, single-sourced version
+        // number straight from this crate's own `CARGO_PKG_VERSION`
+        // (`app/Cargo.toml`'s `version`, the decided single source of truth).
+        // See `ChannelState::display_version`'s doc comment for why the
+        // `env!`/`concat!` has to happen here, in the `app` crate, rather
+        // than inside that function.
+        let version =
+            ChannelState::display_version(concat!("v", env!("CARGO_PKG_VERSION"), "-dev"));
 
         let version_text = ui_builder
             .span(version.to_string())

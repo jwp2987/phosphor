@@ -122,12 +122,59 @@ jobs:
             TAG="${GITHUB_REF#refs/tags/}"
             BRANCH="$TAG"
           else
+            # Deliberately NOT derived from app/Cargo.toml's version (issue
+            # #640): this is an ad-hoc, unreviewed dispatch build, not a
+            # numbered release, and `channel_versions::parse_release_tag`
+            # ranks it below any real release tag from the same day on
+            # purpose (see the `make_latest` comment on publish_release below)
+            # -- giving it a real-looking `v<cargo version>` would make it
+            # look like an official release of that version instead of the
+            # ad-hoc build it is, and the "validate tag matches Cargo version"
+            # step below deliberately skips this branch (it only runs for
+            # `refs/tags/*`) so this format is free to stay unversioned.
             TAG="v0.$(date +%Y.%m.%d.%H%M)"
             BRANCH="${GITHUB_REF#refs/heads/}"
           fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           echo "Release tag: $TAG / build ref: $BRANCH"
+
+      # Guard against a typo'd or stale tag silently shipping a release whose
+      # displayed/plist version (both derived from app/Cargo.toml, issue #640)
+      # disagrees with the tag GitHub shows in the URL and release title.
+      # Only meaningful for a real tag push -- a workflow_dispatch tag is
+      # synthetic and exempted above, not here, so this step is a no-op for it.
+      #
+      # Two shapes are accepted:
+      #   - `v<app/Cargo.toml version>` optionally followed by `-<suffix>`
+      #     (e.g. `v0.1.7`, `v0.1.7-beta.1`) -- the normal case, checked
+      #     against the actual Cargo version below.
+      #   - A legacy dated tag (`v2026.09.04.1-beta`, i.e. the first
+      #     component after `v` is a 4+ digit year): these predate the
+      #     "app/Cargo.toml is authoritative" decision, aren't tied to any
+      #     Cargo version, and are exempted rather than retroactively broken.
+      #     A tag can't be both shapes (a year is never a valid Cargo major
+      #     version component this project has used), so the exemption can't
+      #     be used to sneak a mismatched `v0.1.x`-shaped tag past the check.
+      - name: Validate release tag matches app/Cargo.toml version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${{ steps.compute_tag.outputs.tag }}"
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' app/Cargo.toml | head -n1)
+          if [[ -z "$CARGO_VERSION" ]]; then
+            echo "::error::Could not read a 'version = \"...\"' line from app/Cargo.toml."
+            exit 1
+          fi
+
+          if [[ "$TAG" =~ ^v[0-9]{4}\. ]]; then
+            echo "Legacy dated release tag ($TAG); skipping the Cargo-version check."
+          elif [[ "$TAG" == "v${CARGO_VERSION}" ]] || [[ "$TAG" =~ ^v${CARGO_VERSION//./\\.}-[0-9A-Za-z.]+$ ]]; then
+            echo "Tag $TAG matches app/Cargo.toml version $CARGO_VERSION."
+          else
+            echo "::error::Release tag '$TAG' does not match app/Cargo.toml's version 'v${CARGO_VERSION}' (optionally with a -suffix, e.g. v${CARGO_VERSION}-beta.1). Bump app/Cargo.toml's version to match before tagging, or fix the tag."
+            exit 1
+          fi
 
       # Find the previous release tag (matching v*), used to bound git-cliff's
       # commit range.

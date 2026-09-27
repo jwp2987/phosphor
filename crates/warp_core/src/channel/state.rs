@@ -226,6 +226,35 @@ impl ChannelState {
         option_env!("GIT_RELEASE_TAG")
     }
 
+    /// The version to show a *user* -- `--version`, the About page, and its
+    /// "Copy version" action (issue #640): the injected release tag when one
+    /// was baked in, otherwise `dev_version`.
+    ///
+    /// `dev_version` must be a `v{app version}-dev`-shaped literal computed
+    /// by the *caller*, at the caller's own compile time -- not here. This
+    /// crate's own package has no meaningful version of its own (`warp_core`
+    /// is unversioned in `Cargo.toml`, defaulting to `0.0.0`), so an
+    /// `env!("CARGO_PKG_VERSION")` written inside this function would
+    /// silently report the wrong number: `env!`/`concat!`/`option_env!` are
+    /// expanded using the crate that *contains* the macro invocation, not the
+    /// crate that calls the resulting function. Each caller sources the
+    /// number differently because only the caller knows how to reach it: the
+    /// `app` crate IS the versioned package, so it uses its own
+    /// `concat!("v", env!("CARGO_PKG_VERSION"), "-dev")` directly; `warp_cli`
+    /// is a dependency of `app` and can't see `app`'s Cargo.toml at build
+    /// time via `CARGO_PKG_VERSION`, so its `build.rs` reads `app/Cargo.toml`
+    /// directly and injects `PHOSPHOR_APP_VERSION` instead. Either way the
+    /// result is an already-`'static` literal, so this never allocates.
+    ///
+    /// Deliberately separate from [`Self::app_version`], whose `None` for an
+    /// untagged build is load-bearing for ~45 other call sites (autoupdate
+    /// gating, the `chat_stream` user-agent, `remote_server`'s versioned
+    /// socket/pid paths, ...) -- do not fold this into `app_version` or change
+    /// what `app_version` returns.
+    pub fn display_version(dev_version: &'static str) -> &'static str {
+        Self::app_version().unwrap_or(dev_version)
+    }
+
     pub fn show_autoupdate_menu_items() -> bool {
         CHANNEL_STATE
             .lock()
@@ -282,6 +311,22 @@ impl ChannelState {
 #[cfg(all(test, not(feature = "test-util")))]
 #[path = "state_tests.rs"]
 mod tests;
+
+// `display_version`'s "tag present" case needs `set_app_version` to mock the
+// tag, which only exists under `test-util` -- see the dual `app_version`
+// impls above. The "tag absent" case is covered in `state_tests.rs` instead
+// (the `not(feature = "test-util")` build), since it needs no mock.
+#[cfg(all(test, feature = "test-util"))]
+mod display_version_tests {
+    use super::ChannelState;
+
+    #[test]
+    fn prefers_the_release_tag_when_present() {
+        ChannelState::set_app_version(Some("v0.1.7"));
+        assert_eq!(ChannelState::display_version("v0.1.7-dev"), "v0.1.7");
+        ChannelState::set_app_version(None);
+    }
+}
 
 fn app_id_from_bundle() -> Option<AppId> {
     // On macOS, attempt to determine the app ID from the containing bundle,
