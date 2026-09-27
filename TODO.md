@@ -2569,7 +2569,24 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
       `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
       compile-only no-op here.
-- [ ] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
+- [x] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
+      **Fixed 2026-09-27 (#760):** ported verbatim onto this fork's tab bar (`app/src/tab.rs`)
+      and vertical-tabs sidebar (`app/src/workspace/view/vertical_tabs.rs`, whose `PaneProps::new`
+      already had more parameters than upstream's -- the new `shortcut_hint_tab_index: Option<usize>`
+      landed as the last positional arg before `app`/`ctx` at all 6 call sites). New
+      `TabShortcutModifierState` singleton (`app/src/tab.rs`) tracks held modifier keys with a
+      750ms reveal delay per key, driven by a new `WorkspaceAction::SetTabShortcutModifierKey`
+      dispatched from the workspace root's `EventHandler::on_modifier_state_changed` hook;
+      cleared on window/app focus loss (`handle_window_state_change`) to avoid a stuck-revealed
+      hint if the modifier's key-up never arrives. `reveals_tab_shortcut_hints` derives the reveal
+      modifier from the current `workspace:activate_*_tab` bindings rather than hardcoding it, so
+      a remapped binding reveals with its own modifier. Registered the new singleton at both
+      `app/src/lib.rs` (`initialize_app`) and `app/src/workspace/view_test.rs` (`initialize_app`,
+      the test-only entry point `mock_workspace` and other workspace-constructing tests already
+      route through). Ported all upstream unit tests found in `8b88df98`'s diff
+      (`app/src/tab_tests.rs`: `TabShortcutModifierState` clear/reveal gating; the sidecar
+      truth-table/binding-order/overlap tests in `app/src/workspace/view/vertical_tabs_tests.rs`)
+      verbatim.
 - [ ] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
       it edits is introduced by `8b88df98`.
 - [x] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.

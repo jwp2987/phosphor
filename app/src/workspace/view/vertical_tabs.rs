@@ -1,26 +1,24 @@
 pub mod telemetry;
 
+use super::{group_has_single_member, render_group_member_icon_collage, select_unique_pane_kinds};
+use crate::FeatureFlag;
 use crate::ai::agent::conversation::ConversationStatus;
 use crate::code::editor::{add_color, remove_color};
 use crate::code::icon_from_file_path;
 use crate::safe_triangle::SafeTriangle;
 use crate::send_telemetry_from_app_ctx;
+use crate::terminal::CLIAgent;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::view::TerminalViewState;
-use crate::terminal::CLIAgent;
 use crate::ui_components::agent_icon::{
-    agent_icon_variant_from_terminal_inputs, CLISessionInputs, TerminalIconInputs,
+    CLISessionInputs, TerminalIconInputs, agent_icon_variant_from_terminal_inputs,
 };
 use crate::ui_components::icon_with_status::{
-    render_cli_agent_logo, render_icon_with_status, IconWithStatusSizing, IconWithStatusVariant,
+    IconWithStatusSizing, IconWithStatusVariant, render_cli_agent_logo, render_icon_with_status,
 };
 use crate::workspace::view::vertical_tabs::telemetry::{
     VerticalTabsChipEntrypoint, VerticalTabsTelemetryEvent,
 };
-use super::{
-    group_has_single_member, render_group_member_icon_collage, select_unique_pane_kinds,
-};
-use crate::FeatureFlag;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -28,17 +26,20 @@ use std::sync::{Arc, Mutex};
 use crate::appearance::Appearance;
 use crate::context_chips::display_chip::GitLineChanges;
 use crate::context_chips::github_pr_display_text_from_url;
-use crate::drive::{cloud_object_styling::warp_drive_icon_color, DriveObjectType};
+use crate::drive::{DriveObjectType, cloud_object_styling::warp_drive_icon_color};
 use crate::editor::EditorView;
 use crate::notifications::model::NotificationsModel;
-use crate::pane_group::pane::IPaneType;
 use crate::pane_group::TerminalPane;
+use crate::pane_group::pane::IPaneType;
 use crate::pane_group::{
     CodePane, NotebookPane, PaneGroup, PaneId, TabBarHoverIndex, WorkflowPane,
 };
-use crate::tab::{tab_position_id, SelectedTabColor, TabData, TAB_INDICATOR_SYNCED_COLOR};
-use crate::terminal::session_settings::SessionSettings;
+use crate::tab::{
+    SelectedTabColor, TAB_ACTIVATE_BINDING_NAMES, TAB_INDICATOR_SYNCED_COLOR, TabData,
+    reveals_tab_shortcut_hints, tab_position_id,
+};
 use crate::terminal::TerminalView;
+use crate::terminal::session_settings::SessionSettings;
 use crate::themes::theme::Fill as ThemeFill;
 use crate::ui_components::buttons::combo_inner_button;
 use crate::ui_components::icons::Icon as UiIcon;
@@ -61,25 +62,24 @@ use languages::language_by_local_filename;
 
 use pathfinder_color::ColorU;
 use pathfinder_geometry::rect::RectF;
-use pathfinder_geometry::vector::{vec2f, Vector2F};
+use pathfinder_geometry::vector::{Vector2F, vec2f};
 use settings::Setting as _;
 use std::path::{Path, PathBuf};
 use warp_core::context_flag::ContextFlag;
+use warp_core::ui::Icon as WarpIcon;
 use warp_core::ui::color::blend::Blend;
 use warp_core::ui::color::coloru_with_opacity;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::{AnsiColorIdentifier, Fill as WarpThemeFill, WarpTheme};
-use warp_core::ui::Icon as WarpIcon;
 use warpui::elements::DispatchEventResult;
 use warpui::elements::{
-    resizable_state_handle, Border, ChildAnchor, Clipped, ClippedScrollStateHandle,
-    ClippedScrollable, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, DragAxis,
-    DragBarSide, Draggable, DropShadow, DropTarget, Element, Empty, EventHandler, Expanded,
-    Fill as ElementFill, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
-    OffsetPositioning, Padding, ParentAnchor, ParentElement, ParentOffsetBounds,
-    PositionedElementAnchor, PositionedElementOffsetBounds, Radius, Resizable,
-    ResizableStateHandle, SavePosition, ScrollTarget, ScrollToPositionMode, ScrollbarWidth,
-    Shrinkable, Stack, Text,
+    Border, ChildAnchor, Clipped, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
+    Container, CornerRadius, CrossAxisAlignment, DragAxis, DragBarSide, Draggable, DropShadow,
+    DropTarget, Element, Empty, EventHandler, Expanded, Fill as ElementFill, Flex, Hoverable,
+    MainAxisAlignment, MainAxisSize, MouseStateHandle, OffsetPositioning, Padding, ParentAnchor,
+    ParentElement, ParentOffsetBounds, PositionedElementAnchor, PositionedElementOffsetBounds,
+    Radius, Resizable, ResizableStateHandle, SavePosition, ScrollTarget, ScrollToPositionMode,
+    ScrollbarWidth, Shrinkable, Stack, Text, resizable_state_handle,
 };
 use warpui::fonts::{Properties, Weight};
 use warpui::platform::Cursor;
@@ -405,11 +405,7 @@ fn tab_section(tab: &TabData, app: &AppContext) -> VerticalTabSection {
 /// The sort is **stable within a band**, so tabs keep their relative order and only move when
 /// their band actually changes -- a terminal that becomes an agent migrates once, rather than
 /// the list reshuffling as titles or statuses update.
-fn order_tabs_into_sections(
-    indices: Vec<usize>,
-    tabs: &[TabData],
-    app: &AppContext,
-) -> Vec<usize> {
+fn order_tabs_into_sections(indices: Vec<usize>, tabs: &[TabData], app: &AppContext) -> Vec<usize> {
     // Build units: consecutive entries sharing a `Some(group_id)` form one unit.
     let mut units: Vec<Vec<usize>> = Vec::new();
     let mut i = 0;
@@ -547,6 +543,7 @@ fn render_pane_row_element(
         pane_rename_editor: _,
         is_pinned,
         container_is_hovered,
+        shortcut_hint_tab_index: _,
     } = props;
     let is_selected = is_active_tab && is_focused;
     let show_pin = FeatureFlag::PinnedTabs.is_enabled() && is_pinned && !container_is_hovered;
@@ -958,6 +955,7 @@ struct PaneProps<'a> {
     /// True when the tab container containing this pane is hovered.
     /// The pin icon is hidden when a tab is hovered.
     container_is_hovered: bool,
+    shortcut_hint_tab_index: Option<usize>,
 }
 
 struct PaneRowState {
@@ -1376,6 +1374,7 @@ impl VerticalTabsPanelState {
                                 None,
                                 tab.pinned,
                                 false,
+                                Some(*tab_index),
                                 app,
                             )
                             .is_some_and(|props| pane_matches_query(&props, &query_lower, app))
@@ -2070,6 +2069,7 @@ fn render_groups(
                                     None,
                                     tab.pinned,
                                     false,
+                                    Some(tab_index),
                                     app,
                                 )
                                 .is_some_and(|props| {
@@ -2099,6 +2099,7 @@ fn render_groups(
                                 None,
                                 tab.pinned,
                                 false,
+                                Some(tab_index),
                                 app,
                             )
                             .is_some_and(|props| pane_matches_query(&props, &query_lower, app))
@@ -2459,6 +2460,7 @@ fn render_tab_group_internal(
                     None,
                     tab.pinned,
                     group_state.is_hovered(),
+                    Some(tab_index),
                     app,
                 ) else {
                     return Empty::new().finish();
@@ -2514,6 +2516,7 @@ fn render_tab_group_internal(
                     is_pane_being_renamed.then_some(workspace.pane_rename_editor.clone()),
                     tab.pinned,
                     group_state.is_hovered(),
+                    Some(tab_index),
                     app,
                 ) else {
                     continue;
@@ -3564,16 +3567,13 @@ fn resolve_icon_with_status_variant(
                 },
             )
         }
-        TypedPane::Code(_) => {
-            match icon_from_file_path(title, appearance) { Some(icon_element) => {
-                IconWithStatusVariant::NeutralElement { icon_element }
-            } _ => {
-                IconWithStatusVariant::Neutral {
-                    icon: WarpIcon::Code2,
-                    icon_color: sub_text,
-                }
-            }}
-        }
+        TypedPane::Code(_) => match icon_from_file_path(title, appearance) {
+            Some(icon_element) => IconWithStatusVariant::NeutralElement { icon_element },
+            _ => IconWithStatusVariant::Neutral {
+                icon: WarpIcon::Code2,
+                icon_color: sub_text,
+            },
+        },
         // Settings and environment management use the foreground color per design spec
         // Zap Wave 7-3: `TypedPane::EnvironmentManagement` was physically removed along with the ambient-agent UI subsystem.
         TypedPane::Settings => IconWithStatusVariant::Neutral {
@@ -3681,6 +3681,33 @@ fn render_synced_inputs_indicator() -> Box<dyn Element> {
     .finish()
 }
 
+/// Whether a row is eligible to surface the switch-to-tab shortcut hint: the
+/// reveal modifier is held and the tab falls within the first 8 (the only tabs
+/// with a `cmdorctrl-N` binding). Whether a label is actually shown also
+/// depends on the binding being assigned -- see [`shortcut_hint_label`].
+fn shows_shortcut_hint(modifier_held: bool, tab_index: usize) -> bool {
+    modifier_held && tab_index < TAB_ACTIVATE_BINDING_NAMES.len()
+}
+
+/// Resolves the switch-to-tab shortcut label for a row while the reveal
+/// modifier is held. Returns `None` when no hint should be shown.
+fn shortcut_hint_label(props: &PaneProps<'_>, app: &AppContext) -> Option<String> {
+    let tab_index = props.shortcut_hint_tab_index?;
+    if !shows_shortcut_hint(reveals_tab_shortcut_hints(app), tab_index) {
+        return None;
+    }
+    keybinding_name_to_display_string(TAB_ACTIVATE_BINDING_NAMES[tab_index], app)
+}
+
+/// Inline label showing the switch-to-tab keyboard shortcut, mirroring the
+/// horizontal tab bar's `TabComponent::render_shortcut_hint`.
+fn render_shortcut_hint(label: &str, appearance: &Appearance) -> Box<dyn Element> {
+    let theme = appearance.theme();
+    Text::new_inline(label.to_string(), appearance.ui_font_family(), 12.)
+        .with_color(theme.sub_text_color(theme.background()).into())
+        .finish()
+}
+
 /// Row title line with its trailing indicators — the synchronized-inputs link
 /// icon followed by the unread-activity dot — pinned to the right edge. Returns
 /// `title` untouched when the row has no indicator to show.
@@ -3688,9 +3715,10 @@ fn render_row_title_line(
     title: Box<dyn Element>,
     shows_synced_inputs: bool,
     shows_activity_indicator: bool,
+    shortcut_hint: Option<Box<dyn Element>>,
     theme: &WarpTheme,
 ) -> Box<dyn Element> {
-    if !shows_synced_inputs && !shows_activity_indicator {
+    if !shows_synced_inputs && !shows_activity_indicator && shortcut_hint.is_none() {
         return title;
     }
 
@@ -3703,6 +3731,9 @@ fn render_row_title_line(
     }
     if shows_activity_indicator {
         indicators.add_child(render_title_indicator(theme));
+    }
+    if let Some(hint) = shortcut_hint {
+        indicators.add_child(hint);
     }
 
     Flex::row()
@@ -3775,6 +3806,13 @@ fn render_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn Element> {
         if has_indicator {
             title_row.add_child(
                 Container::new(render_title_indicator(theme))
+                    .with_margin_left(4.)
+                    .finish(),
+            );
+        }
+        if let Some(label) = shortcut_hint_label(&props, app) {
+            title_row.add_child(
+                Container::new(render_shortcut_hint(&label, appearance))
                     .with_margin_left(4.)
                     .finish(),
             );
@@ -4128,6 +4166,7 @@ impl<'a> PaneProps<'a> {
         pane_rename_editor: Option<ViewHandle<EditorView>>,
         is_pinned: bool,
         container_is_hovered: bool,
+        shortcut_hint_tab_index: Option<usize>,
         app: &AppContext,
     ) -> Option<Self> {
         let pane = pane_group.pane_by_id(pane_id)?;
@@ -4179,6 +4218,7 @@ impl<'a> PaneProps<'a> {
             pane_rename_editor,
             is_pinned,
             container_is_hovered,
+            shortcut_hint_tab_index,
         })
     }
 
@@ -4683,6 +4723,7 @@ fn render_terminal_row_content(
         first_line,
         row_shows_synced_inputs_indicator(props, app),
         has_unread_activity(&props.typed, app),
+        shortcut_hint_label(props, app).map(|label| render_shortcut_hint(&label, appearance)),
         theme,
     );
 
@@ -4886,11 +4927,7 @@ fn render_summary_tab_item(
     let sub_text_color = theme.sub_text_color(theme.background());
     let icon = summary_pane_kind_icons
         .map(|icons| {
-            render_summary_pane_kind_icons(
-                icons,
-                VERTICAL_TABS_SUMMARY_ICON_TOTAL_SIZE,
-                appearance,
-            )
+            render_summary_pane_kind_icons(icons, VERTICAL_TABS_SUMMARY_ICON_TOTAL_SIZE, appearance)
         })
         .unwrap_or_else(|| {
             render_pane_icon_with_status(
@@ -4927,6 +4964,7 @@ fn render_summary_tab_item(
         title_region,
         row_shows_synced_inputs_indicator(&props, app),
         summary.has_unread_activity,
+        shortcut_hint_label(&props, app).map(|label| render_shortcut_hint(&label, appearance)),
         theme,
     ));
 
@@ -5034,10 +5072,7 @@ pub(super) fn render_summary_pane_kind_icons(
             stack.add_positioned_child(
                 secondary_with_ring,
                 OffsetPositioning::offset_from_parent(
-                    vec2f(
-                        sizing.badge_offset.0 * scale,
-                        sizing.badge_offset.1 * scale,
-                    ),
+                    vec2f(sizing.badge_offset.0 * scale, sizing.badge_offset.1 * scale),
                     ParentOffsetBounds::ParentBySize,
                     ParentAnchor::BottomRight,
                     ChildAnchor::BottomRight,
@@ -5638,31 +5673,38 @@ fn compute_tab_group_color_mode(
     let per_pane: HashMap<PaneId, Option<AnsiColorIdentifier>> = visible_pane_ids
         .iter()
         .map(|&pane_id| {
-            let color = match pane_group.terminal_view_from_pane_id(pane_id, app) { Some(tv) => {
-                // Terminal pane: determine color from CWD.
-                tv.as_ref(app).pwd_if_local(app).and_then(|cwd| {
-                    dir_colors
-                        .color_for_directory(Path::new(&cwd))
-                        .and_then(|c| c.ansi_color())
-                })
-            } _ => { match pane_group.code_view_from_pane_id(pane_id, app) { Some(code_view) => {
-                // Code pane: determine color from the open file path using longest-prefix
-                // matching against configured directories, so e.g. warp-internal/code.rs
-                // inherits the color assigned to warp-internal.
-                code_view
-                    .as_ref(app)
-                    .local_path(app)
-                    .as_deref()
-                    .and_then(|file_path| {
-                        dir_colors
-                            .color_for_directory(file_path)
-                            .and_then(|c| c.ansi_color())
-                    })
-            } _ => {
-                // Other non-terminal panes (notebook, workflow, etc.): fall back to the
-                // cached directory color from the tab's last active terminal.
-                tab.default_directory_color
-            }}}};
+            let color =
+                match pane_group.terminal_view_from_pane_id(pane_id, app) {
+                    Some(tv) => {
+                        // Terminal pane: determine color from CWD.
+                        tv.as_ref(app).pwd_if_local(app).and_then(|cwd| {
+                            dir_colors
+                                .color_for_directory(Path::new(&cwd))
+                                .and_then(|c| c.ansi_color())
+                        })
+                    }
+                    _ => {
+                        match pane_group.code_view_from_pane_id(pane_id, app) {
+                            Some(code_view) => {
+                                // Code pane: determine color from the open file path using longest-prefix
+                                // matching against configured directories, so e.g. warp-internal/code.rs
+                                // inherits the color assigned to warp-internal.
+                                code_view.as_ref(app).local_path(app).as_deref().and_then(
+                                    |file_path| {
+                                        dir_colors
+                                            .color_for_directory(file_path)
+                                            .and_then(|c| c.ansi_color())
+                                    },
+                                )
+                            }
+                            _ => {
+                                // Other non-terminal panes (notebook, workflow, etc.): fall back to the
+                                // cached directory color from the tab's last active terminal.
+                                tab.default_directory_color
+                            }
+                        }
+                    }
+                };
             (pane_id, color)
         })
         .collect();
@@ -6778,6 +6820,7 @@ fn detail_pane_props<'a>(
         None,
         false,
         false,
+        None,
         app,
     )
 }
@@ -7385,6 +7428,7 @@ fn render_compact_pane_row(props: PaneProps<'_>, app: &AppContext) -> Box<dyn El
         title_element,
         row_shows_synced_inputs_indicator(&props, app),
         has_indicator,
+        shortcut_hint_label(&props, app).map(|label| render_shortcut_hint(&label, appearance)),
         theme,
     );
 

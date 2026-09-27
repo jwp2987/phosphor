@@ -157,16 +157,16 @@ pub use crate::tui::{TuiLoginEvent, TuiLoginModel, TuiLoginPhase, log_out_tui};
 pub mod themes;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::aws_credentials::AwsCredentialRefresher as _;
-#[cfg(not(target_family = "wasm"))]
-use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::ai::mcp::FileBasedMCPManager;
 use crate::ai::mcp::FileMCPWatcher;
+#[cfg(not(target_family = "wasm"))]
+use crate::ai::tui_api_keys::TuiApiKeyRefresher as _;
 use crate::uri::link_policy::is_openable_url_scheme;
 use crate::uri::web_intent_parser::maybe_rewrite_web_url_to_intent;
 
 use ::ai::project_context::model::ProjectContextModel;
-pub use ai::agent::{todos::AIAgentTodoList, AIAgentActionResultType, FileEdit, TodoOperation};
 use ai::agent::conversation::AIConversationId;
+pub use ai::agent::{AIAgentActionResultType, FileEdit, TodoOperation, todos::AIAgentTodoList};
 use ai::agent_conversations_model::AgentConversationsModel;
 use ai::blocklist::agent_view::orchestration_pill_bar_model::OrchestrationPillBarModel;
 use ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
@@ -190,11 +190,11 @@ use quit_warning::UnsavedStateSummary;
 use settings::import::model::ImportedConfigModel;
 use voice::transcriber::VoiceTranscriber;
 use warp_cli::GlobalOptions;
-use warp_cli::{agent::AgentCommand, CliCommand};
+use warp_cli::{CliCommand, agent::AgentCommand};
 
 #[cfg(feature = "local_fs")]
 use repo_metadata::{
-    repositories::DetectedRepositories, watcher::DirectoryWatcher, RepoMetadataModel,
+    RepoMetadataModel, repositories::DetectedRepositories, watcher::DirectoryWatcher,
 };
 #[cfg(feature = "local_fs")]
 use watcher::HomeDirectoryWatcher;
@@ -215,13 +215,14 @@ use ::settings::{Setting, ToggleableSetting};
 pub use warp_core::errors::{report_error, report_if_error};
 
 #[cfg(feature = "plugin_host")]
-pub use plugin::{run_plugin_host, PLUGIN_HOST_FLAG};
+pub use plugin::{PLUGIN_HOST_FLAG, run_plugin_host};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 use warpui::platform::app::ApproveTerminateResult;
 use window_settings::WindowSettings;
 use workflows::manager::WorkflowManager;
 
+use crate::ai::AIRequestUsageModel;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::facts::manager::AIFactManager;
@@ -231,7 +232,6 @@ use crate::ai::mcp::TemplatableMCPServerManager;
 use crate::ai::outline::RepoOutlines;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
-use crate::ai::AIRequestUsageModel;
 use crate::autoupdate::{AutoupdateState, RelaunchModel};
 use crate::changelog_model::ChangelogModel;
 use crate::cloud_object::model::actions::ObjectActions;
@@ -246,9 +246,9 @@ use crate::drive::export::ExportManager;
 use crate::env_vars::manager::EnvVarCollectionManager;
 use crate::gpu_state::GPUState;
 use crate::network::NetworkStatus;
+use crate::notebooks::NotebookObject;
 use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::manager::NotebookManager;
-use crate::notebooks::NotebookObject;
 use crate::palette::PaletteMode;
 use crate::persistence::PersistenceWriter;
 use crate::projects::ProjectManagementModel;
@@ -256,10 +256,11 @@ use crate::server::experiments::ServerExperiments;
 use crate::session_management::{RunningSessionSummary, SessionNavigationData};
 use crate::settings::manager::SettingsManager;
 use crate::settings::{AccessibilitySettings, ScrollSettings, SelectionSettings};
-use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::settings_view::DisplayCount;
+use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::suggestions::ignored_suggestions_model::IgnoredSuggestionsModel;
 use crate::system::SystemStats;
+use crate::tab::TabShortcutModifierState;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::resizable_data::ResizableData;
@@ -268,14 +269,14 @@ use crate::terminal::{AudibleBell, History};
 use crate::undo_close::UndoCloseStack;
 use crate::user_config::WarpConfig;
 use crate::vim_registers::VimRegisters;
-use crate::warp_managed_paths_watcher::{ensure_warp_watch_roots_exist, WarpManagedPathsWatcher};
+use crate::warp_managed_paths_watcher::{WarpManagedPathsWatcher, ensure_warp_watch_roots_exist};
 use crate::workflows::aliases::WorkflowAliases;
 use crate::workflows::local_workflows::LocalWorkflows;
 use crate::workspace::{ActiveSession, OneTimeModalModel, ToastStack};
 use crate::workspaces::user_profiles::UserProfiles;
 #[cfg(feature = "local_tty")]
 use anyhow::Context;
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use appearance::{Appearance, AppearanceManager};
 use channel::ChannelState;
 use interval_timer::IntervalTimer;
@@ -293,7 +294,7 @@ use warp_core::execution_mode::{AppExecutionMode, ExecutionMode};
 use warp_managed_secrets::ManagedSecretManager;
 use workspace::sync_inputs::SyncedInputState;
 
-use warpui::{integration::TestDriver, App, AssetProvider, Event};
+use warpui::{App, AssetProvider, Event, integration::TestDriver};
 
 use self::features::FeatureFlag;
 use crate::app_state::AppState;
@@ -303,15 +304,18 @@ use crate::experiments::ImprovedPaletteSearch;
 pub use crate::global_resource_handles::{GlobalResourceHandles, GlobalResourceHandlesProvider};
 use crate::notification::NotificationContext;
 use crate::root_view::{
-    quake_mode_window_id, quake_mode_window_is_open, OpenFromRestoredArg, OpenPath,
+    OpenFromRestoredArg, OpenPath, quake_mode_window_id, quake_mode_window_is_open,
 };
 pub use crate::server::telemetry::{
-    AgentModeEntrypoint, AgentModeEntrypointSelectionType, TelemetryEvent,
+    AgentModeEntrypoint,
+    AgentModeEntrypointSelectionType,
     // Re-exported for `remote_server::codebase_index_model`, which must not
     // import from `crate::server::` directly (`script/check_cloud_boundary`).
     // These are telemetry *shapes*, not a cloud dependency --
     // `send_telemetry_from_ctx!` is already a compiled-out no-op in this fork.
-    RemoteCodebaseAutoIndexTrigger, RemoteCodebaseIndexStatusTelemetrySource,
+    RemoteCodebaseAutoIndexTrigger,
+    RemoteCodebaseIndexStatusTelemetrySource,
+    TelemetryEvent,
 };
 use crate::server::telemetry::{AppStartupInfo, CloseTarget, PaletteSource};
 use crate::terminal::CustomSecretRegexUpdater;
@@ -1097,9 +1101,8 @@ fn run_internal(mut launch_mode: LaunchMode) -> Result<()> {
     // binary, so it needs the same explicit single-instance check Linux/Windows already have.
     #[cfg(all(feature = "release_bundle", target_os = "macos"))]
     if let LaunchMode::App { .. } = launch_mode {
-        match app_services::mac::pass_startup_args_to_existing_instance(
-            launch_mode.args().as_ref(),
-        ) {
+        match app_services::mac::pass_startup_args_to_existing_instance(launch_mode.args().as_ref())
+        {
             // If we were able to contact an existing application instance, quit -
             // we only want to run a single instance of Zap at a time.
             Ok(_) => std::process::exit(0),
@@ -1959,6 +1962,7 @@ fn initialize_app(
     ctx.add_singleton_model(|_| NetworkStatus::new());
     ctx.add_singleton_model(|_| SystemStats::new());
     ctx.add_singleton_model(|_| KeybindingChangedNotifier::new());
+    ctx.add_singleton_model(|_| TabShortcutModifierState::new());
     ctx.add_singleton_model(|_| search::command_palette::SelectedItems::new());
     ctx.add_singleton_model(search::files::model::FileSearchModel::new);
     ctx.add_singleton_model(|_| VimRegisters::new());
@@ -2261,8 +2265,8 @@ fn initialize_app(
     ctx.add_singleton_model(|ctx| {
         let indexing_enabled =
             launch_mode_supports_indexing && FeatureFlag::FullSourceCodeEmbedding.is_enabled();
-        let should_restore_indices = indexing_enabled
-            && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx);
+        let should_restore_indices =
+            indexing_enabled && UserWorkspaces::as_ref(ctx).is_codebase_context_enabled(ctx);
         let indices_to_restore = if should_restore_indices {
             persisted_workspaces_for_index.clone()
         } else {
@@ -2738,9 +2742,11 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
         })),
         on_disable_warning_modal: Some(Box::new(move |ctx| {
             GeneralSettings::handle(ctx).update(ctx, |general_settings, ctx| {
-                report_if_error!(general_settings
-                    .show_warning_before_quitting
-                    .toggle_and_save_value(ctx));
+                report_if_error!(
+                    general_settings
+                        .show_warning_before_quitting
+                        .toggle_and_save_value(ctx)
+                );
             });
             send_telemetry_from_app_ctx!(TelemetryEvent::QuitModalDisabled, ctx);
         })),
