@@ -14,9 +14,9 @@ use super::{
     display_query_without_context_references, image_tooltip_handles_for_group,
     inline_image_source_label, is_supported_blocklist_image_source, lightbox_trigger_for_section,
     query_context_references, query_prefix_highlight_len, render_scrollable_collapsible_content,
-    should_render_query_and_header, text_sections_with_indices, warping_footer_height,
-    CollapsibleElementState, CollapsibleExpansionState, QueryContextReference,
-    VisualMarkdownLightboxCollection,
+    should_render_query_and_header, should_show_agent_command_status, text_sections_with_indices,
+    warping_footer_height, CollapsibleElementState, CollapsibleExpansionState,
+    QueryContextReference, VisualMarkdownLightboxCollection,
 };
 use crate::{
     ai::agent::{
@@ -164,6 +164,40 @@ fn image_tooltip_handles_for_group_uses_available_handles_only() {
     assert_eq!(image_tooltip_handles_for_group(&handles, 2, 1).len(), 0);
     assert_eq!(image_tooltip_handles_for_group(&handles, 3, 1).len(), 0);
     assert_eq!(image_tooltip_handles_for_group(&[], 1, 1).len(), 0);
+}
+
+// `should_show_agent_command_status` -- issue #694: "Phosphorizing..." (the generic
+// model-is-thinking label) was shown for the whole duration of a BYOP long-running command,
+// because the exchange's output status stays `Streaming` throughout, and the original
+// condition required `!is_streaming` to show the accurate "Executing command..." label.
+
+#[test]
+fn no_command_running_never_shows_the_command_status() {
+    // Whatever `has_action`/`is_streaming` say, there's nothing command-related to report.
+    for has_action in [false, true] {
+        for is_streaming in [false, true] {
+            assert!(!should_show_agent_command_status(
+                false,
+                has_action,
+                is_streaming
+            ));
+        }
+    }
+}
+
+#[test]
+fn command_running_with_an_in_flight_action_shows_status_even_while_streaming() {
+    // The BYOP long-running-command case this issue is about: `is_streaming` is stuck
+    // `true`, but the `ReadShellCommandOutput` poll (has_action) is a reliable signal on
+    // its own.
+    assert!(should_show_agent_command_status(true, true, true));
+    assert!(should_show_agent_command_status(true, true, false));
+}
+
+#[test]
+fn command_running_without_an_action_falls_back_to_the_streaming_gate() {
+    assert!(should_show_agent_command_status(true, false, false));
+    assert!(!should_show_agent_command_status(true, false, true));
 }
 
 #[test]

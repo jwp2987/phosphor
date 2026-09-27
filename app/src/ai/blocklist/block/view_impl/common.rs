@@ -205,6 +205,30 @@ pub struct ForceRefreshButtonProps<'a> {
     pub block_id: crate::terminal::model::block::BlockId,
 }
 
+/// Whether the warping indicator should show an accurate agent-command status message
+/// (`LOAD_OUTPUT_MESSAGE_FOR_RUNNING_COMMAND` / `_FOR_WAITING_FOR_COMMAND_COMPLETION` /
+/// `WAITING_FOR_USER_INPUT_MESSAGE`) instead of the generic "model is thinking" fallback
+/// (`LOAD_OUTPUT_MESSAGE`, "Phosphorizing...").
+///
+/// `is_streaming` alone is not a reliable signal here: for a BYOP long-running command (no
+/// server round trip), the exchange's `AIAgentOutputStatus` stays `Streaming` for the entire
+/// duration the command runs, which made the original `!is_streaming()` guard effectively
+/// unreachable and left the generic label showing the whole time a command was actively
+/// executing. See issue #694.
+///
+/// `has_action` -- whether there is a currently in-flight async action, e.g. the
+/// `ReadShellCommandOutput` poll that drives a long-running command's output -- is a signal
+/// that doesn't depend on `is_streaming` at all, so it can surface the accurate status even
+/// while `is_streaming` is stuck `true`. When there's no in-flight action, fall back to the
+/// original `!is_streaming` gate so a genuinely idle, non-command state isn't mislabelled.
+fn should_show_agent_command_status(
+    is_agent_command_running: bool,
+    has_action: bool,
+    is_streaming: bool,
+) -> bool {
+    is_agent_command_running && (has_action || !is_streaming)
+}
+
 pub fn render_warping_indicator<V: View>(
     props: WarpingProps<'_, V>,
     app: &AppContext,
@@ -370,10 +394,13 @@ pub fn render_warping_indicator<V: View>(
             }
             action => {
                 let active_block = props.terminal_model.block_list().active_block();
-                if !props.model.status(app).is_streaming()
-                    && active_block.is_active_and_long_running()
-                    && active_block.agent_interaction_metadata().is_some()
-                {
+                let is_agent_command_running = active_block.is_active_and_long_running()
+                    && active_block.agent_interaction_metadata().is_some();
+                if should_show_agent_command_status(
+                    is_agent_command_running,
+                    action.is_some(),
+                    props.model.status(app).is_streaming(),
+                ) {
                     if action.is_none() {
                         should_render_waiting_icon = true;
                         WAITING_FOR_USER_INPUT_MESSAGE.to_owned()
