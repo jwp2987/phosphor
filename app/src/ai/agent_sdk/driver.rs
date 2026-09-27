@@ -52,7 +52,6 @@ use crate::{
         },
     },
     auth::AuthStateProvider,
-    server::ids::{ServerId, SyncId},
 };
 use anyhow::Context as _;
 use futures::{
@@ -275,7 +274,8 @@ pub struct Task {
     /// The prompt for the agent.
     pub prompt: AgentRunPrompt,
     pub model: Option<LLMId>,
-    /// ID of the profile to run as (SyncId string). If None, use the default profile.
+    /// ID of the profile to run as, as `agent profile list` prints it: a sync ID string,
+    /// or `default`. If None, use the default profile.
     pub profile: Option<String>,
     /// MCP server specifications to start prior to execution.
     pub mcp_specs: Vec<MCPSpec>,
@@ -304,7 +304,9 @@ pub enum AgentDriverError {
     MCPJsonParseError(String),
     #[error("MCP server configuration is missing required variables")]
     MCPMissingVariables,
-    #[error("Agent profile \"{0}\" not found")]
+    #[error(
+        "Agent profile \"{0}\" not found. Run `agent profile list` to see the IDs `--profile` accepts."
+    )]
     ProfileError(String),
     #[error("Local user state is unavailable. Restart Phosphor and try again.")]
     NotLoggedIn,
@@ -1501,9 +1503,18 @@ impl AgentDriver {
         let terminal_id = self.terminal_driver.as_ref(ctx).terminal_view().id();
 
         if let Some(profile) = profile {
-            let server_id = ServerId::try_from(profile.as_str())
-                .map_err(|_| AgentDriverError::ProfileError(profile.clone()))?;
-            let sync_id = SyncId::ServerId(server_id);
+            // Accepts every ID `agent profile list` prints: a locally created profile's
+            // `Client-<uuid>`, a legacy 22-character server ID, or `default` (#637). This
+            // used to require a server ID, so no locally created profile was selectable.
+            use super::profiles::{ProfileSelector, parse_profile_selector};
+            let sync_id = match parse_profile_selector(&profile) {
+                Some(ProfileSelector::Default) => {
+                    // The default profile is what the session already runs with.
+                    return Ok(());
+                }
+                Some(ProfileSelector::Sync(sync_id)) => sync_id,
+                None => return Err(AgentDriverError::ProfileError(profile)),
+            };
             AIExecutionProfilesModel::handle(ctx).update(ctx, |model, ctx| {
                 if let Some(profile_id) = model.get_profile_id_by_sync_id(&sync_id) {
                     model.set_active_profile(terminal_id, profile_id, ctx);

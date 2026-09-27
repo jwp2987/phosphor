@@ -386,6 +386,9 @@ pub struct RunAgentArgs {
     pub computer_use: HiddenComputerUseArgs,
 
     /// Agent profile to configure the terminal session.
+    ///
+    /// Takes an ID exactly as `agent profile list` prints it; `default` selects the
+    /// default profile.
     #[arg(long = "profile", value_name = "ID")]
     pub profile: Option<String>,
 

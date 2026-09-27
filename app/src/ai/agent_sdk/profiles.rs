@@ -7,7 +7,49 @@ use crate::ai::agent_sdk::output::{self, TableFormat};
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
-use crate::server::ids::SyncId;
+use crate::server::ids::{ClientId, HashableId as _, ServerId, SyncId};
+
+/// The ID `agent profile list` prints for, and `--profile` accepts as, the default
+/// profile when it has no sync ID (the case for every CLI run's default profile).
+pub(super) const DEFAULT_PROFILE_CLI_ID: &str = "default";
+
+/// The profile a `--profile <ID>` argument selects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProfileSelector {
+    /// The default profile, spelled [`DEFAULT_PROFILE_CLI_ID`].
+    Default,
+    /// A profile identified by its sync ID.
+    Sync(SyncId),
+}
+
+/// The ID `agent profile list` prints for a profile: its sync ID, or
+/// [`DEFAULT_PROFILE_CLI_ID`] for the unsynced default profile.
+///
+/// Every value this returns is accepted by [`parse_profile_selector`] (#637). The list
+/// used to print `Unsynced` for any profile without a legacy 22-character server ID —
+/// with no server, every locally created profile — and `--profile` accepted only server
+/// IDs, so the command that lists profiles could not name one the flag would take.
+pub(super) fn profile_cli_id(sync_id: Option<SyncId>) -> String {
+    match sync_id {
+        Some(sync_id) => sync_id.to_string(),
+        None => DEFAULT_PROFILE_CLI_ID.to_string(),
+    }
+}
+
+/// Parse a `--profile` argument: `default`, a locally created profile's
+/// `Client-<uuid>`, or a legacy 22-character server ID.
+pub(super) fn parse_profile_selector(raw: &str) -> Option<ProfileSelector> {
+    let raw = raw.trim();
+    if raw.eq_ignore_ascii_case(DEFAULT_PROFILE_CLI_ID) {
+        return Some(ProfileSelector::Default);
+    }
+    if let Some(client_id) = ClientId::from_hash(raw) {
+        return Some(ProfileSelector::Sync(SyncId::ClientId(client_id)));
+    }
+    ServerId::try_from(raw)
+        .ok()
+        .map(|server_id| ProfileSelector::Sync(SyncId::ServerId(server_id)))
+}
 
 /// Handle Agent Profile-related CLI commands.
 pub fn run(
@@ -42,10 +84,7 @@ impl ProfilesCommandRunner {
                 .flat_map(|id| profiles_model.get_profile_by_id(*id, ctx))
                 .map(|profile| {
                     let name = profile.data().display_name().to_string();
-                    let id = match profile.sync_id() {
-                        Some(SyncId::ServerId(server_id)) => server_id.to_string(),
-                        _ => "Unsynced".to_string(),
-                    };
+                    let id = profile_cli_id(profile.sync_id());
                     ProfileInfo { id, name }
                 })
                 .collect();
@@ -78,3 +117,7 @@ impl TableFormat for ProfileInfo {
         vec![Cell::new(&self.id), Cell::new(&self.name)]
     }
 }
+
+#[cfg(test)]
+#[path = "profiles_tests.rs"]
+mod tests;
