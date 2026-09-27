@@ -10046,6 +10046,11 @@ impl TerminalView {
         trigger: NotificationsTrigger,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Desktop notifications discovery isn't meaningful on the web surface.
+        if cfg!(target_family = "wasm") {
+            return;
+        }
+
         // Don't show if the user has dismissed the banner in this session.
         if matches!(
             self.inline_banners_state.notifications_discovery_banner,

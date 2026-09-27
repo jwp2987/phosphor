@@ -2350,13 +2350,17 @@ what was dropped.
       port the `app/src/local_control/handlers/app_state.rs` switch to `from_slug`:
       the fork's `from_str` there is deliberate and documented, backing the
       `surface.settings.open` scripting contract, and must stay locale-independent.
-- [ ] **`0a7d5380e` — wasm/web guards. Port 2 of 6 hunk groups.**
+- [x] **`0a7d5380e` — wasm/web guards. Port 2 of 6 hunk groups.**
       Portable: the wasm early-return in `insert_notifications_discovery_banner`
       and the `ConversationView` arm of the `WasmNUXDialog::should_display` guard.
       Not applicable: `maybe_add_buy_credits_banner`,
       `check_and_trigger_free_ai_removal_modal`,
       `open_prompt_suggestions_unavailable_modal` — none exists here (credits/billing
       declined) — plus the five `&model` threading hunks that exist only to feed them.
+      **Ported `da973fc33` (#764):** both hunks landed verbatim on top of confirming
+      `WebIntent` here has no `SessionView` variant (only `ConversationView`), so
+      upstream's `SessionView` arm of the same guard is correctly excluded, not
+      dropped by oversight.
 
 ### PORT QUEUE — NOT-PORTED (48)
 
@@ -2667,6 +2671,13 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       here verbatim. **Not a §5.6 weakening** (condition byte-identical, only the wait
       grows) but it is upstream compensating for UPSTREAM's CI. **Do not port
       speculatively** — only if these go flaky here.
+      **Verified, not ported (2026-09-27):** both `submit_cli_agent_rich_input_opencode_defers_enter_and_close`
+      and `submit_with_plugin_but_auto_toggle_off_respects_auto_dismiss` exist verbatim
+      in `app/src/terminal/view_test.rs` at the same default 20-tick margin as upstream
+      pre-fix. No evidence found in `docs/STATE.md` or `HANDOFF.md` of either test having
+      gone flaky in this fork's CI, so per this row's own instruction the margin widening
+      is held off rather than ported speculatively. Re-check if either test is observed
+      flaky in a future round.
 - [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
       fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
       unmeasured build-speed win. Lowest value in the queue.
@@ -2687,12 +2698,16 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 These are real work but do not belong to the NOT-PORTED bucket, so they are listed
 separately rather than inflating the queue count.
 
-- [ ] `d019ddfe9` **(portable half of a DECLINED commit)** — `report_error!` ->
+- [x] `d019ddfe9` **(portable half of a DECLINED commit)** — `report_error!` ->
       `log::warn!` at `ambient_agents/task.rs:260`. The commit as a whole is declined
       below; this half is unconditionally correct, because the fork's `AgentSource` enum
       is MORE trimmed than upstream's pre-fix one (8 variants vs 13) and so hits the
       unknown-source branch strictly more often. Defensive only — no live wire producer
       of `AmbientAgentTask` JSON exists in the fork today.
+      **Ported `b7fb03956` (#763):** log macro swapped, `anyhow`/`report_error` imports
+      dropped as now-unused, deserialize outcome (`None` fallback) unchanged.
+      `task_with_unrecognized_source_still_deserializes_with_no_source` still passes
+      against the same branch.
 - [x] `98b1f5af8` **(bucketed N/A; optional)** — U+21E7 font fallback. `fallback_font_fn`
       is registered only under `cfg(target_family = "wasm")` and the fork ships no web
       build, so this is cheap consistency, **not** a user-visible fix.

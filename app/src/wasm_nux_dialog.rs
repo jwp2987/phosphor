@@ -73,6 +73,7 @@ impl WasmNUXDialog {
     ///
     /// It's shown if all of the following are true:
     /// * Not on a mobile device (mobile users can't use the desktop app)
+    /// * The current URL is not a conversation-transcript view
     /// * The user does not have an explicit native/web preference
     /// * The user hasn't dismissed the dialog
     ///
@@ -81,6 +82,17 @@ impl WasmNUXDialog {
     pub fn should_display(app: &AppContext) -> bool {
         // Don't show on mobile devices - they can't use the desktop app
         if warpui::platform::wasm::is_mobile_device() {
+            return false;
+        }
+
+        // Someone just viewing a conversation transcript (e.g. a factory-onboarding
+        // link) isn't a prospective new user composing in their own workspace, so the
+        // desktop-download prompt isn't relevant to them. The "Open in Warp" header
+        // button remains available as the unobtrusive path to the app.
+        if matches!(
+            web_intent_parser::current_web_intent(),
+            Some(WebIntent::ConversationView(_))
+        ) {
             return false;
         }
 

@@ -1,10 +1,8 @@
 //! Ambient agent task types and utilities.
 
-use anyhow::anyhow;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use warp_cli::agent::Harness;
-use warp_core::report_error;
 use warp_core::ui::theme::WarpTheme;
 use warpui::color::ColorU;
 
@@ -257,7 +255,7 @@ where
             "WEB_APP" => Some(AgentSource::WebApp),
             "GITHUB_ACTION" => Some(AgentSource::GitHubAction),
             _ => {
-                report_error!(anyhow!("Unknown AmbientAgentSource: {}", s));
+                log::warn!("Unknown AmbientAgentSource: {s}");
                 None
             }
         },
