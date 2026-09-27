@@ -6785,6 +6785,17 @@ above: is the defect/gap present *here*? Not whether Zap should merge it.
       `test_custom_adapter_model_name_keeps_reasoning_effort_suffix` (red
       before the fix), `test_openai_adapter_model_name_still_infers_reasoning_effort_suffix`
       (pins the OpenAI-native behavior is unchanged).
+      **CORRECTED 2026-09-27 by the coordinator — the adapter-kind gate alone did not
+      reach this fork's BYOP path.** Phosphor routes an OpenAI-compatible BYOP provider
+      through `AdapterKind::OpenAI` (`chat_stream.rs` `adapter_kind_for`), never
+      `Custom`, so `qwen3-max` on OpenRouter/FLM/vLLM was still stripped. The gate is
+      now the endpoint host: `uses_model_name_effort_convention` infers only for
+      `OpenAI` on `api.openai.com` and `DeepSeek` on `api.deepseek.com`. New tests:
+      `test_openai_adapter_on_third_party_endpoint_keeps_reasoning_effort_suffix` (the
+      real BYOP case) and `test_model_name_effort_convention_is_first_party_hosts_only`
+      (incl. a lookalike host). `ReasoningEffortSetting::Auto`'s doc
+      (`app/src/settings/ai.rs`) updated: on a third-party endpoint, set a level
+      explicitly to send an effort. All 206 genai lib tests pass.
 - [x] **ALREADY FIXED HERE — Zap #326 "pager wrapping no longer swallows the
       heredoc terminator that wedges the agent" — no action.**
       `wrap_command_without_pager`
