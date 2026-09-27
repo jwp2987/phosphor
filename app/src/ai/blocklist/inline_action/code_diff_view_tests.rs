@@ -303,3 +303,43 @@ fn a_revert_skips_files_the_accept_never_wrote() {
     let all_failed = HashSet::from([0, 1]);
     assert!(files_to_revert(2, &none, &all_failed).next().is_none());
 }
+
+// ── Accept reporting: `rename_report` (#688) ──────────────────────────────
+//
+// `try_emit_diffs_saved` used to decide a file's report from its raw
+// `DiffType`, so a remote session's in-place rename fallback (no rename
+// primitive there — see `InlineDiffView::write_action`) was still reported as
+// a move: the original path went into `deleted_files` and the destination
+// into `updated_files`, even though the write never touched either path
+// differently from an ordinary update. `rename_report` is the fix: it reports
+// what `write_action` says actually happened.
+
+/// A local rename reports the destination as the update target and the
+/// original path as the one to mark deleted.
+#[test]
+fn rename_report_moves_the_reported_path_and_marks_the_original_deleted() {
+    let action = FileWriteAction::Rename(PathBuf::from("/work/new.rs"));
+    let (reported_path, renamed_from) = rename_report(&action, "/work/old.rs");
+    assert_eq!(reported_path, "/work/new.rs");
+    assert_eq!(renamed_from, Some("/work/old.rs".to_owned()));
+}
+
+/// An ordinary write — including a remote rename's in-place fallback, which
+/// `write_action` has already resolved to `Write` before this ever sees it —
+/// reports an update at the registered path and nothing as deleted.
+#[test]
+fn rename_report_leaves_an_ordinary_write_at_its_own_path() {
+    let (reported_path, renamed_from) = rename_report(&FileWriteAction::Write, "/work/old.rs");
+    assert_eq!(reported_path, "/work/old.rs");
+    assert_eq!(renamed_from, None);
+}
+
+/// A delete never reaches `rename_report` in `try_emit_diffs_saved` (it is
+/// handled in its own branch), but the function itself must still treat it
+/// like an ordinary write rather than panicking or mis-reporting a rename.
+#[test]
+fn rename_report_treats_a_delete_like_an_ordinary_write() {
+    let (reported_path, renamed_from) = rename_report(&FileWriteAction::Delete, "/work/gone.rs");
+    assert_eq!(reported_path, "/work/gone.rs");
+    assert_eq!(renamed_from, None);
+}

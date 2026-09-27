@@ -90,7 +90,7 @@ use crate::{
             add_color, remove_color,
             view::{CodeEditorEvent, CodeEditorRenderOptions, CodeEditorView},
         },
-        inline_diff::{InlineDiffView, InlineDiffViewEvent, RevertDispatch},
+        inline_diff::{FileWriteAction, InlineDiffView, InlineDiffViewEvent, RevertDispatch},
         DiffResult,
     },
     code_review::telemetry_event::CodeReviewPaneEntrypoint,
@@ -466,6 +466,28 @@ impl RevertingDiffs {
     /// was reverted.
     fn all_reverted(&self) -> Option<bool> {
         (self.queued.is_empty() && self.in_flight.is_empty()).then_some(!self.any_not_reverted)
+    }
+}
+
+/// Decides how `try_emit_diffs_saved` should report one file's write, given
+/// what [`InlineDiffView::write_action`] says actually happened — not the raw
+/// `DiffType` a diff card was built from.
+///
+/// Returns `(file_path_str, renamed_from)`: `file_path_str` is the path
+/// `updated_files` should carry (the destination for a local rename,
+/// otherwise the registered path), and `renamed_from` is `Some(original path)`
+/// exactly when the write was a local rename — the caller pushes it onto
+/// `deleted_files` only if the write actually landed.
+///
+/// A remote session has no rename primitive, so `write_action` already
+/// resolved a remote rename to [`FileWriteAction::Write`] before this ever
+/// sees it: reporting a move that never happened (issue #688) is a bug in the
+/// caller asking `diff()` instead of `write_action()`, not something this
+/// function has to guard against.
+fn rename_report(action: &FileWriteAction, path: &str) -> (String, Option<String>) {
+    match action {
+        FileWriteAction::Rename(to) => (to.to_string_lossy().to_string(), Some(path.to_owned())),
+        FileWriteAction::Write | FileWriteAction::Delete => (path.to_owned(), None),
     }
 }
 
@@ -2681,25 +2703,30 @@ impl CodeDiffView {
                     // every reviewed file, as they always did.
                     let saved = !save_failed.get(idx).copied().unwrap_or(false);
 
-                    let mut file_path_str = path.to_string();
-                    if matches!(
-                        diff.diff_view.as_ref(ctx).diff(),
-                        Some(DiffType::Delete { .. })
-                    ) {
+                    // What the accept actually did — not necessarily what the
+                    // raw `DiffType` alone would suggest: a remote session has
+                    // no rename primitive, so a remote rename falls back to an
+                    // in-place write, and `write_action` (not `diff()`) is what
+                    // knows that. Reporting the raw `DiffType` here regardless
+                    // of the backend is exactly issue #688: the model was told
+                    // a file moved when the write never touched its path.
+                    let action = diff.diff_view.as_ref(ctx).write_action();
+                    if matches!(&action, FileWriteAction::Delete) {
                         if saved {
-                            deleted_files.push(file_path_str);
+                            deleted_files.push(path.to_string());
                         }
                     } else {
-                        // If this was a rename, the file being renamed should be considered "deleted".
-                        if let Some(DiffType::Update {
-                            rename: Some(rename),
-                            ..
-                        }) = diff.diff_view.as_ref(ctx).diff()
-                        {
-                            if saved {
-                                deleted_files.push(file_path_str);
+                        // A local rename reports the original path as deleted
+                        // and the destination as the update target; anything
+                        // else (including a remote rename's in-place
+                        // fallback) reports an ordinary update at the
+                        // registered path.
+                        let (file_path_str, renamed_from) =
+                            rename_report(&action, &path.to_string());
+                        if saved {
+                            if let Some(renamed_from) = renamed_from {
+                                deleted_files.push(renamed_from);
                             }
-                            file_path_str = rename.to_string_lossy().to_string();
                         }
                         let was_edited = diff.diff_view.as_ref(ctx).was_edited();
                         // Ported from upstream
