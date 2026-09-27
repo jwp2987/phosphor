@@ -646,32 +646,44 @@ before acting):
       The new tests are fixture-level (`SessionContext::new_warpified_remote_for_test`), so
       they prove the withdrawal keys on the right predicate, not that a live session
       classifies as `WarpifiedRemote` with no client.
-- [ ] **An agent command on the warpify path is never monitorable or seizable.** The
-      `Agent` long-running control state is installed in exactly one place — the BYOP LRC
-      monitor fallback (`app/src/ai/blocklist/block/cli_controller.rs:383`), gated on a CLI
-      subagent task existing. An agent-requested command that takes the warpify path (`ssh`,
-      `docker run`, ...) spawns no subagent, so `long_running_control_state` stays `None` for
-      the life of the block. Three user-visible failures follow from that one gap, and each was
-      previously chased separately: the warping indicator is suppressed
-      (`status_bar.rs:751`), taking the only "Take over" affordance with it; a submitted prompt
-      is filed `PendingLrcAutoQueue` (`input.rs:12775` tests the same no-control-state
-      condition) and locks the queue; and `is_agent_driving_active_block` is false, so the
-      password-prompt hand-over cannot fire either. Reported as an agent inside tmux inside
-      ssh sitting on an unanswerable prompt with no way to intervene.
-      **Not fixed at the source, and the attempt is instructive.** Installing
-      `Agent { .. }` in `new_hidden` was tried and reverted. Two widely consulted predicates
-      are defined in terms of that state being *absent*: `is_agent_driving_command`'s fallback
-      arm requires `long_running_control_state().is_none()`, and `is_agent_monitoring()` is
-      `is_active_and_long_running() && state.is_some()`. Filling the state in therefore
-      collapsed the first to `is_agent_in_control()` — false for a block's first 50 ms, which
-      is exactly when `AfterBlockStarted` arms the password-prompt poller — and made the
-      `PendingLrcAutoQueue` origin unproducible, so it disabled *both* fixes it was meant to
-      complete while flipping a dozen unrelated call sites at the 50 ms boundary (Ctrl-C
-      routing, the "Agent is monitoring command…" header on unmonitored blocks, keymap
-      context, focus ownership).
-      The end state is still right — a warpified agent command should carry a control state —
-      but it requires redefining those two predicates first, so that "the agent is driving
-      this" stops meaning "no state yet". That is a design change, not a constructor tweak.
+- [x] **An agent command on the warpify path is never monitorable or seizable.** Fixed:
+      issue #753. The `Agent` long-running control state was installed in exactly one place —
+      the BYOP LRC monitor fallback (`app/src/ai/blocklist/block/cli_controller.rs`), gated on
+      the agent's action result carrying a `LongRunningCommandSnapshot` (or the
+      `WriteToLongRunningShellCommand`/`ReadShellCommandOutput`/
+      `TransferShellCommandControlToUser` equivalents). **Root cause, confirmed**:
+      `TerminalModel::blocks::reinit_shell` finishes the active block (`finish(0)`, exit code 0)
+      the instant the shell-integration DCS confirms a subshell/warpified session started —
+      for a working key-authenticated SSH connection or a container that starts in well under a
+      second (the common case), that confirmation wins the race against the 2-second
+      `MAX_WAIT_DURATION` an async `RequestCommandOutput` waits before checking whether the
+      block is still running. The agent sees `Completed` with exit code 0, never a snapshot, so
+      the fallback's gate is never satisfied and `long_running_control_state` stays `None` for
+      the life of the block — spawning no subagent, exactly as this entry originally described.
+      Three user-visible failures followed from that one gap: the warping indicator/"Take over"
+      affordance was suppressed (`status_bar.rs`); a submitted prompt was filed
+      `PendingLrcAutoQueue` and locked the queue with no production unlock, since no subagent
+      task existed for `BlockCompleted`'s cleanup to retire; and `is_agent_driving_active_block`
+      stayed false, so the password-prompt hand-over could not fire. Reported as an agent inside
+      tmux inside ssh sitting on an unanswerable prompt with no way to intervene.
+      **Fix follows the pin's own server-timing model, not a constructor tweak.** Installing
+      `Agent { .. }` in `new_hidden` was tried and reverted (see git history at `2633f931e` /
+      `9a4daa681`) because two widely consulted predicates are defined in terms of that state
+      being *absent*: `is_agent_driving_command`'s fallback arm requires
+      `long_running_control_state().is_none()`, and `is_agent_monitoring()` is
+      `is_active_and_long_running() && state.is_some()`. Those predicates are untouched by this
+      fix. Instead, the exact same upgrade the snapshot-triggered fallback performs (silent CLI
+      subagent task + `set_agent_interaction_mode_for_agent_monitored_command` +
+      `CreatedSubtask`/`SpawnedSubagent`/`UpdatedControl`) is extracted into
+      `CLISubagentController::try_upgrade_block_to_agent_monitored` and triggered a second way,
+      from `TerminalView::trigger_subshell_bootstrap` / `TerminalView::continue_warpify_ssh_session`
+      (`app/src/terminal/view.rs`) — the warpify bootstrap trigger points — while the block about
+      to be replaced by `reinit_shell` is still active and genuinely unfinished, so
+      `needs_byop_monitor_upgrade` (unchanged) still says yes. Control state still arrives
+      asynchronously, after the block starts, matching the pin's timing; the `AfterBlockStarted`
+      ~50 ms window is untouched. `crates/warp_tui` shares the same `CLISubagentController` but
+      has no warpify bootstrap trigger of its own (grep confirms zero matches), so there is
+      nothing to wire up there yet.
 
 - [x] **A queued prompt could lock permanently, with no production unlock.** A prompt
       submitted while an agent `run_shell_command` action was still pending queued as

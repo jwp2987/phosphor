@@ -9366,17 +9366,28 @@ impl TerminalView {
         // Record the active long-running block so we can hide it later once the remote
         // actually confirms subshell bootstrap is in progress.
         // If the remote never emits InitShell, the block stays visible.
-        {
+        let active_block_id = {
             let model = self.model.lock();
+            let active_block_id = model.block_list().active_block_id().clone();
             if model
                 .block_list()
                 .active_block()
                 .is_active_and_long_running()
             {
-                let block_id = model.block_list().active_block_id().clone();
-                self.warpify_state.set_block_id(block_id);
+                self.warpify_state.set_block_id(active_block_id.clone());
             }
-        }
+            active_block_id
+        };
+
+        // This block is about to be finished by `reinit_shell` once the remote/nested shell's
+        // `InitShell` DCS confirms it started -- well before an agent-requested command on this
+        // path would otherwise ever produce the `LongRunningCommandSnapshot` the BYOP LRC
+        // monitor fallback needs to run (see `CLISubagentController::
+        // upgrade_warpify_block_if_agent_driven`'s doc comment). No-ops for the user's own
+        // commands and for a block that already got a control state.
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.upgrade_warpify_block_if_agent_driven(&active_block_id, ctx);
+        });
 
         self.write_init_subshell_bytes_to_pty(shell_type, ctx);
 
@@ -25735,6 +25746,16 @@ impl TerminalView {
     ) {
         self.warpify_state.set_shell_type(&shell_type);
         self.model.lock().set_pending_warp_initiated_control_mode();
+
+        // See the matching call in `trigger_subshell_bootstrap`: this block is about to be
+        // finished by `reinit_shell` once the remote confirms the tmux-wrapped session started,
+        // so an agent-requested command on this path needs the same upgrade here -- it will
+        // never produce the snapshot the BYOP LRC monitor fallback normally waits for.
+        let active_block_id = self.model.lock().block_list().active_block_id().clone();
+        self.cli_subagent_controller.update(ctx, |controller, ctx| {
+            controller.upgrade_warpify_block_if_agent_driven(&active_block_id, ctx);
+        });
+
         // The warpify script emits `SshTmuxInstaller` and `RemoteWarpificationIsUnavailable` from
         // the remote host; both quote this ID.
         let session_id = self.mint_registered_session_id();
