@@ -595,9 +595,21 @@ objc = { git = "https://github.com/warpdotdev/rust-objc.git", rev = "5b656827fa9
 pathfinder_simd = { git = "https://github.com/warpdotdev/pathfinder.git", rev = "34128a129ca6aee168fbc5060a4f21b4f7e486a9" }
 yaml-rust = { git = "https://github.com/warpdotdev/yaml-rust.git", rev = "51684719d0102ca85ff4b21cec39877a0c669e19" }
 
-tink-core = { git = "https://github.com/warpdotdev/tink-rust", branch = "warpdotdev/main" }
-tink-proto = { git = "https://github.com/warpdotdev/tink-rust", branch = "warpdotdev/main" }
-tink-hybrid = { git = "https://github.com/warpdotdev/tink-rust", branch = "warpdotdev/main" }
+# Pinned to a rev, not `branch = "warpdotdev/main"`: a branch pin is a
+# non-reproducible build input that `cargo update` can move silently with no CI
+# gate noticing (#715). This is the commit the branch already resolved to
+# (unchanged since 2025-12-09), so pinning it changes nothing about what
+# builds. The pin's own Cargo.toml (`4111d08f9`) instead pins
+# `54b9ac9af93b0c08b446a7bc0582836c9403a71b`, but that's the tip of the
+# unrelated `warpdotdev/v0.3.0-eecf54c` branch (a rebase onto tink-rust v0.3.0)
+# and its 16 commits ahead of this rev touch none of tink-core/tink-proto/
+# tink-hybrid's own sources -- only aead/, integration/{awskms,gcpkms}, prf/,
+# testing/, tests/, which this fork does not consume. Moving to it would
+# change the Cargo.lock resolution (and adopt a different upstream base) for
+# no behavioral benefit; do that as its own deliberate bump if ever needed.
+tink-core = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
+tink-proto = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
+tink-hybrid = { git = "https://github.com/warpdotdev/tink-rust", rev = "0141035f04a5e262b955c450857b689cff877469" }
 
 tikv-jemallocator = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }
 tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", rev = "2ee30bfdf7059223b54810e4ea6c666f0a379e0b" }

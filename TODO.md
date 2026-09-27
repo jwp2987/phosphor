@@ -2687,7 +2687,7 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
 - [x] `warp_multi_agent_api` `b0886a952` -> **`f0028fa6d05db1ba63726eaf6f8d33ab17abe37b`**.
       See `def3fd0e3` above. Compile-surface change; sequence with the code shards.
       **Closed 2026-09-26:** bumped to `f0028fa6d` in `4a6c07d83` (`Cargo.toml:384`).
-- [ ] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
+- [x] **`tink-core` / `tink-proto` / `tink-hybrid` — pre-existing, NOT introduced by this
       move, and worse than drift.** The fork pins them to a floating
       `branch = "warpdotdev/main"` (`Cargo.toml:593-595`) where both pins use
       `rev = "54b9ac9af93b0c08b446a7bc0582836c9403a71b"`. A branch pin is a
@@ -2696,6 +2696,20 @@ move re-opens them. Invisible to the queue, the identity manifest, and every CI 
       Either pin back to the rev or write the reason at the pin line.
       **`docs/pin-migration.md` recorded these as "3 correctly absent (cloud-coupled)",
       which is false; corrected under #625.**
+      **Closed via #715:** investigated rather than blindly applying the suggested rev —
+      `54b9ac9af9` is the tip of `warpdotdev/v0.3.0-eecf54c` (a different branch, a rebase
+      onto tink-rust v0.3.0), not `warpdotdev/main`. The fork's Cargo.lock already resolves
+      the floating branch to `0141035f04a5e262b955c450857b689cff877469` (unchanged since
+      2025-12-09), and `54b9ac9af9` is 16 commits ahead of it touching only `aead/*`,
+      `integration/{awskms,gcpkms}`, `prf/`, `testing/`, `tests/` and `core/Cargo.toml` —
+      none of it `tink-core`/`tink-proto`/`tink-hybrid` source, none of it consumed here.
+      Pinned to `rev = "0141035f04a5e262b955c450857b689cff877469"` instead: reproducible,
+      and the build doesn't change. `deny.toml`'s `allow-org = { github = ["warpdotdev"] }`
+      already covers this repo regardless of branch vs. rev; `check_license_config_sync`
+      only compares license lists and is unaffected. **Needs `cargo update -p tink-core
+      -p tink-proto -p tink-hybrid`** to refresh `Cargo.lock`'s source URLs from
+      `?branch=warpdotdev%2Fmain#...` to `?rev=0141035f0...#...` (same resolved commit, so
+      no dependency-tree change) — not yet run; coordinator builds.
 - `winit` — **deliberate, leave alone.** Reason IS written at `Cargo.toml:432-437`
   (carries `rust-windowing/winit#4453`, Windows dark-mode registry detection). Upstream's
   own winit rev did not move between the two pins. Verified 2026-09-27:
