@@ -558,6 +558,23 @@ mod startup_restore {
                         ctx,
                     )
                     .expect("the follow-up should be accepted");
+                // The stream's `StreamInit` comes first in production
+                // (`chat_stream.rs`) and initializes the exchange output that
+                // `AddMessagesToTask` below appends to; without it the exchange
+                // stays in `Streaming { output: None }` and upserting a message
+                // into it fails with `OutputNeverInitialized`.
+                conversation
+                    .initialize_output_for_response_stream(
+                        &stream_id,
+                        api::response_event::StreamInit {
+                            request_id: String::new(),
+                            conversation_id: String::new(),
+                            run_id: String::new(),
+                        },
+                        terminal_view_id,
+                        ctx,
+                    )
+                    .expect("stream init should succeed");
                 apply_action(
                     conversation,
                     &stream_id,
