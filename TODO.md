@@ -2531,10 +2531,17 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `6a96a72d` — settings registration refactor. Compile-time only, no behaviour;
       fork's `macros.rs` already ~121 lines diverged, so a manual rewrite for an
       unmeasured build-speed win. Lowest value in the queue.
-- [ ] `5fb3144db` — vim keybindings in the rule content editor
+- [x] `5fb3144db` — vim keybindings in the rule content editor
       (`ai/facts/view/rule_editor.rs:112`, `supports_vim_mode: false`). One line.
-- [ ] `7795e6728` — vim-mode sweep across 6 multi-line editors; all 6 sites are at the
+      **Fixed #736.**
+- [x] `7795e6728` — vim-mode sweep across 6 multi-line editors; all 6 sites are at the
       pre-fix state here. Six lines.
+      **Fixed #736:** flipped/added `supports_vim_mode: true` on all 6 sites
+      (`suggested_rule_modal.rs`, `git_dialog/commit.rs`,
+      `command_dialog_view.rs`, `compact_agent_input.rs`,
+      `enum_creation_dialog.rs`, `queued_prompts_panel.rs`). The
+      `queued_prompts_panel.rs` change is the single flag line only, per the
+      note about `fix/round-followups` editing that file concurrently.
 
 ### Port tasks NOT counted in the 48 (2)
 
