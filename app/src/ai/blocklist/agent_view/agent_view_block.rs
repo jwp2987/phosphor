@@ -67,6 +67,13 @@ impl AgentViewEntryBlock {
             }
             | BlocklistAIHistoryEvent::UpdatedConversationStatus {
                 conversation_id, ..
+            }
+            // A regenerated or renamed title (e.g. `start_title_generation`) otherwise sits
+            // unpainted here until some other event happens to repaint the row -- this block
+            // renders `conversation.title()` directly and had nothing subscribing to its
+            // changes. See issue #691.
+            | BlocklistAIHistoryEvent::UpdatedConversationMetadata {
+                conversation_id, ..
             } if *conversation_id == me.conversation_id => {
                 ctx.notify();
             }

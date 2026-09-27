@@ -7471,8 +7471,15 @@ pub(crate) async fn generate_title_via_byop(
 ///    the title is:" before a newline and the actual title).
 /// 3. Strips prefixes like `Title:` / `标题:` / `Thread:` / `Subject:` (case-insensitive).
 /// 4. Strips leading/trailing quotes / backticks (Chinese and English).
-/// 5. Strips trailing punctuation.
-/// 6. Truncates to 50 characters (by char, to protect CJK); appends `…` if truncated.
+/// 5. Strips a leading progress-status word (`Running` / `Executing` / `Waiting for` /
+///    `Checking`), since `title_system.md` asks for a name rather than a live status line
+///    but a model can still produce one (e.g. "Running sleep 8 command") -- and unlike a
+///    normal title, that phrasing reads as stale the moment the thing it describes finishes
+///    or is rejected, with nothing that ever regenerates it to notice. This is a defensive
+///    backstop for the prompt rule, not a replacement for it: an unrelated title that
+///    happens to start with one of these words (e.g. "Running shoes review") loses it too.
+/// 6. Strips trailing punctuation.
+/// 7. Truncates to 50 characters (by char, to protect CJK); appends `…` if truncated.
 fn sanitize_title(raw: &str) -> Option<String> {
     // 1. Strips reasoning tags (there may be several; DOTALL-style mode).
     let mut s = raw.to_owned();
@@ -7541,7 +7548,30 @@ fn sanitize_title(raw: &str) -> Option<String> {
         }
     }
 
-    // 5. Strips trailing punctuation.
+    // 5. Strips a leading progress-status word that reads as a live status line rather than
+    // a name (see the doc comment above). Only strips when something non-empty remains, so
+    // a title that is *only* the status word ("Running...") is left alone rather than
+    // reduced to nothing. Runs after the quote strip so a quoted status-sounding title
+    // ("\"Running sleep 8 command\"") is still caught.
+    const PROGRESS_PREFIXES: &[&str] = &["running ", "executing ", "waiting for ", "checking "];
+    let lower = s.to_lowercase();
+    for p in PROGRESS_PREFIXES {
+        if lower.starts_with(p) {
+            let rest = s[p.len()..].trim_start();
+            if !rest.is_empty() {
+                let mut capitalized = String::with_capacity(rest.len());
+                let mut chars = rest.chars();
+                if let Some(first) = chars.next() {
+                    capitalized.extend(first.to_uppercase());
+                }
+                capitalized.push_str(chars.as_str());
+                s = capitalized;
+            }
+            break;
+        }
+    }
+
+    // 6. Strips trailing punctuation.
     while let Some(c) = s.chars().last() {
         if matches!(
             c,
@@ -7559,7 +7589,7 @@ fn sanitize_title(raw: &str) -> Option<String> {
         return None;
     }
 
-    // 6. Truncates to 50 characters (by char, to protect CJK). Appends an ellipsis if over.
+    // 7. Truncates to 50 characters (by char, to protect CJK). Appends an ellipsis if over.
     const MAX_CHARS: usize = 50;
     let chars: Vec<char> = s.chars().collect();
     if chars.len() > MAX_CHARS {
@@ -8541,6 +8571,78 @@ fn make_finished_done(
                 request_charges: None,
             },
         )),
+    }
+}
+
+#[cfg(test)]
+mod sanitize_title_tests {
+    use super::*;
+
+    /// The verbatim defect: a title-generation model described what the conversation is
+    /// doing right now instead of naming it. Before the fix this stayed on screen, unchanged,
+    /// after the command finished or was rejected -- see issue #691.
+    #[test]
+    fn strips_a_leading_progress_word() {
+        assert_eq!(
+            sanitize_title("Running sleep 8 command"),
+            Some("Sleep 8 command".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Executing the deploy script"),
+            Some("The deploy script".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Waiting for the build to finish"),
+            Some("The build to finish".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Checking disk usage"),
+            Some("Disk usage".to_owned())
+        );
+    }
+
+    #[test]
+    fn progress_word_strip_is_case_insensitive() {
+        assert_eq!(
+            sanitize_title("RUNNING sleep 8 command"),
+            Some("Sleep 8 command".to_owned())
+        );
+    }
+
+    /// A title that is *only* the status word, with nothing left to promote, is kept as-is
+    /// rather than stripped down to an empty (and then `None`) title.
+    #[test]
+    fn keeps_a_bare_progress_word_title() {
+        assert_eq!(sanitize_title("Running"), Some("Running".to_owned()));
+    }
+
+    /// The known, documented tradeoff of a word-prefix heuristic: an unrelated title that
+    /// legitimately starts with one of the progress words loses it too.
+    #[test]
+    fn known_false_positive_on_an_unrelated_title() {
+        assert_eq!(
+            sanitize_title("Running shoes review"),
+            Some("Shoes review".to_owned())
+        );
+    }
+
+    /// A title with none of the progress words is untouched by this step.
+    #[test]
+    fn leaves_ordinary_titles_alone() {
+        assert_eq!(
+            sanitize_title("Login bug fix"),
+            Some("Login bug fix".to_owned())
+        );
+    }
+
+    /// Interaction with the existing `Title:` prefix strip and quote strip: order matters --
+    /// the progress-word strip runs after those, on the already-unwrapped text.
+    #[test]
+    fn runs_after_prefix_and_quote_stripping() {
+        assert_eq!(
+            sanitize_title("Title: \"Running sleep 8 command\""),
+            Some("Sleep 8 command".to_owned())
+        );
     }
 }
 
