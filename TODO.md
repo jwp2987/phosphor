@@ -2586,6 +2586,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       never took upstream's earlier `log::error!`->`report_error!` migration.
       `hex_color.rs` (`HexColorError` -> `thiserror::Error`) is the cleanest and is
       entirely local.
+      **`hex_color.rs` ported 2026-09-27 (`412acfd8d`):** `HexColorError` is now
+      `thiserror::Error`-derived, matching upstream's per-variant `#[error(..)]`
+      shape; no call sites changed (none exist in this fork's diff that need the
+      typed chain preserved here). **Remaining 4 of the 5 applicable sites not
+      done** — this pass did not verify them against the fork's current
+      `report_error!` call shapes; still open.
 - [ ] `9d3f3e1ec` — clone-reduction micro-refactor. **Not mechanical**: relies on
       `Revision` being `Copy`, and it is not here (`cloud_object/server_types.rs:177`).
       No behavioural delta. Lowest value in this group.
@@ -2597,9 +2603,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       **Ported 2026-09-27 (#710):** `FileTreeState.gitignores: Arc<Vec<Gitignore>>`;
       `handle_watcher_event`'s per-event `.clone()` is now a refcount bump. The one
       mutable consumer (`load_directory`) clones the inner `Vec` via `.as_ref().clone()`.
-- [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
+- [x] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
       **Strictly ordered after `6e192572`**; taken out of order the type changes fight
       each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
+      **Ported 2026-09-27 (`6ebf9758f`):** new `gitignore_cache` module (source-byte-
+      bounded LRU, keyed by path + content digest); `entry::evaluate_entry` and
+      `entry::gitignores_for_directory` route through `gitignore_cache::get_or_parse`
+      instead of `Gitignore::new`. `Vec<Gitignore>`/`&[Gitignore]` became
+      `Vec<Arc<Gitignore>>`/`&[Arc<Gitignore>]` throughout `repo_metadata` and the two
+      independent `crates/ai` gitignore consumers (`file_outline`,
+      `full_source_code_embedding`, plus the fork-only `project_context/model.rs`).
+      `FileTreeState.gitignores` is now `Arc<Vec<Arc<Gitignore>>>`, matching the noted
+      final shape. `parking_lot` added to `repo_metadata/Cargo.toml` (already a
+      workspace dep). Not compiled — verified by grepping every `Gitignore` site in
+      the tree post-edit; none left bare.
 - [x] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
       Higher value here than upstream: the fork's gate is
       `!is_byo_api_key_enabled()`, so the single-widget branch is the DEFAULT path in
