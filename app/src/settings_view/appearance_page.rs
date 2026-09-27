@@ -3315,10 +3315,10 @@ impl AppearanceSettingsPageView {
         // `tab_settings.rs`): a second rule with an identical pattern can never match,
         // since rules are tried first-to-last and the first match wins, so it would be
         // silently dead configuration if accepted.
-        let is_duplicate = TabSettings::as_ref(ctx)
-            .host_footer_color_rules
-            .iter()
-            .any(|existing| existing == &new_rule);
+        let is_duplicate = host_footer_color_rules_contains_duplicate(
+            TabSettings::as_ref(ctx).host_footer_color_rules.as_slice(),
+            &new_rule,
+        );
         if is_duplicate {
             log::warn!(
                 "Not adding host-color rule: {:?} is already configured",
@@ -6315,6 +6315,21 @@ fn build_host_footer_color_rule_move_buttons(
 fn is_valid_host_footer_color_rule_pattern(pattern_text: &str) -> bool {
     let trimmed = pattern_text.trim();
     !trimmed.is_empty() && Regex::new(trimmed).is_ok()
+}
+
+/// Whether `candidate` duplicates a rule already in `existing`, per
+/// `HostFooterColorRule`'s pattern-only `PartialEq` (see its doc comment in
+/// `workspace::tab_settings`): rules are matched first-to-last with first-match-wins,
+/// so a second rule with an already-configured pattern can never take effect -- it
+/// would be silently dead configuration if `commit_host_footer_color_rule` accepted
+/// it. Extracted from that method so the rejection predicate itself -- not just the
+/// `PartialEq` impl it's built on -- has direct unit coverage without constructing
+/// the full `AppearanceSettingsPageView` (#699).
+fn host_footer_color_rules_contains_duplicate(
+    existing: &[HostFooterColorRule],
+    candidate: &HostFooterColorRule,
+) -> bool {
+    existing.iter().any(|rule| rule == candidate)
 }
 
 /// The inline "add a rule" row: pattern + name text inputs, a color swatch picker
