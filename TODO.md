@@ -11563,6 +11563,55 @@ open findings that had no pre-existing row.
       is the same one `apply_v4a_update` already resolved and the guard already
       checked; nothing here re-resolves or re-derives it.
 
+      **2026-09-27, adversarial review of the above, six findings fixed** (see
+      DECLINED.md's IMPROVED entry for the full detail): (1) a rename revert
+      whose first step landed and second was refused reported only the second
+      step's guard message and made a retry unrunnable -- fixed with
+      `AcceptedAction::PartiallyRevertedRename`, an honest combined message,
+      and a `RevertPlan::FinishRename` retry path that touches only the
+      destination; (2) a rename card's rewind lane was keyed by its source
+      path only, so a later edit to the destination could revert concurrently
+      with the rename's own undo -- `RevertSequence` now supports a job
+      belonging to a set of lanes, and `begin_revert` gives a local rename
+      both; (3) `file_contents` keyed by the pre-rename path while
+      `updated_files` reported the destination, so the model got no content
+      for a renamed file -- both now key by the same `rename_report` output;
+      (4) the remote-session UI (tab label, "renamed without changes"
+      placeholder) still showed a move driven by the raw diff instead of
+      `write_action`; (5) `rename_and_save_if_unchanged`
+      (`crates/warp_files/src/lib.rs`, also used by the TUI) wrote the new
+      content over the OLD path before renaming -- a failure in between
+      stranded it there with nothing at the destination and no honest error --
+      rewritten to write the destination first with create-new (`O_EXCL`)
+      semantics (closing a POSIX rename TOCTOU gap too) and only then remove
+      the source, guarded fresh, reporting plainly if both now exist; (6) the
+      new glue (`dispatch_accept_delete`/`rename`, the `UndoRename`/
+      `FinishRename` branches, `finish_rename_revert`,
+      `suppress_next_backing_file_event`) still has no *live-view* test --
+      building one was judged too much unverified risk for a round with no
+      local build available; every decision function is unit-tested and the
+      disk-level writes are pushed through the same real `FileModel` calls,
+      matching this file's existing testing philosophy, but end-to-end
+      sequencing through an actual `InlineDiffView` remains open (see the new
+      entry below).
+
+- [ ] **No live-view test harness for `InlineDiffView`'s accept/revert glue**
+      (found during the 2026-09-27 #688 review). `dispatch_accept_delete`/
+      `dispatch_accept_rename`, the `UndoRename`/`FinishRename` dispatch
+      branches in `dispatch_guarded_revert`, `finish_rename_revert`, and the
+      `suppress_next_backing_file_event` cell (`app/src/code/inline_diff.rs`)
+      have no test that drives them through a real, live `InlineDiffView` end
+      to end -- every existing test either checks a pure decision function
+      (`revert_plan`, `resolve_write_action`, `pre_image_for_diff`) or pushes
+      the disk-level writes those decisions dispatch through the same guarded
+      `FileModel` calls directly, bypassing the view. The nearest precedent in
+      this codebase, `app/src/code/editor/view/view_tests.rs`'s
+      `initialize_editor`, builds a live `CodeEditorView` inside `App::test`
+      with a handful of singleton mocks; an `InlineDiffView` fixture would
+      need the same plus a `FileModel` singleton and `register_file`. Worth
+      building once a round has a build available to verify it compiles and
+      passes before committing to it blind.
+
 - [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
       (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since
       agents in this round do not build. Needs a real `cargo update -p
