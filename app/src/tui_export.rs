@@ -159,7 +159,7 @@ pub use crate::terminal::color::{Colors as TerminalColors, List as TerminalColor
 pub use crate::terminal::conversation_restoration::{
     ConversationBlockRestorationPlan, prepare_conversation_block_restoration,
 };
-pub use crate::terminal::event::AfterBlockCompletedEvent;
+pub use crate::terminal::event::{AfterBlockCompletedEvent, BlockType};
 pub use crate::terminal::history::up_arrow::{
     UpArrowHistoryConfig, prompt_history_for_terminal_view,
 };

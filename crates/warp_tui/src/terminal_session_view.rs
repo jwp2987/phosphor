@@ -18,10 +18,10 @@ use warp::settings::{
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
-    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent,
+    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent, AfterBlockCompletedEvent,
     AgentConversationEntryId, AgentConversationListEntryState, AgentConversationsModel,
     AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState, Appearance, BlockId,
-    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
+    BlockIndex, BlockType, BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
     BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
     BlocklistAIInputModel, CLISubagentController, CLISubagentEvent, CLISubagentTarget,
     COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
@@ -5782,6 +5782,21 @@ impl TypedActionView for TuiTerminalSessionView {
     }
 }
 
+impl TuiTerminalSessionView {
+    /// Whether the active block is a command the agent executed and still drives.
+    ///
+    /// Mirrors `TerminalView::is_agent_driving_active_block` (`app/src/terminal/view.rs`).
+    /// Locking the terminal model here is safe for the same reason: both callers reach this
+    /// from a model-event or poller subscription that takes the same lock itself immediately
+    /// afterwards, so it is never held across the call.
+    #[cfg(unix)]
+    fn is_agent_driving_active_block(&self) -> bool {
+        let model = self.terminal_model.lock();
+        let active_block = model.block_list().active_block();
+        active_block.is_agent_requested_command() && active_block.is_agent_driving_command()
+    }
+}
+
 impl TerminalSurface for TuiTerminalSessionView {
     fn on_shell_determined(&mut self, ctx: &mut ViewContext<Self>) {
         ctx.notify();
@@ -5790,6 +5805,49 @@ impl TerminalSurface for TuiTerminalSessionView {
     fn on_pty_spawn_failed(&mut self, error: anyhow::Error, ctx: &mut ViewContext<Self>) {
         report_error!(error.context("TUI PTY spawn failed"));
         ctx.notify();
+    }
+
+    // Password-prompt hand-over (jwp2987/phosphor#673 follow-up): the TUI previously had none
+    // of this -- it never polled termios at all, inheriting the trait's `false` default -- so
+    // an agent-driven command that stalled on a password prompt (e.g. an agent-run `ssh`) hung
+    // until `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION` (30 minutes). This ports the
+    // agent-driven half of `TerminalView`'s implementation: polling arms whenever the agent is
+    // driving the active block, and detection hands control to the user the same way
+    // `ShellCommandExecutorEvent::TransferControlToUser` already does above.
+    //
+    // Not ported: polling for the *user's* own commands' password prompts
+    // (`password_notifications_enabled`, the warpify-subshell-alias filter in
+    // `TerminalView::would_emit_block_started_for_password_prompt_polling`, and the
+    // SSH-drag-and-drop propagation) -- those are GUI-specific notification/DnD features with
+    // no TUI equivalent to hang off, and are pre-existing gaps, not a regression from this
+    // change (the TUI polled for nobody's password prompts before this). Also not ported: the
+    // non-password `[y/N]`/`read -p` detection (`pending_interactive_prompt` /
+    // `on_stalled_interactive_prompt` / `keeps_polling_after_prompt`, #673's later half) --
+    // scoped out of this change; see TODO.md for what a follow-up needs.
+    #[cfg(unix)]
+    fn should_start_password_prompt_polling(&self, _command: &str, _ctx: &AppContext) -> bool {
+        self.is_agent_driving_active_block()
+    }
+
+    #[cfg(unix)]
+    fn should_stop_password_prompt_polling(&self, completed: &AfterBlockCompletedEvent) -> bool {
+        matches!(
+            &completed.block_type,
+            BlockType::User(_) | BlockType::BootstrapVisible(_) | BlockType::Background(_)
+        )
+    }
+
+    #[cfg(unix)]
+    fn on_possible_password_prompt(
+        &mut self,
+        _block_index: Option<BlockIndex>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
     }
 }
 
