@@ -532,6 +532,7 @@ fn test_toggle_raw_mode_local_notebook_emits_replace_with_code_pane() {
             [PaneEvent::ReplaceWithCodePane {
                 path: BufferLocation::Local(expected_path),
                 source: None,
+                scroll_fraction: None,
             }]
         );
     });
@@ -582,6 +583,7 @@ fn test_toggle_raw_mode_remote_notebook_replaces_pane_with_remote_code_pane() {
             [PaneEvent::ReplaceWithCodePane {
                 path: BufferLocation::Remote(remote_path),
                 source: None,
+                scroll_fraction: None,
             }],
             "Raw mode must replace the pane with a CodePane targeting the remote \
              file, not silently no-op"

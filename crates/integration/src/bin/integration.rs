@@ -264,6 +264,7 @@ fn register_tests() -> HashMap<&'static str, BoxedBuilderFn> {
     register_test!(test_bash_bootstraps_with_prompt_command_array);
     register_test!(test_bash_bootstraps_with_prompt_command_array_that_sets_ps1);
     register_test!(test_zsh_bootstraps_with_nounset_option);
+    register_test!(test_pwsh_vi_edit_mode_does_not_corrupt_commands);
     register_test!(test_legacy_ssh_into_bash);
     register_test!(test_legacy_ssh_into_zsh);
     register_test!(test_tmux_ssh_into_bash);

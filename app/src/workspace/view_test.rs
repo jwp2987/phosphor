@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::AIRequestUsageModel;
 use crate::ai::blocklist::{BlocklistAIHistoryModel, BlocklistAIPermissions};
 use crate::ai::document::ai_document_model::AIDocumentModel;
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
@@ -8,7 +9,6 @@ use crate::ai::outline::RepoOutlines;
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
-use crate::ai::AIRequestUsageModel;
 use crate::auth::UserUid;
 use crate::cloud_object::model::persistence::ObjectStoreModel;
 use crate::cloud_object::model::view::ObjectStoreViewModel;
@@ -26,10 +26,10 @@ use crate::terminal::shared_session::protocol::SessionSourceType;
 use crate::terminal::shared_session::protocol::{ParticipantId, ParticipantList};
 #[cfg(feature = "local_fs")]
 use crate::user_config::tab_configs_dir;
-use repo_metadata::repositories::DetectedRepositories;
-use repo_metadata::watcher::DirectoryWatcher;
 #[cfg(feature = "local_fs")]
 use repo_metadata::RepoMetadataModel;
+use repo_metadata::repositories::DetectedRepositories;
+use repo_metadata::watcher::DirectoryWatcher;
 use std::collections::HashMap;
 use std::sync::Arc;
 use watcher::HomeDirectoryWatcher;
@@ -38,8 +38,8 @@ use crate::cloud_object::update_manager::UpdateManager;
 use crate::server::experiments::ServerExperiments;
 
 use crate::settings::PrivacySettings;
-use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::settings_view::DisplayCount;
+use crate::settings_view::keybindings::KeybindingChangedNotifier;
 use crate::system::SystemStats;
 use crate::tab_configs::tab_config::{TabConfigPaneNode, TabConfigPaneType};
 use crate::terminal::history::History;
@@ -50,15 +50,16 @@ use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
 use crate::terminal::local_tty::spawner::PtySpawner;
+use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
 #[cfg(feature = "local_fs")]
 use tempfile::TempDir;
-use crate::terminal::shared_session::{SharedSessionScrollbackType, SharedSessionStatus};
 
+use crate::ObjectActions;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
 use crate::ai::mcp::{
-    gallery::MCPGalleryManager, templatable_manager::TemplatableMCPServerManager,
-    FileBasedMCPManager, FileMCPWatcher,
+    FileBasedMCPManager, FileMCPWatcher, gallery::MCPGalleryManager,
+    templatable_manager::TemplatableMCPServerManager,
 };
 use crate::resource_center::Tip;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
@@ -66,8 +67,7 @@ use crate::test_util::settings::initialize_settings_for_tests;
 use crate::undo_close::UndoCloseSettings;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use crate::workflows::local_workflows::LocalWorkflows;
-use crate::ObjectActions;
-use crate::{experiments, workspace, GlobalResourceHandlesProvider};
+use crate::{GlobalResourceHandlesProvider, experiments, workspace};
 
 // Zap (localization, Phase 5): `PreferencesSyncer` was physically removed.
 
@@ -76,7 +76,7 @@ use ai::project_context::model::ProjectContextModel;
 use pane_group::{NotebookPane, PaneState, SplitPaneState, TerminalPaneId};
 use terminal::view::ActiveSessionState;
 use warpui::AddSingletonModel;
-use warpui::{platform::WindowStyle, App, ViewHandle};
+use warpui::{App, ViewHandle, platform::WindowStyle};
 
 pub(crate) fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
@@ -89,6 +89,7 @@ pub(crate) fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_| AutoupdateState::new(Arc::new(http_client::Client::new())));
     app.add_singleton_model(|_| NetworkStatus::new());
     app.add_singleton_model(|_| SystemStats::new());
+    app.add_singleton_model(|_| crate::tab::TabShortcutModifierState::new());
     app.add_singleton_model(ObjectStoreModel::mock);
     app.add_singleton_model(UserWorkspaces::default_mock);
     app.add_singleton_model(|_ctx| UserProfiles::new(Vec::new()));
@@ -1412,9 +1413,11 @@ fn test_workspace_sessions_retrieves_tabs() {
                 .map(|tab| tab.read(ctx, |tab, _ctx| tab.pane_id_by_index(0).unwrap()))
                 .expect("WindowId was not retrieved.");
 
-            assert!(workspace
-                .workspace_sessions(ctx.window_id(), ctx)
-                .any(|x| { x.pane_view_locator().pane_id == pane_id }));
+            assert!(
+                workspace
+                    .workspace_sessions(ctx.window_id(), ctx)
+                    .any(|x| { x.pane_view_locator().pane_id == pane_id })
+            );
 
             // Add a tab and check if workspace_sessions finds the second session from the new tab.
             workspace.add_terminal_tab(false, ctx);
@@ -1423,9 +1426,11 @@ fn test_workspace_sessions_retrieves_tabs() {
                 .map(|tab| tab.read(ctx, |tab, _ctx| tab.pane_id_by_index(0).unwrap()))
                 .expect("WindowId was not retrieved.");
 
-            assert!(workspace
-                .workspace_sessions(ctx.window_id(), ctx)
-                .any(|x| { x.pane_view_locator().pane_id == new_pane_id }));
+            assert!(
+                workspace
+                    .workspace_sessions(ctx.window_id(), ctx)
+                    .any(|x| { x.pane_view_locator().pane_id == new_pane_id })
+            );
         });
     });
 }
@@ -1450,9 +1455,11 @@ fn test_workspace_sessions_retrieves_panes() {
                 .get_pane_group_view(0)
                 .map(|tab| tab.read(ctx, |tab, _ctx| tab.pane_id_by_index(1).unwrap()))
                 .expect("WindowId was not retrieved.");
-            assert!(workspace
-                .workspace_sessions(ctx.window_id(), ctx)
-                .any(|x| { x.pane_view_locator().pane_id == new_pane_id }));
+            assert!(
+                workspace
+                    .workspace_sessions(ctx.window_id(), ctx)
+                    .any(|x| { x.pane_view_locator().pane_id == new_pane_id })
+            );
         });
     });
 }
@@ -2772,9 +2779,11 @@ fn test_vertical_tabs_panel_restored_open_when_show_in_restored_windows_enabled(
         app.update(|ctx| {
             TabSettings::handle(ctx).update(ctx, |settings, ctx| {
                 report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
-                report_if_error!(settings
-                    .show_vertical_tab_panel_in_restored_windows
-                    .set_value(true, ctx));
+                report_if_error!(
+                    settings
+                        .show_vertical_tab_panel_in_restored_windows
+                        .set_value(true, ctx)
+                );
             });
         });
 
@@ -3421,9 +3430,11 @@ fn test_vertical_tabs_context_menu_does_not_show_hover_only_tab_bar() {
 
         workspace.update(&mut app, |workspace, ctx| {
             TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .workspace_decoration_visibility
-                    .set_value(WorkspaceDecorationVisibility::OnHover, ctx));
+                report_if_error!(
+                    settings
+                        .workspace_decoration_visibility
+                        .set_value(WorkspaceDecorationVisibility::OnHover, ctx)
+                );
                 report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
             });
             workspace.should_show_ai_assistant_warm_welcome = false;
@@ -3448,9 +3459,11 @@ fn test_standard_tab_context_menu_shows_hover_only_tab_bar() {
 
         workspace.update(&mut app, |workspace, ctx| {
             TabSettings::handle(ctx).update(ctx, |settings, ctx| {
-                report_if_error!(settings
-                    .workspace_decoration_visibility
-                    .set_value(WorkspaceDecorationVisibility::OnHover, ctx));
+                report_if_error!(
+                    settings
+                        .workspace_decoration_visibility
+                        .set_value(WorkspaceDecorationVisibility::OnHover, ctx)
+                );
             });
             workspace.should_show_ai_assistant_warm_welcome = false;
 
@@ -3750,8 +3763,8 @@ fn restore_conversation_in_active_pane_enters_existing_live_conversation_without
         // Note: fork's `start_new_conversation` dropped Warp's
         // `is_cli_agent_transcript` 4th bool param (only
         // `is_autoexecute_override` / `is_viewing_shared_session` remain).
-        let conversation_id =
-            BlocklistAIHistoryModel::handle(&app).update(&mut app, |history, ctx| {
+        let conversation_id = BlocklistAIHistoryModel::handle(&app)
+            .update(&mut app, |history, ctx| {
                 history.start_new_conversation(terminal_view_id, false, false, ctx)
             });
 
@@ -4684,7 +4697,12 @@ fn test_restore_applies_tab_groups_and_pinned_state_into_live_tabs() {
         // The snapshot must carry the group definition and the pinned flags.
         assert_eq!(snapshot.tab_groups.len(), 1);
         assert!(snapshot.tab_groups[0].pinned);
-        assert!(snapshot.tabs.iter().any(|t| t.pinned && t.group_id.is_none()));
+        assert!(
+            snapshot
+                .tabs
+                .iter()
+                .any(|t| t.pinned && t.group_id.is_none())
+        );
 
         let restored = restored_workspace(&mut app, snapshot);
         restored.read(&app, |workspace, _| {
@@ -4831,7 +4849,11 @@ fn test_keymap_context_reflects_active_tab_pin_and_group_state() {
             assert!(!context.set.contains("Workspace_ActiveTabPinned"));
             assert!(!context.set.contains("Workspace_ActiveTabInGroup"));
             assert!(!context.set.contains("Workspace_ActiveTabGroupPinned"));
-            assert!(!context.set.contains("Workspace_ActiveOrSelectedTabsInGroup"));
+            assert!(
+                !context
+                    .set
+                    .contains("Workspace_ActiveOrSelectedTabsInGroup")
+            );
 
             // Pinning the active tab surfaces `Workspace_ActiveTabPinned`.
             workspace.handle_action(&WorkspaceAction::PinActiveTab, ctx);
@@ -4845,7 +4867,11 @@ fn test_keymap_context_reflects_active_tab_pin_and_group_state() {
             assert!(!context.set.contains("Workspace_ActiveTabPinned"));
             assert!(context.set.contains("Workspace_ActiveTabInGroup"));
             assert!(!context.set.contains("Workspace_ActiveTabGroupPinned"));
-            assert!(context.set.contains("Workspace_ActiveOrSelectedTabsInGroup"));
+            assert!(
+                context
+                    .set
+                    .contains("Workspace_ActiveOrSelectedTabsInGroup")
+            );
 
             workspace.handle_action(&WorkspaceAction::PinActiveTabGroup, ctx);
             let context = workspace.keymap_context(ctx);
@@ -6160,7 +6186,10 @@ fn test_toggle_tab_group_color_sets_then_clears() {
             workspace.tab_groups.insert(group_id, group);
             workspace.tabs[0].group_id = Some(group_id);
 
-            assert_eq!(workspace.tab_groups[&group_id].color, SelectedTabColor::Unset);
+            assert_eq!(
+                workspace.tab_groups[&group_id].color,
+                SelectedTabColor::Unset
+            );
 
             let color = AnsiColorIdentifier::Blue;
             workspace.handle_action(
@@ -6212,9 +6241,11 @@ fn test_rename_tab_group_seeds_editor_and_commits_on_enter() {
                 .read(ctx, |editor, ctx| editor.selected_text(ctx));
             assert_eq!("Backend", selected_text);
 
-            workspace.tab_group_rename_editor.update(ctx, |editor, ctx| {
-                editor.insert_selected_text("Frontend", ctx);
-            });
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| {
+                    editor.insert_selected_text("Frontend", ctx);
+                });
             workspace.handle_tab_group_rename_editor_event(&Event::Enter, ctx);
 
             assert!(
@@ -6246,9 +6277,11 @@ fn test_cancel_tab_group_rename_keeps_the_old_name() {
             workspace.tabs[0].group_id = Some(group_id);
 
             workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
-            workspace.tab_group_rename_editor.update(ctx, |editor, ctx| {
-                editor.insert_selected_text("Frontend", ctx);
-            });
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| {
+                    editor.insert_selected_text("Frontend", ctx);
+                });
             workspace.handle_tab_group_rename_editor_event(&Event::Escape, ctx);
 
             assert!(

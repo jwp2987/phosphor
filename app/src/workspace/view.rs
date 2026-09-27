@@ -367,6 +367,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use warp_core::context_flag::ContextFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_util::path::{LineAndColumnArg, user_friendly_path};
+use warpui::event::KeyState;
 use warpui::fonts::Weight;
 use warpui::modals::{AlertDialogWithCallbacks, AppModalCallback};
 
@@ -379,6 +380,7 @@ use warpui::elements::{
     MouseInBehavior, Rect,
 };
 use warpui::ui_components::button::Button;
+use warpui::windowing::state::ApplicationStage;
 use warpui::windowing::{StateEvent, WindowManager};
 use warpui::{elements::MouseStateHandle, fonts::Properties};
 
@@ -449,8 +451,8 @@ use crate::tab::{
     COMPACT_TAB_WIDTH_THRESHOLD, ColorPickerTarget, MOVE_TO_GROUP_LABEL, NewSessionMenuItem,
     PaneNameMenuTarget, SelectedTabColor, TAB_BAR_BORDER_HEIGHT, TAB_INDICATOR_HEIGHT,
     TAB_PIN_INDICATOR_ICON_SIZE, TAB_PIN_VANISH_THRESHOLD, TabBarState, TabComponent, TabData,
-    TabMoveGating, TabTelemetryAction, color_picker_menu_items, next_tab_color, tab_position_id,
-    uses_vertical_tabs,
+    TabMoveGating, TabShortcutModifierState, TabTelemetryAction, color_picker_menu_items,
+    next_tab_color, tab_position_id, uses_vertical_tabs,
 };
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::ui_components::icons;
@@ -2727,6 +2729,9 @@ impl Workspace {
         let state_handle = WindowManager::handle(ctx);
         ctx.subscribe_to_model(&state_handle, |me, _, event, ctx| {
             me.handle_window_state_change(event, ctx);
+        });
+        ctx.observe(&TabShortcutModifierState::handle(ctx), |_, _, ctx| {
+            ctx.notify();
         });
 
         ctx.observe(&RelaunchModel::handle(ctx), |_, _, ctx| {
@@ -17429,6 +17434,20 @@ impl Workspace {
     fn handle_window_state_change(&mut self, event: &StateEvent, ctx: &mut ViewContext<Self>) {
         match &event {
             StateEvent::ValueChanged { current, previous } => {
+                // A modifier released while the window or app is unfocused generates no key-up
+                // event, so it would otherwise leave the tab shortcut hints stuck revealed until
+                // the next unrelated modifier press. Clear on either transition.
+                let window_lost_focus = previous.active_window == Some(self.window_id)
+                    && current.active_window != Some(self.window_id);
+                let app_lost_focus = previous.stage == ApplicationStage::Active
+                    && current.stage != ApplicationStage::Active;
+                if window_lost_focus || app_lost_focus {
+                    TabShortcutModifierState::handle(ctx).update(ctx, |state, ctx| {
+                        if state.clear_held_keys() {
+                            ctx.notify();
+                        }
+                    });
+                }
                 // Re-render if fullscreen state for active window has changed.
                 if current.is_active_window_fullscreen != previous.is_active_window_fullscreen {
                     ctx.notify();
@@ -21583,6 +21602,11 @@ impl TypedActionView for Workspace {
         match action {
             ActivateTab(index) => self.activate_tab(*index, ctx),
             ActivateTabByNumber(num) => self.activate_tab(num.saturating_sub(1), ctx),
+            SetTabShortcutModifierKey { key_code, pressed } => {
+                TabShortcutModifierState::handle(ctx).update(ctx, |state, ctx| {
+                    state.set_key_held(*key_code, *pressed, ctx);
+                });
+            }
             ActivatePrevTab => self.activate_prev_tab(ctx),
             OpenLaunchConfigSaveModal => self.open_launch_config_save_modal(ctx),
             ActivateNextTab => self.activate_next_tab(ctx),
@@ -24874,6 +24898,15 @@ impl View for Workspace {
                     DispatchEventResult::StopPropagation
                 });
         }
+
+        let event_handler =
+            event_handler.on_modifier_state_changed(|ctx, _app, key_code, state| {
+                ctx.dispatch_typed_action(WorkspaceAction::SetTabShortcutModifierKey {
+                    key_code: *key_code,
+                    pressed: matches!(state, KeyState::Pressed),
+                });
+                DispatchEventResult::PropagateToParent
+            });
 
         event_handler.finish()
     }

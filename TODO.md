@@ -2527,10 +2527,26 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       shows `^P` reverting to `up-history`; post-fix it stays on the warp widget.
       **The `748b635c` pwsh half is NOT ported here** — out of scope for this
       change (zsh-only); still open below.
-- [ ] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
+- [x] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
       **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
       `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
       Do not "fix" this by relocating the existing call.
+      **Fixed 2026-09-27 (#750):** ported verbatim onto `pwsh.ps1` -- `Warp-Configure-PSReadLine`
+      forces `EditMode Emacs` (recording `$script:viEditModeOverridden`) when it finds the
+      session already in `Vi`, before its four `Set-PSReadLineKeyHandler` calls; the existing
+      sole call site (`Warp-Precmd`, `:452`) is untouched, and a second call was ADDED (not
+      relocated) at the top of `Warp-Finish-Bootstrap`, matching the trap note above.
+      `vi_mode_enabled` added to the `Bootstrapped` payload next to `shell_plugins`, matching
+      bash/fish. Ported upstream's E2E integration test
+      `test_pwsh_vi_edit_mode_does_not_corrupt_commands`
+      (`crates/integration/src/test/bootstrapping.rs`) and its two registrations
+      (`crates/integration/src/bin/integration.rs`, `crates/integration/tests/integration/shell_integration_tests.rs`)
+      verbatim -- `script/check_integration_test_registry` passes. Note: the paired zsh port
+      (`294033bb`, #737) did not add the equivalent `test_zsh_cursor_mode_vi_bindings_do_not_corrupt_commands`
+      integration test (verified against a real zsh binary instead); that gap is pre-existing
+      and not addressed here, out of scope for the pwsh half.
+      `script/lint_powershell` could not be run in this sandbox (no `pwsh` binary available);
+      the change was checked by hand for brace balance and against upstream's exact diff.
 - [x] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
       the lowercased first token, retaining every **miss** forever with no length
       cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
@@ -2542,11 +2558,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `enum_then_path_option_signature` fixture, and all 4 of upstream's new
       tests. Legacy completer only, matching upstream's own scope (the v2 engine
       already resolves by position).
-- [ ] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
+- [x] `4e49d04f` — **two separable ports, both valid.** (a) `parse_ls_script_output`
       refactor + truncation/malformed-output guard: cross-platform, applies to every
       legacy-SSH listing, 8 new unit tests. (b) WSL guest enumeration: Windows-only.
       Land (a) alone if you want the low-risk half. The `-L` already present here
       came from `1b65a8b9`, not this commit — not a partial land.
+      **Fixed 2026-09-27 (#762):** landed half (a) only, per this row's own scope note
+      — half (b) (`wsl_guest_listing.rs`, `#[cfg(windows)]` call site) stays out,
+      Windows-only. `parse_ls_script_output`/`dir_entry_from_segment` extracted in
+      `app/src/completer/mod.rs`, reused by the `WarpifiedRemote` branch it was inlined
+      in before; the malformed/truncated-output `None` guard and non-UTF-8-drops-only-
+      the-bad-entry behavior now apply there. All 8 cross-platform unit tests ported
+      verbatim to `app/src/completer/test.rs` (`ls_script_for_dir` structure assertion +
+      7 `parse_ls_script_output` cases); the 3 WSL-guest-listing-module tests are not
+      applicable without half (b).
 
 **Terminal / rendering (6)**
 
@@ -2688,12 +2713,34 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Search / workspace / system (10)**
 
-- [ ] `36dd2cc2` **P0 — unbounded search channel.** `async_channel::unbounded()`
+- [x] `36dd2cc2` **P0 — unbounded search channel.** `async_channel::unbounded()`
       (`app/src/search/searcher.rs:1249`) with all three consumers doing
       clear-then-rebuild per event. ~300 lines + ~500 test lines; relocate from
       `crates/warp_search_core/`. **Upstream's revision 1 design was wrong** — a naive
       side-slot coalescer reorders an insert issued between two rebuilds; ship the
       sequence-number + per-commit-chunking design.
+      **Fixed 2026-09-27 (#744):** ported upstream's final (revision 3) design verbatim
+      onto `app/src/search/searcher.rs` (this fork never took the `crates/warp_search_core`
+      extraction, so it stayed in `app/src/search/`): `SearcherProducerState` (a
+      `next_sequence` counter + `Option<PendingRebuild>`) under one lock,
+      `AsyncSearcher::rebuild_index_async` coalescing a burst to at most one pending
+      rebuild and at most one `QueuedItem::RebuildMarker` wake-up, and `merge_with_rebuild`
+      splitting a drained batch into before/rebuild/after commit chunks so a rebuild's
+      clear always commits in isolation (Tantivy's `delete_all_documents` only removes
+      already-committed segments). The three callers
+      (`launch_config`/`new_session`/`warp_drive` `data_source.rs`) switched their
+      `clear_search_index_async` + `build_index_async` pairs to the single
+      `rebuild_index_async` call. Kept the fork's pre-existing `QueuedItem::Flush` barrier
+      (`wait_for_pending_writes`) working alongside the new `RebuildMarker` variant, and
+      kept `log::error!` (not upstream's `report_error!`, an unrelated pre-existing
+      divergence in this file, out of scope here). Ported all 4 of upstream's new tests
+      verbatim (`test_searcher_async_rebuild_coalesces_burst`,
+      `..._preserves_operation_order_with_interleaved_updates`,
+      `..._marker_stays_coalesced_across_supersession`,
+      `..._is_not_delayed_when_its_marker_is_never_sent`) into `searcher_test.rs`
+      (singular, this fork's existing convention), plus their shared test harness
+      (`async_searcher_without_background_writer`, `drain_pending_chunks`,
+      `apply_chunks`, `describe_events`/`document_name`, `poll_until`).
 - [x] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
       DIFFERENT keystroke.** Fork's `CustomAction::ToggleProjectExplorer` is
       `ctrl-2`/`ctrl-shift-2` (`util/bindings.rs:419`) where upstream is `ctrl-1`/`alt-1`.
@@ -2715,23 +2762,94 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       **Fixed 2026-09-26 (#676, `1c2342ecd`):** ported as
       `ExecutionMode::can_inherit_process_path_for_mcp` (`App` false; `Tui`/`Sdk` true; no
       `RemoteServerDaemon` in this fork).
-- [ ] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
+- [x] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
       **Port requires EXTENDING a fork test, not weakening it**: add
       `scroll_fraction: None` to the exhaustive literal at `notebooks/file/mod_tests.rs:530`.
       Fork uses `BufferLocation` where upstream uses `LocalOrRemotePath`.
+      **Fixed 2026-09-27 (#758):** ported the full stack onto this fork's shapes --
+      `ScrollPosition::Fraction`/`RenderState::scroll_fraction`/`scroll_to_fraction`/
+      `ViewportState::scroll_fraction`/`scroll_to_fraction` verbatim; `PaneEvent`'s two
+      variants each grew a `scroll_fraction: Option<OrderedFloat<f32>>` field onto their
+      *existing* fork-specific path types (`BufferLocation` for `ReplaceWithCodePane`,
+      local `PathBuf` for `ReplaceWithFilePane`) rather than adopting upstream's unified
+      `LocalOrRemotePath`. `replace_code_pane_with_file_pane` restructured to "construct
+      empty, seed the pending fraction, then `open_local`" (matching upstream's own
+      ordering fix) since this fork's `FilePane::new` opens synchronously inside its own
+      constructor closure when given a path up front.
+      **The TODO's suggested literal was wrong, corrected using derived behavior**: traced
+      `FileNotebookView::scroll_fraction` and confirmed it can only return `Some` if
+      `pending_scroll_fraction`-worth content exists; the two regression tests at
+      `mod_tests.rs:530`/`582` toggle a freshly-opened, never-scrolled view, so the real
+      fraction is deterministically `0.0` regardless of content/viewport height (scroll_top
+      starts at zero and nothing scrolls it before the toggle). Rather than threading a
+      no-op `Some(0.0)` through the pane-replacement event (scrolling to fraction 0.0 is
+      byte-identical to the pane's untouched default), `scroll_fraction()` returns `None`
+      for that case -- behaviorally a no-op vs. upstream, and it is what makes
+      `scroll_fraction: None` in the existing exhaustive literals the *correct* value, not
+      a placeholder. Both tests updated with that field.
+      Ported upstream's unit test verbatim: `test_scroll_fraction`
+      (`crates/editor/src/render/model/viewport_tests.rs`), covering fraction<->scroll_top
+      midpoint mapping, clamping, and the no-scrollable-range case.
+      No `crates/warp_search_core`-style crate split applies here; everything landed in the
+      existing `app/src/code/*`, `app/src/notebooks/file/mod.rs`, `app/src/pane_group/*`,
+      and `crates/editor/src/render/model/*` files upstream also touches, following round
+      5's Home/End/PageUp and Mermaid-resync work in the same editor files.
 - [x] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
       **Closed as declined 2026-09-26:** Windows-only. Out of scope.
 - [x] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact
       insertion point but parses the diff first.
       **Fixed 2026-09-26 (#679, `2c941fe37`):** early return before parse, fork's staged
       preserved; real-repo regression test added.
-- [ ] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
+- [x] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
       `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
       `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
       compile-only no-op here.
-- [ ] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
-- [ ] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
+      **Fixed 2026-09-27:** ported `SystemInfo::check_for_excessive_memory_usage`'s
+      confirm-on-next-tick logic verbatim (`pending_excessive_memory_footprint_bytes`,
+      `MEMORY_USAGE_WARNING_THRESHOLD_BYTES` as a plain `u64`) -- a threshold crossing
+      no longer triggers the jemalloc dump + `MemoryUsageHigh` emit + latch on the tick
+      that first observes it, only once still excessive on the *next* tick, so a freed
+      transient spike is skipped instead of producing a worthless heap profile and
+      permanently silencing later detection via the once-per-process latch. Per this
+      row's own scope note, the new `TransientMemorySpike` `TelemetryEvent` variant was
+      NOT added -- `send_telemetry_sync_from_ctx!` is a compile-only no-op in this fork
+      (telemetry channel removed, see DECLINED.md), so the skip path logs via
+      `log::info!` instead, matching the existing convention for this exact situation
+      (DECLINED.md's `write_skips_pty_permission_check` entry, "the allow-reason for the
+      sibling `RequestCommandOutput` path is now `log::info!` as well, because
+      `send_telemetry_from_ctx!` is a no-op here").
+- [x] `8b88df98` **(land before `40e39717`)** — tab shortcut hints.
+      **Fixed 2026-09-27 (#760):** ported verbatim onto this fork's tab bar (`app/src/tab.rs`)
+      and vertical-tabs sidebar (`app/src/workspace/view/vertical_tabs.rs`, whose `PaneProps::new`
+      already had more parameters than upstream's -- the new `shortcut_hint_tab_index: Option<usize>`
+      landed as the last positional arg before `app`/`ctx` at all 6 call sites). New
+      `TabShortcutModifierState` singleton (`app/src/tab.rs`) tracks held modifier keys with a
+      750ms reveal delay per key, driven by a new `WorkspaceAction::SetTabShortcutModifierKey`
+      dispatched from the workspace root's `EventHandler::on_modifier_state_changed` hook;
+      cleared on window/app focus loss (`handle_window_state_change`) to avoid a stuck-revealed
+      hint if the modifier's key-up never arrives. `reveals_tab_shortcut_hints` derives the reveal
+      modifier from the current `workspace:activate_*_tab` bindings rather than hardcoding it, so
+      a remapped binding reveals with its own modifier. Registered the new singleton at both
+      `app/src/lib.rs` (`initialize_app`) and `app/src/workspace/view_test.rs` (`initialize_app`,
+      the test-only entry point `mock_workspace` and other workspace-constructing tests already
+      route through). Ported all upstream unit tests found in `8b88df98`'s diff
+      (`app/src/tab_tests.rs`: `TabShortcutModifierState` clear/reveal gating; the sidecar
+      truth-table/binding-order/overlap tests in `app/src/workspace/view/vertical_tabs_tests.rs`)
+      verbatim.
+- [x] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
       it edits is introduced by `8b88df98`.
+      **Fixed 2026-09-27 (#760):** ported verbatim -- new `tab_activate_binding_name(tab_index,
+      tab_count)` (`app/src/tab.rs`) resolves the numbered binding for tabs 1-8 and falls back to
+      the new `workspace:activate_last_tab` binding for the final tab when the window has 9+ tabs,
+      superseding the plain index-bounds check both the tab bar and vertical-tabs sidebar used
+      before. `PaneProps::shortcut_hint_tab_index: Option<usize>` renamed to
+      `shortcut_hint_binding_name: Option<&'static str>` and resolved at the only 2 (of 6)
+      `PaneProps::new` call sites that have a real tab count to hand
+      (`render_tab_group_internal`'s two sites); the 3 search-matching call sites and
+      `detail_pane_props` keep passing `None`, matching upstream's scope (search matching never
+      needed the hint). Removed `shows_shortcut_hint` and its 3 tests, replaced by 3 new
+      `tab_activate_binding_name` tests in `app/src/tab_tests.rs`, exactly mirroring upstream's
+      test churn.
 - [x] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.
       **Closed as declined 2026-09-26:** wasm-only; this fork ships no wasm target. Out of scope.
 
@@ -2841,7 +2959,11 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       existing variants (Heroku, Notion, Linear, Figma, Github, Slack);
       Composio/Resend/Sentry/YouDotCom stay out of scope (no icon assets).
       Tests in `external_product_icon_tests.rs`.
-- [ ] `996babee` — two doc-comment URLs. Zero risk.
+- [x] `996babee` — two doc-comment URLs. Zero risk.
+      **Fixed 2026-09-27:** ported verbatim -- added the `microsoft/terminal`
+      `InputStateMachineEngine.cpp` permalink to both `Shell::input_reporting_sequence`
+      and `ShellType::kill_buffer_bytes` in `crates/warp_terminal/src/shell/mod.rs`.
+      Comment-only, no behavior change.
 - [x] `69254d73` — TUI focus-ownership hardening (13 files).
       **Closed 2026-09-26:** ported in `e287977f0`.
 - [x] `94daf47f3` — **PORTED 2026-08-29** (`56a86a7d7`), with its 3 tests.
