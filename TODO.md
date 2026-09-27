@@ -2725,7 +2725,11 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       existing variants (Heroku, Notion, Linear, Figma, Github, Slack);
       Composio/Resend/Sentry/YouDotCom stay out of scope (no icon assets).
       Tests in `external_product_icon_tests.rs`.
-- [ ] `996babee` — two doc-comment URLs. Zero risk.
+- [x] `996babee` — two doc-comment URLs. Zero risk.
+      **Fixed 2026-09-27:** ported verbatim -- added the `microsoft/terminal`
+      `InputStateMachineEngine.cpp` permalink to both `Shell::input_reporting_sequence`
+      and `ShellType::kill_buffer_bytes` in `crates/warp_terminal/src/shell/mod.rs`.
+      Comment-only, no behavior change.
 - [x] `69254d73` — TUI focus-ownership hardening (13 files).
       **Closed 2026-09-26:** ported in `e287977f0`.
 - [x] `94daf47f3` — **PORTED 2026-08-29** (`56a86a7d7`), with its 3 tests.
