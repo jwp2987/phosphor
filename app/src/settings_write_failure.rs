@@ -16,7 +16,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use warpui::{
-    AppContext, Entity, GetSingletonModelHandle, ModelContext, UpdateModel, ViewContext, WindowId,
+    AppContext, Entity, GetSingletonModelHandle, ModelContext, SingletonEntity as _, UpdateModel,
+    ViewContext, WindowId,
 };
 
 use crate::view_components::DismissibleToast;

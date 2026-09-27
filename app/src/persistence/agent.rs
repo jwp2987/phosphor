@@ -306,7 +306,7 @@ pub(crate) fn upsert_agent_conversation_with_retention<'a>(
     // on dropped tasks -- and computing it from the original snapshot means a dropped task
     // still contributes its real `UserQuery`/`AutoCodeDiff` content to `initial_query`/
     // `is_unlisted_auto_code_diff` instead of being silently treated as absent everywhere.
-    let mut summary = AgentConversationSummary::from_tasks(
+    let mut conversation_summary = AgentConversationSummary::from_tasks(
         tasks
             .iter()
             .copied()
@@ -323,9 +323,9 @@ pub(crate) fn upsert_agent_conversation_with_retention<'a>(
     // as restorable while failing to open with `RestoreConversationError::NoRootTask` or
     // quietly missing a subtask the user actually had.
     if !dropped_task_ids.is_empty() {
-        summary.is_restorable = false;
+        conversation_summary.is_restorable = false;
     }
-    let serialized_summary = serde_json::to_string(&summary).ok();
+    let serialized_summary = serde_json::to_string(&conversation_summary).ok();
 
     conn.transaction::<_, Error, _>(|conn| {
         let summary_to_write = if may_keep_stored_summary {
