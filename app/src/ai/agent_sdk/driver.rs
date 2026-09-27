@@ -234,13 +234,6 @@ pub struct AgentDriver {
     /// Handed to `ThirdPartyHarness::prepare_environment_config` when preparing the
     /// harness; also merged into the terminal session env vars in [`Self::new`].
     third_party_harness_model_config: Option<HarnessModelConfig>,
-
-    /// Records collected for `--output-format json` (#637).
-    ///
-    /// `json` promises one JSON document, but a run's records arrive over time. They are
-    /// buffered here and emitted as a single array by [`Self::finish_json_document`] when
-    /// the run ends; `ndjson` is the streaming format and writes each record as it arrives.
-    json_records: parking_lot::Mutex<Vec<serde_json::Value>>,
 }
 
 pub(crate) enum SDKConversationOutputStatus {
@@ -455,7 +448,6 @@ impl AgentDriver {
             harness: None,
             idle_on_complete,
             third_party_harness_model_config,
-            json_records: Default::default(),
         })
     }
 
@@ -487,7 +479,6 @@ impl AgentDriver {
             harness: None,
             idle_on_complete: None,
             third_party_harness_model_config: None,
-            json_records: Default::default(),
         }
     }
 
@@ -498,9 +489,9 @@ impl AgentDriver {
     /// Write one batch of run output.
     ///
     /// `write` renders into a byte buffer in the driver's format. Under
-    /// `--output-format json` the rendered NDJSON records are held back for the single
-    /// document [`Self::finish_json_document`] prints; every other format goes straight to
-    /// stdout.
+    /// `--output-format json` the rendered NDJSON records go to the single document
+    /// `super::json_document` prints when the process terminates (#637); every other
+    /// format goes straight to stdout.
     fn emit_output<F>(&self, write: F) -> io::Result<()>
     where
         F: FnOnce(&mut Vec<u8>) -> io::Result<()>,
@@ -508,23 +499,10 @@ impl AgentDriver {
         let mut bytes = Vec::new();
         write(&mut bytes)?;
         if self.output_format == OutputFormat::Json {
-            output::collect_json_records(&bytes, &mut self.json_records.lock())
+            super::json_document::push_ndjson(&bytes)
         } else {
             output::with_stdout_buffered(|buf| buf.write_all(&bytes))
         }
-    }
-
-    /// Print the buffered `--output-format json` document. Called once, when the run ends
-    /// (successfully or not); a no-op for every other output format.
-    pub fn finish_json_document(&self) {
-        if self.output_format != OutputFormat::Json {
-            return;
-        }
-        let records = std::mem::take(&mut *self.json_records.lock());
-        report_if_error!(
-            output::with_stdout_buffered(|buf| output::write_json_document(&records, buf))
-                .context("Failed to write JSON output")
-        );
     }
 
     pub fn run(

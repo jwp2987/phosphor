@@ -51,6 +51,7 @@ mod agent_message;
 mod common;
 mod config_file;
 pub(crate) mod driver;
+pub mod json_document;
 mod mcp;
 mod mcp_config;
 mod model;
@@ -158,6 +159,13 @@ fn run_agent(
                 return Err(anyhow::anyhow!(
                     "The opencode harness is only supported for local child agent launches."
                 ));
+            }
+
+            // From here on the run owns stdout. Under `json` it prints exactly one document,
+            // from the will-terminate hook, however the process ends (#637). Argument errors
+            // above are usage errors and, like clap's, go to stderr with no document.
+            if global_options.output_format == OutputFormat::Json {
+                json_document::arm();
             }
 
             // Start the agent driver runner, which will handle the rest of the setup steps
@@ -555,17 +563,15 @@ impl AgentDriverRunner {
             driver.set_output_format(output_format);
             let agent_future = driver.run(task, ctx);
 
-            ctx.spawn(agent_future, |driver, result, ctx| {
-                // `--output-format json` buffers the run's records; print the single
-                // document before exiting, including on failure (#637).
-                driver.finish_json_document();
-                match result {
-                    Ok(()) => {
-                        ctx.terminate_app(TerminationMode::ForceTerminate, None);
-                    }
-                    Err(err) => {
-                        report_fatal_error(err.into(), ctx);
-                    }
+            ctx.spawn(agent_future, |_, result, ctx| match result {
+                Ok(()) => {
+                    // The `--output-format json` document itself is printed by the
+                    // will-terminate hook this triggers (#637).
+                    json_document::record_completed();
+                    ctx.terminate_app(TerminationMode::ForceTerminate, None);
+                }
+                Err(err) => {
+                    report_fatal_error(err.into(), ctx);
                 }
             });
         });
@@ -635,6 +641,11 @@ fn report_fatal_error(err: anyhow::Error, ctx: &mut AppContext) {
     for cause in err.chain().skip(1) {
         let _ = write!(&mut message, "\n=> {cause}");
     }
+
+    // Under `agent run --output-format json`, the document ends with this failure (a
+    // no-op for every other command) (#637). Recorded before the log-file hint, which is
+    // for a human reading stderr.
+    json_document::record_failed(&message);
 
     #[cfg(not(target_family = "wasm"))]
     {

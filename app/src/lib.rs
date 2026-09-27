@@ -2394,6 +2394,12 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             ctx.dispatch_global_action("root_view:update_quake_mode_state", &update_quake_mode_arg);
         })),
         on_will_terminate: Some(Box::new(move |ctx| {
+            // `agent run --output-format json` prints its single document here, so it is
+            // written however the run ends: completion, fatal error, or Ctrl-C/SIGTERM,
+            // which leave the event loop without completing the driver's future (#637).
+            // A no-op for every other launch.
+            crate::ai::agent_sdk::json_document::finish();
+
             NotebookManager::handle(ctx).update(ctx, |manager, ctx| {
                 // Notebooks are only saved periodically, so ensure that any pending changes have
                 // been sent to the writer thread before terminating.

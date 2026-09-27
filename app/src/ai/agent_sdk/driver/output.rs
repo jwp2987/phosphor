@@ -1202,22 +1202,6 @@ pub mod json {
 use crate::ai::agent::{AIAgentText, AIAgentTextSection};
 use crate::code::editor_management::CodeSource;
 use std::io::{self, BufWriter, Write};
-/// Parse newline-delimited JSON records (as written by the [`json`] formatters) and
-/// append them to `records`. Used to build the single `--output-format json` document.
-pub fn collect_json_records(bytes: &[u8], records: &mut Vec<serde_json::Value>) -> io::Result<()> {
-    for record in serde_json::Deserializer::from_slice(bytes).into_iter::<serde_json::Value>() {
-        records.push(record.map_err(|e| io::Error::other(e.to_string()))?);
-    }
-    Ok(())
-}
-
-/// Write `records` as one pretty-printed JSON array followed by a newline: the whole
-/// `--output-format json` document for a run.
-pub fn write_json_document<W: Write>(records: &[serde_json::Value], w: &mut W) -> io::Result<()> {
-    serde_json::to_writer_pretty(&mut *w, records).map_err(|e| io::Error::other(e.to_string()))?;
-    writeln!(w)
-}
-
 /// Execute a closure with a buffered stdout writer and flush it afterwards.
 pub fn with_stdout_buffered<F>(f: F) -> io::Result<()>
 where
