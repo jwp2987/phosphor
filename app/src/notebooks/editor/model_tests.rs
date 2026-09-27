@@ -3191,11 +3191,11 @@ fn test_mermaid_offset_resync_streak_is_capped() {
 
 /// C1 regression test: once the streak trips, `handle_render_model_event` must log the
 /// "did not converge" diagnostic once (not on every subsequent event, which would spam at the
-/// same rate the original livelock spun the CPU), and a legitimate new reason to resync -- here,
-/// a viewport resize -- must give the circuit breaker a fresh budget rather than leaving it
-/// permanently capped for the rest of the pane's lifetime.
+/// same rate the original livelock spun the CPU); a resize must not reset it (the relayouts it
+/// counts can themselves change the width); and a content edit must give the circuit breaker a
+/// fresh budget rather than leaving it permanently capped for the rest of the pane's lifetime.
 #[test]
-fn test_mermaid_offset_resync_streak_logs_once_and_recovers_after_resize() {
+fn test_mermaid_offset_resync_streak_logs_once_and_recovers_after_edit() {
     App::test((), |mut app| async move {
         initialize_deps(&mut app);
         let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
@@ -3234,26 +3234,30 @@ fn test_mermaid_offset_resync_streak_logs_once_and_recovers_after_resize() {
                 "the cap-trip diagnostic should have been logged exactly once by now"
             );
 
-            // A resize is a legitimate new reason to resync -- it must reset the breaker instead
-            // of leaving the pane permanently capped.
+            // A resize must NOT reset the breaker: the relayouts it is counting can themselves
+            // change the available width (a diagram toggling a scrollbar), so a reset here would
+            // let that cycle spin forever.
             model.handle_render_model_event(&RenderEvent::NeedsResize, ctx);
             assert_eq!(
+                model.mermaid_offset_resync_streak, MAX_MERMAID_OFFSET_RESYNC_STREAK,
+                "a resize must not give the circuit breaker a fresh budget"
+            );
+
+            // An edit is a genuine new reason to resync, so it must reset the breaker instead of
+            // leaving the pane permanently capped.
+            model.cursor_at(CharOffset::from(1), ctx);
+            model.user_insert("x", ctx);
+        });
+
+        model_handle.read(&app, |model, _| {
+            assert_eq!(
                 model.mermaid_offset_resync_streak, 0,
-                "a resize should give the circuit breaker a fresh budget"
+                "an edit should give the circuit breaker a fresh budget"
             );
             assert!(
                 !model.mermaid_offset_resync_streak_logged,
                 "a fresh budget should also allow the diagnostic to log again if it re-trips"
             );
-
-            // And it can actually retrip and recover again -- the reset isn't a one-time escape
-            // hatch.
-            flap_streak_to_cap(model, ctx);
-            assert_eq!(
-                model.mermaid_offset_resync_streak,
-                MAX_MERMAID_OFFSET_RESYNC_STREAK
-            );
-            assert!(model.mermaid_offset_resync_streak_logged);
         });
     });
 }

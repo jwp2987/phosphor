@@ -104,8 +104,9 @@ const DEBOUNCED_RESIZE_PERIOD: Duration = Duration::from_millis(150);
 /// resyncs to settle -- that's real, convergent progress, not a livelock, and shouldn't trip the
 /// breaker before every diagram has had a turn.
 ///
-/// The streak (and whether its cap has already been logged) is reset on the next edit, resize,
-/// or new document -- see `reset_mermaid_offset_resync_streak` -- rather than staying pinned
+/// The streak (and whether its cap has already been logged) is reset on the next edit or new
+/// document (not on a resize, which the relayouts themselves can cause) -- see
+/// `reset_mermaid_offset_resync_streak` -- rather than staying pinned
 /// once tripped, so a transient non-convergent stretch isn't fatal for the rest of the pane's
 /// lifetime, and so the diagnostic log fires once per episode instead of on every subsequent
 /// event.
@@ -170,7 +171,7 @@ pub struct NotebooksEditorModel {
     /// Count of consecutive `rebuild_layout` calls issued back-to-back from
     /// `handle_render_model_event` because `sync_mermaid_render_offsets` reported a change.
     /// Reset to 0 whenever a layout pass leaves the offsets unchanged, or by
-    /// `reset_mermaid_offset_resync_streak` on an edit, resize, or new document. See
+    /// `reset_mermaid_offset_resync_streak` on an edit or new document. See
     /// `MAX_MERMAID_OFFSET_RESYNC_STREAK` for why this exists.
     mermaid_offset_resync_streak: u32,
     /// Whether the "did not converge" diagnostic has already been logged for the current
@@ -466,8 +467,8 @@ impl NotebooksEditorModel {
 
     /// Give the Mermaid offset-resync circuit breaker (`MAX_MERMAID_OFFSET_RESYNC_STREAK`) a
     /// fresh budget: called on a new document (`reset_with_markdown`/`reset_with_ipynb`/
-    /// `update_to_new_markdown`), a user edit (`BufferEvent::ContentChanged`), and a viewport
-    /// resize (`RenderEvent::NeedsResize`). Without this, a document that once tripped the cap
+    /// `update_to_new_markdown`) and a content edit (`BufferEvent::ContentChanged`) -- not a
+    /// resize, which the relayouts themselves can trigger. Without this, a document that once tripped the cap
     /// would stay capped -- and keep logging the same diagnostic on every layout event -- for
     /// the rest of the pane's lifetime, even after whatever caused the non-convergent stretch is
     /// long gone.
@@ -499,11 +500,10 @@ impl NotebooksEditorModel {
 
         match event {
             RenderEvent::NeedsResize => {
-                // A resize is a legitimate new reason for a Mermaid block's cached layout to
-                // need resyncing (different available width can change which diagrams fit,
-                // etc.), so give the circuit breaker a fresh budget rather than letting a resize
-                // count against a streak from earlier, unrelated activity.
-                self.reset_mermaid_offset_resync_streak();
+                // Deliberately does NOT reset the Mermaid resync streak: a width change can be a
+                // side effect of the very relayouts the breaker is counting (a diagram's height
+                // toggling a scrollbar changes the available width), and resetting here would let
+                // that cycle run forever. Edits and new documents reset it instead.
                 // When a debounced resize event fires, the model is laid out from scratch, using [`Self::rebuild_layout`].
                 let _ = self.resize_tx.try_send(());
             }
@@ -533,7 +533,7 @@ impl NotebooksEditorModel {
                              relayouts (cap scaled for {max_streak} Mermaid block(s) in the \
                              document); skipping further rebuilds to avoid a layout livelock. \
                              Rendered Mermaid diagrams in this document may be stale until the \
-                             next edit, resize, or reload.",
+                             next edit or reload.",
                             self.mermaid_offset_resync_streak
                         );
                     }
