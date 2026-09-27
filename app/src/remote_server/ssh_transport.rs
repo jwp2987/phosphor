@@ -311,17 +311,48 @@ enum InstallFallbackRoute {
 }
 
 /// Routes a failed install script run. See [`InstallFailureKind`].
+///
+/// The three exit codes `classify_install_failure` groups into
+/// `IntegrityFailed` (4, 5, 6 — see `install_remote_server.sh`'s
+/// `EXIT_NO_PINNED_DIGEST` / `EXIT_NO_DIGEST_TOOL` / `EXIT_DIGEST_MISMATCH`)
+/// get a distinct headline each here, rather than one shared "integrity check
+/// failed" wrapper. Exit 4 (this client was built with no pinned digest —
+/// every local/dev build) and 5 (the remote host has no digest tool) are both
+/// correct, unremarkable fail-closed refusals with nothing to do with
+/// tampering; only 6 (bytes arrived and do not match) is that. The script's
+/// own reason was always present in `error`'s `Display`, just appended after
+/// a headline that called all three "integrity check failed" — which reads as
+/// detected tampering even when it plainly is not (TODO.md "Remote-session
+/// setup degrades silently", item 4: "correct fail-closed behaviour, but the
+/// only surfacing is one log line" undersold it slightly — it already reached
+/// the SSH-remote-server-failed banner (`terminal/view/ssh_remote_server_failed_banner.rs`),
+/// but with this same misleading headline).
 fn route_install_failure(error: &InstallError) -> InstallFallbackRoute {
     match classify_install_failure(error) {
         InstallFailureKind::TransportFailed => InstallFallbackRoute::ScpFallback,
-        // Deliberately louder than a plain error: exit 6 means bytes served
-        // for this release did not match the digest compiled into this client,
-        // which is what tampering looks like from here. Operators need to see
-        // that it was refused rather than quietly retried.
-        InstallFailureKind::IntegrityFailed => InstallFallbackRoute::Fail(format!(
-            "remote-server install refused: integrity check failed, \
-             so the SCP fallback (which installs unverified) was NOT attempted: {error}"
-        )),
+        InstallFailureKind::IntegrityFailed => {
+            let headline = match error {
+                InstallError::ScriptFailed { exit_code: 4, .. } => {
+                    "remote-server install refused: this build has no compiled-in checksum to \
+                     verify the remote binary against (a local/dev build), so it will not \
+                     install an unverified binary"
+                }
+                InstallError::ScriptFailed { exit_code: 5, .. } => {
+                    "remote-server install refused: the remote host has no tool to compute a \
+                     SHA-256 digest, so the download could not be verified"
+                }
+                // Deliberately louder than the other two: this is exit 6, where
+                // bytes served for this release did NOT match the digest
+                // compiled into this client, which is what tampering looks
+                // like from here. Operators need to see that it was refused
+                // rather than quietly retried.
+                _ => {
+                    "remote-server install refused: integrity check failed, \
+                     so the SCP fallback (which installs unverified) was NOT attempted"
+                }
+            };
+            InstallFallbackRoute::Fail(format!("{headline}: {error}"))
+        }
         InstallFailureKind::Fatal => InstallFallbackRoute::Fail(error.to_string()),
     }
 }
@@ -1111,6 +1142,67 @@ mod tests {
             message.contains("NOT attempted"),
             "the refusal must say the unverified fallback was not attempted, got: {message}",
         );
+    }
+
+    // Exit 4 (`EXIT_NO_PINNED_DIGEST`) is a correct, unremarkable fail-closed
+    // refusal on every local/dev build -- not evidence of tampering, and
+    // conflating the two (TODO.md "Remote-session setup degrades silently",
+    // item 4) reads as an alarming false positive on every build an agent or
+    // contributor runs locally.
+    #[test]
+    fn missing_pinned_digest_is_explained_not_reported_as_tampering() {
+        let route = route_install_failure(&script_failure(4));
+        let InstallFallbackRoute::Fail(message) = route else {
+            panic!("exit 4 (no pinned digest) must not route to the SCP fallback");
+        };
+        assert!(
+            message.contains("no compiled-in checksum"),
+            "the refusal must name the real cause (no pinned digest), got: {message}",
+        );
+        assert!(
+            !message.contains("integrity check failed"),
+            "a build with no pinned digest is not evidence of a failed integrity check, \
+             got: {message}",
+        );
+    }
+
+    // Exit 5 (`EXIT_NO_DIGEST_TOOL`) is an environment gap on the remote host,
+    // not tampering either.
+    #[test]
+    fn missing_digest_tool_is_explained_not_reported_as_tampering() {
+        let route = route_install_failure(&script_failure(5));
+        let InstallFallbackRoute::Fail(message) = route else {
+            panic!("exit 5 (no digest tool) must not route to the SCP fallback");
+        };
+        assert!(
+            message.contains("no tool to compute a SHA-256 digest"),
+            "the refusal must name the real cause (no digest tool on the remote host), \
+             got: {message}",
+        );
+        assert!(
+            !message.contains("integrity check failed"),
+            "a missing digest tool is not evidence of a failed integrity check, got: {message}",
+        );
+    }
+
+    // The three IntegrityFailed exit codes must each keep the script's own
+    // stderr in the final message -- `route_install_failure`'s headline
+    // change must not drop it.
+    #[test]
+    fn integrity_failure_messages_always_include_the_scripts_own_reason() {
+        for exit_code in [4, 5, 6] {
+            let error = InstallError::ScriptFailed {
+                exit_code,
+                stderr: "the script's own explanation".to_string(),
+            };
+            let InstallFallbackRoute::Fail(message) = route_install_failure(&error) else {
+                panic!("exit {exit_code} is an integrity failure and must not fall back");
+            };
+            assert!(
+                message.contains("the script's own explanation"),
+                "exit {exit_code}'s refusal must keep the script's own stderr, got: {message}",
+            );
+        }
     }
 
     // Unsupported arch/OS: no asset exists, so retrying the same download

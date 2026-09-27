@@ -141,6 +141,24 @@ pub struct SessionBootstrappedEvent {
     pub session_type: BootstrapSessionType,
 }
 
+/// Why a session settled into the legacy (ControlMaster-based) SSH executor
+/// without the command-executor construction path ever reaching an explicit
+/// [`crate::terminal::event::RemoteServerSetupState::Failed`] or `Unsupported`
+/// terminal state -- see [`SessionsEvent::LegacySshFallback`]. Both of these
+/// were previously `log::info!`-only (TODO.md "Remote-session setup degrades
+/// silently", item 1's "default fully-silent case").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LegacySshFallbackReason {
+    /// The `SshRemoteServer` feature flag is off entirely, so no attempt at
+    /// the remote-server extension was ever made for this session.
+    FeatureDisabled,
+    /// The flag is on, but there is no connected remote-server client for
+    /// this session -- e.g. the connection is still pending, or setup
+    /// resolved to "no client" without recording a `Failed`/`Unsupported`
+    /// state the UI can otherwise key on.
+    NoConnectedClient,
+}
+
 /// Set of events produced the [`Sessions`] model.
 #[derive(Clone, Debug)]
 pub enum SessionsEvent {
@@ -151,6 +169,16 @@ pub enum SessionsEvent {
     SessionBootstrapped(Box<SessionBootstrappedEvent>),
     /// The environment variables were updated.
     EnvironmentVariablesUpdated { session_id: SessionId },
+    /// A legacy SSH session's command executor was just constructed without
+    /// ever reaching a connected remote-server client, and without an
+    /// explicit `RemoteServerSetupState::Failed`/`Unsupported` state existing
+    /// for it -- emitted from `new_command_executor_for_local_tty_session`,
+    /// the exact site that used to only `log::info!` this (TODO.md
+    /// "Remote-session setup degrades silently", item 1).
+    LegacySshFallback {
+        session_id: SessionId,
+        reason: LegacySshFallbackReason,
+    },
 }
 
 impl Entity for Sessions {

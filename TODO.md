@@ -11322,7 +11322,7 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21 — and a mechanical port of the pin would have been ACTIVELY WRONG.** At the pin the *GUI* presenter reports its layout embeddings into `view_parents`, so `view_ancestors` is the single answer for every view and `get_responder_chain` is a one-liner. **In this fork `view_parents` is written only by the TUI render path** (`presenter/tui.rs:202`), so porting that one-liner would collapse **every GUI responder chain to one element**. Fork-introduced split, fork-correct answer required. There were **three** copies of the correct rule and two of the wrong one; all now route through one `responder_chain_for_view` helper. **An in-family site named in no ledger entry:** `dispatch_action_for_view` routed on presenter presence and returned `false` outright, so the same action reached a TUI view *by type* and vanished *by name*. Also fixed a stranded doc comment — `get_responder_chain`'s docs were sitting on `view_ancestors`, leaving one function with none and the other with two.
 
-- [ ] **Remote-session setup degrades silently; every precondition fails without a
+- [~] **Remote-session setup degrades silently; every precondition fails without a
       signal.** Measured 2026-09-19 by driving the same SSH flow through Phosphor and
       upstream Warp on the same host, same commands, same harness.
 
@@ -11375,6 +11375,152 @@ claim, which was wrong by four.
       point of choice (Warp's shape), a visible indicator of whether the live session is
       warpified/remote-server or legacy, and either a working classifier or an inline
       agent path that does not require opening a conversation first.
+
+      **PARTIAL FIX 2026-09-27 (issue #719, `fix/remote-notice`) — maintainer decision:
+      NO blocking chooser.** Surface the degradation, not fewer steps, reusing the
+      existing footer chip / banner components rather than inventing new UI (see
+      `DECLINED.md`'s IMPROVED section for the divergence record against Warp's blocking
+      modal):
+
+      - **(1) legacy fallback, the `Unsupported` case — FIXED.**
+        `RemoteServerSetupState::Unsupported { reason }` was the one silent, terminal
+        state reaching no banner at all — `prompt_render_helper.rs`'s own comment
+        admits it: "Failed and Unsupported both fall back to the legacy SSH flow, so we
+        render the same generic prompt." Added `SshRemoteServerFailureKind::Unsupported`,
+        wired from `RemoteServerManagerEvent::SetupStateChanged` in `terminal/view.rs`,
+        reusing the existing dismissible, per-session-deduped `SshRemoteServerFailedBanner`
+        — the same component `Failed`/install/check/launch failures already use. States
+        the reason (glibc too old, with both versions, or non-glibc with the detected
+        libc name) via new localized (en/ja/zh-CN) strings. Also added a safety-net
+        trigger for `Failed` reached via `SetupStateChanged` without one of the three
+        existing `*Complete` events, deduped by the banner's own `already_present` guard
+        so it cannot double up with the paths that already show it.
+
+        **(1) the fully-silent default case (flag on, no client, no explicit error at
+        all; or the flag off entirely) — FIXED 2026-09-27 (round 2).** This was the
+        maintainer's main ask and the piece the first pass got wrong: it is reachable
+        from a model-context site after all.
+        `new_command_executor_for_local_tty_session` runs with `ctx: &mut
+        ModelContext<Sessions>`, and it is called from exactly one place
+        (`Sessions::initialize_bootstrapped_session`), once per session's lifetime — so
+        it can `ctx.emit()` a new `Sessions`-model event directly, and that event fires
+        at most once per session by construction. Added
+        `SessionsEvent::LegacySshFallback { session_id, reason: LegacySshFallbackReason }`
+        (`terminal/model/session.rs`), emitted at the exact two log-only sites this file
+        already named as the silent defaults: the `log::info!("SshRemoteServer flag on
+        but no connected client...")` line (`LegacySshFallbackReason::NoConnectedClient`)
+        and the previously-uninstrumented "flag off entirely" branch
+        (`LegacySshFallbackReason::FeatureDisabled`). The decision itself is factored
+        into a pure `legacy_ssh_fallback_reason(is_legacy_ssh_session,
+        remote_server_flag_enabled) -> Option<LegacySshFallbackReason>`, unit-tested in
+        `command_executor_tests.rs` without constructing a `Sessions` model or feature
+        flags. `TerminalView::handle_sessions_event` (already the subscriber for
+        `SessionsEvent::SessionInitialized`/`SessionBootstrapped`) now also handles
+        `LegacySshFallback` by showing the same `SshRemoteServerFailedBanner`, with a new
+        `Legacy` kind and its own localized (en/ja/zh-CN) title/description/detail text
+        naming the reason. `crates/warp_tui/src/terminal_session_view.rs` had one
+        *exhaustive* match over `SessionsEvent` with no wildcard arm — updated to a no-op
+        arm for the new variant, or that crate would not have compiled.
+
+      - **(2) `WarpifiedRemote { host_id: None }` — addressed via (1), not independently
+        wired.** `ai/blocklist/action_model/execute/read_files.rs`'s refusal ("File
+        read/edit tools need the Phosphor remote-server extension...") still reaches
+        only the model, never the user, directly — that call site (deep in AI tool
+        execution) has no path to the view layer either. But the root cause is the same
+        as (1): a legacy-SSH session is `WarpifiedRemote` with `host_id: None` by
+        construction (`blocklist/controller.rs`'s own doc), and the existing banner's
+        shared `BANNER_BODY` text ("While advanced features like file browsing and code
+        review are currently disabled...") already explains the consequence once the
+        banner fires for that session — which, after round 2, it now does for every
+        legacy-SSH session's command-executor construction, not only the
+        `Unsupported`/`Failed` cases.
+
+      - **(3) remote binary path — verified, already adequate; not a reachable code
+        defect.** `remote_server_binary()` builds
+        `~/.phosphor/remote-server/<bin>[-<version>]` and no code path anywhere
+        references a separate, un-namespaced `~/.phosphor/<bin>`, so there is nothing in
+        the current tree that silently ignores a stray copy there — the original
+        investigation's "copy at the old path" was a manual-debugging artifact against a
+        path the app never checks, not a reachable product defect. `check_binary` already
+        logs the exact path it checked (`ssh_transport.rs`: `log::info!("Checking for
+        remote server binary at {bin_path}")`), and a real check failure already reaches
+        the banner via `BinaryCheckComplete`.
+
+      - **(4) checksum-missing refusal — FIXED (wording; already partially surfaced).**
+        This already reached a user-visible banner before this change
+        (`route_install_failure`'s `Fail(String)` flows through `BinaryInstallComplete`
+        to the same `SshRemoteServerFailedBanner`), so "the only surfacing is one log
+        line" undersold the prior state — but all three `IntegrityFailed` exit codes (4:
+        no pinned digest, i.e. a dev build; 5: no digest tool on the remote host; 6:
+        genuine digest mismatch) shared one "integrity check failed" headline, which
+        reads as detected tampering even for the two cases that are not tampering.
+        `route_install_failure` (`app/src/remote_server/ssh_transport.rs`) now gives each
+        exit code its own headline while still including the install script's own
+        stderr detail. Unit-tested
+        (`missing_pinned_digest_is_explained_not_reported_as_tampering`,
+        `missing_digest_tool_is_explained_not_reported_as_tampering`,
+        `integrity_failure_messages_always_include_the_scripts_own_reason`).
+
+      - **(5) phosphorize chip never accepted — not a defect, no change.** Declining the
+        chip is a valid user choice, not a silent failure; excluded from the maintainer's
+        "at minimum" surfacing list for this reason.
+
+      - **(6) no `/agent` conversation for agent questions — NOT ADDRESSED.** Confirmed
+        genuinely silent (no log line, no UI anywhere) and structural: this file's own
+        "Fix shape" paragraph above already scopes fixing it properly as needing "either
+        a working classifier or an inline agent path" — separate, larger work from the
+        seven-item surfacing list, not a notice addable at one call site. Left open on
+        issue #719 rather than shipping a narrow, likely-misleading partial signal.
+
+      - **(7) `agents.byop.last_used_model_id` pointing at an unreachable provider — FIXED
+        2026-09-27 (round 2), cheaply, per maintainer's explicit shape: enrich the
+        existing error surface for a failed request, no background probing.** No live
+        reachability signal was built (still true, and still correctly out of scope — see
+        the original note this replaces, kept below for context): instead, when a BYOP
+        request's *open-stream* attempt fails with a transport-level error
+        (`OpenAiCompatibleError::Stream` — `map_genai_error`'s mapping of
+        `genai::Error::WebStream`/`WebAdapterCall`/`WebModelCall`, i.e. reqwest
+        connection/DNS/TLS/timeout failures, matched only at the open-stream call site so
+        a genuine mid-response interruption is never mistaken for an unreachable
+        provider), and another usable BYOP provider is configured, the message now names
+        it: `"<message>\n\n<provider name> at <scheme://host:port> is unreachable; you
+        have other providers configured -- pick one with /model"`. An HTTP status, auth,
+        or decode failure (the provider WAS reached) never gets this hint, even with
+        another provider configured.
+        `AgentProvider::base_url` is redacted to `scheme://host[:port]` by a new small,
+        local `scheme_host_port` helper (`app/src/ai/agent_providers/chat_stream.rs`) —
+        deliberately not `chat_stream.rs`'s existing `redact_url_userinfo`, which keeps
+        the path/query and only strips `user:password@`, the opposite shape needed for a
+        user-facing message. The "is another provider configured" check and the redacted
+        hint are computed once at dispatch time
+        (`response_stream.rs::byop_dispatch_info`, which already has the active
+        `AgentProvider` and an `AppContext` in hand) via a new
+        `UnreachableProviderHint { provider_name, redacted_endpoint }`, threaded through
+        `ByopDispatch` → `ByopOutputInput` (two struct-field additions, three call sites)
+        into `generate_byop_output`'s existing open-stream error arm. The
+        decision/formatting itself (`describe_byop_open_stream_failure`) is a pure
+        function of `(mapped error, Option<hint>) -> String`, unit-tested for all four
+        cases (connection failure + hint, connection failure + no other provider, three
+        non-connection error kinds each confirmed to NOT get the hint) without any
+        network/view/ctx involved. Deliberately not routed through `crate::t!`: this
+        specific message is technical BYOP error text that was never localized before
+        this change either (it interpolates the raw upstream error string), unlike the
+        designed-UI banner text items 1/4 added.
+        **Original note, superseded but kept for context:** *no internal "provider
+        unreachable" computation existed anywhere in the model-selection path —
+        `app/src/ai/llms.rs`'s `byop_last_used_base_model` only checks that the model id
+        is still a recognized choice, never that its provider endpoint answers, and
+        `ai/blocklist/prompt/prompt_alert.rs` explicitly exempts BYOP/local providers from
+        the one reachability gate that exists.* That is still true — this fix does not
+        build one. A live, proactive "is the configured provider reachable" probe (as
+        opposed to reacting to a request that already failed) remains out of scope and
+        untested here, since this environment has no local model server to verify
+        against.
+
+      **Files changed:** `app/src/terminal/view.rs`,
+      `app/src/terminal/view/ssh_remote_server_failed_banner.rs` (+ new
+      `ssh_remote_server_failed_banner_tests.rs`), `app/src/remote_server/ssh_transport.rs`
+      (+ tests), `app/i18n/{en,ja,zh-CN}/warp.ftl`.
 
 
 - [x] **Panic on TUI-only windows.** `core/app.rs:1911` and `:1963` `.expect("Invalid

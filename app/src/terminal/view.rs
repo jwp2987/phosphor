@@ -152,6 +152,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
+    describe_legacy_fallback_reason, describe_unsupported_reason,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -479,7 +480,9 @@ use crate::terminal::model::grid::grid_handler::{FragmentBoundary, TermMode};
 use crate::terminal::model::index::{Point, Side};
 use crate::terminal::model::mouse::MouseState;
 use crate::terminal::model::selection::{SelectAction, SelectionDirection};
-use crate::terminal::model::session::{BootstrapSessionType, SessionType, Sessions, SessionsEvent};
+use crate::terminal::model::session::{
+    BootstrapSessionType, LegacySshFallbackReason, SessionType, Sessions, SessionsEvent,
+};
 use crate::terminal::model::terminal_model::{BlockIndex, TerminalInputState};
 use crate::terminal::model::terminal_model::{
     BlockSelectionCardinality, SelectedBlocks, WithinModel,
@@ -4331,11 +4334,45 @@ impl TerminalView {
                     }
                 }
                 match event {
-                    RemoteServerManagerEvent::SetupStateChanged { .. } => {
+                    RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
                         // Sessions handles the state update directly via its own
                         // subscription to the manager. Notify the view so the
                         // loading footer re-renders with the updated message.
                         ctx.notify();
+
+                        // `Unsupported` is a deliberate fall-back to the legacy
+                        // SSH path -- the preinstall check correctly declined an
+                        // incompatible host. Distinct from `Failed`, which
+                        // already reaches a banner via `SessionConnectionFailed`
+                        // / `BinaryInstallComplete` / `BinaryCheckComplete`
+                        // below. Until now nothing told the user this session
+                        // fell back to the legacy path at all (TODO.md
+                        // "Remote-session setup degrades silently", item 1).
+                        //
+                        // `Failed` is handled here too, as a safety net for any
+                        // path that sets it without also firing one of those
+                        // three events: `show_ssh_remote_server_failed_banner`
+                        // is a no-op when a banner is already shown for this
+                        // session, so this cannot double up.
+                        match state {
+                            RemoteServerSetupState::Unsupported { reason } => {
+                                me.show_ssh_remote_server_failed_banner(
+                                    *session_id,
+                                    SshRemoteServerFailureKind::Unsupported,
+                                    &describe_unsupported_reason(reason),
+                                    ctx,
+                                );
+                            }
+                            RemoteServerSetupState::Failed { error } => {
+                                me.show_ssh_remote_server_failed_banner(
+                                    *session_id,
+                                    SshRemoteServerFailureKind::BinaryInstall,
+                                    error,
+                                    ctx,
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                     RemoteServerManagerEvent::SessionConnected { session_id, .. } => {
                         me.model.lock().event_proxy.send_terminal_event(
@@ -9104,6 +9141,22 @@ impl TerminalView {
             }
             SessionsEvent::SessionBootstrapped(event) => {
                 self.handle_session_bootstrapped(*event, ctx);
+            }
+            // The "default fully-silent" legacy-SSH-fallback case (TODO.md
+            // "Remote-session setup degrades silently", item 1): fired at
+            // most once per session, from the one place the command executor
+            // for a legacy SSH session is ever constructed
+            // (`new_command_executor_for_local_tty_session`), so the
+            // dismissible banner it shows below is shown at most once per
+            // session by construction -- it cannot reappear after dismissal
+            // because nothing emits this event for that session again.
+            SessionsEvent::LegacySshFallback { session_id, reason } => {
+                self.show_ssh_remote_server_failed_banner(
+                    session_id,
+                    SshRemoteServerFailureKind::Legacy,
+                    &describe_legacy_fallback_reason(&reason),
+                    ctx,
+                );
             }
             _ => {}
         }
