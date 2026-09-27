@@ -115,7 +115,6 @@ fn code_page_registers_under_the_code_section() {
 
 #[test]
 fn the_page_contains_the_language_server_and_format_on_save_widgets() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     let _indexing = FeatureFlag::FullSourceCodeEmbedding.override_enabled(false);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
@@ -143,7 +142,6 @@ fn the_page_contains_the_language_server_and_format_on_save_widgets() {
 
 #[test]
 fn disabling_a_server_from_the_page_writes_through_to_persisted_workspace() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     let _indexing = FeatureFlag::FullSourceCodeEmbedding.override_enabled(false);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
@@ -181,7 +179,6 @@ fn disabling_a_server_from_the_page_writes_through_to_persisted_workspace() {
 
 #[test]
 fn format_on_save_action_writes_through_to_code_settings() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
 
@@ -212,7 +209,6 @@ fn format_on_save_action_writes_through_to_code_settings() {
 
 #[test]
 fn the_page_contains_the_line_number_mode_widget() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
 
@@ -231,7 +227,6 @@ fn the_page_contains_the_line_number_mode_widget() {
 
 #[test]
 fn set_code_editor_line_number_mode_action_writes_through_to_editor_settings() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
 
@@ -274,7 +269,6 @@ fn set_code_editor_line_number_mode_action_writes_through_to_editor_settings() {
 
 #[test]
 fn the_page_is_constructible_without_the_lsp_singletons() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     App::test((), |mut app| async move {
         // Neither PersistedWorkspace nor LspManagerModel registered. Both
         // `handle()` and `as_ref()` panic on an unregistered singleton, so an
@@ -296,7 +290,6 @@ fn the_page_is_constructible_without_the_lsp_singletons() {
 
 #[test]
 fn code_page_action_writes_through_to_codebase_context_setting() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
     App::test((), |mut app| async move {
         let page = add_code_page(&mut app);
 
@@ -320,7 +313,6 @@ fn code_page_action_writes_through_to_codebase_context_setting() {
 
 #[test]
 fn code_page_action_writes_through_to_auto_indexing_setting() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
     App::test((), |mut app| async move {
         let page = add_code_page(&mut app);
 
@@ -368,7 +360,6 @@ fn code_page_action_writes_through_to_auto_indexing_setting() {
 #[cfg(not(target_family = "wasm"))]
 #[test]
 fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
     App::test((), |mut app| async move {
         register_base_singletons(&mut app);
         // Read by `AutoIndexingToggleWidget::should_render`, and only once the
@@ -428,15 +419,11 @@ fn the_indexing_rows_appear_only_behind_the_indexing_flag() {
     });
 }
 
-#[test]
-fn code_page_is_hidden_when_the_feature_flag_is_off() {
-    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(false);
-    App::test((), |mut app| async move {
-        let page = add_code_page(&mut app);
-
-        assert!(!page.read(&app, |view, ctx| view.should_render(ctx)));
-    });
-}
+// `code_page_is_hidden_when_the_feature_flag_is_off` removed: it pinned the
+// `ZapNewSettingsModes`-off legacy branch, which the c5e4a02e3 port deletes
+// along with the flag itself (it was unconditionally on in every shipped
+// build -- see TODO.md). `CodeSettingsPageView::should_render` is now
+// unconditionally `true`; there is no longer a state in which the page hides.
 
 /// The pin's `code_page_tests.rs`, ported unchanged.
 ///

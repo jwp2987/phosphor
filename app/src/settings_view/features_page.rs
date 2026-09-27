@@ -58,8 +58,8 @@ use crate::terminal::alt_screen_reporting::{
     AltScreenReporting, FocusReportingEnabled, MouseReportingEnabled, ScrollReportingEnabled,
 };
 use crate::terminal::general_settings::{
-    AutoOpenCodeReviewPaneOnFirstAgentChange, GeneralSettings, LinkTooltip, PersistConversations,
-    QuitOnLastWindowClosed, RestoreSession, ShowWarningBeforeQuitting,
+    GeneralSettings, LinkTooltip, PersistConversations, QuitOnLastWindowClosed, RestoreSession,
+    ShowWarningBeforeQuitting,
 };
 use crate::terminal::keys_settings::{
     ActivationHotkeyEnabled, CtrlTabBehaviorSetting, KeysSettings, KeysSettingsChangedEvent,
@@ -1304,8 +1304,6 @@ pub struct FeaturesPageView {
     // open.
     ssh_wrapper_toggled: bool,
 
-    #[cfg(feature = "local_fs")]
-    external_editor_view: ViewHandle<features::ExternalEditorView>,
     word_boundary_editor: ViewHandle<EditorView>,
 
     tab_behavior_dropdown: ViewHandle<Dropdown<FeaturesPageAction>>,
@@ -2256,9 +2254,6 @@ impl FeaturesPageView {
             }
         });
 
-        #[cfg(feature = "local_fs")]
-        let external_editor_view = ctx.add_typed_action_view(features::ExternalEditorView::new);
-
         let global_hotkey_mode =
             KeysSettings::handle(ctx).read(ctx, |settings, ctx| settings.global_hotkey_mode(ctx));
         let global_hotkey_dropdown = ctx.add_typed_action_view(|ctx| {
@@ -2519,8 +2514,6 @@ impl FeaturesPageView {
 
             ssh_wrapper_toggled: false,
 
-            #[cfg(feature = "local_fs")]
-            external_editor_view,
             word_boundary_editor,
             global_hotkey_dropdown,
 
@@ -2580,20 +2573,6 @@ impl FeaturesPageView {
         general_widgets.push(Box::new(SnackbarHeaderWidget::default()));
         general_widgets.push(Box::new(LinkTooltipWidget::default()));
 
-        #[cfg(feature = "local_fs")]
-        {
-            if !FeatureFlag::ZapNewSettingsModes.is_enabled() {
-                let external_editor_settings =
-                    crate::util::file::external_editor::EditorSettings::as_ref(ctx);
-                if external_editor_settings
-                    .open_file_editor
-                    .is_supported_on_current_platform()
-                {
-                    general_widgets.push(Box::new(ExternalEditorWidget::default()));
-                }
-            }
-        }
-
         if general_settings
             .show_warning_before_quitting
             .is_supported_on_current_platform()
@@ -2614,12 +2593,6 @@ impl FeaturesPageView {
             .is_supported_on_current_platform()
         {
             general_widgets.push(Box::new(MouseScrollMultiplierWidget::default()));
-        }
-
-        if FeatureFlag::AutoOpenCodeReviewPane.is_enabled()
-            && !FeatureFlag::ZapNewSettingsModes.is_enabled()
-        {
-            general_widgets.push(Box::new(AutoOpenCodeReviewPaneWidget::default()));
         }
 
         if DefaultTerminal::can_warp_become_default() {
@@ -4682,28 +4655,6 @@ impl SettingsWidget for LinkTooltipWidget {
     }
 }
 
-#[cfg(feature = "local_fs")]
-#[derive(Default)]
-struct ExternalEditorWidget {}
-
-#[cfg(feature = "local_fs")]
-impl SettingsWidget for ExternalEditorWidget {
-    type View = FeaturesPageView;
-
-    fn search_terms(&self) -> &str {
-        "editor open files markdown AI conversations layout pane tab"
-    }
-
-    fn render(
-        &self,
-        view: &Self::View,
-        _appearance: &Appearance,
-        _app: &AppContext,
-    ) -> Box<dyn Element> {
-        ChildView::new(&view.external_editor_view).finish()
-    }
-}
-
 #[derive(Default)]
 struct QuitWarningModalWidget {
     switch_state: SwitchStateHandle,
@@ -4878,55 +4829,6 @@ impl SettingsWidget for MouseScrollMultiplierWidget {
             appearance,
             input_column,
             None,
-        )
-    }
-}
-
-#[derive(Default)]
-struct AutoOpenCodeReviewPaneWidget {
-    switch_state: SwitchStateHandle,
-}
-
-impl SettingsWidget for AutoOpenCodeReviewPaneWidget {
-    type View = FeaturesPageView;
-
-    fn search_terms(&self) -> &str {
-        "oz auto open code review pane panel agent mode change first time accepted diff view conversation"
-    }
-
-    fn render(
-        &self,
-        view: &Self::View,
-        appearance: &Appearance,
-        app: &AppContext,
-    ) -> Box<dyn Element> {
-        let general_settings = GeneralSettings::as_ref(app);
-        let ui_builder = appearance.ui_builder();
-        render_body_item::<FeaturesPageAction>(
-            crate::t!("settings-features-auto-open-code-review"),
-            None,
-            LocalOnlyIconState::for_setting(
-                AutoOpenCodeReviewPaneOnFirstAgentChange::storage_key(),
-                AutoOpenCodeReviewPaneOnFirstAgentChange::sync_to_cloud(),
-                &mut view
-                    .button_mouse_states
-                    .local_only_icon_tooltip_states
-                    .borrow_mut(),
-                app,
-            ),
-            ToggleState::Enabled,
-            appearance,
-            ui_builder
-                .switch(self.switch_state.clone())
-                .check(*general_settings.auto_open_code_review_pane_on_first_agent_change)
-                .build()
-                .on_click(move |ctx, _, _| {
-                    ctx.dispatch_typed_action(FeaturesPageAction::ToggleAutoOpenCodeReviewPane);
-                })
-                .finish(),
-            Some(crate::t!(
-                "settings-features-auto-open-code-review-description"
-            )),
         )
     }
 }

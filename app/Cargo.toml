@@ -648,7 +648,6 @@ default = [
     "hoa_remote_control",
     "codex_notifications",
     "trim_trailing_blank_lines",
-    "open_warp_new_settings_modes",
     "settings_file",
     "ssh_tmux_wrapper",
     # Reachable at the pin (02b53fcd8) via its own `default`, but dropped from this
@@ -948,7 +947,6 @@ queue_slash_command = []
 inline_menu_headers = []
 restore_prompt_on_inline_model_selector_search = []
 directory_tab_colors = []
-open_warp_new_settings_modes = []
 hoa_code_review = []
 vertical_tabs = []
 async_find = []

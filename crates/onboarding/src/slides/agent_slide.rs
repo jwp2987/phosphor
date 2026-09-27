@@ -3,9 +3,7 @@ use super::OnboardingSlide;
 use crate::localization::localized;
 use crate::model::{OnboardingStateEvent, OnboardingStateModel};
 use crate::slides::{bottom_nav, layout, slide_content};
-use crate::visuals::agent_visual;
 use ui_components::{button, Component as _, Options as _};
-use warp_core::features::FeatureFlag;
 use warp_core::ui::{
     appearance::Appearance,
     theme::{color::internal_colors, Fill},
@@ -309,14 +307,12 @@ impl AgentSlide {
             .with_cross_axis_alignment(CrossAxisAlignment::Start)
             .with_child(upper_sections);
 
-        if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            let disable_oz_section = self.render_disable_oz_section(appearance, settings);
-            col = col.with_child(
-                Container::new(disable_oz_section)
-                    .with_margin_top(24.)
-                    .finish(),
-            );
-        }
+        let disable_oz_section = self.render_disable_oz_section(appearance, settings);
+        col = col.with_child(
+            Container::new(disable_oz_section)
+                .with_margin_top(24.)
+                .finish(),
+        );
 
         Container::new(col.finish()).with_margin_top(40.).finish()
     }
@@ -911,12 +907,7 @@ impl AgentSlide {
         );
 
         let step_index = 2;
-        let step_count = if warp_core::features::FeatureFlag::ZapNewSettingsModes.is_enabled()
-        {
-            5
-        } else {
-            4
-        };
+        let step_count = 5;
         bottom_nav::onboarding_bottom_nav(
             appearance,
             step_index,
@@ -926,33 +917,18 @@ impl AgentSlide {
         )
     }
 
-    fn render_visual(&self, appearance: &Appearance, app: &AppContext) -> Box<dyn Element> {
-        let theme = appearance.theme();
-
-        if FeatureFlag::ZapNewSettingsModes.is_enabled() {
-            let use_vertical = self
-                .onboarding_state
-                .as_ref(app)
-                .ui_customization()
-                .use_vertical_tabs;
-            let path = if use_vertical {
-                "async/png/onboarding/agent_intention/customize_vertical_tabs.png"
-            } else {
-                "async/png/onboarding/agent_intention/customize_horizontal_tabs.png"
-            };
-            layout::onboarding_right_panel_with_bg(path, layout::FOREGROUND_LAYOUT_WIDE)
+    fn render_visual(&self, app: &AppContext) -> Box<dyn Element> {
+        let use_vertical = self
+            .onboarding_state
+            .as_ref(app)
+            .ui_customization()
+            .use_vertical_tabs;
+        let path = if use_vertical {
+            "async/png/onboarding/agent_intention/customize_vertical_tabs.png"
         } else {
-            let panel_background = internal_colors::neutral_2(theme);
-            let neutral = internal_colors::neutral_4(theme);
-
-            let blue = theme.ansi_fg_blue();
-            let green = theme.ansi_fg_green();
-            let yellow = theme.ansi_fg_yellow();
-
-            Container::new(agent_visual(panel_background, neutral, blue, green, yellow))
-                .with_background_color(internal_colors::neutral_1(theme))
-                .finish()
-        }
+            "async/png/onboarding/agent_intention/customize_horizontal_tabs.png"
+        };
+        layout::onboarding_right_panel_with_bg(path, layout::FOREGROUND_LAYOUT_WIDE)
     }
 }
 
@@ -975,7 +951,7 @@ impl View for AgentSlide {
         // base two-column layout.
         layout::static_left(
             || self.render_content(appearance, settings, workspace_enforces_autonomy, app),
-            || self.render_visual(appearance, app),
+            || self.render_visual(app),
         )
     }
 }

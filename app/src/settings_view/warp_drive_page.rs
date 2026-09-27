@@ -6,7 +6,7 @@ use super::{
     LocalOnlyIconState, SettingsSection, ToggleState,
 };
 use crate::{appearance::Appearance, drive::settings::WarpDriveSettings};
-use warp_core::{features::FeatureFlag, report_if_error, settings::ToggleableSetting as _};
+use warp_core::{report_if_error, settings::ToggleableSetting as _};
 use warpui::{
     elements::{Element, MouseStateHandle},
     ui_components::{components::UiComponent, switch::SwitchStateHandle},
@@ -72,7 +72,7 @@ impl SettingsPageMeta for WarpDriveSettingsPageView {
     }
 
     fn should_render(&self, _ctx: &AppContext) -> bool {
-        FeatureFlag::ZapNewSettingsModes.is_enabled()
+        true
     }
 
     fn update_filter(&mut self, query: &str, ctx: &mut ViewContext<Self>) -> MatchData {
