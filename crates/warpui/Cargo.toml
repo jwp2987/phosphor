@@ -145,6 +145,12 @@ async-io.workspace = true
 ctrlc.workspace = true
 font-kit.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Graceful shutdown on SIGTERM / SIGHUP / SIGINT (jwp2987/phosphor#685). Already
+# a dependency of `app`; `libc` queries inherited `SIG_IGN` dispositions.
+libc.workspace = true
+signal-hook = "0.3.17"
+
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 bimap = "0.6.2"
 bytemuck.workspace = true

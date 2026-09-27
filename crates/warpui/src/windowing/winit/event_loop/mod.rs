@@ -1544,16 +1544,13 @@ impl EventLoop {
         &mut self,
         termination_mode: TerminationMode,
     ) -> ApproveTerminateResult {
-        if matches!(
-            termination_mode,
-            TerminationMode::ForceTerminate | TerminationMode::ContentTransferred
-        ) {
-            return ApproveTerminateResult::Terminate;
+        if platform::app::approve_termination(termination_mode, || {
+            self.callbacks.should_terminate_app()
+        }) {
+            ApproveTerminateResult::Terminate
+        } else {
+            ApproveTerminateResult::Cancel
         }
-
-        let approve_terminate_result = self.callbacks.should_terminate_app();
-        if let ApproveTerminateResult::Terminate = approve_terminate_result {}
-        approve_terminate_result
     }
 
     fn handle_ime_event(&mut self, winit_window_id: WinitWindowId, event: ImeEvent) {

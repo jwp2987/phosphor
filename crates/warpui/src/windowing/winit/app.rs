@@ -205,6 +205,32 @@ impl App {
         // application event loop).
         super::delegate::mark_current_thread_as_main();
 
+        // SIGTERM / SIGHUP (kill, logout, `systemctl --user stop`, the launching
+        // terminal closing) run the normal graceful quit instead of killing the
+        // process outright (jwp2987/phosphor#685). The handler thread only posts
+        // a non-cancellable `Terminate` through the proxy; the quit itself runs
+        // on this loop via `LoopExiting` -> `app_will_terminate`. Integration
+        // tests keep default dispositions: their driver owns signal handling.
+        #[cfg(unix)]
+        if !is_integration_test {
+            use crate::platform::termination_signals;
+
+            let proxy = event_loop.create_proxy();
+            let result = termination_signals::install(
+                termination_signals::GUI_TERMINATION_SIGNALS,
+                move || {
+                    proxy
+                        .send_event(CustomEvent::Terminate(TerminationMode::ForceTerminate))
+                        .is_ok()
+                },
+            );
+            if let Err(err) = result {
+                log::warn!("Failed to set up termination signal handling: {err}");
+            }
+        }
+        // TODO(#685): Windows `WM_ENDSESSION` / `WM_QUERYENDSESSION` (logoff,
+        // shutdown) still end the process without `app_will_terminate`.
+
         let ui_app = Self::construct_ui_app(assets, is_integration_test, &event_loop);
         let inner_event_loop = super::EventLoop::new(
             ui_app,

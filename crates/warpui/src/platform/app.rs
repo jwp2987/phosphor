@@ -9,6 +9,23 @@ pub use warpui_core::platform::app::*;
 
 use super::AsInnerMut;
 
+/// Whether a terminate request in `mode` may proceed. Only a
+/// [`TerminationMode::Cancellable`] request consults `should_terminate_app` (the
+/// "Quit Phosphor?" confirmation); a signal-initiated quit is
+/// [`TerminationMode::ForceTerminate`] and must never wait on a dialog nobody can
+/// answer (jwp2987/phosphor#685).
+pub(crate) fn approve_termination(
+    mode: super::TerminationMode,
+    should_terminate_app: impl FnOnce() -> ApproveTerminateResult,
+) -> bool {
+    match mode {
+        super::TerminationMode::Cancellable => {
+            matches!(should_terminate_app(), ApproveTerminateResult::Terminate)
+        }
+        super::TerminationMode::ForceTerminate | super::TerminationMode::ContentTransferred => true,
+    }
+}
+
 /// Platform-specific app implementation. On any given platform, there are at least two possible
 /// implementations:
 /// * The platform-native backend (e.g. Cocoa on macOS, or Winit+X11/Wayland on Linux)
