@@ -10358,11 +10358,21 @@ claim, which was wrong by four.
       **Fixed 2026-09-26 (#678, `f3cad7ab5`)** — same fix as the redirection item above,
       `executed_commands` also expands braces and follows control-flow keywords.
 
-- [ ] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
+- [x] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
       and whitespace-only input decompose to zero commands, so the denylist `.any()` is false and
       the allowlist `.all()` is true, and `AlwaysAsk` returns `Allowed(ExplicitlyAllowlisted)`.
       No zero-command spelling was found that also executes anything, so this is a latent hazard
       rather than a bypass — recorded so it is not rediscovered as one.
+      **Fixed 2026-09-27 (#746).** `command_words_resolved` now also requires
+      `!commands.is_empty()`, so zero-command input is treated exactly like an unresolved
+      command word (#678): `Denied(UnresolvedCommandWord)` when a denylist is configured,
+      `Denied(AlwaysAskEnabled)`/`Denied(AgentDecided)` otherwise — never a vacuous allowlist
+      match. **Pin-identical defect** (`4111d08f9:app/src/ai/blocklist/permissions.rs:899`
+      has the same unguarded `commands.iter().all(...)`), so this is a deliberate divergence,
+      recorded in `DECLINED.md`'s `IMPROVED` section. Tests:
+      `test_can_autoexecute_command_zero_command_input_fails_closed_under_always_ask`,
+      `test_can_autoexecute_command_zero_command_input_fails_closed_when_denylist_configured`
+      (`app/src/ai/blocklist/permissions_test.rs`).
 
 - [ ] **The codebase-index embedding model switches on provider-list ORDER, spending the**
       **user's quota.** `resolve_configured_embedding_model` returns the first entry of

@@ -2621,6 +2621,66 @@ fn test_can_autoexecute_command_fails_closed_on_unresolved_command_words() {
 }
 
 #[test]
+fn test_can_autoexecute_command_zero_command_input_fails_closed_under_always_ask() {
+    // `;`, `{}`, `()` and whitespace-only input all decompose to zero commands. Before the
+    // fix, `commands.iter().all(...)` over that empty list was vacuously `true`, so `AlwaysAsk`
+    // returned `Allowed(ExplicitlyAllowlisted)` even with *no* allowlist rule at all -- there
+    // was nothing to compare against, and an empty "for all" is trivially satisfied. No
+    // zero-command spelling was found that also executes anything, so this was a latent
+    // hazard rather than a bypass; it must still require confirmation like any other command
+    // this profile has not vouched for.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(&mut app, &state, ActionPermission::AlwaysAsk, &[], &[]);
+
+        for command in [";", "{}", "()", "   "] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::AlwaysAskEnabled
+                    )
+                ),
+                "{command:?} executes no command at all and must not be waved through by a \
+                 vacuously-true allowlist match, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_zero_command_input_fails_closed_when_denylist_configured() {
+    // Same hazard as above, seen from the denylist side: with a denylist configured,
+    // zero-command input must be treated the same as an unresolved command word --
+    // `Denied(UnresolvedCommandWord)` -- rather than as "no rule matched, so nothing to deny".
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAsk,
+            &["rm .*"],
+            &[],
+        );
+
+        for command in [";", "{}", "()", "   "] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::UnresolvedCommandWord
+                    )
+                ),
+                "{command:?} executes no command at all; with a denylist configured this must \
+                 fail closed exactly like an unresolved command word, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
 fn test_can_autoexecute_command_unresolved_words_only_matter_when_the_parse_decides() {
     App::test((), |mut app| async move {
         let state = initialize_permissions_test(&mut app);

@@ -382,6 +382,24 @@ these as expected, not as drift to reconcile.
 Each entry must say what upstream does, what we do instead, and the evidence that
 upstream's behavior is actually a defect rather than a preference.
 
+- **Zero-command Agent Mode input fails closed instead of vacuously auto-approving**
+  (`#746`, 2026-09-27, `app/src/ai/blocklist/permissions.rs`). **Upstream:**
+  `can_autoexecute_command` decomposes the command line into `commands: Vec<String>` and
+  gates the allowlist on `commands.iter().all(|c| allowlist.iter().any(|a| a.matches(c)))`,
+  with no check that `commands` is non-empty (`4111d08f9:app/src/ai/blocklist/permissions.rs:899`,
+  byte-identical). **The defect:** input that decomposes to zero commands (`;`, `{}`, `()`,
+  whitespace-only) makes that `.all()` vacuously `true` — satisfied even against an *empty*
+  allowlist with no rules at all — while the denylist's mirroring `.any()` is vacuously
+  `false`. Under `AlwaysAsk` this returns `Allowed(ExplicitlyAllowlisted)` for input no rule
+  ever actually matched. No zero-command spelling was found that also executes anything, so
+  this was a latent hazard rather than a live bypass, but it is inconsistent with the
+  fail-closed contract #678 already established for a merely *unresolved* command word
+  (`CommandExecutionPermissionDeniedReason::UnresolvedCommandWord`). **We do:**
+  `command_words_resolved` now also requires `!commands.is_empty()`, so zero-command input
+  is treated exactly like an unresolved word — `Denied(UnresolvedCommandWord)` with a
+  denylist configured, `Denied(AlwaysAskEnabled)`/`Denied(AgentDecided)` otherwise — and
+  never a vacuous allowlist match.
+
 - **A pinned block header is never drawn over a running command** (`ec2e2d227`,
   2026-09-05, `app/src/terminal/block_list_element.rs`). **Upstream:**
   `should_hide_snackbar_during_long_running_command` hides the pinned snackbar

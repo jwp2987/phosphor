@@ -956,7 +956,16 @@ impl BlocklistAIPermissions {
         let executed = executed_commands(&normalized_command, escape_char);
         denylist_candidates_per_command
             .push(with_flattened_line_breaks(executed.policy_spellings()));
-        let command_words_resolved = executed.is_fully_resolved();
+        // Zero-command input (`;`, `{}`, `()`, whitespace-only) decomposes to an empty
+        // `commands`, which makes the denylist's `.any()` over it vacuously false *and* the
+        // allowlist's `.all()` over it vacuously true below -- so `AlwaysAsk` would return
+        // `Allowed(ExplicitlyAllowlisted)` for input that executes nothing an allowlist rule
+        // ever matched. No zero-command spelling was found that also executes anything, so
+        // this was a latent hazard rather than a bypass, but it is treated the same as an
+        // unresolved command word regardless: there is nothing here to vouch for, so this
+        // fails closed instead of finding vacuous, false agreement between both lists (#678's
+        // `UnresolvedCommandWord` contract).
+        let command_words_resolved = executed.is_fully_resolved() && !commands.is_empty();
 
         // Local auto-approve may bypass the user-configured denylist, but workspace policy must
         // always be evaluated. Sandboxed processes use a separate organization-managed denylist
