@@ -962,13 +962,45 @@ impl AgentConversationsModel {
                 });
             }
 
+            // Metadata changes (e.g. a server-token binding, or a title regenerated via BYOP's
+            // `start_title_generation` in controller.rs) may include a fresh title, but unlike
+            // `UpdatedConversationTitle` (explicit renames, which carry the new title directly)
+            // there's nothing in this event's payload to read it from, so it's looked up fresh.
+            // Patches any task that shadows this conversation the same way the arm above does
+            // (a harmless no-op if the title didn't actually change), then lets subscribers
+            // refresh unconditionally: a `ConversationOrTask::Conversation` row already reads
+            // its title fresh at render time (see `ConversationOrTask::title`), so all it needs
+            // is the repaint this emit triggers. See issue #691: without this, a BYOP-generated
+            // title update never repainted the sidebar/history list -- the previous no-op here
+            // assumed title changes only ever arrived via `UpdatedConversationTitle`, which BYOP
+            // title generation doesn't go through.
+            BlocklistAIHistoryEvent::UpdatedConversationMetadata { conversation_id, .. } => {
+                let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+                if let Some(title) = history_model
+                    .conversation(conversation_id)
+                    .and_then(|conversation| conversation.title())
+                {
+                    for task in self.tasks.values_mut() {
+                        if Self::conversation_id_shadowed_by_task(task, history_model)
+                            == Some(*conversation_id)
+                            && task.title != title
+                        {
+                            task.title = title.clone();
+                        }
+                    }
+                }
+
+                ctx.emit(AgentConversationsModelEvent::ConversationUpdated {
+                    kind: ConversationUpdateKind::MetadataChanged,
+                });
+            }
+
             // Task/exchange-level changes that don't affect conversation navigation.
             BlocklistAIHistoryEvent::CreatedSubtask { .. }
             | BlocklistAIHistoryEvent::UpgradedTask { .. }
             | BlocklistAIHistoryEvent::ReassignedExchange { .. }
             | BlocklistAIHistoryEvent::UpdatedTodoList { .. }
             | BlocklistAIHistoryEvent::UpdatedAutoexecuteOverride { .. }
-            | BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
             // UpdatedStreamingExchange covers streaming and other exchange-level updates but
             // doesn't change any ConversationNavigationData fields (title comes from
             // UpdateTaskDescription, last_updated uses exchange.start_time which is set at append time).

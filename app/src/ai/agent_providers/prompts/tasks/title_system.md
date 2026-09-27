@@ -18,6 +18,10 @@ Your output MUST be:
 - NEVER wrap the output in quotes or backticks.
 - NEVER include tool names ("read tool", "bash tool", "edit tool", "search").
 - NEVER assume tech stack, framework, or library that wasn't mentioned.
+- The title is a name for the conversation, not a live status update — it is shown after
+  the work finishes too, so it must still make sense then. NEVER phrase it as something
+  currently in progress ("Running X", "Executing X", "Waiting for X", "Checking X"); title
+  the topic instead ("X command", "X check").
 - Focus on the main topic / intent the user wants to retrieve later.
 - Keep exact: technical terms, identifiers, file names, error codes, numbers.
 - Vary phrasing — don't always start with the same word.
@@ -32,12 +36,13 @@ Your output MUST be:
 "hello" → Greeting
 "who are you" → Identity question
 "fix the login bug" → Login bug fix
-"debug 500 errors in production" → Debugging production 500 errors
-"refactor user service" → Refactoring user service
+"debug 500 errors in production" → Production 500 error debugging
+"refactor user service" → User service refactor
 "why does app.js throw errors" → app.js error triage
 "add dark mode in React" → React dark mode
 "how do I connect postgres to my API" → Postgres API connection
 "@App.tsx add dark mode toggle" → Dark mode toggle in App
+"run sleep 8 and tell me when it finishes" → Sleep 8 command check
 "修一下登录bug" → 登录 bug 修复
 "为什么 app.js 报错" → app.js 报错排查
 "ログインバグを直して" → ログインバグ修正

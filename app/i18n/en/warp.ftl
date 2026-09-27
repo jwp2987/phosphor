@@ -451,6 +451,7 @@ terminal-input-follow-up-backspace-hint = Ask a follow up, or backspace to exit
 terminal-input-search-queries = Search queries
 terminal-input-search-queries-rewind = Search queries to rewind to
 terminal-input-search-conversations = Search conversations
+terminal-input-follow-up-blocked-on-confirmation = Approve or reject the pending action before sending a follow-up.
 terminal-input-search-skills = Search skills
 terminal-input-search-models = Search models
 terminal-input-search-profiles = Search profiles
@@ -3583,6 +3584,16 @@ ai-inline-code-diff-no-file-name = No file name
 ai-inline-code-diff-save-failed = Failed to save file { $file }: { $reason }
 ai-tool-call-cancelled = Tool call was cancelled
 ai-agent-view-open-in-different-pane = Open in different pane
+# Reason labels for a requested-command row that finished cancelled or denylisted rather than
+# executed (app/src/ai/blocklist/inline_action/requested_command.rs). Scoped addition -- the
+# rest of this file's strings (and the wider `app/src/ai/**` surface) are not yet migrated to
+# i18n, see `app/i18n/PROGRESS.md`.
+ai-requested-command-rejected-by-user = Rejected by you.
+ai-requested-command-cancelled-by-user = Cancelled by you.
+ai-requested-command-cancelled-follow-up = Cancelled -- you sent a follow-up.
+ai-requested-command-cancelled-user-command = Cancelled -- you ran a command in the terminal.
+ai-requested-command-cancelled-shell-exit = Cancelled -- the shell exited.
+ai-requested-command-denylisted = Not run -- this command is on your denylist.
 passive-suggestion-feature-or-bug-label = Code a feature or fix a bug in {1}
 passive-suggestion-help-feature-or-bug-label = Help me code a feature or fix a bug in {1}
 passive-suggestion-implement-feature-or-bug-query = Implement a feature or fix a bug in {1}. Ask me for all the details you need.

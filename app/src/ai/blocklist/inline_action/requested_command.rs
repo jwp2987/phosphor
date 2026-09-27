@@ -21,7 +21,8 @@ use warpui::{
         Flex, MainAxisSize, MouseStateHandle, OffsetPositioning, ParentElement, Radius,
         SelectableArea, SelectionHandle, Stack, Text,
     },
-    keymap::{Context, EditableBinding, FixedBinding, Keystroke},
+    id,
+    keymap::{Context, ContextPredicate, EditableBinding, FixedBinding, Keystroke},
     AppContext, Element, Entity, ModelHandle, SingletonEntity, TypedActionView, UpdateView, View,
     ViewContext, ViewHandle,
 };
@@ -29,6 +30,7 @@ use warpui::{
 use crate::ai::agent::{AIAgentActionResult, AIAgentActionType};
 use warpui::{EntityId, EventContext};
 
+use crate::ai::agent::CancellationReason;
 use crate::ai::agent::RequestCommandOutputResult;
 use crate::ai::agent::{icons, AIAgentActionResultType};
 use crate::ai::blocklist::block::cli_controller::{
@@ -118,6 +120,41 @@ const VIEWING_MCP_TOOL_DETAIL_MESSAGE: &str = "Viewing MCP tool call detail";
 const COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE: &str =
     "Cancelled -- another command was already running.";
 
+// These six are the only strings in this file routed through `t!()`/`t_static!()` so far --
+// `app/src/ai/**` ("ai core") is an entirely unclaimed i18n surface per
+// `app/i18n/PROGRESS.md` (every other label in this file, e.g. `COMMAND_WAITING_FOR_USER_MESSAGE`
+// above, is still a plain literal), so this is a scoped exception for newly-added copy rather
+// than a partial surface migration -- see issue #692. Per `PROGRESS.md`, `en` is the only
+// locale that must have the key; `ja`/`zh-CN` fall back to `en` automatically for a missing
+// key and can be backfilled in a real surface pass later. `lazy_static!` (not a plain `const`,
+// which can't call a function) plus `t_static!` (rather than `t!`, which returns an owned
+// `String`) keeps every use site below unchanged -- still a plain `&'static str` behind the
+// lazy-static proxy, dereferenced with `*` at each use.
+lazy_static! {
+    /// Shown when this row's own Reject button/keybinding was used. Distinct from
+    /// [`COMMAND_CANCELLED_BY_USER_MESSAGE`], which covers a `ManuallyCancelled` reaching this
+    /// row some other way (e.g. the conversation's Stop button firing while this action was
+    /// still pending) -- see [`RequestedCommandView::rejected_by_user`] and issue #692.
+    static ref COMMAND_REJECTED_BY_USER_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-rejected-by-user");
+    /// A `ManuallyCancelled` cancellation not attributable to this row's own Reject button --
+    /// see [`COMMAND_REJECTED_BY_USER_MESSAGE`].
+    static ref COMMAND_CANCELLED_BY_USER_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-by-user");
+    static ref COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-follow-up");
+    static ref COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-user-command");
+    static ref COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-cancelled-shell-exit");
+    /// Shown for a command an autonomous profile refused to run because it matched the user's
+    /// command denylist (`RequestCommandOutputResult::Denylisted`). Unlike the cancellation
+    /// reasons above, this is read directly off the stored result at render time -- see
+    /// `denylisted_command_message` -- so it survives a restart.
+    static ref COMMAND_DENYLISTED_MESSAGE: &'static str =
+        crate::t_static!("ai-requested-command-denylisted");
+}
+
 /// The profile-autoexecution footer's sentence, shown only when the Accept/Edit/Cancel buttons
 /// are on the same row -- see [`RequestedCommandView::execution_decision_footer_message`].
 const PROFILE_ALWAYS_ASK_FOOTER_MESSAGE: &str =
@@ -154,6 +191,22 @@ lazy_static! {
     };
 }
 
+/// The context predicate gating the Enter/Numpad-Enter -> Accept keybinding below: true only
+/// when `RequestedCommandView` itself is on the responder chain (i.e. it, or a descendant of
+/// it, has focus) and its inline edit mode isn't open (`cmdorctrl-enter` handles Accept there
+/// instead). In particular, this is false whenever the agent's own input box has focus
+/// instead -- the input is a sibling of this view, not a descendant of it, so it never
+/// contributes `RequestedCommandView::ui_name()` to the context.
+///
+/// Extracted into its own function (rather than inlined at each `FixedBinding` site, as
+/// before) so that guarantee is unit-testable in isolation: see `enter_context_predicate_tests`
+/// in the test module. Issue #690 was, in part, about confirming Enter typed into the agent
+/// input can never reach this binding just because the card happens to be showing somewhere
+/// on screen.
+fn enter_accepts_requested_command_context() -> ContextPredicate {
+    id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT)
+}
+
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -166,12 +219,12 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "enter",
             RequestedCommandViewAction::Accept,
-            id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT),
+            enter_accepts_requested_command_context(),
         ),
         FixedBinding::new(
             "numpadenter",
             RequestedCommandViewAction::Accept,
-            id!(RequestedCommandView::ui_name()) & !id!(EDIT_MODE_OPEN_KEYMAP_CONTEXT),
+            enter_accepts_requested_command_context(),
         ),
         FixedBinding::new(
             "cmdorctrl-enter",
@@ -345,17 +398,22 @@ pub struct RequestedCommandView {
     header_mouse_state: MouseStateHandle,
     is_editing: bool,
 
-    /// Whether this action was cancelled by the app because another command was already
-    /// running, rather than by anything the user or the conversation did.
+    /// The short explanation to show next to this row's icon once it finishes cancelled (see
+    /// `cancel_explanation_for_reason`), or `None` while that's still undetermined or doesn't
+    /// apply.
     ///
-    /// The stored result cannot answer this on its own: every one of those paths lands on the
-    /// same `RequestCommandOutput(CancelledBeforeExecution)`, whether the user pressed Cancel,
-    /// the conversation was reverted, or the long-running-command drain took it out. The one
-    /// thing that separates them is the `cancellation_reason` on
+    /// The stored result cannot answer this on its own: every cancelled-before-execution path
+    /// lands on the same `RequestCommandOutput(CancelledBeforeExecution)`, whether the user
+    /// pressed Reject, the conversation was reverted, or the long-running-command drain took
+    /// it out. The one thing that separates them is the `cancellation_reason` on
     /// `BlocklistAIActionEvent::FinishedAction`, which is live only at the moment the event
     /// arrives -- so it is captured there and remembered here. A row restored from a previous
-    /// session never sees that event and so keeps the old, unlabelled rendering.
-    cancelled_by_running_command: bool,
+    /// session never sees that event and so keeps the old, unlabelled rendering. Issue #692.
+    cancel_explanation: Option<&'static str>,
+
+    /// Set when this row's own Reject button/keybinding was used. See
+    /// `COMMAND_REJECTED_BY_USER_MESSAGE`.
+    rejected_by_user: bool,
 
     // A requested command can either be copied directly off of one citation (such as a Zap Drive
     // object), derived from one or more citations, or be unrelated to any citations.
@@ -551,21 +609,13 @@ impl RequestedCommandView {
                                         )
                                     };
 
-                                    // A cancellation nobody asked for. Every user- and
-                                    // conversation-driven cancellation carries a
-                                    // `CancellationReason` (`ManuallyCancelled` from the row's
-                                    // own Cancel button, `FollowUpSubmitted`, `Reverted`,
-                                    // `Deleted`, `AgentExitedShell`); the one path that passes
-                                    // `None` for a command that never got as far as a block is
-                                    // the "another command is already running" path -- the
-                                    // long-running-command drain in
-                                    // `BlocklistAIActionModel::handle_action_result` and the
-                                    // `is_active_and_long_running` guard it exists to uphold.
-                                    // Requiring the block to be absent as well keeps the label
-                                    // off rows whose command actually started and was then torn
-                                    // down some other way.
-                                    me.cancelled_by_running_command =
-                                        cancellation_reason.is_none() && !has_command_block;
+                                    // See `cancel_explanation_for_reason` for what each
+                                    // `CancellationReason` (or its absence) means here.
+                                    me.cancel_explanation = cancel_explanation_for_reason(
+                                        *cancellation_reason,
+                                        has_command_block,
+                                        me.rejected_by_user,
+                                    );
 
                                     if block_absent_or_finished && me.is_header_expanded {
                                         me.set_is_header_expanded(false, ctx);
@@ -631,7 +681,8 @@ impl RequestedCommandView {
             autonomy_setting_speedbump,
             is_header_expanded: false,
             header_mouse_state: Default::default(),
-            cancelled_by_running_command: false,
+            cancel_explanation: None,
+            rejected_by_user: false,
             copied_from_citation: None,
             derived_from_citations: Default::default(),
             citation_state_handles: Default::default(),
@@ -732,8 +783,15 @@ impl RequestedCommandView {
             CodeEditorEvent::CopiedEmptyText => {
                 ctx.emit(RequestedCommandViewEvent::CopiedEmptyText);
             }
+            // Windows has no `ctrl-c`-as-reject `FixedBinding` (the code editor's own
+            // Ctrl+C-to-copy takes that chord there instead), so a Ctrl+C with nothing
+            // selected is routed here as the platform's equivalent of the Reject keybinding.
+            // Set `rejected_by_user` the same way `RequestedCommandViewAction::Reject` does
+            // just below, or this row falls back to the generic "Cancelled by you." label
+            // instead of "Rejected by you." -- see issue #692.
             #[cfg(windows)]
             CodeEditorEvent::WindowsCtrlC { copied_selection } if !copied_selection => {
+                self.rejected_by_user = true;
                 ctx.emit(RequestedCommandViewEvent::Rejected);
             }
             _ => {}
@@ -1253,10 +1311,24 @@ impl RequestedCommandView {
         // Computed up here rather than bound inside the `match` arm: `action_status` is matched
         // a second time further down (to attach the interaction mode), so the first `match` must
         // not move it, and `AIActionStatus::Finished` owns its result.
-        let was_cancelled_for_running_command = self.cancelled_by_running_command
-            && action_status
+        let cancel_explanation = self.cancel_explanation.filter(|_| {
+            action_status
                 .as_ref()
-                .is_some_and(|status| status.is_cancelled());
+                .is_some_and(|status| status.is_cancelled())
+        });
+        // Read directly off the stored result (see `denylisted_command_message`), not off
+        // `self.cancel_explanation` -- a denylist refusal never goes through
+        // `BlocklistAIActionEvent::FinishedAction`'s cancellation-reason plumbing at all.
+        let denylisted_message = action_status.as_ref().and_then(|status| {
+            let AIActionStatus::Finished(result) = status else {
+                return None;
+            };
+            let AIAgentActionResultType::RequestCommandOutput(command_result) = &result.result
+            else {
+                return None;
+            };
+            denylisted_command_message(command_result)
+        });
 
         match action_status {
             Some(AIActionStatus::Preprocessing) => {
@@ -1291,8 +1363,23 @@ impl RequestedCommandView {
             // `CancelledBeforeExecution` with no finished block), so there is no "Viewing
             // command detail" state for this arm to steal. Styled like `Queued` -- dim, and no
             // monospace override, because the text is prose rather than a command.
-            Some(AIActionStatus::Finished(..)) if was_cancelled_for_running_command => {
-                title = COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE.into();
+            Some(AIActionStatus::Finished(..)) if cancel_explanation.is_some() => {
+                title = cancel_explanation
+                    .expect("guarded by is_some() above")
+                    .into();
+                font_color_override = Some(blended_colors::text_disabled(
+                    appearance.theme(),
+                    appearance.theme().surface_2(),
+                ));
+            }
+            // Also ahead of the expanded-header arm: a denylisted command never ran, so
+            // there's no execution detail to view, but (unlike the cancellation above) it can
+            // still be expanded to see the command text -- see `render_body`/expansion below.
+            // The reason stays the header's title either way.
+            Some(AIActionStatus::Finished(..)) if denylisted_message.is_some() => {
+                title = denylisted_message
+                    .expect("guarded by is_some() above")
+                    .into();
                 font_color_override = Some(blended_colors::text_disabled(
                     appearance.theme(),
                     appearance.theme().surface_2(),
@@ -1969,7 +2056,10 @@ impl TypedActionView for RequestedCommandView {
             RequestedCommandViewAction::ToggleAcceptMenu => {
                 self.toggle_accept_split_button_menu(ctx)
             }
-            RequestedCommandViewAction::Reject => ctx.emit(RequestedCommandViewEvent::Rejected),
+            RequestedCommandViewAction::Reject => {
+                self.rejected_by_user = true;
+                ctx.emit(RequestedCommandViewEvent::Rejected);
+            }
             RequestedCommandViewAction::OpenEditMode => self.open_edit_mode(ctx),
             RequestedCommandViewAction::CloseEditMode => self.close_edit_mode(ctx),
             RequestedCommandViewAction::FocusEditor => {
@@ -2070,6 +2160,58 @@ fn mcp_viewing_detail_title_text(tool_name: &str, server_name: Option<&str>) -> 
         Some(server) => format!("Viewing MCP tool {tool_name} on {server}"),
         None => format!("Viewing MCP tool {tool_name}"),
     }
+}
+
+/// The short explanation to show next to a cancelled command's icon, or `None` when none
+/// should be shown -- either the command actually started (`has_command_block`, which has its
+/// own rendering via the block's exit-code icon) or the reason doesn't call for explaining a
+/// row that was torn down rather than cancelled by anyone in particular.
+///
+/// A pure function of state captured off the live `BlocklistAIActionEvent::FinishedAction`
+/// event -- `AIAgentActionResult` itself carries no cancellation reason, every path stores the
+/// same `CancelledBeforeExecution` (see `COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE`) -- kept
+/// separate from the view so it's unit-testable without an app/view context. Issue #692:
+/// `c6124b6e4` added the `None`/no-block case below (the long-running-command drain) but left
+/// every other cancellation reason, including an explicit user Reject, unlabelled.
+fn cancel_explanation_for_reason(
+    reason: Option<CancellationReason>,
+    has_command_block: bool,
+    rejected_by_user: bool,
+) -> Option<&'static str> {
+    if has_command_block {
+        return None;
+    }
+    match reason {
+        None => Some(COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE),
+        Some(CancellationReason::ManuallyCancelled) if rejected_by_user => {
+            Some(*COMMAND_REJECTED_BY_USER_MESSAGE)
+        }
+        Some(CancellationReason::ManuallyCancelled) => Some(*COMMAND_CANCELLED_BY_USER_MESSAGE),
+        Some(CancellationReason::FollowUpSubmitted { .. }) => {
+            Some(*COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
+        }
+        Some(CancellationReason::UserCommandExecuted) => {
+            Some(*COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
+        }
+        Some(CancellationReason::AgentExitedShell) => {
+            Some(*COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
+        }
+        // Torn down some other way -- a revert/delete removed the exchange entirely, or the
+        // block finished by itself while the agent was still streaming. Nothing to explain
+        // to the user here.
+        Some(CancellationReason::Reverted)
+        | Some(CancellationReason::Deleted)
+        | Some(CancellationReason::OptimisticCLISubagentCompletion) => None,
+    }
+}
+
+/// The short explanation to show for a command an autonomous profile refused to run because
+/// it matched the user's command denylist. Reads the reason directly off the stored
+/// `RequestCommandOutputResult` rather than off a live event, so (unlike
+/// `cancel_explanation_for_reason`) it survives a restart -- the result itself says why.
+fn denylisted_command_message(result: &RequestCommandOutputResult) -> Option<&'static str> {
+    matches!(result, RequestCommandOutputResult::Denylisted { .. })
+        .then_some(*COMMAND_DENYLISTED_MESSAGE)
 }
 
 #[cfg(test)]

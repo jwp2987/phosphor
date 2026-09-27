@@ -7462,6 +7462,25 @@ pub(crate) async fn generate_title_via_byop(
     Ok(sanitize_title(&raw))
 }
 
+/// Whether text following a stripped `Running `/`Executing ` prefix (already lowercased and
+/// trimmed by the caller) unambiguously reads as a live command-execution status rather than
+/// ordinary prose that happens to start with the same word -- see step 5 of `sanitize_title`'s
+/// doc comment for why this needs to be narrow. Deliberately limited to the two shapes this
+/// fork's own status-line vocabulary actually produces (`LOAD_OUTPUT_MESSAGE_FOR_RUNNING_COMMAND`
+/// = "Executing command...", and command text is otherwise always rendered backtick-quoted --
+/// see e.g. `COMMAND_WAITING_FOR_USER_MESSAGE` and its sibling constants in
+/// `inline_action::requested_command`):
+/// - Ends with the word "command" (optionally followed by punctuation already trimmed by the
+///   caller, or still present -- trimmed again here), e.g. "sleep 8 command".
+/// - Is entirely a backtick-quoted command literal, e.g. "\`sleep 8\`", "\`npm test\`".
+///
+/// Anything else -- prose that continues past the prefix, like "tests fails on CI" or "the
+/// deploy script" -- is left alone: those are legitimate titles, not stale status lines.
+fn looks_like_a_live_command_status(rest: &str) -> bool {
+    let rest = rest.trim_end_matches(['.', '!', '?', ',', ';', ':', '。', '！', '？']);
+    rest.ends_with(" command") || (rest.len() >= 2 && rest.starts_with('`') && rest.ends_with('`'))
+}
+
 /// Sanitizes the title text. An empty string → None (lets the upstream skip the emit).
 ///
 /// Processing order:
@@ -7471,8 +7490,18 @@ pub(crate) async fn generate_title_via_byop(
 ///    the title is:" before a newline and the actual title).
 /// 3. Strips prefixes like `Title:` / `标题:` / `Thread:` / `Subject:` (case-insensitive).
 /// 4. Strips leading/trailing quotes / backticks (Chinese and English).
-/// 5. Strips trailing punctuation.
-/// 6. Truncates to 50 characters (by char, to protect CJK); appends `…` if truncated.
+/// 5. Strips a leading `Running`/`Executing` when what follows unambiguously reads as a live
+///    command-execution status rather than ordinary prose that happens to start with the same
+///    word (see `looks_like_a_live_command_status`). `title_system.md` asks for a name rather
+///    than a live status line, but a model can still produce one (e.g. "Running sleep 8
+///    command") -- and unlike a normal title, that phrasing reads as stale the moment the
+///    thing it describes finishes or is rejected, with nothing that ever regenerates it to
+///    notice. This is a defensive backstop for the prompt rule, not a replacement for it.
+///    Deliberately narrow: an early version stripped the word off *any* title starting with
+///    it, which silently corrupted an ordinary title like "Running tests fails on CI" (where
+///    "Running" is a noun phrase, not a live-progress verb) into "Tests fails on CI".
+/// 6. Strips trailing punctuation.
+/// 7. Truncates to 50 characters (by char, to protect CJK); appends `…` if truncated.
 fn sanitize_title(raw: &str) -> Option<String> {
     // 1. Strips reasoning tags (there may be several; DOTALL-style mode).
     let mut s = raw.to_owned();
@@ -7541,7 +7570,32 @@ fn sanitize_title(raw: &str) -> Option<String> {
         }
     }
 
-    // 5. Strips trailing punctuation.
+    // 5. Strips a leading progress-status word that reads as a live status line rather than
+    // a name (see the doc comment above and `looks_like_a_live_command_status`). Only strips
+    // when something non-empty remains, so a title that is *only* the status word
+    // ("Running...") is left alone rather than reduced to nothing. Runs after the quote strip
+    // so a quoted status-sounding title ("\"Running sleep 8 command\"") is still caught.
+    const PROGRESS_PREFIXES: &[&str] = &["running ", "executing "];
+    let lower = s.to_lowercase();
+    for p in PROGRESS_PREFIXES {
+        if let Some(lower_rest) = lower.strip_prefix(p) {
+            if looks_like_a_live_command_status(lower_rest.trim()) {
+                let rest = s[p.len()..].trim_start();
+                if !rest.is_empty() {
+                    let mut capitalized = String::with_capacity(rest.len());
+                    let mut chars = rest.chars();
+                    if let Some(first) = chars.next() {
+                        capitalized.extend(first.to_uppercase());
+                    }
+                    capitalized.push_str(chars.as_str());
+                    s = capitalized;
+                }
+            }
+            break;
+        }
+    }
+
+    // 6. Strips trailing punctuation.
     while let Some(c) = s.chars().last() {
         if matches!(
             c,
@@ -7559,7 +7613,7 @@ fn sanitize_title(raw: &str) -> Option<String> {
         return None;
     }
 
-    // 6. Truncates to 50 characters (by char, to protect CJK). Appends an ellipsis if over.
+    // 7. Truncates to 50 characters (by char, to protect CJK). Appends an ellipsis if over.
     const MAX_CHARS: usize = 50;
     let chars: Vec<char> = s.chars().collect();
     if chars.len() > MAX_CHARS {
@@ -8541,6 +8595,151 @@ fn make_finished_done(
                 request_charges: None,
             },
         )),
+    }
+}
+
+#[cfg(test)]
+mod sanitize_title_tests {
+    use super::*;
+
+    /// The verbatim defect: a title-generation model described what the conversation is
+    /// doing right now instead of naming it. Before the fix this stayed on screen, unchanged,
+    /// after the command finished or was rejected -- see issue #691. Both recognized shapes:
+    /// ending in the word "command", and a fully backtick-quoted command literal.
+    #[test]
+    fn strips_a_leading_progress_word_that_reads_as_a_command_status() {
+        assert_eq!(
+            sanitize_title("Running sleep 8 command"),
+            Some("Sleep 8 command".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Executing the deploy command"),
+            Some("The deploy command".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Running `sleep 8`"),
+            Some("`sleep 8`".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Executing `npm test`"),
+            Some("`npm test`".to_owned())
+        );
+    }
+
+    /// Trailing punctuation the model added (removed later, by step 6) doesn't defeat the
+    /// "ends with command" check here.
+    #[test]
+    fn tolerates_trailing_punctuation_before_the_command_check() {
+        assert_eq!(
+            sanitize_title("Running sleep 8 command."),
+            Some("Sleep 8 command".to_owned())
+        );
+    }
+
+    #[test]
+    fn progress_word_strip_is_case_insensitive() {
+        assert_eq!(
+            sanitize_title("RUNNING sleep 8 command"),
+            Some("Sleep 8 command".to_owned())
+        );
+    }
+
+    /// A title that is *only* the status word, with nothing left to promote, is kept as-is
+    /// rather than stripped down to an empty (and then `None`) title.
+    #[test]
+    fn keeps_a_bare_progress_word_title() {
+        assert_eq!(sanitize_title("Running"), Some("Running".to_owned()));
+    }
+
+    /// The regression this narrowing exists for (issue #691, review follow-up): a title
+    /// that legitimately starts with "Running" but is ordinary prose -- not a live status --
+    /// must survive untouched, not get silently corrupted into "Tests fails on CI".
+    #[test]
+    fn does_not_touch_prose_that_starts_with_a_progress_word() {
+        assert_eq!(
+            sanitize_title("Running tests fails on CI"),
+            Some("Running tests fails on CI".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Running shoes review"),
+            Some("Running shoes review".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Executing the deploy script"),
+            Some("Executing the deploy script".to_owned())
+        );
+    }
+
+    /// `Waiting for`/`Checking` were dropped from the recognized prefixes entirely: their
+    /// false-positive risk (ordinary sentences starting the same way, e.g. "Checking your
+    /// work before deploying") wasn't worth the narrow win, unlike `Running`/`Executing`
+    /// (which this fork's own status vocabulary -- `LOAD_OUTPUT_MESSAGE_FOR_RUNNING_COMMAND`,
+    /// "Executing command..." -- actually produces).
+    #[test]
+    fn no_longer_strips_waiting_for_or_checking() {
+        assert_eq!(
+            sanitize_title("Waiting for the build to finish"),
+            Some("Waiting for the build to finish".to_owned())
+        );
+        assert_eq!(
+            sanitize_title("Checking disk usage"),
+            Some("Checking disk usage".to_owned())
+        );
+    }
+
+    /// A title with none of the progress words is untouched by this step.
+    #[test]
+    fn leaves_ordinary_titles_alone() {
+        assert_eq!(
+            sanitize_title("Login bug fix"),
+            Some("Login bug fix".to_owned())
+        );
+    }
+
+    /// Interaction with the existing `Title:` prefix strip and quote strip: order matters --
+    /// the progress-word strip runs after those, on the already-unwrapped text.
+    #[test]
+    fn runs_after_prefix_and_quote_stripping() {
+        assert_eq!(
+            sanitize_title("Title: \"Running sleep 8 command\""),
+            Some("Sleep 8 command".to_owned())
+        );
+    }
+}
+
+#[cfg(test)]
+mod looks_like_a_live_command_status_tests {
+    use super::looks_like_a_live_command_status;
+
+    #[test]
+    fn command_suffix_is_recognized() {
+        assert!(looks_like_a_live_command_status("sleep 8 command"));
+        assert!(looks_like_a_live_command_status("the deploy command"));
+    }
+
+    #[test]
+    fn backtick_quoted_command_is_recognized() {
+        assert!(looks_like_a_live_command_status("`sleep 8`"));
+        assert!(looks_like_a_live_command_status("`npm test`"));
+    }
+
+    #[test]
+    fn trailing_punctuation_does_not_defeat_the_command_suffix_check() {
+        assert!(looks_like_a_live_command_status("sleep 8 command."));
+        assert!(looks_like_a_live_command_status("sleep 8 command!"));
+    }
+
+    #[test]
+    fn ordinary_prose_is_rejected() {
+        assert!(!looks_like_a_live_command_status("tests fails on ci"));
+        assert!(!looks_like_a_live_command_status("shoes review"));
+        assert!(!looks_like_a_live_command_status("the deploy script"));
+    }
+
+    /// A lone backtick isn't "quoted" -- there's no closing backtick to make it a literal.
+    #[test]
+    fn a_single_backtick_is_not_quoted() {
+        assert!(!looks_like_a_live_command_status("`"));
     }
 }
 

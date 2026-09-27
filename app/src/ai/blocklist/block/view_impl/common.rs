@@ -205,6 +205,36 @@ pub struct ForceRefreshButtonProps<'a> {
     pub block_id: crate::terminal::model::block::BlockId,
 }
 
+/// Whether the warping indicator should show an accurate agent-command status message
+/// (`LOAD_OUTPUT_MESSAGE_FOR_RUNNING_COMMAND` / `_FOR_WAITING_FOR_COMMAND_COMPLETION` /
+/// `WAITING_FOR_USER_INPUT_MESSAGE`) instead of the generic "model is thinking" fallback
+/// (`LOAD_OUTPUT_MESSAGE`, "Phosphorizing...").
+///
+/// `is_streaming` alone is not a reliable signal here: for a BYOP long-running command (no
+/// server round trip), the exchange's `AIAgentOutputStatus` stays `Streaming` for the entire
+/// duration the command runs, which made the original `!is_streaming()` guard effectively
+/// unreachable and left the generic label showing the whole time a command was actively
+/// executing. See issue #694.
+///
+/// `is_polling_command_output` -- specifically whether the currently in-flight async action is
+/// `ReadShellCommandOutput`, the poll that drives a long-running command's output -- is a
+/// signal that doesn't depend on `is_streaming` at all, so it can surface the accurate status
+/// even while `is_streaming` is stuck `true`. Deliberately narrower than "any action is
+/// in-flight": the caller's `action` also matches unrelated action types (`ReadFiles`,
+/// `AskUserQuestion`, ...), and a non-BYOP conversation can legitimately still be
+/// `is_streaming` while running one of those alongside a long-running command it isn't
+/// currently polling -- passing "any action" here would show "Executing command..." for that
+/// unrelated action instead of falling through to the generic label. When the action isn't
+/// this specific poll, fall back to the original `!is_streaming` gate so a genuinely idle,
+/// non-command state isn't mislabelled.
+fn should_show_agent_command_status(
+    is_agent_command_running: bool,
+    is_polling_command_output: bool,
+    is_streaming: bool,
+) -> bool {
+    is_agent_command_running && (is_polling_command_output || !is_streaming)
+}
+
 pub fn render_warping_indicator<V: View>(
     props: WarpingProps<'_, V>,
     app: &AppContext,
@@ -370,10 +400,26 @@ pub fn render_warping_indicator<V: View>(
             }
             action => {
                 let active_block = props.terminal_model.block_list().active_block();
-                if !props.model.status(app).is_streaming()
-                    && active_block.is_active_and_long_running()
-                    && active_block.agent_interaction_metadata().is_some()
-                {
+                let is_agent_command_running = active_block.is_active_and_long_running()
+                    && active_block.agent_interaction_metadata().is_some();
+                // Specifically the `ReadShellCommandOutput` poll -- not "any action at all" --
+                // is what should be allowed to bypass the `is_streaming` gate below: this
+                // catch-all `action` arm also matches plenty of other, unrelated action types
+                // (`ReadFiles`, `AskUserQuestion`, `RequestFileEdits`, ...), and a non-BYOP
+                // conversation can legitimately be mid-`is_streaming` while running one of
+                // those *alongside* an unrelated long-running command the agent isn't
+                // currently polling. Gating on the specific action keeps that case falling
+                // through to the generic label instead of being mislabelled "Executing
+                // command...". See issue #694's review follow-up.
+                let is_polling_command_output = matches!(
+                    action,
+                    Some(AIAgentActionType::ReadShellCommandOutput { .. })
+                );
+                if should_show_agent_command_status(
+                    is_agent_command_running,
+                    is_polling_command_output,
+                    props.model.status(app).is_streaming(),
+                ) {
                     if action.is_none() {
                         should_render_waiting_icon = true;
                         WAITING_FOR_USER_INPUT_MESSAGE.to_owned()
