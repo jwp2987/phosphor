@@ -91,6 +91,9 @@ impl OpenAIAdapter {
 		let response_format_plan = response_format_plan(&options_set);
 
 		// -- url
+		// Read before `endpoint` is consumed: suffix inference below depends on the host.
+		let infers_effort_from_model_name =
+			uses_model_name_effort_convention(model.adapter_kind, endpoint.base_url());
 		let url = AdapterDispatcher::get_service_url(&model, service_type, endpoint)?;
 
 		// -- api_key / headers
@@ -107,15 +110,24 @@ impl OpenAIAdapter {
 		let stream = matches!(service_type, ServiceType::ChatStream);
 
 		// -- compute reasoning_effort and eventual trimmed model_name
-		// For now, just for openai AdapterKind
+		//
+		// Suffix inference (trimming a trailing "-max"/"-high"/... and sending it as
+		// `reasoning_effort`) is OpenAI's and DeepSeek's own model-naming convention, so it only
+		// applies when the request actually goes to their first-party API. The `OpenAI` adapter
+		// kind is also what every OpenAI-compatible BYOP provider is routed through (OpenRouter,
+		// FastFlowLM, vLLM, a local Ollama /v1, ...), where a name like "qwen3-max" is simply the
+		// model's name and must reach the endpoint unchanged (jwp2987/phosphor#772, after
+		// zerx-lab/zap#338). `PROTECTED_MODEL_NAMES` in `chat_options.rs` only ever patched two
+		// such names. An explicit `reasoning_effort` is always honoured.
 		let (reasoning_effort, model_name): (Option<ReasoningEffort>, &str) = {
-			let (reasoning_effort, model_name) = options_set
-				.reasoning_effort()
-				.cloned()
-				.map(|v| (Some(v), model_name))
-				.unwrap_or_else(|| ReasoningEffort::from_model_name(model_name));
-
-			(reasoning_effort, model_name)
+			let explicit = options_set.reasoning_effort().cloned();
+			if let Some(effort) = explicit {
+				(Some(effort), model_name)
+			} else if infers_effort_from_model_name {
+				ReasoningEffort::from_model_name(model_name)
+			} else {
+				(None, model_name)
+			}
 		};
 
 		// -- Build the basic payload
@@ -570,6 +582,23 @@ fn apply_chat_cache_breakpoint(_model_iden: &ModelIden, content: &mut [Value], _
 
 // region:    --- Tests
 
+/// Whether `base_url` is the first-party API of an adapter kind whose own model names carry a
+/// reasoning-effort suffix (OpenAI, DeepSeek). Any other host -- an OpenAI-compatible proxy or
+/// local server reached through the same adapter kind -- names models however it likes.
+fn uses_model_name_effort_convention(adapter_kind: AdapterKind, base_url: &str) -> bool {
+	let Some(host) = reqwest::Url::parse(base_url)
+		.ok()
+		.and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+	else {
+		return false;
+	};
+	match adapter_kind {
+		AdapterKind::OpenAI => host == "api.openai.com",
+		AdapterKind::DeepSeek => host == "api.deepseek.com",
+		_ => false,
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -654,6 +683,91 @@ mod tests {
 				"function": { "name": "get_weather" }
 			})
 		);
+	}
+
+	/// A BYOP/custom-adapter model name ending in a reasoning-effort keyword (e.g. "-max")
+	/// must be sent to the endpoint unchanged: that naming convention belongs to OpenAI and
+	/// DeepSeek, not to arbitrary user-configured model names. Regression test for
+	/// https://github.com/zerx-lab/zap/pull/338, ported to this fork's PROTECTED_MODEL_NAMES
+	/// allowlist not covering the general case.
+	#[test]
+	fn test_custom_adapter_model_name_keeps_reasoning_effort_suffix() {
+		let target = ServiceTarget {
+			model: ModelIden::new(AdapterKind::Custom(0), "gpt-5-max"),
+			auth: AuthData::from_single("test-key"),
+			endpoint: Endpoint::from_static("https://example.com/v1/"),
+		};
+
+		let web_req = OpenAIAdapter::util_to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::from_user("hello"),
+			ChatOptionsSet::default(),
+			None,
+		)
+		.expect("to_web_request_data should succeed");
+
+		assert_eq!(web_req.payload["model"], "gpt-5-max");
+		assert!(web_req.payload.get("reasoning_effort").is_none());
+	}
+
+	/// The case that matters in Phosphor: an OpenAI-compatible BYOP provider is routed through
+	/// the `OpenAI` adapter kind, not `Custom`, so the gate has to be the endpoint host. A
+	/// third-party endpoint's "qwen3-max" must reach it unchanged (#772).
+	#[test]
+	fn test_openai_adapter_on_third_party_endpoint_keeps_reasoning_effort_suffix() {
+		let target = ServiceTarget {
+			model: ModelIden::new(AdapterKind::OpenAI, "qwen3-max"),
+			auth: AuthData::from_single("test-key"),
+			endpoint: Endpoint::from_static("https://openrouter.ai/api/v1/"),
+		};
+
+		let web_req = OpenAIAdapter::util_to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::from_user("hello"),
+			ChatOptionsSet::default(),
+			None,
+		)
+		.expect("to_web_request_data should succeed");
+
+		assert_eq!(web_req.payload["model"], "qwen3-max");
+		assert!(web_req.payload.get("reasoning_effort").is_none());
+	}
+
+	#[test]
+	fn test_model_name_effort_convention_is_first_party_hosts_only() {
+		assert!(uses_model_name_effort_convention(AdapterKind::OpenAI, "https://api.openai.com/v1/"));
+		assert!(uses_model_name_effort_convention(AdapterKind::OpenAI, "https://API.OpenAI.com/v1/"));
+		assert!(uses_model_name_effort_convention(AdapterKind::DeepSeek, "https://api.deepseek.com/v1/"));
+		assert!(!uses_model_name_effort_convention(AdapterKind::OpenAI, "http://localhost:52625/v1/"));
+		assert!(!uses_model_name_effort_convention(AdapterKind::OpenAI, "https://api.openai.com.evil.example/v1/"));
+		assert!(!uses_model_name_effort_convention(AdapterKind::DeepSeek, "https://api.openai.com/v1/"));
+		assert!(!uses_model_name_effort_convention(AdapterKind::OpenAI, "not a url"));
+	}
+
+	/// The same BYOP model name sent through the native OpenAI adapter kind is unaffected:
+	/// OpenAI's own suffix convention still applies there, and this pins that this fix does
+	/// not regress it.
+	#[test]
+	fn test_openai_adapter_model_name_still_infers_reasoning_effort_suffix() {
+		let target = ServiceTarget {
+			model: ModelIden::new(AdapterKind::OpenAI, "gpt-5-max"),
+			auth: AuthData::from_single("test-key"),
+			endpoint: Endpoint::from_static("https://api.openai.com/v1/"),
+		};
+
+		let web_req = OpenAIAdapter::util_to_web_request_data(
+			target,
+			ServiceType::Chat,
+			ChatRequest::from_user("hello"),
+			ChatOptionsSet::default(),
+			None,
+		)
+		.expect("to_web_request_data should succeed");
+
+		assert_eq!(web_req.payload["model"], "gpt-5");
+		assert_eq!(web_req.payload["reasoning_effort"], "max");
 	}
 
 	#[test]

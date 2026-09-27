@@ -1042,9 +1042,11 @@ pub enum AgentProviderApiType {
 /// Provider-level reasoning effort (thinking depth) preference.
 ///
 /// Semantics:
-/// - `Auto` (default): does not pass an effort value to genai. The OpenAI / Anthropic adapters
-///   infer it automatically from the model name suffix (`-low` / `-high` / `-zero`, etc.);
-///   Gemini / DeepSeek do not infer it.
+/// - `Auto` (default): does not pass an effort value to genai. The Anthropic adapter, and the
+///   OpenAI adapter only when the provider's `base_url` is OpenAI's own API, infer it from the
+///   model name suffix (`-low` / `-high` / `-zero`, etc.). An OpenAI-compatible third-party
+///   endpoint gets the model name unchanged, since there "qwen3-max" is just a name (#772);
+///   set a level explicitly to send an effort there.
 /// - `Off`: explicitly sends `none` for models that support reasoning, disabling the chain of
 ///   thought.
 /// - Other levels: the client first checks with `reasoning::model_supports_reasoning` and

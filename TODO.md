@@ -6766,10 +6766,136 @@ other way.
 
 ## UPSTREAM ZAP PRS — triaged 2026-09-27
 
-Triage of merged PRs on `zerx-lab/zap`, ported by content (no shared git
-history) after confirming the fix applies and nothing here depends on the
-behavior being changed.
+Four `zerx-lab/zap` PRs, triaged against this fork the same way as the issues
+above: is the defect/gap present *here*? Not whether Zap should merge it.
 
+- [x] **FIXED — Zap #338 "fix(ai): don't strip -max suffix from BYOP model
+      names" — CONFIRMED PRESENT, fixed here.** `util_to_web_request_data`
+      (`lib/rust-genai/src/adapter/adapters/openai/adapter_shared.rs`) called
+      `ReasoningEffort::from_model_name` for every OpenAI-compatible adapter
+      including `AdapterKind::Custom` (BYOP), which strips a trailing
+      `-max`/`-high`/etc. keyword from the model name and injects a
+      `reasoning_effort` field unless the model name is the exact literal
+      string in a two-entry `PROTECTED_MODEL_NAMES` allowlist
+      (`chat_options.rs:11`: `["deepseek-r1-zero", "qwen3.8-max"]`) — evidence
+      someone already patched the *one* name this hit and not the general
+      case. A BYOP name like `gpt-5-max` still got mangled. Fixed by gating
+      the suffix inference to `AdapterKind::OpenAI | AdapterKind::DeepSeek`
+      only, matching upstream's fix; every other adapter kind now passes the
+      model name through unchanged unless the caller set an explicit
+      `reasoning_effort`. Issue #772. Tests:
+      `test_custom_adapter_model_name_keeps_reasoning_effort_suffix` (red
+      before the fix), `test_openai_adapter_model_name_still_infers_reasoning_effort_suffix`
+      (pins the OpenAI-native behavior is unchanged).
+      **CORRECTED 2026-09-27 by the coordinator — the adapter-kind gate alone did not
+      reach this fork's BYOP path.** Phosphor routes an OpenAI-compatible BYOP provider
+      through `AdapterKind::OpenAI` (`chat_stream.rs` `adapter_kind_for`), never
+      `Custom`, so `qwen3-max` on OpenRouter/FLM/vLLM was still stripped. The gate is
+      now the endpoint host: `uses_model_name_effort_convention` infers only for
+      `OpenAI` on `api.openai.com` and `DeepSeek` on `api.deepseek.com`. New tests:
+      `test_openai_adapter_on_third_party_endpoint_keeps_reasoning_effort_suffix` (the
+      real BYOP case) and `test_model_name_effort_convention_is_first_party_hosts_only`
+      (incl. a lookalike host). `ReasoningEffortSetting::Auto`'s doc
+      (`app/src/settings/ai.rs`) updated: on a third-party endpoint, set a level
+      explicitly to send an effort. All 206 genai lib tests pass.
+- [x] **ALREADY FIXED HERE — Zap #326 "pager wrapping no longer swallows the
+      heredoc terminator that wedges the agent" — no action.**
+      `wrap_command_without_pager`
+      (`app/src/ai/blocklist/action_model/execute/shell_command.rs:906`) already
+      detects a multi-line command (or one ending in a `#` comment, a case Zap's
+      PR doesn't even mention) and puts the closing token alone on its own line
+      for bash/zsh, fish and PowerShell, exactly matching the upstream fix's
+      shape. Tests already exist and pin it:
+      `multiline_heredoc_keeps_delimiter_and_closer_on_their_own_lines` and
+      neighbors in `shell_command_tests.rs:182-277`. No gap, no work.
+- [ ] **NOT PORTED — Zap #317 "remote code review for Warpified SSH sessions +
+      security hardening" — security hardening ALREADY PRESENT here (8/8);
+      the remote-code-review feature is NOT ported (large, out of scope for
+      this pass).**
+      Hardening items, checked one by one:
+      1. `shell_quote_arg` shell-aware quoting helper — present,
+         `app/src/terminal/model/session/command_executor/shared.rs:55`, used
+         throughout `execute.rs`/`file_glob.rs`/`grep.rs`.
+      2. Escape paths in `is_file_path`/`is_git_repository` — present,
+         `app/src/ai/blocklist/action_model/execute.rs:1366,1378`, with tests
+         `execute_tests.rs:236-320`.
+      3. Escape paths in remote SSH session commands — present,
+         `app/src/terminal/model/session/command_executor/remote_command_executor.rs:61-69`,
+         with an in-code comment noting upstream `88c344e2` fixed two sites and
+         this fork ported both (the `history_file` one and this `cd` one).
+      4. Quote prompt-chip shell commands (git checkout / nvm use / cd) —
+         present, `app/src/terminal/input.rs:985-1001`, all via
+         `shell_quote_arg`.
+      5. Stop logging full incoming URIs — present,
+         `app/src/uri/mod.rs:909-916` (`handle_incoming_uri` uses `safe_info!`
+         / `safe_url_log_fields`, logging the full URL only on dogfood
+         builds); the Windows single-instance URI server
+         (`app/src/app_services/windows/single_instance_manager.rs:118-119`)
+         routes through the same function, so it inherits the guard.
+      6. Restrict iTerm file downloads to inline-only — present,
+         `app/src/terminal/model/terminal_model.rs:3708-3719`, with an
+         in-code comment citing upstream `f3b9ce1c8f`/GHSA and explaining the
+         non-inline write path is now refused entirely.
+      7. Restrict markdown open-link to safe schemes — present and **ahead of
+         the pin**, `app/src/uri/link_policy.rs` (`is_openable_url_scheme`);
+         the file's own doc comment says pinned Warp `42effe840` still opens
+         `file:`/`javascript:`/etc. unchecked and warns not to "restore" that
+         on a re-pin.
+      8. Strip leading `VAR=value` assignments before denylist matching —
+         present, `app/src/ai/blocklist/permissions.rs` via
+         `command_without_leading_env_vars` (used at
+         `remote_command_executor.rs:30,1607`), with
+         `permissions_test.rs` coverage.
+      **All 8 hardening items are already here**, several with their own
+      comments citing the same upstream security commits Zap's PR cites — this
+      fork did not learn about them from Zap #317, it independently ported the
+      same upstream fixes. No issue filed; nothing to fix.
+      **The remote-code-review feature itself is NOT evaluated for porting
+      here** — per the task scope, only its security-hardening commits were
+      triaged. Sized at 17 commits touching git-operation refactoring, a new
+      transport-agnostic `GitExecTarget` abstraction (routes git commands
+      locally or over an SSH channel), async remote-repo-root tracking, and a
+      keyed diff-state cache — a genuine subsystem addition (extending the
+      code-review panel to Warpified SSH sessions), not a bug fix. Value: real
+      for SSH-heavy users, but this fork's own git parity gaps (hunk-level
+      staging, branch create/switch, `pull` — see the git parity table further
+      up in this file) are smaller, higher-value asks on the same subsystem.
+      Risk of porting now: large diff surface against code this fork has
+      already reshaped (`shell_quote_arg`, the escape fixes above) — the abstraction
+      would need re-verification against every one of those, not a clean
+      cherry-pick. Recommendation: do not port; revisit only if remote/SSH
+      code review is explicitly requested.
+- [x] **NOT PRESENT HERE — Zap #339 "route hardcoded Chinese UI strings
+      through the Fluent catalog" — the defect class does not exist in this
+      fork; no action.** Checked every file `#339`'s own diff touches
+      (`chat_stream.rs`, `agent_providers/mod.rs`, `models_dev.rs`,
+      `openai_compatible.rs`) plus a full-tree scan for CJK Han characters in
+      `app/src` and `crates` (`rg '[\p{Han}]'`). Zero hardcoded Chinese
+      **display** strings found anywhere in production Rust code. What the
+      scan *did* find, all deliberate and none display-facing:
+      - `settings_view/mod.rs:477` (`if label == "网络"`) and four
+        `search_terms()` keyword corpora (`network_page.rs:597`,
+        `features_page.rs:4518`, `agent_providers_widget.rs:2605`,
+        `appearance_page.rs:3680`) — persisted-data compat / multilingual
+        search-index synonyms, not rendered UI copy, each with its own
+        comment explaining why it stays.
+      - `settings/language.rs:1948-1949`, `font_fallback.rs:54-55` —
+        `"简体中文"`/`"日本語"` language-picker endonyms (the standard,
+        correct way to label a language in its own script; not an English
+        violation).
+      - `chat_stream.rs:2839` (`"(tool 执行结果未保留)"`) — a legacy
+        backward-compat placeholder literal for old persisted history,
+        commented "kept verbatim intentionally, not translated".
+      - `chat_stream.rs:7699-7702` (`"标题:"`/`"主题:"`) — stripping a
+        Chinese title/subject prefix from **model-generated** text (the
+        model can reply in whatever language the conversation is in); a
+        parsing rule, not UI prose.
+      - `tools/mcp.rs` CJK hits are all inside `#[cfg(test)]` (test data
+        exercising Unicode-aware name splitting).
+      This fork's English-string policy (AGENTS.md / `CLAUDE.local.md`,
+      already credited for closing Zap #297 the same way) had already
+      eliminated this whole class before #339 was filed upstream. No new
+      Fluent keys needed; no issue filed.
 - [x] **Zap #341 (`8954864e3`) — foreground image layers swallow clicks.**
       `render_grid_without_ligatures`/`render_grid_with_ligatures` in
       `app/src/terminal/grid_renderer.rs` started a layer for foreground images
@@ -6787,6 +6913,15 @@ behavior being changed.
       other half of the same upstream commit — defaulting
       `TERMINAL_BROWSER_DISPLAY_SCALE=1` in `local_tty/unix.rs` — because it
       injects a third-party tool's env var into every spawned shell. Fixes #771.
+- [x] **ALREADY HERE — Zap #322 (`0aac70803`) "remember the CLI agent floating
+      window's size across conversations and restarts" — no action.** Merged into
+      Zap on 2026-09-28, but its code predates Phosphor's split from Zap and is
+      already in this tree: the shared `ModalType::CliSubagentWidth`/`Height`
+      handles in `app/src/ai/blocklist/block/cli.rs` (`CLISubagentView::new`), the
+      `cli_subagent_width`/`cli_subagent_height` window columns in
+      `app/src/persistence/sqlite.rs`, and the identically named migration
+      `crates/persistence/migrations/2026-07-20-000000_add_cli_subagent_window_sizes`.
+      Checked by the coordinator 2026-09-27.
 
 ## OPEN ISSUES FROM THE FIRST RE-PIN (2026-08-15) — `02b53fcd8` -> `42effe840`
 

@@ -241,7 +241,8 @@ struct ByopDispatch {
     /// Explicitly-specified API protocol type; chat_stream maps this to a genai AdapterKind.
     api_type: crate::settings::AgentProviderApiType,
     /// Provider-level reasoning effort preference. When `Auto`, no effort is passed
-    /// to genai and the adapter infers it from the model name suffix itself;
+    /// to genai and the adapter may infer it from the model name suffix itself (the
+    /// OpenAI adapter only on OpenAI's own host, see `ReasoningEffortSetting`);
     /// non-Auto is injected after the client capability gate.
     reasoning_effort: crate::settings::ReasoningEffortSetting,
     extra_headers: Vec<(String, String)>,
