@@ -2382,15 +2382,13 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
         let close = self.transport.close();
         async move {
             let result = close.await;
-            // `close` is rmcp's own `TokioChildProcess::graceful_shutdown`: it waits
-            // for the child, killing only that one process (no process group) if it
-            // doesn't exit in time. Whether it exited on its own or was killed, a
-            // grandchild it spawned (jwp2987/phosphor#707) can still be running, so
-            // this also reaches for the whole group here -- covering the ordinary
-            // stop/restart path (`shutdown_server`), not just app exit. A no-op
-            // (`ESRCH`) in the overwhelmingly common case where there was nothing
-            // left to kill.
-            child.kill();
+            // `close` is rmcp's own `TokioChildProcess::graceful_shutdown`: it waits for
+            // (and reaps) the child. No kill here: once the loop has ended the slot must
+            // be released without signalling anything, because the pid may already name
+            // an unrelated process (`app_exit_never_kills_the_child_of_a_server_whose_loop_ended`).
+            // A grandchild orphaned by a single server's stop/restart is the accepted
+            // residual (jwp2987/phosphor#707); app exit kills the whole group while the
+            // leader is still verified to be ours (`ChildKillHandle::kill`).
             child.release();
             result
         }

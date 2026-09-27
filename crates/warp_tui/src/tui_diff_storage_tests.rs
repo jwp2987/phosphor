@@ -452,10 +452,13 @@ fn revert_undoes_an_accepted_rename() {
 }
 
 #[test]
-fn revert_tolerates_a_crlf_checkout_of_the_accepted_content() {
-    // `ExpectedDiskState`'s comparison is line-ending-normalised, so a file
-    // whose accepted content was later checked out (or line-ending-converted)
-    // as CRLF must not refuse the revert.
+fn revert_refuses_when_line_endings_were_converted_after_the_accept() {
+    // `ExpectedDiskState::Content` compares LF-normalised text, but a guarded write
+    // also refuses when it would change the file's line-ending convention
+    // (`warp_files::compare_pre_image` / `line_ending_style`): a file converted to
+    // CRLF after the accept has had every line changed, and writing the LF original
+    // back would silently revert all of them. The revert must refuse and leave the
+    // converted file alone.
     App::test((), |mut app| async move {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("main.rs").to_string_lossy().to_string();
@@ -473,13 +476,16 @@ fn revert_tolerates_a_crlf_checkout_of_the_accepted_content() {
         );
 
         accept_local(&mut app, vec![diff.clone()]).await;
-        // Simulate a CRLF checkout of the exact content the accept just wrote.
+        // Simulate a CRLF conversion of the exact content the accept just wrote.
         fs::write(&path, "one\r\nTWO\r\nthree\r\n").unwrap();
 
         let outcomes = revert_local(&mut app, vec![diff]).await;
 
-        assert_eq!(outcomes, vec![FileRevertOutcome::Reverted]);
-        assert_eq!(fs::read_to_string(&path).unwrap(), "one\ntwo\nthree\n");
+        assert_eq!(
+            outcomes,
+            vec![FileRevertOutcome::Refused { path: path.clone() }]
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "one\r\nTWO\r\nthree\r\n");
     });
 }
 

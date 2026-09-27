@@ -5545,7 +5545,7 @@ pub(crate) fn scheme_host_port(base_url: &str) -> String {
 /// actively misleading (#719 item 7: "when an agent request fails with a connection error
 /// (connection refused / DNS / timeout) ... make the existing error say so").
 ///
-/// Pure formatting, no I/O -- unit-tested directly in this file's `#[cfg(test)]` section.
+/// Pure formatting, no I/O -- unit-tested directly in this file's test module below.
 fn describe_byop_open_stream_failure(
     mapped: &OpenAiCompatibleError,
     other_provider_hint: Option<&UnreachableProviderHint>,

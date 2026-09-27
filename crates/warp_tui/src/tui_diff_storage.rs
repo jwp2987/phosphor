@@ -461,8 +461,10 @@ struct RevertStep {
 /// A formatter, a build step or the user having touched the file since the
 /// accept therefore refuses the revert rather than silently discarding their
 /// work. That is the intended trade: the common case (nothing touched the file
-/// between accepting and rewinding) still passes, and `ExpectedDiskState`'s
-/// comparison is line-ending-normalised, so a CRLF checkout is not a refusal.
+/// between accepting and rewinding) still passes. `ExpectedDiskState`'s content
+/// comparison is line-ending-normalised, but the guarded write still refuses when
+/// the file's line-ending convention changed after the accept (writing the old
+/// endings back would rewrite every line) -- see `warp_files::compare_pre_image`.
 fn revert_plan(diff: &FileDiff, path: &str) -> Result<Vec<RevertStep>, String> {
     let accepted = final_content_from_op(&diff.base.content, &diff.diff_type)?;
     let steps = match &diff.diff_type {

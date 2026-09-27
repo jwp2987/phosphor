@@ -3038,7 +3038,8 @@ fn open_url_refused_by_hook_is_not_opened() {
     App::test((), |mut app| async move {
         app.update(|ctx| {
             ctx.set_before_open_url(|url, _| {
-                if url.contains("refuse") {
+                // Match the last path segment: the shared NEEDLE itself contains "refuse".
+                if url.ends_with("/refuse") {
                     OpenUrlDecision::Refuse
                 } else {
                     OpenUrlDecision::Open(url.to_owned())
