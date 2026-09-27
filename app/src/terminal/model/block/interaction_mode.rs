@@ -688,20 +688,24 @@ pub fn formatted_terminal_contents_for_input(
     )
 }
 
-/// The text on the cursor's row up to (not including) the cursor, or `None` when the cursor sits
-/// at column 0 -- i.e. the last thing the command printed ended in a newline, which is not the
-/// shape of a prompt waiting for an answer on the same line.
+/// The text on the cursor's logical line (i.e. following soft wraps backward) up to (not
+/// including) the cursor, or `None` when the cursor sits at column 0 -- i.e. the last thing the
+/// command printed ended in a newline, which is not the shape of a prompt waiting for an answer
+/// on the same line.
 ///
 /// Used to spot a command stalled on an interactive prompt (`[y/N]`, `read -p`, "Press any
 /// key"). Those prompts leave termios in cooked mode with echo on, so unlike a password prompt
-/// the termios poller cannot see them; the only signal is what is printed before the cursor.
+/// the termios poller cannot see them; the only signal is what is printed before the cursor. A
+/// narrow terminal wraps even a short prompt across several grid rows, so the start of the range
+/// has to follow `WRAPLINE` back to the start of the logical line rather than assuming the
+/// cursor's grid row holds the whole thing.
 pub fn text_before_cursor_on_cursor_line(grid_handler: &GridHandler) -> Option<String> {
     let cursor_point = grid_handler.cursor_point();
     if cursor_point.col == 0 {
         return None;
     }
     Some(grid_handler.bounds_to_string(
-        Point::new(cursor_point.row, 0),
+        grid_handler.line_search_left(cursor_point),
         Point::new(cursor_point.row, cursor_point.col.saturating_sub(1)),
         false,
         RespectObfuscatedSecrets::Yes,

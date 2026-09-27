@@ -10040,8 +10040,14 @@ fn password_prompt_polling_is_suppressed_for_warpify_compatible_subshells() {
 // ── Agent commands must not wedge on interactive prompts (#673) ──
 //
 // The subshell filter above exists for the user's own warpify-compatible
-// commands. An agent-run `ssh` that stops on its password prompt has nobody
-// watching the PTY, so the agent check must win over the filter.
+// commands. `ssh <host>` is deliberately not one of them (only the native
+// per-host extension-install path handles a literal `ssh`, so it always
+// falls through `would_emit_block_started_for_password_prompt_polling` --
+// see `password_prompt_polling_is_suppressed_for_warpify_compatible_subshells`
+// above, which is careful to leave `ssh` out of the suppressed list). A
+// `docker run ... bash` subshell *is* filtered, so it is the case where the
+// agent-driving check has to win over the filter for the agent's password
+// prompt to be seen at all.
 #[cfg(unix)]
 #[test]
 fn agent_run_subshell_command_still_arms_password_prompt_polling() {
@@ -10050,13 +10056,13 @@ fn agent_run_subshell_command_still_arms_password_prompt_polling() {
         let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
 
         terminal.update(&mut app, |view, ctx| {
-            let command = "ssh prod.example.com";
+            let command = "docker run -it ubuntu bash";
             view.model
                 .lock()
-                .simulate_long_running_block(command, "prod.example.com's password: ");
+                .simulate_long_running_block(command, "Password: ");
             assert!(
                 !view.should_start_password_prompt_polling(command, ctx),
-                "the user's own ssh must stay suppressed by the subshell filter"
+                "the user's own subshell command must stay suppressed by the subshell filter"
             );
 
             let conversation_id = BlocklistAIHistoryModel::handle(ctx)
@@ -10068,7 +10074,7 @@ fn agent_run_subshell_command_still_arms_password_prompt_polling() {
                 .block_list_mut()
                 .active_block_mut()
                 .set_agent_interaction_mode_for_requested_command(
-                    AIAgentActionId::from("agent-ssh".to_owned()),
+                    AIAgentActionId::from("agent-docker".to_owned()),
                     None,
                     conversation_id,
                 );
@@ -10079,7 +10085,7 @@ fn agent_run_subshell_command_still_arms_password_prompt_polling() {
             );
             assert!(
                 view.should_start_password_prompt_polling(command, ctx),
-                "an agent-run ssh must be polled, or its password prompt hangs for 30 minutes"
+                "an agent-run subshell command must be polled, or its password prompt hangs for 30 minutes"
             );
         });
     })
