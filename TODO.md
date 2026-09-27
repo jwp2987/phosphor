@@ -735,10 +735,12 @@ before acting):
       starts; the flag still parses so a script gets that message rather than clap's
       generic parse failure. See `DECLINED.md` for the updated row.
       **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
+- [x] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
       (`crates/warp_tui/src/terminal_session_view/state.rs:586-592` and `:598-604`, byte-identical).
       The test only asserts `contains`, so it cannot catch a duplicate.
-      **In progress 2026-09-26:** branch `fix/cli-637`.
+      **Fixed #709:** removed the duplicate block; added
+      `shortcut_sections_never_repeat_a_description` to assert no section repeats a
+      description.
 
 **Two of my own brief claims were wrong and are worth recording**, because both would have
 put falsehoods in a user manual: `provider` is **not** the BYOP surface (it is a Linear/Slack
