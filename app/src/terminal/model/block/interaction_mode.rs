@@ -687,3 +687,108 @@ pub fn formatted_terminal_contents_for_input(
         )
     )
 }
+
+/// The text on the cursor's row up to (not including) the cursor, or `None` when the cursor sits
+/// at column 0 -- i.e. the last thing the command printed ended in a newline, which is not the
+/// shape of a prompt waiting for an answer on the same line.
+///
+/// Used to spot a command stalled on an interactive prompt (`[y/N]`, `read -p`, "Press any
+/// key"). Those prompts leave termios in cooked mode with echo on, so unlike a password prompt
+/// the termios poller cannot see them; the only signal is what is printed before the cursor.
+pub fn text_before_cursor_on_cursor_line(grid_handler: &GridHandler) -> Option<String> {
+    let cursor_point = grid_handler.cursor_point();
+    if cursor_point.col == 0 {
+        return None;
+    }
+    Some(grid_handler.bounds_to_string(
+        Point::new(cursor_point.row, 0),
+        Point::new(cursor_point.row, cursor_point.col.saturating_sub(1)),
+        false,
+        RespectObfuscatedSecrets::Yes,
+        true,
+        RespectDisplayedOutput::No,
+    ))
+}
+
+/// Whether `line_before_cursor` -- the output on the cursor's row, up to the cursor -- has the
+/// shape of an interactive prompt waiting for the user: an explicit confirmation marker
+/// (`[y/N]`, `(yes/no)`, "Press any key", ...) anywhere on the line, or a line that ends on the
+/// `?` / `:` that `read -p "Continue? "` and `read -p "Name: "` leave the cursor after.
+///
+/// Deliberately loose: it is only consulted for an agent command whose tool call is blocked
+/// waiting for completion (so the agent could not answer anyway), and only after the same line
+/// has been seen unchanged across several termios polls. A false positive hands the PTY to the
+/// user while the command keeps running; a false negative is the 30-minute hang.
+pub fn looks_like_interactive_prompt(line_before_cursor: &str) -> bool {
+    /// Prompts are one short line. Anything longer is output that happens to lack a newline.
+    const MAX_PROMPT_CHARS: usize = 200;
+    const MARKERS: &[&str] = &[
+        "[y/n]",
+        "(y/n)",
+        "[yes/no]",
+        "(yes/no",
+        "[y/n/",
+        "y/n?",
+        "press any key",
+        "press enter",
+        "press return",
+        "hit enter",
+        "hit any key",
+    ];
+
+    let line = line_before_cursor.trim();
+    if line.is_empty() || line.chars().count() > MAX_PROMPT_CHARS {
+        return false;
+    }
+    let lower = line.to_lowercase();
+    MARKERS.iter().any(|marker| lower.contains(marker))
+        || line.ends_with('?')
+        || line.ends_with(':')
+}
+
+/// Debounces [`looks_like_interactive_prompt`] across termios polls: a command is only treated
+/// as stalled on a prompt once the same prompt line has been observed on
+/// [`Self::REQUIRED_CONSECUTIVE_POLLS`] consecutive polls. A line that is still changing is
+/// output in progress, not a question.
+#[derive(Debug, Default)]
+pub struct InteractivePromptProbe {
+    last_prompt: Option<String>,
+    consecutive_polls: u8,
+    has_fired: bool,
+}
+
+impl InteractivePromptProbe {
+    /// Polls run once a second, so this is roughly three seconds of an unchanged prompt.
+    pub const REQUIRED_CONSECUTIVE_POLLS: u8 = 3;
+
+    /// Forgets everything observed so far. Called when a new block starts.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Feeds one poll's observation (`None` when no prompt is showing). Returns `true` exactly
+    /// once per reset: on the poll that completes the required run of identical prompts.
+    pub fn observe(&mut self, prompt: Option<String>) -> bool {
+        if self.has_fired {
+            return false;
+        }
+        match prompt {
+            None => {
+                self.last_prompt = None;
+                self.consecutive_polls = 0;
+            }
+            Some(prompt) if self.last_prompt.as_ref() == Some(&prompt) => {
+                self.consecutive_polls = self.consecutive_polls.saturating_add(1);
+            }
+            Some(prompt) => {
+                self.last_prompt = Some(prompt);
+                self.consecutive_polls = 1;
+            }
+        }
+        if self.consecutive_polls >= Self::REQUIRED_CONSECUTIVE_POLLS {
+            self.has_fired = true;
+            return true;
+        }
+        false
+    }
+}

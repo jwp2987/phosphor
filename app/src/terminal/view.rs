@@ -468,6 +468,10 @@ use crate::terminal::input::{InputState, MenuPositioning, MenuPositioningProvide
 use crate::terminal::keys::TerminalKeybindings;
 use crate::terminal::model::block::{AgentInteractionMetadata, BlockMetadata};
 use crate::terminal::model::block::{Block, BlockId};
+#[cfg(unix)]
+use crate::terminal::model::block::{
+    looks_like_interactive_prompt, text_before_cursor_on_cursor_line,
+};
 use crate::terminal::model::blocks::{BlockFilter, BlockList};
 use crate::terminal::model::blocks::{
     AgentTranscriptNavigableItem, BlockHeight, BlockHeightItem, BlockHeightSummary, Gap,
@@ -25660,17 +25664,71 @@ impl TerminalSurface for TerminalView {
 
     #[cfg(unix)]
     fn should_start_password_prompt_polling(&self, command: &str, ctx: &AppContext) -> bool {
-        if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
-            return false;
-        }
         // An agent-executed command that stops on a password prompt has nobody watching the
         // PTY -- in the reported case the session was inside tmux, so the prompt went to a pane
         // the user wasn't even looking at. The poller is the only way to find out, so arm it
         // regardless of the notification setting: that setting governs whether the *user* is
         // told about their own command, not whether the agent gets unwedged.
-        self.is_agent_driving_active_block()
-            || password_notifications_enabled(ctx)
+        //
+        // This is checked *before* the subshell filter, not after it. That filter exists to
+        // stop a spurious "needs attention" notification on the user's own warpify-compatible
+        // subshells (`ssh`, `docker run`, ...); it says nothing about the agent path, and
+        // running it first meant an agent-run `ssh` that stopped on its password prompt was
+        // never polled and hung for the full 30-minute backstop.
+        if self.is_agent_driving_active_block() {
+            return true;
+        }
+        if !self.would_emit_block_started_for_password_prompt_polling(command, ctx) {
+            return false;
+        }
+        password_notifications_enabled(ctx)
             || (self.is_ssh_uploader() && FeatureFlag::SshDragAndDrop.is_enabled())
+    }
+
+    #[cfg(unix)]
+    fn pending_interactive_prompt(&self, ctx: &AppContext) -> Option<String> {
+        let (action_id, prompt) = {
+            let model = self.model.lock();
+            if model.is_alt_screen_active() {
+                return None;
+            }
+            let active_block = model.block_list().active_block();
+            if !(active_block.is_agent_requested_command()
+                && active_block.is_agent_driving_command())
+            {
+                return None;
+            }
+            let action_id = active_block.requested_command_action_id()?.clone();
+            let prompt =
+                text_before_cursor_on_cursor_line(active_block.output_grid().grid_handler())?;
+            if !looks_like_interactive_prompt(&prompt) {
+                return None;
+            }
+            (action_id, prompt)
+        };
+        // Only a tool call that is blocked waiting for this command to *complete* can hang on
+        // a prompt. Any other agent command gets a snapshot within seconds and can answer the
+        // prompt itself with `write_to_long_running_shell_command`; taking the PTY away from
+        // it there would be stealing, not unwedging.
+        self.ai_action_model
+            .as_ref(ctx)
+            .shell_command_executor(ctx)
+            .as_ref(ctx)
+            .is_awaiting_completion(&action_id)
+            .then_some(prompt)
+    }
+
+    #[cfg(unix)]
+    fn on_stalled_interactive_prompt(&mut self, ctx: &mut ViewContext<Self>) {
+        // Same hand-over as a password prompt (see `on_possible_password_prompt`), minus the
+        // password notification and SSH-upload plumbing, which are about passwords
+        // specifically. The agent's tool call keeps waiting and gets the command's real result
+        // once the user answers and it completes.
+        if self.is_agent_driving_active_block() {
+            self.cli_subagent_controller.update(ctx, |controller, ctx| {
+                controller.switch_control_to_user(UserTakeOverReason::BlockedOnInput, ctx);
+            });
+        }
     }
 
     #[cfg(unix)]

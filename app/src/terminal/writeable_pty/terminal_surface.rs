@@ -113,6 +113,21 @@ where
     ) {
     }
 
+    /// The interactive (non-password) prompt the active block appears to be stalled on, if
+    /// the surface wants such prompts detected. Consulted on each poll whose termios is cooked
+    /// with echo on -- the shape a `[y/N]` or `read -p` prompt leaves, which the password
+    /// heuristic cannot see. The manager debounces the answer across polls before calling
+    /// [`Self::on_stalled_interactive_prompt`].
+    #[cfg(unix)]
+    fn pending_interactive_prompt(&self, _ctx: &AppContext) -> Option<String> {
+        None
+    }
+
+    /// Called once the same [`Self::pending_interactive_prompt`] has been observed on several
+    /// consecutive polls.
+    #[cfg(unix)]
+    fn on_stalled_interactive_prompt(&mut self, _ctx: &mut ViewContext<Self>) {}
+
     /// Called when the block the poller was tracking completes.
     #[cfg(unix)]
     fn on_polled_block_completed(

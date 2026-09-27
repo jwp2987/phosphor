@@ -46,7 +46,9 @@ pub enum UserTakeOverReason {
         reason: String,
     },
     /// An agent-executed command stopped on a terminal input prompt -- typically `sudo`'s
-    /// password prompt -- detected from termios by the attribute poller. The agent cannot
+    /// password prompt, detected from termios by the attribute poller, or a `[y/N]` /
+    /// `read -p` prompt a `wait_until_completion` command has sat on unchanged for several
+    /// polls (`TerminalSurface::pending_interactive_prompt`). The agent cannot
     /// answer it and holds the PTY, so before this existed the block simply hung until
     /// `ShellCommandExecutor::MAX_UNTIL_COMPLETION_DURATION` (30 minutes) fired, with no
     /// prompt shown to the user; under tmux the prompt wasn't even on a pane they were

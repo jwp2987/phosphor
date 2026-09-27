@@ -1972,3 +1972,93 @@ pub fn test_command_and_output_cursor_visibility_follow_block_state() {
     assert!(!block.is_command_cursor_visible());
     assert!(!block.is_output_cursor_visible());
 }
+
+// ── Interactive-prompt detection for stalled agent commands (#673) ──
+
+#[test]
+fn looks_like_interactive_prompt_matches_confirmation_and_read_prompts() {
+    for prompt in [
+        "Do you want to continue? [Y/n] ",
+        "Overwrite config.toml (y/N)",
+        "Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        "Press any key to continue . . .",
+        "Proceed? ",
+        "Enter a name: ",
+    ] {
+        assert!(
+            looks_like_interactive_prompt(prompt),
+            "{prompt:?} is a prompt"
+        );
+    }
+    for output in [
+        "",
+        "   ",
+        "Compiling phosphor v0.1.7",
+        "[=====>      ] 42%",
+        "user@host ~ $ ",
+    ] {
+        assert!(
+            !looks_like_interactive_prompt(output),
+            "{output:?} is not a prompt"
+        );
+    }
+    let too_long = format!("{}?", "x".repeat(300));
+    assert!(
+        !looks_like_interactive_prompt(&too_long),
+        "a long line that happens to end in `?` is output, not a prompt"
+    );
+}
+
+#[test]
+fn interactive_prompt_probe_fires_once_after_a_stable_run() {
+    let mut probe = InteractivePromptProbe::default();
+    let prompt = || Some("Continue? [y/N]".to_owned());
+
+    // A changing line is output in progress and restarts the count.
+    assert!(!probe.observe(prompt()));
+    assert!(!probe.observe(Some("Continue? [y/N] y".to_owned())));
+    assert!(!probe.observe(None));
+
+    for _ in 1..InteractivePromptProbe::REQUIRED_CONSECUTIVE_POLLS {
+        assert!(!probe.observe(prompt()));
+    }
+    assert!(probe.observe(prompt()), "fires on the completing poll");
+    assert!(!probe.observe(prompt()), "and only once");
+
+    probe.reset();
+    for _ in 1..InteractivePromptProbe::REQUIRED_CONSECUTIVE_POLLS {
+        assert!(!probe.observe(prompt()));
+    }
+    assert!(
+        probe.observe(prompt()),
+        "a reset re-arms it for the next block"
+    );
+}
+
+#[test]
+fn text_before_cursor_reads_only_the_unterminated_cursor_line() {
+    let mut block = TestBlockBuilder::new().build();
+    block.prompt_only_precmd(PromptMetadata::default());
+    block.start();
+    for c in "apt remove foo".chars() {
+        block.input(c);
+    }
+    block.preexec(Default::default());
+    for c in "Reading package lists... Done".chars() {
+        block.input(c);
+    }
+    block.carriage_return();
+    block.linefeed();
+    assert_eq!(
+        text_before_cursor_on_cursor_line(block.output_grid().grid_handler()),
+        None,
+        "output that ends in a newline leaves the cursor at column 0"
+    );
+
+    for c in "Continue? [y/N] ".chars() {
+        block.input(c);
+    }
+    let line = text_before_cursor_on_cursor_line(block.output_grid().grid_handler())
+        .expect("the cursor sits after the prompt on its own line");
+    assert_eq!(line.trim_end(), "Continue? [y/N]");
+}

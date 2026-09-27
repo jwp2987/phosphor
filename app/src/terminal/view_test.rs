@@ -9958,6 +9958,125 @@ fn password_prompt_polling_is_suppressed_for_warpify_compatible_subshells() {
     })
 }
 
+// ── Agent commands must not wedge on interactive prompts (#673) ──
+//
+// The subshell filter above exists for the user's own warpify-compatible
+// commands. An agent-run `ssh` that stops on its password prompt has nobody
+// watching the PTY, so the agent check must win over the filter.
+#[cfg(unix)]
+#[test]
+fn agent_run_subshell_command_still_arms_password_prompt_polling() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let command = "ssh prod.example.com";
+            view.model
+                .lock()
+                .simulate_long_running_block(command, "prod.example.com's password: ");
+            assert!(
+                !view.should_start_password_prompt_polling(command, ctx),
+                "the user's own ssh must stay suppressed by the subshell filter"
+            );
+
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            view.model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("agent-ssh".to_owned()),
+                    None,
+                    conversation_id,
+                );
+
+            assert!(
+                !view.would_emit_block_started_for_password_prompt_polling(command, ctx),
+                "the filter itself is unchanged"
+            );
+            assert!(
+                view.should_start_password_prompt_polling(command, ctx),
+                "an agent-run ssh must be polled, or its password prompt hangs for 30 minutes"
+            );
+        });
+    })
+}
+
+/// A `[y/N]` prompt leaves echo on, so termios cannot see it. For a
+/// `wait_until_completion` agent command it is handed to the user; for any other
+/// agent command the agent gets snapshots and can answer it itself, so it is left
+/// alone.
+#[cfg(unix)]
+#[test]
+fn agent_command_stalled_on_confirmation_prompt_is_handed_to_user() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let (_window_id, terminal) = add_window_with_id_and_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, ctx| {
+            let action_id = AIAgentActionId::from("agent-apt".to_owned());
+            let conversation_id = BlocklistAIHistoryModel::handle(ctx)
+                .update(ctx, |history, ctx| {
+                    history.start_new_conversation(view.view_id, false, false, ctx)
+                });
+            {
+                let mut model = view.model.lock();
+                model.simulate_long_running_block(
+                    "sudo apt remove foo",
+                    "Removing foo\r\nDo you want to continue? [Y/n] ",
+                );
+                model
+                    .block_list_mut()
+                    .active_block_mut()
+                    .set_agent_interaction_mode_for_requested_command(
+                        action_id.clone(),
+                        None,
+                        conversation_id,
+                    );
+            }
+
+            assert_eq!(
+                view.pending_interactive_prompt(ctx),
+                None,
+                "an agent polling with snapshots can answer the prompt itself"
+            );
+
+            view.ai_action_model
+                .as_ref(ctx)
+                .shell_command_executor(ctx)
+                .update(ctx, |executor, _| {
+                    executor.mark_awaiting_completion_for_test(action_id.clone());
+                });
+            let prompt = view
+                .pending_interactive_prompt(ctx)
+                .expect("a wait_until_completion command on a [Y/n] prompt is stalled");
+            assert!(
+                prompt.contains("[Y/n]"),
+                "unexpected prompt text: {prompt:?}"
+            );
+
+            view.on_stalled_interactive_prompt(ctx);
+            let control_state = view
+                .model
+                .lock()
+                .block_list()
+                .active_block()
+                .long_running_control_state()
+                .cloned();
+            assert_eq!(
+                control_state,
+                Some(LongRunningCommandControlState::User {
+                    reason: UserTakeOverReason::BlockedOnInput,
+                })
+            );
+        });
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Depth-aware agent-view back button.
 //
