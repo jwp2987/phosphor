@@ -1982,12 +1982,17 @@ its other files ship here **at the pre-fix state**:
 
 #### Not ports — ledger entries the refutation produced
 
-- [ ] `e054075b8` — **refuted as N/A, but do NOT port the commit.**
+- [x] `e054075b8` — **refuted as N/A, but do NOT port the commit.**
       `code_editor_line_number_mode` is registered (`app/src/settings/editor.rs:231`)
       and honoured by the editor (`app/src/code/editor/view.rs:1279`) but has **no
       settings UI anywhere** in the fork — and the old pin HAD one
       (`42effe840:app/src/settings_view/features_page.rs:1386`). Unfiled in both
       TODO.md and DECLINED.md. Destination if wanted is the fork's `code_page.rs`.
+      **Fixed #722:** added a `code_editor_line_number_mode_dropdown` to
+      `code_page.rs`, following the page's existing `render_body_item`
+      dropdown-in-a-row shape (`CodeEditorLineNumberModeWidget`), with en/ja/zh-CN
+      strings and tests covering discovery and the write-through to
+      `AppEditorSettings`.
 - [ ] `8cbb01d45` (partial) — the split itself is pure, but the pin-side path
       `app/src/workspaces/user_workspaces.rs` ceases to exist at `4111d08f9` and
       fork tooling keys on it (`docs/SWEEP-INVENTORY.md:944`). Confirm

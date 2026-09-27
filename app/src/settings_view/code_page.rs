@@ -25,7 +25,8 @@ use crate::{
     code::lsp_telemetry::{LspControlActionType, LspEnablementSource, LspTelemetryEvent},
     send_telemetry_from_ctx,
     ai::agent_providers::embeddings,
-    settings::{AISettings, CodeSettings},
+    settings::{AISettings, AppEditorSettings, CodeEditorLineNumberMode, CodeSettings},
+    view_components::{Dropdown, DropdownItem},
     workspaces::user_workspaces::UserWorkspaces,
     terminal::general_settings::GeneralSettings,
     ui_components::{
@@ -143,6 +144,7 @@ pub struct CodeSettingsPageView {
     suggested_server_statuses: HashMap<(PathBuf, LSPServerType), LspRepoStatus>,
     #[cfg(feature = "local_fs")]
     external_editor_view: Option<ViewHandle<ExternalEditorView>>,
+    code_editor_line_number_mode_dropdown: ViewHandle<Dropdown<CodeSettingsPageAction>>,
 }
 
 impl CodeSettingsPageView {
@@ -247,6 +249,12 @@ impl CodeSettingsPageView {
             );
         }
 
+        let code_editor_line_number_mode_dropdown = ctx.add_typed_action_view(Dropdown::new);
+        Self::update_code_editor_line_number_mode_dropdown(
+            code_editor_line_number_mode_dropdown.clone(),
+            ctx,
+        );
+
         let (page, external_editor_view) = Self::build_page(ctx);
 
         Self {
@@ -255,7 +263,48 @@ impl CodeSettingsPageView {
             suggested_server_statuses: HashMap::new(),
             #[cfg(feature = "local_fs")]
             external_editor_view,
+            code_editor_line_number_mode_dropdown,
         }
+    }
+
+    /// Rebuilds the line-number-mode dropdown's items and selection from the current
+    /// `AppEditorSettings::code_editor_line_number_mode` value.
+    fn update_code_editor_line_number_mode_dropdown(
+        dropdown: ViewHandle<Dropdown<CodeSettingsPageAction>>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        dropdown.update(ctx, |dropdown, ctx| {
+            let values = [
+                CodeEditorLineNumberMode::Absolute,
+                CodeEditorLineNumberMode::Relative,
+            ];
+
+            let current_value = *AppEditorSettings::as_ref(ctx).code_editor_line_number_mode;
+
+            let selected_index = values
+                .iter()
+                .position(|val| *val == current_value)
+                .unwrap_or_else(|| {
+                    log::error!(
+                        "Could not find current code editor line number mode in dropdown option list"
+                    );
+                    0
+                });
+
+            dropdown.set_items(
+                values
+                    .into_iter()
+                    .map(|val| {
+                        DropdownItem::new(
+                            val.dropdown_item_label(),
+                            CodeSettingsPageAction::SetCodeEditorLineNumberMode(val),
+                        )
+                    })
+                    .collect(),
+                ctx,
+            );
+            dropdown.set_selected_by_index(selected_index, ctx);
+        });
     }
 
     /// Keeps one mouse-state entry per rendered language-server row.
@@ -293,6 +342,7 @@ impl CodeSettingsPageView {
                 Box::new(GlobalSearchToggleWidget::default()),
                 Box::new(ShowHiddenFilesToggleWidget::default()),
                 Box::new(FormatOnSaveToggleWidget::default()),
+                Box::new(CodeEditorLineNumberModeWidget),
                 Box::new(LanguageServersWidget),
                 Box::new(CodebaseContextToggleWidget::default()),
                 Box::new(AutoIndexingToggleWidget::default()),
@@ -332,6 +382,7 @@ impl CodeSettingsPageView {
                     Box::new(GlobalSearchToggleWidget::default()),
                     Box::new(ShowHiddenFilesToggleWidget::default()),
                     Box::new(FormatOnSaveToggleWidget::default()),
+                    Box::new(CodeEditorLineNumberModeWidget),
                     Box::new(LanguageServersWidget),
                     Box::new(CodebaseContextToggleWidget::default()),
                     Box::new(AutoIndexingToggleWidget::default()),
@@ -401,6 +452,7 @@ pub enum CodeSettingsPageAction {
     },
     ToggleCodebaseContext,
     ToggleAutoIndexing,
+    SetCodeEditorLineNumberMode(CodeEditorLineNumberMode),
 }
 
 impl TypedActionView for CodeSettingsPageView {
@@ -581,6 +633,15 @@ impl TypedActionView for CodeSettingsPageView {
                     report_if_error!(settings.auto_indexing_enabled.toggle_and_save_value(ctx));
                 });
                 ctx.notify();
+            }
+            CodeSettingsPageAction::SetCodeEditorLineNumberMode(mode) => {
+                AppEditorSettings::handle(ctx).update(ctx, |editor_settings, ctx| {
+                    report_if_error!(
+                        editor_settings
+                            .code_editor_line_number_mode
+                            .set_value(*mode, ctx)
+                    );
+                });
             }
             CodeSettingsPageAction::ToggleAutoOpenCodeReviewPane => {
                 GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -951,6 +1012,39 @@ impl SettingsWidget for FormatOnSaveToggleWidget {
                 })
                 .finish(),
             Some(crate::t!("settings-code-format-on-save-desc")),
+        )
+    }
+}
+
+/// `e054075b8` (refuted N/A -- see TODO.md): `code_editor_line_number_mode` is a real
+/// TOML setting (`app/src/settings/editor.rs`) honoured by the editor
+/// (`app/src/code/editor/view.rs:1279`), but until now had no settings UI anywhere in
+/// the fork. The old pin exposed it as a dropdown on `features_page.rs`; this fork's
+/// Code page is flat, so it lands here instead, following this page's existing
+/// dropdown-in-`render_body_item` shape.
+struct CodeEditorLineNumberModeWidget;
+
+impl SettingsWidget for CodeEditorLineNumberModeWidget {
+    type View = CodeSettingsPageView;
+
+    fn search_terms(&self) -> &str {
+        "line numbers absolute relative code editor gutter"
+    }
+
+    fn render(
+        &self,
+        view: &Self::View,
+        appearance: &Appearance,
+        _app: &AppContext,
+    ) -> Box<dyn Element> {
+        render_body_item::<CodeSettingsPageAction>(
+            crate::t!("settings-code-line-number-mode"),
+            None,
+            LocalOnlyIconState::Hidden,
+            ToggleState::Enabled,
+            appearance,
+            ChildView::new(&view.code_editor_line_number_mode_dropdown).finish(),
+            Some(crate::t!("settings-code-line-number-mode-desc")),
         )
     }
 }

@@ -30,13 +30,13 @@ use chrono::Utc;
 use lsp::supported_servers::LSPServerType;
 use warp_core::features::FeatureFlag;
 use warpui::platform::WindowStyle;
-use warpui::{App, SingletonEntity as _, TypedActionView as _};
+use warpui::{App, AppContext, SingletonEntity as _, TypedActionView as _};
 
 use super::{CodeSettingsPageAction, CodeSettingsPageView};
 use crate::ai::agent_providers::secrets::AgentProviderSecrets;
 use crate::ai::persisted_workspace::{EnablementState, PersistedWorkspace};
 use crate::appearance::Appearance;
-use crate::settings::CodeSettings;
+use crate::settings::{AppEditorSettings, CodeEditorLineNumberMode, CodeSettings};
 use crate::settings_view::SettingsSection;
 use crate::settings_view::settings_page::SettingsPageMeta as _;
 #[cfg(not(target_family = "wasm"))]
@@ -207,6 +207,68 @@ fn format_on_save_action_writes_through_to_code_settings() {
             app.read(|ctx| *CodeSettings::as_ref(ctx).format_on_save),
             before
         );
+    });
+}
+
+#[test]
+fn the_page_contains_the_line_number_mode_widget() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
+    App::test((), |mut app| async move {
+        register_base_singletons(&mut app);
+
+        let (_window_id, page) =
+            app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
+
+        page.update(&mut app, |view, ctx| {
+            assert!(
+                view.update_filter("gutter", ctx).is_truthy(),
+                "the line-number-mode dropdown is not reachable from the Code page"
+            );
+            view.update_filter("", ctx);
+        });
+    });
+}
+
+#[test]
+fn set_code_editor_line_number_mode_action_writes_through_to_editor_settings() {
+    let _flag = FeatureFlag::ZapNewSettingsModes.override_enabled(true);
+    App::test((), |mut app| async move {
+        register_base_singletons(&mut app);
+
+        let (_window_id, page) =
+            app.add_window(WindowStyle::NotStealFocus, CodeSettingsPageView::new);
+
+        let mode = |ctx: &AppContext| *AppEditorSettings::as_ref(ctx).code_editor_line_number_mode;
+
+        assert_eq!(
+            app.read(mode),
+            CodeEditorLineNumberMode::Absolute,
+            "test assumes the documented default"
+        );
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(
+                &CodeSettingsPageAction::SetCodeEditorLineNumberMode(
+                    CodeEditorLineNumberMode::Relative,
+                ),
+                ctx,
+            );
+        });
+        assert_eq!(
+            app.read(mode),
+            CodeEditorLineNumberMode::Relative,
+            "the action did not reach AppEditorSettings::code_editor_line_number_mode"
+        );
+
+        page.update(&mut app, |page, ctx| {
+            page.handle_action(
+                &CodeSettingsPageAction::SetCodeEditorLineNumberMode(
+                    CodeEditorLineNumberMode::Absolute,
+                ),
+                ctx,
+            );
+        });
+        assert_eq!(app.read(mode), CodeEditorLineNumberMode::Absolute);
     });
 }
 

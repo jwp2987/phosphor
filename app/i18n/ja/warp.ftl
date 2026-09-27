@@ -1149,6 +1149,8 @@ settings-code-remote-index-indexing-completed = インデックス作成中 - { 
 settings-code-remote-index-synced = 同期済み
 settings-code-remote-index-stale = 古い状態
 settings-code-remote-index-failed = 失敗
+settings-code-line-number-mode = 行番号
+settings-code-line-number-mode-desc = コードエディタの行番号を絶対位置で表示するか、現在の行からの相対位置で表示するかを選択します。
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

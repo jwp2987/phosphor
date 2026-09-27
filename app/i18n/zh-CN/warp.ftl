@@ -1192,6 +1192,8 @@ settings-code-remote-index-indexing-completed = 正在索引 - { $completed }
 settings-code-remote-index-synced = 已同步
 settings-code-remote-index-stale = 已过期
 settings-code-remote-index-failed = 失败
+settings-code-line-number-mode = 行号
+settings-code-line-number-mode-desc = 在代码编辑器中以绝对位置显示行号，或相对于当前行显示。
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----

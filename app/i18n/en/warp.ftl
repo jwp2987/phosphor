@@ -1302,6 +1302,8 @@ settings-code-remote-index-indexing-completed = Indexing - { $completed }
 settings-code-remote-index-synced = Synced
 settings-code-remote-index-stale = Stale
 settings-code-remote-index-failed = Failed
+settings-code-line-number-mode = Line numbers
+settings-code-line-number-mode-desc = Show line numbers in code editors as absolute positions, or relative to the current line.
 
 # --- ANCHOR-SUB-EXEC-MODAL-BLOCKS (agent-settings-misc) ---
 # ---- execution_profile_view ----
