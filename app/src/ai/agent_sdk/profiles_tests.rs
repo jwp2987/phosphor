@@ -51,14 +51,9 @@ fn unsynced_default_profile_is_listed_as_default() {
 #[test]
 fn other_ids_do_not_match() {
     let printed = profile_cli_id(Some(sync_id(&format!("Client-{}", uuid::Uuid::new_v4()))));
+    let other_client_id = format!("Client-{}", uuid::Uuid::new_v4());
 
-    for raw in [
-        "",
-        "   ",
-        "Unsynced",
-        "default",
-        &format!("Client-{}", uuid::Uuid::new_v4()),
-    ] {
+    for raw in ["", "   ", "Unsynced", "default", other_client_id.as_str()] {
         assert!(!cli_id_matches(&printed, raw), "{raw:?} matched {printed}");
     }
 }

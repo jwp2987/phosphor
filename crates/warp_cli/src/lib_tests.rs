@@ -901,16 +901,18 @@ fn agent_run_accepts_mcp() {
     ));
 }
 
-/// Long help for `agent run`, as `<bin> agent run --help` renders it.
+/// Long help for `agent run`, as `<bin> agent run --help` renders it, with runs of
+/// whitespace collapsed so assertions do not depend on where clap wraps lines.
 fn agent_run_long_help() -> String {
     let mut command = <Args as clap::CommandFactory>::command();
-    command
+    let help = command
         .find_subcommand_mut("agent")
         .expect("`agent` subcommand should exist")
         .find_subcommand_mut("run")
         .expect("`agent run` subcommand should exist")
         .render_long_help()
-        .to_string()
+        .to_string();
+    help.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 // #637: `--model` pointed at `warp model list` (wrong binary) and `--skill` at
