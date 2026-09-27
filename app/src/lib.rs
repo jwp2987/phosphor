@@ -1694,6 +1694,16 @@ fn initialize_app(
             return OpenUrlDecision::Open(url_str.to_owned());
         };
 
+        // A local `file:` URL has already been through the launch policy above: a launchable
+        // target was rewritten to its folder and a non-local one refused. What reaches here is an
+        // ordinary local file (an OSC 8 link from a build tool, say), which callers such as
+        // `TerminalView::open_terminal_content_url` deliberately allow, so the backstop must not
+        // refuse it just because `file` is not a web scheme.
+        #[cfg(feature = "local_fs")]
+        if url.scheme() == "file" && matches!(url.host_str(), None | Some("") | Some("localhost")) {
+            return OpenUrlDecision::Open(url_str.to_owned());
+        }
+
         if !is_openable_url_scheme(&url) {
             log::warn!(
                 "Refusing to open a URL whose scheme is outside the openable set: {:?}",
