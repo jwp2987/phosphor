@@ -605,8 +605,15 @@ pub struct RepaintTask {
 }
 
 pub enum RepaintTrigger {
-    Timer { instant: Instant },
-    AssetLoaded { asset_handle: AssetHandle },
+    Timer {
+        instant: Instant,
+        /// Whether this timer firing requires a full layout, or only a paint.
+        /// See `WindowInvalidation::paint_only_redraw_requested` and issue #703.
+        layout_required: bool,
+    },
+    AssetLoaded {
+        asset_handle: AssetHandle,
+    },
 }
 
 type EventMunger = dyn Fn(&mut Event, &mut AppContext);
@@ -3170,6 +3177,19 @@ impl AppContext {
                 break;
             }
 
+            // A redraw requested purely for a paint-only reason (a timer-driven
+            // repaint like a blinking cursor, via `PaintContext::repaint_after_paint_only`)
+            // with no view notified or removed, and no other (layout-affecting)
+            // `redraw_requested` reason, can reuse the previous frame's layout: skip
+            // layout/after_layout and only re-run paint. Any other invalidation reason
+            // (a notified view, a removed view, or a plain `redraw_requested` — an
+            // asset finishing loading, a window resize, a theme change, …) still gets
+            // a full layout, exactly as before. See issue #703.
+            let skip_layout = invalidation.updated.is_empty()
+                && invalidation.removed.is_empty()
+                && !invalidation.redraw_requested
+                && invalidation.paint_only_redraw_requested;
+
             {
                 let mut presenter = presenter.borrow_mut();
                 presenter.invalidate(invalidation, self);
@@ -3190,11 +3210,12 @@ impl AppContext {
                 // In the future, we should separate out position computation from
                 // scene building, as we don't need to do the latter on each
                 // iteration of this loop.
-                scene = presenter.build_scene(
+                scene = presenter.build_scene_skip_layout_if(
                     size,
                     window.backing_scale_factor(),
                     window.max_texture_dimension_2d(),
                     self,
+                    skip_layout,
                 );
 
                 // Cache the last position cache after rendering.
@@ -3227,6 +3248,33 @@ impl AppContext {
             return;
         };
         self.build_scene(window_id, window.as_ctx());
+    }
+
+    /// Test-only: marks the window as needing a redraw for the same reason a
+    /// paint-only timer (`PaintContext::repaint_after_paint_only`/
+    /// `repaint_at_paint_only`, e.g. a blinking cursor) does when it fires — lets
+    /// tests exercise the layout-skipping path in `build_scene` without waiting on
+    /// a real timer. See issue #703.
+    #[cfg(test)]
+    pub fn simulate_paint_only_redraw(&mut self, window_id: WindowId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .paint_only_redraw_requested = true;
+    }
+
+    /// Test-only: marks a view as needing to be re-rendered, the same way
+    /// `ViewContext::notify` does once its deferred effect is flushed — but
+    /// synchronously, so a test can pair it with `simulate_render_frame` in the
+    /// same `AppContext::update` call without also racing the effect-flush's own
+    /// eager rebuild (`on_window_invalidated`'s unit-test path). See issue #703.
+    #[cfg(test)]
+    pub fn simulate_view_updated(&mut self, window_id: WindowId, view_id: EntityId) {
+        self.window_invalidations
+            .entry(window_id)
+            .or_default()
+            .updated
+            .insert(view_id);
     }
 
     pub fn add_view<T, F>(&mut self, window_id: WindowId, build_view: F) -> ViewHandle<T>
@@ -3937,12 +3985,26 @@ impl AppContext {
     }
 
     /// Schedules an asynchronous task for each delayed notify. Removes any existing notify jobs that've been cancelled.
-    pub fn manage_delayed_repaint_timers(&mut self, window_id: WindowId, repaint_at: Instant) {
+    ///
+    /// `layout_required` says whether the scheduled repaint needs a full layout
+    /// when it fires (`true`, the safe default for anything but a paint-only
+    /// repaint), or whether it's known to only need paint to re-run (`false`,
+    /// e.g. a blinking cursor with nothing else pending) — see
+    /// `PaintContext::repaint_after_paint_only` and issue #703. When `false`, this
+    /// sets `WindowInvalidation::paint_only_redraw_requested` instead of
+    /// `redraw_requested`, so `AppContext::build_scene` can skip layout for that
+    /// wake if nothing else invalidated the window in the meantime.
+    pub fn manage_delayed_repaint_timers(
+        &mut self,
+        window_id: WindowId,
+        repaint_at: Instant,
+        layout_required: bool,
+    ) {
         // Avoid creating new timers if a timer with a closer repaint time for
         // the same window already exists.
         if self.repaint_tasks.iter().any(|(_, task)| {
             task.window_id == window_id &&
-            matches!(task.repaint_trigger, RepaintTrigger::Timer { instant } if instant <= repaint_at)
+            matches!(task.repaint_trigger, RepaintTrigger::Timer { instant, .. } if instant <= repaint_at)
         }) {
             return;
         }
@@ -3957,10 +4019,12 @@ impl AppContext {
 
                 // If the timer is no longer in repaint_tasks, it was cancelled.
                 if app.repaint_tasks.remove(&task_id).is_some() {
-                    app.window_invalidations
-                        .entry(window_id)
-                        .or_default()
-                        .redraw_requested = true;
+                    let invalidation = app.window_invalidations.entry(window_id).or_default();
+                    if layout_required {
+                        invalidation.redraw_requested = true;
+                    } else {
+                        invalidation.paint_only_redraw_requested = true;
+                    }
                     app.update_windows();
                 }
             }
@@ -3973,6 +4037,7 @@ impl AppContext {
                 window_id,
                 repaint_trigger: RepaintTrigger::Timer {
                     instant: repaint_at,
+                    layout_required,
                 },
             },
         );
