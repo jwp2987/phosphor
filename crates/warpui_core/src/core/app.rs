@@ -4783,8 +4783,30 @@ impl AppContext {
     }
 
     /// Opens the file path using the default application configured to handle the given filetype.
+    ///
+    /// A path the default handler would *launch* -- an app bundle, installer, executable,
+    /// script, shortcut, or macro-bearing document; see
+    /// [`warp_util::launch_policy::is_launchable_path`] -- is revealed in the file manager
+    /// instead (#681). This is the process-wide backstop: every surface that opens a local file
+    /// "with the system" ends here, so a caller that forgets the policy still cannot launch a
+    /// path that terminal output, a model or a document named.
+    ///
+    /// The platform opener is handed the *resolved* path -- `~` expanded, symlinks and `..`
+    /// resolved -- which is exactly the path the policy checked. Handing it the original would
+    /// let `docs/guide.pdf -> ../Evil.app` or `Evil.app/Contents/..` pass the check under one
+    /// spelling and launch under another.
     pub fn open_file_path(&mut self, path: &Path) {
-        self.platform_delegate.open_file_path(path);
+        let resolved = warp_util::launch_policy::resolve_for_open(path);
+        if resolved.launchable {
+            log::info!(
+                "Revealing instead of opening a launchable path: {path:?} -> {:?}",
+                resolved.path
+            );
+            self.platform_delegate
+                .open_file_path_in_explorer(&resolved.path);
+            return;
+        }
+        self.platform_delegate.open_file_path(&resolved.path);
     }
 
     /// Opens the given file path in an explorer view. On MacOS this will open the file in finder.
@@ -5391,8 +5413,16 @@ impl AppContext {
     }
 
     /// Opens the given URL in the default application configured to handle the URL.
+    /// Opens `url` with the OS handler, after the `set_before_open_url` rewrite.
+    ///
+    /// A rewrite to the empty string is a veto: nothing is opened. That is how the app's
+    /// callback refuses a URL it cannot make safe (#681) without widening the callback's type.
     pub fn open_url(&self, url: &str) {
         let effective_url = (self.before_open_url_callback)(url, self);
+        if effective_url.is_empty() {
+            log::warn!("Not opening a URL the before-open callback refused: {url:?}");
+            return;
+        }
         self.platform_delegate.open_url(&effective_url);
     }
 

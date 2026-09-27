@@ -18321,10 +18321,17 @@ impl TerminalView {
     /// `set_before_open_url` cannot veto an open (its callback returns `String`), so the guard
     /// has to be here.
     fn open_terminal_content_url(&self, uri: &str, ctx: &mut ViewContext<Self>) {
-        match link_detection::openable_terminal_url(uri) {
-            Ok(url) => {
+        match link_detection::terminal_url_action(uri) {
+            Ok(link_detection::TerminalUrlAction::Open(url)) => {
                 ctx.notify();
                 ctx.open_url(url.as_str());
+            }
+            // A local `file:` URL is allowed through (OSC 8 from build tools is the point), but
+            // one naming an app bundle, installer, executable or script is revealed in the file
+            // manager instead of handed to the OS handler, which would launch it (#681).
+            Ok(link_detection::TerminalUrlAction::Reveal(path)) => {
+                ctx.notify();
+                ctx.open_file_path_in_explorer(&path);
             }
             Err(blocked) => {
                 log::warn!("Refusing to open terminal link {uri:?}: {blocked:?}");

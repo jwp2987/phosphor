@@ -8,6 +8,7 @@ use warp_core::features::FeatureFlag;
 pub use warp_util::file_type::{
     is_binary_file, is_file_content_binary, is_jupyter_notebook_file, is_markdown_file,
 };
+pub use warp_util::launch_policy::is_launchable_path;
 
 #[derive(
     Debug,
@@ -59,6 +60,139 @@ pub enum FileTarget {
     SystemDefault,
     /// Open in the system default application (generic open, e.g. for binary files).
     SystemGeneric,
+    /// Reveal the file in Finder / Explorer / the file manager instead of opening it.
+    ///
+    /// The target for a path the OS default handler would *launch* -- an app bundle, installer,
+    /// executable, script, shortcut or macro-bearing document (#681). See
+    /// [`is_launchable_path`] for the policy and [`guard_system_handler_target`] for where it
+    /// replaces `SystemGeneric` / `SystemDefault`.
+    RevealInFileManager,
+    /// Open in the OS default application *only if* that application is a known editor (which
+    /// reads the file, never runs it); otherwise open in Zap's code editor with this layout.
+    ///
+    /// The target for launchable *text* -- a `.command`, `.py`, `.desktop` or `+x` script --
+    /// under the system-default editor choice (#681). Its OS default handler may be Terminal or
+    /// Python Launcher, which would run it; its default editor, when it has one, is what the
+    /// user expects to see. Never hands the file to the OS handler.
+    DefaultEditorOnly(EditorLayout),
+}
+
+impl FileTarget {
+    /// Whether this target hands the file to the OS default handler.
+    pub fn is_system_handler(&self) -> bool {
+        matches!(self, FileTarget::SystemGeneric | FileTarget::SystemDefault)
+    }
+}
+
+/// The one place the launch policy meets a [`FileTarget`] (#681): an OS-handler target for a
+/// path the handler would launch becomes [`FileTarget::RevealInFileManager`]. Every other
+/// target is returned unchanged -- the in-app viewers and editors never execute a file, so a
+/// `.command` or `.desktop` file may still be *read* in the code editor.
+///
+/// Callers that build a `SystemGeneric` target by hand at click time (the raster-image
+/// shortcuts in the AI document view and notebook links) pass through this; the AI block's
+/// shortcut is built on hover, so it stays extension-only and is checked by the workspace sink
+/// on click. Either way a path cannot reach the OS handler by skipping [`resolve_file_target`].
+///
+/// Touches the filesystem (see [`is_launchable_path`]): call it on click, never on hover.
+pub fn guard_system_handler_target(path: &Path, target: FileTarget) -> FileTarget {
+    if target.is_system_handler() && is_launchable_path(path) {
+        FileTarget::RevealInFileManager
+    } else {
+        target
+    }
+}
+
+/// The path to reveal for a `file:` URL, when handing that URL to the OS would launch its path
+/// (#681): the resolved path the policy checked (symlinks, `..` and `~` resolved). `None` for
+/// every other scheme, for a `file:` URL that names another host or does not convert to a path,
+/// and for a path that is not [`is_launchable_path`].
+///
+/// OSC 8 hyperlinks and `file://` URLs printed in terminal output reach `AppContext::open_url`,
+/// which bypasses `open_file_path`; callers that accept `file:` URLs must check this first and
+/// reveal the path instead. [`before_open_url_launch_policy`] is the backstop.
+///
+/// `local_fs` only: `Url::to_file_path` does not exist on wasm, and there is no local file to
+/// launch there.
+#[cfg(feature = "local_fs")]
+pub fn launchable_file_url_path(url: &url::Url) -> Option<std::path::PathBuf> {
+    if url.scheme() != "file" {
+        return None;
+    }
+    let path = url.to_file_path().ok()?;
+    let resolved = warp_util::launch_policy::resolve_for_open(&path);
+    resolved.launchable.then_some(resolved.path)
+}
+
+/// The `set_before_open_url` backstop for the launch policy (#681). The callback cannot veto an
+/// open, but it can rewrite the URL, and `AppContext::open_url` treats a rewrite to `""` as a
+/// veto. Returns `Some(rewrite)` to replace the URL, `None` to leave it alone.
+///
+/// * A `file:` URL naming another host is refused (`""`): on Windows it is a UNC path, i.e. an
+///   SMB connection to a host the link chose; on Unix it does not name a local file at all.
+/// * A local `file:` URL that does not convert to a path is refused.
+/// * A string that is not a URL but is a path -- `/tmp/x.AppImage`, `~/x.app`, `C:\x\setup.exe`
+///   (which `Url::parse` reads as scheme `c:`), `\\host\share\x.exe` -- is treated as the path
+///   the opener would treat it as: UNC paths are refused, local ones go through the policy.
+/// * A local file path or URL that is launchable is rewritten to the `file:` URL of its nearest
+///   non-launchable, non-symlinked folder, which the OS opens in the file manager.
+#[cfg(feature = "local_fs")]
+pub fn before_open_url_launch_policy(url_str: &str) -> Option<String> {
+    const REFUSE: &str = "";
+    let trimmed = url_str.trim();
+    if is_unc_path(trimmed) {
+        return Some(REFUSE.to_owned());
+    }
+    let path = match url::Url::parse(trimmed) {
+        Ok(url) if url.scheme() == "file" => {
+            if !matches!(url.host_str(), None | Some("") | Some("localhost")) {
+                return Some(REFUSE.to_owned());
+            }
+            match url.to_file_path() {
+                Ok(path) => path,
+                Err(()) => return Some(REFUSE.to_owned()),
+            }
+        }
+        // A Windows drive path parses as a one-letter scheme; it is a path, not a URL.
+        Ok(url) if url.scheme().len() == 1 => std::path::PathBuf::from(trimmed),
+        Ok(_) => return None,
+        Err(_) if looks_like_local_path(trimmed) => std::path::PathBuf::from(trimmed),
+        Err(_) => return None,
+    };
+    if !is_launchable_path(&path) {
+        return None;
+    }
+    Some(
+        warp_util::launch_policy::reveal_directory_for(&path)
+            .and_then(|dir| url::Url::from_directory_path(dir).ok())
+            .map(String::from)
+            .unwrap_or_else(|| REFUSE.to_owned()),
+    )
+}
+
+/// `\\host\share`, `//host/share` or `\\?\UNC\host\share`: a network path. The verbatim local
+/// form `\\?\C:\...` is not one.
+#[cfg(feature = "local_fs")]
+fn is_unc_path(s: &str) -> bool {
+    if s.to_ascii_uppercase().starts_with(r"\\?\UNC\") {
+        return true;
+    }
+    if s.starts_with(r"\\?\") || s.starts_with(r"\\.\") {
+        return false;
+    }
+    let mut chars = s.chars();
+    matches!(chars.next(), Some('\\' | '/')) && matches!(chars.next(), Some('\\' | '/'))
+}
+
+/// Whether a string that failed to parse as a URL is a local filesystem path.
+#[cfg(feature = "local_fs")]
+fn looks_like_local_path(s: &str) -> bool {
+    s.starts_with('/')
+        || s.starts_with('\\')
+        || s.starts_with('~')
+        || s.starts_with("./")
+        || s.starts_with("../")
+        || std::path::Path::new(s).is_absolute()
 }
 
 /// Checks if a file is a code file with language support.
@@ -82,6 +216,9 @@ pub fn renders_in_warp_notebook_viewer(path: impl AsRef<Path>) -> bool {
         || (FeatureFlag::JupyterNotebookRendering.is_enabled() && is_jupyter_notebook_file(path))
 }
 
+/// Whether `path` is an image Zap can display (in the in-app image viewer, as an inline image,
+/// etc.). This includes SVG. Do NOT use it to decide whether a file is safe to hand to the OS
+/// default handler -- use [`is_supported_raster_image_file`] for that.
 pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
     path.as_ref()
         .extension()
@@ -93,6 +230,23 @@ pub fn is_supported_image_file(path: impl AsRef<Path>) -> bool {
             )
         })
         .unwrap_or(false)
+}
+
+/// Whether `path` is a supported *raster* image: [`is_supported_image_file`] minus SVG.
+///
+/// This is the predicate for "may this image be handed to the OS default handler". SVG may not:
+/// it is XML that can embed `<script>` and external references, and its registered handler on a
+/// normal desktop is a browser, which executes it. `jpg`/`jpeg`/`png`/`gif`/`webp` are decoded by
+/// their handler. Paths from model output, notebook links, and AI documents are attacker-namable,
+/// so every "open this image in the system viewer" shortcut must use this, and let SVG fall
+/// through to [`resolve_file_target`] (in-app image viewer or an editor, never the OS handler).
+pub fn is_supported_raster_image_file(path: impl AsRef<Path>) -> bool {
+    let path = path.as_ref();
+    is_supported_image_file(path)
+        && !path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("svg"))
 }
 
 /// Returns true if `path` looks like a shell script the user intends to run when
@@ -256,14 +410,23 @@ pub fn resolve_file_target_with_editor_choice(
         return FileTarget::ImageViewer(layout);
     }
 
-    // 4. Binary files -> System Default
+    // 4. Binary files -> System Default, unless the handler would launch it (#681): `.app`,
+    // `.pkg`, `.exe`, `.msi`, `.docm`, ... are all "binary" and all run when opened.
     if !is_openable_in_warp {
-        return FileTarget::SystemGeneric;
+        return guard_system_handler_target(path, FileTarget::SystemGeneric);
     }
 
-    // 5. External Editor or System Default (for text files)
+    // 5. External Editor or System Default (for text files). Text can be launchable too:
+    // `.command`, `.desktop`, `.bat`, `.ps1`, `.py` and executable scripts are all text, and
+    // their default handler may run them (#681). Being text, they have safe ways to "open":
+    // the platform's default app when that is a known editor (the old route already preferred
+    // it), else Zap's code editor. Revealing them instead would turn every click on a
+    // traceback's `foo.py`, or on `./configure` on a 0777 mount, into a Finder window.
     match editor_choice {
         EditorChoice::ExternalEditor(editor) => FileTarget::ExternalEditor(editor),
+        EditorChoice::SystemDefault if is_launchable_path(path) => {
+            FileTarget::DefaultEditorOnly(layout)
+        }
         EditorChoice::SystemDefault => FileTarget::SystemDefault,
         EditorChoice::Zap | EditorChoice::EnvEditor => unreachable!("Already matched above"),
     }
@@ -662,5 +825,318 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("nope");
         assert!(!starts_with_shebang(&p));
+    }
+
+    /// #681: every editor choice, every launchable path -> never the OS default handler.
+    /// Binary ones (`.app`, `.pkg`, `.exe`, `.docx`) take step 4 and are revealed; text ones
+    /// (`.command`, `.desktop`, `.bat`) take step 5 and open in an editor only.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn launchable_paths_never_resolve_to_os_handler() {
+        for path in [
+            "/tmp/model-named/Evil.app",
+            "/tmp/model-named/setup.pkg",
+            "/tmp/model-named/image.dmg",
+            "/tmp/model-named/setup.exe",
+            "/tmp/model-named/setup.msi",
+            "/tmp/model-named/pkg.deb",
+            "/tmp/model-named/report.docx",
+            "/tmp/model-named/report.docm",
+            "/tmp/model-named/app.jar",
+            "/tmp/model-named/run.command",
+            "/tmp/model-named/app.desktop",
+            "/tmp/model-named/run.bat",
+            "/tmp/model-named/link.webloc",
+            "/tmp/model-named/App.AppImage",
+        ] {
+            for editor_choice in [
+                EditorChoice::Zap,
+                EditorChoice::EnvEditor,
+                EditorChoice::SystemDefault,
+                EditorChoice::ExternalEditor(Editor::VSCode),
+            ] {
+                let target = resolve_file_target_with_editor_choice(
+                    Path::new(path),
+                    editor_choice,
+                    false, /* prefer_markdown_viewer */
+                    EditorLayout::SplitPane,
+                    None,
+                );
+                assert!(
+                    !target.is_system_handler(),
+                    "{path} resolved to {target:?} under {editor_choice:?}"
+                );
+            }
+        }
+    }
+
+    /// #681: the issue's exact case -- a binary, launchable path with no override resolves to
+    /// Reveal where it used to resolve to `SystemGeneric`.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn launchable_binary_resolves_to_reveal() {
+        for path in ["Evil.app", "setup.pkg", "setup.exe", "report.xlsx"] {
+            let target = resolve_file_target_with_editor_choice(
+                Path::new(path),
+                EditorChoice::Zap,
+                true, /* prefer_markdown_viewer */
+                EditorLayout::SplitPane,
+                None,
+            );
+            assert_eq!(target, FileTarget::RevealInFileManager, "{path}");
+        }
+    }
+
+    /// #681: a launchable *text* file under the system-default editor choice (the default for
+    /// `open_file_editor`) opens in the default app only if that is a known editor, else in
+    /// Zap's code editor -- never the OS handler. The policy blocks launching, not reading.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn launchable_text_file_opens_in_an_editor_not_the_os_handler() {
+        for path in [
+            "/tmp/run.command",
+            "/tmp/app.desktop",
+            "/tmp/run.bat",
+            "/tmp/build.sh",
+            "/tmp/traceback.py",
+        ] {
+            let target = resolve_file_target_with_editor_choice(
+                Path::new(path),
+                EditorChoice::SystemDefault,
+                false, /* prefer_markdown_viewer */
+                EditorLayout::NewTab,
+                None,
+            );
+            assert_eq!(
+                target,
+                FileTarget::DefaultEditorOnly(EditorLayout::NewTab),
+                "{path}"
+            );
+        }
+    }
+
+    /// #681: ordinary documents, media and text keep today's targets.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn ordinary_files_keep_their_targets() {
+        for path in ["paper.pdf", "video.mp4", "archive.zip", "song.mp3"] {
+            let target = resolve_file_target_with_editor_choice(
+                Path::new(path),
+                EditorChoice::Zap,
+                true, /* prefer_markdown_viewer */
+                EditorLayout::SplitPane,
+                None,
+            );
+            assert_eq!(target, FileTarget::SystemGeneric, "{path}");
+        }
+        let text = resolve_file_target_with_editor_choice(
+            Path::new("notes.txt"),
+            EditorChoice::SystemDefault,
+            false, /* prefer_markdown_viewer */
+            EditorLayout::SplitPane,
+            None,
+        );
+        assert_eq!(text, FileTarget::SystemDefault);
+        let image = resolve_file_target_with_editor_choice(
+            Path::new("photo.png"),
+            EditorChoice::SystemDefault,
+            false, /* prefer_markdown_viewer */
+            EditorLayout::NewTab,
+            None,
+        );
+        assert_eq!(image, FileTarget::ImageViewer(EditorLayout::NewTab));
+    }
+
+    /// #681: the guard only rewrites OS-handler targets, and only for launchable paths.
+    #[test]
+    fn guard_rewrites_only_os_handler_targets_for_launchable_paths() {
+        let app = Path::new("/tmp/Evil.app");
+        let pdf = Path::new("/tmp/paper.pdf");
+        for target in [FileTarget::SystemGeneric, FileTarget::SystemDefault] {
+            assert_eq!(
+                guard_system_handler_target(app, target.clone()),
+                FileTarget::RevealInFileManager
+            );
+            assert_eq!(guard_system_handler_target(pdf, target.clone()), target);
+        }
+        for target in [
+            FileTarget::CodeEditor(EditorLayout::SplitPane),
+            FileTarget::MarkdownViewer(EditorLayout::SplitPane),
+            FileTarget::ImageViewer(EditorLayout::SplitPane),
+            FileTarget::EnvEditor,
+            FileTarget::RevealInFileManager,
+        ] {
+            assert_eq!(guard_system_handler_target(app, target.clone()), target);
+        }
+    }
+
+    /// #681: `file:` URLs to launchable paths are recognised, including percent-encoded ones;
+    /// web URLs and ordinary files are left alone. Unix-only because the literals are Unix
+    /// `file:` URLs (on Windows they have no drive letter and do not convert to a path).
+    #[test]
+    #[cfg(all(unix, feature = "local_fs"))]
+    fn launchable_file_url_path_detects_file_urls_only() {
+        let parse = |s: &str| url::Url::parse(s).unwrap();
+        for launchable in [
+            "file:///tmp/Evil.app",
+            "file:///tmp/My%20Setup.pkg",
+            "file:///tmp/setup.EXE",
+            "file://localhost/tmp/run.command",
+        ] {
+            assert!(
+                launchable_file_url_path(&parse(launchable)).is_some(),
+                "{launchable}"
+            );
+        }
+        for inert in [
+            "file:///tmp/paper.pdf",
+            "file:///tmp/notes.txt",
+            "https://example.com/Evil.app",
+            "http://example.com/setup.exe",
+            "mailto:someone@example.com",
+        ] {
+            assert!(launchable_file_url_path(&parse(inert)).is_none(), "{inert}");
+        }
+    }
+
+    /// #681: the `set_before_open_url` backstop. A launchable local path or `file:` URL -- in
+    /// any spelling the opener accepts, including a bare path that is not a URL at all -- is
+    /// rewritten to its nearest non-launchable, resolved folder; network paths and non-local
+    /// `file:` URLs are vetoed (`""`); everything else passes through (`None`).
+    #[test]
+    #[cfg(all(unix, feature = "local_fs"))]
+    fn before_open_url_backstop() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = std::fs::canonicalize(dir.path()).unwrap();
+        let folder = |p: &Path| url::Url::from_directory_path(p).unwrap().to_string();
+        let file_url = |p: &Path| url::Url::from_file_path(p).unwrap().to_string();
+        let base_str = base.to_string_lossy().into_owned();
+
+        // Launchable: file URLs and bare paths, rewritten to the containing folder.
+        for launchable in [
+            file_url(&base.join("Evil.app")),
+            file_url(&base.join("setup.pkg")),
+            format!("{base_str}/App.AppImage"),
+            format!("  {base_str}/setup.exe  "),
+            format!("{base_str}/sub/../Evil.app"),
+        ] {
+            assert_eq!(
+                before_open_url_launch_policy(&launchable),
+                Some(folder(&base)),
+                "{launchable}"
+            );
+        }
+        // Never a bundle ancestor.
+        assert_eq!(
+            before_open_url_launch_policy(&file_url(&base.join("Evil.app/Contents/run.command"))),
+            Some(folder(&base.join("Evil.app/Contents")))
+        );
+        assert_eq!(
+            before_open_url_launch_policy(&file_url(&base.join("Outer.app/Inner.pkg"))),
+            Some(folder(&base))
+        );
+        // A symlink with a harmless name to a bundle.
+        std::fs::create_dir(base.join("Real.app")).unwrap();
+        std::os::unix::fs::symlink(base.join("Real.app"), base.join("guide.pdf")).unwrap();
+        assert_eq!(
+            before_open_url_launch_policy(&file_url(&base.join("guide.pdf"))),
+            Some(folder(&base))
+        );
+
+        // Refused outright: network paths and non-local file URLs.
+        for network in [
+            r"\\attacker.example\share\x.exe",
+            r"\\attacker.example\share\notes.txt",
+            "//attacker.example/share/x.exe",
+            r"\\?\UNC\attacker.example\share\x.exe",
+            "file://attacker.example/share/x.exe",
+            "file://attacker.example/share/notes.txt",
+        ] {
+            assert_eq!(
+                before_open_url_launch_policy(network),
+                Some(String::new()),
+                "{network}"
+            );
+        }
+
+        // Passed through unchanged.
+        for inert in [
+            "https://example.com/Evil.app",
+            "mailto:someone@example.com",
+            "phosphor://action/x",
+            "file:///tmp/paper.pdf",
+            "/tmp/paper.pdf",
+            "not a path",
+        ] {
+            assert_eq!(before_open_url_launch_policy(inert), None, "{inert}");
+        }
+    }
+
+    /// A Windows drive path parses as a one-letter URL scheme; the backstop treats it as the
+    /// path it is.
+    #[test]
+    #[cfg(all(windows, feature = "local_fs"))]
+    fn before_open_url_backstop_windows_drive_paths() {
+        for launchable in [r"C:\Users\x\Downloads\setup.exe", "c:/x/Evil.msi"] {
+            let rewrite = before_open_url_launch_policy(launchable);
+            assert!(
+                rewrite
+                    .as_deref()
+                    .is_some_and(|r| r.starts_with("file:///")),
+                "{launchable} -> {rewrite:?}"
+            );
+        }
+        assert_eq!(before_open_url_launch_policy(r"C:\x\paper.pdf"), None);
+    }
+
+    /// #675: the raster predicate is exactly the display predicate minus SVG. If a format is
+    /// added to `is_supported_image_file`, decide deliberately whether it may reach the OS
+    /// handler -- this test fails until you do.
+    #[test]
+    fn raster_image_predicate_is_image_predicate_minus_svg() {
+        for raster in ["a.jpg", "a.JPEG", "a.png", "a.gif", "a.webp"] {
+            assert!(is_supported_image_file(raster), "{raster}");
+            assert!(is_supported_raster_image_file(raster), "{raster}");
+        }
+        for svg in ["a.svg", "a.SVG", "a.Svg", "/tmp/dir.png/evil.svg"] {
+            assert!(is_supported_image_file(svg), "{svg} is still displayable");
+            assert!(
+                !is_supported_raster_image_file(svg),
+                "{svg} must not be treated as a raster image"
+            );
+        }
+        for other in ["a.txt", "a", "a.svgz", "svg", "a.png.exe"] {
+            assert!(!is_supported_raster_image_file(other), "{other}");
+        }
+    }
+
+    /// #675: an SVG that falls through the raster shortcut must resolve to an in-app target
+    /// under every editor choice -- never the OS default handler.
+    #[test]
+    #[cfg(feature = "local_fs")]
+    fn svg_never_resolves_to_os_handler() {
+        for editor_choice in [
+            EditorChoice::Zap,
+            EditorChoice::EnvEditor,
+            EditorChoice::SystemDefault,
+            EditorChoice::ExternalEditor(Editor::VSCode),
+        ] {
+            for prefer_markdown_viewer in [false, true] {
+                let target = resolve_file_target_with_editor_choice(
+                    Path::new("/tmp/model-named.svg"),
+                    editor_choice,
+                    prefer_markdown_viewer,
+                    EditorLayout::SplitPane,
+                    None,
+                );
+                assert!(
+                    !matches!(
+                        target,
+                        FileTarget::SystemGeneric | FileTarget::SystemDefault
+                    ),
+                    "svg resolved to {target:?} under {editor_choice:?}"
+                );
+            }
+        }
     }
 }

@@ -355,6 +355,26 @@ pub fn open_file_path_with_line_and_col(
     ctx.open_file_path(full_path);
 }
 
+/// Open `full_path` in its macOS default application, but only if that application is a known
+/// [`Editor`]; returns whether it was opened.
+///
+/// For launchable text (#681): a `.command`, `.py` or `+x` script whose default handler may be
+/// Terminal or Python Launcher, which would *run* it. An editor reads it. Nothing here falls
+/// back to the OS handler -- the caller opens the in-app editor when this returns `false`.
+pub fn open_in_default_editor_only(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &Path,
+    ctx: &mut AppContext,
+) -> bool {
+    if !full_path.is_file() {
+        return false;
+    }
+    default_app_to_open_path(full_path)
+        .as_deref()
+        .and_then(Editor::new_from_identifier)
+        .is_some_and(|editor| editor.open(line_column_number, full_path, ctx))
+}
+
 fn is_zap_bundle(bundle_id: &str) -> bool {
     AppId::parse(bundle_id)
         .map(|id| {

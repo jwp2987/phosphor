@@ -377,6 +377,32 @@ pub fn open_file_path_with_line_and_col(
     ctx.open_file_path(full_path);
 }
 
+/// Open `full_path` in its XDG default application, but only if that application is a known
+/// [`Editor`]; returns whether it was opened. See the macOS twin for why (#681): the caller
+/// opens the in-app editor when this returns `false`, never the OS handler.
+pub fn open_in_default_editor_only(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &Path,
+    _ctx: &mut AppContext,
+) -> bool {
+    if !full_path.is_file() {
+        return false;
+    }
+    let Some(editor) = get_app_for_file_from_mime(full_path) else {
+        return false;
+    };
+    let Some(mut command) = editor.command(full_path, line_column_number) else {
+        return false;
+    };
+    match command.spawn() {
+        Ok(_) => true,
+        Err(err) => {
+            log::error!("Error launching {editor:?}: {err:#}");
+            false
+        }
+    }
+}
+
 /// Attempt to match a file with an existing editor based on Mime type
 ///
 /// Calls xdg-mime to first find the mime type of a file, and then find

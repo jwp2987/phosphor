@@ -257,8 +257,9 @@ impl SecretRedactionState {
         self.get_secret_mut(location, secret_range)
     }
 
-    pub fn dismiss_tooltip(&mut self) {
-        self.secret_location_open_tooltip = None;
+    /// Closes the secret tooltip, returning whether one was open.
+    pub fn dismiss_tooltip(&mut self) -> bool {
+        self.secret_location_open_tooltip.take().is_some()
     }
 
     pub fn set_obfuscated(

@@ -93,3 +93,23 @@ pub fn feedback_form_url() -> String {
         .append_pair("os-version", &os_info::get().version().to_string());
     url.to_string()
 }
+
+/// Whether `url` is a web or mail link: `http`, `https` or `mailto`, and nothing else.
+///
+/// For `open_url` call sites whose URL comes from data rather than from a constant -- a PR URL
+/// from `gh`, an MCP server's `authorization_url`, a toast link, a hyperlink in a prompt alert.
+/// Those links are only ever meant to reach a browser or mail client; a `file:` URL, a bare
+/// path, or another app's scheme reaching them would be handed to whatever handler claims it
+/// (#681), so they are refused rather than passed through.
+pub fn is_web_or_mail_link(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| matches!(url.scheme(), "http" | "https" | "mailto"))
+}
+
+/// Open `url` only if it [`is_web_or_mail_link`]; log and do nothing otherwise.
+pub fn open_web_or_mail_link(url: &str, ctx: &warpui::AppContext) {
+    if is_web_or_mail_link(url) {
+        ctx.open_url(url);
+    } else {
+        log::warn!("Refusing to open a non-web link: {url:?}");
+    }
+}

@@ -249,7 +249,8 @@ impl View for PromptAlertView {
         .register_default_click_handlers_with_action_support(|hyperlink_lens, event, ctx| {
             match hyperlink_lens {
                 HyperlinkLens::Url(url) => {
-                    ctx.open_url(url);
+                    // Web and mail only (#681).
+                    crate::util::links::open_web_or_mail_link(url, ctx);
                 }
                 HyperlinkLens::Action(action_ref) => {
                     if let Some(action) = action_ref.as_any().downcast_ref::<WorkspaceAction>() {

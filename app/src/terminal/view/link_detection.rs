@@ -366,6 +366,31 @@ pub(super) fn openable_terminal_url(uri: &str) -> Result<Url, BlockedTerminalLin
     Ok(url)
 }
 
+/// What clicking a terminal-content URI does, once [`openable_terminal_url`] has allowed it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TerminalUrlAction {
+    /// Hand the URL to the OS URL handler.
+    Open(Url),
+    /// Reveal this local path in the file manager: the URL was a local `file:` URL naming an app
+    /// bundle, installer, executable, script or shortcut, which the OS handler would launch
+    /// (#681). OSC 8 `file://` links from build tools stay clickable; this only changes what a
+    /// click on a *launchable* one does.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
+    Reveal(std::path::PathBuf),
+}
+
+/// The full decision for a terminal-content URI: the scheme policy, then the launch policy.
+pub(super) fn terminal_url_action(uri: &str) -> Result<TerminalUrlAction, BlockedTerminalLink> {
+    let url = openable_terminal_url(uri)?;
+    // Without a local filesystem (wasm) there is nothing to launch, and `Url::to_file_path`
+    // does not exist.
+    #[cfg(feature = "local_fs")]
+    if let Some(path) = crate::util::openable_file_type::launchable_file_url_path(&url) {
+        return Ok(TerminalUrlAction::Reveal(path));
+    }
+    Ok(TerminalUrlAction::Open(url))
+}
+
 impl HighlightedLinkOption {
     /// Assigns the inner value and syncs it with the BlockList and AltScreen
     pub fn set(&mut self, link: GridHighlightedLink, model: &mut TerminalModel) {
@@ -1115,7 +1140,9 @@ mod tests;
 mod scheme_policy_tests {
     use warp_core::channel::ChannelState;
 
-    use super::{openable_terminal_url, BlockedTerminalLink};
+    use super::{
+        BlockedTerminalLink, TerminalUrlAction, openable_terminal_url, terminal_url_action,
+    };
 
     #[track_caller]
     fn assert_blocked_scheme(uri: &str, scheme: &str) {
@@ -1164,6 +1191,44 @@ mod scheme_policy_tests {
                 "{uri} names this machine and must still open"
             );
         }
+    }
+
+    /// #681: an OSC 8 / printed `file://` link to an app bundle, installer, executable or
+    /// script is revealed, not handed to the OS handler (which would launch it). Ordinary local
+    /// files and web URLs still open.
+    #[test]
+    #[cfg(all(unix, feature = "local_fs"))]
+    fn launchable_file_urls_are_revealed() {
+        use warp_util::launch_policy::canonical_path_for_open;
+
+        for (uri, path) in [
+            ("file:///tmp/Evil.app", "/tmp/Evil.app"),
+            ("file:///tmp/setup.pkg", "/tmp/setup.pkg"),
+            ("file://localhost/tmp/setup.exe", "/tmp/setup.exe"),
+            ("FILE:///tmp/run.command", "/tmp/run.command"),
+            ("file:///tmp/My%20Installer.dmg", "/tmp/My Installer.dmg"),
+        ] {
+            assert_eq!(
+                terminal_url_action(uri),
+                // The resolved path the policy checked, which is what gets revealed.
+                Ok(TerminalUrlAction::Reveal(canonical_path_for_open(
+                    std::path::Path::new(path)
+                ))),
+                "{uri}"
+            );
+        }
+        for uri in [
+            "file:///tmp/osc8-test.txt",
+            "file:///tmp/paper.pdf",
+            "https://example.com/Evil.app",
+        ] {
+            assert!(
+                matches!(terminal_url_action(uri), Ok(TerminalUrlAction::Open(_))),
+                "{uri} must still open"
+            );
+        }
+        // The scheme policy still runs first.
+        assert!(terminal_url_action("file://attacker.example/share/Evil.app").is_err());
     }
 
     /// Terminal content is less trusted than notebook content, so it must not be more

@@ -667,6 +667,68 @@ fn test_open_file_notebook_focuses_existing_markdown_pane() {
     });
 }
 
+/// #681: the workspace sink every link surface funnels into (terminal links, AI blocks, AI
+/// documents, notebooks, the file tree, code review, pane events). It reveals a launchable path
+/// even when handed an OS-handler target directly, acts on `RevealInFileManager`, and still
+/// opens an ordinary file with the OS handler.
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_open_file_with_target_reveals_launchable_paths() {
+    use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let app_bundle = temp_dir.path().join("Evil.app");
+        let installer = temp_dir.path().join("setup.pkg");
+        let script = temp_dir.path().join("run.command");
+        let document = temp_dir.path().join("paper.pdf");
+
+        for (path, target) in [
+            (&app_bundle, FileTarget::SystemGeneric),
+            (&installer, FileTarget::RevealInFileManager),
+            (&script, FileTarget::SystemDefault),
+            (&document, FileTarget::SystemGeneric),
+        ] {
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.open_file_with_target(
+                    path.clone(),
+                    target,
+                    None,
+                    CodeSource::Link {
+                        path: path.clone(),
+                        range_start: None,
+                        range_end: None,
+                    },
+                    ctx,
+                );
+            });
+        }
+
+        // What reaches the platform is the resolved path the policy checked (on macOS the
+        // tempdir itself sits behind the `/var -> /private/var` symlink).
+        use warp_util::launch_policy::canonical_path_for_open as resolved;
+        let needle = temp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            recorded_system_opens_matching(&needle),
+            vec![
+                RecordedSystemOpen::RevealedFile(resolved(&app_bundle)),
+                RecordedSystemOpen::RevealedFile(resolved(&installer)),
+                // Launchable text headed for the system default app takes the editor-only
+                // route; it does not exist here, so it is revealed rather than edited.
+                RecordedSystemOpen::RevealedFile(resolved(&script)),
+                RecordedSystemOpen::OpenedFile(resolved(&document)),
+            ]
+        );
+    });
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_search_editor_enter_executes_selection() {

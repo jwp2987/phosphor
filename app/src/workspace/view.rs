@@ -5666,13 +5666,67 @@ impl Workspace {
                     ctx,
                 );
             }
+            // The sink re-applies the launch policy (#681): a target built by hand (a raster
+            // shortcut, a pane event, a future caller) must not reach the OS default handler for
+            // a path that handler would launch, whether or not it came from
+            // `resolve_file_target`. Launchable text that was headed for the system default app
+            // gets the editor-only route; anything else is revealed.
+            target @ (FileTarget::SystemDefault | FileTarget::SystemGeneric)
+                if crate::util::openable_file_type::is_launchable_path(&path) =>
+            {
+                if matches!(target, FileTarget::SystemDefault)
+                    && crate::util::openable_file_type::is_file_openable_in_warp(&path).is_some()
+                {
+                    let layout = *EditorSettings::as_ref(ctx).open_file_layout;
+                    self.open_in_editor_never_os_handler(path, layout, line_col, code_source, ctx);
+                } else {
+                    let resolved = warp_util::launch_policy::resolve_for_open(&path);
+                    ctx.open_file_path_in_explorer(&resolved.path);
+                }
+            }
             FileTarget::SystemDefault => {
                 crate::util::file::open_file_path_with_editor(line_col, path.clone(), None, ctx);
             }
             FileTarget::SystemGeneric => {
                 ctx.open_file_path(&path);
             }
+            FileTarget::RevealInFileManager => {
+                // Reveal the resolved path the policy checked, not a symlink or `..` spelling.
+                let resolved = warp_util::launch_policy::resolve_for_open(&path);
+                ctx.open_file_path_in_explorer(&resolved.path);
+            }
+            FileTarget::DefaultEditorOnly(layout) => {
+                self.open_in_editor_never_os_handler(path, layout, line_col, code_source, ctx);
+            }
         }
+    }
+
+    /// Open launchable text (#681) somewhere that reads it and cannot run it: the platform's
+    /// default app if that is a known editor, else Zap's code editor. A path that resolves to
+    /// something other than a regular file (a symlink to a bundle, say) is revealed instead.
+    #[cfg(feature = "local_fs")]
+    fn open_in_editor_never_os_handler(
+        &mut self,
+        path: PathBuf,
+        layout: EditorLayout,
+        line_col: Option<LineAndColumnArg>,
+        code_source: CodeSource,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let resolved = warp_util::launch_policy::resolve_for_open(&path);
+        if !resolved.path.is_file() {
+            ctx.open_file_path_in_explorer(&resolved.path);
+            return;
+        }
+        if crate::util::file::external_editor::open_file_path_in_default_editor_only(
+            line_col,
+            &resolved.path,
+            ctx,
+        ) {
+            return;
+        }
+        let open_as_preview = false;
+        self.open_code(code_source, layout, line_col, open_as_preview, &[], ctx);
     }
 
     fn handle_left_panel_event(&mut self, event: &LeftPanelEvent, ctx: &mut ViewContext<Self>) {
@@ -21924,7 +21978,8 @@ impl TypedActionView for Workspace {
                 let window_id = ctx.window_id();
                 ctx.dispatch_typed_action_for_view(window_id, self.settings_pane.id(), action)
             }
-            OpenLink(link) => ctx.open_url(link),
+            // Toast links and PR chips carry data-sourced URLs; web and mail only (#681).
+            OpenLink(link) => crate::util::links::open_web_or_mail_link(link, ctx),
             #[cfg(target_family = "wasm")]
             OpenLinkOnDesktop(url) => self.open_link_on_desktop(url, ctx),
             DumpDebugInfo => self.dump_debug_info(ctx),

@@ -373,3 +373,162 @@ fn received_message_collapsible_id_prefixes_row_ids() {
     assert_eq!(&*second, "received-message:message-2");
     assert_ne!(first, second);
 }
+
+// ── Model-named file paths and the OS default handler (#675) ──
+
+/// A raster image detected in AI output opens in the system image viewer, as before.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_raster_image_path_opens_in_system_viewer() {
+    use crate::util::openable_file_type::FileTarget;
+
+    for path in [
+        "/tmp/photo.png",
+        "/tmp/photo.JPG",
+        "/tmp/anim.gif",
+        "/tmp/a.webp",
+    ] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            Some(FileTarget::SystemGeneric),
+            "{path}"
+        );
+    }
+}
+
+/// An SVG named by the model must NOT be forced to `SystemGeneric`: its default handler is
+/// normally a browser, which runs any `<script>` the file embeds. With no override it goes
+/// through `resolve_file_target`, which never picks the OS handler for SVG (see
+/// `openable_file_type::tests::svg_never_resolves_to_os_handler`).
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_svg_path_is_not_handed_to_os_handler() {
+    for path in [
+        "/tmp/model-named.svg",
+        "/tmp/model-named.SVG",
+        "/tmp/x.png/evil.Svg",
+    ] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            None,
+            "{path}"
+        );
+    }
+}
+
+/// Non-image paths keep their existing behaviour: no override.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_non_image_path_has_no_override() {
+    for path in ["/tmp/main.rs", "/tmp/README.md", "/tmp/noext"] {
+        assert_eq!(
+            super::detected_file_path_target_override(std::path::Path::new(path)),
+            None,
+            "{path}"
+        );
+    }
+}
+
+// ── Model-named launchable paths are revealed, never opened (#681) ──
+
+/// The issue's case: a model names `Evil.app` / `setup.pkg` / `setup.exe` in an AI block. There
+/// is no override, so `TerminalView::open_file_path` resolves it with `resolve_file_target` --
+/// which must now pick Reveal, not `SystemGeneric`, under every editor choice.
+#[test]
+#[cfg(feature = "local_fs")]
+fn detected_launchable_path_resolves_to_reveal() {
+    use crate::util::file::external_editor::{Editor, settings::EditorChoice};
+    use crate::util::openable_file_type::{
+        EditorLayout, FileTarget, resolve_file_target_with_editor_choice,
+    };
+
+    for path in [
+        "/tmp/Evil.app",
+        "/tmp/setup.pkg",
+        "/tmp/image.dmg",
+        "/tmp/setup.exe",
+        "/tmp/setup.msi",
+        "/tmp/report.xlsx",
+    ] {
+        let path = std::path::Path::new(path);
+        assert_eq!(super::detected_file_path_target_override(path), None);
+        for editor_choice in [
+            EditorChoice::Zap,
+            EditorChoice::SystemDefault,
+            EditorChoice::ExternalEditor(Editor::VSCode),
+        ] {
+            assert_eq!(
+                resolve_file_target_with_editor_choice(
+                    path,
+                    editor_choice,
+                    false, /* prefer_markdown_viewer */
+                    EditorLayout::SplitPane,
+                    None,
+                ),
+                FileTarget::RevealInFileManager,
+                "{path:?} under {editor_choice:?}"
+            );
+        }
+    }
+}
+
+/// A model-named `.png` that is actually an executable (execute bit + ELF header). The hover-
+/// time override stays extension-only -- no filesystem access on hover (#681 review) -- and the
+/// path is caught at click time: it is launchable, so the workspace sink and
+/// `AppContext::open_file_path` reveal it (`workspace::view_test::
+/// test_open_file_with_target_reveals_launchable_paths` covers the sink for `SystemGeneric`).
+#[test]
+#[cfg(all(feature = "local_fs", unix))]
+fn detected_raster_image_that_is_an_executable_is_caught_at_click_time() {
+    use crate::util::openable_file_type::{
+        FileTarget, guard_system_handler_target, is_launchable_path,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let disguised = dir.path().join("photo.png");
+    std::fs::write(&disguised, b"\x7fELF\x02\x01\x01").unwrap();
+    std::fs::set_permissions(&disguised, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let hover_time = super::detected_file_path_target_override(&disguised);
+    assert_eq!(hover_time, Some(FileTarget::SystemGeneric));
+    assert!(is_launchable_path(&disguised));
+    assert_eq!(
+        guard_system_handler_target(&disguised, hover_time.unwrap()),
+        FileTarget::RevealInFileManager
+    );
+}
+
+// ── Tooltip dismissal only repaints when something changed (#677) ──
+
+/// `dismiss_ai_tooltips` gates its repaint on this return value, so it must report `true` only
+/// when a tooltip was actually open.
+#[test]
+fn secret_tooltip_dismiss_reports_whether_one_was_open() {
+    use super::TextLocation;
+    use super::secret_redaction::SecretRedactionState;
+    use warpui::elements::SecretRange;
+
+    let mut state = SecretRedactionState::default();
+    assert!(!state.dismiss_tooltip(), "nothing open");
+
+    let location = TextLocation::Output {
+        section_index: 0,
+        line_index: 0,
+    };
+    let range = SecretRange {
+        char_range: 0..4,
+        byte_range: 0..4,
+    };
+    state.show_secret_tooltip(&location, &range);
+    assert!(state.dismiss_tooltip(), "an open tooltip was closed");
+    assert!(state.open_tooltip_location().is_none());
+    assert!(!state.dismiss_tooltip(), "second dismiss is a no-op");
+}
+
+/// A code-snippet "open" button that was never hovered needs no repaint on focus change.
+#[test]
+fn unhovered_code_snippet_button_reset_reports_no_change() {
+    let handles = crate::ai::blocklist::code_block::CodeSnippetButtonHandles::default();
+    assert!(!handles.reset_hover_state_on_focus_change());
+}

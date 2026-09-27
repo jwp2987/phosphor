@@ -8,6 +8,7 @@ pub mod content_version;
 pub mod file;
 pub mod file_type;
 pub mod host_id;
+pub mod launch_policy;
 pub mod local_or_remote_path;
 pub mod on_cancel;
 pub mod path;

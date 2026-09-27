@@ -98,7 +98,7 @@ use crate::settings::{InputSettings, SelectionSettings};
 use crate::terminal::view::{CodeDiffAction, TerminalAction};
 use crate::ui_components::icons::Icon;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{is_supported_image_file, FileTarget};
+use crate::util::openable_file_type::{FileTarget, is_supported_raster_image_file};
 use crate::view_components::action_button::ActionButton;
 use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
@@ -267,11 +267,25 @@ pub fn init(app: &mut AppContext) {
     cli::init(app);
 }
 
+/// The target to force for a file path detected in AI output, if any.
+///
+/// Raster images go straight to the system image viewer. SVG must NOT (#675): it is a scripting
+/// document whose default handler is normally a browser, and this path is named by the model. It
+/// gets no override, so `TerminalView::open_file_path` routes it through `resolve_file_target`,
+/// which picks the in-app image viewer or an editor -- never the OS default handler.
+///
+/// Every other path also gets no override and so goes through `resolve_file_target` on click,
+/// which reveals a launchable path (`.app`, `.pkg`, `.exe`, ...) in the file manager (#681).
+///
+/// This is deliberately extension-only and touches no filesystem: it also runs on *hover*
+/// (`show_link_tooltip`, `hovered_rich_content_link`), and a stat on a hung NFS/sshfs/FUSE
+/// mount would freeze the UI. The raster shortcut is still checked against the launch policy
+/// -- at click time, by the workspace sink (`Workspace::open_file_with_target`) and
+/// `AppContext::open_file_path`, so a model-named `photo.png` that is really an executable is
+/// revealed, not opened.
 #[cfg(feature = "local_fs")]
-impl AIBlock {
-    fn detected_file_path_target_override(&self, absolute_path: &Path) -> Option<FileTarget> {
-        is_supported_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
-    }
+fn detected_file_path_target_override(absolute_path: &Path) -> Option<FileTarget> {
+    is_supported_raster_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4054,7 +4068,7 @@ impl AIBlock {
             } => RichContentLink::FilePath {
                 absolute_path: absolute_path.to_owned(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             },
         };
         Some(rich_content_link)
@@ -4608,22 +4622,36 @@ impl AIBlock {
         }
     }
 
+    /// Dismisses this block's tooltips and resets code-snippet button hover state.
+    ///
+    /// `TerminalView::dismiss_tooltips` calls this on EVERY AI block on each focus change and
+    /// scroll, so it only repaints when something visible actually changed (#677, the tooltip
+    /// half of upstream `216d0efe7`). The dismiss events are still emitted unconditionally: the
+    /// terminal's copy of the tooltip can outlive this block's (e.g. `replace_all_links` clears
+    /// ours without emitting), and emitting costs no repaint.
     pub fn dismiss_ai_tooltips(&mut self, ctx: &mut ViewContext<Self>) {
-        self.detected_links_state.link_location_open_tooltip = None;
+        let dismissed_link_tooltip = self
+            .detected_links_state
+            .link_location_open_tooltip
+            .take()
+            .is_some();
         ctx.emit(AIBlockEvent::DismissLinkTooltip);
-        self.secret_redaction_state.dismiss_tooltip();
+        let dismissed_secret_tooltip = self.secret_redaction_state.dismiss_tooltip();
         ctx.emit(AIBlockEvent::DismissSecretTooltip);
 
         // The hover state for the "open" button in linked code blocks should be reset on a focus change.
+        let mut reset_button_hover = false;
         for button_handles in self
             .state_handles
             .normal_response_code_snippet_buttons
             .iter()
         {
-            button_handles.reset_hover_state_on_focus_change();
+            reset_button_hover |= button_handles.reset_hover_state_on_focus_change();
         }
 
-        ctx.notify();
+        if dismissed_link_tooltip || dismissed_secret_tooltip || reset_button_hover {
+            ctx.notify();
+        }
     }
 
     fn open_link(
@@ -4650,7 +4678,7 @@ impl AIBlock {
             }) => ctx.emit(AIBlockEvent::OpenDetectedFilePath {
                 absolute_path: absolute_path.clone(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             }),
             None => (),
         }
@@ -4674,7 +4702,7 @@ impl AIBlock {
             } => RichContentLink::FilePath {
                 absolute_path: absolute_path.to_owned(),
                 line_and_column_num: *line_and_column_num,
-                target_override: self.detected_file_path_target_override(absolute_path),
+                target_override: detected_file_path_target_override(absolute_path),
             },
         };
         let position_id = rich_content_link_tooltip_position_id(&ctx.view_id());

@@ -321,6 +321,28 @@ pub fn open_file_path_with_editor(
     }
 }
 
+/// Open `full_path` in the platform's default application for it *only if* that application
+/// is a known [`Editor`]; returns whether it was opened. Never hands the file to the OS
+/// handler. Used for launchable text under the system-default editor choice (#681): the
+/// caller falls back to Zap's code editor on `false`.
+pub fn open_file_path_in_default_editor_only(
+    line_column_number: Option<LineAndColumnArg>,
+    full_path: &std::path::Path,
+    ctx: &mut AppContext,
+) -> bool {
+    cfg_if::cfg_if! {
+        if #[cfg(target_os = "macos")] {
+            mac::open_in_default_editor_only(line_column_number, full_path, ctx)
+        } else if #[cfg(any(target_os = "linux", target_os = "freebsd"))] {
+            linux::open_in_default_editor_only(line_column_number, full_path, ctx)
+        } else {
+            // Windows has no editor-only lookup here; the in-app editor is the safe choice.
+            let _ = (line_column_number, full_path, ctx);
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "mod_test.rs"]
 mod tests;

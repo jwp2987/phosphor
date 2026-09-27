@@ -501,7 +501,8 @@ pub(crate) fn handle_notification_artifact_buttons_event(
                 },
                 ctx
             );
-            ctx.open_url(url);
+            // The URL comes from `gh`; only a web link may reach the OS handler (#681).
+            crate::util::links::open_web_or_mail_link(url, ctx);
         }
     }
 }
