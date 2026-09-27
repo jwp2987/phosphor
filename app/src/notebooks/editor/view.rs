@@ -189,9 +189,36 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "home",
             EditorViewAction::MoveToLineStart,
-            text_entry.clone(),
+            text_entry.clone() & !id!("EditorSelectable"),
         ),
-        FixedBinding::new("end", EditorViewAction::MoveToLineEnd, text_entry.clone()),
+        FixedBinding::new(
+            "end",
+            EditorViewAction::MoveToLineEnd,
+            text_entry.clone() & !id!("EditorSelectable"),
+        ),
+        // The rendered Markdown viewer (`InteractionState::Selectable`) has no text cursor for
+        // Home/End/Page Up/Page Down to move, and previously only the mouse wheel could scroll
+        // it at all. Scroll the viewport instead.
+        FixedBinding::new(
+            "home",
+            EditorViewAction::ScrollToDocumentStart,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "end",
+            EditorViewAction::ScrollToDocumentEnd,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "pagedown",
+            EditorViewAction::ScrollPageDown,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "pageup",
+            EditorViewAction::ScrollPageUp,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
         FixedBinding::new("cmdorctrl-]", EditorViewAction::Indent, text_entry.clone()),
         FixedBinding::new(
             "cmdorctrl-[",
@@ -767,6 +794,16 @@ pub enum EditorViewAction {
     Delete,
     Backspace,
     Scroll(Pixels),
+    /// Scroll down by one viewport height. Bound to Page Down.
+    ScrollPageDown,
+    /// Scroll up by one viewport height. Bound to Page Up.
+    ScrollPageUp,
+    /// Scroll to the top of the document. Bound to Home in Selectable (rendered Markdown)
+    /// interaction state, where Home has no text cursor to move.
+    ScrollToDocumentStart,
+    /// Scroll to the bottom of the document. Bound to End in Selectable (rendered Markdown)
+    /// interaction state, where End has no text cursor to move.
+    ScrollToDocumentEnd,
     MaybeOpenFileOrUrl {
         offset: CharOffset,
         link_in_text: Option<UserInput<String>>,
@@ -1753,6 +1790,52 @@ impl RichTextEditorView {
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render_state, ctx| {
                 render_state.scroll(delta, ctx);
+            })
+        })
+    }
+
+    /// Scroll down by one viewport height.
+    fn scroll_page_down(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let page = render_state.viewport().height();
+                render_state.scroll(-page, ctx);
+            })
+        })
+    }
+
+    /// Scroll up by one viewport height.
+    fn scroll_page_up(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let page = render_state.viewport().height();
+                render_state.scroll(page, ctx);
+            })
+        })
+    }
+
+    /// Scroll all the way to the top of the document.
+    ///
+    /// `ViewportState::scroll`/`scroll_to` clamp the resulting offset to
+    /// `[0, content_height - viewport_height]`, so any delta at least as large as the total
+    /// content height reliably lands at the top without needing to know the current scroll
+    /// position.
+    fn scroll_to_document_start(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let content_height = render_state.height();
+                render_state.scroll(content_height, ctx);
+            })
+        })
+    }
+
+    /// Scroll all the way to the bottom of the document. See `scroll_to_document_start` for why
+    /// an overshooting delta is sufficient.
+    fn scroll_to_document_end(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let content_height = render_state.height();
+                render_state.scroll(-content_height, ctx);
             })
         })
     }
@@ -2846,6 +2929,13 @@ impl View for RichTextEditorView {
             context.set.insert("EditorIsEditable");
         }
 
+        // The rendered Markdown viewer (`FileNotebookView`) uses `Selectable`: there's no text
+        // cursor to move, so Home/End/Page Up/Page Down should scroll the viewport instead of
+        // (a no-op) cursor movement.
+        if matches!(self.interaction_state(ctx), InteractionState::Selectable) {
+            context.set.insert("EditorSelectable");
+        }
+
         if self.insertion_menu_state.open_at_source.is_some() {
             context.set.insert("BlockInsertionMenu");
         }
@@ -2941,6 +3031,10 @@ impl TypedActionView for RichTextEditorView {
                 .update(ctx, |links, ctx| links.secondary_action(target, ctx)),
             CreateOrEditLink => self.edit_link(false, ctx),
             Scroll(delta) => self.scroll(*delta, ctx),
+            ScrollPageDown => self.scroll_page_down(ctx),
+            ScrollPageUp => self.scroll_page_up(ctx),
+            ScrollToDocumentStart => self.scroll_to_document_start(ctx),
+            ScrollToDocumentEnd => self.scroll_to_document_end(ctx),
             SelectUp => self.select_up(ctx),
             SelectDown => self.select_down(ctx),
             SelectLeft => self.select_left(ctx),
@@ -3367,6 +3461,10 @@ impl TypedActionView for RichTextEditorView {
             EditorViewAction::Delete
             | EditorViewAction::Backspace
             | EditorViewAction::Scroll(_)
+            | EditorViewAction::ScrollPageDown
+            | EditorViewAction::ScrollPageUp
+            | EditorViewAction::ScrollToDocumentStart
+            | EditorViewAction::ScrollToDocumentEnd
             | EditorViewAction::SelectUp
             | EditorViewAction::SelectDown
             | EditorViewAction::SelectLeft

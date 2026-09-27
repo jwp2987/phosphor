@@ -235,7 +235,7 @@ fn test_loaded_mermaid_diagram_with_placeholder_height_needs_relayout() {
 
             assert!(matches!(
                 RichTextEditorView::layout_affecting_asset_load(&block, asset_cache),
-                Some(super::LayoutAffectingAssetLoad::LoadedNeedsRelayout)
+                Some(super::LayoutAffectingAssetLoad::LoadedNeedsRelayout(_))
             ));
         });
     })
@@ -887,5 +887,108 @@ fn test_cmd_click_missing_markdown_anchor_falls_back_to_link_resolution() {
             "Missing anchor click should fall back to link resolution: {:?}",
             events.lock().clone()
         );
+    });
+}
+
+/// Home/End/Page Up/Page Down should scroll the rendered (read-only) Markdown viewer -- it has
+/// no text cursor for them to move -- but must keep moving the cursor as before while editing.
+/// Regression test for https://github.com/warpdotdev/warp/issues/698.
+#[test]
+fn test_keymap_context_scopes_home_end_page_bindings_to_selectable() {
+    App::test((), |mut app| async move {
+        let (_, editor_view, _) = initialize_editor(&mut app);
+        reset_editor_with_markdown(&mut app, &editor_view, "line 1\nline 2\nline 3").await;
+
+        let editable_context = editor_view.read(&app, |editor, ctx| editor.keymap_context(ctx));
+        assert!(
+            !editable_context.set.contains("EditorSelectable"),
+            "EditorSelectable must be absent while editing, or Home/End/Page Up/Page Down \
+             would scroll the viewport instead of moving the cursor"
+        );
+
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+
+        let selectable_context = editor_view.read(&app, |editor, ctx| editor.keymap_context(ctx));
+        assert!(
+            selectable_context.set.contains("EditorSelectable"),
+            "EditorSelectable must be present for rendered Markdown, which has no text \
+             cursor, so Home/End/Page Up/Page Down scroll the viewport instead"
+        );
+    });
+}
+
+/// Dispatching the scroll actions bound to Home/End/Page Up/Page Down in the rendered
+/// (`Selectable`) Markdown viewer should move the viewport, not a (nonexistent) cursor.
+/// Regression test for https://github.com/warpdotdev/warp/issues/698.
+#[test]
+fn test_scroll_actions_scroll_rendered_markdown_viewport() {
+    App::test((), |mut app| async move {
+        let (_, editor_view, _) = initialize_editor(&mut app);
+
+        let markdown = (0..100)
+            .map(|i| format!("Paragraph {i}"))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        reset_editor_with_markdown(&mut app, &editor_view, &markdown).await;
+
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+
+        // Give the viewport a fixed, small height so the content overflows it and there's
+        // room to scroll.
+        let render_state = editor_view.read(&app, |editor, ctx| {
+            editor.model.as_ref(ctx).render_state().clone()
+        });
+        render_state.update(&mut app, |render_state, ctx| {
+            render_state.set_viewport_size(
+                warp_editor::render::model::viewport::SizeInfo {
+                    viewport_size: pathfinder_geometry::vector::Vector2F::new(400., 100.),
+                    needs_layout: true,
+                },
+                ctx,
+            );
+        });
+        app.read(|ctx| render_state.as_ref(ctx).layout_complete())
+            .await;
+
+        let (content_height, viewport_height) = app.read(|ctx| {
+            let render_state = render_state.as_ref(ctx);
+            (render_state.height(), render_state.viewport().height())
+        });
+        assert!(
+            content_height > viewport_height,
+            "test content must overflow the viewport for this test to be meaningful"
+        );
+
+        // Page Down scrolls forward by one viewport height.
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorViewAction::ScrollPageDown, ctx);
+        });
+        let after_page_down = app.read(|ctx| render_state.as_ref(ctx).viewport().scroll_top());
+        assert_eq!(after_page_down, viewport_height);
+
+        // Page Up scrolls back by one viewport height.
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorViewAction::ScrollPageUp, ctx);
+        });
+        let after_page_up = app.read(|ctx| render_state.as_ref(ctx).viewport().scroll_top());
+        assert_eq!(after_page_up, warpui::units::Pixels::zero());
+
+        // End scrolls all the way to the bottom.
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorViewAction::ScrollToDocumentEnd, ctx);
+        });
+        let at_end = app.read(|ctx| render_state.as_ref(ctx).viewport().scroll_top());
+        assert_eq!(at_end, content_height - viewport_height);
+
+        // Home scrolls all the way back to the top.
+        editor_view.update(&mut app, |editor, ctx| {
+            editor.handle_action(&EditorViewAction::ScrollToDocumentStart, ctx);
+        });
+        let at_start = app.read(|ctx| render_state.as_ref(ctx).viewport().scroll_top());
+        assert_eq!(at_start, warpui::units::Pixels::zero());
     });
 }
