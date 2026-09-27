@@ -1301,3 +1301,59 @@ fn test_apply_v4a_rename_to_existing_file_no_deltas() {
         }
     });
 }
+
+/// A V4A move to a NEW file must carry the destination resolved against the SESSION cwd (and
+/// with `~` expanded), exactly as the source is resolved and as the permission guard judges
+/// it. The writers rename onto `DiffType::Update { rename }` verbatim, so a raw relative
+/// destination used to land against the PROCESS cwd — e.g. a TUI launched from `~/.codex`
+/// wrote `~/.codex/config.toml` while the guard checked `<session cwd>/config.toml` (#682).
+#[test]
+fn test_apply_v4a_rename_destination_is_resolved_against_session_cwd() {
+    App::test((), |app| async move {
+        let dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let cwd = dir.path().to_string_lossy().to_string();
+        std::fs::write(
+            dir.path().join("notes.md"),
+            "line one\nline two\nline three\n",
+        )
+        .unwrap();
+
+        let home = dirs::home_dir().expect("home dir");
+        for (move_to, expected) in [
+            ("config.toml", dir.path().join("config.toml")),
+            ("sub/../moved.md", dir.path().join("moved.md")),
+            (
+                "~/phosphor-682-test-never-created.md",
+                home.join("phosphor-682-test-never-created.md"),
+            ),
+        ] {
+            let v4a_edit = ParsedDiff::V4AEdit {
+                file: Some("notes.md".to_string()),
+                move_to: Some(move_to.to_string()),
+                hunks: vec![],
+            };
+            let session_context = SessionContext::new_local_with_cwd_for_test(&cwd);
+            let result = apply_edits(
+                vec![FileEdit::Edit(v4a_edit)],
+                &session_context,
+                &AIIdentifiers::default(),
+                app.background_executor(),
+                Arc::new(AuthState::new_for_test()),
+                false,
+                |path| async move { FileReadResult::from(std::fs::read_to_string(path)) },
+            )
+            .await;
+
+            let diffs = result.unwrap_or_else(|err| panic!("move to {move_to:?}: {err:?}"));
+            assert_eq!(diffs.len(), 1, "move to {move_to:?}: {diffs:?}");
+            match &diffs[0].diff_type {
+                DiffType::Update { rename, .. } => assert_eq!(
+                    rename.as_deref(),
+                    Some(expected.as_path()),
+                    "move to {move_to:?} must be resolved against the session cwd"
+                ),
+                other => panic!("Expected Update with rename, got {other:?}"),
+            }
+        }
+    });
+}

@@ -43,6 +43,19 @@ impl ParsedDiff {
             ParsedDiff::V4AEdit { file, .. } => file.as_ref(),
         }
     }
+
+    /// The V4A rename/move destination, if this edit moves its file.
+    ///
+    /// [`Self::file`] is the *source* only. Anything deciding whether an edit may write a
+    /// path must consult this too: applying a V4A edit with `move_to` writes the destination
+    /// and removes the source, so a check over [`Self::file`] alone never sees where the
+    /// content lands.
+    pub fn move_to(&self) -> Option<&String> {
+        match self {
+            ParsedDiff::StrReplaceEdit { .. } => None,
+            ParsedDiff::V4AEdit { move_to, .. } => move_to.as_ref(),
+        }
+    }
 }
 
 impl Display for ParsedDiff {

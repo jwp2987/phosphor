@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use ai::diff_validation::ParsedDiff;
+
 use uuid::Uuid;
 
 use settings::Setting as _;
@@ -8,6 +10,7 @@ use warpui::{App, EntityId, ModelHandle, SingletonEntity};
 
 use warp_core::execution_mode::ExecutionMode;
 
+use crate::ai::agent::FileEdit;
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
 use crate::{
     GlobalResourceHandles, GlobalResourceHandlesProvider, LaunchMode,
@@ -545,6 +548,219 @@ fn test_can_write_files_mcp_config_always_denied() {
             });
         }
     })
+}
+
+fn v4a_move(file: &str, move_to: &str) -> FileEdit {
+    FileEdit::Edit(ParsedDiff::V4AEdit {
+        file: Some(file.to_owned()),
+        move_to: Some(move_to.to_owned()),
+        hunks: Vec::new(),
+    })
+}
+
+/// A V4A rename writes its `move_to` destination, but the auto-approve path used to build its
+/// guard list from `FileEdit::file()` — the SOURCE — so renaming an innocuous file onto a
+/// protected config was auto-approved under an auto-write setting. Every destination below is
+/// protected once resolved the way the writer resolves it; each must be refused, and refused
+/// by the protected-path guard rather than by the autonomy setting.
+#[test]
+fn test_can_apply_file_edits_move_to_protected_path_denied() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            terminal_view_id,
+            convo_id,
+            permissions,
+            profile_model,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.set_apply_code_diffs(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &ActionPermission::AlwaysAllow,
+                ctx,
+            );
+        });
+
+        let project_cwd = Some("/project".to_owned());
+        let codex_cwd = Some("/home/someone/.codex".to_owned());
+        let cases = [
+            // (source, destination, session cwd)
+            ("notes.md", "~/.claude.json", &project_cwd),
+            ("notes.md", "~/.mcp.json", &project_cwd),
+            ("notes.md", ".mcp.json", &project_cwd),
+            ("src/notes.md", "../.mcp.json", &project_cwd),
+            ("notes.md", "sub/../.claude.json", &project_cwd),
+            ("notes.md", "/project/.warp/.mcp.json", &project_cwd),
+            // Only the RESOLVED destination is protected here: the raw string `config.toml`
+            // matches nothing, but from a cwd of `~/.codex` the writer writes
+            // `~/.codex/config.toml`.
+            ("notes.md", "config.toml", &codex_cwd),
+            // Moving a protected file AWAY deletes it; the source must still be guarded.
+            (".mcp.json", "backup.json", &project_cwd),
+        ];
+
+        for (source, destination, cwd) in cases {
+            let edits = [v4a_move(source, destination)];
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_apply_file_edits(
+                    &convo_id,
+                    &edits,
+                    &None,
+                    cwd,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        FileWritePermission::Denied(FileWritePermissionDeniedReason::ProtectedPath)
+                    ),
+                    "move {source:?} -> {destination:?} (cwd {cwd:?}) must require \
+                     confirmation as a protected write, got {result:?}"
+                );
+            });
+        }
+
+        // The hole this closes: the source alone is an ordinary, auto-writable file, which is
+        // all the guard used to be shown for a rename.
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_write_files(
+                &convo_id,
+                &[PathBuf::from("notes.md")],
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(result.is_allowed(), "source alone is writable: {result:?}");
+        });
+
+        // A protected destination anywhere in a batch taints the whole batch.
+        let batch = [
+            FileEdit::Create {
+                file: Some("src/new.rs".to_owned()),
+                content: Some(String::new()),
+            },
+            v4a_move("notes.md", "~/.claude.json"),
+        ];
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_apply_file_edits(
+                &convo_id,
+                &batch,
+                &None,
+                &project_cwd,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                !result.is_allowed(),
+                "batch with a protected move must not auto-apply, got {result:?}"
+            );
+        });
+    })
+}
+
+/// Normalising and adding the destination must not turn the guard into "deny every rename":
+/// an ordinary in-project rename (including one that leaves its directory, since
+/// `apply_code_diffs` has no directory allowlist) still auto-approves under AlwaysAllow.
+#[test]
+fn test_can_apply_file_edits_ordinary_rename_still_autoapproves() {
+    App::test((), |mut app| async move {
+        let PermissionsTestState {
+            terminal_view_id,
+            convo_id,
+            permissions,
+            profile_model,
+            ..
+        } = initialize_permissions_test(&mut app);
+
+        profile_model.update(&mut app, |model, ctx| {
+            model.set_apply_code_diffs(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &ActionPermission::AlwaysAllow,
+                ctx,
+            );
+        });
+
+        let cwd = Some("/project".to_owned());
+        for (source, destination) in [
+            ("src/old_name.rs", "src/new_name.rs"),
+            ("src/lib.rs", "src/nested/../lib2.rs"),
+            ("docs/a.md", "../other/a.md"),
+        ] {
+            let edits = [v4a_move(source, destination)];
+            permissions.read(&app, |model, ctx| {
+                let result = model.can_apply_file_edits(
+                    &convo_id,
+                    &edits,
+                    &None,
+                    &cwd,
+                    Some(terminal_view_id),
+                    ctx,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        FileWritePermission::Allowed(
+                            FileWritePermissionAllowedReason::AutowriteSettingEnabled
+                        )
+                    ),
+                    "rename {source:?} -> {destination:?} should auto-approve, got {result:?}"
+                );
+            });
+        }
+
+        // With AlwaysAsk, a rename is not auto-approved just because it is a rename.
+        profile_model.update(&mut app, |model, ctx| {
+            model.set_apply_code_diffs(
+                *model.active_profile(Some(terminal_view_id), ctx).id(),
+                &ActionPermission::AlwaysAsk,
+                ctx,
+            );
+        });
+        let edits = [v4a_move("src/old_name.rs", "src/new_name.rs")];
+        permissions.read(&app, |model, ctx| {
+            let result = model.can_apply_file_edits(
+                &convo_id,
+                &edits,
+                &None,
+                &cwd,
+                Some(terminal_view_id),
+                ctx,
+            );
+            assert!(
+                !result.is_allowed(),
+                "AlwaysAsk must still ask, got {result:?}"
+            );
+        });
+    })
+}
+
+/// The guard must be shown where a move actually writes: the destination, resolved against
+/// the session cwd exactly as `host_native_absolute_path` resolves it for the writer, plus
+/// the raw spelling (so resolution can only add denials). A destination outside the working
+/// directory is therefore visible to the check under its real absolute path.
+#[test]
+fn test_file_edit_guard_paths_include_resolved_move_destination() {
+    let cwd = Some("/project/src".to_owned());
+    let edits = [
+        v4a_move("a.rs", "../../outside/a.rs"),
+        FileEdit::Delete {
+            file: Some("/project/src/gone.rs".to_owned()),
+        },
+    ];
+    let paths = super::file_edit_guard_paths(&edits, &None, &cwd);
+    for expected in [
+        "a.rs",
+        "/project/src/a.rs",
+        "../../outside/a.rs",
+        "/outside/a.rs",
+        "/project/src/gone.rs",
+    ] {
+        assert!(
+            paths.contains(&PathBuf::from(expected)),
+            "expected {expected:?} among guard paths {paths:?}"
+        );
+    }
 }
 
 /// The four command allow/denylist mutators on `BlocklistAIPermissions` must write the store

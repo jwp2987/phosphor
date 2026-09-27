@@ -825,3 +825,31 @@ pub fn run_daemon() -> anyhow::Result<()> {
 "
     );
 }
+
+/// `file()` is the rename SOURCE; `move_to()` is where a V4A move writes. Permission checks
+/// consult both, so the accessor must return the destination for V4A and nothing for a
+/// search/replace edit, which cannot move a file.
+#[test]
+fn test_move_to_returns_v4a_destination_only() {
+    let moved = ParsedDiff::V4AEdit {
+        file: Some("a.txt".to_string()),
+        move_to: Some("~/.mcp.json".to_string()),
+        hunks: vec![],
+    };
+    assert_eq!(moved.file().map(String::as_str), Some("a.txt"));
+    assert_eq!(moved.move_to().map(String::as_str), Some("~/.mcp.json"));
+
+    let in_place = ParsedDiff::V4AEdit {
+        file: Some("a.txt".to_string()),
+        move_to: None,
+        hunks: vec![],
+    };
+    assert_eq!(in_place.move_to(), None);
+
+    let str_replace = ParsedDiff::StrReplaceEdit {
+        file: Some("a.txt".to_string()),
+        search: None,
+        replace: None,
+    };
+    assert_eq!(str_replace.move_to(), None);
+}

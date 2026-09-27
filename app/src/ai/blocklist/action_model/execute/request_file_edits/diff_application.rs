@@ -732,13 +732,23 @@ async fn apply_v4a_update<F, Fut>(
         full: ("Matching V4A diffs for: {file_path:?}")
     );
 
-    // Check if we're renaming to an existing file.
-    let rename_target_content = if let Some(target) = &rename_to {
-        let target_absolute = host_native_absolute_path(
-            target,
+    // Resolve the rename destination ONCE, exactly as the source is resolved, and carry the
+    // resolved path forward. The permission guard (`file_edit_guard_paths`) judges this
+    // resolved spelling; the writers (`local_code_editor.rs` / `tui_diff_storage.rs` ->
+    // `warp_files` `rename`) do not resolve `DiffType::Update { rename }` again. Passing the raw
+    // `move_to` through meant `~` was never expanded and a relative destination landed
+    // against the PROCESS cwd rather than the session's, so the guard and the writer named
+    // different files (#682).
+    let rename_to = rename_to.map(|target| {
+        host_native_absolute_path(
+            &target,
             session_context.shell(),
             session_context.current_working_directory(),
-        );
+        )
+    });
+
+    // Check if we're renaming to an existing file.
+    let rename_target_content = if let Some(target_absolute) = &rename_to {
         match read_file(target_absolute.clone()).await {
             FileReadResult::Found(content) => Some(content),
             FileReadResult::NotFound => None,
@@ -748,7 +758,7 @@ async fn apply_v4a_update<F, Fut>(
                     full: ("Unable to read rename target file {target_absolute:?}: {err}")
                 );
                 result.errors.push(DiffApplicationError::ReadFailed {
-                    file: target.clone(),
+                    file: target_absolute.clone(),
                     message: err,
                 });
                 return;

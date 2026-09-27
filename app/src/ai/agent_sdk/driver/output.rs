@@ -310,6 +310,11 @@ pub mod text {
                         for path in file_paths {
                             writeln!(w, "- {path}")?;
                         }
+                        // A V4A move writes its destination; name it, so the log never shows
+                        // only the innocuous source of a rename onto a sensitive path.
+                        for (from, to) in super::file_edit_moves(file_edits) {
+                            writeln!(w, "- {from} -> {to} (move)")?;
+                        }
                     }
                     AIAgentActionType::Grep { queries, path } => {
                         writeln!(w, "Grepping for {} in {path}", format_queries(queries))?;
@@ -585,6 +590,12 @@ pub mod json {
     }
 
     #[derive(Serialize)]
+    struct JsonFileMove<'a> {
+        from: &'a str,
+        to: &'a str,
+    }
+
+    #[derive(Serialize)]
     #[serde(tag = "tool", rename_all = "snake_case")]
     enum JsonToolCall<'a> {
         RunCommand {
@@ -596,7 +607,12 @@ pub mod json {
         },
         EditFiles {
             title: Option<&'a str>,
+            /// The file each edit applies to — for a V4A move, its SOURCE. Unchanged meaning.
             file_paths: Vec<&'a str>,
+            /// V4A moves in this batch, source to destination. The destination is written and
+            /// is not listed in `file_paths`. Omitted when the batch moves nothing.
+            #[serde(skip_serializing_if = "Vec::is_empty")]
+            moves: Vec<JsonFileMove<'a>>,
         },
         Grep {
             queries: &'a [String],
@@ -960,9 +976,13 @@ pub mod json {
                     AIAgentActionType::RequestFileEdits { file_edits, title } => {
                         let file_paths: Vec<&str> =
                             file_edits.iter().filter_map(|edit| edit.file()).collect();
+                        let moves = super::file_edit_moves(file_edits)
+                            .map(|(from, to)| JsonFileMove { from, to })
+                            .collect();
                         Some(JsonMessage::ToolCall(JsonToolCall::EditFiles {
                             title: title.as_deref(),
                             file_paths,
+                            moves,
                         }))
                     }
                     AIAgentActionType::Grep { queries, path } => {
@@ -1197,12 +1217,82 @@ pub mod json {
         let message = JsonMessage::System(JsonSystemEvent::SharedSessionEstablished { join_url });
         write_message(&message, w)
     }
+
+    #[cfg(test)]
+    mod edit_files_tests {
+        use super::*;
+        use crate::ai::agent::FileEdit;
+        use ai::diff_validation::ParsedDiff;
+
+        fn edit_files_json(file_edits: &[FileEdit]) -> serde_json::Value {
+            let call = JsonToolCall::EditFiles {
+                title: None,
+                file_paths: file_edits.iter().filter_map(|edit| edit.file()).collect(),
+                moves: super::super::file_edit_moves(file_edits)
+                    .map(|(from, to)| JsonFileMove { from, to })
+                    .collect(),
+            };
+            serde_json::to_value(&call).expect("serializes")
+        }
+
+        /// `file_paths` keeps its meaning (the file each edit applies to — a move's SOURCE);
+        /// a move's destination is reported in `moves`, never mixed into `file_paths` (#682).
+        #[test]
+        fn a_move_reports_its_destination_separately() {
+            let edits = [FileEdit::Edit(ParsedDiff::V4AEdit {
+                file: Some("notes.md".to_owned()),
+                move_to: Some("~/.claude.json".to_owned()),
+                hunks: Vec::new(),
+            })];
+            assert_eq!(
+                edit_files_json(&edits),
+                serde_json::json!({
+                    "tool": "edit_files",
+                    "title": null,
+                    "file_paths": ["notes.md"],
+                    "moves": [{ "from": "notes.md", "to": "~/.claude.json" }],
+                })
+            );
+        }
+
+        /// Consumers that predate `moves` see exactly the old shape when nothing is moved.
+        #[test]
+        fn moves_is_omitted_when_nothing_moves() {
+            let edits = [FileEdit::Create {
+                file: Some("src/new.rs".to_owned()),
+                content: Some(String::new()),
+            }];
+            assert_eq!(
+                edit_files_json(&edits),
+                serde_json::json!({
+                    "tool": "edit_files",
+                    "title": null,
+                    "file_paths": ["src/new.rs"],
+                })
+            );
+        }
+    }
 }
 
-use crate::ai::agent::{AIAgentText, AIAgentTextSection};
+use crate::ai::agent::{AIAgentText, AIAgentTextSection, FileEdit};
 use crate::code::editor_management::CodeSource;
 use std::io::{self, BufWriter, Write};
 /// Execute a closure with a buffered stdout writer and flush it afterwards.
+/// The V4A moves in a batch of file edits, as `(source, destination)`.
+///
+/// `FileEdit::file()` names only a move's source; the destination is where the content is
+/// written, so both output formats report it separately rather than folding it into the
+/// source list (#682).
+fn file_edit_moves(file_edits: &[FileEdit]) -> impl Iterator<Item = (&str, &str)> {
+    file_edits.iter().filter_map(|edit| match edit {
+        FileEdit::Edit(diff) => {
+            let to = diff.move_to()?;
+            Some((diff.file().map_or("<unknown>", String::as_str), to.as_str()))
+        }
+        FileEdit::Create { .. } | FileEdit::Delete { .. } => None,
+    })
+}
+
 pub fn with_stdout_buffered<F>(f: F) -> io::Result<()>
 where
     F: FnOnce(&mut BufWriter<io::StdoutLock>) -> io::Result<()>,

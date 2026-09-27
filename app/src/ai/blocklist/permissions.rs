@@ -1,11 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Component, Path, PathBuf},
+    path::PathBuf,
 };
 
 use crate::{
     ai::{
-        agent::conversation::AIConversationId,
+        agent::{FileEdit, conversation::AIConversationId},
         execution_profiles::{
             AIExecutionProfile, ActionPermission, AskUserQuestionPermission, WriteToPtyPermission,
             profiles::{AIExecutionProfilesModel, ClientProfileId},
@@ -17,10 +17,12 @@ use crate::{
 };
 use warp_core::execution_mode::AppExecutionMode;
 
+use crate::ai::paths::host_native_absolute_path;
+use crate::terminal::ShellLaunchData;
+
+use super::protected_paths::is_protected_write_path;
 #[cfg(not(target_family = "wasm"))]
 use crate::ai::mcp::TemplatableMCPServerManager;
-use crate::ai::mcp::{MCPProvider, mcp_provider_from_file_path};
-use strum::IntoEnumIterator as _;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -131,8 +133,9 @@ pub enum FileWritePermissionDeniedReason {
     AlwaysAskEnabled,
     Inconclusive,
     AgentDecided,
-    /// The path is a system-protected file (e.g. an MCP config) that must never
-    /// be auto-written regardless of user autonomy settings.
+    /// The path is on the protected list (`blocklist::protected_paths`: MCP and agent
+    /// configs, this app's settings, ssh, shell startup files, git hooks, ...) and must never
+    /// be written without the user's explicit confirmation, whatever the autonomy settings.
     ProtectedPath,
 }
 
@@ -767,6 +770,26 @@ impl BlocklistAIPermissions {
         self.determine_write_permissions_from_active_profile(terminal_view_id, ctx)
     }
 
+    /// Returns whether Agent Mode can automatically apply `file_edits`.
+    ///
+    /// This is the entry point for a batch of agent file edits; prefer it over
+    /// [`Self::can_write_files`], which trusts its caller to have named every path. It feeds
+    /// the protected-path guard every path the batch writes or removes — including a V4A
+    /// rename's `move_to` destination — in both the spelling the model emitted and the
+    /// absolute spelling the writer resolves it to. See [`file_edit_guard_paths`].
+    pub fn can_apply_file_edits(
+        &self,
+        conversation_id: &AIConversationId,
+        file_edits: &[FileEdit],
+        shell: &Option<ShellLaunchData>,
+        current_working_directory: &Option<String>,
+        terminal_view_id: Option<EntityId>,
+        ctx: &AppContext,
+    ) -> FileWritePermission {
+        let paths = file_edit_guard_paths(file_edits, shell, current_working_directory);
+        self.can_write_files(conversation_id, &paths, terminal_view_id, ctx)
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub fn can_call_mcp_tool(
         &self,
@@ -1257,12 +1280,62 @@ impl BlocklistAIPermissions {
     }
 }
 
-/// Returns `Some(Denied(ProtectedPath))` if any of the given paths are system-protected
-/// and must never be auto-written regardless of user autonomy settings.
+/// Every path a batch of agent file edits writes to or removes, in every spelling the
+/// protected-path guard must see.
+///
+/// # Why the destination
+///
+/// A V4A edit with `move_to` writes the destination and removes the source
+/// (`diff_application.rs`, `apply_v4a_update` -> `DiffType::Update { rename }` ->
+/// `rename_and_save`). `FileEdit::file()` names only the source, and this list used to be
+/// built from it alone, so renaming an innocuous file onto `~/.claude.json` or `.mcp.json`
+/// was auto-approved under an auto-write setting while the guard never saw the path being
+/// written. [`FileEdit::written_paths`] names both ends.
+///
+/// # Why two spellings of each path
+///
+/// The writer resolves every path — source and destination alike — through
+/// [`host_native_absolute_path`]: tilde expansion, a join against the session cwd, lexical
+/// normalisation. The guard is given that resolved spelling so it judges the file actually
+/// written; e.g. `config.toml` from a cwd of `~/.codex` is `~/.codex/config.toml`, which no
+/// check of the raw string can recognise. The raw spelling is kept as well, so resolution can
+/// only ever add denials, never remove one the raw path already triggered (a remote or WSL
+/// session's resolved spelling need not look like a local home path).
+///
+/// Both are lexical. Symlinks are not followed for the destination, exactly as they are not
+/// for the source — see the residue notes in [`super::protected_paths`].
+pub(crate) fn file_edit_guard_paths(
+    file_edits: &[FileEdit],
+    shell: &Option<ShellLaunchData>,
+    current_working_directory: &Option<String>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    for path in file_edits.iter().flat_map(|edit| edit.written_paths()) {
+        let resolved = host_native_absolute_path(path, shell, current_working_directory);
+        if resolved != path {
+            paths.push(PathBuf::from(resolved));
+        }
+        paths.push(PathBuf::from(path));
+    }
+    paths
+}
+
+/// Returns `Some(Denied(ProtectedPath))` if any of the given paths are protected and must
+/// never be written without the user's explicit, per-action confirmation — regardless of
+/// autonomy settings, run-to-completion, or the LRC tag-in override.
 /// Returns `None` if no paths are protected.
+///
+/// The protected set (MCP configs, this app's settings and profile store, other agents'
+/// configs and hooks, skills and prompt templates, SSH, shell startup files, git hooks and
+/// config, `.envrc`, VS Code tasks) and how it is matched are defined in ONE place:
+/// [`super::protected_paths`]. Read its module docs before changing either.
+///
+/// What this function is given matters as much as the list: callers must pass every path a
+/// write touches, in the spelling the writer will use. For agent file edits that is
+/// [`BlocklistAIPermissions::can_apply_file_edits`] / [`file_edit_guard_paths`], which pass a
+/// V4A rename's destination as well as its source, both raw and resolved against the
+/// session's shell and cwd (#682).
 fn check_protected_write_paths(paths: &[PathBuf]) -> Option<FileWritePermission> {
-    // MCP config files are always protected from auto-write to prevent security risks
-    // from injecting arbitrary context into the agent.
     if paths.iter().any(|path| is_protected_write_path(path)) {
         Some(FileWritePermission::Denied(
             FileWritePermissionDeniedReason::ProtectedPath,
@@ -1272,105 +1345,21 @@ fn check_protected_write_paths(paths: &[PathBuf]) -> Option<FileWritePermission>
     }
 }
 
-/// Whether `path` names a system-protected config file.
+/// Whether any of `file_edits` writes, removes or renames onto a protected path.
 ///
-/// # Why this is not just `mcp_provider_from_file_path(path)`
-///
-/// The only production caller of [`BlocklistAIPermissions::can_write_files`] hands it the
-/// **raw path strings the model emitted** (`ai/blocklist/action_model/execute/
-/// request_file_edits.rs`, `should_autoexecute`), while the code that actually performs the
-/// write resolves them first, through `warp_ai::paths::host_native_absolute_path` — tilde
-/// expansion, join against the session cwd, then lexical normalisation. Guard and writer
-/// therefore disagreed about which file a path names.
-///
-/// That gap was exploitable for exactly one provider, and only because of an asymmetry in
-/// `mcp_provider_from_file_path`: it matches *project* configs by path **suffix** (so
-/// `~/.mcp.json`, `~/.codex/config.toml` and `~/.warp/.mcp.json` are caught however they are
-/// spelled) but matches *home* configs by **equality** against an absolute path. Claude is
-/// the one provider whose home config file name (`.claude.json`) differs from its project
-/// config file name (`.mcp.json`), so it had only the equality match — and `~/.claude.json`,
-/// `.claude.json` and `some/dir/../.claude.json` are all unequal to
-/// `/home/<user>/.claude.json`. Each of the three resolves to it at write time.
-///
-/// Two defences, both cheap and neither requiring the caller to change:
-///
-/// 1. expand a leading `~` and fold away `.` / `..` before consulting the provider table, so
-///    a non-canonical spelling of an absolute path can no longer miss the equality match;
-/// 2. additionally suffix-match every provider's *home* config path, which is what makes a
-///    bare relative `.claude.json` protected without this function needing a cwd it does not
-///    have. This over-matches by design — a `.claude.json` in a project directory is denied
-///    auto-write too — which is the same conservative treatment `.mcp.json` already gets, and
-///    the failure mode is asking the user rather than silently writing.
-///
-/// # Residue, deliberately not closed here
-///
-/// - **Symlinks.** Normalisation is purely lexical, so a symlink pointing at a protected file
-///   still evades. Resolving them needs `fs::canonicalize` on the *parent* (the target of a
-///   write need not exist yet), i.e. blocking I/O inside an `&AppContext` read, and the agent
-///   would have to create the link first — which is a *command*, gated separately.
-/// - **`$HOME/...` and other variable spellings.** `shellexpand::tilde` handles `~` only;
-///   resolving `$HOME` means an environment the guard is not given.
-/// - **cwd-relative paths in general.** `../../etc/hosts` cannot be resolved without the
-///   session's working directory. The belt-and-braces repair is for the caller to pass the
-///   already-resolved path — `request_file_edits.rs` imports `host_native_absolute_path`
-///   and uses it six lines away — and that stays worth doing; this function is the backstop,
-///   not the whole answer.
-/// - **Rename destinations never reach here at all.** `ParsedDiff::file()`
-///   (`crates/ai/src/diff_validation/mod.rs:39-45`) returns the *source* of a V4A edit and
-///   never `move_to`, so `should_autoexecute` builds its path list without the destination
-///   while `diff_application.rs:396-431` renames onto it. No amount of hardening inside this
-///   function can see a path it is never given.
-///
-/// Covered by `test_can_write_files_mcp_config_always_denied`.
-fn is_protected_write_path(path: &Path) -> bool {
-    let normalized = normalize_for_protected_path_check(path);
-
-    if mcp_provider_from_file_path(&normalized).is_some() {
-        return true;
-    }
-
-    // Home-level configs are matched by equality inside `mcp_provider_from_file_path`, which
-    // a relative spelling can never satisfy. Match them by suffix as well.
-    MCPProvider::iter().any(|provider| normalized.ends_with(provider.home_config_path()))
-}
-
-/// Expands a leading `~` and folds away `.` and `..` components, without touching the
-/// filesystem.
-///
-/// Deliberately lexical: this runs inside a permission check, and `fs::canonicalize` both
-/// blocks and fails outright on a path that does not exist yet — which is the normal case for
-/// a file the agent is about to create.
-fn normalize_for_protected_path_check(path: &Path) -> PathBuf {
-    let expanded = match path.to_str() {
-        Some(path) => PathBuf::from(shellexpand::tilde(path).into_owned()),
-        // Not valid UTF-8, so there is no `~` to expand; normalise it as-is.
-        None => path.to_path_buf(),
-    };
-
-    let mut normalized = PathBuf::new();
-    for component in expanded.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => match normalized.components().next_back() {
-                // Ascend out of a named directory.
-                Some(Component::Normal(_)) => {
-                    normalized.pop();
-                }
-                // `..` cannot ascend past the root; POSIX defines `/..` as `/`.
-                Some(Component::RootDir | Component::Prefix(_)) => {}
-                // Nothing to ascend out of yet (`../x`, or `../..`): keep it, so the path
-                // does not silently become a *different*, shorter one.
-                _ => normalized.push(".."),
-            },
-            component => normalized.push(component.as_os_str()),
-        }
-    }
-
-    if normalized.as_os_str().is_empty() {
-        expanded
-    } else {
-        normalized
-    }
+/// Used where the executor must refuse a stand-in confirmation (the LRC tag-in override):
+/// a protected write needs the user's own click, not an inferred one.
+pub(crate) fn file_edits_touch_protected_path(
+    file_edits: &[FileEdit],
+    shell: &Option<ShellLaunchData>,
+    current_working_directory: &Option<String>,
+) -> bool {
+    check_protected_write_paths(&file_edit_guard_paths(
+        file_edits,
+        shell,
+        current_working_directory,
+    ))
+    .is_some()
 }
 
 impl Entity for BlocklistAIPermissions {

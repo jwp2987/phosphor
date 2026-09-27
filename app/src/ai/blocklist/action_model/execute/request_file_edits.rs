@@ -5,14 +5,15 @@ mod telemetry;
 use warp_util::file::FileSaveError;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use ai::diff_validation::AIRequestedCodeDiff;
 use futures::{FutureExt, channel::oneshot, future::BoxFuture};
 use itertools::Itertools;
 use vec1::{Vec1, vec1};
 use warp_core::send_telemetry_from_ctx;
-use warpui::{Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _, ViewHandle};
+use warpui::{
+    AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity as _, ViewHandle,
+};
 
 use apply_diff_model::ApplyDiffModel;
 use diff_application::DiffApplicationError;
@@ -36,10 +37,11 @@ use crate::{
             conversation::AIConversationId,
         },
         blocklist::{
-            BlocklistAIPermissions, RequestedEditResolution,
+            BlocklistAIPermissions, RequestedEditResolution, SessionContext,
             inline_action::code_diff_view::{
                 CodeDiffView, CodeDiffViewEvent, DiffSessionType, FileDiff, FileSaveFailure,
             },
+            permissions::file_edits_touch_protected_path,
         },
         paths::host_native_absolute_path,
     },
@@ -125,11 +127,6 @@ impl RequestFileEditsExecutor {
             return false;
         };
 
-        let paths: Vec<PathBuf> = file_edits
-            .iter()
-            .filter_map(|edit| edit.file().map(PathBuf::from))
-            .collect();
-
         // Don't allow autoexecution if the diff was generated passively.
         let Some(latest_exchange) = BlocklistAIHistoryModel::as_ref(ctx)
             .conversation(&conversation_id)
@@ -153,9 +150,44 @@ impl RequestFileEditsExecutor {
             return true;
         }
 
+        // Guard every path the edits write — including a V4A rename's `move_to` destination —
+        // resolved against the same shell and cwd the writer (`apply_diff_model`) uses. The
+        // list used to be built from `edit.file()` alone, which is a rename's SOURCE, so an
+        // auto-approved move could write a protected path the guard never saw.
+        let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
         BlocklistAIPermissions::as_ref(ctx)
-            .can_write_files(&conversation_id, &paths, Some(self.terminal_view_id), ctx)
+            .can_apply_file_edits(
+                &conversation_id,
+                file_edits,
+                session_context.shell(),
+                session_context.current_working_directory(),
+                Some(self.terminal_view_id),
+                ctx,
+            )
             .is_allowed()
+    }
+
+    /// Whether `input` is a file-edit action that writes, removes or renames onto a protected
+    /// path (`blocklist::protected_paths`), judged exactly as [`Self::should_autoexecute`]
+    /// judges it: every written path including a V4A move's destination, raw and resolved
+    /// against the session's shell and cwd.
+    ///
+    /// The executor uses this to refuse stand-in confirmations (the LRC tag-in override) for
+    /// such writes; only the user's own click may approve them. `false` for any other action.
+    pub(super) fn writes_protected_path(
+        &self,
+        input: ExecuteActionInput,
+        ctx: &AppContext,
+    ) -> bool {
+        let AIAgentActionType::RequestFileEdits { file_edits, .. } = &input.action.action else {
+            return false;
+        };
+        let session_context = SessionContext::from_session(self.active_session.as_ref(ctx), ctx);
+        file_edits_touch_protected_path(
+            file_edits,
+            session_context.shell(),
+            session_context.current_working_directory(),
+        )
     }
 
     /// Registers a diff view to handle a RequestFileEdits action.
