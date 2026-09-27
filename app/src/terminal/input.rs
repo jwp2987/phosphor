@@ -489,6 +489,39 @@ const HISTORY_DETAILS_VIEW_WIDTH_REQUIREMENT: f32 = 1100.;
 const MIN_BUFFER_LEN_TO_SHOW_COMPLETIONS_WHILE_TYPING: usize = 2;
 
 const AI_COMMAND_SEARCH_TRIGGER: &str = "#";
+
+/// Whether closing a hashtag-triggered AI command search panel should erase the
+/// literal `#` it opened from, given the query text and filter chip visible in
+/// the panel at the moment it closed (see `Input::handle_command_search_closed`).
+///
+/// The panel's own editor never holds the `#` character itself: the moment the
+/// panel opens, `SearchBar::handle_editor_text_update` recognizes the leading
+/// `#` as the natural-language filter atom, turns it into the filter chip, and
+/// clears it from the panel's editor. So there is exactly one query/filter
+/// combination this function ever has to decide, and it decides it two ways:
+///
+/// - a real natural-language query was typed (`filter` is
+///   `QueryFilter::NaturalLanguage` and `query` is non-empty) -- the user
+///   presumably got their answer, so the `#` and the query both go; this is
+///   the only case that clears the buffer.
+/// - anything else -- the chip still showing with an empty query (Escape
+///   right after the `#` opened the panel), or no chip and an empty query
+///   (the user pressed Backspace on the empty panel, which clears only the
+///   *chip* -- see `SearchBar`'s `EditorEvent::BackspaceOnEmptyBuffer` arm --
+///   then Escaped) -- keeps the `#` as literal text. Both of these are the
+///   user dismissing AI command search without answering it, and the
+///   literal-`#` escape hatch this function exists for (`TODO.md`, #767)
+///   requires that dismissing it never be indistinguishable from erasing the
+///   character: Backspace-then-Escape must behave the same as
+///   Escape-immediately, which it did not before this fix.
+fn should_clear_hashtag_buffer_on_command_search_close(
+    query_when_closed: &str,
+    filter_when_closed: &Option<QueryFilter>,
+) -> bool {
+    matches!(filter_when_closed, Some(QueryFilter::NaturalLanguage))
+        && !query_when_closed.trim().is_empty()
+}
+
 /// Keymap context asserted while a queued prompt is being edited inline.
 /// Bindings that would otherwise steal a printable character from that editor
 /// must exclude it -- see the `shift-?` shortcuts binding, which is gated on the
@@ -7595,21 +7628,13 @@ impl Input {
         filter_when_closed: &Option<QueryFilter>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // We want to restore / preserve the buffer as follows when the buffer text is "#":
-        // - if command search was "#" when closed, keep the "#" in the buffer
-        //   because the user probably wanted "#" without command search.
-        // - if command search was "#: some_query" when closed, clear the buffer
-        //   because the user probably got their answer from ai command search.
-        // - if command search was empty when closed, clear the buffer
-        //   because the user probably backspace'd out of "#" and then hit escape.
-        let is_command_search_empty =
-            filter_when_closed.is_none() && query_when_closed.trim().is_empty();
-        let was_non_empty_ai_command_search =
-            matches!(filter_when_closed, Some(QueryFilter::NaturalLanguage))
-                && !query_when_closed.trim().is_empty();
         let was_triggered_by_hashtag = self.buffer_text(ctx).trim() == AI_COMMAND_SEARCH_TRIGGER;
 
-        if (is_command_search_empty || was_non_empty_ai_command_search) && was_triggered_by_hashtag
+        if was_triggered_by_hashtag
+            && should_clear_hashtag_buffer_on_command_search_close(
+                query_when_closed,
+                filter_when_closed,
+            )
         {
             self.editor().update(ctx, |editor, ctx| {
                 editor.clear_buffer(ctx);
