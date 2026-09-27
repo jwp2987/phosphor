@@ -12974,10 +12974,9 @@ impl Input {
             let window_id = ctx.window_id();
             ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
                 toast_stack.add_ephemeral_toast(
-                    DismissibleToast::default(
-                        "Approve or reject the pending action before sending a follow-up."
-                            .to_owned(),
-                    ),
+                    DismissibleToast::default(crate::t!(
+                        "terminal-input-follow-up-blocked-on-confirmation"
+                    )),
                     window_id,
                     ctx,
                 );

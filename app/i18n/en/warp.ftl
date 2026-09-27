@@ -450,6 +450,7 @@ terminal-input-follow-up-backspace-hint = Ask a follow up, or backspace to exit
 terminal-input-search-queries = Search queries
 terminal-input-search-queries-rewind = Search queries to rewind to
 terminal-input-search-conversations = Search conversations
+terminal-input-follow-up-blocked-on-confirmation = Approve or reject the pending action before sending a follow-up.
 terminal-input-search-skills = Search skills
 terminal-input-search-models = Search models
 terminal-input-search-profiles = Search profiles
