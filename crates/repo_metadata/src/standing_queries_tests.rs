@@ -89,6 +89,34 @@ fn support_file_beneath_skill_does_not_synthesize_provider_update() {
     assert!(results.project_skills().next().is_none());
 }
 
+/// Guards #774 (rule-file indexing parity): the repo-metadata standing-query
+/// indexer's default rule-file list must recognize every name the local path
+/// recognizes (`warp_util::project_rules::RULES_FILE_PATTERN`, re-exported as
+/// `ai::project_context::model::RULES_FILE_PATTERN`). Before this fix
+/// `StandingQueryDefinitions::default()` hard-coded `["WARP.md", "AGENTS.md"]`,
+/// silently dropping `CLAUDE.md` from this indexer's results even though it
+/// worked in local tabs. This closes the indexing-list gap only — see
+/// `warp_util::project_rules`'s module doc comment for why that indexed result
+/// still does not reach the agent for a *remote* (SSH) session on this fork.
+#[test]
+fn default_project_rule_files_match_shared_rules_file_pattern() {
+    let definitions = StandingQueryDefinitions::default();
+    let claude_md = repo_path("CLAUDE.md");
+
+    assert!(
+        definitions.is_project_rule_file(&claude_md),
+        "StandingQueryDefinitions::default() must recognize CLAUDE.md, matching the \
+         single-sourced warp_util::project_rules::RULES_FILE_PATTERN local tabs use"
+    );
+
+    for name in warp_util::project_rules::RULES_FILE_PATTERN {
+        assert!(
+            definitions.is_project_rule_file(&repo_path(name)),
+            "StandingQueryDefinitions::default() is missing {name} from RULES_FILE_PATTERN"
+        );
+    }
+}
+
 /// Emulates the open `AGENTS.md` discovery contract that non-Warp agents follow:
 /// walk from a working directory up to the repository root, collecting any
 /// `AGENTS.md` rule files via the same predicate Warp uses to index project

@@ -13383,3 +13383,22 @@ open findings that had no pre-existing row.
       diff-against-baseline approach for the rest of the suite), promote this step from
       `warn` to `fail` in `script/precheck` and drop the "not yet gated" language from its
       header comment.
+- [ ] **#774 — build the missing remote project-rules pipeline (WARP.md/AGENTS.md/CLAUDE.md
+      never reach the agent for an SSH session).** `crates/repo_metadata/src/standing_queries.rs`'s
+      `StandingQueryDefinitions::default()` now recognizes `CLAUDE.md` alongside `WARP.md`/
+      `AGENTS.md` (single-sourced from `warp_util::project_rules::RULES_FILE_PATTERN`,
+      `9a6a1f806`), so the indexer's standing-query results include a remote repo's rule
+      files by name. But nothing turns that into agent context for a remote session:
+      `ai::project_context::model::standing_project_rule_paths` and
+      `ProjectContextModel::reconcile_project_rules` — the functions that would bridge
+      `repo_metadata`'s results into `ProjectContextModel`'s `remote_path_to_rules` — have no
+      non-test caller, and `remote_path_to_rules` itself has no production writer at all.
+      Remote project-rule *discovery and content-reading* (the pin's
+      `app/src/ai/metadata_project_rules.rs`) does not exist on this fork. The adjacent,
+      already-solved case — remote project *skills* — is wired end-to-end via
+      `app/src/ai/remote_context_files.rs`'s `read_remote_text_file_contents` (called from
+      `SkillWatcher::refresh_project_skills_for_repo`); building the rules pipeline likely
+      means an analogous `RepoMetadataModel`-subscribed reconciler for rule files, calling
+      `reconcile_project_rules` per remote host/root and populating `remote_path_to_rules`
+      via that same RPC. Not scoped further here (AGENTS.md §5.6) — sizing it needs reading
+      `SkillWatcher`'s subscription wiring first.

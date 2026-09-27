@@ -19,7 +19,19 @@ impl Default for StandingQueryDefinitions {
     fn default() -> Self {
         Self {
             project_skill_provider_paths: Vec::new(),
-            project_rule_file_names: vec!["WARP.md".to_string(), "AGENTS.md".to_string()],
+            // Single-sourced from `warp_util::project_rules::RULES_FILE_PATTERN` so this
+            // indexer's rule-file recognition agrees with the local path's
+            // `ai::project_context::model::RULES_FILE_PATTERN` (same constant, re-exported
+            // there). Before this fix, a `CLAUDE.md` in a repository never showed up in
+            // this indexer's standing-query results, even though it worked locally via
+            // the `ai` crate's own fast-path scan. This is indexing-list prep only —
+            // see `warp_util::project_rules`'s module doc comment: this fork has no
+            // production pipeline yet that turns a remote repo's standing-query rule
+            // results into content the agent's context receives over SSH.
+            project_rule_file_names: warp_util::project_rules::RULES_FILE_PATTERN
+                .iter()
+                .map(|name| name.to_string())
+                .collect(),
         }
     }
 }

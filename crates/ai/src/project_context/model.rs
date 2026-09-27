@@ -26,7 +26,16 @@ use super::GlobalRules;
 /// `pub` rather than `pub(crate)` because the app's `/open-project-rules` command has to open the
 /// same file the agent reads; before it could see this list it hard-coded `WARP.md` and opened a
 /// nonexistent file in every `AGENTS.md`-only project (#638).
-pub const RULES_FILE_PATTERN: &[&str] = &["WARP.md", "AGENTS.md", "CLAUDE.md"];
+///
+/// Re-exported from `warp_util::project_rules` rather than defined here: `repo_metadata`'s
+/// standing-query indexer needs this same list too (so its indexed rule-file results agree
+/// on names with this local pipeline), and `repo_metadata` cannot depend on `ai` (dependency
+/// runs the other way), so the canonical list lives in `warp_util`, which both crates
+/// already depend on. See `warp_util::project_rules`'s module doc comment: this is
+/// indexing-list prep, not a working remote-rules pipeline — this fork has no production
+/// path yet that turns `repo_metadata`'s standing-query results into agent context for a
+/// remote (SSH) session.
+pub const RULES_FILE_PATTERN: &[&str] = warp_util::project_rules::RULES_FILE_PATTERN;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "local_fs")] {
