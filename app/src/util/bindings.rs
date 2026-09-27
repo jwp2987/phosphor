@@ -112,6 +112,7 @@ pub enum CustomAction {
     CloseOtherTabs,
     CloseTabsRight,
     ToggleMaximizePane,
+    MovePaneToOwnTab,
     LaunchConfigPalette,
     FilesPalette,
     TriggerWelcomeBlock,

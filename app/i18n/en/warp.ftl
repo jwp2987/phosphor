@@ -2166,6 +2166,7 @@ keybinding-desc-pane-group-resize-right = Resize pane > Move divider right
 keybinding-desc-pane-group-resize-up = Resize pane > Move divider up
 keybinding-desc-pane-group-resize-down = Resize pane > Move divider down
 keybinding-desc-pane-group-toggle-maximize = Toggle Maximize Active Pane
+keybinding-desc-pane-group-move-pane-to-own-tab = Move Focused Pane to Its Own Tab
 
 # Root view bindings
 keybinding-desc-root-view-toggle-fullscreen = Toggle fullscreen
@@ -2628,6 +2629,7 @@ menu-tab-group-untitled = Untitled group
 # --- pane header overflow menu (terminal/view/pane_impl.rs) ---
 menu-pane-copy-link = Copy link
 menu-pane-stop-sharing-session = Stop session broadcast
+menu-pane-move-to-own-tab = Move pane to its own tab
 menu-pane-open-on-desktop = Open on Desktop
 
 # --- file tree context menu (code/file_tree/view.rs) ---

@@ -1921,6 +1921,7 @@ keybinding-desc-pane-group-resize-right = 调整面板 > 分隔条右移
 keybinding-desc-pane-group-resize-up = 调整面板 > 分隔条上移
 keybinding-desc-pane-group-resize-down = 调整面板 > 分隔条下移
 keybinding-desc-pane-group-toggle-maximize = 切换最大化当前面板
+keybinding-desc-pane-group-move-pane-to-own-tab = 将聚焦的面板移至独立标签页
 
 # 根视图相关 binding
 keybinding-desc-root-view-toggle-fullscreen = 切换全屏
@@ -2361,6 +2362,7 @@ menu-tab-default-no-color = 默认（无颜色）
 # --- pane header 溢出菜单（terminal/view/pane_impl.rs） ---
 menu-pane-copy-link = 复制链接
 menu-pane-stop-sharing-session = 停止会话广播
+menu-pane-move-to-own-tab = 将窗格移至独立标签页
 menu-pane-open-on-desktop = 在桌面端打开
 
 # --- 文件树右键菜单（code/file_tree/view.rs） ---

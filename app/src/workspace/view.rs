@@ -15319,6 +15319,19 @@ impl Workspace {
                     }
                 }
             }
+            pane_group::Event::MovePaneToOwnTab { pane_id } => {
+                // Pull the pane out of the current tab and insert it as its own
+                // tab right after the current one -- the same primitives the
+                // tab-bar "drop pane after tab" drag path uses
+                // (`remove_pane_for_move` + `add_tab_from_existing_pane`), just
+                // triggered from the pane header overflow menu instead of a drag.
+                let new_idx = self.active_tab_index + 1;
+                if let Some(pane) = pane_group.update(ctx, |pane_group, ctx| {
+                    pane_group.remove_pane_for_move(pane_id, ctx)
+                }) {
+                    self.add_tab_from_existing_pane(pane, new_idx, None, ctx);
+                }
+            }
             pane_group::Event::SwitchTabFocusAndMovePane {
                 tab_idx,
                 pane_id,

@@ -1064,6 +1064,12 @@ pub enum PaneEvent {
     SplitUp(Option<AvailableShell>),
     SplitDown(Option<AvailableShell>),
     ToggleMaximized,
+    /// Request that this pane be pulled out of its tab's pane group and
+    /// promoted to its own tab, right after the current one. Handled by the
+    /// workspace (pane <-> tab ownership lives there), which reuses the same
+    /// `remove_pane_for_move` + `add_tab_from_existing_pane` primitives as
+    /// the tab-bar "drop pane before/after tab" drag path.
+    MoveToOwnTab,
     /// Make this pane the focused pane.
     FocusSelf,
     FocusActiveSession,

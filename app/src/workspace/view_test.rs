@@ -6787,3 +6787,131 @@ fn test_new_group_from_tab_menu_keeps_rename_focus_for_enter_and_click() {
         });
     }
 }
+
+/// The pane header overflow menu's "Move pane to its own tab" action
+/// (`PaneEvent::MoveToOwnTab` -> `pane_group::Event::MovePaneToOwnTab`) reuses the
+/// same `remove_pane_for_move` + `add_tab_from_existing_pane` primitives as the
+/// tab-bar "drop pane before/after tab" drag path. Invoking it on a pane in a
+/// 2-pane tab should split that pane off into a new tab placed right after the
+/// current one, focus it, and keep the moved pane's underlying `TerminalView`
+/// (i.e. its session) alive rather than tearing it down and restarting it.
+#[test]
+fn test_move_pane_to_own_tab_splits_off_a_new_focused_tab_without_restarting_the_session() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let pane_group = workspace.read(&app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(0)
+                .expect("should have pane group for tab 0")
+                .clone()
+        });
+
+        let first_terminal_id = pane_group.read(&app, |panes, _ctx| {
+            get_newly_created_pane_id(panes, &[])
+                .as_terminal_pane_id()
+                .expect("should be a terminal pane")
+        });
+
+        // Split off a second pane so the tab has more than one pane -- the
+        // precondition for the "move to own tab" menu item to be offered.
+        let second_terminal_id = pane_group.update(&mut app, |panes, ctx| {
+            panes.add_terminal_pane(Direction::Right, None, ctx)
+        });
+
+        pane_group.read(&app, |panes, ctx| {
+            assert_eq!(
+                panes.pane_ids().count(),
+                2,
+                "should have 2 panes before the move"
+            );
+            assert!(
+                split_pane_state(panes, first_terminal_id, ctx).is_in_split_pane(),
+                "the first pane must be in a split for the menu item's precondition to hold"
+            );
+        });
+
+        // The moved pane's `TerminalView` identity before the move -- the same
+        // view must come out the other side, proving the session was carried
+        // over rather than restarted.
+        let original_view_id = pane_group
+            .read(&app, |panes, ctx| {
+                panes.terminal_view_from_pane_id(first_terminal_id, ctx)
+            })
+            .expect("first pane should be a terminal pane")
+            .id();
+
+        assert_eq!(
+            workspace.read(&app, |workspace, _| workspace.tab_count()),
+            1
+        );
+
+        // Invoke the action the way the pane header overflow menu does: emit
+        // `PaneEvent::MoveToOwnTab` for the first pane, which `PaneGroup`
+        // turns into `Event::MovePaneToOwnTab` for the workspace to handle.
+        workspace.update(&mut app, |workspace, ctx| {
+            let pane_group = workspace.active_tab_pane_group().clone();
+            workspace.handle_file_tree_event(
+                pane_group,
+                &pane_group::Event::MovePaneToOwnTab {
+                    pane_id: first_terminal_id.into(),
+                },
+                ctx,
+            );
+        });
+
+        // A new tab was created, placed right after the (only) original tab.
+        assert_eq!(
+            workspace.read(&app, |workspace, _| workspace.tab_count()),
+            2,
+            "moving a pane out of a 2-pane tab should yield 2 tabs"
+        );
+        assert_eq!(
+            workspace.read(&app, |workspace, _| workspace.active_tab_index()),
+            1,
+            "the new tab (holding the moved pane) should be focused"
+        );
+
+        // The original tab kept the pane that wasn't moved, and is no longer split.
+        let remaining_pane_group = workspace.read(&app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(0)
+                .expect("original tab should still exist")
+                .clone()
+        });
+        remaining_pane_group.read(&app, |panes, _ctx| {
+            assert_eq!(panes.pane_ids().count(), 1);
+            assert_eq!(
+                panes.pane_ids().next(),
+                Some(second_terminal_id.into()),
+                "the pane that stayed behind should be the one that wasn't moved"
+            );
+        });
+
+        // The new tab holds exactly the moved pane, focused, with the same
+        // underlying terminal session (no restart).
+        let new_pane_group = workspace.read(&app, |workspace, _ctx| {
+            workspace
+                .get_pane_group_view(1)
+                .expect("new tab should exist")
+                .clone()
+        });
+        new_pane_group.read(&app, |panes, ctx| {
+            assert_eq!(panes.pane_ids().count(), 1);
+            assert_eq!(panes.pane_ids().next(), Some(first_terminal_id.into()));
+            assert_eq!(panes.focused_pane_id(ctx), first_terminal_id.into());
+            assert_eq!(panes.active_session_id(ctx), Some(first_terminal_id));
+
+            let moved_view_id = panes
+                .terminal_view_from_pane_id(first_terminal_id, ctx)
+                .expect("moved pane should still be a terminal pane")
+                .id();
+            assert_eq!(
+                moved_view_id, original_view_id,
+                "the moved pane must keep its original TerminalView (and therefore its \
+                 session) alive, not restart into a new one"
+            );
+        });
+    });
+}
