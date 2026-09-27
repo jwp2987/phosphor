@@ -25,13 +25,13 @@ use warp::integration_testing::tab_group::{
     assert_group_collapsed, assert_group_header_count, assert_group_member_count,
     assert_group_name, assert_groups_contiguous, assert_tab_group_count, assert_tab_group_layout,
     assert_tab_ungrouped, assert_tabs_in_same_group, close_tab_group_of_tab,
-    create_tab_group_from_tab, ensure_grouped_tabs_enabled, move_tab_to_group_of_tab,
-    new_tab_in_group_of_tab, open_settings_file_in_new_tab, rename_tab_group_of_tab,
-    group_id_for_tab, toggle_tab_group_collapsed_of_tab,
+    create_tab_group_from_tab, ensure_grouped_tabs_enabled, group_id_for_tab,
+    move_tab_to_group_of_tab, new_tab_in_group_of_tab, open_settings_file_in_new_tab,
+    rename_tab_group_of_tab, toggle_tab_group_collapsed_of_tab,
 };
-use warp::workspace::tab_group::TabGroupId;
 use warp::integration_testing::terminal::wait_until_bootstrapped_single_pane_for_tab;
 use warp::integration_testing::workspace::{assert_focused_tab_index, assert_tab_count};
+use warp::workspace::tab_group::TabGroupId;
 use warpui::{
     WindowId,
     event::{Event, ModifiersState},
@@ -52,6 +52,20 @@ const DRAG_ARM_OFFSET: f32 = 12.0;
 
 /// Adds `count` extra terminal tabs (so the workspace ends up with `count + 1`),
 /// waiting for each to finish bootstrapping.
+///
+/// Forces a repaint after each tab is added. Without this, `maybe_render_frame`
+/// (`crates/warpui_core/src/integration/step.rs`) only awaits a real frame when
+/// `App::has_window_invalidations` is already true at the moment it checks, and
+/// by the time it checks here there is no pending invalidation -- so the tab bar
+/// is never repainted for the rest of the test and stays stuck showing the
+/// single tab from the very first paint (`tabs=1 slots=1 active=0` on every
+/// subsequent paint, measured by instrumentation; see TODO.md's "DIAGNOSED: the
+/// tab bar renders ONE tab for the whole test" entry). That silently starved
+/// every drag helper of anything but tab 0's stale rect, so `on_tab_drag` was
+/// never actually invoked despite the tests passing. Forcing the invalidation
+/// per tab (rather than once after the loop) guarantees each intermediate
+/// layout is real, which matters because some tests key off `tab_index`-specific
+/// rects established while earlier tabs are still being added.
 fn open_extra_tabs(mut builder: Builder, count: usize) -> Builder {
     for tab_index in 1..=count {
         builder = builder
@@ -59,9 +73,20 @@ fn open_extra_tabs(mut builder: Builder, count: usize) -> Builder {
                 new_step_with_default_assertions(&format!("Open tab {tab_index}"))
                     .with_keystrokes(&[cmd_or_ctrl_shift("t")]),
             )
-            .with_step(wait_until_bootstrapped_single_pane_for_tab(tab_index));
+            .with_step(wait_until_bootstrapped_single_pane_for_tab(tab_index))
+            .with_step(force_render_after_tab_change(tab_index));
     }
     builder
+}
+
+/// Forces the window to repaint so a just-added (or removed) tab is actually
+/// reflected in the laid-out element tree the drag/positioning helpers read
+/// from. See `open_extra_tabs`'s doc comment for why this is necessary.
+fn force_render_after_tab_change(tab_index: usize) -> TestStep {
+    new_step_with_default_assertions(&format!("Force a repaint after tab {tab_index} change"))
+        .with_action(move |app, window_id, _| {
+            app.update(|ctx| ctx.invalidate_all_views_for_window(window_id));
+        })
 }
 
 /// Presses the left mouse button at the centre of `tab_index` and nudges it far

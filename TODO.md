@@ -6228,7 +6228,7 @@ moving the pin:
 
 ### Defects — user-visible
 
-- [ ] 🔴 **DIAGNOSED: the tab bar renders ONE tab for the whole test, so the six tab-group
+- [x] 🔴 **DIAGNOSED: the tab bar renders ONE tab for the whole test, so the six tab-group
       integration tests never drag anything.** Measured 2026-08-19 by logging inside
       `render_tab_bar_contents`: **`tabs=1 slots=1 active=0`, on all four paints**, during
       `test_drag_tab_out_of_group` — a test whose fixture creates FOUR tabs and whose model
@@ -6349,6 +6349,27 @@ moving the pin:
       first. So the exact path that produced the reported duplicate for a collapsed group has a
       fix and no regression test. Add one: collapse a group, drag a non-member over it, assert
       one header and one contiguous run.
+
+      **Fixed 2026-09-27 (#745), UNVERIFIED — no build available this round.**
+      `open_extra_tabs` (`crates/integration/src/test/tab_groups.rs`) now forces a
+      repaint after each tab is added, via
+      `app.update(|ctx| ctx.invalidate_all_views_for_window(window_id))` (same
+      pattern as `crates/warpui_core/src/core/tui_view_tests.rs:607`), added as a
+      step immediately after `wait_until_bootstrapped_single_pane_for_tab`. This
+      targets the mechanism exactly as diagnosed: `maybe_render_frame` only awaits
+      a frame when `has_window_invalidations` is already true at the moment it
+      checks, and the tab-adding steps left no pending invalidation at that point,
+      so the tab bar was never repainted after its first paint. Deliberately the
+      narrower, local fix (inside `tab_groups.rs`) rather than changing
+      `maybe_render_frame`'s gating in `crates/warpui_core/src/integration/step.rs`,
+      which every integration test in the suite goes through. No test assertions
+      were touched or weakened. **This is reasoned from the code, not confirmed by
+      a run** — no cargo available this round. If some other mechanism also
+      consumes the invalidation before `maybe_render_frame`'s check (not yet
+      identified — several earlier hypotheses in this entry were disproved by
+      instrumentation before landing on this one), the six tests could still not
+      exercise `on_tab_drag`, and only a real build+run (with `--no-capture`,
+      per the methodological note above) confirms it either way.
 
 - [x] **The Windows usage suite is FLAKY, and that is the real problem.** The two specific
       failures are fixed (`9c6eb1621`) and both now pass — but the failure COUNT swings wildly
