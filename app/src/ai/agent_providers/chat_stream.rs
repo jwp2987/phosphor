@@ -11284,6 +11284,49 @@ mod serializer_readiness_tests {
     /// all) must still get a real anchor for its compaction summary, and that summary must
     /// be re-inserted into later requests instead of the skill invocation vanishing along
     /// with the (correctly) hidden history it heads.
+    /// A persisted `/skill` invocation must replay exactly the text the model saw when it ran
+    /// live; any drift would change the request on every later turn (#778).
+    #[test]
+    fn live_and_persisted_skill_invocations_render_identically() {
+        let skill_at = |scope: SkillScope| ParsedSkill {
+            name: "deploy".to_owned(),
+            description: "Deploy the app".to_owned(),
+            path: warp_util::local_or_remote_path::LocalOrRemotePath::Local(
+                std::path::PathBuf::from("/repo/.agents/skills/deploy/SKILL.md"),
+            ),
+            content: "Run scripts/deploy.sh from the skill directory.".to_owned(),
+            line_range: None,
+            provider: ai::skills::SkillProvider::Agents,
+            scope,
+        };
+        for scope in [SkillScope::Project, SkillScope::Bundled] {
+            for user_query in [Some("ship it"), None] {
+                let skill = skill_at(scope);
+                // Mirrors the live `AIAgentInput::InvokeSkill` arm of `build_chat_request`.
+                let live_path =
+                    (skill.scope != SkillScope::Bundled).then(|| skill.path.display_path());
+                let live = compose_invoke_skill_text(
+                    &skill.name,
+                    &skill.content,
+                    live_path.as_deref(),
+                    user_query,
+                );
+
+                let message = make_invoke_skill_message("task-1", "req-1", &skill, user_query);
+                let Some(api::message::Message::InvokeSkill(invoke_skill)) = &message.message
+                else {
+                    panic!("make_invoke_skill_message must produce an InvokeSkill message");
+                };
+                let persisted = compose_persisted_invoke_skill_text(invoke_skill);
+
+                assert_eq!(
+                    persisted, live,
+                    "scope {scope:?}, user_query {user_query:?}: replay differs from the live text"
+                );
+            }
+        }
+    }
+
     #[test]
     fn build_chat_request_reinserts_summary_anchored_on_skill_invocation() {
         let skill = ParsedSkill {
