@@ -469,11 +469,19 @@ should not be left implying otherwise.
       command palette lists unbound bindings too, so every `CustomAction` menu item is already
       reachable on Linux. The complete menu-only residue is six items, three of them
       debug-build-only, none losing a capability. See `DECLINED.md` for the full trace.
-- [ ] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` is
-      `OR(WINDOWS, MAC)` and the read early-returns on Linux, so the only way to disable it
-      there is `system.linux_selection_clipboard = false`, which also kills copy-to-primary.
-      Separately, `maybe_copy_on_select` writes the primary selection *before* checking
-      `copy_on_select`, so disabling that setting does not stop primary-selection writes.
+- [x] **Middle-click paste asymmetry on Linux** — `middle_click_paste_enabled` was
+      `OR(WINDOWS, MAC)` and the read early-returned on Linux, so the only way to disable it
+      there was `system.linux_selection_clipboard = false`, which also killed copy-to-primary.
+      **Fixed 2026-09-27 (#708, this commit):** `middle_click_paste_enabled` widened to
+      `SupportedPlatforms::DESKTOP`; `read_for_middle_click_paste` now gates Linux/FreeBSD on it
+      too (ANDed with `linux_selection_clipboard`), while `maybe_copy_on_select` /
+      `maybe_write_to_linux_selection_clipboard` are untouched. Recorded in `DECLINED.md`
+      (`IMPROVED`). Tests in `app/src/settings/select_tests.rs`.
+      **Still open, separately:** `maybe_copy_on_select` writes the primary selection *before*
+      checking `copy_on_select`, so disabling that setting does not stop primary-selection
+      writes — that ordering is pin-verbatim (see the doc comment on `maybe_copy_on_select`) and
+      was explicitly NOT touched by this fix; it needs its own maintainer sign-off (AGENTS.md
+      §5.10) and tracking issue before reordering.
 - [ ] **The literal-`#` escape hatch is fragile** — Escape immediately keeps the `#`, but
       Backspace-then-Escape deletes it, because clearing the filter chip makes the panel look
       empty. Worth a UX look **specifically because this release ships the setting that
@@ -2655,9 +2663,14 @@ separately rather than inflating the queue count.
       `script/{linux,macos,windows}` bundle scripts — a real port, not a cherry-pick.
 - [x] **`b1bcc3564`** — add `rust-analyzer` to `rust-toolchain.toml` components. One word.
       **Closed via #714.**
-- [ ] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
+- [x] **`1e4b86a81`** — `release-cli` `codegen-units` 1 -> 4; roughly halves that
       profile's build time for ~4% larger stripped binaries. The fork does use
       `release-cli` for the macOS and musl TUI builds.
+      **Fixed 2026-09-27 (#720, this commit):** `Cargo.toml`'s `[profile.release-cli]` now sets
+      `codegen-units = 4`, comment carried over from upstream. `1e4b86a81` is an ancestor of the
+      current pin (`4111d08f9`), whose `Cargo.toml` already reads `codegen-units = 4` for this
+      profile — this closes a gap against the pin, not a divergence, so no `DECLINED.md` entry.
+      No other profile touched.
 
 ### Scope decisions — DECLINED 2026-08-29 (maintainer). Do not re-derive.
 
@@ -9886,13 +9899,19 @@ Ordered by severity, not by area.
       **FIXED 2026-08-21:** `output.rs:2741-2782` new `usage_pill_headline_credits` + `usage_pill_has_any_usage`, both rollup-derived, used for **both** the displayed number (`:2830`) and the suppression check — fixing only the number would have left the worse limb (button entirely absent) in place. Ported from `42effe840:output.rs:3686-3713`; no `platform_credits_spent` term exists in the pin's `render_usage_button`, so nothing BYOP-divergent had to be dropped, and the fork's BYO-API-key early return is preserved *ahead* of the rollup so BYOK users pay no cost. **Render cost considered and kept unmemoised, documented at the call site:** the non-orchestrator case is one empty-slice probe with no allocation; a cheaper totals-only sum was explicitly rejected as a second implementation free to drift from the footer, and headline-equals-footer is the invariant being fixed. Tests at `:3598` include the required case (orchestrator spends 0, child spends 30) plus a guard against the suppression check becoming a tautology. **Unrelated gap noticed, not acted on:** the pin's `output.rs` renders a "This response won't count towards your usage" notice via `should_show_failed_output_usage_notice`; the fork has both symbols (`view_util.rs:70,168`) but only `tui_export.rs:117` uses them, so the GUI output view is missing that notice.
 
 
-- [ ] **`[byop] build_client: endpoint_url=` logs the user's provider base URL.**
+- [x] **`[byop] build_client: endpoint_url=` logs the user's provider base URL.**
       `chat_stream.rs:4584` prints the configured endpoint at `Info`, which for a
       self-hosted or corporate gateway is an internal hostname, and `warp.log` goes
       into `write_log_bundle_zip_to`. Same exposure class as the request-content leak
       fixed 2026-08-21 but **config rather than conversation content**, so it was left
       out of that change deliberately and needs its own decision: redact to scheme+host,
       digest it, or accept it. Flagged by the agent that fixed the content leak.
+      **Fixed 2026-09-27 (#718, this commit):** decision made — redact to `scheme://host[:port]`
+      via a new `redact_endpoint_for_log` helper, applied at this log line AND the
+      insecure-endpoint-refusal warning beside it (same `endpoint_url`, previously undocumented
+      as a second site). Unit tests cover userinfo, query keys, IPv6 host, and
+      no-scheme/garbage input (placeholder). In-source residual list updated at
+      `chat_stream.rs`'s "Known residuals" doc comment.
 
 - [x] **`[byop] stream chunk error:` prints the provider's error body verbatim.**
       `chat_stream.rs:5794`. Some providers echo a fragment of the request in a 400
@@ -10024,9 +10043,16 @@ claim, which was wrong by four.
       `HTTP GET {url}` into its context chain, so the URL reaches `warn` ungated. Websearch
       (`:7570`) carries the Exa endpoint, not the query.
       **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
-- [ ] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
+- [x] **`[byop] open stream failed` (`:5887`)** — same class as the recorded `stream chunk
       error`, not previously recorded.
       **Rewritten 2026-09-26:** the one residual of this class NOT yet in the in-source list at `chat_stream.rs:3235-3253`. Action: add it to that list (source change), then close as a residual.
+      **Fixed 2026-09-27 (#718, this commit):** unlike the recorded `stream chunk error` (a
+      provider-supplied error body, kept verbatim on purpose), this one can also carry a bare
+      `reqwest::Error`'s `Display`, which embeds the request URL in prose
+      (`... for url (https://host/path)`). Added `redact_urls_in_error_text`, which finds and
+      reduces any `http(s)://` substring in the rendered error text to `scheme://host[:port]`
+      before logging — so the residual here is now the same shape as the redacted
+      `endpoint_url`, not the full URL. Added to the in-source residual list.
 - [x] **Parser error text** (`:6587`, `:7804`, `:7826`) — serde_json is normally
       position-only, but `unknown field` / `invalid value` renderings can quote a field name
       or a short value.
@@ -10035,8 +10061,14 @@ claim, which was wrong by four.
       default, but a verbosity switch is **not** a privacy opt-in, so it is a residual
       rather than a gate.
       **Closed as residual 2026-09-26:** recorded as a documented residual in the in-source list at `chat_stream.rs:3235-3253`.
-- [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
+- [x] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
       already-recorded `endpoint_url`.
+      **Closed as residual 2026-09-27 (#718, this commit):** decision made — kept as-is
+      (credentials are already stripped by `redact_url_userinfo`, and the only time this line
+      fires is when the proxy URL failed to parse, where seeing the host — and the typo — is the
+      diagnosis). Broken out into its own bullet in the in-source residual list rather than
+      staying folded into the `endpoint_url` entry, since that one is now redacted and this one
+      deliberately is not.
 
 - [x] **`InlineDiffView::restore_diff_base` writes the diff base over the file with no**
       **conflict check.** Unlike accept (fixed 2026-08-21 via `FileModel::save_if_unchanged`),
@@ -10212,13 +10244,23 @@ claim, which was wrong by four.
       pin-inherited enum, which carries the upstream `TODO: Maybe implement client side depth
       and result limits`. Filed rather than diverging a shared crate.
 
-- [ ] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
+- [x] **`script/precheck` does not run `-p integration`.** Its package list covers 40 crates
       and excludes the integration suite, which CI runs as a separate 3-shard job under
       `xvfb-run`. So a change to integration assertions — or, as on 2026-08-21, an over-broad
       security fix that breaks a feature only that suite covers — passes a fully green local
       `precheck` and fails in CI. That is precisely the round trip `precheck`'s own header
       says it exists to prevent. Either add it (it takes ~5.5 min locally) or say plainly in
       the header that integration is not covered.
+      **Fixed 2026-09-27 (#721, this commit):** new "integration suite" step runs
+      `xvfb-run -a -s "-screen 0 1280x1024x24" cargo nextest run -p integration --profile ci`
+      (mirrors `pr-check.yml`'s `integration-linux` job exactly, minus its 3-way `--partition`
+      — a single local run does the whole suite). Fails clearly (blocks the push) if `xvfb-run`
+      is missing. **Deliberately advisory on scenario failures, not blocking**, matching CI's
+      own stance: `integration-linux` is not a required status check because nobody has ever
+      triaged a `known_test_failures.txt` baseline for this suite (environment-dependent
+      scenarios), and gating precheck on an empty baseline would fail on the first environment
+      gap rather than an actual regression. Promote to `check_test_failures` once a baseline
+      exists. Header updated to describe this accurately instead of overclaiming.
 ### Reliability
 
 - [x] **Compaction can hide messages that were never summarised.** `commit.rs:71` and
