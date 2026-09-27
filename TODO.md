@@ -694,22 +694,46 @@ before acting):
       is the real gap.
       **Closed 2026-09-26:** fixed by `184e16d27`…`00a93cd91` (unlock at `drain_queued_prompts`, `FinishedSubagent`, and the LRC tag-in), shipped in 0.1.6/0.1.7. Only residue: the action-scoped unlock in `handle_action_result` described above — low value, not tracked separately.
 
-- [ ] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,
+- [x] **`whoami` prints hard-coded placeholders** — `TEST_USER_EMAIL = "test_user@warp.dev"`,
       `TEST_USER_UID = "test_user_uid"` (`app/src/auth/mod.rs:31-32`) with no indication it is
       not a real identity. (Constants verified; the print path was not traced.)
-      **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **`agent list` exists only to fail** — parses fully, including `--repo`, then always
+      **Fixed #637 (`b686c8532`):** `whoami` now says "Local profile (no account)" in pretty
+      output, `local` in text, `{"type":"local","account":null}` in json (newline-terminated).
+      The `TEST_USER_*` constants are unchanged — they still back the local auth facade —
+      `whoami` was the only place that printed them as an identity.
+- [x] **`agent list` exists only to fail** — parses fully, including `--repo`, then always
       errors "Agent skill listing is disabled in Phosphor".
-      **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **`--profile <ID>` is unusable.** `agent profile list` prints `Unsynced` for any locally
+      **Fixed #637 (`3af2811d3`):** `agent list` removed outright — its sources at the pin
+      were Warp's hosted environments and a GitHub-fetched skills repo, neither of which
+      exists here; a local skill lister would be new work, not a repair.
+- [x] **`--profile <ID>` is unusable.** `agent profile list` prints `Unsynced` for any locally
       created profile, but the flag requires a 22-character `ServerId`. The command that lists
       profiles cannot emit an ID the flag accepts.
-      **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **`--output-format json` emits NDJSON for `agent run`**, not a JSON document; list
+      **Fixed #637 (`c322288bf` + `a426cda4c`):** `agent profile list` now prints each
+      profile's sync ID (`Client-<uuid>` for local profiles, the server ID for legacy ones)
+      and `default` for the unsynced default profile; `--profile` parses all three, resolved
+      by matching the listed strings rather than by adding a `crate::server::ids` import
+      `script/check_cloud_boundary` would refuse.
+- [x] **`--output-format json` emits NDJSON for `agent run`**, not a JSON document; list
       commands under it emit no trailing newline.
-      **In progress 2026-09-26:** branch `fix/cli-637`.
-- [ ] **Stale help strings** — `--model` says "Use `warp model list`"; `--skill` points at
+      **Fixed #637 (`e8d00014f`):** under json, `agent run` now buffers records and prints one
+      pretty-printed array when the run ends; ndjson is unchanged. List commands under every
+      format now end with a trailing newline.
+- [x] **Stale help strings** — `--model` says "Use `warp model list`"; `--skill` points at
       `oz schedule create`, a subcommand this fork removed.
+      **Fixed #637 (`d9e4f205c`):** the `--model` hint now names the `model list` subcommand
+      without a binary name; the `--skill` line pointing at the removed scheduler is gone.
+- [x] **`CLIAgent::PhosphorTui` did not recognise the shipped `phosphor-tui` binary** —
+      it listed only `zap-tui-oss`, the cargo build name, so self-recognition (detection,
+      PATH probing, the footer) missed the name every release archive renames it to.
+      **Fixed #637 (`6ca9b4d68`):** `phosphor-tui` added as a prefix after the existing
+      ones, leaving the canonical `warp` prefix first.
+- [x] **`agent run --share` was hidden but still silently accepted**, running the agent
+      unshared with no indication (see `DECLINED.md`, "Agent session sharing").
+      **Fixed #637 (`db5afe5b1`):** `agent run` now refuses up front with
+      `SHARE_UNSUPPORTED_MESSAGE`, via `ShareArgs::unsupported_error`, before the run
+      starts; the flag still parses so a script gets that message rather than clap's
+      generic parse failure. See `DECLINED.md` for the updated row.
       **In progress 2026-09-26:** branch `fix/cli-637`.
 - [ ] **The `?` shortcuts sheet lists "toggle auto-approve" twice**
       (`crates/warp_tui/src/terminal_session_view/state.rs:586-592` and `:598-604`, byte-identical).
@@ -2328,9 +2352,10 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `f42c4ab6c` — `Lazy` field deferral (22 files, ~987 insertions). Adds
       `crates/warp_util/src/lazy.rs`. **Depends on `ee95ac0fd` landing first.**
       One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork.
-- [ ] `0a0fd3ae1` **(ordered pair, land before `c25ac4070`)** — Paste entry in the
+- [x] `0a0fd3ae1` **(ordered pair, land before `c25ac4070`)** — Paste entry in the
       block-list context menu; introduces the `paste_menu_item` helper the other needs.
-      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
+      **Landed 2026-09-26 (#683, `53a40902d`)** without upstream's share-item regrouping
+      (the fork has no share items).
 - [x] `c25ac4070` — right-click behavior setting. **Costs 21 call sites across 14
       files** (`on_right_mouse_down` gains `&ModifiersState`), two of which upstream
       does not touch. Carries an unadvertised fix: right-click over an app that owns
@@ -2373,19 +2398,22 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       The 11-line deletion is keystroke-independent. **Upstream never built or tested
       this revision, and its "editable beats fixed" claim was code-inspection only** —
       re-derive against `warpui_core/src/keymap/matcher.rs` before landing.
-- [ ] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
+- [x] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
       Fork is behind even upstream's pre-fix state: `native.rs:741` hard-requires
       `mcp_execution_path`, whose only writer is the GUI bootstrap.
-      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
+      **Fixed 2026-09-26 (#676, `1c2342ecd`):** ported as
+      `ExecutionMode::can_inherit_process_path_for_mcp` (`App` false; `Tui`/`Sdk` true; no
+      `RemoteServerDaemon` in this fork).
 - [ ] `092c1dce` — preserve scroll fraction across the markdown Rendered/Raw toggle.
       **Port requires EXTENDING a fork test, not weakening it**: add
       `scroll_fraction: None` to the exhaustive literal at `notebooks/file/mod_tests.rs:530`.
       Fork uses `BufferLocation` where upstream uses `LocalOrRemotePath`.
 - [x] `46c0b513` — Windows DPC-watchdog: avoid a full process-table walk per session bootstrap.
       **Closed as declined 2026-09-26:** Windows-only. Out of scope.
-- [ ] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact
+- [x] `eaf70a6a` — oversized-diff early return; fork has `MAX_DIFF_SIZE` and the exact
       insertion point but parses the diff first.
-      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
+      **Fixed 2026-09-26 (#679, `2c941fe37`):** early return before parse, fork's staged
+      preserved; real-repo regression test added.
 - [ ] `e0d01fff` — **port the `system/info.rs` half only.** It gates a real local
       `MemoryUsageHigh` emit + jemalloc dump that latch for the process lifetime. The
       `telemetry/events.rs` half is dead weight: `send_telemetry_sync_from_ctx!` is a
@@ -2412,11 +2440,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
 - [ ] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
       is already a workspace dep; `app/Cargo.toml` needs both added.
-- [ ] `216d0efe7` — **port the tooltip half only.** `dismiss_ai_tooltips` currently
+- [x] `216d0efe7` — **port the tooltip half only.** `dismiss_ai_tooltips` currently
       fires an unconditional `ctx.notify()` on every focus change. The recording-span
       cache is dead on arrival (session recording declined, #350) and
       `output.rs:2964` documents why. The `search_codebase.rs` sub-hunk has no target.
-      **In progress 2026-09-26:** branch `fix/svg-open-handler`.
+      **Tooltip half ported 2026-09-26 (#677, `9353cb534`):** hover-reset repaint kept and
+      dismiss events left unconditional on purpose — see `DECLINED.md` → IMPROVED.
 - [ ] `d68a638ef` — **5 of 26 sites apply**; the rest already differ because the fork
       never took upstream's earlier `log::error!`->`report_error!` migration.
       `hex_color.rs` (`HexColorError` -> `thiserror::Error`) is the cleanest and is
@@ -2734,18 +2763,28 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
   hand-over it was being asked for, so it now admits an agent-requested command with no control
   state — for `BlockedOnInput` only.
 
-- [ ] **Not done: the same wedge via a non-password prompt.** The detector keys on termios
+- [x] **Not done: the same wedge via a non-password prompt.** The detector keys on termios
       (ECHO off, ICANON on), which is the password shape specifically. An agent command that
       blocks on an ordinary `read -p` or a `[y/N]` confirmation leaves echo on and is still
       invisible; it hangs the same way and still relies on the 30-minute backstop.
-      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
+      **Fixed 2026-09-26 (#673, `1ea40df0d` + `246bd326c`):** `[y/N]` / `read -p` /
+      "Press any key" prompts are detected from the text before the cursor when termios is
+      canonical+echo — a 3-poll debounce for explicit markers (`[y/N]`, `(yes/no)`, "Press
+      any key"), 15 polls for a bare trailing `?` or `:`; detection re-arms per episode (a
+      host-key prompt followed by a password prompt both work), and only for
+      `wait_until_completion` requests (`ShellCommandExecutor::is_awaiting_completion`) —
+      other agent commands get snapshots and answer the prompt themselves. **Residual false
+      positive:** a `wait_until_completion` command that prints a line ending in `?` or `:`
+      with no newline and then goes silent for ≥15s is still handed to the user even though
+      the command is still running.
 
-- [ ] **Not done: `would_emit_block_started_for_password_prompt_polling`
+- [x] **Not done: `would_emit_block_started_for_password_prompt_polling`
       (`view.rs:15361`) still suppresses warpify-compatible subshell commands** — `ssh`,
       `docker run`, and friends — so an agent-run `ssh` that prompts is not detected. That
       suppression exists to stop spurious notifications on the *user* path; whether it should
       apply to the agent path is a separate judgement and was left alone deliberately.
-      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
+      **Fixed 2026-09-26 (#673, `1ea40df0d`):** the agent-driving check now runs before the
+      subshell filter. The filter still applies to the user's own blocks.
 
 - [ ] **Not done: the TUI gets none of this.** `impl TerminalSurface for TuiTerminalSessionView`
       (`crates/warp_tui/src/terminal_session_view.rs:5775`) overrides only `on_shell_determined`
@@ -3445,7 +3484,7 @@ measurement.**
       see the open item immediately below**)
 
 ### Open — the shutdown hook this section claimed was Done
-- [ ] **No LSP terminate on app shutdown.** `app/src/lib.rs:2360-2392` runs
+- [x] **No LSP terminate on app shutdown.** `app/src/lib.rs:2360-2392` runs
       `on_will_terminate` straight from `PersistenceWriter::terminate()` to
       `PtySpawner::prepare_for_app_termination()`, with no LSP step anywhere in
       the closure. The pin has one at `42effe840:app/src/lib.rs:2692-2694`:
@@ -3456,7 +3495,12 @@ measurement.**
       a different type, which merely detaches an async shutdown and is not a
       substitute for the graceful all-workspaces teardown. Consequence: language
       servers are left to be reaped by the OS on quit rather than shut down.
-      **In progress 2026-09-26:** branch `fix/mcp-review-lsp`.
+      **Fixed 2026-09-26 (#680, `736e26767`):** `on_will_terminate` →
+      `terminate_language_servers_for_app_exit` → `LspManagerModel::terminate_for_app_exit`
+      (bounded 1s wait; no-op without `lsp::init`). `LspManagerModel::terminate` itself
+      still has no caller. See `DECLINED.md` → IMPROVED for why this diverges from the
+      pin's unconditional call, and for the later ordering fix (#680/#687,
+      `0b0d8541a`).
 - [x] `workspace_language_server` migration, re-applied onto current main (`5f2f5d103`)
 - [x] PersistedWorkspace LSP **state** layer — `EnablementState`,
       `language_servers`, the seven enable/disable/query methods, `ModelEvent`
@@ -9864,7 +9908,7 @@ Ordered by severity, not by area.
       `.expect` sweep. `settings_view/features/external_editor.rs:245-250` is already
       correct (`report_if_error!` + `unwrap_or`) and is the pattern to copy.
 
-- [ ] **`ai/blocklist/block.rs:274` maps `is_supported_image_file` straight to**
+- [x] **`ai/blocklist/block.rs:274` maps `is_supported_image_file` straight to**
       **`FileTarget::SystemGeneric`, including `.svg`.** `.svg` is a scripting document
       whose default handler is normally a browser, so this hands model-referenced SVG to a
       handler that executes content. Same defect as `notebooks/link.rs:945`, **fixed there
@@ -9872,7 +9916,10 @@ Ordered by severity, not by area.
       `util::openable_file_type` (current list minus `svg`) and have both call it —
       `is_supported_image_file` itself must NOT change, because its four other callers mean
       "can we display this as an image", which stays true of SVG.
-      **In progress 2026-09-26:** branch `fix/svg-open-handler`.
+      **Fixed 2026-09-26 (#675, `fd97d6df6`):** `is_supported_raster_image_file` added and
+      used by `block.rs`, `ai_document_view.rs` (same bug, previously unlisted) and
+      `notebooks/link.rs`. The binary/installer fallback is tracked separately as #681
+      (below).
 
 - [x] **CORRECTION to the 2026-08-21 notebook link-scheme entry — it was wrong twice.**
       (i) Its claim that `WebIntent::try_from_url`'s `ALLOWED_ACTIONS` acted as "a second
@@ -9935,7 +9982,7 @@ claim, which was wrong by four.
 - [ ] **Proxy URL host** (`:4858`) still logged after userinfo redaction — same class as the
       already-recorded `endpoint_url`.
 
-- [ ] **`InlineDiffView::restore_diff_base` writes the diff base over the file with no**
+- [x] **`InlineDiffView::restore_diff_base` writes the diff base over the file with no**
       **conflict check.** Unlike accept (fixed 2026-08-21 via `FileModel::save_if_unchanged`),
       its correct pre-image is the content the *accept* wrote, which the view does not retain,
       so guarding it against the diff *base* would refuse every revert following a
@@ -9946,7 +9993,24 @@ claim, which was wrong by four.
       retained. For the TUI that was shown false on 2026-08-21 — the content is a pure
       function of the diff the caller already holds — and the TUI revert is now guarded.
       The GUI path carries the same shape and the same stale note.
-      **In progress 2026-09-26:** branch `fix/guard-diff-revert`.
+      **Fixed 2026-09-26 (#672, `08801ee3e`):** accept records `accepted_content`; revert uses
+      `save_if_unchanged` / `delete_if_unchanged` against `Content(accepted)`, the same
+      semantics as the TUI `revert_plan`.
+      **Two follow-ups found during #672's review, both closed by #684 (`e2662fd17`/`112a7618f`):**
+      (1) **GUI revert marked the action Reverted before the guarded write resolved** —
+      `CodeDiffView::revert_changes` set `CodeDiffState::Reverted` and
+      `mark_action_as_reverted` synchronously, so a write-time refusal only toasted while
+      the card and conversation history still claimed a revert that had not happened.
+      Fixed: `reverted_action_ids` now only records a revert whose every guarded write
+      landed. (2) **`LocalCodeEditorView::restore_diff_base` was unguarded**
+      (`std::fs::remove_file` / `GlobalBufferModel::save`) — unreachable (its only caller
+      was `CodeDiffView` over `InlineDiffView`) but a hazard if ever wired up. Fixed:
+      removed as dead and unguarded code.
+      **Rewind sequencing follow-up, #686 (`dab34b159`):** each file's reverts now run
+      strictly newest→oldest behind the #672 guard, and a refusal stops that file's older
+      reverts. See `DECLINED.md` → IMPROVED.
+      **Revert-chain review fixes (`6c60a4940`):** the GUI revert restores the raw
+      original text (CRLF/mixed endings preserved) and skips files the accept never wrote.
 
 - [x] **`warp_tui/src/tui_diff_storage.rs:147` is the TUI counterpart of the lost-update**
       **defect.** Same AI-diff persistence, same `register_file_path(..., false, ...)`, same
@@ -9970,7 +10034,7 @@ claim, which was wrong by four.
       **Blocker:** `Workspace::can_move_tab` is `pub(super)`; it needs widening to
       `pub(crate)` or a thin `pub(crate)` wrapper. `TabMovement` is already reachable.
 
-- [ ] 🔴 **Redirection glued to or preceding the command name defeats the Agent Mode denylist.**
+- [x] 🔴 **Redirection glued to or preceding the command name defeats the Agent Mode denylist.**
       `simple/parser.rs:146-149` consumes `<`/`>` *inside* `parse_part`, so `rm>/dev/null -rf ~`
       yields candidates `rm>/dev/null -rf ~` and `rm/dev/null -rf ~` and no `rm .*` rule matches;
       `parser.rs:91-94` consumes a leading redirect, so `>/dev/null rm -rf ~` decomposes with the
@@ -9984,9 +10048,24 @@ claim, which was wrong by four.
       underlining and the allowlist. **Deliberately not half-fixed:** closing the glued form
       while leaving the leading form open is the false-confidence failure the residue list exists
       to prevent. Pin-parity.
-      **In progress 2026-09-26:** branch `fix/denylist-bypass`.
+      **Fixed 2026-09-26 (#678, `f3cad7ab5`):** `can_autoexecute_command` also matches the
+      denylist against `warp_completer::parsers::simple::executed_commands`, a shell-accurate
+      enumeration of executed command words (quote removal, brace expansion, redirections
+      anywhere, compound commands, `$()`/backticks/`<()`, unquoted heredoc bodies, assignment
+      prefixes, and a wrapper table). It fails closed with `Denied(UnresolvedCommandWord)` when
+      a word is only known at run time, and never widens the allowlist. `decompose_command`
+      itself is unchanged (it also feeds x-ray, error underlining and the allowlist, and
+      widening an allowlist match is the unsafe direction).
+      **Review follow-up (`bcbe89dda`):** indirect execution (aliases, git config/env,
+      interpreters, `xargs`/`parallel`, a PowerShell subset, Unicode look-alikes,
+      case-insensitive names) is now caught or fails closed; residue is listed on
+      `denylist_match_candidates` — script files, pre-defined aliases/functions,
+      ssh/docker/kubectl remote execution, full-path rules and PATH tricks, programs' own
+      config files, and env vars outside the lists.
+      **Still open:** zero-command input is vacuous (see the item above); PowerShell is only
+      approximated via the POSIX grammar.
 
-- [ ] 🟠 **Brace expansion and shell control-flow keywords hide the command name from the denylist.**
+- [x] 🟠 **Brace expansion and shell control-flow keywords hide the command name from the denylist.**
       `{rm,-rf,~}` decomposes to `rm,-rf,~`; `{r,}m -rf ~` to `r,` + `m -rf ~`;
       `if true; then rm -rf ~; fi`, `while … do rm …; done` and `for … do rm …; done` all make
       `then`/`do` the command name. All confirmed running `rm` in bash. Brace expansion is purely
@@ -9995,7 +10074,8 @@ claim, which was wrong by four.
       inconsistent rather than deliberate. The existing advice to "carry denylist entries for the
       prefixes" is sound for `sudo` and useless for `then`/`do`. Repair is a parser change.
       Pin-parity.
-      **In progress 2026-09-26:** branch `fix/denylist-bypass`.
+      **Fixed 2026-09-26 (#678, `f3cad7ab5`)** — same fix as the redirection item above,
+      `executed_commands` also expands braces and follows control-flow keywords.
 
 - [ ] **Zero-command input makes both the denylist and the allowlist vacuous.** `;`, `{}`, `()`
       and whitespace-only input decompose to zero commands, so the denylist `.any()` is false and
@@ -10486,14 +10566,16 @@ claim, which was wrong by four.
       **VERDICT CONFIRMED (independent verifier, 2026-08-21):** `TODO.md:215` sits under "Confirmed genuinely absent" (`:204`) and is contradicted by `toggle_hunk_staged`, `StageTarget::Hunk` (`diff_state.rs:163`), `run_apply_patch_cached`, `StageHunkButton` and the daemon leg (`server_model.rs:3542`, proto `:1418`); TODO.md:2980 records it landed. Verifier also checked the row's SECOND half: `checkout_branch` was a deliberate removal shipped via prompt chip, so **both cells are stale**.
       **FIXED 2026-08-21:** Row struck with citations, and the second half corrected too — `checkout_branch` was a deliberate removal shipped via prompt chip, not an absence. The bare-name-grep failure is explained against the table's own stated evidence rule.
 
-- [ ] **`@`-context attachments lock the input with no invalidation on edit.**
+- [x] **`@`-context attachments lock the input with no invalidation on edit.**
       `context_model.rs:748` adds them to `has_locking_attachment`, which kills
       autodetection and blocks unlock; `prune_stale_at_context_attachments` runs only on
       menu-accept and submit, never on edit. Delete the `@ref` text and the input stays
       stuck in AI mode with an empty buffer — **the next shell command goes to the
       agent.**
       **VERDICT PARTIAL — 'blocks unlock' wrong (independent verifier, 2026-08-21):** `context_model.rs:745-749` does include the at-context attachments, gating `should_run_input_autodetection`, and pruning runs only at `input.rs:9779` and `:12923`. But it is NOT a parity gap — `42effe840:context_model.rs:269-271` has no at-context machinery at all — and "blocks unlock" is wrong: Esc reaches `set_input_mode_terminal` (`input.rs:7881`, `:13102-13114`), an unconditional manual override.
-      **In progress 2026-09-26:** branch `fix/agent-prompt-hangs`.
+      **Fixed 2026-09-26 (#674, `b96d124d4` + `9fc7d1710`):** the at-context lock now
+      follows the buffer on every edit (absent references are tracked, not pruned).
+      Removal still happens only at accept and submit.
 
       **PARTIAL CONFIRMED, NOT FIXED 2026-08-21 — doc corrected, behaviour needs a file outside this round.** "Blocks unlock" is **wrong**: Escape clears attached context, a second Escape reaches `set_input_mode_terminal` (`input.rs:13111`, an unconditional manual override), and a send resets via `reset_context_to_default`. So it is a **stale** lock, not a stuck one. **But the headline stands:** the submit-time prune (`input.rs:12933`) runs *inside* the AI submit path, so it removes the stale attachment **after** routing — the next shell command does go to the agent. No phantom attachment is ever *sent*. `retain_at_context_attachments_in_query` runs from exactly two places and **nothing runs it on a buffer edit**. **Deliberately not fixed by dropping the at-context clause** — while the `@ref` is in the buffer the lock is exactly right, and removing it would let the classifier flip a genuine `@`-reference query to shell. The predicate's doc did not even name the third source; rewritten to name all three, distinguish the two this model owns from the one that is a cache of a buffer fact, and cite the missing invalidation. **Proposed fix for the `input.rs` owner:** prune on the buffer-edited editor event, so the predicate reconciles per keystroke.
 
@@ -10786,13 +10868,25 @@ claim, which was wrong by four.
 
       **FIXED 2026-08-21 — divergence AHEAD of the pin (all three limbs are pin-identical).** New `FileModel::save_if_unchanged(.., ExpectedDiskState, ..)`; read, compare and write happen inside one spawned task. **The `version: ContentVersion` parameter was never a concurrency check** — it is a process-global `AtomicUsize` that `report_save_outcome` records only *after* a successful write. **Content compare, not mtime, and the decisive reason is that mtime was never available:** the diff view uses `register_file_path`, which does not load, so there is no earlier `stat` to compare against; mtime is also preserved by `cp -p`/`rsync --times`. A digest was rejected because the full read is unavoidable either way. **Compared LF-normalised on both sides** — the editor stores the base normalised while the accept write emits the buffer's own inferred line endings, so a byte compare would have failed **every** accept on a CRLF file while protecting nothing. `ExpectedDiskState::Absent` covers `DiffType::Create`, and **local `NotFound` is the only failure that clears it**; every other read error refuses, so "could not read" never becomes "safe to overwrite". On conflict nothing is written, the version is **not** recorded, and the refusal flows through the existing `FailedToSave` → error-toast path. **`subscribe_to_updates=false` deliberately left as-is,** with reasons at the call site: flipping it buys nothing alone (the subscription ignores `FileUpdated`), would change live editor behaviour under the user, and is not a substitute since the watcher is 200 ms-debounced and advisory. **A guarded variant rather than changing `save`,** after auditing all 11 callers — most are legitimately unguarded, since a live buffer the user is typing into is not snapshot-derived.
 
-- [ ] **The protected-path guard operates on unresolved paths and ignores rename
+- [x] **The protected-path guard operates on unresolved paths and ignores rename
       targets (pin-parity).** `permissions.rs:1239` matches absolute MCP config paths,
       but `request_file_edits.rs:126-129` feeds it raw LLM strings, and
       `ParsedDiff::file()` returns the SOURCE, never `move_to`
       (`diff_application.rs:325-335`) — so a V4A rename auto-writes `~/.mcp.json`.
       **VERDICT PARTIAL — one limb refuted (independent verifier, 2026-08-21):** Rename limb confirmed: `ParsedDiff::file()` (`crates/ai/src/diff_validation/mod.rs:39-45`) never returns `move_to`, so `check_protected_write_paths` never sees the destination and `rename_and_save` writes it. Pin-parity. **The "unresolved paths" limb breaks:** `mcp/mod.rs:135-143` suffix-matches components, so a raw `~/.mcp.json` string IS caught. Only `~/.claude.json` escapes.
-      **In progress 2026-09-26:** branch `fix/move-to-protected-path`.
+      **RENAMES LIMB FIXED 2026-09-26 (#682) — pin-identical at `4111d08f9`.** `should_autoexecute`
+      now calls `BlocklistAIPermissions::can_apply_file_edits`, which guards
+      `FileEdit::written_paths()` (source + V4A `move_to`) in both raw and
+      `host_native_absolute_path`-resolved spellings against the session shell/cwd.
+      Resolution only adds paths (fail closed). Symlinks remain lexical for source and
+      destination alike. `can_write_files` has no directory write allowlist — the
+      protected-path guard is the only path-scoped gate. (`678b4ac19`)
+      **Follow-up 2026-09-26 (#682, `50d8d76e8`/`ce23cb369`/`96553fdf7`):** rename
+      destination resolved once in `apply_v4a_update` and shared by guard and writer
+      (was raw, so it landed against the process cwd); LRC tag-in can no longer stand in
+      for a protected write; protected set broadened and centralised in
+      `blocklist/protected_paths.rs`; case-insensitive on macOS/Windows, Windows
+      trailing-dot/ADS handling; SDK `EditFiles` gains a separate `moves` field.
 
       **HALF FIXED 2026-08-21 — and the verifier's refutation of the paths limb was too NARROW.** It tested only `~/.mcp.json`. The mechanism is real and provable at the call site: `request_file_edits.rs:127-130` feeds the guard **raw model strings** while the writer resolves via `host_native_absolute_path` — the same module, six lines away, already importing it. The verifier was right about *scale*: it bites for exactly one provider, because `mcp_provider_from_file_path` matches **project** configs by suffix but **home** configs by absolute equality, and Claude is the only provider whose home name differs from its project name. Evasions confirmed by emulating `Path::components`/`ends_with` semantics: `~/.claude.json`, `.claude.json`, `../.claude.json`, `/home/u/tmp/../.claude.json` all escaped — while `/home/u/./.claude.json` did **not**, since Rust folds mid-path `.`. Fixed with tilde expansion plus lexical `.`/`..` folding (never `canonicalize` — it blocks, and fails on a not-yet-created file) and a home-config suffix match. **Renames limb still OPEN, same shape as the file-write rename hole found this morning:** `ParsedDiff::file()` returns the source for both variants and never `move_to`, and **the rename path consults no guard at all**. The fix belongs in `request_file_edits.rs` (add `move_to` to `paths`, resolved) or a `ParsedDiff::written_paths()`.
 
@@ -11420,3 +11514,162 @@ claim, which was wrong by four.
       request whose OSC reply is merely slow, after which the late reply is
       ignored and no EOT is sent -- a narrower hazard the watchdog introduced.
       The actual lockup needs a fresh capture at the time it happens.
+
+## FIX ROUND 2026-09-26/27 — items with no earlier ledger row
+
+Entries elsewhere in this file were updated in place where an earlier row already
+described the bug (search for the issue number). These are the round's fixes and
+open findings that had no pre-existing row.
+
+- [x] **#650 — the window footer bar kept a warpified remote host's colour after
+      the remote shell exited.** A `Session` never changes from `WarpifiedRemote`
+      back to `Local` in place, so "becoming local" is observable only as the
+      active block's session id switching; nothing recomputed the footer bar
+      there, so it kept the remote host's colour until the next preexec.
+      **Fixed (`419268ff7`):** the bar recomputes in `apply_block_metadata_update`
+      after the active block metadata is replaced. **Still open (low):** a dead
+      pane after `ModelEvent::Exit` keeps its last colour.
+
+- [ ] **Rewind batch never settles if a remote revert write never resolves.**
+      Found reviewing the revert chain (`6c60a4940`): the card stays `Reverting`
+      and later rewinds of that file queue behind it, with no per-rewind timer to
+      mark an in-flight write failed and abandon the lane.
+
+- [ ] **#688 — GUI accept never applies an agent's rename (`move_to`) or delete**,
+      and reports them to the model as done. Same behaviour at the pin
+      (`4111d08f9`), so this is pin-parity, not a regression — recorded because it
+      surfaced repeatedly during the revert-chain and rename-guard work this round.
+
+- [ ] **Cargo.lock: `signal-hook` was hand-added to `warpui`'s deps for #685**
+      (SIGTERM/SIGHUP handling) rather than regenerated through `cargo`, since
+      agents in this round do not build. Needs a real `cargo update -p
+      signal-hook` (or equivalent) on the build host to make sure the resolved
+      version and its transitive deps match what a real build would pick.
+
+- [ ] **Windows graceful shutdown on console close / logoff is still incomplete
+      (#685 follow-up).** Headless `CTRL_CLOSE_EVENT`
+      (`crates/warpui/src/platform/headless/event_loop.rs`) and GUI
+      `WM_QUERYENDSESSION`/`WM_ENDSESSION`
+      (`crates/warpui/src/windowing/winit/app.rs`) both still skip
+      `app_will_terminate` entirely, so LSP/MCP shutdown, the terminal-server
+      teardown and the persistence flush all get skipped on a Windows console
+      close or logoff.
+
+- [ ] **MCP stdio servers are not spawned in their own process group**, so on
+      exit only the direct child is killed by handle (`be564eeaf`); a grandchild
+      (e.g. under `npx`) that ignores EOF can survive. Consider a process group
+      plus a group kill (a Job Object on Windows), bearing in mind the TUI's
+      SIGINT behaviour. Related residue from the same hardening: MCP force-kill
+      has no handle at all on pidfd-less Linux (<5.3) or FreeBSD, so those
+      children get stdin EOF but are never force-killed.
+
+- [ ] **Headless/TUI exit status after a signal-initiated quit is always 0.**
+      Found reviewing #685's shutdown ordering fix (`0b0d8541a`): the winit and
+      macOS loops re-raise the signal after a graceful quit so the parent sees
+      "terminated by SIGTERM", but the headless/TUI loop does not — its caller
+      just restores the terminal after it returns, and exits 0 regardless of
+      which signal ended the process.
+
+### Later lanes — #689 through #702
+
+- [x] **#689 — editor idle repaint.** An unfocused-but-editable file-editor pane
+      kept rescheduling a full-window repaint every `CURSOR_BLINK_INTERVAL`
+      (500ms) forever, ~25% CPU under software rendering for any open editor
+      pane. **Fixed:** gate the blink-timer scheduling on `focused`, matching the
+      check already used for actually drawing the cursor (`4ecdfd075`); reset the
+      blink phase to visible on focus/window-activation gain, so refocusing
+      cannot leave the cursor invisible for up to 500ms (`843e6561a`). **Open:**
+      **#703** — a *focused* idle editor still arms a full-window repaint on
+      every blink, because `Presenter::build_scene` repaints the entire element
+      tree rather than just the cursor rect. Filed separately; #689 covers only
+      the unfocused-pane case.
+
+- [x] **#696 — English prompts containing `;` or `>` autodetected as Shell and
+      executed.** See `DECLINED.md` → IMPROVED for the full mechanism
+      (`SafetyGatedClassifier`, `aac2d9aec`/`9274515a4`/`004045c44`/`487953581`)
+      and its residue (an uninstalled command that is also an English word goes
+      to AI once the command index is loaded).
+
+- [x] **#697 — rendered Markdown with Mermaid diagrams spins forever (100% CPU,
+      layout never completes).** Two unbounded relayout loops: an asset-load
+      rebuild with no memoization, and an offset-resync with no streak cap.
+      **Fixed:** dedupe the asset-load rebuild per `AssetSource` and cap
+      consecutive resyncs (`bada932e9`); harden against view reuse across
+      documents, stagger diagram loads, and scale the cap to the diagram count so
+      documents with many Mermaid blocks don't false-positive (`936a1ab6e`);
+      reset the streak only on a content edit or new document, never a resize —
+      a resize can itself be caused by a relayout, which would have kept the
+      original livelock alive (`7113b0fa2`); test hardening (`24d0dddd4`).
+- [x] **#698 — Home/End/Page Up/Page Down do nothing in read-only rendered
+      Markdown** (`InteractionState::Selectable` has no text cursor, so only the
+      mouse wheel scrolled). **Fixed (`eced32c24`):** scoped bindings for the
+      `EditorSelectable` keymap context that scroll the viewport (top, bottom,
+      one page) instead of moving a cursor.
+      **Open (TODO new):** an off-screen selection from shift-Home/shift-End
+      etc. doesn't autoscroll into view in Selectable mode — pre-existing,
+      shared by every selection-extending binding via
+      `handle_content_model_event`'s `can_edit`-gated autoscroll, not introduced
+      by this fix. Fixing it here would be an arbitrary half-measure.
+
+- [x] **#690 — agent input hidden while a command awaits approval**, so
+      keystrokes vanished and Enter reached the approval card's own binding
+      instead. **Fixed:** input stays visible/focusable while blocked
+      (`6449130a6`, `a70bac5b1`); Enter only approves when the card itself is on
+      the responder chain, not merely because it stole focus (`c68eb6b67`);
+      submitting a follow-up while the conversation is `Blocked` is refused with
+      a toast hint rather than silently cancelling the pending confirmation
+      (buffer kept) (`a70bac5b1`, localized `685740947`).
+      **TODO new:** queue the follow-up instead of refusing it —
+      `QueuedQueryModel` has no unlock trigger for "blocked on confirmation", so
+      the refused text has to be resent by hand once the card resolves.
+
+- [x] **#691 — generated conversation titles read as a live status, and the
+      sidebar/history list went stale.** Fixed: stop titles from reading as
+      status (`b28772ae9`); refresh the sidebar/history list on conversation
+      metadata changes (`ade64e1c4`); stop title sanitization from corrupting
+      ordinary "Running"/"Executing" titles (`14e62e972`).
+- [x] **#692 — no reason shown for a rejected/cancelled/denylisted command.**
+      Fixed (`f207e3ac2`); Windows' Ctrl-C reject path also fixed to say
+      "Rejected by you." instead of the generic cancellation message, and the
+      six reason strings localized (`c68eb6b67`). **Residue:** strings are
+      localized in `en` only; `ja`/`zh-CN` fall back to `en` for the new keys.
+- [x] **#693 — an empty conversation was listed before its first message.**
+      Fixed (`db9c5ee9a`).
+- [x] **#694 — inaccurate status while an agent command runs.** Fixed
+      (`5275d5f40`); narrowed the command-status override to the actual output
+      poll after review (`531c41038`).
+
+- [x] **#695 — leftover Warp branding.** typeform links and the Auto-Warpify
+      snippet repointed (`049f2e15d`); the zap-launch modal's repo/CONTRIBUTING
+      links repointed at this fork, and `check_brand_strings` extended with a
+      `REPO_HOST` pattern so it now catches `github.com/warpdotdev/warp` URLs
+      (case-sensitive literals it could not previously see) (`169beff59`).
+- [x] **#699 — host colour rule UX.** Error text, duplicate-rule rejection,
+      reordering and ellipsis for long rules (`76e00a01d`); `ja`/`zh-CN`
+      strings and a test of the real dedup path (`2348fbde2`).
+- [x] **#700 — footer host colour has no explanation.** Hovering the window
+      footer bar now explains its colour (`eab68174a`); "Unknown host" tooltip
+      localized and the colour+tooltip resolution unified into one pass
+      (`c1487c33f`).
+- [x] **#701 — profile page disagreed with the composer's model.** First fix
+      (`051bc35c4`, "Auto" CLI-agent model ignoring the configured base model)
+      was the wrong mechanism and was **reverted by `cc6fab6e0`**, which instead
+      adds "Currently using X (chosen with /model)" under the profile page's
+      Base model — showing the real divergence rather than papering over it.
+- [x] **#702 — wording/LSP message/MCP search.** Stray colon, misleading
+      Markdown LSP message, and an MCP search miss fixed (`998f6a4c3`); zh-CN
+      right-click label missing "行为" (behavior) (`91b64f707`); `884ed2d7d` —
+      the pwsh execution-policy error still said "Warpify".
+
+### Still open, unfixed this round
+
+- [ ] **#654 — winit repoint awaiting maintainer approval.** Not yet acted on;
+      no commit lands in this round. Verify against the current state of
+      `rust-windowing/winit#4453` before treating this as blocked — see the
+      2026-08-10 winit entry above (`jwp2987/winit`) for the last verified state.
+- [ ] **#640 — version display.** See the existing item above ("Nothing a user
+      sees reports `0.1.2`") — decision still pending.
+- [ ] **#681 — open questions.** See the #681 item above for the fixed core
+      (launchable paths revealed, not opened); `.html` policy and the file-tree
+      double-click behaviour are still open questions there, not closed by this
+      round.

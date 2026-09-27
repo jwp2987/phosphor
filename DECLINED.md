@@ -236,7 +236,8 @@ unrelated to voice and is not declined — see the issue for its state.
 | **`tui_cli_shell_command` / `tui_resume_shell_command`** | — | **Declined 2026-08-11 (cloud, already neutered).** `crates/warp_tui/src/terminal_session_view.rs` at the pin builds a channel-aware `warp[-channel] --resume <token>` hint for resuming a conversation by **server token**. This fork has no server tokens: `BlocklistAIHistoryModel::load_conversation_by_server_token` (`app/src/ai/blocklist/history_model/conversation_loader.rs:158`) is hardcoded to return `None`, with its own comment — "BYOP has no cloud server and no server conversation tokens" — so `TuiConversationRestoreTarget::Server` never fires. Building a channel-aware hint generator for a command that always fails is not worth doing. `tui_cli_shell_command` is the shared builder whose only two consumers are this and the row below, so it goes with them. Also note the fork's binary layout does not match the pin's 6-channel model at all: `crates/warp_tui/Cargo.toml` sets `autobins = false` and declares one real bin (`zap-tui-oss`). <!-- markers: sym:tui_resume_shell_command sym:provider_api_key_shell_command --> |
 | **`provider_api_key_shell_command` / `ProviderApiKeyOperation`** | #142, #347 | **Declined 2026-08-11 (superseded).** Same pattern as the `CustomEndpoint` decision, reached from the `warp_tui` slash-command side instead of the model-preference side: the pin shells out to *itself* to set or clear one of ~4 hardcoded providers. This fork does it in-process, through `crates/warp_tui/src/api_keys_menu.rs`'s `/api-keys` inline picker over the arbitrary-provider `AgentProviderSecrets` BYOP store. **Amended 2026-08-29 (#629):** this row used to name a second route, `session.rs`'s `--set-provider-api-key` / `--clear-provider-api-key` clap flags "handled directly against `ApiKeyManager`" — they were, and that was the defect. That store cannot affect anything the user can reach, and those flags were its only writers, so a key set that way reported success and left the agent with nothing usable. **Be precise about the mechanism** — the short version "nothing reads it" is false and will send the next reader the wrong way. `AiApiKeys` *is* read, by `is_using_api_key_for_provider` (`app/src/ai/llms.rs:26`) from six live call sites, one behavioural (`data_source.rs:245,355`, clearing `DisableReason::RequiresUpgrade`). It is dead **in effect**: every such read is gated on `LLMProvider::{OpenAI, Anthropic, Google}` with `_ => false`, and every production `LLMInfo` this fork builds carries `LLMProvider::Unknown` (`ai/llms.rs:295,440,467,489,511`, `ai/agent_providers/mod.rs:219,248`), so they all return `false` whatever is stored. The key is never sent either: its only other consumer is `RequestParams::api_keys`, a removed-server-path field on a struct that derives no `Serialize` and that no code reads. Both flags are now refused for every provider, pointing at the picker and at Settings > AI > Agent providers (`reject_provider_api_key_flags`). `/api-keys` is the single route. Its module doc already records that it mirrors upstream's `/add-api-key` "in spirit... implemented against this fork's arbitrary-provider BYOP model instead of upstream's hardcoded ~4-provider list." |
 | **AWS Bedrock OIDC role assumption (`--bedrock-role-arn` / `--bedrock-role-region`)** | — | **Declined 2026-08-10 (maintainer): not now.** `--bedrock-role-region` (`crates/warp_cli/src/agent.rs:378`) is `requires`-mandatory and never read — the pin threads it into `OidcManaged { region }` and this fork's variant has no `region` field. **The path is unreachable regardless:** `refresh_aws_credentials_oidc` needs an ambient `task_id`, always `None` **on the headless SDK driver path** (`app/src/ai/agent_sdk/mod.rs:534` hard-sets `driver_options.task_id = None`, which is also why `driver/terminal.rs:171`'s `set_ambient_agent_task_id(Some(tid))` never fires). **Narrowed 2026-08-18** — this was being read as a repo-wide claim and is false as such: the GUI `/orchestrate` path mints a live id via `AmbientAgentTaskId::new_local()` (`app/src/pane_group/pane/local_harness_launch.rs:380`), and mints its token through Warp's cloud `ManagedSecretManager`. So wiring the flag would connect it to something that cannot run. Left in place rather than removed or hidden: removal of a `requires`-mandatory flag is a breaking CLI change, and the flags are the natural anchor if Bedrock role assumption is ever built on a non-cloud credential source. Revisit then. |
-| **Agent session sharing (`oz agent run --share`)** | — | **Cloud, declined; flag hidden 2026-08-10.** Sharing an agent session requires Warp's backend to host the shared session and resolve recipients (`team:`, `public:`, `user@host`), none of which exists here. The CLI surface was ported whole, so the flag parsed and validated its recipient grammar helpfully and then did nothing: `build_merged_config_and_task` hardcodes `should_share = false` (`app/src/ai/agent_sdk/mod.rs:500`) and `ShareArgs::is_shared` has zero callers. **Hidden with clap `hide = true` rather than removed**, so a script passing `--share` today keeps parsing instead of failing at the argument parser; it stays inert either way, and an undocumented no-op beats a documented promise that is not kept. `ShareRequest`/`ShareSubject`/`ShareAccessLevel` and their parser tests stay: they are still the parse surface for the flag that is still accepted. <!-- markers: keep:ShareRequest keep:ShareSubject keep:ShareAccessLevel --> |
+| **Agent session sharing (`oz agent run --share`)** | — | **Cloud, declined; flag hidden 2026-08-10.** Sharing an agent session requires Warp's backend to host the shared session and resolve recipients (`team:`, `public:`, `user@host`), none of which exists here. The CLI surface was ported whole, so the flag parsed and validated its recipient grammar helpfully and then did nothing: `build_merged_config_and_task` hardcodes `should_share = false` (`app/src/ai/agent_sdk/mod.rs:500` — reference this as "mod.rs `should_share = false` (unreachable with `--share`)", not as an unwired site). **Hidden, and refused at run time (#637, 2026-09-26).** The flag still parses so a script passing `--share` gets a clear error (`SHARE_UNSUPPORTED_MESSAGE`, via `ShareArgs::unsupported_error`, returned by `run_agent` before the run starts) rather than clap's generic parse failure. Previously it was silently ignored, which let a user believe a session was shared. `ShareRequest`/`ShareSubject`/`ShareAccessLevel` and their parser tests stay: they are still the parse surface for the flag that is still accepted. <!-- markers: keep:ShareRequest keep:ShareSubject keep:ShareAccessLevel --> |
+| **`oz agent list`** | #637 | **Removed 2026-09-26 (#637).** At the pin it listed agent configurations from Warp's hosted environments, or skills from a GitHub repo via `--repo`; neither exists here, so it parsed fully and then always errored "Agent skill listing is disabled in Phosphor". A local skill lister would be new work, not parity — the skills `agent run --skill` can use are already named in that flag's help. |
 | **Status-menu `org` / `email` fields** | #389 | **DECIDED 2026-08-09: dropped, not deferred.** Warp's status menu shows the signed-in account's organisation and email. Phosphor has no cloud account, no organisation and no sign-in email, so there is no truthful value to render. Both fields were removed from `TuiStatusInfo` outright rather than blanked or filled with a BYOP substitute (commit `c87c49820`), and no empty rows are left where they used to be. **Permanently unported pin tests:** `status_email_fallback_chain_*`, `status_slash_command_opens_dedicated_status_menu_via_shared_structure` (asserts literal `"Org"`/`"Email"` rows this fork no longer renders), and `user_info_updates_only_require_*`, plus anything needing `resolve_status_email` / `STATUS_SIGNED_IN`. Porting them would be red; weakening their assertions to match is what AGENTS §5.6 forbids. **Recorded here 2026-08-09** because the decision previously existed only in a commit message, which is where the #576 port sweep found it — the rest of `/status` and the read-only menu surface ARE ported and wired, so this is a narrow field-level drop, not a declined feature. <!-- markers: test:status_slash_command_opens_dedicated_status_menu_via_shared_structure --> |
 | **Agent-invoked agent spawning (`AIAgentActionType::RunAgents`)** | #325 | **DECLINED 2026-08-09 (maintainer) — was 'deferred' earlier the same day, now a decline.** Phosphor's answer to orchestration is the USER-invoked route: `/orchestrate` (`ad06c852c`), shipped on both GUI and TUI, spawning local children wired into the #304 pill bar, tab bar and transcript rendering, with swap/stop/kill and a working child-to-parent mailbox. **What is declined is letting the MODEL decide to spawn agents.** Reasons: the pin's `RunAgentsRequest` is cloud-typed so there is nothing to port — it would be from-scratch API design that permanently diverges from the pin; `AIAgentActionType` has 35 variants and no spawn variant, with **68 files** matching that enum; and `StartAgentExecutionMode`/`RunAgentsExecutionMode`/`RunAgentsAgentRunConfig` have no reference implementation to follow, so their shape would be embedded across those 68 files before anyone knew it was right. A model that can spawn agents also multiplies token spend, which the pin governs cloud-side and this fork has no equivalent for. **Not covered by this decline:** the proto side is already handled — `Tool::RunAgents(_)` and `ToolCallResultType::RunAgentsResult(_)` are recognised and routed (`conversation_yaml.rs`, `convert_conversation.rs`, `task/helper.rs:135` maps it to "orchestrate"); and `SendMessageToAgent`, once part of this family, was split out, landed with a local executor, and its own row above is marked reversed. Revisit only if user-invoked orchestration proves insufficient in practice. |
 | **Integration tests that need Warp's own cloud infrastructure** | — | **DECIDED 2026-08-16**, making CI green after the first re-pin. Three groups of `crates/integration` tests named in `integration_tests! { .. }` can never pass in this fork and were removed from the run lists. **(1) SSH/remote-subshell tests (9).** Every one proxies through `-o ProxyCommand="gcloud compute start-iap-tunnel ubuntu-14-04 25784 --project=warp-ssh-integration-testing --zone=us-east4-a"` (`app/src/integration_testing/subshell/util.rs`) — a GCP project and VM owned by Warp. Without credentials for it `gcloud` prints `WARNING: Could not open the configuration file` where the test expects a password prompt, which is exactly how they failed. **(2) 18 `test_sftp_*`.** SFTP (`app/src/sftp_manager/`) was removed in Track 3 (`3c657be0`, `73e08968`); the builders went with it and only the list entries survived. **(3) 4 `test_websocket_*`.** The dropped session-sharing websocket layer (see the `heartbeat.rs` row above); no builders exist. Groups 2 and 3 produced `panic!("test not found for args")` on every CI run — the integration binary resolves names through `register_test!`, and a name listed but not registered is a guaranteed panic. `script/check_stub_coverage` does **not** scan `crates/integration`, so nothing caught any of this. The test *functions* for group 1 are left in `src/test/ssh.rs` (still referenced by `register_test!`) so restoring them is a one-line list change if this fork ever gets its own SSH test host. <!-- markers: test:test_ssh_into_ash test:test_ssh_into_sh test:test_tmux_ssh_into_bash test:test_tmux_ssh_into_zsh test:test_legacy_ssh_into_bash test:test_legacy_ssh_into_zsh test:test_ssh_with_shell_override test:test_can_bootstrap_remote_bash_subshell test:test_can_bootstrap_remote_zsh_subshell test:test_sftp_pane_close test:test_websocket_begins_on_startup --> |
@@ -737,3 +738,161 @@ upstream's behavior is actually a defect rather than a preference.
   root when its follow-up's new server root is saved — a non-empty snapshot cannot tell
   that apart from a legitimate root replacement. See `TODO.md`.
   <!-- markers: keep:PersistedTaskRetention keep:upsert_agent_conversation_with_retention keep:AmbiguousRootTask -->
+
+- **Rename destinations are permission-checked** (`678b4ac19`, 2026-09-26,
+  `app/src/ai/blocklist/permissions.rs`). **Upstream:** the protected-write guard
+  (`request_file_edits.rs`) checks only a V4A edit's *source* path against the protected
+  set; `ParsedDiff::file()` never returns `move_to`, so a rename's destination reaches
+  `rename_and_save` unchecked, and `permissions.rs:1239` matches on raw, unresolved
+  strings rather than the paths the writer actually resolves. **The defect:** an agent
+  can rename an unprotected file onto `~/.mcp.json` (or any other protected path) and
+  the guard never sees it, because it was built to check "what got edited", not "what got
+  written". **Confirmed at the pin** (`4111d08f9`, same shape). **We do:** guard both the
+  source and `move_to`, resolved exactly as the writer resolves them (raw and
+  `host_native_absolute_path`-derived spellings both checked) against the session
+  shell/cwd; resolution only ever adds candidate paths, never removes one, so the
+  direction is fail-closed. **Follow-up (`50d8d76e8`/`ce23cb369`/`96553fdf7`):** the
+  rename destination is resolved once in `apply_v4a_update` and shared by guard and
+  writer (previously computed twice, so the guard checked one string and the writer used
+  another); an LRC tag-in can no longer stand in for a protected write; the protected set
+  was broadened and centralised in `blocklist/protected_paths.rs`; matching is
+  case-insensitive on macOS/Windows, with Windows trailing-dot/ADS handling; the SDK's
+  `EditFiles` gained a separate `moves` field so callers can distinguish them.
+  **Residue:** symlinks, `$HOME` spellings, and Windows 8.3 names are still unresolved;
+  `mcp_provider_from_file_path` is still case-sensitive (it only affects a UI badge).
+
+- **GUI inline-diff revert is guarded against the accepted content** (`08801ee3e`, 2026-09-26,
+  `app/src/editor/view/inline_diff`). **Upstream** (`4111d08f9:app/src/local_code_editor.rs:2235-2277`)
+  reverts with an unconditional `FileModel::save` / `delete` — no conflict check against
+  what is actually on disk. **The defect:** the TUI side of this exact hazard was fixed
+  2026-08-21 (guard against `Content(accepted)` / `Absent`); the GUI's
+  `InlineDiffView::restore_diff_base` carried the identical unguarded shape, on a since-
+  refuted premise (`0219e06c3`) that the accepted bytes were unavailable to guard
+  against — they are a pure function of the diff the caller already holds. **We do:**
+  accept records `accepted_content`; revert uses `save_if_unchanged` / `delete_if_unchanged`
+  against `Content(accepted)`, the same semantics as the TUI's `revert_plan`. The GUI
+  revert also restores the raw original text (CRLF/mixed endings preserved, `6c60a4940`)
+  and skips files the accept never wrote. A re-pin must not restore parity here.
+
+- **`DiffViewer::restore_diff_base` is not a trait member** (`e2662fd17`/`112a7618f`, 2026-09-26).
+  **Upstream:** has a no-op default `restore_diff_base` and a separate, unguarded
+  `LocalCodeEditorView` version — neither is called from the GUI revert path. **We do:**
+  the revert is `InlineDiffView`-only and guarded (see the row above); a diff card
+  becomes `Reverted` only after every guarded write lands, where the pin marks it
+  `Reverted` at once (before the write is even attempted). Don't restore either the
+  no-op trait member or the pin's synchronous marking on a re-pin.
+
+- **SVG is excluded from the system-viewer shortcut for AI-block, AI-document and
+  notebook links** (`fd97d6df6`, 2026-09-26, `app/src/ai/blocklist/block.rs`,
+  `app/src/ai/agent_providers/ai_document_view.rs`, `app/src/notebooks/link.rs`).
+  **Upstream** opens a model-named `.svg` in the default system handler — normally a
+  browser, which executes embedded scripting. **The defect:** an SVG is a scripting
+  document, not an inert image, and `notebooks/link.rs` had already been fixed for
+  exactly this on 2026-08-21 while `block.rs` and `ai_document_view.rs` (same bug,
+  previously unlisted) had not. **We do:** `is_supported_raster_image_file` (the
+  existing image list minus `svg`) gates the system-open shortcut everywhere;
+  `is_supported_image_file` is unchanged, since its four other callers mean "can we
+  display this", which stays true of SVG.
+
+- **`dismiss_ai_tooltips` keeps the repaint for a real hover reset and keeps the dismiss
+  events unconditional** (`9353cb534`, 2026-09-26), unlike `216d0efe7`. **Upstream's**
+  change makes the repaint conditional on a recording-span cache that is dead on arrival
+  here (session recording is declined, #350; `output.rs:2964` documents why), and its
+  `search_codebase.rs` sub-hunk has no target in this fork at all. **We do:** port only
+  the tooltip half — keep the unconditional `ctx.notify()` on focus change, since without
+  the recording-span cache there is nothing else to condition it on, and gating it would
+  just leave stale tooltips on screen.
+
+- **Launchable local paths are revealed, never opened** (`b33e54c70`, 2026-09-26, #681).
+  **Upstream:** clicking a path or `file://` link to an `.app`/`.pkg`/`.exe`/`.msi`/
+  `.desktop`/macro-bearing Office document hands it to the OS default handler, which
+  launches or executes it. **The defect:** a link inside model output or a notebook is
+  attacker- or model-controlled text; handing a launchable path straight to the OS
+  default handler runs it with no confirmation. **We do:**
+  `warp_util::launch_policy::is_launchable_path` routes it to the file manager instead
+  (launchable *text* still opens in the in-app editor), enforced in
+  `resolve_file_target`, the workspace sink, `AppContext::open_file_path`, the terminal
+  URL handler and `set_before_open_url`. **Open questions, not covered by this decision:**
+  `.html` under `open_file_editor` still resolves to `system_default`; `uri/mod.rs`'s
+  "Open with Phosphor" still executes runnable scripts by design; a file-tree
+  double-click of a `.docx`/`.app` now reveals rather than opens (a deliberate,
+  user-initiated choice, unlike the link surfaces above). A re-pin must not restore
+  `SystemGeneric` for these paths.
+
+- **LSP shutdown on quit** (`736e26767`, 2026-09-26, #680). **Upstream's**
+  `on_will_terminate` calls `LspManagerModel::terminate` from a fire-and-forget spot
+  right before winit's `process::exit(0)`, so the shutdown request races the exit and
+  may never be delivered. **We do:** `terminate_language_servers_for_app_exit`, which
+  waits up to 1s (`APP_EXIT_SHUTDOWN_GRACE`) on the background shutdowns before the
+  process actually exits. Expected divergence at re-pin; don't "restore" the pin's
+  fire-and-forget call. See also the ordering entry below (`0b0d8541a`), which moved
+  where in `on_will_terminate` this wait runs.
+
+- **MCP servers are stopped on app exit** (`96e8f94f6`, 2026-09-26, #687). **Upstream's**
+  `on_will_terminate` never stops MCP servers at all, and its winit loop's
+  `process::exit` skips `rmcp`'s kill-on-drop, so a stdio server that ignores EOF is
+  orphaned upstream. **We do:** close every transport, wait on a 1s deadline shared with
+  LSP shutdown (`APP_EXIT_SHUTDOWN_GRACE`), then SIGKILL leftover stdio children.
+  Expected divergence on re-pin. **Hardened (`be564eeaf`):** the kill is by handle, never
+  by bare pid — a pidfd on Linux (`pidfd_open`/`pidfd_send_signal`, so a kill after the
+  child is reaped fails `ESRCH` instead of hitting a reused pid), the child's start time
+  on macOS (`proc_pidinfo`), and the spawn-time process handle on Windows. Kernels
+  without pidfds (<5.3) and FreeBSD get no force-kill handle — the child still gets
+  stdin EOF but is never force-killed; that residue is still open (see `TODO.md`).
+
+- **Rewind revert sequencing** (`dab34b159`, 2026-09-26, #686). **Upstream** has no guard
+  on its unconditional `RevertChanges` fan-out, so it has no ordering either — every
+  file's reverts fire at once. **We do:** each file's reverts run strictly
+  newest→oldest behind the #672 guard, and a refusal stops that file's older reverts
+  rather than racing them. A re-pin must not restore the pin's simultaneous fan-out.
+
+- **Signal-initiated quits stay graceful and exit safely** (`32d203389`/`6be0450a1`,
+  2026-09-26, #685). **Upstream** handles only `SIGINT`, and only in the headless build
+  (`4111d08f9:app/src/warpui/platform/headless/event_loop.rs:235`). **The defect:**
+  closing the launching terminal delivers `SIGHUP` twice (the shell forwards it, then the
+  kernel on session-leader exit) and `logind` sends `SIGTERM` then `SIGHUP` on a session
+  stop — a naive "any second signal escalates" policy (this fork's own first cut) treats
+  a normal shutdown sequence as a demand for an immediate, ungraceful exit. **We do:**
+  `SIGTERM`/`SIGHUP` run the full graceful quit, non-cancellable, with a 5s hard
+  deadline; escalation to an immediate exit requires a *repeat of the same signal* at
+  least `ESCALATION_MIN_INTERVAL` (1s) after its first delivery, and `SIGHUP` never
+  escalates. The deadline watchdog and any escalated exit use `hard_exit` (flush the
+  logger, then `_exit`/`TerminateProcess`) rather than `std::process::exit`, which would
+  otherwise race atexit handlers and C++ static destructors (GPU drivers, SQLite) still
+  running on the main thread. A signal-initiated quit that completes re-raises the
+  signal after restoring its default disposition, so the parent sees "terminated by
+  SIGTERM" (which systemd treats as a clean stop, unlike exit status 143) instead of
+  exit 0. The terminal server, which shares the host's process group and session, now
+  catches (not ignores) `SIGHUP`/`SIGTERM` and keeps running until the host's socket
+  closes or the host dies — it used to die at the same moment the host began its
+  graceful quit, closing every pty out from under it.
+
+- **`on_will_terminate` ordering** (`0b0d8541a`, 2026-09-26, #680/#687). **Upstream** runs
+  the bounded LSP+MCP wait immediately after the unbounded persistence-writer join and
+  before the terminal-server and app-services teardown. **The defect:** a slow writer
+  drain delayed even the *start* of the server shutdowns, eating into the 5s SIGTERM
+  deadline, and Linux's single-instance D-Bus name was still held during the wait, so a
+  relaunch during it was routed to the hidden, exiting instance. **We do:** start LSP and
+  MCP shutdowns immediately (no wait), flush notebooks, join the writer, tear down the
+  terminal server (still after the writer, so shells aren't persisted as exited), tear
+  down app services (releasing the single-instance name), *then* wait for the servers
+  until their shared deadline and kill leftovers.
+
+- **A safety gate forces an autodetected English prompt back to AI even when the
+  classifier says Shell** (`aac2d9aec`/`9274515a4`/`004045c44`/`487953581`, 2026-09-26/27,
+  `crates/input_classifier/src/safety_gate.rs`). **Upstream has no such gate** — confirmed
+  absent from `4111d08f9`: `crates/input_classifier` at the pin has no `safety_gate.rs`,
+  and neither the ONNX/fastText/heuristic classifiers nor `app/src/input_classifier.rs`
+  post-process a `Shell` verdict at all. **The defect this fixes is real, not
+  hypothetical:** two independent gaps in the shared classifier let English prose
+  containing a shell metacharacter or a one-off keyword after a `;` autodetect as Shell
+  and execute — e.g. "Run exactly this: sleep 8; echo hi > ~/lrc.txt" ran in bash. **We
+  do:** `SafetyGatedClassifier<C>` wraps every classifier (ONNX, fastText, heuristic) and
+  overrides a `Shell` verdict back to AI when the buffer's effective first token has no
+  command evidence (no token description, not a one-off keyword, not path-like) and is
+  itself an ordinary English word — before the session's `$PATH` index has finished
+  loading, only when the buffer also has a prose shape (a later token ending in `:`
+  before the first shell operator, e.g. "run exactly this:"); once the index is loaded,
+  dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
+  happens to be an ordinary English word still overrides to AI once the command index is
+  loaded — the fail-safe direction, but a real (documented) false positive.
