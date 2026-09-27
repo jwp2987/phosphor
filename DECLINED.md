@@ -896,3 +896,39 @@ upstream's behavior is actually a defect rather than a preference.
   dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
+
+- **A silently-degraded remote SSH session gets a dismissible banner instead of Warp's
+  blocking chooser** (`113e56e1d`, 2026-09-27, issue #719,
+  `app/src/terminal/view/ssh_remote_server_failed_banner.rs`,
+  `app/src/remote_server/ssh_transport.rs`). **Upstream, confirmed at the pin
+  `4111d08f9`:** blocks the session with a labelled modal, "Choose your experience for
+  this remote session," naming both options, marking one Recommended, stating what
+  declining costs, plus "Don't ask me this again" and a settings link — the user cannot
+  proceed without an explicit choice. **The defect this fork had instead (TODO.md
+  "Remote-session setup degrades silently", measured 2026-09-19):** no chooser AND no
+  indication — `RemoteServerSetupState::Unsupported` (host correctly declined as
+  incompatible) reached no banner at all, and `prompt_render_helper.rs`'s own comment
+  admitted the `Failed` case rendered the identical generic "Starting shell..." prompt a
+  healthy session gets. A user could sit in a legacy, non-phosphorized SSH session
+  indistinguishable from a working one. **Explicit maintainer decision, this issue: NOT
+  a blocking chooser either.** A blocking modal on every SSH connection is a worse
+  interruption than a silent degrade for the common case (most SSH hosts are either
+  fully supported or fully unsupported for a given client build, so the choice rarely
+  varies session to session) — the fix is to say what happened, not to force a decision
+  before the shell is usable. **We do:** a non-blocking, dismissible, per-session banner
+  (`SshRemoteServerFailedBanner`, extended with an `Unsupported` kind) naming the reason
+  when known (glibc too old, with both versions; non-glibc, with the detected libc name)
+  and leaving the existing one-click `Phosphorize SSH session  Ctrl I` footer chip as the
+  path back to the guided flow — no new UI invented, no change to which mode is chosen.
+  Also gave the three `IntegrityFailed` install-refusal exit codes (no pinned checksum on
+  this build / no digest tool on the remote host / genuine tampering) distinct wording
+  instead of one "integrity check failed" headline, which previously read as detected
+  tampering on every local/dev build. **Residue, tracked on #719 rather than guessed at
+  here:** the fully-silent default legacy-fallback case (flag on, no connected client, no
+  explicit `Failed`/`Unsupported` state) has no event to hook without new session-
+  bootstrap plumbing; `WarpifiedRemote{host_id: None}`'s file-tool refusal reaches only
+  the model, not the user, at its own call site (addressed indirectly by this banner's
+  shared body text, not directly); no-agent-conversation routing and
+  `agents.byop.last_used_model_id` provider-reachability both need a new capability (a
+  working classifier / an inline agent path, and a live reachability probe,
+  respectively), not a surfacing fix.
