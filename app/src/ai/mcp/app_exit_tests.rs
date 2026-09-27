@@ -260,4 +260,64 @@ mod real_process {
         let status = child.wait().expect("sleep is reaped");
         assert_eq!(status.signal(), Some(libc::SIGKILL));
     }
+
+    /// The real bug (jwp2987/phosphor#707): a stdio MCP server spawned under a
+    /// wrapper (`npx`, `uvx`, a shell script) can leave a grandchild that ignores
+    /// stdin EOF. This spawns a `sh` stub that backgrounds a long-lived `sleep` and
+    /// prints its pid before waiting on it -- the same shape as a wrapper script
+    /// that execs nothing and just supervises its own child -- puts it in a new
+    /// process group the way the production spawn site does, and asserts that
+    /// `ChildKillHandle::kill` (the app-exit and stop/restart force-kill primitive)
+    /// takes the grandchild down too, not just the direct child.
+    #[test]
+    fn killing_the_group_leader_also_kills_a_grandchild() {
+        use std::io::{BufRead as _, BufReader};
+        use std::os::unix::process::CommandExt as _;
+        use std::process::Stdio;
+        use std::time::{Duration, Instant};
+
+        #[allow(clippy::disallowed_types)]
+        let mut leader = std::process::Command::new("sh")
+            .arg("-c")
+            // Background a long sleep, print its pid so the test can watch for it,
+            // then wait on it -- `wait` returns once SIGKILL takes the child, and
+            // never on its own within the test's lifetime otherwise.
+            .arg("sleep 300 & echo $!; wait")
+            .stdout(Stdio::piped())
+            .process_group(0) // new group of its own, pgid == leader's pid.
+            .spawn()
+            .expect("sh starts");
+
+        let mut stdout = BufReader::new(leader.stdout.take().expect("stdout piped"));
+        let mut pid_line = String::new();
+        stdout
+            .read_line(&mut pid_line)
+            .expect("grandchild pid printed");
+        let grandchild_pid: libc::pid_t = pid_line.trim().parse().expect("a pid");
+
+        // SAFETY: a signal-0 probe; doesn't actually signal anything.
+        assert_eq!(
+            unsafe { libc::kill(grandchild_pid, 0) },
+            0,
+            "the grandchild must be alive before the kill"
+        );
+
+        let handle = ChildKillHandle::open(leader.id()).expect("handle opens");
+        assert!(handle.kill(), "the group leader must be signalled");
+        leader.wait().expect("sh is reaped");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: still just a signal-0 probe.
+            let alive = unsafe { libc::kill(grandchild_pid, 0) } == 0;
+            if !alive {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "grandchild {grandchild_pid} outlived its group leader"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }

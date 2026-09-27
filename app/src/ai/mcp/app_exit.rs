@@ -149,8 +149,14 @@ impl ChildProcessSlot {
 /// - macOS: no pidfds, so the child's start time is recorded, and the kill is only
 ///   sent if the pid still names a process with that start time.
 /// - Windows: a process handle opened at spawn. Holding it keeps the process object,
-///   and so its pid, from being reused.
+///   and so its pid, from being reused. No process-group/Job-Object equivalent of
+///   `kill_group` is implemented yet (jwp2987/phosphor#707); a stdio server's
+///   grandchild is not killed on Windows.
 /// - Anything else: no handle.
+///
+/// On Unix, `kill` also best-effort signals the child's whole process group (see
+/// [`ChildKillHandle::kill`]): the spawn site puts the direct child in a new group
+/// of its own, so `pgid == pid` and no separate id needs tracking.
 pub(crate) struct ChildKillHandle {
     pid: u32,
     inner: imp::Handle,
@@ -171,11 +177,23 @@ impl ChildKillHandle {
     /// Forcibly kills the child (`SIGKILL` / `TerminateProcess`), returning whether
     /// the kill was delivered. A child that has already exited is left alone.
     ///
-    /// rmcp spawns the child from a plain `tokio::process::Command` (no process
-    /// group), so this kills that process alone; anything it spawned itself is left
-    /// to notice its stdin/stdout closing.
+    /// The direct child is spawned into its own new process group (`pgid == pid`,
+    /// jwp2987/phosphor#707), so on Unix this first signals the whole group
+    /// (`kill(-pid, SIGKILL)`) -- but only if the leader was confirmed to still be the
+    /// process we spawned (pidfd on Linux, start time on macOS) just before the guarded
+    /// kill. The group signal follows that kill immediately: the killed leader is a
+    /// zombie until reaped, and a surviving grandchild keeps the pgid referenced, so in
+    /// either case the number cannot have been reissued to an unrelated group. If
+    /// the leader is already gone, the group is left alone: a surviving grandchild is
+    /// the accepted residual, never a signal to a pgid that may have been reused. The
+    /// guarded single-process kill then runs as before.
     pub(crate) fn kill(&self) -> bool {
-        imp::kill(&self.inner, self.pid)
+        let ours = imp::is_ours(&self.inner, self.pid);
+        let killed = imp::kill(&self.inner, self.pid);
+        if ours {
+            imp::kill_group(self.pid);
+        }
+        killed
     }
 }
 
@@ -202,6 +220,23 @@ mod imp {
         Some(Handle(unsafe { OwnedFd::from_raw_fd(fd) }))
     }
 
+    /// Whether the pidfd still refers to a live (or unreaped) process: signal 0 checks
+    /// deliverability without sending anything.
+    pub(super) fn is_ours(handle: &Handle, _pid: u32) -> bool {
+        let flags: libc::c_uint = 0;
+        // SAFETY: `pidfd_send_signal(2)` with signal 0 on a pidfd we own, no siginfo.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                handle.0.as_raw_fd(),
+                0,
+                std::ptr::null::<libc::siginfo_t>(),
+                flags,
+            )
+        };
+        rc == 0
+    }
+
     pub(super) fn kill(handle: &Handle, pid: u32) -> bool {
         let flags: libc::c_uint = 0;
         // SAFETY: `pidfd_send_signal(2)` on a pidfd we own, with no siginfo.
@@ -222,6 +257,22 @@ mod imp {
             return false;
         }
         true
+    }
+
+    /// Best-effort `SIGKILL` to the whole process group (jwp2987/phosphor#707): the
+    /// spawn site puts the child in a new group of its own, so `pgid == pid`. A
+    /// negative pid signals the group rather than the single process. Only called
+    /// once `is_ours` confirmed the leader (see `ChildKillHandle::kill`). Errors
+    /// (`ESRCH`: the group is already empty) are not logged -- the common case is that
+    /// there was never a grandchild to reach.
+    pub(super) fn kill_group(pid: u32) {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return;
+        };
+        // SAFETY: plain kill(2); a negative pid targets the process group `-pid`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -260,6 +311,10 @@ mod imp {
         })
     }
 
+    pub(super) fn is_ours(handle: &Handle, pid: u32) -> bool {
+        start_time(pid) == Some(handle.start_time)
+    }
+
     pub(super) fn kill(handle: &Handle, pid: u32) -> bool {
         // Only signal `pid` while it still names the process we spawned.
         if start_time(pid) != Some(handle.start_time) {
@@ -270,6 +325,19 @@ mod imp {
         };
         // SAFETY: plain kill(2).
         unsafe { libc::kill(raw, libc::SIGKILL) == 0 }
+    }
+
+    /// Best-effort `SIGKILL` to the whole process group (jwp2987/phosphor#707); see
+    /// the Linux `kill_group` for the reasoning. Gated on the start-time check in
+    /// `is_ours`, which carries this module's existing macOS residual (no pidfd).
+    pub(super) fn kill_group(pid: u32) {
+        let Ok(pid) = libc::pid_t::try_from(pid) else {
+            return;
+        };
+        // SAFETY: plain kill(2); a negative pid targets the process group `-pid`.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
     }
 }
 
@@ -294,10 +362,20 @@ mod imp {
         Some(Handle(handle.0 as isize))
     }
 
+    pub(super) fn is_ours(_handle: &Handle, _pid: u32) -> bool {
+        false
+    }
+
     pub(super) fn kill(handle: &Handle, _pid: u32) -> bool {
         // SAFETY: terminating the process our open handle refers to.
         unsafe { TerminateProcess(HANDLE(handle.0 as *mut core::ffi::c_void), 1) }.is_ok()
     }
+
+    /// No Windows equivalent yet (jwp2987/phosphor#707): a Job Object would need
+    /// plumbing through to this out-of-band kill path (not just to rmcp's own
+    /// `Child`), which is more than a "if simple" change. A stdio server's
+    /// grandchild is not killed on Windows.
+    pub(super) fn kill_group(_pid: u32) {}
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -308,9 +386,15 @@ mod imp {
         None
     }
 
+    pub(super) fn is_ours(_handle: &Handle, _pid: u32) -> bool {
+        false
+    }
+
     pub(super) fn kill(_handle: &Handle, _pid: u32) -> bool {
         false
     }
+
+    pub(super) fn kill_group(_pid: u32) {}
 }
 
 #[cfg(test)]

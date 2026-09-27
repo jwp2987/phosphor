@@ -16,13 +16,15 @@ use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentExchangeId, AIAgentInput,
     AIAgentOutput, AIAgentOutputMessage, AIAgentOutputMessageType, AIAgentTodo, AIAgentTodoList,
     AIBlockModel, AIBlockOutputStatus, AIConversationAutoexecuteMode, AIConversationId,
-    AIRequestType, AgentViewEntryOrigin, AgentViewState, AskUserQuestionItem,
-    AskUserQuestionOption, AskUserQuestionType, BlockPadding, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, ConversationStatus, Harness, InputType, LLMId, LLMPreferences,
-    MessageId, OutputStatusUpdateCallback, PtyIntent, PtyIntentEvent, ServerOutputId, Session,
-    Shared, SizeInfo, SizeUpdate, SlashCommandKind, TaskId, TuiMcpAction, TuiMcpServerId,
-    TuiUpArrowHistoryItemKind, WarpConfig, WarpConfigUpdateEvent, export_conversation_markdown,
-    queue_tui_permission_action, register_tui_session_view_test_singletons, slash_commands,
+    AIRequestType, AfterBlockCompletedEvent, AgentViewEntryOrigin, AgentViewState,
+    AskUserQuestionItem, AskUserQuestionOption, AskUserQuestionType, BlockPadding, BlockType,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, ConversationStatus, Harness, InputType,
+    LLMId, LLMPreferences, LongRunningCommandControlState, MessageId, OutputStatusUpdateCallback,
+    PtyIntent, PtyIntentEvent, ServerOutputId, Session, Shared, SizeInfo, SizeUpdate,
+    SlashCommandKind, TaskId, TerminalSurface, TuiMcpAction, TuiMcpServerId,
+    TuiUpArrowHistoryItemKind, UserTakeOverReason, WarpConfig, WarpConfigUpdateEvent,
+    export_conversation_markdown, queue_tui_permission_action,
+    register_tui_session_view_test_singletons, slash_commands,
 };
 use warp_core::settings::Setting as _;
 use warp_editor::model::CoreEditorModel;
@@ -1866,6 +1868,141 @@ fn stale_user_pty_bytes_are_dropped_after_agent_takes_control_or_is_tagged_in() 
 
         assert_eq!(*writes.borrow(), vec![b"user".to_vec()]);
     });
+}
+
+// jwp2987/phosphor#673 follow-up: the TUI previously implemented none of
+// `TerminalSurface`'s password-prompt polling hooks (inheriting the trait's `false`
+// default), so an agent-driven command stalled on a password prompt had nobody to
+// notice and hand it to the user. These mirror `view_test.rs`'s
+// `agent_run_subshell_command_still_arms_password_prompt_polling` for the ported,
+// agent-driven half; the user's-own-command polling (notification setting, warpify
+// subshell filter) is deliberately out of scope, see the impl's doc comment.
+
+#[cfg(unix)]
+#[test]
+fn should_start_password_prompt_polling_arms_only_while_the_agent_drives_the_active_block() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("sudo apt remove foo", "Password: ");
+            assert!(
+                !view.should_start_password_prompt_polling("sudo apt remove foo", ctx),
+                "the user's own command must not be polled (out of scope for this port)"
+            );
+
+            let conversation_id = AIConversationId::new();
+            view.terminal_model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("agent-sudo".to_owned()),
+                    None,
+                    conversation_id,
+                );
+
+            assert!(
+                view.should_start_password_prompt_polling("sudo apt remove foo", ctx),
+                "an agent-driven command must be polled, or its password prompt hangs \
+                 for the 30-minute backstop"
+            );
+        });
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn should_stop_password_prompt_polling_matches_the_completed_blocks_type() {
+    // Mirrors `TerminalView::should_stop_password_prompt_polling`
+    // (`app/src/terminal/view.rs`) exactly -- same three variants stop polling, the
+    // rest (a restored/in-band/static/bootstrap-hidden block) do not.
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        let stops = |block_type: BlockType| {
+            view.read(&app, |view, _| {
+                view.should_stop_password_prompt_polling(&AfterBlockCompletedEvent {
+                    command_finished_to_precmd_delay: None,
+                    block_type,
+                    num_secrets_obfuscated: 0,
+                    cloud_workflow_id: None,
+                    cloud_env_var_collection_id: None,
+                })
+            })
+        };
+
+        // `BlockType::User(_)` is the third "stops polling" variant alongside these two --
+        // omitted here because constructing a `UserBlockCompleted` needs types this crate
+        // does not otherwise need exported (`tui_export.rs`); the `matches!` arm in the
+        // implementation treats all three identically.
+        assert!(stops(BlockType::Background(Default::default())));
+        assert!(stops(BlockType::BootstrapVisible(Default::default())));
+        assert!(!stops(BlockType::Restored));
+        assert!(!stops(BlockType::InBandCommand));
+        assert!(!stops(BlockType::Static));
+        assert!(!stops(BlockType::BootstrapHidden));
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn on_possible_password_prompt_hands_control_to_the_user_when_the_agent_is_driving() {
+    App::test((), |mut app| async move {
+        let fixture = focus_test_fixture(&mut app);
+        let (view, _) = add_focus_test_session(&mut app, &fixture, true);
+
+        view.update(&mut app, |view, ctx| {
+            view.terminal_model
+                .lock()
+                .simulate_long_running_block("sudo apt remove foo", "Password: ");
+
+            // Not agent-driving: must not touch the block's control state.
+            view.on_possible_password_prompt(None, ctx);
+            assert_eq!(
+                view.terminal_model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .long_running_control_state()
+                    .cloned(),
+                None,
+                "the user's own command must not be handed anywhere"
+            );
+
+            let conversation_id = AIConversationId::new();
+            view.terminal_model
+                .lock()
+                .block_list_mut()
+                .active_block_mut()
+                .set_agent_interaction_mode_for_requested_command(
+                    AIAgentActionId::from("agent-sudo".to_owned()),
+                    None,
+                    conversation_id,
+                );
+
+            view.on_possible_password_prompt(None, ctx);
+
+            assert_eq!(
+                view.terminal_model
+                    .lock()
+                    .block_list()
+                    .active_block()
+                    .long_running_control_state()
+                    .cloned(),
+                Some(LongRunningCommandControlState::User {
+                    reason: UserTakeOverReason::BlockedOnInput,
+                }),
+                "an agent-driven command stalled on a password prompt must hand control \
+                 to the user, or the block hangs at \"Executing command...\" until the \
+                 30-minute backstop"
+            );
+        });
+    })
 }
 
 fn focus_test_fixture(app: &mut App) -> FocusTestFixture {

@@ -28,7 +28,8 @@ impl QueuedQueryId {
 /// Zap note: upstream Warp also has an `InitialCloudMode` origin for a permanently-locked
 /// row that holds the initial Cloud Mode prompt until hand-off. Cloud Mode is a Warp cloud
 /// feature that Zap does not have, so that origin (and its dedicated `remove_*` path) is
-/// dropped here. The only remaining locked origin is `PendingLrcAutoQueue`.
+/// dropped here. The locked origins are `PendingLrcAutoQueue` and (jwp2987/phosphor#690
+/// follow-up) `PendingApprovalFollowUp`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueuedQueryOrigin {
     /// Filed via the `/queue <prompt>` slash command.
@@ -40,6 +41,14 @@ pub enum QueuedQueryOrigin {
     /// Filed while an agent-requested run_shell_command action's snapshot has not yet fired.
     /// Locked for manual push and auto-fire until the snapshot fires.
     PendingLrcAutoQueue,
+    /// Filed because the conversation was `Blocked` on a pending action confirmation when the
+    /// user submitted a follow-up. Locked for manual push and auto-fire until the blocked
+    /// action resolves (approved and finished, rejected, or the conversation is cancelled --
+    /// see [`QueuedQueryModel::unlock_pending_approval_rows`]).
+    PendingApprovalFollowUp,
+    /// A former `PendingApprovalFollowUp` row whose blocked action has resolved. Ordinary
+    /// unlocked queued-prompt semantics from here.
+    ApprovalFollowUp,
     /// Filed as the follow-up prompt of a `/compact-and <prompt>` slash command, waiting for
     /// the summarize to finish.
     CompactAndSlashCommand,
@@ -130,9 +139,13 @@ impl QueuedQuery {
     /// so the row simply ignored every click. The panel already took this view: it disables
     /// only the Send Now button for these rows (`queued_prompts_panel.rs:400`).
     ///
-    /// `PendingLrcAutoQueue` rows are locked only until the action snapshot fires.
+    /// `PendingLrcAutoQueue` rows are locked only until the action snapshot fires;
+    /// `PendingApprovalFollowUp` rows only until the blocked action resolves.
     pub fn is_locked(&self) -> bool {
-        matches!(self.origin, QueuedQueryOrigin::PendingLrcAutoQueue)
+        matches!(
+            self.origin,
+            QueuedQueryOrigin::PendingLrcAutoQueue | QueuedQueryOrigin::PendingApprovalFollowUp
+        )
     }
 }
 
@@ -208,8 +221,10 @@ pub enum QueuedQueryEvent {
         conversation_id: AIConversationId,
         query_id: QueuedQueryId,
     },
-    /// Emitted when PendingLrcAutoQueue rows are transitioned to LrcAutoQueue after
-    /// the action snapshot fires.
+    /// Emitted when locked rows are transitioned to their unlocked counterpart:
+    /// `PendingLrcAutoQueue` -> `LrcAutoQueue` after the action snapshot fires, or
+    /// `PendingApprovalFollowUp` -> `ApprovalFollowUp` after a blocked action resolves
+    /// (jwp2987/phosphor#690 follow-up).
     RowUnlocked {
         conversation_id: AIConversationId,
     },
@@ -517,6 +532,37 @@ impl QueuedQueryModel {
         }
     }
 
+    /// Transitions all `PendingApprovalFollowUp` rows for `conversation_id` to
+    /// `ApprovalFollowUp`, unlocking them for manual push and auto-fire now that the blocked
+    /// action they were waiting on has resolved. Emits `RowUnlocked` if any rows were changed.
+    ///
+    /// Called from the same `drain_queued_prompts` sites that already call
+    /// [`Self::unlock_pending_lrc_rows`] (jwp2987/phosphor#690 follow-up): a turn `Complete`
+    /// auto-fires the now-unlocked head through the ordinary path, matching "approved and
+    /// finished" and "rejected" (the conversation continues to some other terminal status); a
+    /// turn `Error`/`Cancelled` unlocks but only restores the head into the input when the user
+    /// is looking at the conversation, otherwise leaving it queued -- never a silent send for a
+    /// genuinely cancelled conversation.
+    pub fn unlock_pending_approval_rows(
+        &mut self,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(state) = self.queues.get_mut(&conversation_id) else {
+            return;
+        };
+        let mut unlocked = false;
+        for row in state.queue.iter_mut() {
+            if row.origin == QueuedQueryOrigin::PendingApprovalFollowUp {
+                row.origin = QueuedQueryOrigin::ApprovalFollowUp;
+                unlocked = true;
+            }
+        }
+        if unlocked {
+            ctx.emit(QueuedQueryEvent::RowUnlocked { conversation_id });
+        }
+    }
+
     /// Removes all `PendingLrcAutoQueue` rows for `conversation_id` so stale locked
     /// rows do not linger.
     pub fn remove_pending_lrc_rows(
@@ -565,7 +611,8 @@ impl QueuedQueryModel {
     /// Used by the non-clean drain path (Error / Cancelled) to restore a single popped
     /// prompt to the input editor. No-ops when the head is locked
     /// ([`QueuedQuery::is_locked`]) so a status-transition arriving before a locked
-    /// `PendingLrcAutoQueue` row is unlocked cannot clobber it.
+    /// `PendingLrcAutoQueue` or `PendingApprovalFollowUp` (jwp2987/phosphor#690 follow-up) row
+    /// is unlocked cannot clobber it.
     pub fn pop_front(
         &mut self,
         conversation_id: AIConversationId,

@@ -51,11 +51,18 @@ const MAX_PROMPT_LINES: f32 = 5.;
 const PROMPT_PREVIEW_MAX_CHARS: usize = 500;
 const SEND_NOW_PENDING_LRC_TOOLTIP: &str =
     "Prompts cannot be sent until the full terminal use agent is initialized.";
+/// jwp2987/phosphor#690 follow-up: `QueuedQueryOrigin::PendingApprovalFollowUp`.
+const SEND_NOW_PENDING_APPROVAL_TOOLTIP: &str =
+    "This will send once the pending action is approved or rejected.";
 const SEND_NOW_TO_FULL_TERMINAL_USE_AGENT_TOOLTIP: &str = "Send to full terminal use agent";
 const SEND_NOW_AS_READ_ONLY_VIEWER_TOOLTIP: &str = "Read-only viewers cannot send prompts.";
 /// Suffix on rows auto-queued during an agent-requested long-running command, which fire
 /// when that command completes rather than at the end of the full response.
 const LRC_AUTO_QUEUE_ROW_SUFFIX: &str = "(queued until the command finishes)";
+/// Suffix on a row queued while its conversation was `Blocked` on a pending action confirmation
+/// (jwp2987/phosphor#690 follow-up), shown only while it is still locked
+/// (`QueuedQueryOrigin::PendingApprovalFollowUp`).
+const SEND_NOW_PENDING_APPROVAL_ROW_SUFFIX: &str = "(queued until the pending action resolves)";
 
 /// Returns the position-cache id used to look up a row's bounding rect during a drag.
 /// Indexed by the row's current visual index so swaps maintain stable lookups.
@@ -398,9 +405,14 @@ impl QueuedPromptsPanelView {
                 continue;
             };
             let disabled_for_pending_lrc = *origin == QueuedQueryOrigin::PendingLrcAutoQueue;
-            let disabled = disabled_for_pending_lrc || !self.can_send_prompt;
+            let disabled_for_pending_approval =
+                *origin == QueuedQueryOrigin::PendingApprovalFollowUp;
+            let disabled =
+                disabled_for_pending_lrc || disabled_for_pending_approval || !self.can_send_prompt;
             let tooltip = if disabled_for_pending_lrc {
                 SEND_NOW_PENDING_LRC_TOOLTIP
+            } else if disabled_for_pending_approval {
+                SEND_NOW_PENDING_APPROVAL_TOOLTIP
             } else if !self.can_send_prompt {
                 SEND_NOW_AS_READ_ONLY_VIEWER_TOOLTIP
             } else if lrc_subagent_in_progress {
@@ -1112,7 +1124,14 @@ fn render_row(props: RenderRowProps<'_>, app: &AppContext) -> Box<dyn Element> {
             .finish();
             // Command rows are prefaced with a blue `!` so they read as shell commands; prompt
             // rows render their text directly. Rows auto-queued during an agent-requested
-            // long-running command carry an italic suffix explaining when they will fire.
+            // long-running command, or waiting on a blocked action to resolve
+            // (jwp2987/phosphor#690 follow-up), carry an italic suffix explaining when they
+            // will fire. `ApprovalFollowUp` (the unlocked counterpart, once the blocked action
+            // has resolved) is an ordinary row from then on and gets no suffix, unlike
+            // `LrcAutoQueue`, which keeps its "queued until the command finishes" meaning even
+            // after `PendingLrcAutoQueue` unlocks.
+            let approval_suffix = (origin == QueuedQueryOrigin::PendingApprovalFollowUp)
+                .then_some(SEND_NOW_PENDING_APPROVAL_ROW_SUFFIX);
             if is_command {
                 Flex::row()
                     .with_cross_axis_alignment(CrossAxisAlignment::Center)
@@ -1127,10 +1146,12 @@ fn render_row(props: RenderRowProps<'_>, app: &AppContext) -> Box<dyn Element> {
                     .finish()
             } else if origin == QueuedQueryOrigin::LrcAutoQueue
                 || origin == QueuedQueryOrigin::PendingLrcAutoQueue
+                || approval_suffix.is_some()
             {
+                let suffix_text = approval_suffix.unwrap_or(LRC_AUTO_QUEUE_ROW_SUFFIX);
                 let suffix_color: ColorU = theme.sub_text_color(theme.surface_1()).into();
                 let suffix = Text::new(
-                    LRC_AUTO_QUEUE_ROW_SUFFIX.to_owned(),
+                    suffix_text.to_owned(),
                     appearance.ui_font_family(),
                     queued_input_font_size,
                 )

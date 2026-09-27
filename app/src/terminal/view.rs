@@ -5389,6 +5389,14 @@ impl TerminalView {
                 QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                     model.unlock_pending_lrc_rows(conversation_id, ctx)
                 });
+                // A turn reaching `Complete` also means any `Blocked` status this conversation
+                // had has been left -- the blocked action was approved and finished, or
+                // rejected and the conversation carried on to completion here
+                // (jwp2987/phosphor#690 follow-up). Unlock `PendingApprovalFollowUp` rows the
+                // same way, so they auto-fire below like any other unlocked row.
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_approval_rows(conversation_id, ctx)
+                });
 
                 let input_is_empty = self.input.as_ref(ctx).buffer_text(ctx).is_empty();
                 let first_row_is_in_edit_mode =
@@ -5492,6 +5500,15 @@ impl TerminalView {
                 // is looking.
                 QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
                     model.unlock_pending_lrc_rows(conversation_id, ctx)
+                });
+                // Same reasoning for a `Blocked` conversation that ends up here instead: a
+                // genuinely cancelled conversation (`FinishReason::Cancelled`) must not send a
+                // `PendingApprovalFollowUp` row silently (jwp2987/phosphor#690 follow-up) --
+                // unlocking it (without auto-firing, which only the `Complete` arm above does)
+                // gets it exactly the same restore-to-input-or-leave-queued treatment as any
+                // other row below, never a silent send.
+                QueuedQueryModel::handle(ctx).update(ctx, |model, ctx| {
+                    model.unlock_pending_approval_rows(conversation_id, ctx)
                 });
 
                 // Only restore the head into the input when the user is currently viewing this

@@ -1873,6 +1873,21 @@ async fn spawn_server(
                     // On Windows, ensure that no console window is shown.
                     #[cfg(windows)]
                     cmd.creation_flags(windows::Win32::System::Threading::CREATE_NO_WINDOW.0);
+
+                    // Put the child in a new process group of its own
+                    // (jwp2987/phosphor#707): its pgid becomes its own pid, so
+                    // `ChildKillHandle::kill` can reach a grandchild spawned by the
+                    // server itself (e.g. under `npx`/`uvx`/a shell wrapper) that
+                    // ignores stdin EOF, not just the direct child. This also means
+                    // Ctrl-C at a host terminal no longer hits the server directly:
+                    // shutdown goes through the app's own graceful `on_will_terminate`
+                    // path instead (which already stops MCP servers, #687), which is
+                    // the point -- a raw SIGINT bypassed the close/drain sequence.
+                    // No Windows equivalent yet (would need a Job Object plumbed
+                    // through to `ChildKillHandle`'s out-of-band kill path); tracked
+                    // as a follow-up in TODO.md.
+                    #[cfg(unix)]
+                    cmd.process_group(0);
                 }),
             )
             .stderr(std::process::Stdio::piped())
@@ -2367,6 +2382,15 @@ impl<T: rmcp::transport::Transport<R>, R: rmcp::service::ServiceRole> rmcp::tran
         let close = self.transport.close();
         async move {
             let result = close.await;
+            // `close` is rmcp's own `TokioChildProcess::graceful_shutdown`: it waits
+            // for the child, killing only that one process (no process group) if it
+            // doesn't exit in time. Whether it exited on its own or was killed, a
+            // grandchild it spawned (jwp2987/phosphor#707) can still be running, so
+            // this also reaches for the whole group here -- covering the ordinary
+            // stop/restart path (`shutdown_server`), not just app exit. A no-op
+            // (`ESRCH`) in the overwhelmingly common case where there was nothing
+            // left to kill.
+            child.kill();
             child.release();
             result
         }

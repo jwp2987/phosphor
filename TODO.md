@@ -2875,14 +2875,77 @@ flags already covered by `DECLINED.md`. **Do not touch the 49.**
       **Fixed 2026-09-26 (#673, `1ea40df0d`):** the agent-driving check now runs before the
       subshell filter. The filter still applies to the user's own blocks.
 
-- [ ] **Not done: the TUI gets none of this.** `impl TerminalSurface for TuiTerminalSessionView`
-      (`crates/warp_tui/src/terminal_session_view.rs:5775`) overrides only `on_shell_determined`
-      and `on_pty_spawn_failed`, so it inherits the trait's `false` default for
-      `should_start_password_prompt_polling` and has never polled termios at all. That predates
-      this change. Its rendering half *is* wired — `terminal_use_status_text`
-      (`crates/warp_tui/src/tui_cli_subagent_view.rs:86`) shows the new state — so a TUI session
-      whose control state was set elsewhere displays correctly; it simply cannot detect the
-      prompt itself.
+- [x] **#733 — the TUI got none of this, agent-driven password-prompt half
+      fixed.** `impl TerminalSurface for TuiTerminalSessionView`
+      (`crates/warp_tui/src/terminal_session_view.rs`) overrode only
+      `on_shell_determined` and `on_pty_spawn_failed`, so it inherited the trait's
+      `false` default for `should_start_password_prompt_polling` and never polled
+      termios at all. That predated this change. Its rendering half *is* wired —
+      `terminal_use_status_text` (`crates/warp_tui/src/tui_cli_subagent_view.rs:86`)
+      shows the new state — so a TUI session whose control state was set elsewhere
+      displays correctly; it simply could not detect the prompt itself.
+      **Fixed:** `is_agent_driving_active_block` (mirrors the GUI's),
+      `should_start_password_prompt_polling` (arms whenever the agent drives the
+      active block — `TerminalManager<S>` is generic over the surface and real TUI
+      sessions already run through the same poller, so this was reachable, just
+      unimplemented), `should_stop_password_prompt_polling`, and
+      `on_possible_password_prompt` (hands control to the user via the TUI's
+      existing `cli_subagent_controller`). `BlockType` added to `tui_export.rs`.
+      **Deliberately scoped out, not a regression** (see the impl's doc comment):
+      polling for the *user's* own commands' password prompts
+      (`password_notifications_enabled`, the warpify-subshell-alias filter, SSH
+      drag-and-drop propagation — GUI-specific notification/DnD features with no
+      TUI equivalent; the TUI polled for nobody's password prompts before this).
+      **Still open — a real follow-up, not done here:** the non-password
+      `[y/N]`/`read -p` detection (`pending_interactive_prompt` /
+      `on_stalled_interactive_prompt` / `keeps_polling_after_prompt`, #673's later
+      half). The TUI already has the infrastructure this would need
+      (`ai_action_model`, `terminal_model`, `cli_subagent_controller`), but it also
+      needs `InteractivePromptCandidate`/`interactive_prompt_candidate`
+      (`app/src/terminal/model/block/interaction_mode.rs`) exported through
+      `tui_export.rs`, which was judged out of scope for this pass.
+
+## FIX ROUND 2026-09-27 — two small GUI observations, both confirmed and fixed
+
+- [x] **#740a — typing `@notes` in the agent input's @-mention picker found
+      nothing outside a git repo**, even though `notes.md` existed in cwd/$HOME,
+      while browsing "Files and folders" found it fine. **Root cause:**
+      `AIContextMenuView::setup_data_sources_for_all_categories`
+      (`app/src/search/ai_context_menu/view.rs`), used when a typed query fans
+      out across every category at the top level, had a match arm for
+      `AIContextMenuCategory::RepoFiles` but none for `CurrentFolderFiles`, so
+      it fell into the `_ => { // TODO: Add other categories }` catch-all —
+      `get_categories_for_mode` already selects `CurrentFolderFiles` (not
+      `RepoFiles`) for a cwd with no detected git repo, so outside a repo the
+      Files category was silently absent from top-level search entirely, not
+      merely searching the wrong path. `reset_mixer` (browsing "Files and
+      folders" explicitly) already handled both variants, which is why
+      browsing worked. **Fixed (`6fd544d39`):** added the missing
+      `CurrentFolderFiles` arm, mirroring `reset_mixer`'s (`file_data_source_for_pwd`
+      instead of the repo-scoped `file_data_source_for_current_repo`).
+- [x] **#740b — Settings > Appearance > host footer colour rules: pressing
+      Enter in the pattern field with an invalid regex showed only the error
+      border, not the explanatory text "Add rule" shows.** **Root cause:**
+      `SubmittableTextInput::on_try_submit` only emitted `Submit` once its own
+      validator passed; on failure it just set its own `has_error` (the
+      border). `commit_host_footer_color_rule` — the single place that sets
+      the actual error-text state, called unconditionally by "Add rule" and by
+      Enter in the name field — was never reached by an Enter in the pattern
+      field that failed validation. **Fixed (`1f169cd60`):** added
+      `SubmittableTextInputEvent::InvalidSubmit(String)`, emitted alongside the
+      existing border feedback, and routed into `commit_host_footer_color_rule`
+      the same way `Submit` is. **Residue, not a new gap:** two of the three
+      other exhaustive-match consumers of this widget (`warpify_page.rs`'s
+      added-commands editor, `ai_page.rs`'s CLI-agent-footer-command editor)
+      also have a real validator where `InvalidSubmit` can now fire, but were
+      left as a no-op — their own error border was already their only feedback
+      before this change, so wiring them up too was out of scope for this pass.
+      Both fixes are code-traced with high confidence but not covered by new
+      automated tests (constructing `AIContextMenuView`/`AppearanceSettingsPageView`
+      is heavy enough that this codebase already documents skipping it
+      elsewhere, e.g. `appearance_page_tests.rs`'s comment on
+      `commit_host_footer_color_rule`); left for the coordinator to verify by
+      hand.
 
 ## 🛑 BUILD FREEZE — in force from 2026-08-11 until the maintainer lifts it
 
@@ -11838,20 +11901,38 @@ open findings that had no pre-existing row.
       teardown and the persistence flush all get skipped on a Windows console
       close or logoff.
 
-- [ ] **MCP stdio servers are not spawned in their own process group**, so on
+- [x] **#707 — MCP stdio servers are not spawned in their own process group**, so on
       exit only the direct child is killed by handle (`be564eeaf`); a grandchild
-      (e.g. under `npx`) that ignores EOF can survive. Consider a process group
-      plus a group kill (a Job Object on Windows), bearing in mind the TUI's
-      SIGINT behaviour. Related residue from the same hardening: MCP force-kill
+      (e.g. under `npx`) that ignores EOF can survive.
+      **Fixed (`392fd39d5`):** the child is spawned in a new process group on Unix
+      (`process_group(0)`, pgid == pid); `ChildKillHandle::kill` also best-effort
+      signals the whole group (`kill(-pid, SIGKILL)`) alongside the existing
+      pidfd/start-time-guarded single-process kill, used by both the app-exit
+      force-kill and (via `ReleaseChildOnClose::close`) the ordinary
+      `shutdown_server` stop/restart path, so stopping one server kills its group
+      too. See `DECLINED.md`'s #687 entry for why the group signal's residual race
+      is accepted. **Still open:** Windows has no process-group equivalent — a Job
+      Object would need plumbing through to the out-of-band kill path, not just to
+      rmcp's own `Child`, and was left as a follow-up rather than attempted.
+      Related residue from the same hardening, not addressed here: MCP force-kill
       has no handle at all on pidfd-less Linux (<5.3) or FreeBSD, so those
       children get stdin EOF but are never force-killed.
 
-- [ ] **Headless/TUI exit status after a signal-initiated quit is always 0.**
-      Found reviewing #685's shutdown ordering fix (`0b0d8541a`): the winit and
-      macOS loops re-raise the signal after a graceful quit so the parent sees
-      "terminated by SIGTERM", but the headless/TUI loop does not — its caller
-      just restores the terminal after it returns, and exits 0 regardless of
-      which signal ended the process.
+- [x] **#717 — headless/TUI exit status after a signal-initiated quit was always
+      0.** Found reviewing #685's shutdown ordering fix (`0b0d8541a`): the winit
+      and macOS loops re-raise the signal after a graceful quit so the parent sees
+      "terminated by SIGTERM", but the headless/TUI loop did not — its caller just
+      restored the terminal after it returned, and exited 0 regardless of which
+      signal ended the process.
+      **Fixed (`3a6b1169a`):** `headless::app::App::run` now calls
+      `termination_signals::exit_after_signal_shutdown()` right after
+      `event_loop::run` returns, matching the winit/macOS call sites; it is a
+      no-op for a non-signal-initiated quit, so integration tests and
+      `agent run --output-format json` (which share this loop) are unaffected.
+      **Left to the coordinator:** a process-level check (spawn the TUI, `kill
+      -TERM` it, check `$?`) — the status-mapping logic itself is already fully
+      unit-tested in `termination_signals_tests.rs`, but this specific plumbing
+      isn't independently testable without ending the test process.
 
 ### Later lanes — #689 through #702
 
@@ -11902,9 +11983,20 @@ open findings that had no pre-existing row.
       submitting a follow-up while the conversation is `Blocked` is refused with
       a toast hint rather than silently cancelling the pending confirmation
       (buffer kept) (`a70bac5b1`, localized `685740947`).
-      **TODO new:** queue the follow-up instead of refusing it —
-      `QueuedQueryModel` has no unlock trigger for "blocked on confirmation", so
-      the refused text has to be resent by hand once the card resolves.
+      **#725 — queue the follow-up instead of refusing it, fixed:** a new
+      locked `QueuedQueryOrigin::PendingApprovalFollowUp`/`ApprovalFollowUp`
+      pair (`app/src/ai/blocklist/queued_query.rs`) mirrors the
+      `PendingLrcAutoQueue`/`LrcAutoQueue` forced-queue pattern.
+      `submit_ai_query` queues instead of refusing; `unlock_pending_approval_rows`
+      is called from the same `drain_queued_prompts` sites (`terminal/view.rs`)
+      that already unlock `PendingLrcAutoQueue` — the `Complete` arm unlocks and
+      auto-fires (covers "approved and finished" and "rejected, conversation
+      continued to completion"), the `Error`/`Cancelled` arm unlocks but only
+      restores to input or leaves queued, never auto-firing, so a genuinely
+      cancelled conversation never sends the row silently. Panel: Send Now
+      disabled with a tooltip and a "(queued until the pending action resolves)"
+      suffix while locked. Model-level tests cover lock semantics, the unlock
+      transition, the two locked origins not interfering, and the cancel path.
 
 - [x] **#691 — generated conversation titles read as a live status, and the
       sidebar/history list went stale.** Fixed: stop titles from reading as

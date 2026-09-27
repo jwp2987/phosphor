@@ -12951,36 +12951,53 @@ impl Input {
         // conversation-level status, not the block-level `is_blocked_on_user_confirmation`, is
         // what's reachable from this method.
         //
-        // Left as a plain refusal with a hint rather than routed into `QueuedQueryModel`: that
-        // machinery's "should this queue instead of firing" decision
-        // (`maybe_queue_input_for_in_progress_conversation`) is keyed entirely off long-running-
-        // command state (`is_lrc_auto_queue_active`) and the user's general auto-queue setting,
-        // neither of which describes "an action is blocked on confirmation" -- and the locked-row
-        // pattern it uses for a similar forced-queue case (`PendingLrcAutoQueue`) unlocks on the
-        // command's snapshot firing, an event this state doesn't have an equivalent of. Bolting
-        // a new locked origin and unlock trigger onto that state machine without being able to
-        // compile or run it was judged riskier than this: no text is lost (the buffer is left
-        // untouched), and the user can still send the follow-up the moment they approve or
-        // reject.
-        let selected_conversation_is_blocked = self
+        // Queues instead of refusing (jwp2987/phosphor#690 follow-up): a plain refusal with a
+        // hint (`terminal-input-follow-up-blocked-on-confirmation`, still in `en/warp.ftl` but
+        // no longer referenced from Rust) left the user to notice the card resolve and resend by
+        // hand. `QueuedQueryOrigin::PendingApprovalFollowUp` mirrors `PendingLrcAutoQueue`'s
+        // locked-row pattern: locked (undeletable... no, deletable and editable, just not
+        // sendable/auto-fireable, per `QueuedQuery::is_locked`'s doc) until
+        // `QueuedQueryModel::unlock_pending_approval_rows` flips it to the plain
+        // `ApprovalFollowUp` origin. That unlock is driven by the same `drain_queued_prompts`
+        // call sites that already unlock `PendingLrcAutoQueue` (turn `Complete`, and
+        // `Error`/`Cancelled`) rather than a new subscription here, so a rejected action (the
+        // conversation continues -> eventually `Complete`) sends the row through the ordinary
+        // auto-fire path, and a genuinely cancelled conversation (`Cancelled`) gets the same
+        // restore-to-input-or-leave-queued treatment every other queued row already gets there --
+        // never a silent send.
+        let selected_conversation_id_if_blocked = self
             .ai_context_model
             .as_ref(ctx)
             .selected_conversation_id(ctx)
-            .and_then(|conversation_id| {
-                BlocklistAIHistoryModel::as_ref(ctx).conversation(&conversation_id)
-            })
-            .is_some_and(|conversation| conversation.status().is_blocked());
-        if selected_conversation_is_blocked {
-            let window_id = ctx.window_id();
-            ToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-                toast_stack.add_ephemeral_toast(
-                    DismissibleToast::default(crate::t!(
-                        "terminal-input-follow-up-blocked-on-confirmation"
-                    )),
-                    window_id,
-                    ctx,
-                );
+            .filter(|conversation_id| {
+                BlocklistAIHistoryModel::as_ref(ctx)
+                    .conversation(conversation_id)
+                    .is_some_and(|conversation| conversation.status().is_blocked())
             });
+        if let Some(conversation_id) = selected_conversation_id_if_blocked {
+            let prompt = self.editor.as_ref(ctx).buffer_text(ctx);
+            if prompt.trim().is_empty() {
+                return;
+            }
+            self.editor.update(ctx, |editor, ctx| {
+                editor.abort_attached_images_future_handle(ctx);
+            });
+            self.ai_input_model.update(ctx, |model, ctx| {
+                model.handle_input_buffer_submitted(ctx);
+            });
+            self.editor.update(ctx, |editor, ctx| {
+                editor.clear_buffer(ctx);
+            });
+            let attachments = self.ai_context_model.update(ctx, |context_model, ctx| {
+                context_model.take_pending_attachments(ctx)
+            });
+            let query = QueuedQuery::new_with_attachments(
+                prompt,
+                QueuedQueryOrigin::PendingApprovalFollowUp,
+                attachments,
+            );
+            QueuedQueryModel::handle(ctx)
+                .update(ctx, |model, ctx| model.append(conversation_id, query, ctx));
             return;
         }
 

@@ -132,6 +132,7 @@ impl SubmittableTextInput {
         if !(self.validator)(&content) {
             self.has_error = true;
             ctx.notify();
+            ctx.emit(SubmittableTextInputEvent::InvalidSubmit(content));
         } else {
             self.editor
                 .update(ctx, |editor, ctx| editor.clear_buffer(ctx));
@@ -219,6 +220,14 @@ impl View for SubmittableTextInput {
 pub enum SubmittableTextInputEvent {
     /// Notify the subscribers (parent view) of the submission.
     Submit(String),
+    /// An Enter-triggered submit was rejected by the validator (jwp2987/phosphor#699
+    /// follow-up). `Submit` only fires once content passes validation, so a subscriber that
+    /// shows its own explanation of *why* a submission was rejected (this widget's own
+    /// feedback is just the border going red) has no event to react to on failure -- unlike a
+    /// sibling "submit" button that calls straight into the same validate-and-commit logic
+    /// regardless of what this widget's internal `has_error` flag says. Carries the trimmed
+    /// content that failed validation.
+    InvalidSubmit(String),
     Escape,
 }
 

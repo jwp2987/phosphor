@@ -1458,15 +1458,22 @@ impl AppearanceSettingsPageView {
             );
             input
         });
-        // Enter in the pattern field submits the rule, same as clicking "Add rule" -- gated by
-        // `is_valid_host_footer_color_rule_pattern` so an invalid regex shows an error border
-        // instead of being silently dropped (see `SubmittableTextInput::render`).
+        // Enter in the pattern field submits the rule, same as clicking "Add rule". `Submit`
+        // only fires once `is_valid_host_footer_color_rule_pattern` passes, so on its own this
+        // showed only the widget's own error border on an invalid regex -- not the actual
+        // explanation `commit_host_footer_color_rule` sets (jwp2987/phosphor#699 follow-up:
+        // "Add rule" and Enter in the name field always call `commit_host_footer_color_rule`
+        // regardless of validity, so they always got the text; Enter here did not). Also
+        // routing `InvalidSubmit` into the same function makes Enter reach it unconditionally
+        // too, closing that gap.
         ctx.subscribe_to_view(
             &host_footer_color_rule_pattern_editor,
-            |me, _, event, ctx| {
-                if let SubmittableTextInputEvent::Submit(pattern_text) = event {
+            |me, _, event, ctx| match event {
+                SubmittableTextInputEvent::Submit(pattern_text)
+                | SubmittableTextInputEvent::InvalidSubmit(pattern_text) => {
                     me.commit_host_footer_color_rule(pattern_text, ctx);
                 }
+                SubmittableTextInputEvent::Escape => {}
             },
         );
         let host_footer_color_rule_name_editor = {
@@ -6345,6 +6352,11 @@ fn host_footer_color_rules_contains_duplicate(
 /// border. The border alone doesn't say why, so `view.host_footer_color_rule_error` (set by
 /// `commit_host_footer_color_rule`) is rendered as text underneath when the last attempt
 /// was rejected -- an invalid regex, or an exact duplicate of an already-configured pattern.
+/// (jwp2987/phosphor#699 follow-up: this used to be true only for "Add rule" and Enter in the
+/// name field, which always call `commit_host_footer_color_rule` regardless of validity --
+/// Enter in the pattern field only reached it via `SubmittableTextInput`'s `Submit` event,
+/// which never fires on an invalid regex, so the border showed but the text underneath did
+/// not. Routing `SubmittableTextInputEvent::InvalidSubmit` into the same handler closed that.)
 fn render_host_footer_color_rule_add_row(
     view: &AppearanceSettingsPageView,
     appearance: &Appearance,
