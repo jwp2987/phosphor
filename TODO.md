@@ -2587,8 +2587,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       (`app/src/tab_tests.rs`: `TabShortcutModifierState` clear/reveal gating; the sidecar
       truth-table/binding-order/overlap tests in `app/src/workspace/view/vertical_tabs_tests.rs`)
       verbatim.
-- [ ] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
+- [x] `40e39717` — follow-up to the above; **impossible to land alone**, every symbol
       it edits is introduced by `8b88df98`.
+      **Fixed 2026-09-27 (#760):** ported verbatim -- new `tab_activate_binding_name(tab_index,
+      tab_count)` (`app/src/tab.rs`) resolves the numbered binding for tabs 1-8 and falls back to
+      the new `workspace:activate_last_tab` binding for the final tab when the window has 9+ tabs,
+      superseding the plain index-bounds check both the tab bar and vertical-tabs sidebar used
+      before. `PaneProps::shortcut_hint_tab_index: Option<usize>` renamed to
+      `shortcut_hint_binding_name: Option<&'static str>` and resolved at the only 2 (of 6)
+      `PaneProps::new` call sites that have a real tab count to hand
+      (`render_tab_group_internal`'s two sites); the 3 search-matching call sites and
+      `detail_pane_props` keep passing `None`, matching upstream's scope (search matching never
+      needed the hint). Removed `shows_shortcut_hint` and its 3 tests, replaced by 3 new
+      `tab_activate_binding_name` tests in `app/src/tab_tests.rs`, exactly mirroring upstream's
+      test churn.
 - [x] `56921910` — 6-line wasm cfg split of `WORKSPACE_PADDING`.
       **Closed as declined 2026-09-26:** wasm-only; this fork ships no wasm target. Out of scope.
 

@@ -3,7 +3,7 @@ use crate::context_chips::display_chip::GitLineChanges;
 use crate::pane_group::pane::IPaneType;
 use crate::pane_group::{PaneId, TabBarHoverIndex, TerminalPaneId};
 use crate::safe_triangle::SafeTriangle;
-use crate::tab::{ShortcutModifierKind, TAB_ACTIVATE_BINDING_NAMES, reveals_shortcut_hints};
+use crate::tab::{ShortcutModifierKind, reveals_shortcut_hints};
 use crate::terminal::CLIAgent;
 use crate::workspace::tab_group::TabGroupId;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
@@ -26,10 +26,9 @@ use super::{
     pane_search_text_fragments, preferred_agent_tab_titles, push_normalized_unique_summary_label,
     search_fragments_contain_query, select_summary_pane_kind_icons, select_unique_pane_kinds,
     should_keep_detail_sidecar_visible_for_mouse_position, should_show_tab_group_header,
-    show_before_indicator, shows_shortcut_hint, shows_synced_inputs_indicator,
-    sort_summary_primary_labels_status_first, summary_overflow_count,
-    summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
-    terminal_pull_request_badge_label, terminal_search_text_fragments,
+    show_before_indicator, shows_synced_inputs_indicator, sort_summary_primary_labels_status_first,
+    summary_overflow_count, summary_search_text_fragments, terminal_kind_badge_label,
+    terminal_primary_line_data, terminal_pull_request_badge_label, terminal_search_text_fragments,
     terminal_title_fallback_font, uses_outer_group_container,
     vertical_tabs_end_of_list_drop_target_data, visible_pane_ids_for_detail_target,
     vtab_diff_stats_text, vtab_group_kebab_position_id, vtab_group_position_id,
@@ -1242,42 +1241,6 @@ fn synced_inputs_indicator_respects_tab_indicators_setting() {
 #[test]
 fn synced_inputs_indicator_hidden_on_non_terminal_rows() {
     assert!(!shows_synced_inputs_indicator(false, true, true));
-}
-
-#[test]
-fn shortcut_hint_shown_when_modifier_held_within_first_eight_tabs() {
-    assert!(shows_shortcut_hint(true, 0));
-    assert!(shows_shortcut_hint(
-        true,
-        TAB_ACTIVATE_BINDING_NAMES.len() - 1
-    ));
-}
-
-#[test]
-fn shortcut_hint_hidden_when_modifier_not_held() {
-    assert!(!shows_shortcut_hint(false, 0));
-}
-
-#[test]
-fn shortcut_hint_hidden_beyond_eighth_tab() {
-    assert!(!shows_shortcut_hint(true, TAB_ACTIVATE_BINDING_NAMES.len()));
-    assert!(!shows_shortcut_hint(
-        true,
-        TAB_ACTIVATE_BINDING_NAMES.len() + 1
-    ));
-}
-
-#[test]
-fn tab_activate_binding_names_cover_first_eight_tabs_in_order() {
-    assert_eq!(TAB_ACTIVATE_BINDING_NAMES.len(), 8);
-    assert_eq!(
-        TAB_ACTIVATE_BINDING_NAMES[0],
-        "workspace:activate_first_tab"
-    );
-    assert_eq!(
-        TAB_ACTIVATE_BINDING_NAMES[TAB_ACTIVATE_BINDING_NAMES.len() - 1],
-        "workspace:activate_eighth_tab"
-    );
 }
 
 #[test]
