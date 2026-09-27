@@ -29,7 +29,7 @@ use warp_editor::{
 use warp_util::{path::LineAndColumnArg, user_input::UserInput};
 use warpui::{
     accessibility::{AccessibilityContent, ActionAccessibilityContent, WarpA11yRole},
-    assets::asset_cache::{AssetCache, AssetHandle, AssetState},
+    assets::asset_cache::{AssetCache, AssetHandle, AssetSource, AssetState},
     clipboard::ClipboardContent,
     elements::{
         AnchorPair, Axis, Border, ChildAnchor, Clipped, ConstrainedBox, Container, CornerRadius,
@@ -189,9 +189,54 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "home",
             EditorViewAction::MoveToLineStart,
-            text_entry.clone(),
+            text_entry.clone() & !id!("EditorSelectable"),
         ),
-        FixedBinding::new("end", EditorViewAction::MoveToLineEnd, text_entry.clone()),
+        FixedBinding::new(
+            "end",
+            EditorViewAction::MoveToLineEnd,
+            text_entry.clone() & !id!("EditorSelectable"),
+        ),
+        // `InteractionState::Selectable` ("will respond to selection actions, and ignore edit
+        // actions. No cursor is shown" -- see the enum's doc comment) has no text cursor for
+        // Home/End/Page Up/Page Down to move, and previously only the mouse wheel could scroll
+        // it at all. Scroll the viewport instead.
+        //
+        // This is every `RichTextEditorView` in Selectable mode, not just the notebook rendered
+        // Markdown viewer that #698 was filed against: read-only AI documents, code review
+        // comments, the read-only code/diff viewer, and workflow views all reuse this same view
+        // and all set Selectable for the same reason (a read-only, text-selectable display with
+        // no cursor), so the fix is intentionally applied at this shared level rather than
+        // special-cased to the notebook file viewer.
+        //
+        // Shift-Home/Shift-End (`SelectToLineStart`/`SelectToLineEnd`, below) are deliberately
+        // *not* excluded the same way: unlike plain Home/End, they extend the text *selection*,
+        // which Selectable mode explicitly supports and renders (it's how a read-only view lets
+        // you select text to copy). That they don't currently autoscroll a resulting off-screen
+        // selection into view is a real but separate, pre-existing gap shared by every
+        // selection-extending binding in Selectable mode alike (mouse-drag, Cmd+A, the
+        // shift-arrow keys, and these) -- not something introduced by, or unique to, Home/End's
+        // lack of a cursor -- so it's out of scope for #698, which is specifically about
+        // Home/End/Page Up/Page Down having no scrolling ability at all.
+        FixedBinding::new(
+            "home",
+            EditorViewAction::ScrollToDocumentStart,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "end",
+            EditorViewAction::ScrollToDocumentEnd,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "pagedown",
+            EditorViewAction::ScrollPageDown,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
+        FixedBinding::new(
+            "pageup",
+            EditorViewAction::ScrollPageUp,
+            text_entry.clone() & id!("EditorSelectable"),
+        ),
         FixedBinding::new("cmdorctrl-]", EditorViewAction::Indent, text_entry.clone()),
         FixedBinding::new(
             "cmdorctrl-[",
@@ -767,6 +812,16 @@ pub enum EditorViewAction {
     Delete,
     Backspace,
     Scroll(Pixels),
+    /// Scroll down by one viewport height. Bound to Page Down.
+    ScrollPageDown,
+    /// Scroll up by one viewport height. Bound to Page Up.
+    ScrollPageUp,
+    /// Scroll to the top of the document. Bound to Home in Selectable (rendered Markdown)
+    /// interaction state, where Home has no text cursor to move.
+    ScrollToDocumentStart,
+    /// Scroll to the bottom of the document. Bound to End in Selectable (rendered Markdown)
+    /// interaction state, where End has no text cursor to move.
+    ScrollToDocumentEnd,
     MaybeOpenFileOrUrl {
         offset: CharOffset,
         link_in_text: Option<UserInput<String>>,
@@ -933,12 +988,17 @@ impl EditorViewAction {
 #[derive(Default)]
 struct LayoutAffectingAssetLoads {
     loading: HashSet<AssetHandle>,
-    loaded_needs_relayout: bool,
+    /// Mermaid asset sources whose diagram just finished loading and whose stored layout
+    /// `config` doesn't match the diagram's real aspect ratio yet. Keyed by `AssetSource`
+    /// (rather than a bare bool) so the caller can tell *which* sources still need a rebuild
+    /// and skip ones it already requested one for — see
+    /// `RichTextEditorView::relaidout_mermaid_asset_sources`.
+    loaded_needs_relayout: HashSet<AssetSource>,
 }
 
 enum LayoutAffectingAssetLoad {
     Loading(AssetHandle),
-    LoadedNeedsRelayout,
+    LoadedNeedsRelayout(AssetSource),
 }
 
 fn mermaid_diagram_needs_loaded_layout(
@@ -1072,6 +1132,9 @@ pub struct RichTextEditorView {
     link_editor_open: bool,
     pub(super) insertion_menu_state: BlockInsertionMenuState,
     pending_layout_affecting_asset_loads: HashSet<AssetHandle>,
+    /// Mermaid asset sources a rebuild has already been requested for after their diagram
+    /// finished loading. See `watch_layout_affecting_asset_loads` for why this dedup matters.
+    relaidout_mermaid_asset_sources: HashSet<AssetSource>,
 
     pub(super) find_bar: FindBarState,
     max_width: Option<Pixels>,
@@ -1191,6 +1254,7 @@ impl RichTextEditorView {
             requested_block_insertion_menu_open: Default::default(),
             insertion_menu_state,
             pending_layout_affecting_asset_loads: Default::default(),
+            relaidout_mermaid_asset_sources: Default::default(),
             hovered_file_path: None,
             open_file_path: None,
             file_path_mouse_states: Default::default(),
@@ -1359,8 +1423,8 @@ impl RichTextEditorView {
                 LayoutAffectingAssetLoad::Loading(handle) => {
                     loads.loading.insert(handle);
                 }
-                LayoutAffectingAssetLoad::LoadedNeedsRelayout => {
-                    loads.loaded_needs_relayout = true;
+                LayoutAffectingAssetLoad::LoadedNeedsRelayout(source) => {
+                    loads.loaded_needs_relayout.insert(source);
                 }
             });
         loads
@@ -1378,8 +1442,9 @@ impl RichTextEditorView {
             } => match asset_cache.load_asset::<ImageType>(asset_source.clone()) {
                 AssetState::Loading { handle } => Some(LayoutAffectingAssetLoad::Loading(handle)),
                 AssetState::Loaded { data } => {
-                    mermaid_diagram_needs_loaded_layout(config, data.as_ref())
-                        .then_some(LayoutAffectingAssetLoad::LoadedNeedsRelayout)
+                    mermaid_diagram_needs_loaded_layout(config, data.as_ref()).then_some(
+                        LayoutAffectingAssetLoad::LoadedNeedsRelayout(asset_source.clone()),
+                    )
                 }
                 AssetState::Evicted | AssetState::FailedToLoad(_) => None,
             },
@@ -1399,9 +1464,50 @@ impl RichTextEditorView {
         }
     }
 
+    /// Forget which layout-affecting asset loads (Mermaid diagrams) this view has already
+    /// requested a rebuild for, or is already watching for.
+    ///
+    /// Must be called on every new document (`reset_with_markdown`/`reset_with_ipynb`): this
+    /// view is reused across documents (for example `AIDocumentView`'s editor, or a notebook
+    /// pane whose file changes), but `relaidout_mermaid_asset_sources` is keyed only by a hash
+    /// of the Mermaid source text (`mermaid_asset_source`), not by document or block identity.
+    /// Without this, a second document containing a byte-identical diagram to one already seen
+    /// would find its (freshly created, placeholder-sized) block's asset source already marked
+    /// "relaidout" from the previous document, and never get the rebuild it needs to pick up the
+    /// diagram's real size -- stale layout for the life of the new document, not a hang, but the
+    /// same underlying bug class as #697.
+    ///
+    /// `pending_layout_affecting_asset_loads` is cleared too, for the same reason: it's also
+    /// keyed on asset identity rather than document identity, so a stale entry could suppress a
+    /// duplicate-load watch that the new document's copy of that block genuinely needs. (A
+    /// leftover in-flight future for an old handle is harmless either way -- it only removes its
+    /// entry and, if still relevant, requests a relayout -- but there is no reason to keep it
+    /// around once the document it was watching for is gone.)
+    fn reset_layout_affecting_asset_load_tracking(&mut self) {
+        self.relaidout_mermaid_asset_sources.clear();
+        self.pending_layout_affecting_asset_loads.clear();
+    }
+
     fn watch_layout_affecting_asset_loads(&mut self, ctx: &mut ViewContext<Self>) {
         let loads = self.layout_affecting_asset_loads(ctx);
-        if loads.loaded_needs_relayout {
+
+        // `rebuild_layout` only *queues* a relayout (`RenderState::add_pending_edit`); the
+        // model's stored block config isn't refreshed until that queued layout is actually
+        // processed, which happens asynchronously. This method re-runs on every `render_state`
+        // notification in the meantime (there can be several before the queued layout catches
+        // up), and would otherwise see the same stale, pre-load `config` on each one and
+        // request another full-document rebuild — a self-sustaining loop that starves the
+        // queued layout of a turn to ever land and fix the staleness. Only request a rebuild
+        // once per asset source that still needs one, so this can fire at most once per Mermaid
+        // diagram's load.
+        let newly_needs_relayout: Vec<_> = loads
+            .loaded_needs_relayout
+            .difference(&self.relaidout_mermaid_asset_sources)
+            .cloned()
+            .collect();
+        if !newly_needs_relayout.is_empty() {
+            self.relaidout_mermaid_asset_sources
+                .extend(newly_needs_relayout);
             self.model.update(ctx, |model, ctx| {
                 model.rebuild_layout(ctx);
             });
@@ -1674,12 +1780,14 @@ impl RichTextEditorView {
     }
 
     pub fn reset_with_markdown(&mut self, markdown: &str, ctx: &mut ViewContext<Self>) {
+        self.reset_layout_affecting_asset_load_tracking();
         self.model.update(ctx, |model, ctx| {
             model.reset_with_markdown(markdown, ctx);
         });
     }
 
     pub fn reset_with_ipynb(&mut self, ipynb: &str, ctx: &mut ViewContext<Self>) {
+        self.reset_layout_affecting_asset_load_tracking();
         self.model.update(ctx, |model, ctx| {
             model.reset_with_ipynb(ipynb, ctx);
         });
@@ -1726,6 +1834,52 @@ impl RichTextEditorView {
         self.model.update(ctx, |model, ctx| {
             model.render_state().update(ctx, |render_state, ctx| {
                 render_state.scroll(delta, ctx);
+            })
+        })
+    }
+
+    /// Scroll down by one viewport height.
+    fn scroll_page_down(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let page = render_state.viewport().height();
+                render_state.scroll(-page, ctx);
+            })
+        })
+    }
+
+    /// Scroll up by one viewport height.
+    fn scroll_page_up(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let page = render_state.viewport().height();
+                render_state.scroll(page, ctx);
+            })
+        })
+    }
+
+    /// Scroll all the way to the top of the document.
+    ///
+    /// `ViewportState::scroll`/`scroll_to` clamp the resulting offset to
+    /// `[0, content_height - viewport_height]`, so any delta at least as large as the total
+    /// content height reliably lands at the top without needing to know the current scroll
+    /// position.
+    fn scroll_to_document_start(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let content_height = render_state.height();
+                render_state.scroll(content_height, ctx);
+            })
+        })
+    }
+
+    /// Scroll all the way to the bottom of the document. See `scroll_to_document_start` for why
+    /// an overshooting delta is sufficient.
+    fn scroll_to_document_end(&mut self, ctx: &mut ViewContext<Self>) {
+        self.model.update(ctx, |model, ctx| {
+            model.render_state().update(ctx, |render_state, ctx| {
+                let content_height = render_state.height();
+                render_state.scroll(-content_height, ctx);
             })
         })
     }
@@ -2819,6 +2973,13 @@ impl View for RichTextEditorView {
             context.set.insert("EditorIsEditable");
         }
 
+        // The rendered Markdown viewer (`FileNotebookView`) uses `Selectable`: there's no text
+        // cursor to move, so Home/End/Page Up/Page Down should scroll the viewport instead of
+        // (a no-op) cursor movement.
+        if matches!(self.interaction_state(ctx), InteractionState::Selectable) {
+            context.set.insert("EditorSelectable");
+        }
+
         if self.insertion_menu_state.open_at_source.is_some() {
             context.set.insert("BlockInsertionMenu");
         }
@@ -2914,6 +3075,10 @@ impl TypedActionView for RichTextEditorView {
                 .update(ctx, |links, ctx| links.secondary_action(target, ctx)),
             CreateOrEditLink => self.edit_link(false, ctx),
             Scroll(delta) => self.scroll(*delta, ctx),
+            ScrollPageDown => self.scroll_page_down(ctx),
+            ScrollPageUp => self.scroll_page_up(ctx),
+            ScrollToDocumentStart => self.scroll_to_document_start(ctx),
+            ScrollToDocumentEnd => self.scroll_to_document_end(ctx),
             SelectUp => self.select_up(ctx),
             SelectDown => self.select_down(ctx),
             SelectLeft => self.select_left(ctx),
@@ -3340,6 +3505,10 @@ impl TypedActionView for RichTextEditorView {
             EditorViewAction::Delete
             | EditorViewAction::Backspace
             | EditorViewAction::Scroll(_)
+            | EditorViewAction::ScrollPageDown
+            | EditorViewAction::ScrollPageUp
+            | EditorViewAction::ScrollToDocumentStart
+            | EditorViewAction::ScrollToDocumentEnd
             | EditorViewAction::SelectUp
             | EditorViewAction::SelectDown
             | EditorViewAction::SelectLeft

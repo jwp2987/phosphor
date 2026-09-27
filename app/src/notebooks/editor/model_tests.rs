@@ -10,6 +10,7 @@ use crate::cloud_object::{Revision, StoredObjectMetadata, StoredObjectPermission
 use crate::editor::InteractionState;
 use crate::notebooks::editor::keys::NotebookKeybindings;
 use crate::notebooks::editor::model::DEBOUNCED_RESIZE_PERIOD;
+use crate::notebooks::editor::model::MAX_MERMAID_OFFSET_RESYNC_STREAK;
 use crate::notebooks::editor::notebook_command::NotebookCommand;
 use crate::notebooks::editor::view::{RichTextEditorConfig, RichTextEditorView};
 use crate::notebooks::file::MarkdownDisplayMode;
@@ -3088,6 +3089,281 @@ fn test_multiselect_delete() {
             let clipboard = ctx.clipboard().read();
             assert_eq!(&clipboard.plain_text, "Second\nFirst");
             assert_eq!(clipboard.html.as_deref(), Some("<p>Second</p><p>First</p>"));
+        });
+    });
+}
+
+/// Regression test for `NotebooksEditorModel`'s half of the #697 hang (the
+/// `mermaid_offset_resync_streak` circuit breaker in `handle_render_model_event`): a fenced code
+/// block near the top of the document, followed by enough paragraphs to push a Mermaid block off
+/// the bottom of the viewport, mirrors the exact document shape from the reported repro.
+///
+/// This model has no attached [`RichTextEditorView`] (`model_from_markdown` creates it directly,
+/// separately from the dummy view/model pair `setup_editor_window` wires up for its window), so
+/// it does *not* exercise `RichTextEditorView::watch_layout_affecting_asset_loads` or its
+/// `relaidout_mermaid_asset_sources` dedup -- the *other* half of the #697 fix, which only runs
+/// when a real view is observing the render state. See
+/// `test_rendered_markdown_view_with_code_block_and_trailing_mermaid_converges` in
+/// `view_tests.rs` for that half.
+#[test]
+fn test_rendered_markdown_with_code_block_and_trailing_mermaid_converges() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let mut markdown = String::from("# t\n\n```rust\nfn a() {}\n```\n\n");
+        for i in 1..=60 {
+            markdown.push_str(&format!(
+                "Paragraph {i} with some words to fill the line.\n\n"
+            ));
+        }
+        markdown.push_str("```mermaid\nflowchart LR\n  A --> B\n```\n");
+
+        let model_handle = model_from_markdown(&markdown, &mut app, true);
+        model_handle.update(&mut app, |model, ctx| {
+            model.set_default_mermaid_display_mode(MarkdownDisplayMode::Rendered, ctx);
+            model.set_interaction_state(InteractionState::Selectable, ctx);
+        });
+
+        // If layout doesn't converge, these awaits hang forever — that's the bug. A handful of
+        // awaits is enough headroom for the normal settle (mermaid offsets sync, then a resize
+        // once the viewport is first measured) without masking a real non-convergence.
+        for _ in 0..5 {
+            layout_model(&mut app, &model_handle).await;
+        }
+
+        // One command per fenced code block: the Rust fence and the Mermaid fence.
+        assert_eq!(command_models(&model_handle, &mut app).len(), 2);
+
+        let mermaid_offset_count = model_handle.read(&app, |model, ctx| {
+            model
+                .render_state
+                .as_ref(ctx)
+                .layout_options()
+                .mermaid_render_offsets
+                .len()
+        });
+        assert_eq!(mermaid_offset_count, 1);
+    });
+}
+
+/// Direct test of the `MAX_MERMAID_OFFSET_RESYNC_STREAK` circuit breaker: if
+/// `sync_mermaid_render_offsets` reports a change on every single `LayoutUpdated` (the
+/// condition the guard exists for), `handle_render_model_event` must stop calling
+/// `rebuild_layout` once the streak hits the cap, rather than retriggering indefinitely.
+#[test]
+fn test_mermaid_offset_resync_streak_is_capped() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let model_handle =
+            model_from_markdown("```mermaid\ngraph TD\nA --> B\n```", &mut app, true);
+        layout_model(&mut app, &model_handle).await;
+
+        let command = command_models(&model_handle, &mut app)
+            .into_iter()
+            .exactly_one()
+            .expect("Mermaid command should exist");
+
+        model_handle.update(&mut app, |model, ctx| {
+            // Flip the block's display mode before every `LayoutUpdated` so
+            // `sync_mermaid_render_offsets`'s computed offset set alternates between empty and
+            // non-empty on each call, forcing it to report "changed" every time — the runaway
+            // condition the streak guard exists to bound.
+            for i in 0..(MAX_MERMAID_OFFSET_RESYNC_STREAK as usize * 3) {
+                let mode = if i % 2 == 0 {
+                    MarkdownDisplayMode::Raw
+                } else {
+                    MarkdownDisplayMode::Rendered
+                };
+                command.update(ctx, |cmd, _| cmd.mermaid_display_mode = mode);
+                model.handle_render_model_event(&RenderEvent::LayoutUpdated, ctx);
+            }
+
+            assert_eq!(
+                model.mermaid_offset_resync_streak, MAX_MERMAID_OFFSET_RESYNC_STREAK,
+                "the resync streak should saturate at the cap instead of growing unbounded"
+            );
+        });
+    });
+}
+
+/// C1 regression test: once the streak trips, `handle_render_model_event` must log the
+/// "did not converge" diagnostic once (not on every subsequent event, which would spam at the
+/// same rate the original livelock spun the CPU); a resize must not reset it (the relayouts it
+/// counts can themselves change the width); and a content edit must give the circuit breaker a
+/// fresh budget rather than leaving it permanently capped for the rest of the pane's lifetime.
+#[test]
+fn test_mermaid_offset_resync_streak_logs_once_and_recovers_after_edit() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let model_handle =
+            model_from_markdown("```mermaid\ngraph TD\nA --> B\n```", &mut app, true);
+        layout_model(&mut app, &model_handle).await;
+
+        let command = command_models(&model_handle, &mut app)
+            .into_iter()
+            .exactly_one()
+            .expect("Mermaid command should exist");
+
+        let flap_streak_to_cap =
+            |model: &mut NotebooksEditorModel,
+             ctx: &mut warpui::ModelContext<NotebooksEditorModel>| {
+                for i in 0..(MAX_MERMAID_OFFSET_RESYNC_STREAK as usize * 3) {
+                    let mode = if i % 2 == 0 {
+                        MarkdownDisplayMode::Raw
+                    } else {
+                        MarkdownDisplayMode::Rendered
+                    };
+                    command.update(ctx, |cmd, _| cmd.mermaid_display_mode = mode);
+                    model.handle_render_model_event(&RenderEvent::LayoutUpdated, ctx);
+                }
+            };
+
+        model_handle.update(&mut app, |model, ctx| {
+            flap_streak_to_cap(model, ctx);
+            assert_eq!(
+                model.mermaid_offset_resync_streak,
+                MAX_MERMAID_OFFSET_RESYNC_STREAK
+            );
+            assert!(
+                model.mermaid_offset_resync_streak_logged,
+                "the cap-trip diagnostic should have been logged exactly once by now"
+            );
+
+            // A resize must NOT reset the breaker: the relayouts it is counting can themselves
+            // change the available width (a diagram toggling a scrollbar), so a reset here would
+            // let that cycle spin forever.
+            model.handle_render_model_event(&RenderEvent::NeedsResize, ctx);
+            assert_eq!(
+                model.mermaid_offset_resync_streak, MAX_MERMAID_OFFSET_RESYNC_STREAK,
+                "a resize must not give the circuit breaker a fresh budget"
+            );
+
+            // An edit is a genuine new reason to resync, so it must reset the breaker instead of
+            // leaving the pane permanently capped.
+            model.cursor_at(CharOffset::from(1), ctx);
+            model.user_insert("x", ctx);
+        });
+
+        model_handle.read(&app, |model, _| {
+            assert_eq!(
+                model.mermaid_offset_resync_streak, 0,
+                "an edit should give the circuit breaker a fresh budget"
+            );
+            assert!(
+                !model.mermaid_offset_resync_streak_logged,
+                "a fresh budget should also allow the diagnostic to log again if it re-trips"
+            );
+        });
+    });
+}
+
+/// R3 regression test: a document reset (opening a new file into a reused editor) must give the
+/// Mermaid offset-resync circuit breaker a fresh budget. Before this fix, `reset_with_markdown`
+/// never touched `mermaid_offset_resync_streak`, so a pane that had tripped the cap on one
+/// document would carry that streak into the next one, capping it out immediately regardless of
+/// whether the new document's Mermaid blocks needed any resyncing at all.
+#[test]
+fn test_mermaid_offset_resync_streak_reset_on_new_document() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        let model_handle =
+            model_from_markdown("```mermaid\ngraph TD\nA --> B\n```", &mut app, true);
+        layout_model(&mut app, &model_handle).await;
+
+        let command = command_models(&model_handle, &mut app)
+            .into_iter()
+            .exactly_one()
+            .expect("Mermaid command should exist");
+
+        model_handle.update(&mut app, |model, ctx| {
+            for i in 0..(MAX_MERMAID_OFFSET_RESYNC_STREAK as usize * 3) {
+                let mode = if i % 2 == 0 {
+                    MarkdownDisplayMode::Raw
+                } else {
+                    MarkdownDisplayMode::Rendered
+                };
+                command.update(ctx, |cmd, _| cmd.mermaid_display_mode = mode);
+                model.handle_render_model_event(&RenderEvent::LayoutUpdated, ctx);
+            }
+            assert_eq!(
+                model.mermaid_offset_resync_streak,
+                MAX_MERMAID_OFFSET_RESYNC_STREAK
+            );
+            assert!(model.mermaid_offset_resync_streak_logged);
+
+            model.reset_with_markdown("A brand new document with no diagrams.", ctx);
+            assert_eq!(
+                model.mermaid_offset_resync_streak, 0,
+                "a new document must not inherit the previous document's resync streak"
+            );
+            assert!(!model.mermaid_offset_resync_streak_logged);
+        });
+    });
+}
+
+/// C2 regression test: `MAX_MERMAID_OFFSET_RESYNC_STREAK`'s base cap of 8 must scale up with the
+/// number of Mermaid blocks in the document, since diagrams can resolve (parse/load) at
+/// staggered times and each can independently flip `mermaid_render_offsets`' membership once --
+/// a document with more diagrams than the base cap can legitimately need more than 8 consecutive
+/// resyncs to settle, and that's convergent progress, not a livelock.
+#[test]
+fn test_mermaid_offset_resync_streak_scales_with_diagram_count() {
+    App::test((), |mut app| async move {
+        initialize_deps(&mut app);
+        let _enabled = FeatureFlag::MarkdownMermaid.override_enabled(true);
+
+        // 10 distinct diagrams: more than the base cap of 8.
+        let mut markdown = String::new();
+        for i in 1..=10 {
+            markdown.push_str(&format!("```mermaid\ngraph TD\nA{i} --> B{i}\n```\n\n"));
+        }
+
+        let model_handle = model_from_markdown(&markdown, &mut app, true);
+        layout_model(&mut app, &model_handle).await;
+
+        let commands = command_models(&model_handle, &mut app);
+        assert_eq!(commands.len(), 10);
+
+        let effective_cap = model_handle.read(&app, |model, ctx| {
+            model.max_mermaid_offset_resync_streak(ctx)
+        });
+        assert_eq!(
+            effective_cap, 10,
+            "the cap should scale up to the number of Mermaid blocks in the document"
+        );
+
+        model_handle.update(&mut app, |model, ctx| {
+            // Flap every block's mode together each pass, forcing a "changed" result every time,
+            // for 9 consecutive passes: one more than the unscaled base cap of 8 would allow, but
+            // still under the scaled cap of 10.
+            for i in 0..9 {
+                let mode = if i % 2 == 0 {
+                    MarkdownDisplayMode::Raw
+                } else {
+                    MarkdownDisplayMode::Rendered
+                };
+                for command in &commands {
+                    command.update(ctx, |cmd, _| cmd.mermaid_display_mode = mode);
+                }
+                model.handle_render_model_event(&RenderEvent::LayoutUpdated, ctx);
+            }
+
+            assert_eq!(
+                model.mermaid_offset_resync_streak, 9,
+                "9 consecutive resyncs should still be under the scaled cap of 10 and keep \
+                 retrying, where the unscaled base cap of 8 would already have tripped"
+            );
+            assert!(
+                !model.mermaid_offset_resync_streak_logged,
+                "the cap should not have tripped yet"
+            );
         });
     });
 }
