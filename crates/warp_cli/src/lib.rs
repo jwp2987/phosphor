@@ -386,18 +386,18 @@ pub enum Command {
     ///
     ///
     /// For bash, add the following to ~/.bashrc:
-    ///     source <(path/to/warp completions bash)
+    ///     source <(path/to/phosphor-oss completions bash)
     ///
     /// For zsh, add the following to ~/.zshrc:
-    ///     source <(path/to/warp completions zsh)
+    ///     source <(path/to/phosphor-oss completions zsh)
     ///
     /// For fish, add the following to ~/.config/fish/config.fish:
-    ///     path/to/warp completions fish | source
+    ///     path/to/phosphor-oss completions fish | source
     ///
     /// For Powershell, add the following to $PROFILE:
     ///     path\to\phosphor-oss completions powershell | Out-String | Invoke-Expression
     ///
-    /// If no shell is provided, this defaults to the shell that Zap was run from.
+    /// If no shell is provided, this defaults to the shell that Phosphor was run from.
     #[command(verbatim_doc_comment)]
     Completions {
         /// Shell to generate completions for.
