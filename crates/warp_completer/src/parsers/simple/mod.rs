@@ -1,5 +1,6 @@
 use crate::meta::{Spanned, SpannedItem};
 
+mod command_words;
 mod convert;
 mod iter;
 mod lexer;
@@ -7,6 +8,7 @@ mod parser;
 mod token;
 
 use crate::parsers::LiteCommand;
+pub use command_words::{ExecutedCommands, executed_commands};
 use lexer::Lexer;
 use parser::Parser;
 use warp_util::path::EscapeChar;
@@ -124,7 +126,8 @@ pub fn command_without_leading_env_vars<S: AsRef<str>>(
 /// must treat that as "unknown" and fail closed, never as "no match".
 ///
 /// Two further limits are inherited from the parser and are **not** repaired by unquoting, so
-/// a security caller must not read a resolved-looking name as trustworthy:
+/// a security caller must not read a resolved-looking name as trustworthy — it should use
+/// [`executed_commands`], which is built for exactly that and reports what it cannot resolve:
 ///
 /// - redirection is consumed rather than delimited. `parse_part` swallows `<`/`>` *inside* a
 ///   word, so `rm>/dev/null -rf ~` resolves its name to `rm/dev/null`; `parse_command_list`

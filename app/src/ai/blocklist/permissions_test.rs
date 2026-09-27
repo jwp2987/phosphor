@@ -2441,3 +2441,389 @@ fn test_empty_org_denylist_allows_user_entries() {
         });
     })
 }
+
+/// Sets the active profile to `permission` with the given deny- and allowlist regexes.
+fn configure_command_profile(
+    app: &mut App,
+    state: &PermissionsTestState,
+    permission: ActionPermission,
+    denylist: &[&str],
+    allowlist: &[&str],
+) {
+    let terminal_view_id = state.terminal_view_id;
+    state.profile_model.update(app, |model, ctx| {
+        let profile_id = *model.active_profile(Some(terminal_view_id), ctx).id();
+        model.set_execute_commands(profile_id, &permission, ctx);
+        for rule in denylist {
+            model.add_to_command_denylist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex(rule).unwrap(),
+                ctx,
+            );
+        }
+        for rule in allowlist {
+            model.add_to_command_allowlist(
+                profile_id,
+                &AgentModeCommandExecutionPredicate::new_regex(rule).unwrap(),
+                ctx,
+            );
+        }
+    });
+}
+
+fn autoexecute_decision(
+    app: &App,
+    state: &PermissionsTestState,
+    command: &str,
+    escape_char: EscapeChar,
+) -> CommandExecutionPermission {
+    state.permissions.read(app, |model, ctx| {
+        model.can_autoexecute_command(
+            &state.convo_id,
+            command,
+            escape_char,
+            false,
+            None,
+            Some(state.terminal_view_id),
+            ctx,
+        )
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_denylist_sees_every_executed_command_word() {
+    // Regression test for #678. Under `AlwaysAllow` the denylist is the only gate, and every
+    // command below runs `rm` in bash while `decompose_command` -- shared with command x-ray
+    // and the allowlist -- surfaced something else as the command name: the redirect target,
+    // `rm,-rf,~`, `then`, `do`, `env`, `sudo`, ... The denylist now also sees what
+    // `executed_commands` says the line runs.
+    //
+    // NOTE: a deliberate divergence from the pin, which has the same holes. If a re-pin makes
+    // this fail, the fix has been reverted -- reinstate it, do not delete the test.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAllow,
+            &["rm .*"],
+            &[],
+        );
+
+        for (command, escape_char) in [
+            // redirection before, or glued to, the command name
+            (">/dev/null rm -rf ~", EscapeChar::Backslash),
+            ("rm>/dev/null -rf ~", EscapeChar::Backslash),
+            ("2>&1 rm -rf ~", EscapeChar::Backslash),
+            ("&>/dev/null rm -rf ~", EscapeChar::Backslash),
+            ("{fd}>/dev/null rm -rf ~", EscapeChar::Backslash),
+            // brace expansion that forms the command
+            ("{rm,-rf,~}", EscapeChar::Backslash),
+            ("{r,}m -rf ~", EscapeChar::Backslash),
+            // compound commands
+            ("if true; then rm -rf ~; fi", EscapeChar::Backslash),
+            ("if false; then :; else rm -rf ~; fi", EscapeChar::Backslash),
+            ("while true; do rm -rf ~; done", EscapeChar::Backslash),
+            ("until false; do rm -rf ~; done", EscapeChar::Backslash),
+            ("for i in 1; do rm -rf ~; done", EscapeChar::Backslash),
+            ("case x in x) rm -rf ~;; esac", EscapeChar::Backslash),
+            ("{ rm -rf ~; }", EscapeChar::Backslash),
+            ("(rm -rf ~)", EscapeChar::Backslash),
+            ("! rm -rf ~", EscapeChar::Backslash),
+            ("f() { rm -rf ~; }; f", EscapeChar::Backslash),
+            // lists
+            ("true; rm -rf ~", EscapeChar::Backslash),
+            ("true && rm -rf ~", EscapeChar::Backslash),
+            ("false || rm -rf ~", EscapeChar::Backslash),
+            ("echo | rm -rf ~", EscapeChar::Backslash),
+            ("sleep 1 & rm -rf ~", EscapeChar::Backslash),
+            // substitutions
+            ("echo $(rm -rf ~)", EscapeChar::Backslash),
+            ("echo `rm -rf ~`", EscapeChar::Backslash),
+            ("cat <(rm -rf ~)", EscapeChar::Backslash),
+            // wrappers, and commands whose arguments are commands
+            ("env rm -rf ~", EscapeChar::Backslash),
+            ("env -i X=1 rm -rf ~", EscapeChar::Backslash),
+            ("command rm -rf ~", EscapeChar::Backslash),
+            ("exec rm -rf ~", EscapeChar::Backslash),
+            ("nice -n 5 rm -rf ~", EscapeChar::Backslash),
+            ("sudo -u root rm -rf ~", EscapeChar::Backslash),
+            ("timeout 5 rm -rf ~", EscapeChar::Backslash),
+            ("xargs rm -rf ~", EscapeChar::Backslash),
+            (r"find . -exec rm -rf {} \;", EscapeChar::Backslash),
+            ("sh -c 'rm -rf ~'", EscapeChar::Backslash),
+            ("eval 'rm -rf ~'", EscapeChar::Backslash),
+            // quoting, decoding, paths and array prefixes
+            ("'r'm -rf ~", EscapeChar::Backslash),
+            ("\\rm -rf ~", EscapeChar::Backslash),
+            ("\"rm\" -rf ~", EscapeChar::Backslash),
+            ("$'\\x72m' -rf ~", EscapeChar::Backslash),
+            ("/bin/rm -rf ~", EscapeChar::Backslash),
+            ("FOO=(a b) rm -rf ~", EscapeChar::Backslash),
+            // PowerShell
+            ("Get-Date; rm -rf ~", EscapeChar::Backtick),
+        ] {
+            let result = autoexecute_decision(&app, &state, command, escape_char);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                    )
+                ),
+                "{command:?} runs `rm` and must be denied by the `rm .*` rule, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_fails_closed_on_unresolved_command_words() {
+    // When a command word is only known at run time, "no denylist rule matched" proves
+    // nothing, so the command must not be auto-approved: the user confirms instead.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAllow,
+            &["rm .*"],
+            &[],
+        );
+
+        for command in [
+            "$CMD -rf ~",
+            "R=rm; $R -rf ~",
+            "${R} -rf ~",
+            "$(echo rm) -rf ~",
+            "`echo rm` -rf ~",
+            "/bin/r? -rf ~",
+            "$HOME/bin/tool",
+            "eval \"$X\"",
+            "sh -c \"$X\"",
+            "sudo $CMD",
+            "echo 'unterminated",
+            "if true; then echo",
+        ] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::UnresolvedCommandWord
+                    )
+                ),
+                "{command:?} has a command word the denylist cannot see and must require \
+                 confirmation, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_unresolved_words_only_matter_when_the_parse_decides() {
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+
+        // No denylist: there is no rule an unknown command word could have matched, and
+        // AlwaysAllow never consulted the parse, so the decision is unchanged.
+        configure_command_profile(&mut app, &state, ActionPermission::AlwaysAllow, &[], &[]);
+        let result = autoexecute_decision(&app, &state, "$CMD -rf ~", EscapeChar::Backslash);
+        assert!(
+            matches!(
+                result,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                )
+            ),
+            "got {result:?}"
+        );
+
+        // The allowlist *does* depend on the parse, so an unresolved command word withholds
+        // an allowlist match -- even from a rule that matches everything -- while resolved
+        // commands are allowlisted exactly as before.
+        configure_command_profile(&mut app, &state, ActionPermission::AlwaysAsk, &[], &[".*"]);
+        let result = autoexecute_decision(&app, &state, "git status", EscapeChar::Backslash);
+        assert!(
+            matches!(
+                result,
+                CommandExecutionPermission::Allowed(
+                    CommandExecutionPermissionAllowedReason::ExplicitlyAllowlisted
+                )
+            ),
+            "got {result:?}"
+        );
+        for command in ["$CMD -rf ~", "{ rm -rf ~", "eval \"$X\""] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::AlwaysAskEnabled
+                    )
+                ),
+                "{command:?} must not be allowlisted from a parse that cannot see its command \
+                 word, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_executed_command_analysis_keeps_ordinary_decisions() {
+    // The analysis is additive: commands that do not run a denylisted program, and commands
+    // an allowlist approved before, are decided exactly as they were.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAllow,
+            &["rm .*"],
+            &[],
+        );
+
+        for command in [
+            "git status",
+            "ls -la | grep foo",
+            "cargo build 2>&1 | tail -20",
+            "echo \"rm -rf ~\"",
+            "grep -rn rm src",
+            "git commit -m \"remove (old) files\"",
+            "command -v rm",
+            "for f in *.rs; do echo \"$f\"; done",
+            "\"$HOME/.cargo/bin/cargo\" build",
+            "cat <<'EOF' > notes.txt\nit's if then do\nEOF",
+            "X=1 make test",
+            "[ -f x ] && echo yes",
+        ] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Allowed(
+                        CommandExecutionPermissionAllowedReason::AlwaysAllowed
+                    )
+                ),
+                "{command:?} does not run `rm` and should be allowed as before, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_allowlist_unchanged_for_resolved_commands() {
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAsk,
+            &[],
+            &["git .*", "ls( .*)?"],
+        );
+
+        for command in [
+            "git status",
+            "git log -n 5",
+            "ls",
+            "ls -la",
+            "git status && ls",
+        ] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Allowed(
+                        CommandExecutionPermissionAllowedReason::ExplicitlyAllowlisted
+                    )
+                ),
+                "{command:?} is allowlisted, got {result:?}"
+            );
+        }
+        for command in ["git status; rm -rf ~", "cat x", "ls $(rm -rf ~)"] {
+            let result = autoexecute_decision(&app, &state, command, EscapeChar::Backslash);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::AlwaysAskEnabled
+                    )
+                ),
+                "{command:?} is not wholly allowlisted, got {result:?}"
+            );
+        }
+    })
+}
+
+#[test]
+fn test_can_autoexecute_command_denylist_follows_indirect_execution() {
+    // Follow-up to #678 (adversarial review): commands reached through aliases, git config,
+    // command-valued environment variables, case-insensitive names and PowerShell aliases are
+    // denied; input- or interpreter-driven code, and PowerShell outside the analysed subset,
+    // requires confirmation.
+    App::test((), |mut app| async move {
+        let state = initialize_permissions_test(&mut app);
+        configure_command_profile(
+            &mut app,
+            &state,
+            ActionPermission::AlwaysAllow,
+            &["rm .*"],
+            &[],
+        );
+
+        for (command, escape_char) in [
+            ("alias r=rm; r -rf ~", EscapeChar::Backslash),
+            ("git -c core.pager='rm -rf ~' log", EscapeChar::Backslash),
+            ("git -c alias.x='!rm -rf ~' x", EscapeChar::Backslash),
+            (
+                "GIT_EXTERNAL_DIFF='rm -rf ~' git diff",
+                EscapeChar::Backslash,
+            ),
+            ("echo hi # ; rm -rf ~", EscapeChar::Backslash),
+            ("coproc NAME { rm -rf ~; }", EscapeChar::Backslash),
+            ("true; and rm -rf ~", EscapeChar::Backslash),
+            ("RM -rf ~", EscapeChar::Backslash),
+            ("=rm -rf ~", EscapeChar::Backslash),
+            ("ri -rf ~", EscapeChar::Backtick),
+            ("& 'rm' -rf ~", EscapeChar::Backtick),
+        ] {
+            let result = autoexecute_decision(&app, &state, command, escape_char);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::ExplicitlyDenylisted
+                    )
+                ),
+                "{command:?} runs `rm` and must be denied, got {result:?}"
+            );
+        }
+
+        for (command, escape_char) in [
+            ("${x:-rm} -rf ~", EscapeChar::Backslash),
+            ("xargs env", EscapeChar::Backslash),
+            ("python3 -c 'import shutil'", EscapeChar::Backslash),
+            ("perl -e 'unlink'", EscapeChar::Backslash),
+            ("git -c include.path=/tmp/x log", EscapeChar::Backslash),
+            ("LD_PRELOAD=/tmp/x.so ls", EscapeChar::Backslash),
+            ("r\u{200b}m -rf ~", EscapeChar::Backslash),
+            (
+                "Get-ChildItem | ForEach-Object { Remove-Item $_ }",
+                EscapeChar::Backtick,
+            ),
+            ("& $cmd -rf ~", EscapeChar::Backtick),
+        ] {
+            let result = autoexecute_decision(&app, &state, command, escape_char);
+            assert!(
+                matches!(
+                    result,
+                    CommandExecutionPermission::Denied(
+                        CommandExecutionPermissionDeniedReason::UnresolvedCommandWord
+                    )
+                ),
+                "{command:?} cannot be vouched for and must require confirmation, got {result:?}"
+            );
+        }
+    })
+}
