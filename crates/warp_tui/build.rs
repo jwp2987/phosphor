@@ -22,6 +22,44 @@ fn main() {
     let target_os = env::var("CARGO_CFG_TARGET_OS").expect("CARGO_CFG_TARGET_OS must be set");
 
     generate_channel_config_if_needed(&target_os);
+    inject_app_version();
+}
+
+/// Injects `PHOSPHOR_APP_VERSION`, read from the **app** crate's `Cargo.toml`,
+/// for `session.rs`'s `cli_version()` untagged-build fallback (issue #756,
+/// following #640's `warp_cli/build.rs`, which this is a straight copy of --
+/// see that file's doc comment for the full rationale: `warp_tui` is a
+/// dependency of `app`, not the other way around, so it can't see `app`'s
+/// `CARGO_PKG_VERSION` and has to read `app/Cargo.toml` directly instead).
+fn inject_app_version() {
+    let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set by cargo");
+    let app_cargo_toml = Path::new(&manifest_dir).join("../../app/Cargo.toml");
+
+    println!("cargo:rerun-if-changed={}", app_cargo_toml.display());
+
+    let contents = fs::read_to_string(&app_cargo_toml).unwrap_or_else(|err| {
+        panic!(
+            "warp_tui/build.rs: could not read {} (needed for the app's release version, issue #756): {err}",
+            app_cargo_toml.display()
+        )
+    });
+
+    let version = contents
+        .lines()
+        .find_map(|line| {
+            let rest = line.trim().strip_prefix("version")?;
+            let rest = rest.trim_start().strip_prefix('=')?;
+            let rest = rest.trim_start().strip_prefix('"')?;
+            rest.split('"').next()
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "warp_tui/build.rs: no 'version = \"...\"' line found in {}",
+                app_cargo_toml.display()
+            )
+        });
+
+    println!("cargo:rustc-env=PHOSPHOR_APP_VERSION={version}");
 }
 
 /// If the `release_bundle` feature is enabled and `warp-channel-config` is

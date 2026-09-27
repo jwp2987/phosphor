@@ -148,12 +148,48 @@ fn version_flag_prints_cli_version() {
         .expect_err("--version should short-circuit clap parsing");
 
     assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
-    // `run()` prints only CLI_VERSION (no binary-name precursor). Clap's
+    // `run()` prints only `cli_version()` (no binary-name precursor). Clap's
     // DisplayVersion payload still contains the configured version string.
     assert!(
-        error.to_string().contains(super::CLI_VERSION),
+        error.to_string().contains(super::cli_version()),
         "--version should be backed by the configured CLI version"
     );
+}
+
+/// #756: an untagged build (no `GIT_RELEASE_TAG`) must report the same
+/// `v{app version}-dev` shape #640 established for the GUI/`warp_cli` paths
+/// (`ChannelState::display_version`), not the old bare `v0.0.0.0.0.0`
+/// placeholder. No `GIT_RELEASE_TAG` is baked into test builds, so this needs
+/// no mock -- mirrors `warp_core::channel::state::state_tests`'s
+/// "tag absent" coverage for the same reason.
+#[test]
+fn version_falls_back_to_app_version_dev_format_when_untagged() {
+    warp_core::channel::ChannelState::set_app_version(None);
+
+    let version = super::cli_version();
+
+    assert_ne!(
+        version, "v0.0.0.0.0.0",
+        "must not print the old hardcoded placeholder"
+    );
+    assert!(
+        version.starts_with('v') && version.ends_with("-dev"),
+        "untagged build should report v{{app version}}-dev, got {version:?}"
+    );
+}
+
+/// #756: when a release tag *is* baked in, it wins over the dev fallback --
+/// same contract `ChannelState::display_version` already guarantees for the
+/// GUI/`warp_cli` paths (`display_version_tests::prefers_the_release_tag_when_present`).
+#[test]
+fn version_prefers_the_release_tag_when_present() {
+    warp_core::channel::ChannelState::set_app_version(Some("v1.2.3"));
+
+    let version = super::cli_version();
+
+    warp_core::channel::ChannelState::set_app_version(None);
+
+    assert_eq!(version, "v1.2.3");
 }
 
 #[test]

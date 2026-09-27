@@ -601,6 +601,22 @@ before acting):
       exempting legacy dated beta tags (`v2026.09.04.1-beta`); `workflow_dispatch`'s generated
       `v0.<date>` tag is intentionally left alone (see the workflow's comment — it's an
       ad-hoc, unversioned build, not a numbered release).
+- [x] **`phosphor-tui` had its own `CLI_VERSION`, not covered by #640's `display_version`
+      fix — FIXED (#756), 2026-09-27.** `crates/warp_tui/src/session.rs:33` defined a
+      separate `const CLI_VERSION` read from `option_env!("GIT_RELEASE_TAG")` with fallback
+      `"v0.0.0.0.0.0"`, used on `TuiArgs`'s `#[command(version = CLI_VERSION)]`, so a local
+      dev build (no `GIT_RELEASE_TAG`) made `phosphor-tui --version` print that raw
+      placeholder instead of the `v{app/Cargo.toml version}-dev` format #640 established for
+      the GUI/`warp_cli` paths. `crates/warp_tui/build.rs` now injects
+      `PHOSPHOR_APP_VERSION` the same way `warp_cli/build.rs` does (`warp_tui` is also a
+      dependency of `app`, not the other way around, so it reads `app/Cargo.toml` itself);
+      `CLI_VERSION` became `cli_version()`, a function calling
+      `ChannelState::display_version(concat!("v", env!("PHOSPHOR_APP_VERSION"), "-dev"))`
+      directly — no new crate dependency needed, `warp_tui` already depends on `warp_core`.
+      Tests: `version_falls_back_to_app_version_dev_format_when_untagged` and
+      `version_prefers_the_release_tag_when_present` added to
+      `crates/warp_tui/src/session_tests.rs`; the existing `version_flag_prints_cli_version`
+      updated to call `cli_version()` instead of the removed constant.
 - [x] **Three places decided "is this a remote session the file tools cannot reach", and
       only one of them was right — FIXED 2026-09-03.** The runtime guard in
       `app/src/ai/blocklist/action_model/execute/read_files.rs:129` refuses when the session
