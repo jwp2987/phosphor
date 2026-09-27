@@ -688,6 +688,9 @@ pub fn formatted_terminal_contents_for_input(
     )
 }
 
+/// How many soft-wrapped rows above the cursor row a stalled prompt may span.
+const MAX_PROMPT_WRAPPED_ROWS: usize = 16;
+
 /// The text on the cursor's logical line (i.e. following soft wraps backward) up to (not
 /// including) the cursor, or `None` when the cursor sits at column 0 -- i.e. the last thing the
 /// command printed ended in a newline, which is not the shape of a prompt waiting for an answer
@@ -704,8 +707,15 @@ pub fn text_before_cursor_on_cursor_line(grid_handler: &GridHandler) -> Option<S
     if cursor_point.col == 0 {
         return None;
     }
+    // This runs on every stall poll, and a command can leave the cursor after one enormous
+    // unterminated line (minified JSON, a long progress line). A prompt is short, so bound the
+    // walk back rather than re-reading the whole logical line each time.
+    let mut start = grid_handler.line_search_left(cursor_point);
+    start.row = start
+        .row
+        .max(cursor_point.row.saturating_sub(MAX_PROMPT_WRAPPED_ROWS));
     Some(grid_handler.bounds_to_string(
-        grid_handler.line_search_left(cursor_point),
+        start,
         Point::new(cursor_point.row, cursor_point.col.saturating_sub(1)),
         false,
         RespectObfuscatedSecrets::Yes,
