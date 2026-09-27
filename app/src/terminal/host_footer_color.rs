@@ -157,6 +157,33 @@ pub fn resolve_footer_bar_color(
     }
 }
 
+/// Returns tooltip text explaining *why* the window footer bar has the color
+/// [`resolve_footer_bar_color`] resolved for the same inputs -- otherwise a colored
+/// footer bar gives no indication of which host or rule produced it (#700).
+///
+/// `None` in exactly the cases [`resolve_footer_bar_color`] returns `None`: a
+/// [`ResolvedHost::Local`] session, or a [`ResolvedHost::Named`] one that no rule
+/// matches -- there is no color on screen for either case, so there is nothing to
+/// explain.
+pub fn resolve_footer_bar_tooltip(
+    session_type: &SessionType,
+    session_hostname: &str,
+    pending_ssh_target: Option<Option<String>>,
+    rules: &[HostFooterColorRule],
+) -> Option<String> {
+    match resolve_host(session_type, session_hostname, pending_ssh_target) {
+        ResolvedHost::Local => None,
+        ResolvedHost::Unknown => Some("Unknown host".to_string()),
+        ResolvedHost::Named(host) => rules
+            .iter()
+            .find(|rule| rule.pattern.is_match(&host))
+            .map(|rule| match &rule.name {
+                Some(rule_name) => format!("{host} ({rule_name})"),
+                None => host.clone(),
+            }),
+    }
+}
+
 #[cfg(test)]
 #[path = "host_footer_color_tests.rs"]
 mod tests;

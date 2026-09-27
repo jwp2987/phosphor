@@ -2731,6 +2731,18 @@ pub struct TerminalView {
     /// doc for why the regex matching must not run per frame.
     window_footer_bar_color: Option<AnsiColorIdentifier>,
 
+    /// Tooltip text explaining `window_footer_bar_color`, per
+    /// `host_footer_color::resolve_footer_bar_tooltip` -- `None` in exactly the cases
+    /// `window_footer_bar_color` is also `None` (nothing painted, nothing to explain).
+    /// Recomputed alongside `window_footer_bar_color` by
+    /// `recompute_window_footer_bar_color`; see that field's doc for why this must not
+    /// be recomputed during render (#700).
+    window_footer_bar_tooltip: Option<String>,
+
+    /// Hover state for the window-footer-bar tooltip above. A single handle is enough:
+    /// only one footer bar is ever rendered per `TerminalView`.
+    window_footer_bar_tooltip_mouse_state: MouseStateHandle,
+
     /// The keystroke bound to canceling a command.
     /// This is cached on the view because the UI framework APIs needed to lookup keystroke for an
     /// action only exist on `AppContext`, which is not accessible at render time. Sigh.
@@ -4234,6 +4246,8 @@ impl TerminalView {
             // Recomputed just below, once `Self` exists and `ctx.notify()` is
             // callable; `None` here is never rendered.
             window_footer_bar_color: None,
+            window_footer_bar_tooltip: None,
+            window_footer_bar_tooltip_mouse_state: Default::default(),
             cancel_command_keystroke: keybinding_name_to_keystroke(CANCEL_COMMAND_KEYBINDING, ctx),
             is_file_drop_target: false,
             is_ssh_file_uploader: false,
@@ -13342,13 +13356,20 @@ impl TerminalView {
         let color = host_footer_color::resolve_footer_bar_color(
             &session_type,
             &hostname,
-            pending_ssh_target,
+            pending_ssh_target.clone(),
             rules,
             unknown_host_color,
         );
+        let tooltip = host_footer_color::resolve_footer_bar_tooltip(
+            &session_type,
+            &hostname,
+            pending_ssh_target,
+            rules,
+        );
 
-        if self.window_footer_bar_color != color {
+        if self.window_footer_bar_color != color || self.window_footer_bar_tooltip != tooltip {
             self.window_footer_bar_color = color;
+            self.window_footer_bar_tooltip = tooltip;
             ctx.notify();
         }
     }
@@ -27901,14 +27922,31 @@ impl View for TerminalView {
                 .to_ansi_color(&appearance.theme().terminal_colors().normal)
                 .into()
         });
+        // A colored footer bar with no indication of *why* it's colored is the whole
+        // bug in #700: `window_footer_bar_tooltip` (cached alongside the color, same
+        // recompute-on-change rule) names the matched host/rule so hovering the bar
+        // answers that without a trip to Settings.
+        let footer_bar = render_window_footer_bar(
+            footer_bar_content,
+            self.size_info.pane_height_px().as_f32(),
+            footer_bar_background,
+        );
+        let footer_bar = match &self.window_footer_bar_tooltip {
+            Some(tooltip) => appearance.ui_builder().tool_tip_on_element(
+                tooltip.clone(),
+                self.window_footer_bar_tooltip_mouse_state.clone(),
+                footer_bar,
+                ParentAnchor::TopMiddle,
+                ChildAnchor::BottomMiddle,
+                vec2f(0., -3.),
+            ),
+            None => footer_bar,
+        };
+
         let element = Flex::column()
             .with_main_axis_size(MainAxisSize::Max)
             .with_child(Shrinkable::new(1., element).finish())
-            .with_child(render_window_footer_bar(
-                footer_bar_content,
-                self.size_info.pane_height_px().as_f32(),
-                footer_bar_background,
-            ))
+            .with_child(footer_bar)
             .finish();
 
         let final_element = if self.is_file_drop_target && FeatureFlag::SshDragAndDrop.is_enabled()

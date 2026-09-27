@@ -10,6 +10,14 @@ fn rule(pattern: &str, color: AnsiColorIdentifier) -> HostFooterColorRule {
     }
 }
 
+fn named_rule(pattern: &str, color: AnsiColorIdentifier, name: &str) -> HostFooterColorRule {
+    HostFooterColorRule {
+        pattern: Regex::new(pattern).expect("valid test regex"),
+        color,
+        name: Some(name.to_string()),
+    }
+}
+
 // --- resolve_host precedence ---------------------------------------------------
 
 /// Source 1 (shell-integration hostname) wins whenever the session is genuinely
@@ -214,4 +222,59 @@ fn unknown_host_color_is_independent_of_rules() {
         AnsiColorIdentifier::Yellow,
     );
     assert_eq!(color, Some(AnsiColorIdentifier::Yellow));
+}
+
+// --- resolve_footer_bar_tooltip: explains what resolve_footer_bar_color painted --
+
+/// #700: a colored footer bar with no explanation is the whole bug. When a rule
+/// matches, the tooltip must name the resolved host so hovering the bar answers
+/// "why is this colored" without a trip to Settings.
+#[test]
+fn matched_host_tooltip_names_the_host() {
+    let session_type = SessionType::WarpifiedRemote { host_id: None };
+    let rules = vec![rule("^prod-", AnsiColorIdentifier::Red)];
+
+    let tooltip = resolve_footer_bar_tooltip(&session_type, "prod-db-1", None, &rules);
+    assert_eq!(tooltip.as_deref(), Some("prod-db-1"));
+}
+
+/// When the matching rule has a user-given name, the tooltip surfaces it alongside
+/// the host so a rule like "prod fleet" is recognizable, not just its raw pattern.
+#[test]
+fn matched_host_tooltip_includes_the_rule_name_when_set() {
+    let session_type = SessionType::WarpifiedRemote { host_id: None };
+    let rules = vec![named_rule("^prod-", AnsiColorIdentifier::Red, "Production")];
+
+    let tooltip = resolve_footer_bar_tooltip(&session_type, "prod-db-1", None, &rules);
+    assert_eq!(tooltip.as_deref(), Some("prod-db-1 (Production)"));
+}
+
+/// No tooltip for a plain local session -- `resolve_footer_bar_color` paints
+/// nothing for it either, so there is nothing to explain.
+#[test]
+fn local_session_has_no_tooltip() {
+    let tooltip = resolve_footer_bar_tooltip(&SessionType::Local, "my-laptop", None, &[]);
+    assert_eq!(tooltip, None);
+}
+
+/// No tooltip for a named host that no rule matches -- the bar is uncolored
+/// (`None`, the default), matching `resolve_footer_bar_color`'s own behavior for
+/// this case (see `non_matching_host_yields_default` above).
+#[test]
+fn non_matching_named_host_has_no_tooltip() {
+    let session_type = SessionType::WarpifiedRemote { host_id: None };
+    let rules = vec![rule("^staging-", AnsiColorIdentifier::Red)];
+
+    let tooltip = resolve_footer_bar_tooltip(&session_type, "prod-db-1", None, &rules);
+    assert_eq!(tooltip, None);
+}
+
+/// An unknown host gets an explanatory tooltip too, independent of `rules` --
+/// mirrors `unknown_host_color_is_independent_of_rules` for the color.
+#[test]
+fn unknown_host_tooltip_is_independent_of_rules() {
+    let rules = vec![rule(".*", AnsiColorIdentifier::Red)];
+
+    let tooltip = resolve_footer_bar_tooltip(&SessionType::Local, "my-laptop", Some(None), &rules);
+    assert_eq!(tooltip.as_deref(), Some("Unknown host"));
 }
