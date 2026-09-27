@@ -1157,6 +1157,7 @@ settings-exec-profile-auto = 自動
 settings-exec-profile-section-models = モデル
 settings-exec-profile-section-permissions = 権限
 settings-exec-profile-base-model = ベースモデル:
+settings-exec-profile-base-model-currently-using = 現在は { $model } を使用中 (/model で選択)
 settings-exec-profile-full-terminal-use = ターミナル全面利用:
 settings-exec-profile-title-model = タイトル生成:
 settings-exec-profile-active-ai-model = アクティブ AI:

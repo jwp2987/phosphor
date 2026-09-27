@@ -104,17 +104,26 @@ impl View for ExecutionProfileView {
 
         let llm_preferences = LLMPreferences::as_ref(app);
 
-        let base_model = profile
+        let configured_base_model = profile
             .base_model
             .as_ref()
             .and_then(|id| llm_preferences.get_llm_info(id))
-            .map(|info| info.display_name.clone())
-            .unwrap_or_else(|| {
-                llm_preferences
-                    .get_default_base_model()
-                    .display_name
-                    .clone()
-            });
+            .unwrap_or_else(|| llm_preferences.get_default_base_model());
+        let base_model = configured_base_model.display_name.clone();
+
+        // #701: the model actually driving a request can differ from the profile's
+        // configured `base_model` -- `LLMPreferences` resolves the BYOP picker's
+        // globally last-used model (whatever was last picked with `/model` in the
+        // composer) ahead of any profile's own `base_model`, so a profile can show one
+        // model here while a different one is currently in effect, with nothing on this
+        // page saying so. Surface it as a secondary line rather than replacing the
+        // configured value -- the row above still answers "what is this profile set
+        // to", this answers "what is it actually doing right now".
+        let base_model_currently_used = {
+            let effective = llm_preferences
+                .get_effective_base_model_for_profile(app, profile.base_model.as_ref());
+            (effective.id != configured_base_model.id).then(|| effective.display_name.clone())
+        };
 
         let cli_agent_model = profile
             .cli_agent_model
@@ -216,6 +225,13 @@ impl View for ExecutionProfileView {
                             is_any_ai_enabled,
                         ),
                     ));
+                    if let Some(currently_used) = base_model_currently_used {
+                        model_flex.add_child(render_base_model_currently_used_note(
+                            currently_used,
+                            appearance,
+                            is_any_ai_enabled,
+                        ));
+                    }
                     model_flex.add_child(with_standard_vertical_margin(
                         render_model_line_with_icon(
                             Icon::Terminal,
@@ -689,6 +705,41 @@ fn render_model_line_with_icon(
             )
             .finish(),
     )
+    .finish()
+}
+
+/// A secondary line under the "Base model" row, shown only when the model actually
+/// driving a request differs from the profile's configured `base_model` (#701): see
+/// `LLMPreferences::get_effective_base_model_for_profile`'s doc for why that can
+/// happen even for a profile that isn't active on any terminal.
+fn render_base_model_currently_used_note(
+    model_display_name: String,
+    appearance: &Appearance,
+    is_ai_enabled: bool,
+) -> Box<dyn Element> {
+    Container::new(
+        Text::new(
+            crate::t!(
+                "settings-exec-profile-base-model-currently-using",
+                model = model_display_name
+            ),
+            appearance.ui_font_family(),
+            appearance.ui_font_footnote(),
+        )
+        .with_color(if is_ai_enabled {
+            appearance
+                .theme()
+                .sub_text_color(appearance.theme().surface_1())
+                .into()
+        } else {
+            appearance.theme().disabled_ui_text_color().into()
+        })
+        .finish(),
+    )
+    .with_margin_left(18.)
+    .with_margin_bottom(4.)
+    .with_border(warpui::elements::Border::left(1.).with_border_fill(appearance.theme().outline()))
+    .with_padding_left(8.)
     .finish()
 }
 

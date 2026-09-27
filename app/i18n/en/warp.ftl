@@ -1309,6 +1309,7 @@ settings-exec-profile-auto = Auto
 settings-exec-profile-section-models = MODELS
 settings-exec-profile-section-permissions = PERMISSIONS
 settings-exec-profile-base-model = Base model:
+settings-exec-profile-base-model-currently-using = Currently using { $model } (chosen with /model)
 settings-exec-profile-full-terminal-use = Full terminal use:
 settings-exec-profile-title-model = Title generation:
 settings-exec-profile-active-ai-model = Active AI:

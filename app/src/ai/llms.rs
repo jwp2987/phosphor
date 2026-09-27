@@ -713,18 +713,58 @@ impl LLMPreferences {
             }
         }
 
+        if let Some(llm_info) = self.byop_last_used_base_model(app) {
+            return llm_info;
+        }
+
+        self.get_active_profile_base_model(app, terminal_view_id)
+    }
+
+    /// The BYOP picker's globally last-used model (`AISettings.byop_last_used_model_id`),
+    /// if one is set and still a valid agent-mode choice. Factored out of
+    /// [`Self::get_preferred_base_model`] so [`Self::get_effective_base_model_for_profile`]
+    /// can apply the exact same override -- ahead of a profile's own configured
+    /// `base_model`, per that method's doc -- without duplicating the lookup.
+    fn byop_last_used_base_model<'a>(&'a self, app: &AppContext) -> Option<&'a LLMInfo> {
         // The BYOP picker's last_used is closer to the user's latest intent than the profile default.
         let last_used = crate::settings::AISettings::as_ref(app)
             .byop_last_used_model_id
             .to_string();
-        if !last_used.is_empty() {
-            let llm_id: LLMId = last_used.into();
-            if let Some(llm_info) = self.models_by_feature.agent_mode.info_for_id(&llm_id) {
-                return llm_info;
-            }
+        if last_used.is_empty() {
+            return None;
+        }
+        let llm_id: LLMId = last_used.into();
+        self.models_by_feature.agent_mode.info_for_id(&llm_id)
+    }
+
+    /// Resolves what the composer's model chip would show for a *specific* profile's
+    /// configured `base_model` -- e.g. `base_model_id`, as read straight off a profile
+    /// the caller already has -- if that profile were active on a terminal with no
+    /// per-terminal override: [`Self::byop_last_used_base_model`] if set, falling back
+    /// to `base_model_id` itself, falling back to the agent-mode default.
+    ///
+    /// Exists for the profile settings page
+    /// (`settings_view::execution_profile_view`), which lists every profile, not just
+    /// the active one, and so cannot use [`Self::get_active_base_model`] --
+    /// `AIExecutionProfilesModel::active_profile` ignores a bare profile id and only
+    /// ever resolves the active *session's* profile. `byop_last_used_model_id` is
+    /// deliberately consulted ahead of any profile's `base_model` (see
+    /// [`Self::get_preferred_base_model`]'s doc: it is a global override, not scoped to
+    /// the active profile), so this can show even a profile that is not active on any
+    /// terminal as currently driving a different model than the one it's configured
+    /// with -- precisely the "Base model" row's blind spot #701 reported.
+    pub fn get_effective_base_model_for_profile<'a>(
+        &'a self,
+        app: &AppContext,
+        base_model_id: Option<&LLMId>,
+    ) -> &'a LLMInfo {
+        if let Some(llm_info) = self.byop_last_used_base_model(app) {
+            return llm_info;
         }
 
-        self.get_active_profile_base_model(app, terminal_view_id)
+        base_model_id
+            .and_then(|id| self.models_by_feature.agent_mode.info_for_id(id))
+            .unwrap_or_else(|| self.models_by_feature.agent_mode.default_llm_info())
     }
 
     /// Returns the active execution profile's effective base model, *without*
@@ -897,27 +937,11 @@ impl LLMPreferences {
         let profile = AIExecutionProfilesModel::as_ref(app).active_profile(terminal_view_id, app);
 
         let available = self.get_cli_agent_available();
-        if let Some(info) = profile
+        profile
             .data()
             .cli_agent_model
             .clone()
             .and_then(|id| available.info_for_id(&id))
-        {
-            return info;
-        }
-
-        // "Auto" (no `cli_agent_model` configured): prefer the same model the
-        // profile's base model resolves to, if it's also a valid choice for
-        // CLI agent use, so the model that actually drives a full-terminal-use
-        // turn agrees with the model shown elsewhere as the profile's base
-        // model. Previously this fell straight through to
-        // `available.default_llm_info()` -- whichever provider happens to be
-        // first in the user's configured provider list -- which could be a
-        // completely unrelated provider/model from the one configured (and
-        // displayed) as the base model (#701).
-        let base_model = self.get_active_base_model(app, terminal_view_id);
-        available
-            .info_for_id(&base_model.id)
             .unwrap_or_else(|| available.default_llm_info())
     }
 

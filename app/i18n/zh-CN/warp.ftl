@@ -1200,6 +1200,7 @@ settings-exec-profile-auto = 自动
 settings-exec-profile-section-models = 模型
 settings-exec-profile-section-permissions = 权限
 settings-exec-profile-base-model = 基础模型：
+settings-exec-profile-base-model-currently-using = 当前正在使用 { $model }（通过 /model 选择）
 settings-exec-profile-full-terminal-use = 完整终端使用：
 settings-exec-profile-title-model = 标题生成：
 settings-exec-profile-active-ai-model = 主动式 AI:
