@@ -919,3 +919,114 @@ fn late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only
         drop(model_events_tx);
     });
 }
+
+/// Diagnostics for the still-unexplained field lockup in TODO.md ("The shell lockup"):
+/// `track_pty_write_gate_stall` must notice when the PTY write gate has been shut with writes
+/// queued for a while, log exactly once per unbroken stall (not once per queued write), and reset
+/// once the stall ends -- either because the gate reopens or because the queue drains out from
+/// under it.
+#[test]
+fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // The line editor starts out inactive (this harness's default -- see the file-level
+        // comment), so `can_write_to_pty` is already shut. Queue a write so there is something
+        // pending behind that gate.
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: Cow::Owned(vec![b'x']),
+            });
+            controller.execute_next_queued_write(ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.pty_write_gate_blocked_since.is_some(),
+                "a shut gate with writes queued must start tracking when the stall began."
+            );
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "a stall that just started must not have logged yet."
+            );
+        });
+
+        // Fast-forward the tracked start time past the log threshold, as if the stall had been
+        // running for a while, and drive the tracker again -- this is the same call
+        // `execute_next_queued_write` makes on every subsequent queued write or
+        // `LineEditorStatusEvent::Active`.
+        controller.update(&mut app, |controller, ctx| {
+            controller.pty_write_gate_blocked_since = Some(
+                Instant::now() - (PTY_WRITE_GATE_STALL_LOG_THRESHOLD + Duration::from_secs(1)),
+            );
+            controller.track_pty_write_gate_stall(ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "a stall past the threshold must be logged."
+            );
+        });
+
+        // Driving the tracker again while still stalled must not reset or re-log -- one log line
+        // per unbroken stretch, not one per keystroke.
+        let blocked_since_before = controller.read(&app, |controller, _| {
+            controller
+                .pty_write_gate_blocked_since
+                .expect("still stalled")
+        });
+        controller.update(&mut app, |controller, ctx| {
+            controller.track_pty_write_gate_stall(ctx);
+        });
+        controller.read(&app, |controller, _| {
+            assert_eq!(
+                controller.pty_write_gate_blocked_since,
+                Some(blocked_since_before),
+                "an already-logged, still-ongoing stall must not restart its clock."
+            );
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "an already-logged, still-ongoing stall must stay logged, not reset."
+            );
+        });
+
+        // The queue draining ends the stall and must reset the tracker, even though the gate
+        // itself is still shut.
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.clear();
+            controller.track_pty_write_gate_stall(ctx);
+        });
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.pty_write_gate_blocked_since.is_none(),
+                "an empty queue is not a stall, however long the gate has been shut."
+            );
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "the log-once flag must reset along with the stall."
+            );
+        });
+
+        drop(model_events_tx);
+    });
+}

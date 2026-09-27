@@ -69,6 +69,12 @@ const NATIVE_COMPLETIONS_UNAVAILABLE_MESSAGE: &str = "Tab completions aren't ava
      shell -- it has no Phosphor shell integration to answer them. This is usual for a shell \
      entered with su, sudo su - or ksu.";
 
+/// How long the PTY write gate must stay shut with writes queued before
+/// `track_pty_write_gate_stall` logs it. Chosen to be well above ordinary scheduling jitter
+/// (`LineEditorStatusEvent::Active` firing a beat late) but well below the point where a user
+/// would already suspect something is wrong, so the log line is there before they go looking.
+const PTY_WRITE_GATE_STALL_LOG_THRESHOLD: Duration = Duration::from_secs(3);
+
 /// Represents a single call to write bytes to the PTY asynchronously.
 enum PtyWrite {
     Command {
@@ -157,6 +163,16 @@ pub struct PtyController<T: EventLoopSender> {
     /// out the shell genuinely never replies -- the common case, where `^Y` was just readline's
     /// yank and no read is stuck at all, so the flag is harmless dead weight.
     has_pending_late_completions_prompt_reply: bool,
+    /// When the current unbroken stretch of the PTY write gate being shut *with writes queued*
+    /// began, if we are in one. Diagnostic-only bookkeeping for the still-unexplained field lockup
+    /// in TODO.md ("The shell lockup"): the watchdog above only ever fires for the (currently
+    /// unreachable, `FeatureFlag::NativeShellCompletions`-gated) native-completions handshake, but
+    /// the *other* gate in `can_write_to_pty` -- the line editor being inactive -- has no such
+    /// watchdog and is a live suspect. Cleared whenever the gate opens or the queue drains.
+    pty_write_gate_blocked_since: Option<std::time::Instant>,
+    /// Whether the current stretch tracked by `pty_write_gate_blocked_since` has already produced
+    /// its one log line, so a long stall logs once instead of once per queued keystroke.
+    has_logged_current_pty_write_stall: bool,
 }
 
 impl<T: EventLoopSender> PtyController<T> {
@@ -375,6 +391,8 @@ impl<T: EventLoopSender> PtyController<T> {
             native_completions_generation: 0,
             has_reported_native_completions_unavailable: false,
             has_pending_late_completions_prompt_reply: false,
+            pty_write_gate_blocked_since: None,
+            has_logged_current_pty_write_stall: false,
         }
     }
 
@@ -608,8 +626,11 @@ impl<T: EventLoopSender> PtyController<T> {
     /// when the line editor becomes active.
     fn execute_next_queued_write(&mut self, ctx: &mut ModelContext<Self>) {
         if !self.can_write_to_pty(ctx) {
+            self.track_pty_write_gate_stall(ctx);
             return;
         }
+        self.pty_write_gate_blocked_since = None;
+        self.has_logged_current_pty_write_stall = false;
 
         if let Some(write) = self.pending_writes.pop_front() {
             let is_command = matches!(write, PtyWrite::Command { .. });
@@ -618,6 +639,49 @@ impl<T: EventLoopSender> PtyController<T> {
                 self.execute_next_queued_write(ctx);
             }
         }
+    }
+
+    /// Diagnostics for the still-unexplained field lockup in TODO.md ("The shell lockup"): the
+    /// reporter is on bash with no enabler for `FeatureFlag::NativeShellCompletions`, so the
+    /// watchdog above cannot be what wedged their pane -- but `can_write_to_pty` has a second
+    /// gate, the line editor being inactive, that has no watchdog and no diagnostics at all. This
+    /// makes the next capture decisive: if the gate is shut for more than a few seconds while
+    /// writes are queued, log once naming which gate is shut and how many writes are waiting,
+    /// then stay quiet until the stretch ends (a fresh keystroke reopening the gate, or the queue
+    /// draining) so a stuck pane cannot spam the log once per keystroke.
+    ///
+    /// Never logs write contents, only counts and booleans -- see #718 on log redaction.
+    fn track_pty_write_gate_stall(&mut self, ctx: &mut ModelContext<Self>) {
+        if self.pending_writes.is_empty() {
+            self.pty_write_gate_blocked_since = None;
+            self.has_logged_current_pty_write_stall = false;
+            return;
+        }
+
+        let now = std::time::Instant::now();
+        let blocked_since = *self.pty_write_gate_blocked_since.get_or_insert(now);
+
+        if self.has_logged_current_pty_write_stall {
+            return;
+        }
+
+        let stalled_for = now.saturating_duration_since(blocked_since);
+        if stalled_for < PTY_WRITE_GATE_STALL_LOG_THRESHOLD {
+            return;
+        }
+
+        let line_editor_inactive = !self.line_editor_status.as_ref(ctx).is_line_editor_active();
+        let awaiting_completions_prompt = self
+            .in_flight_native_completions_state
+            .as_ref()
+            .is_some_and(|state| state.is_awaiting_prompt());
+        log::warn!(
+            "PTY write gate has been shut for {stalled_for:?} with {} write(s) queued \
+             (line_editor_inactive={line_editor_inactive}, awaiting_completions_prompt={awaiting_completions_prompt}); \
+             if the pane looks locked up, this is the capture to keep.",
+            self.pending_writes.len()
+        );
+        self.has_logged_current_pty_write_stall = true;
     }
 
     /// Writes a set of bytes to the PTY to begin bootstrapping a shell.
