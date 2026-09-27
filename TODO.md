@@ -2609,12 +2609,18 @@ separately rather than inflating the queue count.
       restore metadata without the binary). **Closed via #712:** `script/install_cargo_release_deps`
       and `script/install_cargo_bundle` now check the installed binary's own version and
       `--force` reinstall on a mismatch, instead of trusting `cargo binstall`'s metadata.
-- [ ] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
+- [x] **`6e0feaf9c` — SUPPLY CHAIN.** Fork CI still uses the third-party
       `cargo-bins/cargo-binstall` action (`prepare_environment/action.yml:87`,
       `pr-check.yml:249`) while the fork's own SHA-verified script sits unused. Also adds
       a missing binstall bootstrap to the wasm deps script.
-- [ ] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
+      **Closed via #713:** `prepare_environment/action.yml` and `pr-check.yml`'s
+      `licenses` job now run `./script/install_cargo_binstall`; `script/wasm/install_build_deps`
+      calls it explicitly instead of relying on it having run beforehand.
+- [x] **`352a7fc10`** — retry + exponential backoff on the binstall download; the fork's
       `curl` has no `--retry` at all, so a CDN brownout fails bootstrap outright.
+      **Closed via #713:** `script/install_cargo_binstall`'s download now retries at the
+      shell level with exponential backoff (10s -> 20s -> 40s -> 80s -> fail), which works
+      on curl versions too old for `--retry-all-errors`.
 - [ ] **`cff5f778c`** — **FOUR files, not one. This ledger entry previously described
       only the first and would itself have caused a partial port.**
       (a) `script/lint_powershell` throws on the first source with findings, hiding
