@@ -139,7 +139,7 @@ impl FileGlobExecutor {
         // truncation here beyond `glob_result_to_json`'s own cap, exactly as before this
         // field was added.
         let result_limit = match input.action.action {
-            AIAgentActionType::FileGlobV2 { result_limit, .. } => *result_limit,
+            AIAgentActionType::FileGlobV2 { result_limit, .. } => result_limit,
             _ => None,
         };
         ActionExecution::new_async(
