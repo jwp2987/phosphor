@@ -12,6 +12,8 @@ use warpui::{
     AppContext, Element, Entity, SingletonEntity, TypedActionView, View, ViewContext,
 };
 
+use remote_server::setup::UnsupportedReason;
+
 use crate::{terminal::model::session::SessionId, ui_components::icons::Icon, Appearance};
 
 const BANNER_BODY: &str =
@@ -33,27 +35,61 @@ pub enum SshRemoteServerFailureKind {
     BinaryCheck,
     BinaryInstall,
     Launch,
+    /// The preinstall check classified this host as incompatible with the
+    /// prebuilt remote-server binary (old glibc, non-glibc libc, ...) and the
+    /// controller deliberately fell back to the legacy ControlMaster-backed
+    /// SSH flow -- nothing failed, the host was correctly declined. Distinct
+    /// from the other three kinds (which ARE failures): until this variant
+    /// existed, nothing told the user this session fell back to the legacy
+    /// path at all, let alone why (TODO.md "Remote-session setup degrades
+    /// silently", item 1).
+    Unsupported,
 }
 
 impl SshRemoteServerFailureKind {
-    fn title(self) -> &'static str {
+    fn title(self) -> String {
         match self {
-            Self::BinaryCheck => "SSH extension couldn't be verified",
-            Self::BinaryInstall => "SSH extension couldn't be installed",
-            Self::Launch => "SSH extension couldn't be started",
+            Self::BinaryCheck => "SSH extension couldn't be verified".to_string(),
+            Self::BinaryInstall => "SSH extension couldn't be installed".to_string(),
+            Self::Launch => "SSH extension couldn't be started".to_string(),
+            Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-title"),
         }
     }
 
-    fn description(self) -> &'static str {
+    fn description(self) -> String {
         match self {
             Self::BinaryCheck => {
-                "The SSH extension binary could not be verified on the remote host."
+                "The SSH extension binary could not be verified on the remote host.".to_string()
             }
             Self::BinaryInstall => {
-                "The binary could not be written or executed on the remote host."
+                "The binary could not be written or executed on the remote host.".to_string()
             }
-            Self::Launch => "The SSH extension could not be started on the remote host.",
+            Self::Launch => {
+                "The SSH extension could not be started on the remote host.".to_string()
+            }
+            Self::Unsupported => crate::t!("terminal-ssh-remote-server-unsupported-description"),
         }
+    }
+}
+
+/// Explains, in one line, why the preinstall check declined this host for the
+/// remote-server extension. Shown as the [`SshRemoteServerFailedBanner`]'s
+/// detail line for [`SshRemoteServerFailureKind::Unsupported`].
+///
+/// Pure and unit-tested on its own (see `ssh_remote_server_failed_banner_tests.rs`)
+/// so the mapping from [`UnsupportedReason`] to user-facing text can be
+/// checked without constructing any view.
+pub fn describe_unsupported_reason(reason: &UnsupportedReason) -> String {
+    match reason {
+        UnsupportedReason::GlibcTooOld { detected, required } => crate::t!(
+            "terminal-ssh-remote-server-unsupported-glibc-detail",
+            detected = detected.to_string(),
+            required = required.to_string()
+        ),
+        UnsupportedReason::NonGlibc { name } => crate::t!(
+            "terminal-ssh-remote-server-unsupported-non-glibc-detail",
+            name = name.clone()
+        ),
     }
 }
 
@@ -219,3 +255,7 @@ impl TypedActionView for SshRemoteServerFailedBanner {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "ssh_remote_server_failed_banner_tests.rs"]
+mod tests;

@@ -152,6 +152,7 @@ use crate::terminal::view::ssh_remote_server_choice_view::{
 };
 use crate::terminal::view::ssh_remote_server_failed_banner::{
     SshRemoteServerFailedBanner, SshRemoteServerFailedBannerEvent, SshRemoteServerFailureKind,
+    describe_unsupported_reason,
 };
 use crate::terminal::view::telemetry::PromptSuggestionFallbackReason;
 use crate::workspaces::user_workspaces::UserWorkspacesEvent;
@@ -4331,11 +4332,45 @@ impl TerminalView {
                     }
                 }
                 match event {
-                    RemoteServerManagerEvent::SetupStateChanged { .. } => {
+                    RemoteServerManagerEvent::SetupStateChanged { session_id, state } => {
                         // Sessions handles the state update directly via its own
                         // subscription to the manager. Notify the view so the
                         // loading footer re-renders with the updated message.
                         ctx.notify();
+
+                        // `Unsupported` is a deliberate fall-back to the legacy
+                        // SSH path -- the preinstall check correctly declined an
+                        // incompatible host. Distinct from `Failed`, which
+                        // already reaches a banner via `SessionConnectionFailed`
+                        // / `BinaryInstallComplete` / `BinaryCheckComplete`
+                        // below. Until now nothing told the user this session
+                        // fell back to the legacy path at all (TODO.md
+                        // "Remote-session setup degrades silently", item 1).
+                        //
+                        // `Failed` is handled here too, as a safety net for any
+                        // path that sets it without also firing one of those
+                        // three events: `show_ssh_remote_server_failed_banner`
+                        // is a no-op when a banner is already shown for this
+                        // session, so this cannot double up.
+                        match state {
+                            RemoteServerSetupState::Unsupported { reason } => {
+                                me.show_ssh_remote_server_failed_banner(
+                                    *session_id,
+                                    SshRemoteServerFailureKind::Unsupported,
+                                    &describe_unsupported_reason(reason),
+                                    ctx,
+                                );
+                            }
+                            RemoteServerSetupState::Failed { error } => {
+                                me.show_ssh_remote_server_failed_banner(
+                                    *session_id,
+                                    SshRemoteServerFailureKind::BinaryInstall,
+                                    error,
+                                    ctx,
+                                );
+                            }
+                            _ => {}
+                        }
                     }
                     RemoteServerManagerEvent::SessionConnected { session_id, .. } => {
                         me.model.lock().event_proxy.send_terminal_event(
