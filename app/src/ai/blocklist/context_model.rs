@@ -429,6 +429,13 @@ pub struct BlocklistAIContextModel {
     /// Context attachments shown in the input box with a visible @name.
     pending_inline_at_context_attachments: HashMap<String, AIAgentAttachment>,
 
+    /// Keys of `pending_inline_at_context_attachments` whose `@ref` text is not in the input
+    /// buffer as of the last edit ([`Self::sync_at_context_references_with_query`]). Kept
+    /// separate instead of deleting the attachment, because the text can come back -- a
+    /// Backspace-and-retype inside the `@ref`, an undo, a cut and paste -- and the attachment
+    /// must come back with it. Only accept and submit actually prune.
+    absent_at_context_references: HashSet<String>,
+
     /// The pending query could be new, which means it starts a new conversation, or follow-up, which means
     /// it continues the selected conversation.
     ///
@@ -643,6 +650,7 @@ impl BlocklistAIContextModel {
             conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
+            absent_at_context_references: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
@@ -675,6 +683,7 @@ impl BlocklistAIContextModel {
             conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
+            absent_at_context_references: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
@@ -709,6 +718,7 @@ impl BlocklistAIContextModel {
             conversation_selection,
             pending_inline_diff_hunk_attachments: Default::default(),
             pending_inline_at_context_attachments: Default::default(),
+            absent_at_context_references: Default::default(),
             pending_document_id: None,
             auto_attached_agent_view_user_block_ids: Vec::new(),
             #[cfg(feature = "local_fs")]
@@ -752,22 +762,31 @@ impl BlocklistAIContextModel {
     /// This model cannot see the buffer, so it cannot tell a live `@ref` from one the user has
     /// since deleted, and it answers `true` for both.
     ///
-    /// **The reconciliation runs on every user edit.** `terminal/input.rs` calls
-    /// `prune_stale_at_context_attachments` (which runs `retain_at_context_attachments_in_query`)
-    /// from the `EditorEvent::Edited` handler for user-origin edits, before the autodetection
-    /// gate, as well as on `EditorEvent::AcceptAIContextMenuItem` and at submit. Before the edit
-    /// hook existed (#674), deleting the `@ref` text left this returning `true` for an
-    /// attachment that no longer existed, autodetection stayed off, and the next shell command
-    /// typed was submitted to the agent -- the submit-time prune runs inside the AI submit path,
-    /// after routing. System edits are not reconciled, because inserting a reference passes
-    /// through an intermediate buffer holding neither the `@filter` nor the `@ref`.
+    /// **The at-context clause follows the buffer on every edit, without deleting anything.**
+    /// `terminal/input.rs` runs [`Self::sync_at_context_references_with_query`] from the
+    /// `EditorEvent::Edited` handler, before the autodetection gate, so only attachments whose
+    /// `@ref` text is currently present lock the input. Before that (#674), deleting the
+    /// `@ref` left this `true`, autodetection stayed off, and the next shell command typed was
+    /// submitted to the agent. Pruning on edit was tried and is wrong: the text can come back
+    /// (Backspace-and-retype, undo, cut and paste) and the attachment would be silently lost.
+    /// Actual removal still happens only at context-menu accept and submit
+    /// (`prune_stale_at_context_attachments`).
     ///
     /// While the `@ref` *is* in the buffer this lock is exactly right: dropping the at-context
     /// clause would let the classifier flip a genuine `@`-reference query to shell.
     pub fn has_locking_attachment(&self) -> bool {
         !self.pending_context_block_ids.is_empty()
             || !self.pending_attachments.is_empty()
-            || !self.pending_inline_at_context_attachments.is_empty()
+            || self.has_present_at_context_attachment()
+    }
+
+    /// Whether any `@`-context attachment's reference text is in the buffer as of the last
+    /// [`Self::sync_at_context_references_with_query`]. Before any sync, every registered
+    /// attachment counts as present.
+    fn has_present_at_context_attachment(&self) -> bool {
+        self.pending_inline_at_context_attachments
+            .keys()
+            .any(|reference| !self.absent_at_context_references.contains(reference))
     }
 
     /// Returns the set `BlockId`s corresponding to blocks to be included as context with the next
@@ -1486,8 +1505,23 @@ impl BlocklistAIContextModel {
         reference: String,
         attachment: AIAgentAttachment,
     ) {
+        self.absent_at_context_references.remove(&reference);
         self.pending_inline_at_context_attachments
             .insert(reference, attachment);
+    }
+
+    /// Records which `@`-context attachments currently have their reference text in `query`,
+    /// without removing any. Run on every buffer edit so [`Self::has_locking_attachment`]
+    /// follows the buffer; an attachment whose text is deleted and later restored is locking
+    /// (and sent) again, which pruning on edit would have lost.
+    pub fn sync_at_context_references_with_query(&mut self, query: &str) {
+        let present = self.at_context_references_in_query(query);
+        self.absent_at_context_references = self
+            .pending_inline_at_context_attachments
+            .keys()
+            .filter(|reference| !present.contains(*reference))
+            .cloned()
+            .collect();
     }
 
     /// Returns the @ context attachments, indexed by their visible reference string.
@@ -1551,11 +1585,13 @@ impl BlocklistAIContextModel {
         let references = self.at_context_references_in_query(query);
         self.pending_inline_at_context_attachments
             .retain(|reference, _attachment| references.contains(reference));
+        self.absent_at_context_references.clear();
     }
 
     /// Clears all @ context attachments.
     pub fn clear_at_context_attachments(&mut self) {
         self.pending_inline_at_context_attachments.clear();
+        self.absent_at_context_references.clear();
     }
 
     /// Removes and returns all pending attachments, emitting a resync so the staged context

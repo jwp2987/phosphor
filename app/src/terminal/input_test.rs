@@ -2771,11 +2771,29 @@ fn test_slash_menu_saved_prompt_inserts_context_reference() {
     });
 }
 
-/// Deleting an `@ref` from the buffer must drop its attachment on that edit, not at the next
-/// accept-or-submit: a stale attachment keeps `has_locking_attachment` true, which turns
+/// Types `text` into the buffer as a user edit, running the same `Edited` handling the editor
+/// subscription would.
+fn user_edit(input: &mut Input, text: &str, ctx: &mut ViewContext<Input>) {
+    input.replace_buffer_content(text, ctx);
+    input.handle_editor_event(&EditorEvent::Edited(EditOrigin::UserInitiated), ctx);
+}
+
+fn at_context_state(input: &Input, ctx: &mut ViewContext<Input>) -> (bool, Vec<String>) {
+    let query = input.buffer_text(ctx);
+    let context_model = input.ai_context_model.as_ref(ctx);
+    let mut referenced = context_model
+        .referenced_at_context_attachments(&query)
+        .into_keys()
+        .collect::<Vec<_>>();
+    referenced.sort();
+    (context_model.has_locking_attachment(), referenced)
+}
+
+/// Deleting an `@ref` from the buffer must release the AI-mode lock on that edit, not at the
+/// next accept-or-submit: a stale attachment kept `has_locking_attachment` true, which turned
 /// autodetection off, so the next shell command typed was routed to the agent (#674).
 #[test]
-fn test_deleting_at_reference_prunes_its_context_on_edit() {
+fn test_deleting_at_reference_releases_the_ai_lock_on_edit() {
     App::test((), |mut app| async move {
         initialize_app(&mut app);
         let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
@@ -2789,38 +2807,68 @@ fn test_deleting_at_reference_prunes_its_context_on_edit() {
                 );
             });
 
-            // While the reference is in the buffer, user edits keep it.
-            input.replace_buffer_content("@proxy explain this", ctx);
-            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::UserTyped), ctx);
-            assert!(
-                input
-                    .ai_context_model
-                    .as_ref(ctx)
-                    .pending_at_context_attachments()
-                    .contains_key("@proxy")
-            );
-
-            // System edits are skipped: inserting a reference passes through a buffer that
-            // holds neither the `@filter` nor the `@ref`.
-            input.replace_buffer_content("", ctx);
-            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::SystemEdit), ctx);
-            assert!(
-                input
-                    .ai_context_model
-                    .as_ref(ctx)
-                    .pending_at_context_attachments()
-                    .contains_key("@proxy")
+            user_edit(input, "@proxy explain this", ctx);
+            assert_eq!(
+                at_context_state(input, ctx),
+                (true, vec!["@proxy".to_string()])
             );
 
             // The user deletes the reference and types a shell command.
-            input.replace_buffer_content("ls -la", ctx);
-            input.handle_editor_event(&EditorEvent::Edited(EditOrigin::UserInitiated), ctx);
-            let context_model = input.ai_context_model.as_ref(ctx);
-            assert!(context_model.pending_at_context_attachments().is_empty());
-            assert!(
-                !context_model.has_locking_attachment(),
+            user_edit(input, "ls -la", ctx);
+            assert_eq!(
+                at_context_state(input, ctx),
+                (false, vec![]),
                 "a deleted @ref must not keep the input locked in AI mode"
             );
+        });
+    });
+}
+
+/// The reference text can disappear and come back -- Backspace inside it and retype, undo a
+/// deletion, cut and paste it -- and the attachment must come back with it. Pruning on edit
+/// lost it silently: the buffer showed the `@ref`, but the agent got no attachment and the
+/// AI-mode lock was gone.
+#[test]
+fn test_restored_at_reference_keeps_its_attachment() {
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let terminal = add_window_with_bootstrapped_terminal(&mut app, None, None).await;
+        let input = terminal.read(&app, |terminal, _| terminal.input().clone());
+
+        input.update(&mut app, |input, ctx| {
+            input.ai_context_model.update(ctx, |model, _ctx| {
+                model.register_at_context_attachment(
+                    "@src/main.rs".to_string(),
+                    AIAgentAttachment::PlainText("fn main() {}".to_string()),
+                );
+            });
+            let live = (true, vec!["@src/main.rs".to_string()]);
+
+            for (case, broken) in [
+                // Backspace inside the reference, then retype the character.
+                ("backspace and retype", "@src/mai.rs explain"),
+                // Delete the whole reference, then undo.
+                ("undo", " explain"),
+                // Cut the reference, then paste it back.
+                ("cut and paste", " explain"),
+            ] {
+                user_edit(input, "@src/main.rs explain", ctx);
+                assert_eq!(at_context_state(input, ctx), live, "{case}: before");
+
+                user_edit(input, broken, ctx);
+                assert_eq!(
+                    at_context_state(input, ctx),
+                    (false, vec![]),
+                    "{case}: while the text is gone the lock is released"
+                );
+
+                user_edit(input, "@src/main.rs explain", ctx);
+                assert_eq!(
+                    at_context_state(input, ctx),
+                    live,
+                    "{case}: restoring the text restores the attachment and the lock"
+                );
+            }
         });
     });
 }
