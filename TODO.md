@@ -10047,7 +10047,7 @@ claim, which was wrong by four.
       `code-diff-save-conflict` with a `$file` variable.
       **Closed 2026-09-26:** fixed in `461af5a39` (regression test in `inline_action/code_diff_view_tests.rs`).
 
-- [ ] **`tab.move` over local control acks moves it did not perform.**
+- [x] **`tab.move` over local control acks moves it did not perform.**
       `local_control/handlers/app_state.rs:453-474` dispatches `MoveTabLeft/Right` and
       `ack(...)`s unconditionally, so a scripted caller cannot tell a performed move from a
       refused one — and the 2026-08-21 `can_move_tab` port substantially **enlarged** the
@@ -10055,6 +10055,11 @@ claim, which was wrong by four.
       and return `TargetStateConflict` (already used three times in that file).
       **Blocker:** `Workspace::can_move_tab` is `pub(super)`; it needs widening to
       `pub(crate)` or a thin `pub(crate)` wrapper. `TabMovement` is already reachable.
+      **Fixed 2026-09-27 (#739):** widened `can_move_tab` to `pub(crate)` and `tab_move`
+      now checks it before dispatching, returning `TargetStateConflict` on refusal.
+      Tests in `app_state_tests.rs` cover both directions: a pinned-boundary refusal acks
+      an error and leaves tab order untouched, and a legal move still acks success and
+      actually reorders the tabs.
 
 - [x] 🔴 **Redirection glued to or preceding the command name defeats the Agent Mode denylist.**
       `simple/parser.rs:146-149` consumes `<`/`>` *inside* `parse_part`, so `rm>/dev/null -rf ~`

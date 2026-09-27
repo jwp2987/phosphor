@@ -40,7 +40,9 @@ use crate::util::file::external_editor::EditorSettings;
 use crate::util::openable_file_type::{EditorLayout, resolve_file_target_to_open_in_warp};
 #[cfg(feature = "local_fs")]
 use crate::workspace::PaneViewLocator;
-use crate::workspace::{CommandSearchOptions, InitContent, Workspace, WorkspaceAction};
+use crate::workspace::{
+    CommandSearchOptions, InitContent, TabMovement, Workspace, WorkspaceAction,
+};
 
 const MAX_PANE_RESIZE_STEPS: u32 = 1_000;
 
@@ -455,9 +457,9 @@ fn tab_move(
     let workspace = target_workspace(ActionKind::TabMove, target, ctx)?;
     workspace.update(ctx, |workspace, ctx| {
         let index = tab_index_from_target(target, workspace, ctx)?;
-        let action = match direction {
-            ControlDirection::Left => WorkspaceAction::MoveTabLeft(index),
-            ControlDirection::Right => WorkspaceAction::MoveTabRight(index),
+        let movement = match direction {
+            ControlDirection::Left => TabMovement::Left,
+            ControlDirection::Right => TabMovement::Right,
             ControlDirection::Up
             | ControlDirection::Down
             | ControlDirection::Previous
@@ -467,6 +469,22 @@ fn tab_move(
                     "tab.move only accepts left or right",
                 ));
             }
+        };
+        // `handle_action` below silently no-ops a refused move (pinned/group
+        // boundary, or already at the edge) -- fine for a keybinding or menu
+        // click, where nothing else was promised, but a scripted caller acks
+        // unconditionally otherwise and can't tell a performed move from a
+        // refused one. Check the same predicate `move_tab` itself checks and
+        // refuse loudly instead.
+        if !workspace.can_move_tab(index, movement) {
+            return Err(ControlError::new(
+                ErrorCode::TargetStateConflict,
+                "tab.move: the tab cannot move further in that direction",
+            ));
+        }
+        let action = match movement {
+            TabMovement::Left => WorkspaceAction::MoveTabLeft(index),
+            TabMovement::Right => WorkspaceAction::MoveTabRight(index),
         };
         workspace.handle_action(&action, ctx);
         Ok::<_, ControlError>(())

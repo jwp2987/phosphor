@@ -13523,7 +13523,13 @@ impl Workspace {
     /// the entry rather than offer one that does nothing -- the same shape as
     /// `can_move_tab_group`, which was ported with its call sites and whose
     /// pinned rule this now literally shares ([`Self::pinned_step_allowed`]).
-    pub(super) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
+    ///
+    /// `pub(crate)`, not `pub(super)`: `local_control/handlers/app_state.rs`'s
+    /// `tab.move` handler needs to check this before it dispatches
+    /// `MoveTabLeft`/`MoveTabRight` and acks, so a scripted caller can tell a
+    /// performed move from a refused one instead of getting an unconditional
+    /// ack for both.
+    pub(crate) fn can_move_tab(&self, index: usize, direction: TabMovement) -> bool {
         let Some(tab) = self.tabs.get(index) else {
             return false;
         };
