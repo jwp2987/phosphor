@@ -81,6 +81,7 @@ use warpui::{
     prelude::RectF,
     text::point::Point,
     units::Pixels,
+    windowing::{self, WindowManager},
     AppContext, BlurContext, CursorInfo, Element, Entity, FocusContext, ModelHandle,
     SingletonEntity, View, ViewContext, ViewHandle, WeakViewHandle, WindowId,
 };
@@ -319,6 +320,15 @@ impl CodeEditorView {
         ctx.subscribe_to_model(&font_settings_handle, |me, _, _, ctx| {
             me.handle_appearance_or_font_change(ctx);
         });
+
+        // Keep the cursor-blink timer in sync with window activation changes: without this, an
+        // editor that already has keyboard focus but whose window was deactivated (e.g. via
+        // alt-tab) and then reactivated resumes the blink cycle wherever it happened to freeze,
+        // which can leave the cursor invisible for up to CURSOR_BLINK_INTERVAL after refocus.
+        ctx.subscribe_to_model(
+            &WindowManager::handle(ctx),
+            Self::handle_windowing_state_event,
+        );
 
         let model = ctx.add_model(|ctx| {
             CodeEditorModel::new(
@@ -1413,6 +1423,33 @@ impl CodeEditorView {
         });
     }
 
+    /// Companion to [`View::on_focus`]/[`View::on_blur`] for the case those don't cover: the
+    /// editor already has keyboard focus, but its *window* is deactivated (e.g. via alt-tab) and
+    /// later reactivated. [`Self::is_focused`] (used to decide whether to draw/blink the cursor)
+    /// requires both self-focus and an active window, so window activation changes need the same
+    /// reset-and-notify treatment as a focus event. Mirrors
+    /// `RichTextEditorView::handle_windowing_state_event` in `app/src/notebooks/editor/view.rs`.
+    fn handle_windowing_state_event(
+        &mut self,
+        _handle: ModelHandle<WindowManager>,
+        event: &windowing::StateEvent,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let windowing::StateEvent::ValueChanged { current, previous } = event;
+        let focused = ctx.is_self_focused();
+        let previously_focused = focused && previous.active_window == Some(ctx.window_id());
+        let currently_focused = focused && current.active_window == Some(ctx.window_id());
+
+        if !previously_focused && currently_focused {
+            // Re-render to show the cursor.
+            self.display_states.display_state.reset_cursor_blink_timer();
+            ctx.notify();
+        } else if previously_focused && !currently_focused {
+            // Re-render to hide the cursor.
+            ctx.notify();
+        }
+    }
+
     pub fn is_focused(&self, app: &AppContext) -> bool {
         let Some(handle) = self.self_handle.upgrade(app) else {
             return false;
@@ -2416,8 +2453,16 @@ impl View for CodeEditorView {
     }
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
-        if focus_ctx.is_self_focused() && self.goto_line_dialog.as_ref(ctx).is_open() {
-            ctx.focus(&self.goto_line_dialog);
+        if focus_ctx.is_self_focused() {
+            if self.goto_line_dialog.as_ref(ctx).is_open() {
+                ctx.focus(&self.goto_line_dialog);
+            } else {
+                // Re-render to show the cursor, and restart the blink cycle from "visible" so it
+                // doesn't come back showing whatever phase it happened to freeze in while
+                // unfocused.
+                self.display_states.display_state.reset_cursor_blink_timer();
+                ctx.notify();
+            }
         }
     }
 
