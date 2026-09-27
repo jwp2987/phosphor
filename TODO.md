@@ -2503,8 +2503,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       filters empty index lists, so **do not sell this as a live bug** — no
       configuration was found where it is user-visible today.
       **Closed 2026-09-26:** ported in `f7d506bb2`.
-- [ ] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
+- [x] `25f07935` — MCP logo prefix-match (`"Sentry (OAuth)"`). Scope to the
       `starts_with` change; the fork also lacks 4 icon variants from out-of-range commits.
+      **Fixed #734:** ported the table-driven prefix match for the fork's 6
+      existing variants (Heroku, Notion, Linear, Figma, Github, Slack);
+      Composio/Resend/Sentry/YouDotCom stay out of scope (no icon assets).
+      Tests in `external_product_icon_tests.rs`.
 - [ ] `996babee` — two doc-comment URLs. Zero risk.
 - [x] `69254d73` — TUI focus-ownership hardening (13 files).
       **Closed 2026-09-26:** ported in `e287977f0`.
