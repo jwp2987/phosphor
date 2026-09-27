@@ -2459,8 +2459,11 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Repo metadata / settings / misc (12)**
 
-- [ ] `6e192572` **(land before `c6609ef2`)** — outer `Arc` on `FileTreeState.gitignores`,
+- [x] `6e192572` **(land before `c6609ef2`)** — outer `Arc` on `FileTreeState.gitignores`,
       deep-cloned per event today.
+      **Ported 2026-09-27 (#710):** `FileTreeState.gitignores: Arc<Vec<Gitignore>>`;
+      `handle_watcher_event`'s per-event `.clone()` is now a refcount bump. The one
+      mutable consumer (`load_directory`) clones the inner `Vec` via `.as_ref().clone()`.
 - [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
       **Strictly ordered after `6e192572`**; taken out of order the type changes fight
       each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
