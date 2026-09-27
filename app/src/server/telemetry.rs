@@ -2997,6 +2997,9 @@ impl TelemetryEvent {
                     FileTarget::SystemDefault => ("system_default", None, None),
                     FileTarget::SystemGeneric => ("system_generic", None, None),
                     FileTarget::RevealInFileManager => ("reveal_in_file_manager", None, None),
+                    FileTarget::DefaultEditorOnly(layout) => {
+                        ("default_editor_only", Some(*layout), None)
+                    }
                     FileTarget::ExternalEditor(editor) => ("external_editor", None, Some(*editor)),
                 };
 

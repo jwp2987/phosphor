@@ -1,5 +1,5 @@
 use super::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// The policy table (#681). Every entry here is a path that must be revealed, never handed to
 /// the OS default handler. None of these paths exist: the extension alone decides.
@@ -250,17 +250,221 @@ fn executable_magic_reads_short_files() {
 /// Revealing must never land on a launchable ancestor: opening `Evil.app` *is* launching it.
 #[test]
 fn reveal_directory_skips_launchable_ancestors() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dunce::canonicalize(dir.path()).unwrap();
     assert_eq!(
-        reveal_directory_for(Path::new("/tmp/Evil.app/Contents/MacOS/run.command")),
-        Some(Path::new("/tmp/Evil.app/Contents/MacOS"))
+        reveal_directory_for(&base.join("Evil.app/Contents/MacOS/run.command")),
+        Some(base.join("Evil.app/Contents/MacOS"))
     );
     assert_eq!(
-        reveal_directory_for(Path::new("/tmp/Evil.app")),
-        Some(Path::new("/tmp"))
+        reveal_directory_for(&base.join("Evil.app")),
+        Some(base.clone())
     );
     assert_eq!(
-        reveal_directory_for(Path::new("/tmp/Outer.app/Inner.app")),
-        Some(Path::new("/tmp"))
+        reveal_directory_for(&base.join("Outer.app/Inner.app")),
+        Some(base.clone())
     );
-    assert_eq!(reveal_directory_for(Path::new("Evil.app")), None);
+}
+
+/// #681 review: a harmless name that is a symlink to a bundle. `metadata` follows the link and
+/// sees a directory; the opener resolves the link and launches the bundle.
+#[test]
+#[cfg(unix)]
+fn symlink_with_a_harmless_name_to_a_bundle_is_launchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("Evil.app");
+    std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+    std::fs::create_dir(dir.path().join("docs")).unwrap();
+
+    let file_named_link = dir.path().join("docs/guide.pdf");
+    std::os::unix::fs::symlink("../Evil.app", &file_named_link).unwrap();
+    assert!(is_launchable_path(&file_named_link));
+
+    let dir_named_link = dir.path().join("docs2");
+    std::os::unix::fs::symlink(&bundle, &dir_named_link).unwrap();
+    assert!(is_launchable_path(&dir_named_link));
+
+    // The opener is handed the resolved path, which is exactly what was checked.
+    let resolved = resolve_for_open(&file_named_link);
+    assert!(resolved.launchable);
+    assert_eq!(resolved.path, dunce::canonicalize(&bundle).unwrap());
+
+    // The reveal folder is never the symlinked bundle.
+    let inside = dir_named_link.join("Contents");
+    assert_eq!(
+        reveal_directory_for(&inside.join("run.command")),
+        Some(dunce::canonicalize(bundle.join("Contents")).unwrap())
+    );
+    assert_eq!(
+        reveal_directory_for(&dir_named_link),
+        Some(dunce::canonicalize(dir.path()).unwrap())
+    );
+
+    // A symlink to an ordinary file stays ordinary.
+    let pdf = dir.path().join("real.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7\n").unwrap();
+    let pdf_link = dir.path().join("docs/paper.pdf");
+    std::os::unix::fs::symlink(&pdf, &pdf_link).unwrap();
+    assert!(!is_launchable_path(&pdf_link));
+}
+
+/// #681 review: `Evil.app/Contents/..` has no file name, and `metadata` sees a directory; the
+/// macOS opener standardises it to `Evil.app` and launches it.
+#[test]
+fn dot_dot_suffix_into_a_bundle_is_launchable() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("Evil.app");
+    std::fs::create_dir_all(bundle.join("Contents")).unwrap();
+    let sneaky = bundle.join("Contents").join("..");
+    assert!(sneaky.file_name().is_none());
+    assert!(is_launchable_path(&sneaky));
+    assert_eq!(
+        resolve_for_open(&sneaky).path,
+        dunce::canonicalize(&bundle).unwrap()
+    );
+
+    // Also when nothing exists: lexical normalisation alone must catch it.
+    assert!(is_launchable_path(Path::new(
+        "/nonexistent-681/Evil.app/Contents/.."
+    )));
+    assert!(is_launchable_path(Path::new(
+        "/nonexistent-681/Evil.app/./Contents/../"
+    )));
+    assert!(!is_launchable_path(Path::new(
+        "/nonexistent-681/Evil.app/.."
+    )));
+}
+
+#[test]
+fn normalize_lexically_folds_parent_components() {
+    assert_eq!(
+        normalize_lexically(Path::new("/a/b/../c/./d")),
+        PathBuf::from("/a/c/d")
+    );
+    assert_eq!(normalize_lexically(Path::new("/..")), PathBuf::from("/"));
+    assert_eq!(
+        normalize_lexically(Path::new("../../a")),
+        PathBuf::from("../../a")
+    );
+}
+
+/// #681 review: macOS's opener expands a leading `~`, so the check must too.
+#[test]
+fn leading_tilde_is_expanded_like_the_opener() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let resolved = canonical_path_for_open(Path::new("~/nonexistent-681/Evil.app"));
+    assert!(
+        resolved.ends_with("nonexistent-681/Evil.app"),
+        "{resolved:?}"
+    );
+    assert!(
+        resolved.starts_with(dunce::canonicalize(&home).unwrap_or(home)),
+        "{resolved:?}"
+    );
+    // Relative paths come back absolute, so nothing downstream re-interprets a `~`.
+    assert!(canonical_path_for_open(Path::new("~someone/x.txt")).is_absolute());
+}
+
+/// #681 review: a non-UTF-8 name must still yield its extension; `to_str()` returned `None` and
+/// the policy failed open.
+#[test]
+#[cfg(unix)]
+fn non_utf8_names_keep_their_extension() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let name = Path::new(OsStr::from_bytes(b"/tmp/x\xff.deb"));
+    assert_eq!(candidate_extensions(name), vec!["deb".to_owned()]);
+    assert!(is_launchable_path(name));
+    let app = Path::new(OsStr::from_bytes(b"/tmp/\xfe\xffEvil.APP"));
+    assert!(is_launchable_path(app));
+}
+
+#[test]
+#[cfg(windows)]
+fn unpaired_surrogate_names_keep_their_extension() {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStringExt;
+
+    // "C:\x<unpaired surrogate>.exe"
+    let mut wide: Vec<u16> = "C:\\x".encode_utf16().collect();
+    wide.push(0xD800);
+    wide.extend(".exe".encode_utf16());
+    let path = std::path::PathBuf::from(OsString::from_wide(&wide));
+    assert!(is_launchable_path(&path));
+}
+
+/// #681 review: NTFS alternate data streams name the file before the `:`.
+#[test]
+fn alternate_data_stream_suffix_is_seen_through() {
+    for path in [
+        "/tmp/evil.exe::$DATA",
+        "/tmp/evil.exe:stream",
+        "/tmp/evil.EXE:stream:$DATA",
+        "/tmp/notes.txt:hidden.exe",
+    ] {
+        assert!(is_launchable_path(Path::new(path)), "{path}");
+    }
+    assert!(!is_launchable_path(Path::new("/tmp/notes.txt:hidden")));
+}
+
+/// #681 review: table additions.
+#[test]
+fn review_table_additions_are_launchable() {
+    for ext in [
+        "one",
+        "onepkg",
+        "rdp",
+        "mdb",
+        "accdb",
+        "accde",
+        "ade",
+        "adp",
+        "mde",
+        "mda",
+        "mam",
+        "iqy",
+        "slk",
+        "dqy",
+        "xlw",
+        "mht",
+        "mhtml",
+        "vsto",
+        "vsix",
+        "wll",
+        "sparseimage",
+        "sparsebundle",
+        "cdr",
+        "ftploc",
+        "mailloc",
+        "vncloc",
+    ] {
+        assert!(is_launchable_extension(ext), "{ext}");
+        assert!(
+            is_launchable_path(Path::new(&format!("/tmp/x.{ext}"))),
+            "{ext}"
+        );
+    }
+}
+
+/// #681 review: a FIFO in place of the file must not block the magic-number read. Before the
+/// fix, `File::open` on a FIFO with no writer blocked forever.
+#[test]
+#[cfg(unix)]
+fn fifo_does_not_block_the_magic_read() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let fifo = dir.path().join("photo.png");
+    let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+    // SAFETY: `c_path` is a valid NUL-terminated path for the duration of the call.
+    let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o755) };
+    assert_eq!(rc, 0, "mkfifo failed");
+
+    // Called directly: this is the "swapped between stat and open" case.
+    assert!(!starts_with_executable_magic(&fifo));
+    // And through the public entry point.
+    assert!(!is_launchable_path(&fifo));
 }

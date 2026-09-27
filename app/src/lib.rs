@@ -1674,6 +1674,21 @@ fn initialize_app(
     // app-wide chokepoint needs `set_before_open_url` to take a `-> Option<String>` handler,
     // which is a `warpui_core` change.
     ctx.set_before_open_url(|url_str, _ctx| {
+        // Launch policy backstop (#681), ahead of the parse below because a bare path, a UNC
+        // path or a Windows drive path is exactly what fails (or mis-)parses as a URL and would
+        // otherwise pass through to the OS opener unchanged. See
+        // `openable_file_type::before_open_url_launch_policy`: a launchable local path is
+        // rewritten to its containing folder, and a non-local `file:` URL or UNC path is
+        // refused (`""` is a veto in `AppContext::open_url`). Call sites that accept `file:`
+        // URLs still reveal the file itself (`TerminalView::open_terminal_content_url`).
+        #[cfg(feature = "local_fs")]
+        if let Some(rewrite) =
+            crate::util::openable_file_type::before_open_url_launch_policy(url_str)
+        {
+            log::info!("Launch policy rewrote an opened URL: {url_str:?} -> {rewrite:?}");
+            return rewrite;
+        }
+
         let Ok(url) = Url::parse(url_str) else {
             return url_str.to_owned();
         };
@@ -1683,16 +1698,6 @@ fn initialize_app(
                 "Opening a URL whose scheme is outside the openable set: {:?}",
                 url.scheme()
             );
-        }
-
-        // Backstop for the launch policy (#681): a `file:` URL naming an app bundle, installer,
-        // executable or script would be *launched* by the OS handler. The callback cannot veto,
-        // but it can rewrite -- to the nearest non-launchable containing folder, which the OS
-        // opens in the file manager. Call sites that accept `file:` URLs reveal the file itself
-        // (`TerminalView::open_terminal_content_url`); this catches any that do not.
-        if let Some(folder) = crate::util::openable_file_type::launchable_file_url_folder(&url) {
-            log::info!("Opening the containing folder instead of a launchable file URL: {folder}");
-            return folder;
         }
 
         match maybe_rewrite_web_url_to_intent(&url) {

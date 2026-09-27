@@ -375,18 +375,20 @@ pub(super) enum TerminalUrlAction {
     /// bundle, installer, executable, script or shortcut, which the OS handler would launch
     /// (#681). OSC 8 `file://` links from build tools stay clickable; this only changes what a
     /// click on a *launchable* one does.
+    #[cfg_attr(not(feature = "local_fs"), allow(dead_code))]
     Reveal(std::path::PathBuf),
 }
 
 /// The full decision for a terminal-content URI: the scheme policy, then the launch policy.
 pub(super) fn terminal_url_action(uri: &str) -> Result<TerminalUrlAction, BlockedTerminalLink> {
     let url = openable_terminal_url(uri)?;
-    Ok(
-        match crate::util::openable_file_type::launchable_file_url_path(&url) {
-            Some(path) => TerminalUrlAction::Reveal(path),
-            None => TerminalUrlAction::Open(url),
-        },
-    )
+    // Without a local filesystem (wasm) there is nothing to launch, and `Url::to_file_path`
+    // does not exist.
+    #[cfg(feature = "local_fs")]
+    if let Some(path) = crate::util::openable_file_type::launchable_file_url_path(&url) {
+        return Ok(TerminalUrlAction::Reveal(path));
+    }
+    Ok(TerminalUrlAction::Open(url))
 }
 
 impl HighlightedLinkOption {
@@ -1195,8 +1197,10 @@ mod scheme_policy_tests {
     /// script is revealed, not handed to the OS handler (which would launch it). Ordinary local
     /// files and web URLs still open.
     #[test]
-    #[cfg(unix)]
+    #[cfg(all(unix, feature = "local_fs"))]
     fn launchable_file_urls_are_revealed() {
+        use warp_util::launch_policy::canonical_path_for_open;
+
         for (uri, path) in [
             ("file:///tmp/Evil.app", "/tmp/Evil.app"),
             ("file:///tmp/setup.pkg", "/tmp/setup.pkg"),
@@ -1206,7 +1210,10 @@ mod scheme_policy_tests {
         ] {
             assert_eq!(
                 terminal_url_action(uri),
-                Ok(TerminalUrlAction::Reveal(path.into())),
+                // The resolved path the policy checked, which is what gets revealed.
+                Ok(TerminalUrlAction::Reveal(canonical_path_for_open(
+                    std::path::Path::new(path)
+                ))),
                 "{uri}"
             );
         }

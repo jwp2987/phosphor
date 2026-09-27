@@ -353,7 +353,8 @@ impl TuiMcpManager {
                     .find(|server| server.id == id)
                     .and_then(|server| server.authorization_url.as_deref())
                 {
-                    ctx.open_url(url);
+                    // Server-supplied: only an http(s) authorization page may open (#681).
+                    crate::util::links::open_web_or_mail_link(url, ctx);
                 }
             }
             TuiMcpAction::Start(id) | TuiMcpAction::Retry(id) => match id {

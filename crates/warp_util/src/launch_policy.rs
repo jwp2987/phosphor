@@ -27,7 +27,7 @@
 //! "open this path with the system" call in the process goes through), and, for `file:` URLs,
 //! the terminal's URL handler plus the app's `set_before_open_url` callback.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// Extensions that launch, install, mount or follow a shortcut on at least one desktop
 /// platform, or whose default handler runs embedded macros. Lower-case, without the dot.
@@ -61,6 +61,13 @@ const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     "inetloc",
     "fileloc",
     "afploc",
+    "ftploc",
+    "mailloc",
+    "vncloc",
+    // --- macOS: disk images besides .dmg (opening one mounts it) ---
+    "sparseimage",
+    "sparsebundle",
+    "cdr",
     // --- Windows: executables ---
     "exe",
     "com",
@@ -107,6 +114,24 @@ const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     "themepack",
     "diagcab",
     "chm",
+    "rdp",
+    "mht",
+    "mhtml",
+    "vsto",
+    "vsix",
+    "wll",
+    // OneNote notebooks embed attachments that run on double-click.
+    "one",
+    "onepkg",
+    // Access databases run VBA and macros on open.
+    "mdb",
+    "accdb",
+    "accde",
+    "ade",
+    "adp",
+    "mde",
+    "mda",
+    "mam",
     // --- Linux: launchers, self-extracting installers and packages ---
     "desktop",
     "appimage",
@@ -156,6 +181,11 @@ const LAUNCHABLE_EXTENSIONS: &[&str] = &[
     "ppsm",
     "ppam",
     "sldm",
+    // Excel data-connection and legacy formats that run DDE/web queries on open.
+    "iqy",
+    "slk",
+    "dqy",
+    "xlw",
     // Legacy binary formats carry VBA and OLE objects.
     "doc",
     "dot",
@@ -191,23 +221,40 @@ const LAUNCHABLE_EXTENSIONS: &[&str] = &[
 #[cfg(windows)]
 const WINDOWS_ONLY_LAUNCHABLE_EXTENSIONS: &[&str] = &["js", "jse"];
 
-/// The extension the OS would act on, lower-cased.
+/// Every extension the OS might act on for `path`, lower-cased and without the dot. Empty when
+/// the name has none.
 ///
-/// Trailing dots and spaces are stripped first: Win32 path normalisation drops them, so
-/// `evil.exe.` and `evil.exe ` both open `evil.exe`, while `Path::extension` reports an empty or
-/// space-suffixed extension for them.
-fn effective_extension(path: &Path) -> Option<String> {
-    let name = path.file_name()?.to_str()?;
-    let name = name.trim_end_matches(['.', ' ']);
-    let (stem, ext) = name.rsplit_once('.')?;
-    // A leading-dot name (`.bashrc`) has no extension, matching `Path::extension`.
-    if stem.is_empty() || ext.is_empty() {
-        return None;
+/// * The name is read lossily, never with `to_str()`: a non-UTF-8 name (`x\xff.deb` on Linux, an
+///   unpaired surrogate on Windows) must still yield its extension, or the policy fails open.
+/// * Trailing dots and spaces are stripped: Win32 path normalisation drops them, so `evil.exe.`
+///   and `evil.exe ` both open `evil.exe`.
+/// * An NTFS alternate-data-stream suffix is considered too: `evil.exe::$DATA` and
+///   `evil.exe:stream` name `evil.exe`, so the part before the first `:` contributes its
+///   extension alongside the whole name's. On Unix `:` is an ordinary character and the extra
+///   candidate only ever makes the check stricter.
+pub fn candidate_extensions(path: &Path) -> Vec<String> {
+    let Some(name) = path.file_name() else {
+        return Vec::new();
+    };
+    let name = name.to_string_lossy();
+    let mut forms = vec![name.as_ref()];
+    if let Some((before_stream, _)) = name.split_once(':') {
+        forms.push(before_stream);
     }
-    Some(ext.to_ascii_lowercase())
+    let mut extensions = Vec::new();
+    for form in forms {
+        let form = form.trim_end_matches(['.', ' ']);
+        if let Some((stem, ext)) = form.rsplit_once('.') {
+            // A leading-dot name (`.bashrc`) has no extension, matching `Path::extension`.
+            if !stem.is_empty() && !ext.is_empty() {
+                extensions.push(ext.to_ascii_lowercase());
+            }
+        }
+    }
+    extensions
 }
 
-/// Whether `ext` (lower-case, no dot) is in the launchable set for this platform.
+/// Whether `ext` (no dot, any case) is in the launchable set for this platform.
 pub fn is_launchable_extension(ext: &str) -> bool {
     let ext = ext.to_ascii_lowercase();
     if LAUNCHABLE_EXTENSIONS.contains(&ext.as_str()) {
@@ -220,12 +267,96 @@ pub fn is_launchable_extension(ext: &str) -> bool {
     false
 }
 
+/// The path the platform opener will actually act on, computed the way it will compute it.
+///
+/// * A leading `~` is expanded to the home directory: macOS's opener calls
+///   `stringByExpandingTildeInPath`, so a literal `~/x.app` means `$HOME/x.app` to it.
+/// * A relative path is made absolute against the current directory. The result no longer
+///   starts with `~`, so an unexpandable `~user/...` cannot be re-interpreted downstream.
+/// * Symlinks and `..` are resolved (`fs::canonicalize`); for a path that does not exist the
+///   longest existing prefix is canonicalised and the rest is normalised lexically. macOS's
+///   opener calls `standardizedURL`, which folds `Evil.app/Contents/..` into `Evil.app`.
+///
+/// [`is_launchable_path`] checks this path as well as the one it was given, and callers pass
+/// *this* path -- the one that was checked -- to the opener.
+pub fn canonical_path_for_open(path: &Path) -> PathBuf {
+    let expanded = expand_leading_tilde(path);
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        match std::env::current_dir() {
+            Ok(dir) => dir.join(&expanded),
+            Err(_) => expanded,
+        }
+    };
+    if let Ok(canonical) = dunce::canonicalize(&absolute) {
+        return canonical;
+    }
+    let normal = normalize_lexically(&absolute);
+    let mut existing = normal.as_path();
+    let mut missing = Vec::new();
+    loop {
+        if let Ok(mut canonical) = dunce::canonicalize(existing) {
+            for name in missing.iter().rev() {
+                canonical.push(name);
+            }
+            return canonical;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                missing.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return normal,
+        }
+    }
+}
+
+fn expand_leading_tilde(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::Normal(first)) if first == "~" => match dirs::home_dir() {
+            Some(home) => home.join(components.as_path()),
+            None => path.to_path_buf(),
+        },
+        _ => path.to_path_buf(),
+    }
+}
+
+/// `.` dropped and `..` folded into its parent, without touching the filesystem.
+fn normalize_lexically(path: &Path) -> PathBuf {
+    let mut normal = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let last_is_normal =
+                    matches!(normal.components().next_back(), Some(Component::Normal(_)));
+                let last_is_root = matches!(
+                    normal.components().next_back(),
+                    Some(Component::RootDir | Component::Prefix(_))
+                );
+                if last_is_normal {
+                    normal.pop();
+                } else if !last_is_root {
+                    // A relative path climbing above its start keeps the `..`; `/..` is `/`.
+                    normal.push(component);
+                }
+            }
+            other => normal.push(other),
+        }
+    }
+    normal
+}
+
 /// Whether handing `path` to the OS default handler could launch, install, mount or run it.
 ///
-/// Checks, in order:
-/// 1. the extension against [`LAUNCHABLE_EXTENSIONS`] -- this also covers macOS bundles, which
-///    are directories (`Foo.app/`), and does not require the path to exist;
-/// 2. on Unix, a regular file with the owner's execute bit that either has no extension or
+/// The path is checked as given, lexically normalised, and as [`canonical_path_for_open`]
+/// resolves it: a harmless name can be a symlink to a bundle (`docs/guide.pdf -> ../Evil.app`),
+/// and `Evil.app/Contents/..` has no file name at all. Each form is launchable if:
+/// 1. any of its [`candidate_extensions`] is launchable -- this also covers macOS bundles, which
+///    are directories (`Foo.app/`), and does not require the path to exist; or
+/// 2. on Unix, it is a regular file with the owner's execute bit that either has no extension or
 ///    starts with `#!` or an executable-format magic number. macOS `open` runs such a file in
 ///    Terminal; Linux file managers offer to run it. An executable bit on a file with a
 ///    document extension (a `.pdf` on a FAT-formatted drive, where every file is 0777) does
@@ -233,11 +364,40 @@ pub fn is_launchable_extension(ext: &str) -> bool {
 ///
 /// Directories other than bundles are never launchable: opening one shows it in the file
 /// manager, which is exactly what revealing would do.
+///
+/// This touches the filesystem (stat, canonicalise, read four bytes). Call it when the user
+/// clicks, never on hover: a hung network mount would freeze the UI.
 pub fn is_launchable_path(path: &Path) -> bool {
-    if effective_extension(path).is_some_and(|ext| is_launchable_extension(&ext)) {
-        return true;
+    resolve_for_open(path).launchable
+}
+
+/// The result of checking a path before handing it to the OS opener.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedOpen {
+    /// The path to hand to the opener (or to reveal): [`canonical_path_for_open`] of the input.
+    pub path: PathBuf,
+    /// Whether any form of the input is [`is_launchable_path`].
+    pub launchable: bool,
+}
+
+/// Check `path` once and return the exact path that was checked, for the opener to use.
+pub fn resolve_for_open(path: &Path) -> ResolvedOpen {
+    let canonical = canonical_path_for_open(path);
+    let launchable = is_launchable_literal(path)
+        || is_launchable_literal(&normalize_lexically(path))
+        || is_launchable_literal(&canonical);
+    ResolvedOpen {
+        path: canonical,
+        launchable,
     }
-    is_executable_file(path)
+}
+
+/// The policy applied to one spelling of a path, with no resolution.
+fn is_launchable_literal(path: &Path) -> bool {
+    candidate_extensions(path)
+        .iter()
+        .any(|ext| is_launchable_extension(ext))
+        || is_executable_file(path)
 }
 
 #[cfg(unix)]
@@ -250,7 +410,7 @@ fn is_executable_file(path: &Path) -> bool {
     if !metadata.is_file() || metadata.permissions().mode() & 0o100 == 0 {
         return false;
     }
-    if effective_extension(path).is_none() {
+    if candidate_extensions(path).is_empty() {
         return true;
     }
     starts_with_executable_magic(path)
@@ -258,22 +418,32 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(not(unix))]
 fn is_executable_file(_path: &Path) -> bool {
-    // Windows decides executability by extension alone, which step 1 already covered.
+    // Windows decides executability by extension alone, which the extension check covered.
     false
 }
 
 /// Whether `path` starts with `#!`, or an ELF, Mach-O (thin or fat) or PE header.
 ///
 /// Reads at most four bytes: the path can be named by terminal output or a model, so the file
-/// is attacker-controlled in size.
+/// is attacker-controlled in size. Opened with `O_NONBLOCK` and re-checked with `fstat` on the
+/// handle: a file swapped for a FIFO between the caller's `stat` and this `open` would otherwise
+/// block the UI thread until something writes to the pipe.
 #[cfg(unix)]
 fn starts_with_executable_magic(path: &Path) -> bool {
     use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
 
-    let mut prefix = [0u8; 4];
-    let Ok(mut file) = std::fs::File::open(path) else {
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+    else {
         return false;
     };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return false;
+    }
+    let mut prefix = [0u8; 4];
     let mut filled = 0;
     while filled < prefix.len() {
         match file.read(&mut prefix[filled..]) {
@@ -297,13 +467,17 @@ fn starts_with_executable_magic(path: &Path) -> bool {
     MAGICS.iter().any(|magic| prefix.starts_with(magic))
 }
 
-/// The directory to show instead of launching `path`: its nearest ancestor that is not itself
-/// launchable (`Evil.app/Contents/x.command` must not resolve to `Evil.app`, which would launch
-/// the bundle). `None` if no such ancestor exists.
-pub fn reveal_directory_for(path: &Path) -> Option<&Path> {
-    path.ancestors()
+/// The directory to show instead of launching `path`: the nearest ancestor of its
+/// [`canonical_path_for_open`] that is not itself launchable (`Evil.app/Contents/x.command` must
+/// not resolve to `Evil.app`, which would launch the bundle). Working from the canonical path
+/// means the result is never a symlink to a bundle either. `None` if no such ancestor exists.
+pub fn reveal_directory_for(path: &Path) -> Option<PathBuf> {
+    let canonical = canonical_path_for_open(path);
+    canonical
+        .ancestors()
         .skip(1)
-        .find(|ancestor| !ancestor.as_os_str().is_empty() && !is_launchable_path(ancestor))
+        .find(|ancestor| !ancestor.as_os_str().is_empty() && !is_launchable_literal(ancestor))
+        .map(Path::to_path_buf)
 }
 
 #[cfg(test)]

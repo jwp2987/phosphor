@@ -136,3 +136,28 @@ fn manual_sections_referenced_by_ui_links_exist() {
     );
     assert!(user_docs_url().ends_with("/docs/manual"));
 }
+
+/// #681: data-sourced links may only reach a browser or mail client.
+#[test]
+fn web_or_mail_links_only() {
+    for url in [
+        "https://github.com/jwp2987/phosphor/pull/1",
+        "http://localhost:8080/callback",
+        "mailto:someone@example.com",
+        "HTTPS://example.com",
+    ] {
+        assert!(super::is_web_or_mail_link(url), "{url}");
+    }
+    for url in [
+        "file:///tmp/Evil.app",
+        "/tmp/Evil.app",
+        "C:\\x\\setup.exe",
+        "\\\\host\\share\\x.exe",
+        "phosphor://launch/x",
+        "vscode://file/tmp/x",
+        "javascript:alert(1)",
+        "",
+    ] {
+        assert!(!super::is_web_or_mail_link(url), "{url}");
+    }
+}

@@ -29,6 +29,9 @@ pin-project.workspace = true
 futures-util.workspace = true
 event-listener.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [target.'cfg(windows)'.dependencies]
 directories.workspace = true
 windows.workspace = true

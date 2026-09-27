@@ -2924,32 +2924,66 @@ fn test_dropping_tui_view_removes_it_from_tui_views_and_view_parents() {
 }
 
 /// #681: `AppContext::open_file_path` is the process-wide backstop. A path the OS default
-/// handler would launch is revealed in the file manager; an ordinary file still opens.
+/// handler would launch is revealed in the file manager; an ordinary file still opens. The
+/// platform delegate receives the resolved path the policy checked, never the raw spelling.
 #[test]
 fn open_file_path_reveals_launchable_paths_instead_of_opening_them() {
     use crate::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
     use std::path::PathBuf;
+    use warp_util::launch_policy::canonical_path_for_open;
 
     const NEEDLE: &str = "phosphor-681-app-context-backstop";
     App::test((), |mut app| async move {
         let dir = PathBuf::from(format!("/nonexistent/{NEEDLE}"));
         let app_bundle = dir.join("Evil.app");
         let installer = dir.join("setup.pkg");
+        // No file name, and a directory to `metadata`; `standardizedURL` makes it `Evil.app`.
+        let dot_dot = dir.join("Evil.app").join("Contents").join("..");
         let document = dir.join("paper.pdf");
 
         app.update(|ctx| {
             ctx.open_file_path(&app_bundle);
             ctx.open_file_path(&installer);
+            ctx.open_file_path(&dot_dot);
             ctx.open_file_path(&document);
         });
 
         assert_eq!(
             recorded_system_opens_matching(NEEDLE),
             vec![
-                RecordedSystemOpen::RevealedFile(app_bundle),
-                RecordedSystemOpen::RevealedFile(installer),
-                RecordedSystemOpen::OpenedFile(document),
+                RecordedSystemOpen::RevealedFile(canonical_path_for_open(&app_bundle)),
+                RecordedSystemOpen::RevealedFile(canonical_path_for_open(&installer)),
+                RecordedSystemOpen::RevealedFile(canonical_path_for_open(&app_bundle)),
+                RecordedSystemOpen::OpenedFile(canonical_path_for_open(&document)),
             ]
+        );
+    });
+}
+
+/// #681: a `set_before_open_url` rewrite to the empty string vetoes the open.
+#[test]
+fn open_url_rewritten_to_empty_is_not_opened() {
+    use crate::platform::test::recorded_system_opens_matching;
+
+    const NEEDLE: &str = "phosphor-681-open-url-veto";
+    App::test((), |mut app| async move {
+        app.update(|ctx| {
+            ctx.set_before_open_url(|url, _| {
+                if url.contains("refuse") {
+                    String::new()
+                } else {
+                    url.to_owned()
+                }
+            });
+            ctx.open_url(&format!("https://example.com/{NEEDLE}/refuse"));
+            ctx.open_url(&format!("https://example.com/{NEEDLE}/allow"));
+        });
+
+        assert_eq!(
+            recorded_system_opens_matching(NEEDLE),
+            vec![crate::platform::test::RecordedSystemOpen::OpenedUrl(
+                format!("https://example.com/{NEEDLE}/allow")
+            )]
         );
     });
 }

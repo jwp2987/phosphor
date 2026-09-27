@@ -706,14 +706,24 @@ fn test_open_file_with_target_reveals_launchable_paths() {
             });
         }
 
-        let needle = temp_dir.path().to_string_lossy().into_owned();
+        // What reaches the platform is the resolved path the policy checked (on macOS the
+        // tempdir itself sits behind the `/var -> /private/var` symlink).
+        use warp_util::launch_policy::canonical_path_for_open as resolved;
+        let needle = temp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
             recorded_system_opens_matching(&needle),
             vec![
-                RecordedSystemOpen::RevealedFile(app_bundle),
-                RecordedSystemOpen::RevealedFile(installer),
-                RecordedSystemOpen::RevealedFile(script),
-                RecordedSystemOpen::OpenedFile(document),
+                RecordedSystemOpen::RevealedFile(resolved(&app_bundle)),
+                RecordedSystemOpen::RevealedFile(resolved(&installer)),
+                // Launchable text headed for the system default app takes the editor-only
+                // route; it does not exist here, so it is revealed rather than edited.
+                RecordedSystemOpen::RevealedFile(resolved(&script)),
+                RecordedSystemOpen::OpenedFile(resolved(&document)),
             ]
         );
     });

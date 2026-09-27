@@ -472,12 +472,17 @@ fn detected_launchable_path_resolves_to_reveal() {
     }
 }
 
-/// The raster shortcut is guarded too: a model-named `.png` that is actually an executable
-/// (execute bit + ELF header) is revealed rather than handed to the OS.
+/// A model-named `.png` that is actually an executable (execute bit + ELF header). The hover-
+/// time override stays extension-only -- no filesystem access on hover (#681 review) -- and the
+/// path is caught at click time: it is launchable, so the workspace sink and
+/// `AppContext::open_file_path` reveal it (`workspace::view_test::
+/// test_open_file_with_target_reveals_launchable_paths` covers the sink for `SystemGeneric`).
 #[test]
 #[cfg(all(feature = "local_fs", unix))]
-fn detected_raster_image_that_is_an_executable_is_revealed() {
-    use crate::util::openable_file_type::FileTarget;
+fn detected_raster_image_that_is_an_executable_is_caught_at_click_time() {
+    use crate::util::openable_file_type::{
+        FileTarget, guard_system_handler_target, is_launchable_path,
+    };
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -485,9 +490,12 @@ fn detected_raster_image_that_is_an_executable_is_revealed() {
     std::fs::write(&disguised, b"\x7fELF\x02\x01\x01").unwrap();
     std::fs::set_permissions(&disguised, std::fs::Permissions::from_mode(0o755)).unwrap();
 
+    let hover_time = super::detected_file_path_target_override(&disguised);
+    assert_eq!(hover_time, Some(FileTarget::SystemGeneric));
+    assert!(is_launchable_path(&disguised));
     assert_eq!(
-        super::detected_file_path_target_override(&disguised),
-        Some(FileTarget::RevealInFileManager)
+        guard_system_handler_target(&disguised, hover_time.unwrap()),
+        FileTarget::RevealInFileManager
     );
 }
 

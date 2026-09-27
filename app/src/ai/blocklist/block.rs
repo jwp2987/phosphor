@@ -98,9 +98,7 @@ use crate::settings::{InputSettings, SelectionSettings};
 use crate::terminal::view::{CodeDiffAction, TerminalAction};
 use crate::ui_components::icons::Icon;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{
-    FileTarget, guard_system_handler_target, is_supported_raster_image_file,
-};
+use crate::util::openable_file_type::{FileTarget, is_supported_raster_image_file};
 use crate::view_components::action_button::ActionButton;
 use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
@@ -278,14 +276,18 @@ pub fn init(app: &mut AppContext) {
 /// gets no override, so `TerminalView::open_file_path` routes it through `resolve_file_target`,
 /// which picks the in-app image viewer or an editor -- never the OS default handler.
 ///
-/// Every other path also gets no override and so goes through `resolve_file_target`, which
-/// reveals a launchable path (`.app`, `.pkg`, `.exe`, ...) in the file manager (#681). The raster
-/// shortcut itself goes through the same guard: a model-named `photo.png` that is really an
-/// executable with its execute bit set is revealed, not opened.
+/// Every other path also gets no override and so goes through `resolve_file_target` on click,
+/// which reveals a launchable path (`.app`, `.pkg`, `.exe`, ...) in the file manager (#681).
+///
+/// This is deliberately extension-only and touches no filesystem: it also runs on *hover*
+/// (`show_link_tooltip`, `hovered_rich_content_link`), and a stat on a hung NFS/sshfs/FUSE
+/// mount would freeze the UI. The raster shortcut is still checked against the launch policy
+/// -- at click time, by the workspace sink (`Workspace::open_file_with_target`) and
+/// `AppContext::open_file_path`, so a model-named `photo.png` that is really an executable is
+/// revealed, not opened.
 #[cfg(feature = "local_fs")]
 fn detected_file_path_target_override(absolute_path: &Path) -> Option<FileTarget> {
-    is_supported_raster_image_file(absolute_path)
-        .then(|| guard_system_handler_target(absolute_path, FileTarget::SystemGeneric))
+    is_supported_raster_image_file(absolute_path).then_some(FileTarget::SystemGeneric)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
