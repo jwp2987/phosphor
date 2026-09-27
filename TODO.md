@@ -10111,16 +10111,32 @@ claim, which was wrong by four.
       there. The authoritative-looking in-source comment is still wrong.
       **Closed 2026-09-26:** the comment at `crates/warp_features/src/lib.rs:898-915` now gives the Cargo-feature reason and explicitly forbids re-adding the "no update feed" clause.
 
-- [ ] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
+- [x] **TUI `/rewind` has zero revert tests.** `tui_diff_storage_tests.rs` covers only accept.
       The four revert pre-images and the `REVERT_CHAIN_TAIL` ordering added 2026-08-21 are
       untested.
+      **Fixed 2026-09-27 (#723):** added `revert_plan_for_create_deletes_the_file` /
+      `_for_delete_recreates_the_file` / `_for_rename_restores_original_and_deletes_target` /
+      `_for_in_place_update_writes_the_base_back` (pure coverage of all four pre-images) and
+      `revert_undoes_an_accepted_create` / `_update` / `_delete` / `_rename`,
+      `revert_tolerates_a_crlf_checkout_of_the_accepted_content`,
+      `revert_is_refused_when_the_file_changed_since_accept`, and
+      `revert_reports_one_outcome_per_diff_mixing_success_and_refusal` (end-to-end through
+      `FileModel`, including the `REVERT_CHAIN_TAIL` sequencing and a genuine refusal).
 
-- [ ] **A refused `/rewind` is invisible to the user.** `terminal_session_view.rs:4151` shows
+- [x] **A refused `/rewind` is invisible to the user.** `terminal_session_view.rs:4151` shows
       "Rewound conversation and reverted file edits" unconditionally; refusals arrive after
       that function returns and land only in the log. `TransientHint` is view-owned, so
       `revert_file_diffs(&[FileDiff], &mut AppContext)` cannot reach it — closing this needs a
       call-site change, either handing it a way to raise the hint or returning the completions
       for the view to await.
+      **Fixed 2026-09-27 (#723):** took the second option named above. `revert_file_diffs` now
+      returns `BoxFuture<'static, Vec<FileRevertOutcome>>` instead of firing the writes and
+      returning nothing; `dispatch_revert` resolves its own `Result<(), String>` alongside the
+      existing `REVERT_CHAIN_TAIL` ordering. `rewind_to_exchange` awaits the future via
+      `ctx.spawn` and shows one of three real outcomes through the new `rewind_outcome_hint`:
+      nothing to revert ("Rewound conversation"), everything reverted ("...and reverted N file
+      edit(s)", success-colored), or some/all refused (named paths, error-colored). `REWOUND_HINT`
+      no longer claims a revert happened when there was nothing to revert.
 
 - [ ] **The pin's second consumer of `is_container_subshell` is still absent.**
       `42effe840:writeable_pty/pty_controller.rs:444` writes the bootstrap in 4KB chunks with

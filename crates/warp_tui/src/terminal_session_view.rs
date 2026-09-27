@@ -18,32 +18,29 @@ use warp::settings::{
 use warp::tui_export::{
     AIAgentAction, AIAgentActionId, AIAgentActionResultType, AIAgentContext, AIAgentExchangeId,
     AIAgentPtyWriteMode, AIConversation, AIConversationAutoexecuteMode, AIConversationId,
-    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent,
-    AgentConversationEntryId, AgentConversationListEntryState, AgentConversationsModel,
-    AgentInteractionMetadata, AgentViewEntryOrigin, AgentViewState, Appearance, BlockId,
-    BlocklistAIActionEvent, BlocklistAIActionModel, BlocklistAIContextModel,
-    BlocklistAIController, BlocklistAIHistoryEvent, BlocklistAIHistoryModel,
-    BlocklistAIInputModel, CLISubagentController, CLISubagentEvent, CLISubagentTarget,
-    COMMAND_REGISTRY, CancellationReason, ChangelogModel, ChangelogRequestType, ClientProfileId,
-    CommandExecutionSource, ConversationFileExport, ConversationSelection,
-    ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, ForkConversationError,
-    GitHubRepoModel,
-    GitRepoStatusModel, LLMId, LLMPreferences,
+    AcceptSlashCommandOrSavedPrompt, ActiveSession, ActiveSessionEvent, AgentConversationEntryId,
+    AgentConversationListEntryState, AgentConversationsModel, AgentInteractionMetadata,
+    AgentViewEntryOrigin, AgentViewState, Appearance, BlockId, BlocklistAIActionEvent,
+    BlocklistAIActionModel, BlocklistAIContextModel, BlocklistAIController,
+    BlocklistAIHistoryEvent, BlocklistAIHistoryModel, BlocklistAIInputModel, CLISubagentController,
+    CLISubagentEvent, CLISubagentTarget, COMMAND_REGISTRY, CancellationReason, ChangelogModel,
+    ChangelogRequestType, ClientProfileId, CommandExecutionSource, ConversationFileExport,
+    ConversationSelection, ConversationSelectionHandle, ExecuteCommandEvent, FORK_PREFIX, FileDiff,
+    ForkConversationError, GitHubRepoModel, GitRepoStatusModel, LLMId, LLMPreferences,
     LLMPreferencesEvent, LOCAL_SKILLS_REMOTE_EXECUTION_ERROR_MESSAGE, LinkedWorkflowData,
     LoadedConversationData, ModelEvent, PRE_REWIND_PREFIX, ParsedSlashCommandInput,
     PersistenceWriter, PtyIntent, PtyIntentEvent, RepoDetectionSessionType, RepoDetectionSource,
     ServerConversationToken, SessionsEvent, ShellCommandExecutorEvent, SizeInfo, SizeUpdate,
-    SkillReference, SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand,
-    TerminalModel, TerminalSurface, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager,
-    TuiMcpServerId, TuiMcpVariableValue, TuiSlashCommandDataSource,
-    TuiSlashCommandDataSourceArgs, TuiUpArrowHistoryItemKind, TuiZeroStateDataSource,
-    UsageCostOutcome, UserTakeOverReason, WAKEUP_THROTTLE_PERIOD, WarpConfig,
-    WarpConfigUpdateEvent, block_context_from_terminal_model, build_slash_command_mixer,
-    context_usage_report, conversation_cost_report, detect_possible_git_repo,
-    export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
-    maybe_build_ai_query_upsert_event,
-    prepare_conversation_block_restoration, record_autodetection_toggle_from_slash_command,
-    record_saved_prompt_accepted, record_static_slash_command_accepted, saved_prompt_text_for_id,
+    SkillReference, SlashCommandKind, SlashCommandSelectionBehavior, StaticCommand, TerminalModel,
+    TerminalSurface, TerminalSurfaceInit, TuiMcpAction, TuiMcpManager, TuiMcpServerId,
+    TuiMcpVariableValue, TuiSlashCommandDataSource, TuiSlashCommandDataSourceArgs,
+    TuiUpArrowHistoryItemKind, TuiZeroStateDataSource, UsageCostOutcome, UserTakeOverReason,
+    WAKEUP_THROTTLE_PERIOD, WarpConfig, WarpConfigUpdateEvent, block_context_from_terminal_model,
+    build_slash_command_mixer, context_usage_report, conversation_cost_report,
+    detect_possible_git_repo, export_conversation_markdown, loaded_subtree_rollup, log_out_tui,
+    maybe_build_ai_query_upsert_event, prepare_conversation_block_restoration,
+    record_autodetection_toggle_from_slash_command, record_saved_prompt_accepted,
+    record_static_slash_command_accepted, saved_prompt_text_for_id,
     slash_command_selection_behavior, throttle, tui_conversation_actions_in_order,
     tui_set_active_profile,
 };
@@ -140,7 +137,7 @@ use crate::tui_cli_subagent_view::{
     ALLOW_BLOCKED_ACTION_KEY_BINDING, HAND_BACK_KEY_BINDING, REJECT_BLOCKED_ACTION_KEY_BINDING,
     TuiCLISubagentView,
 };
-use crate::tui_diff_storage::revert_file_diffs;
+use crate::tui_diff_storage::{FileRevertOutcome, revert_file_diffs};
 use crate::tui_revert_registry::TuiFileEditRevertRegistry;
 use crate::ui::{abbreviate_home_prefix, conversation_restore_failed, conversation_restoring};
 use crate::warping_indicator::{render_response_summary, render_warping_indicator_row};
@@ -319,7 +316,10 @@ const EXCHANGE_MENU_REQUIRES_CONVERSATION_HINT: &str = "No active conversation t
 const REWIND_FAILED_HINT: &str = "Failed to rewind the conversation";
 // A rewind truncates the conversation, reverts file edits made this session
 // back to their pre-edit content, and saves a pre-rewind backup conversation.
-const REWOUND_HINT: &str = "Rewound conversation and reverted file edits";
+// Shown only when there was nothing to revert (no eligible file edits) or
+// everything reverted cleanly; see `rewind_outcome_hint` for the other cases —
+// a refused revert must never be reported with this text.
+const REWOUND_HINT: &str = "Rewound conversation";
 
 /// Footer label shown while the input is in `!` shell mode. The how-to-exit
 /// guidance lives in the input's placeholder ghost text, so the footer only
@@ -381,6 +381,51 @@ fn cost_command_unavailable_hint(
     }
 }
 
+/// Turns the per-file outcomes of a `/rewind`'s file-edit reverts into the
+/// footer hint shown to the user, plus whether it should render as success or
+/// error. `outcomes` is never empty here — the caller only reaches this when
+/// there was at least one file edit to revert (see [`REWOUND_HINT`] for the
+/// "nothing to revert" case, which never calls this).
+fn rewind_outcome_hint(outcomes: &[FileRevertOutcome]) -> (String, bool) {
+    let total = outcomes.len();
+    let refused: Vec<&str> = outcomes
+        .iter()
+        .filter_map(|outcome| match outcome {
+            FileRevertOutcome::Refused { path } => Some(path.as_str()),
+            FileRevertOutcome::Reverted => None,
+        })
+        .collect();
+    if refused.is_empty() {
+        (
+            format!(
+                "Rewound conversation and reverted {total} file edit{}",
+                if total == 1 { "" } else { "s" }
+            ),
+            true,
+        )
+    } else if refused.len() == total {
+        (
+            format!(
+                "Rewound conversation, but could not revert {}: {}",
+                if total == 1 {
+                    "the file edit"
+                } else {
+                    "any file edits"
+                },
+                refused.join(", ")
+            ),
+            false,
+        )
+    } else {
+        (
+            format!(
+                "Rewound conversation; could not revert edits to: {}",
+                refused.join(", ")
+            ),
+            false,
+        )
+    }
+}
 
 
 
@@ -3373,7 +3418,6 @@ impl TuiTerminalSessionView {
 
 
 
-
     /// Mirrors the GUI `/cost` eligibility checks, then toggles the selected
     /// conversation's completed-response summary.
     fn toggle_response_summary_visibility(&mut self, ctx: &mut ViewContext<Self>) {
@@ -4140,12 +4184,13 @@ impl TuiTerminalSessionView {
             .map(|(action_id, _)| action_id)
             .collect();
         actions_to_revert.reverse();
+        let mut diffs_to_revert: Vec<FileDiff> = Vec::new();
         for action_id in &actions_to_revert {
             let diffs = TuiFileEditRevertRegistry::handle(ctx).update(ctx, |registry, _| {
                 registry.take_diffs(&conversation_id, action_id)
             });
             if let Some(diffs) = diffs {
-                revert_file_diffs(&diffs, ctx);
+                diffs_to_revert.extend(diffs);
             }
         }
         // Re-render the (now truncated) conversation on the surface.
@@ -4159,7 +4204,23 @@ impl TuiTerminalSessionView {
             return;
         };
         self.replace_conversation_surface(truncated, TuiConversationRestoreOrigin::Fork, ctx);
-        self.show_success_hint(REWOUND_HINT.to_owned(), ctx);
+        // The reverts dispatched above are guarded, async writes; their outcome
+        // is not known yet. Show the hint only once they settle, so a refusal
+        // is visible instead of landing only in the log (see `revert_file_diffs`
+        // and `rewind_outcome_hint`).
+        if diffs_to_revert.is_empty() {
+            self.show_success_hint(REWOUND_HINT.to_owned(), ctx);
+        } else {
+            let revert = revert_file_diffs(diffs_to_revert, ctx);
+            ctx.spawn(revert, |me, outcomes, ctx| {
+                let (message, is_success) = rewind_outcome_hint(&outcomes);
+                if is_success {
+                    me.show_success_hint(message, ctx);
+                } else {
+                    me.show_error_hint(message, ctx);
+                }
+            });
+        }
     }
 
     fn handle_accepted_model(&mut self, id: &LLMId, ctx: &mut ViewContext<Self>) {
