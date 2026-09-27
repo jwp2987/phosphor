@@ -14,6 +14,7 @@ use warp::{
         terminal::{
             assert_active_block_command_for_single_terminal_in_tab,
             assert_long_running_block_executing_for_single_terminal_in_tab,
+            clear_blocklist_to_remove_bootstrapped_blocks,
             execute_command_for_single_terminal_in_tab,
             util::{current_shell_starter_and_version, ExpectedExitStatus},
             wait_until_bootstrapped_single_pane_for_tab,
@@ -371,6 +372,38 @@ pub fn test_zsh_bootstraps_with_nounset_option() -> Builder {
             "echo 'nounset test passed'".to_string(),
             ExpectedExitStatus::Success,
             "nounset test passed",
+        ))
+}
+
+/// Regression test for CORE-3804: a profile that selects PSReadLine's vi edit mode must not
+/// corrupt submitted commands.
+pub fn test_pwsh_vi_edit_mode_does_not_corrupt_commands() -> Builder {
+    new_builder()
+        .set_should_run_test(|| {
+            let (starter, _) = current_shell_starter_and_version();
+            matches!(starter.shell_type(), shell::ShellType::PowerShell)
+        })
+        .with_setup(|utils| {
+            let dir = utils.test_dir();
+            write_rc_files_for_test(
+                dir,
+                "Set-PSReadLineOption -EditMode Vi",
+                [ShellRcType::PowerShell],
+            );
+        })
+        .with_step(wait_until_bootstrapped_single_pane_for_tab(0))
+        .with_step(clear_blocklist_to_remove_bootstrapped_blocks())
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "echo vi_edit_mode_ok".to_string(),
+            ExpectedExitStatus::Success,
+            "vi_edit_mode_ok",
+        ))
+        .with_step(execute_command_for_single_terminal_in_tab(
+            0,
+            "Write-Output second_command_ok".to_string(),
+            ExpectedExitStatus::Success,
+            "second_command_ok",
         ))
 }
 

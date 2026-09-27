@@ -2369,10 +2369,26 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       shows `^P` reverting to `up-history`; post-fix it stays on the warp widget.
       **The `748b635c` pwsh half is NOT ported here** — out of scope for this
       change (zsh-only); still open below.
-- [ ] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
+- [x] `748b635c` **P0 (pairs with `294033bb`)** — same defect in `pwsh.ps1`.
       **Trap:** the fix ADDS a second `Warp-Configure-PSReadLine` call inside
       `Warp-Finish-Bootstrap`; the fork has exactly one call site (`:452`, precmd).
       Do not "fix" this by relocating the existing call.
+      **Fixed 2026-09-27 (#750):** ported verbatim onto `pwsh.ps1` -- `Warp-Configure-PSReadLine`
+      forces `EditMode Emacs` (recording `$script:viEditModeOverridden`) when it finds the
+      session already in `Vi`, before its four `Set-PSReadLineKeyHandler` calls; the existing
+      sole call site (`Warp-Precmd`, `:452`) is untouched, and a second call was ADDED (not
+      relocated) at the top of `Warp-Finish-Bootstrap`, matching the trap note above.
+      `vi_mode_enabled` added to the `Bootstrapped` payload next to `shell_plugins`, matching
+      bash/fish. Ported upstream's E2E integration test
+      `test_pwsh_vi_edit_mode_does_not_corrupt_commands`
+      (`crates/integration/src/test/bootstrapping.rs`) and its two registrations
+      (`crates/integration/src/bin/integration.rs`, `crates/integration/tests/integration/shell_integration_tests.rs`)
+      verbatim -- `script/check_integration_test_registry` passes. Note: the paired zsh port
+      (`294033bb`, #737) did not add the equivalent `test_zsh_cursor_mode_vi_bindings_do_not_corrupt_commands`
+      integration test (verified against a real zsh binary instead); that gap is pre-existing
+      and not addressed here, out of scope for the pwsh half.
+      `script/lint_powershell` could not be run in this sandbox (no `pwsh` binary available);
+      the change was checked by hand for brace balance and against upstream's exact diff.
 - [x] `213c9b32` — unbounded `SignatureCache` growth: append-only `MemoMap` keyed on
       the lowercased first token, retaining every **miss** forever with no length
       cap. Fork test file is `registry_test.rs` (singular) — a rename, not a gap.
