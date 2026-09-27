@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use parking_lot::{FairMutex, Mutex};
 use warpui::App;
@@ -6,6 +7,7 @@ use warpui::App;
 use super::*;
 use crate::terminal::event_listener::ChannelEventListener;
 use crate::terminal::model::session::{SessionId, Sessions};
+use crate::terminal::model::terminal_model::SubshellInitializationInfo;
 use crate::terminal::shell::Shell;
 
 #[derive(Clone, Default)]
@@ -459,6 +461,160 @@ fn input_reporting_sequence_is_written_before_an_already_queued_in_band_command(
             cancel_rx.try_recv().is_err(),
             "an accepted in-band command must not be cancelled."
         );
+
+        drop(model_events_tx);
+    });
+}
+
+/// A session bootstrapped inside a `docker`/`podman exec -it` subshell, matching
+/// `bootstrap::is_container_subshell`'s predicate.
+#[cfg(feature = "local_fs")]
+fn docker_exec_session_info() -> SessionInfo {
+    let mut session_info = SessionInfo::new_for_test();
+    session_info.shell = Shell::new(ShellType::Bash, None, None, Default::default(), None);
+    session_info.subshell_info = Some(SubshellInitializationInfo {
+        spawning_command: "docker exec -it my-container bash".to_owned(),
+        was_triggered_by_rc_file_snippet: false,
+        env_var_collection_name: None,
+        ssh_connection_info: None,
+    });
+    session_info
+}
+
+/// The double-PTY proxy behind `docker`/`podman exec -it` drops data on large
+/// writes, so a container subshell's bootstrap must go out in bounded chunks
+/// with gaps between them rather than as one write -- see
+/// `bootstrap::is_container_subshell`'s doc comment and the pin
+/// (`4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`).
+///
+/// This drives a bootstrap sized to span two 4KB chunks (a full first chunk
+/// plus a short remainder) through the real `PtyController` -> event-loop path
+/// and asserts on what actually reached `TestEventLoopSender`: exactly two
+/// writes, arriving as two separate messages (not concatenated into the single
+/// write the non-container path would produce -- see
+/// `non_container_bootstrap_is_written_as_a_single_unchunked_write` below),
+/// which is what a proxy that drops large single writes needs. The chunks'
+/// bytes are also asserted to reassemble the original bootstrap exactly, so a
+/// chunk-boundary bug would fail here even if the write count matched.
+#[cfg(feature = "local_fs")]
+#[test]
+fn container_subshell_bootstrap_is_written_in_bounded_chunks() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // One full 4KB chunk plus a short remainder: exercises the chunk
+        // boundary, not just "small enough to fit in one write anyway".
+        let bootstrap: Vec<u8> = (0..(4096 + 100)).map(|i| (i % 256) as u8).collect();
+        let session_info = docker_exec_session_info();
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Bash,
+                bootstrap.clone().into(),
+            );
+        });
+
+        // The chunks are dispatched via spawned timers (0ms, 50ms gap); poll
+        // rather than assert on an exact instant.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while sender.messages.lock().len() < 2 && Instant::now() < deadline {
+            Timer::after(Duration::from_millis(10)).await;
+        }
+
+        let messages = sender.messages.lock();
+        assert_eq!(
+            messages.len(),
+            2,
+            "a 4196-byte container bootstrap should be written as two 4KB-bounded chunks, not one write"
+        );
+        let mut reassembled = Vec::new();
+        for message in messages.iter() {
+            match message {
+                Message::Input(bytes) => reassembled.extend_from_slice(bytes),
+                other => panic!("unexpected message on the container bootstrap path: {other:?}"),
+            }
+        }
+        assert_eq!(
+            reassembled, bootstrap,
+            "the chunks must reassemble the original bootstrap byte-for-byte"
+        );
+
+        drop(model_events_tx);
+    });
+}
+
+/// The chunking decision is `is_container_subshell`, not "the bootstrap is
+/// large": a non-container session with a bootstrap over the 4KB chunk size
+/// must still go out as a single write, so this only depends on the container
+/// predicate. Runs under either the `local_fs` or non-`local_fs` build of
+/// `write_bootstrap_script_to_shell` (the non-`local_fs` stub always writes
+/// unchunked), so it also guards the default-feature build this fork's own
+/// precheck does not otherwise exercise for `local_fs` code.
+#[test]
+fn non_container_bootstrap_is_written_as_a_single_unchunked_write() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Larger than the 4KB chunk size, but not a container subshell.
+        let bootstrap: Vec<u8> = (0..(4096 + 100)).map(|i| (i % 256) as u8).collect();
+        let session_info = zsh_session_info();
+
+        controller.update(&mut app, |controller, ctx| {
+            controller.write_bootstrap_script_to_shell(
+                &session_info,
+                ctx,
+                ShellType::Zsh,
+                bootstrap.clone().into(),
+            );
+        });
+
+        let messages = sender.messages.lock();
+        assert_eq!(
+            messages.len(),
+            1,
+            "a non-container bootstrap must not be chunked even when it exceeds the chunk size"
+        );
+        assert_input_matches(&messages[0], bootstrap);
 
         drop(model_events_tx);
     });

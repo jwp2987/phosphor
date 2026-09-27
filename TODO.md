@@ -10138,11 +10138,25 @@ claim, which was wrong by four.
       edit(s)", success-colored), or some/all refused (named paths, error-colored). `REWOUND_HINT`
       no longer claims a revert happened when there was nothing to revert.
 
-- [ ] **The pin's second consumer of `is_container_subshell` is still absent.**
+- [x] **The pin's second consumer of `is_container_subshell` is still absent.**
       `42effe840:writeable_pty/pty_controller.rs:444` writes the bootstrap in 4KB chunks with
       50ms gaps under a container subshell, because the double-PTY proxy in
       `docker/podman exec -it` drops data on large writes. The guard function was ported
       2026-08-21 but only its first consumer; this one needs `pty_controller.rs`.
+      **Fixed 2026-09-27 (#728):** ported the chunking branch to
+      `write_bootstrap_script_to_shell` from the current pin (`ORACLE.md`'s
+      `4111d08f9:app/src/terminal/writeable_pty/pty_controller.rs:444-454`, which is
+      byte-identical to `42effe840`'s here) — 4KB chunks, `ctx.spawn(Timer::after(50ms *
+      index), ...)` per chunk, same shape as upstream. `bootstrap::is_container_subshell`'s
+      doc comment updated (it previously said this consumer was deliberately not ported).
+      Tests: `container_subshell_bootstrap_is_written_in_bounded_chunks` (`local_fs`-gated,
+      asserts two separate messages that reassemble byte-for-byte) and
+      `non_container_bootstrap_is_written_as_a_single_unchunked_write` (unconditional,
+      pins that the decision is the container predicate, not bootstrap size). The
+      `local_fs`-gated test needs `--features local_fs` to run, which `script/precheck`
+      already documents as outside its default-feature and `--features gui` checks — a
+      pre-existing gate gap, not introduced here. A real `docker`/`podman exec -it`
+      container needs a live check this sandbox cannot perform.
 
 - [ ] **One stale "preprocessing" comment in `crates/warp_tui/`.** `test_fixtures.rs:43-45`
       says the helper enqueues "action preprocessing through `ctx.spawn`"; it emits synchronously,

@@ -37,11 +37,11 @@ const BYTE_ORDER_MARK: &str = "\u{FEFF}";
 /// anything the host writes to its own temp directory is unreadable from inside
 /// the container.
 ///
-/// The pin has a second consumer for this predicate that is deliberately not
-/// ported here: `writeable_pty/pty_controller.rs:444` chunks the bootstrap into
-/// 4KB writes with 50ms gaps for container subshells, because the double-PTY
-/// proxy in `docker/podman exec -it` drops data on large writes. That file is
-/// outside this change's scope; the gap is recorded rather than half-fixed.
+/// The pin has a second consumer for this predicate:
+/// `writeable_pty/pty_controller.rs`'s `write_bootstrap_script_to_shell` chunks
+/// the bootstrap into 4KB writes with 50ms gaps for container subshells,
+/// because the double-PTY proxy in `docker/podman exec -it` drops data on
+/// large writes. That consumer is now ported too.
 #[cfg(feature = "local_fs")]
 pub fn is_container_subshell(session_info: &SessionInfo) -> bool {
     session_info.subshell_info.as_ref().is_some_and(|info| {
