@@ -923,12 +923,17 @@ upstream's behavior is actually a defect rather than a preference.
   Also gave the three `IntegrityFailed` install-refusal exit codes (no pinned checksum on
   this build / no digest tool on the remote host / genuine tampering) distinct wording
   instead of one "integrity check failed" headline, which previously read as detected
-  tampering on every local/dev build. **Residue, tracked on #719 rather than guessed at
-  here:** the fully-silent default legacy-fallback case (flag on, no connected client, no
-  explicit `Failed`/`Unsupported` state) has no event to hook without new session-
-  bootstrap plumbing; `WarpifiedRemote{host_id: None}`'s file-tool refusal reaches only
-  the model, not the user, at its own call site (addressed indirectly by this banner's
-  shared body text, not directly); no-agent-conversation routing and
+  tampering on every local/dev build. **Round 2, same day:** the fully-silent default
+  legacy-fallback case (flag on, no connected client, no explicit `Failed`/`Unsupported`
+  state; or the flag off entirely) turned out to be reachable after all —
+  `new_command_executor_for_local_tty_session` runs with `ctx: &mut
+  ModelContext<Sessions>` and is called exactly once per session's lifetime, so it can
+  `ctx.emit()` a new `SessionsEvent::LegacySshFallback` directly at its two log-only
+  sites; `TerminalView` already subscribed to `SessionsEvent` and now shows the same
+  banner (a new `Legacy` kind) for it, at most once per session by construction. **Residue,
+  still tracked on #719:** `WarpifiedRemote{host_id: None}`'s file-tool refusal reaches
+  only the model, not the user, at its own call site (addressed indirectly by this
+  banner's shared body text, not directly); no-agent-conversation routing and
   `agents.byop.last_used_model_id` provider-reachability both need a new capability (a
   working classifier / an inline agent path, and a live reachability probe,
   respectively), not a surfacing fix.

@@ -11260,13 +11260,30 @@ claim, which was wrong by four.
         so it cannot double up with the paths that already show it.
 
         **(1) the fully-silent default case (flag on, no client, no explicit error at
-        all) — NOT WIRED.** No `RemoteServerManagerEvent` fires distinctly for this case,
-        and the log-only fallback (`command_executor.rs`'s
-        `new_command_executor_for_local_tty_session`) is a synchronous executor-
-        construction function with no path to the view layer. Fixing this needs new
-        event plumbing (a `ModelEvent`/`RemoteServerManagerEvent` variant emitted from
-        session bootstrap) that could not be responsibly added and verified without
-        compiling; left as follow-up on issue #719.
+        all; or the flag off entirely) — FIXED 2026-09-27 (round 2).** This was the
+        maintainer's main ask and the piece the first pass got wrong: it is reachable
+        from a model-context site after all.
+        `new_command_executor_for_local_tty_session` runs with `ctx: &mut
+        ModelContext<Sessions>`, and it is called from exactly one place
+        (`Sessions::initialize_bootstrapped_session`), once per session's lifetime — so
+        it can `ctx.emit()` a new `Sessions`-model event directly, and that event fires
+        at most once per session by construction. Added
+        `SessionsEvent::LegacySshFallback { session_id, reason: LegacySshFallbackReason }`
+        (`terminal/model/session.rs`), emitted at the exact two log-only sites this file
+        already named as the silent defaults: the `log::info!("SshRemoteServer flag on
+        but no connected client...")` line (`LegacySshFallbackReason::NoConnectedClient`)
+        and the previously-uninstrumented "flag off entirely" branch
+        (`LegacySshFallbackReason::FeatureDisabled`). The decision itself is factored
+        into a pure `legacy_ssh_fallback_reason(is_legacy_ssh_session,
+        remote_server_flag_enabled) -> Option<LegacySshFallbackReason>`, unit-tested in
+        `command_executor_tests.rs` without constructing a `Sessions` model or feature
+        flags. `TerminalView::handle_sessions_event` (already the subscriber for
+        `SessionsEvent::SessionInitialized`/`SessionBootstrapped`) now also handles
+        `LegacySshFallback` by showing the same `SshRemoteServerFailedBanner`, with a new
+        `Legacy` kind and its own localized (en/ja/zh-CN) title/description/detail text
+        naming the reason. `crates/warp_tui/src/terminal_session_view.rs` had one
+        *exhaustive* match over `SessionsEvent` with no wildcard arm — updated to a no-op
+        arm for the new variant, or that crate would not have compiled.
 
       - **(2) `WarpifiedRemote { host_id: None }` — addressed via (1), not independently
         wired.** `ai/blocklist/action_model/execute/read_files.rs`'s refusal ("File
@@ -11277,8 +11294,9 @@ claim, which was wrong by four.
         construction (`blocklist/controller.rs`'s own doc), and the existing banner's
         shared `BANNER_BODY` text ("While advanced features like file browsing and code
         review are currently disabled...") already explains the consequence once the
-        banner fires for that session, which it now does for the `Unsupported`/`Failed`
-        cases (1) covers.
+        banner fires for that session — which, after round 2, it now does for every
+        legacy-SSH session's command-executor construction, not only the
+        `Unsupported`/`Failed` cases.
 
       - **(3) remote binary path — verified, already adequate; not a reachable code
         defect.** `remote_server_binary()` builds
