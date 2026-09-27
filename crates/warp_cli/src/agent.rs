@@ -318,8 +318,6 @@ pub struct RunAgentArgs {
     /// validates the repo's git remote matches the expected org.
     ///
     /// When used with --prompt, the skill provides the base context and the prompt is the task.
-    ///
-    /// To automate a skill on a schedule, use `oz schedule create --skill <SPEC>`.
     #[arg(long = "skill", value_name = "SPEC")]
     pub skill: Option<SkillSpec>,
 

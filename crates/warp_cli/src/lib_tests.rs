@@ -889,3 +889,39 @@ fn agent_run_accepts_mcp() {
         [crate::mcp::MCPSpec::Uuid(parsed_uuid)] if *parsed_uuid == uuid
     ));
 }
+
+/// Long help for `agent run`, as `<bin> agent run --help` renders it.
+fn agent_run_long_help() -> String {
+    let mut command = <Args as clap::CommandFactory>::command();
+    command
+        .find_subcommand_mut("agent")
+        .expect("`agent` subcommand should exist")
+        .find_subcommand_mut("run")
+        .expect("`agent run` subcommand should exist")
+        .render_long_help()
+        .to_string()
+}
+
+// #637: `--model` pointed at `warp model list` (wrong binary) and `--skill` at
+// `oz schedule create`, a subcommand this fork removed with the cron scheduler.
+#[test]
+fn agent_run_help_has_no_stale_command_references() {
+    let help = agent_run_long_help();
+
+    assert!(
+        help.contains("model list"),
+        "`--model` should still say how to list models:\n{help}"
+    );
+    assert!(
+        !help.contains("warp model list"),
+        "`--model` help must not name the `warp` binary:\n{help}"
+    );
+    assert!(
+        !help.contains("schedule create"),
+        "`--skill` help must not point at the removed `schedule` subcommand:\n{help}"
+    );
+    assert!(
+        Args::try_parse_from(["warp", "schedule", "create"]).is_err(),
+        "`schedule` is removed; if it comes back, revisit the `--skill` help"
+    );
+}
