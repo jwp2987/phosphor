@@ -4809,6 +4809,28 @@ impl AppContext {
         self.platform_delegate.open_file_path(&resolved.path);
     }
 
+    /// Opens `path` with the system default application, without the launch-policy check
+    /// [`Self::open_file_path`] otherwise enforces (#706, following #681).
+    ///
+    /// The sole sanctioned caller is the workspace's file-tree open sink
+    /// (`Workspace::open_file_with_target` in `app/src/workspace/view.rs`), and only for a path
+    /// the user reached by double-clicking (or pressing Enter on) it in the file tree they can
+    /// see -- a deliberate choice about a path the user picked themselves. Every other "open this
+    /// file with the system" caller in the process names a path that can be model-, link-, or
+    /// terminal-output-controlled (an AI block, a notebook link, an AI document, a `file:` URL,
+    /// `set_before_open_url`) and MUST keep going through [`Self::open_file_path`], which still
+    /// reveals a launchable path there. Do not add new callers of this method; a launchable path
+    /// reaching the OS default handler outside the file-tree click is exactly the defect #681
+    /// fixed.
+    ///
+    /// Still resolves `path` the same way [`Self::open_file_path`] does (`~` expanded, symlinks
+    /// and `..` resolved), so the platform opener acts on the same path the file tree showed and
+    /// the caller checked.
+    pub fn open_file_path_from_file_tree(&mut self, path: &Path) {
+        let resolved = warp_util::launch_policy::canonical_path_for_open(path);
+        self.platform_delegate.open_file_path(&resolved);
+    }
+
     /// Opens the given file path in an explorer view. On MacOS this will open the file in finder.
     pub fn open_file_path_in_explorer(&mut self, path: &Path) {
         self.platform_delegate.open_file_path_in_explorer(path);

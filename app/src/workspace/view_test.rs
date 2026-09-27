@@ -729,6 +729,65 @@ fn test_open_file_with_target_reveals_launchable_paths() {
     });
 }
 
+/// #706: the one exception to the reveal above -- `CodeSource::FileTree` (a double-click or
+/// Enter on a file the file tree already shows the user, a deliberate choice about a path they
+/// picked, unlike every `CodeSource` in the test above) opens a launchable path with its normal
+/// target instead of revealing it. Every target here is `SystemDefault`/`SystemGeneric` -- the
+/// shape `FileTreeView::open_file` actually hands the sink after its own
+/// `permit_system_open_from_file_tree` undo -- exercising the guard arm's `!FileTree` exclusion
+/// directly; a hand-built `RevealInFileManager` is a separate, explicit "reveal" instruction the
+/// sink still honors regardless of origin (this is what `AGENTS.md` calls "not a global bypass
+/// flag" -- only the launch-policy *substitution* is skipped, never an explicit reveal request).
+#[cfg(feature = "local_fs")]
+#[test]
+fn test_open_file_with_target_file_tree_origin_opens_launchable_paths() {
+    use warpui::platform::test::{RecordedSystemOpen, recorded_system_opens_matching};
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+        let workspace = mock_workspace(&mut app);
+        let temp_dir = TempDir::new().expect("failed to create temp dir");
+        let app_bundle = temp_dir.path().join("Evil.app");
+        let installer = temp_dir.path().join("setup.pkg");
+        let script = temp_dir.path().join("run.command");
+        let document = temp_dir.path().join("paper.pdf");
+
+        for (path, target) in [
+            (&app_bundle, FileTarget::SystemGeneric),
+            (&installer, FileTarget::SystemGeneric),
+            (&script, FileTarget::SystemDefault),
+            (&document, FileTarget::SystemGeneric),
+        ] {
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.open_file_with_target(
+                    path.clone(),
+                    target,
+                    None,
+                    CodeSource::FileTree { path: path.clone() },
+                    ctx,
+                );
+            });
+        }
+
+        use warp_util::launch_policy::canonical_path_for_open as resolved;
+        let needle = temp_dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            recorded_system_opens_matching(&needle),
+            vec![
+                RecordedSystemOpen::OpenedFile(resolved(&app_bundle)),
+                RecordedSystemOpen::OpenedFile(resolved(&installer)),
+                RecordedSystemOpen::OpenedFile(resolved(&script)),
+                RecordedSystemOpen::OpenedFile(resolved(&document)),
+            ]
+        );
+    });
+}
+
 #[cfg(feature = "local_fs")]
 #[test]
 fn test_worktree_sidecar_search_editor_enter_executes_selection() {

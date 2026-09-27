@@ -11669,7 +11669,14 @@ open findings that had no pre-existing row.
       2026-08-10 winit entry above (`jwp2987/winit`) for the last verified state.
 - [ ] **#640 — version display.** See the existing item above ("Nothing a user
       sees reports `0.1.2`") — decision still pending.
-- [ ] **#681 — open questions.** See the #681 item above for the fixed core
-      (launchable paths revealed, not opened); `.html` policy and the file-tree
-      double-click behaviour are still open questions there, not closed by this
-      round.
+- [x] **#681 — open questions.** See the #681 item above for the fixed core
+      (launchable paths revealed, not opened). **Decided 2026-09-27 (maintainer):**
+      `.html` keeps following `open_file_editor` (no code change — recorded in
+      DECLINED.md); a file-tree double-click/Enter on a launchable path now
+      OPENS it with its normal target instead of revealing it, since it's a
+      deliberate user choice about a path they picked, unlike the link
+      surfaces #681 covers (fixed as #706, `permit_system_open_from_file_tree`
+      in `app/src/util/openable_file_type.rs`, plus the workspace sink and
+      `AppContext::open_file_path_from_file_tree`). `uri/mod.rs`'s "Open with
+      Phosphor" still executing runnable scripts by design remains open,
+      untouched by this round.
