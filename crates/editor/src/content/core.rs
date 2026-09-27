@@ -21,6 +21,7 @@ use crate::content::{
 use enum_iterator::all;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use std::ops::Range;
+use std::sync::Arc;
 use string_offset::CharOffset;
 use sum_tree::SumTree;
 use warpui::elements::ListIndentLevel;
@@ -366,10 +367,10 @@ impl Buffer {
         );
         log::debug!("=> Overall new range: {:?}", replacement_range.new_range);
 
-        let new_lines = self.styled_blocks_in_range(
+        let new_lines = Arc::new(self.styled_blocks_in_range(
             replacement_range.new_range,
             StyledBlockBoundaryBehavior::Exclusive,
-        );
+        ));
 
         EditResult {
             undo_item: Some(undo_arg),

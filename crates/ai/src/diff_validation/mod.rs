@@ -163,6 +163,7 @@ impl AIRequestedCodeDiff {
                 fuzzy_match_failures,
                 noop_deltas,
                 missing_line_numbers: _,
+                fuzzy_match_failure_details: _,
             }) => {
                 let update_deltas_empty = match &self.diff_type {
                     DiffType::Update { deltas, .. } => deltas.is_empty(),
@@ -338,7 +339,7 @@ fn remove_extra_line_num_prefix(replace: String) -> String {
         .join("\n")
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct DiffMatchFailures {
     /// Failures to perform a fuzzy match with content.
     pub fuzzy_match_failures: u8,
@@ -346,6 +347,18 @@ pub struct DiffMatchFailures {
     pub noop_deltas: u8,
     /// Search blocks that are missing line numbers.
     pub missing_line_numbers: u8,
+    /// Identifiers for blocks that failed to fuzzy match. Skipped for telemetry.
+    #[serde(skip)]
+    pub fuzzy_match_failure_details: Vec<DiffMatchFailure>,
+}
+
+/// Identifies a search/hunk block that failed to match, without carrying file content.
+///
+/// `block_number` is 1-based and refers to the block's position among all blocks for the file in
+/// the original tool call (not merely among failures).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffMatchFailure {
+    pub block_number: usize,
 }
 
 /// Fix two common issues with responses from the models that request code actions:
@@ -410,7 +423,7 @@ pub fn fuzzy_match_v4a_diffs(
 
     let file_lines: Vec<&str> = file_content.lines().collect();
 
-    for diff in diffs {
+    for (block_index, diff) in diffs.iter().enumerate() {
         // Check for no-op diffs
         if diff.old == diff.new {
             log::info!("Ignoring V4A diff with identical old and new content.");
@@ -441,6 +454,9 @@ pub fn fuzzy_match_v4a_diffs(
             None => {
                 log::warn!("Failed to find matching location for V4A diff");
                 failures.fuzzy_match_failures += 1;
+                failures.fuzzy_match_failure_details.push(DiffMatchFailure {
+                    block_number: block_index + 1,
+                });
             }
         }
     }
@@ -507,7 +523,7 @@ fn fuzzy_match_file_diffs(
 
     let target_lines: Vec<&str> = lines(file_content).collect();
 
-    for diff in diffs {
+    for (block_index, diff) in diffs.iter().enumerate() {
         #[cfg(debug_assertions)]
         log::debug!("{diff:#?}");
 
@@ -639,6 +655,9 @@ fn fuzzy_match_file_diffs(
             }
             None => {
                 failures.fuzzy_match_failures += 1;
+                failures.fuzzy_match_failure_details.push(DiffMatchFailure {
+                    block_number: block_index + 1,
+                });
             }
         }
     }

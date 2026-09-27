@@ -2402,13 +2402,25 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       loop permanently. `thiserror` and `libc` are already deps. **Port this instead
       of `b1731dde0`, which it rewrites.**
       **Closed 2026-09-26:** ported in `e287977f0`.
-- [ ] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
+- [x] `d89e78385` **(land before `1c925e333`)** — `Arc` the layout delta; upstream
       measured multi-GB transient allocation when two editors share one `Buffer`.
-- [ ] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
+      **Ported 2026-09-27 (#729):** `EditDelta.new_lines: Arc<Vec<StyledBufferBlock>>`;
+      `layout_delta` takes `&self` and `LayoutTask` borrows its source block instead of
+      owning it. `buffer.rs`/`core.rs`'s `styled_blocks_in_range` call sites wrap in
+      `Arc::new`.
+- [x] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
       `truncate_text_for_layout` silently drops text before shaping, and upstream's
       safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
       fork's frame-offset clamping and `BlockMarker` 1-indexing first. The chunking
       half is coordinate-free and can be ported alone.
+      **Ported 2026-09-27 (#730):** traced the risk first — `LayOutArgs::layout_run`
+      (`content/edit.rs`) accumulates `content_length`/`frame_offset_from_block_start`
+      from buffer content, never the shaped frame; `OffsetMap::translate` already
+      clamps via `.min(run.length)`; `TextFrame::caret_index_for_x_unbounded`
+      (`warpui_core::text_layout`) already special-cases a truncated shaped line. All
+      three of upstream's safety invariants hold here, so both halves (chunking via
+      `chunk_layout_tasks` + line-length cap via `truncate_text_for_layout` /
+      `clamp_style_runs_for_layout`) were ported together.
 - [x] `12e455c56` — macOS Core Text style-run coalescing (~36 lines + 3 tests).
       Upstream attributes an ~11.98 GB spike to it. **Upstream never built or ran
       this** (no macOS CI) — needs a real macOS build here, not a rubber stamp.
@@ -2505,9 +2517,12 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `CLIAgentSessionStatus` has no `Cancelled` variant. ~1000 lines incl. tests;
       fully local (PTY byte observation), the harness is never signaled.
       **Closed 2026-09-26:** ported in `182ee1449`, tests in `e9f49cf94`.
-- [ ] `bc0f17ce` — structured per-block diff-match failures for agent retry.
+- [x] `bc0f17ce` — structured per-block diff-match failures for agent retry.
       **Preserve** the `RemoteFileOperationsUnsupported` arm's deliberate-divergence
       comment; the commit does not touch it. Its message over-describes the diff.
+      **Ported 2026-09-27 (#711):** `DiffMatchFailure { block_number }` added to
+      `DiffMatchFailures.fuzzy_match_failure_details` (`#[serde(skip)]`); the
+      `RemoteFileOperationsUnsupported` arm and its comment are untouched.
 - [ ] `4cd1c77c4` — file-explorer chip in the native agent-view toolbelt; entirely local.
 - [ ] `ff16a0b2a` — `hashbrown` raw-entry + `FxHashMap` in hot paths. `rustc-hash`
       is already a workspace dep; `app/Cargo.toml` needs both added.
@@ -2527,8 +2542,11 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Repo metadata / settings / misc (12)**
 
-- [ ] `6e192572` **(land before `c6609ef2`)** — outer `Arc` on `FileTreeState.gitignores`,
+- [x] `6e192572` **(land before `c6609ef2`)** — outer `Arc` on `FileTreeState.gitignores`,
       deep-cloned per event today.
+      **Ported 2026-09-27 (#710):** `FileTreeState.gitignores: Arc<Vec<Gitignore>>`;
+      `handle_watcher_event`'s per-event `.clone()` is now a refcount bump. The one
+      mutable consumer (`load_directory`) clones the inner `Vec` via `.as_ref().clone()`.
 - [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
       **Strictly ordered after `6e192572`**; taken out of order the type changes fight
       each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
