@@ -5667,7 +5667,15 @@ impl Input {
 
         // If the last block was empty, don't create any suggestions.
         // Also don't create suggestions for requested commands part of an agent mode conversation.
-        if block_completed.command.is_empty() || block_completed.was_part_of_agent_interaction {
+        if block_completed
+            .command
+            .get_with(|compute| {
+                let model = self.model.lock();
+                compute(model.block_list())
+            })
+            .is_empty()
+            || block_completed.was_part_of_agent_interaction
+        {
             return;
         }
 
@@ -5693,7 +5701,10 @@ impl Input {
         };
         let context = WarpAiExecutionContext::new(&session);
         let completer_data = self.completer_data();
-        let block_context = Some(BlockContext::from_completed_block(&block_completed));
+        let block_context = Some(BlockContext::from_completed_block(
+            &block_completed,
+            &self.model,
+        ));
         let previous_result = self.last_intelligent_autosuggestion_result.take();
         self.next_command_model.update(ctx, |model, ctx| {
             model.generate_next_command_suggestion(
@@ -8243,6 +8254,31 @@ impl Input {
             .get_ignored_suggestions_for_type(SuggestionType::ShellCommand);
         #[cfg(feature = "local_fs")]
         let conn = self.conn.clone();
+        // Resolve the last completed block's lazily-computed fields now, synchronously, since the
+        // spawned future below doesn't have access to the terminal model to resolve them later.
+        #[cfg(feature = "local_fs")]
+        let last_user_block_completed_data =
+            completer_data
+                .last_user_block_completed
+                .as_ref()
+                .map(|block| {
+                    (
+                        block
+                            .command
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .to_owned(),
+                        block
+                            .serialized_block
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .clone(),
+                    )
+                });
         let abort_handle = ctx
             .spawn_abortable(
                 async move {
@@ -8250,14 +8286,17 @@ impl Input {
                     // First, use rich history to find commands with a matching prefix that were run
                     // in a similar context, taking into account the most recent block run.
                     if let Some(conn) = conn {
-                        if let Some(last_user_block_completed) =
-                            &completer_data.last_user_block_completed
+                        if let Some((last_command, last_serialized_block)) =
+                            &last_user_block_completed_data
                         {
                             let similar_history_contexts = {
                                 let mut conn = conn.lock();
                                 NextCommandModel::get_similar_history_context(
                                     &mut conn,
-                                    last_user_block_completed,
+                                    last_command,
+                                    &last_serialized_block.pwd,
+                                    last_serialized_block.exit_code,
+                                    last_serialized_block.shell_host.as_ref(),
                                     0,
                                 )
                             };
@@ -12459,10 +12498,11 @@ impl Input {
             return;
         }
         let block = block.as_ref().unwrap();
-        let (exit_code, working_dir) = (
-            block.serialized_block.exit_code,
-            block.serialized_block.pwd.as_ref(),
-        );
+        let serialized_block = block.serialized_block.get_with(|compute| {
+            let model = self.model.lock();
+            compute(model.block_list())
+        });
+        let (exit_code, working_dir) = (serialized_block.exit_code, serialized_block.pwd.as_ref());
         let number_of_top_lines_per_grid = 100;
         let number_of_bottom_lines_per_grid = 200;
 
@@ -12470,9 +12510,7 @@ impl Input {
             let model = self.model.lock();
             let terminal_width = model.block_list().size().columns;
 
-            if let Some(current_block) =
-                model.block_list().block_with_id(&block.serialized_block.id)
-            {
+            if let Some(current_block) = model.block_list().block_with_id(&serialized_block.id) {
                 current_block.get_block_content_summary(
                     terminal_width,
                     number_of_top_lines_per_grid,
@@ -12481,7 +12519,7 @@ impl Input {
             } else {
                 log::error!(
                     "Failed to fetch predicted queries, could not find block with ID: {:?}",
-                    block.serialized_block.id
+                    serialized_block.id
                 );
                 return;
             }
@@ -12497,7 +12535,13 @@ impl Input {
 
         // BYOP path: replaces ServerApi::predict_am_queries with a BYOP one-shot completion.
         let last_block = crate::ai::agent_providers::active_ai::LastBlockSnippet {
-            command: block.command.clone(),
+            command: block
+                .command
+                .get_with(|compute| {
+                    let model = self.model.lock();
+                    compute(model.block_list())
+                })
+                .to_owned(),
             exit_code: exit_code.value(),
             pwd: working_dir.cloned().unwrap_or_default(),
         };
@@ -13570,16 +13614,29 @@ impl Input {
                     .shared_session_input_state
                     .as_ref()
                     .map(|state| state.history_model.clone())
-                { Some(shared_session_history_model) => {
-                    shared_session_history_model.update(ctx, |history_model, _ctx| {
-                        history_model.push(HistoryEntry::for_completed_block(
-                            block_completed.command,
-                            &block_completed.serialized_block,
-                        ))
-                    })
-                } _ => {
-                    log::warn!("Tried to access non-existent shared session history model")
-                }}
+                {
+                    Some(shared_session_history_model) => {
+                        let command = block_completed
+                            .command
+                            .get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            })
+                            .to_owned();
+                        let serialized_block =
+                            block_completed.serialized_block.get_with(|compute| {
+                                let model = self.model.lock();
+                                compute(model.block_list())
+                            });
+                        shared_session_history_model.update(ctx, move |history_model, _ctx| {
+                            history_model
+                                .push(HistoryEntry::for_completed_block(command, serialized_block))
+                        })
+                    }
+                    _ => {
+                        log::warn!("Tried to access non-existent shared session history model")
+                    }
+                }
             } else if is_next_command_enabled(ctx) {
                 self.maybe_predict_next_action_ai(block_completed, ctx);
             }

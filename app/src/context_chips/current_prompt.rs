@@ -2,8 +2,9 @@ use crate::ai::blocklist::agent_view::AgentViewController;
 use crate::features::FeatureFlag;
 use crate::settings::{AISettings, AISettingsChangedEvent, InputSettings, WarpPromptSeparator};
 use crate::terminal::cli_agent_sessions::CLIAgentSessionsModel;
-use crate::terminal::event::{BlockType, UserBlockCompleted};
+use crate::terminal::event::BlockType;
 use crate::terminal::model::session::{ExecuteCommandOptions, Session, SessionsEvent};
+use crate::terminal::model::terminal_model::TerminalModel;
 use crate::terminal::model_events::{ModelEvent, ModelEventDispatcher};
 use crate::{
     debounce::debounce,
@@ -20,6 +21,7 @@ use crate::{
 };
 use futures::{pin_mut, FutureExt as _};
 use itertools::Itertools;
+use parking_lot::FairMutex;
 use warp_completer::completer::CommandExitStatus;
 use warp_core::user_preferences::GetUserPreferences;
 
@@ -43,7 +45,7 @@ use crate::code_review::github_repo_model::{GitHubRepoEvent, GitHubRepoModel};
 use crate::context_chips::display_chip::GitLineChanges;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash as _, Hasher as _};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 use warpui::WeakModelHandle;
 use warpui::{
@@ -181,6 +183,13 @@ pub struct CurrentPrompt {
     /// `GitHubRepoModel` for the current repository.
     #[cfg(feature = "local_fs")]
     github_repo_model: Option<WeakModelHandle<GitHubRepoModel>>,
+
+    /// Used to resolve lazily-computed `UserBlockCompleted` fields in `handle_model_event`.
+    /// Only set (together with the `handle_model_event` subscription) when constructed via
+    /// `new_with_model_events` with a live terminal session. See that constructor's `live_session`
+    /// parameter, which bundles this with the model events subscription so the two can't
+    /// disagree.
+    terminal_model: Option<Weak<FairMutex<TerminalModel>>>,
 }
 
 /// Context about the current terminal session, needed to update the prompt.
@@ -219,9 +228,16 @@ impl CurrentPrompt {
         Self::new_with_model_events(sessions, None, ctx)
     }
 
+    /// `live_session` is `Some` iff this prompt is backed by a live terminal session: its model
+    /// event dispatcher (used to subscribe to block-completion events) and terminal model (used
+    /// to resolve those events' lazily-computed fields) always go together, so they're bundled
+    /// into one `Option` rather than two independently-nullable parameters.
     pub fn new_with_model_events(
         sessions: ModelHandle<Sessions>,
-        model_events: Option<&ModelHandle<ModelEventDispatcher>>,
+        live_session: Option<(
+            &ModelHandle<ModelEventDispatcher>,
+            Arc<FairMutex<TerminalModel>>,
+        )>,
         ctx: &mut ModelContext<Self>,
     ) -> Self {
         let prompt = Prompt::handle(ctx);
@@ -236,9 +252,14 @@ impl CurrentPrompt {
             }
         });
 
-        if let Some(model_events) = model_events {
+        if let Some((model_events, _)) = &live_session {
             ctx.subscribe_to_model(model_events, Self::handle_model_event);
         }
+
+        // we cannot simply capture the strong references in subscriptions, or we risk having a
+        // reference cycle.
+        let terminal_model =
+            live_session.map(|(_, terminal_model)| Arc::downgrade(&terminal_model));
 
         let (update_tx, update_rx) = async_channel::unbounded();
         let debounce_period = ctx
@@ -271,6 +292,7 @@ impl CurrentPrompt {
             git_repo_status: None,
             #[cfg(feature = "local_fs")]
             github_repo_model: None,
+            terminal_model,
         }
     }
 
@@ -1339,32 +1361,40 @@ impl CurrentPrompt {
     }
 
     fn handle_model_event(&mut self, event: &ModelEvent, ctx: &mut ModelContext<Self>) {
-        if let ModelEvent::AfterBlockCompleted(after_block_completed) = event {
-            if let BlockType::User(UserBlockCompleted { command, .. }) =
-                &after_block_completed.block_type
-            {
-                if let Some(cmd) = command.split_whitespace().next() {
-                    // Resolve aliases so that e.g. `alias g=git` followed by `g push`
-                    // still triggers invalidation for chips watching "git".
-                    let resolved = self
-                        .latest_context
-                        .as_ref()
-                        .and_then(|context| context.active_block_metadata.session_id())
-                        .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
-                        .and_then(|session| session.alias_value(cmd).map(String::from));
-                    let effective_cmd = resolved.as_deref().unwrap_or(cmd);
+        if let ModelEvent::AfterBlockCompleted(after_block_completed) = event
+            && let BlockType::User(user_block_completed) = &after_block_completed.block_type
+            && let Some(terminal_model) = &self
+                .terminal_model
+                .as_mut()
+                .and_then(|model| model.upgrade())
+            && let Some(cmd) = user_block_completed
+                .command
+                .get_with(|compute| {
+                    let model = terminal_model.lock();
+                    compute(model.block_list())
+                })
+                .split_whitespace()
+                .next()
+        {
+            // Resolve aliases so that e.g. `alias g=git` followed by `g push`
+            // still triggers invalidation for chips watching "git".
+            let resolved = self
+                .latest_context
+                .as_ref()
+                .and_then(|context| context.active_block_metadata.session_id())
+                .and_then(|session_id| self.sessions.as_ref(ctx).get(session_id))
+                .and_then(|session| session.alias_value(cmd).map(String::from));
+            let effective_cmd = resolved.as_deref().unwrap_or(cmd);
 
-                    for (chip_kind, state) in &mut self.states {
-                        if let Some(chip) = chip_kind.to_chip() {
-                            if chip
-                                .runtime_policy()
-                                .invalidate_on_commands()
-                                .iter()
-                                .any(|c| c == effective_cmd)
-                            {
-                                state.invalidating_command_count += 1;
-                            }
-                        }
+            for (chip_kind, state) in &mut self.states {
+                if let Some(chip) = chip_kind.to_chip() {
+                    if chip
+                        .runtime_policy()
+                        .invalidate_on_commands()
+                        .iter()
+                        .any(|c| c == effective_cmd)
+                    {
+                        state.invalidating_command_count += 1;
                     }
                 }
             }

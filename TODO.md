@@ -2625,57 +2625,74 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       block"; that is stronger than the code guarantees, since `AIAgentExchange.input` can
       grow via `update_exchange_from_messages` on a shared-session viewer. Comment
       softened; the window is upstream's too.
-- [ ] `f42c4ab6c` — `Lazy` field deferral (22 files, ~987 insertions). Adds
+- [x] `f42c4ab6c` — `Lazy` field deferral (22 files, ~987 insertions). Adds
       `crates/warp_util/src/lazy.rs`. **Depends on `ee95ac0fd` landing first** —
-      landed 2026-09-26, so this is now unblocked.
-      One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork.
-      **Partially ported 2026-09-27: `Lazy<T, S>` utility only, not the
-      `UserBlockCompleted` conversion.** Telemetry-divergence check first, as this
-      round's brief asked: `DECLINED.md`'s "Telemetry" row confirms the channel is
-      physically removed here (`should_collect_ai_ugc_telemetry()` hard-`false`), so
-      the `is_ai_ugc_telemetry_enabled` branch in `block.rs`'s `From<&Block> for
-      BlockType` (the `content_summary(2500, 2500, ...)` arm) is dead in practice —
-      but that is a narrower claim than "these fields are for telemetry": `command`,
+      landed 2026-09-26.
+      One hunk targets `local_tty/terminal_view_adaptor.rs`, dropped by the fork
+      (no such file here); its `CurrentPrompt::new_with_model_events` call site
+      moved to `local_tty/terminal_manager.rs`'s `create_surface` closure, which
+      already has the `Arc<FairMutex<TerminalModel>>` on hand.
+      **Landed 2026-09-27, in two rounds.** Round 1 landed the self-contained
+      `Lazy<T, S>` utility only (`crates/warp_util/src/lazy.rs` + `lazy_tests.rs`,
+      verbatim port, 7 tests; `pub mod lazy;`; `parking_lot.workspace = true` added
+      to `warp_util/Cargo.toml` and `Cargo.lock`). Round 2 (this entry) did the
+      rewiring: `UserBlockCompleted`'s five fields (`serialized_block`, `command`,
       `command_with_obfuscated_secrets`, `output_truncated`,
-      `output_truncated_with_obfuscated_secrets`, and `serialized_block` are read by
-      several purely local, non-cloud features (`ai/block_context.rs`,
+      `output_truncated_with_obfuscated_secrets`) became `Lazy<T, BlockList>`, with
+      `UserBlockCompleted::new`/`new_for_test` constructors, and every consumer
+      updated to call `.get(&block_list)` (when a `&BlockList` is already on hand)
+      or `.get_with(|compute| { let model = lock; compute(model.block_list()) })`
+      (when only a `FairMutex<TerminalModel>` is available).
+      Telemetry-divergence check confirmed first (as the prior round's brief
+      asked): `DECLINED.md`'s "Telemetry" row confirms the channel is physically
+      removed here (`should_collect_ai_ugc_telemetry()` hard-`false`), so the
+      `is_ai_ugc_telemetry_enabled` branch in `block.rs`'s
+      `compute_output_truncated{,_with_obfuscated_secrets}` (the
+      `content_summary(2500, 2500, ...)` arm) is dead in practice — but the fields
+      themselves are live: read by `ai/block_context.rs`,
       `ai/blocklist/passive_suggestions/{legacy,maa}.rs`,
       `ai/predict/next_command_model.rs`, `ai/aws_credentials.rs`,
       `context_chips/current_prompt.rs`, `persistence/commands.rs`,
-      `terminal/view.rs`, `terminal/view/open_in_warp.rs`). The eager-computation
-      cost this commit targets is real here too — not cloud-only debt, and not
-      something to decline.
-      **Landed the self-contained half**: `crates/warp_util/src/lazy.rs` +
-      `lazy_tests.rs` (verbatim port, 7 tests), `pub mod lazy;` in `warp_util`'s
-      `lib.rs`, `parking_lot.workspace = true` added to `warp_util/Cargo.toml`
-      (already a workspace dependency at `0.12.1`, just not previously a dependency
-      of this crate) and to `Cargo.lock`'s `warp_util` dependency list (hand-edited;
-      `parking_lot` already resolves to one version workspace-wide, so this adds an
-      edge, not a new package).
-      **Deliberately NOT ported this round: rewiring `UserBlockCompleted`'s five
-      fields to `Lazy<T, BlockList>` and updating every consumer.** This is the
-      large, risky part of the commit, for reasons beyond "22 files": (1) upstream's
-      own PR description flags a stale-index correctness trap (must resolve by
-      `BlockId`, not `BlockIndex`, across block removal/reindexing) with a dedicated
-      regression test reproducing it; (2) a real deadlock was found and fixed
-      upstream in `maa.rs`'s `handle_user_block_completed` (a `get_with` compute
-      closure re-locking a mutex the caller already held) — every consumer in this
-      fork needs the same audit, and several of those consumer files
-      (`ai/blocklist/passive_suggestions/*`, `ai/predict/next_command_model.rs`) are
-      exactly the AI-subsystem files `SCOPE-AI.md` flags as heavily diverged/MIXED,
-      so upstream's call-site diff cannot be trusted to apply cleanly; (3) it's a
-      cross-crate change (`warp_tui`'s `terminal_session_view.rs` also reads these
-      fields, and upstream notes this was invisible to a `warp`-scoped
-      `cargo check`) — exactly the kind of blind spot this round's "no cargo build"
-      rule can't catch. Confirmed this fork's structural prerequisites already
-      match upstream's (`BlockList` at `terminal/model/blocks.rs:281`,
-      `FairMutex<TerminalModel>` used the same way in `block_list_element.rs` and
-      `input.rs`), so a future round doing this for real should be able to follow
-      upstream's diff fairly directly per file — but it needs a compiler in the
-      loop, not a blind port. **Not compiled** — `rustfmt --check --config-path
-      .rustfmt.toml` is clean on `lazy.rs`/`lazy_tests.rs`; `Cargo.lock`/`Cargo.toml`
-      edits are not rustfmt's concern and were checked by hand against the existing
-      `parking_lot` package entry.
+      `terminal/{input,view}.rs`, `terminal/view/open_in_warp.rs`, and
+      `terminal/local_tty/terminal_manager.rs` (for the `CurrentPrompt` and
+      `ApiKeyManager` wiring). `warp_tui`'s `terminal_session_view.rs` was grepped
+      as the flagged cross-crate consumer but turned out **not** to read any of the
+      five fields — its `AfterBlockCompleted` handler here only calls
+      `ensure_external_commands_are_warming`, since the telemetry call
+      (`emit_block_completed_telemetry`) upstream patched in that file doesn't
+      exist in this fork. `persistence/commands.rs::get_same_commands_from_history`
+      picked up upstream's signature change (now takes `command`/`pwd`/`exit_code`/
+      `shell_host` directly instead of `&UserBlockCompleted`) but the
+      "double-reversing" bug upstream's commit message mentions fixing there isn't
+      visible in the upstream diff itself (no `.rev()` change) — this fork's
+      pre-existing `.order(id.desc())` already matches the documented
+      newest-to-oldest contract, so there was nothing to fix, only the signature.
+      **Deadlock audit**: found and fixed the same real deadlock upstream did, in
+      `maa.rs`'s `handle_user_block_completed` — it called
+      `BlockContext::from_completed_block` (which now locks `self.terminal_model`
+      internally) while still holding a `let model = self.terminal_model.lock();`
+      guard from resolving `conversation_id`; restructured to drop that guard
+      before calling `from_completed_block`. No other consumer holds the model
+      lock across an accessor call — `get_with` locks and releases synchronously
+      inside itself, so a plain `&T` returned from it carries no lock, and every
+      other call site either has no outer lock in scope or (in `view.rs`,
+      `input.rs`) only holds one as a dropped-immediately temporary in an `if`
+      condition.
+      **Stale-index test**: ported `deferred_fields_resolve_by_block_id_after_reindex`
+      to `terminal/model/blocks_test.rs` (this fork's `blocks_tests.rs`), adapted to
+      call `BlockList::remove_block_at_index` directly (private, accessible since
+      the test module is `blocks.rs`'s `mod tests`) in place of upstream's
+      `BlockList::remove_command_blocks_at_indices`, which doesn't exist here.
+      Confirmed this fork's structural prerequisites already matched upstream's
+      (`BlockList` at `terminal/model/blocks.rs:282`, `FairMutex<TerminalModel>`
+      used the same way in `input.rs`/`view.rs`), so the per-file diff applied
+      directly. **Not compiled** (round rule) — `rustfmt --check --config-path
+      .rustfmt.toml` is clean on every touched line in all 15 files (compared
+      against a `git stash` baseline; the tree has pre-existing drift elsewhere).
+      Needs a real `cargo check`/`cargo test -p app` (and `-p warp_tui`) pass next
+      round to confirm the untyped bits — especially the macro-generated
+      `lazy_block_field!` closures in `block.rs` and the `Deref`/coercion chains
+      from `&Arc<SerializedBlock>` to `&SerializedBlock`/`&str` used throughout.
 - [x] `0a0fd3ae1` **(ordered pair, land before `c25ac4070`)** — Paste entry in the
       block-list context menu; introduces the `paste_menu_item` helper the other needs.
       **Landed 2026-09-26 (#683, `53a40902d`)** without upstream's share-item regrouping
