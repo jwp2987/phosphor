@@ -1600,7 +1600,9 @@ impl PaneGroup {
                     .conversation_ids_to_restore
                     .iter()
                     .filter(|&conversation_id| {
-                        RestoredAgentConversations::handle(ctx).read(ctx, |store, _| {
+                        // `update`, not `read`: the store loads the conversation's task
+                        // payload from sqlite on first access and caches it.
+                        RestoredAgentConversations::handle(ctx).update(ctx, |store, _| {
                             store
                                 .get_conversation(conversation_id)
                                 .is_some_and(|persisted_conv| {
@@ -2964,21 +2966,23 @@ impl PaneGroup {
         // `parent_agent_id` -> `agent_id_to_conversation_id` linkage.
         let parent_conversation_id = {
             let history_model = BlocklistAIHistoryModel::as_ref(ctx);
-            let restored_conversations = RestoredAgentConversations::as_ref(ctx);
             history_model
                 .conversation(&child_conversation_id)
                 .and_then(|conversation| {
                     history_model.resolved_parent_conversation_id_for_conversation(conversation)
                 })
-                .or_else(|| {
-                    restored_conversations
-                        .get_conversation(&child_conversation_id)
-                        .and_then(|conversation| {
-                            history_model
-                                .resolved_parent_conversation_id_for_conversation(conversation)
-                        })
-                })
-        };
+        }
+        .or_else(|| {
+            // The restore store loads lazily from sqlite, so it needs `update`.
+            RestoredAgentConversations::handle(ctx).update(ctx, |store, ctx| {
+                let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+                store
+                    .get_conversation(&child_conversation_id)
+                    .and_then(|conversation| {
+                        history_model.resolved_parent_conversation_id_for_conversation(conversation)
+                    })
+            })
+        });
 
         let Some(parent_conversation_id) = parent_conversation_id else {
             // No parent linkage: reachable only if some pane already owns it.
