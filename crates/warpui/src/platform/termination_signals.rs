@@ -15,40 +15,89 @@
 //! channel, or the main dispatch queue on macOS). The main loop then runs the same
 //! shutdown path as any other non-cancellable quit.
 //!
-//! # Deadline
+//! # Deadline and escalation
 //!
 //! The first signal also arms a watchdog thread that exits the process after
 //! [`SHUTDOWN_DEADLINE`], so a wedged flush cannot make the app ignore `SIGTERM`.
-//! A further signal while the shutdown is in flight exits immediately.
+//!
+//! A further signal only cuts the graceful shutdown short when it is a repeat of a
+//! signal already received, at least [`ESCALATION_MIN_INTERVAL`] after the first
+//! one, and not `SIGHUP`. Closing the launching terminal delivers `SIGHUP` twice in
+//! quick succession (the shell forwards it to its jobs, then the kernel sends it again
+//! when the session leader exits), and logind sends `SIGTERM` then `SIGHUP`; neither
+//! is anyone insisting, and escalating on them would skip `app_will_terminate`.
+//! (jwp2987/phosphor#685 review.)
+//!
+//! # Exiting
+//!
+//! The watchdog and an escalated exit end the process with [`hard_exit`]
+//! (`_exit(2)` / `TerminateProcess`), not `std::process::exit`: the main thread is
+//! mid-shutdown, and running `atexit` handlers and C++ static destructors (GPU
+//! drivers, SQLite) concurrently with it risks a crash. Once a signal-initiated
+//! shutdown has completed, [`exit_after_signal_shutdown`] re-raises the signal
+//! with its default disposition, so the parent sees the conventional "terminated
+//! by SIGTERM" status rather than a clean exit.
 
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
+
+use instant::Instant;
 
 /// How long a signal-initiated graceful shutdown may take before the process
 /// exits regardless.
 pub(crate) const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long after the first delivery of a signal a repeat of it must arrive to be
+/// taken as "exit now" rather than as a duplicate delivery.
+pub(crate) const ESCALATION_MIN_INTERVAL: Duration = Duration::from_secs(1);
+
+/// `SIGHUP`'s number (1 on every Unix; also used for the conventional exit status).
+#[cfg(unix)]
+pub(crate) const SIGHUP: i32 = libc::SIGHUP;
+#[cfg(not(unix))]
+pub(crate) const SIGHUP: i32 = 1;
 
 /// What the handler thread should do in response to one delivered signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalResponse {
     /// The first termination signal: ask the main loop to shut down gracefully.
     BeginGracefulShutdown,
-    /// A signal arrived while a graceful shutdown was already underway: the
-    /// sender is insisting, so exit now.
+    /// A duplicate or different signal during the shutdown: let it finish.
+    Ignore,
+    /// The same signal again, long enough after the first: the sender is
+    /// insisting, so exit now.
     ExitImmediately,
 }
 
-/// Remembers whether a signal-initiated shutdown is already in flight.
+/// Remembers which signals have arrived, and when, since a signal-initiated
+/// shutdown began.
 #[derive(Debug, Default)]
 pub(crate) struct ShutdownState {
-    shutdown_requested: bool,
+    /// Each distinct signal received, with the time it was first received. Non-empty
+    /// once a shutdown has been requested.
+    first_received: Vec<(i32, Instant)>,
 }
 
 impl ShutdownState {
-    pub(crate) fn on_signal(&mut self) -> SignalResponse {
-        if std::mem::replace(&mut self.shutdown_requested, true) {
-            SignalResponse::ExitImmediately
-        } else {
-            SignalResponse::BeginGracefulShutdown
+    pub(crate) fn on_signal(&mut self, signal: i32, now: Instant) -> SignalResponse {
+        if self.first_received.is_empty() {
+            self.first_received.push((signal, now));
+            return SignalResponse::BeginGracefulShutdown;
+        }
+        if signal == SIGHUP {
+            return SignalResponse::Ignore;
+        }
+        match self.first_received.iter().find(|(seen, _)| *seen == signal) {
+            Some(&(_, first))
+                if now.saturating_duration_since(first) >= ESCALATION_MIN_INTERVAL =>
+            {
+                SignalResponse::ExitImmediately
+            }
+            Some(_) => SignalResponse::Ignore,
+            None => {
+                self.first_received.push((signal, now));
+                SignalResponse::Ignore
+            }
         }
     }
 }
@@ -64,6 +113,9 @@ pub(crate) trait ShutdownHooks {
     fn arm_deadline(&self, deadline: Duration, exit_code: i32);
     /// Exits the process immediately.
     fn exit(&self, exit_code: i32);
+    /// Remembers that `signal` started the shutdown, for
+    /// [`exit_after_signal_shutdown`].
+    fn record_initiating_signal(&self, signal: i32);
 }
 
 /// The conventional exit status for a process ended by `signal`.
@@ -73,30 +125,42 @@ pub(crate) fn exit_code_for_signal(signal: i32) -> i32 {
 
 /// Handles one delivered termination signal. Runs on the signal-handling
 /// thread, never in signal context.
-pub(crate) fn handle_signal(state: &mut ShutdownState, signal: i32, hooks: &impl ShutdownHooks) {
+pub(crate) fn handle_signal(
+    state: &mut ShutdownState,
+    signal: i32,
+    now: Instant,
+    hooks: &impl ShutdownHooks,
+) {
     let exit_code = exit_code_for_signal(signal);
-    match state.on_signal() {
+    match state.on_signal(signal, now) {
         SignalResponse::BeginGracefulShutdown => {
             log::info!(
                 "Received termination signal {signal}; shutting down gracefully (deadline {}s)",
                 SHUTDOWN_DEADLINE.as_secs()
             );
+            hooks.record_initiating_signal(signal);
             hooks.arm_deadline(SHUTDOWN_DEADLINE, exit_code);
             if !hooks.request_terminate() {
                 log::warn!("Main loop is gone; exiting without a graceful shutdown");
                 hooks.exit(exit_code);
             }
         }
+        SignalResponse::Ignore => {
+            log::info!(
+                "Received termination signal {signal} during shutdown; letting the graceful \
+                 shutdown finish"
+            );
+        }
         SignalResponse::ExitImmediately => {
-            log::warn!("Received termination signal {signal} during shutdown; exiting now");
+            log::warn!("Received termination signal {signal} again during shutdown; exiting now");
             hooks.exit(exit_code);
         }
     }
 }
 
 /// Waits out `deadline` with `sleep`, then ends the process with `exit`. The
-/// real watchdog passes `std::thread::sleep` and `std::process::exit`; tests
-/// inject fakes.
+/// real watchdog passes `std::thread::sleep` and [`hard_exit`]; tests inject
+/// fakes.
 pub(crate) fn run_deadline_watchdog(
     deadline: Duration,
     exit_code: i32,
@@ -111,14 +175,99 @@ pub(crate) fn run_deadline_watchdog(
     exit(exit_code);
 }
 
+/// Ends the process now with `exit_code`, without running `atexit` handlers or
+/// static destructors: `_exit(2)` on Unix, `TerminateProcess` on Windows.
+///
+/// Used where the main thread may be mid-shutdown (the deadline watchdog, an
+/// escalated exit), where `std::process::exit` would run those destructors
+/// concurrently with it. The logger is flushed first; that only takes the logger's
+/// own lock, which the main thread never holds for long.
+#[allow(unreachable_code)]
+pub(crate) fn hard_exit(exit_code: i32) {
+    log::logger().flush();
+    #[cfg(unix)]
+    // SAFETY: `_exit` is async-signal-safe and never returns.
+    unsafe {
+        libc::_exit(exit_code)
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+        // SAFETY: terminating our own process through its pseudo-handle.
+        let _ = unsafe { TerminateProcess(GetCurrentProcess(), exit_code as u32) };
+    }
+    std::process::exit(exit_code)
+}
+
+/// The signal that started the current shutdown, or 0.
+static INITIATING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+/// How the process should end once a shutdown has run to completion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalExit {
+    /// Exit normally with this status.
+    Status(i32),
+    /// Die of this signal, as the parent expects of a process sent it.
+    Reraise(i32),
+}
+
+/// How to end the process after a completed shutdown, given the signal (if any)
+/// that started it.
+pub(crate) fn final_exit(initiating_signal: Option<i32>) -> FinalExit {
+    match initiating_signal {
+        Some(signal) if cfg!(unix) => FinalExit::Reraise(signal),
+        Some(signal) => FinalExit::Status(exit_code_for_signal(signal)),
+        None => FinalExit::Status(0),
+    }
+}
+
+fn initiating_signal() -> Option<i32> {
+    match INITIATING_SIGNAL.load(Ordering::Acquire) {
+        0 => None,
+        signal => Some(signal),
+    }
+}
+
+/// If a termination signal started this shutdown, ends the process the way that
+/// signal would have (default disposition, re-raised) now that `app_will_terminate`
+/// has finished; otherwise returns so the caller exits as usual.
+///
+/// Called by platform loops right after `app_will_terminate` where the process is
+/// about to exit anyway (winit, macOS). Not by the headless loop, whose caller still
+/// has to restore the terminal.
+pub(crate) fn exit_after_signal_shutdown() {
+    match final_exit(initiating_signal()) {
+        FinalExit::Status(0) => {}
+        FinalExit::Status(code) => hard_exit(code),
+        FinalExit::Reraise(signal) => {
+            log::info!("Graceful shutdown after signal {signal} finished; re-raising it");
+            log::logger().flush();
+            #[cfg(unix)]
+            // SAFETY: restoring the default disposition and raising the signal on
+            // ourselves; if that somehow returns, `hard_exit` ends the process.
+            unsafe {
+                libc::signal(signal, libc::SIG_DFL);
+                libc::raise(signal);
+            }
+            hard_exit(exit_code_for_signal(signal));
+        }
+    }
+}
+
 /// [`ShutdownHooks`] that act on the real process.
 pub(crate) struct ProcessHooks<F> {
     request_terminate: F,
+    /// How the watchdog and an escalated exit end the process: [`hard_exit`]
+    /// outside tests.
+    exit: fn(i32),
 }
 
 impl<F: Fn() -> bool> ProcessHooks<F> {
     pub(crate) fn new(request_terminate: F) -> Self {
-        Self { request_terminate }
+        Self {
+            request_terminate,
+            exit: hard_exit,
+        }
     }
 }
 
@@ -128,20 +277,21 @@ impl<F: Fn() -> bool> ShutdownHooks for ProcessHooks<F> {
     }
 
     fn arm_deadline(&self, deadline: Duration, exit_code: i32) {
+        let exit = self.exit;
         let spawned = std::thread::Builder::new()
             .name("shutdown-deadline".to_string())
-            .spawn(move || {
-                run_deadline_watchdog(deadline, exit_code, std::thread::sleep, |code| {
-                    std::process::exit(code)
-                })
-            });
+            .spawn(move || run_deadline_watchdog(deadline, exit_code, std::thread::sleep, exit));
         if let Err(err) = spawned {
             log::warn!("Failed to spawn the shutdown deadline watchdog: {err}");
         }
     }
 
     fn exit(&self, exit_code: i32) {
-        std::process::exit(exit_code);
+        (self.exit)(exit_code);
+    }
+
+    fn record_initiating_signal(&self, signal: i32) {
+        INITIATING_SIGNAL.store(signal, Ordering::Release);
     }
 }
 
@@ -201,7 +351,7 @@ pub(crate) fn install(
             let hooks = ProcessHooks::new(request_terminate);
             let mut state = ShutdownState::default();
             for signal in delivered.forever() {
-                handle_signal(&mut state, signal, &hooks);
+                handle_signal(&mut state, signal, Instant::now(), &hooks);
             }
         })?;
     Ok(())

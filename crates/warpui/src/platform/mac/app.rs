@@ -455,6 +455,9 @@ extern "C-unwind" fn warp_app_did_resign_active(this: &mut Object, _: Sel, _: id
 extern "C-unwind" fn warp_app_will_terminate(this: &mut Object, _: Sel, _: id) {
     let app = unsafe { get_app(this) };
     app.callbacks.app_will_terminate();
+    // Cocoa exits with status 0 once this returns; a signal-initiated quit should
+    // end the way the signal would have (jwp2987/phosphor#685).
+    crate::platform::termination_signals::exit_after_signal_shutdown();
 }
 
 #[unsafe(no_mangle)]

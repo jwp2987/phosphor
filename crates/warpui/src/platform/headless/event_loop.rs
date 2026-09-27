@@ -63,8 +63,8 @@ pub(super) fn run(
     }
 
     // Drop the receiver so a signal that arrives during shutdown cannot queue a
-    // terminate nobody will read. (A second signal exits immediately anyway, and
-    // the first one armed a deadline; see `termination_signals`.)
+    // terminate nobody will read. (The first signal armed a deadline, and an
+    // insistent repeat exits immediately; see `termination_signals`.)
     drop(receiver);
 
     callbacks.app_will_terminate();
@@ -76,7 +76,8 @@ pub(super) fn run(
 ///
 /// The first signal posts [`TerminationMode::ForceTerminate`] to this loop (the
 /// same request the TUI's own exit actions send) and arms the shutdown deadline;
-/// a second signal exits immediately. No app work runs in the signal handler: it
+/// only a repeat of the same signal (not `SIGHUP`) at least a second later exits
+/// immediately. No app work runs in the signal handler: it
 /// only wakes a thread that sends on the loop's channel. See
 /// [`platform::termination_signals`].
 ///
@@ -121,7 +122,7 @@ fn setup_signal_handler(sender: Sender<AppEvent>) {
         let mut state = state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        handle_signal(&mut state, SIGINT, &hooks);
+        handle_signal(&mut state, SIGINT, instant::Instant::now(), &hooks);
     });
     if let Err(e) = result {
         log::warn!("Failed to set up Ctrl-C handler: {e}");

@@ -981,6 +981,11 @@ impl EventLoop {
 
                 self.callbacks.app_will_terminate();
 
+                // A signal-initiated quit ends the way the signal would have
+                // (jwp2987/phosphor#685); otherwise this returns.
+                #[cfg(not(target_family = "wasm"))]
+                crate::platform::termination_signals::exit_after_signal_shutdown();
+
                 // On non-web platforms, immediately terminate the process instead of returning
                 // from the event loop.  This matches the behavior of
                 // `[NSApp terminate]` on macOS, and may avoid some at-exit
