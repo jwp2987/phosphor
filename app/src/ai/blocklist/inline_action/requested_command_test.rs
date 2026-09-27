@@ -1,9 +1,14 @@
 //! Unit tests for format_command_text in requested_command.rs
 
 use super::{
+    COMMAND_CANCELLED_BY_USER_MESSAGE, COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE,
+    COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE, COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE,
+    COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE, COMMAND_DENYLISTED_MESSAGE,
+    COMMAND_REJECTED_BY_USER_MESSAGE, cancel_explanation_for_reason, denylisted_command_message,
     format_command_text, header_message_for_user_take_over_reason, mcp_blocked_title_text,
     mcp_viewing_detail_title_text,
 };
+use crate::ai::agent::{CancellationReason, RequestCommandOutputResult};
 use crate::ai::blocklist::block::cli_controller::UserTakeOverReason;
 
 #[test]
@@ -149,4 +154,110 @@ fn newline_then_multibyte_results_in_ellipsis_only() {
     // Sanity: output remains valid UTF-8
     let reconstructed: String = output.chars().collect();
     assert_eq!(reconstructed, output);
+}
+
+// A rejected/cancelled command used to show a bare icon next to the command text, with
+// nothing distinguishing "you rejected this" from "it failed" from "the app dropped it" --
+// c6124b6e4 fixed only the no-reason (long-running-command drain) case. See issue #692.
+
+#[test]
+fn no_reason_and_no_block_is_the_running_command_drain() {
+    assert_eq!(
+        cancel_explanation_for_reason(None, false, false),
+        Some(COMMAND_CANCELLED_FOR_RUNNING_COMMAND_MESSAGE)
+    );
+}
+
+#[test]
+fn a_command_block_that_actually_started_is_never_explained_here() {
+    // Whatever the reason, a block existing means the command started and was torn down some
+    // other way, which has its own rendering (the block's own exit-code icon).
+    for reason in [
+        None,
+        Some(CancellationReason::ManuallyCancelled),
+        Some(CancellationReason::UserCommandExecuted),
+        Some(CancellationReason::AgentExitedShell),
+    ] {
+        assert_eq!(cancel_explanation_for_reason(reason, true, true), None);
+    }
+}
+
+#[test]
+fn reject_button_says_rejected_by_you() {
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::ManuallyCancelled), false, true),
+        Some(COMMAND_REJECTED_BY_USER_MESSAGE)
+    );
+}
+
+#[test]
+fn manually_cancelled_without_the_reject_flag_says_cancelled_by_you() {
+    // e.g. the conversation's Stop button firing while this action was still pending --
+    // distinct from this row's own Reject button.
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::ManuallyCancelled), false, false),
+        Some(COMMAND_CANCELLED_BY_USER_MESSAGE)
+    );
+}
+
+#[test]
+fn follow_up_submitted_names_the_follow_up() {
+    assert_eq!(
+        cancel_explanation_for_reason(
+            Some(CancellationReason::FollowUpSubmitted {
+                is_for_same_conversation: true
+            }),
+            false,
+            false
+        ),
+        Some(COMMAND_CANCELLED_FOR_FOLLOW_UP_MESSAGE)
+    );
+}
+
+#[test]
+fn user_command_executed_names_the_terminal_command() {
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::UserCommandExecuted), false, false),
+        Some(COMMAND_CANCELLED_FOR_USER_COMMAND_MESSAGE)
+    );
+}
+
+#[test]
+fn agent_exited_shell_names_the_shell_exit() {
+    assert_eq!(
+        cancel_explanation_for_reason(Some(CancellationReason::AgentExitedShell), false, false),
+        Some(COMMAND_CANCELLED_FOR_SHELL_EXIT_MESSAGE)
+    );
+}
+
+#[test]
+fn torn_down_rather_than_cancelled_reasons_stay_unlabelled() {
+    for reason in [
+        CancellationReason::Reverted,
+        CancellationReason::Deleted,
+        CancellationReason::OptimisticCLISubagentCompletion,
+    ] {
+        assert_eq!(
+            cancel_explanation_for_reason(Some(reason), false, false),
+            None
+        );
+    }
+}
+
+#[test]
+fn denylisted_result_is_labelled() {
+    assert_eq!(
+        denylisted_command_message(&RequestCommandOutputResult::Denylisted {
+            command: "rm -rf /".to_owned()
+        }),
+        Some(COMMAND_DENYLISTED_MESSAGE)
+    );
+}
+
+#[test]
+fn non_denylisted_result_is_not_labelled_here() {
+    assert_eq!(
+        denylisted_command_message(&RequestCommandOutputResult::CancelledBeforeExecution),
+        None
+    );
 }
