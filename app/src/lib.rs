@@ -2338,6 +2338,26 @@ fn initialize_app(
     app_state
 }
 
+/// Hard upper bound on how long quitting waits for language servers to shut down.
+/// Shutdowns run concurrently, so this is the whole budget, not a per-server one.
+const LSP_APP_EXIT_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Gracefully shuts down every language server as the app terminates (jwp2987/phosphor#680;
+/// the pin does the same from `on_will_terminate`). Waits at most
+/// [`LSP_APP_EXIT_SHUTDOWN_GRACE`], so a wedged server cannot hang quit.
+///
+/// A no-op when `LspManagerModel` was never registered: `lsp::init` runs only on the client
+/// app's `workspace::init` path, the remote-server daemon shares these callbacks without it,
+/// and `LspManagerModel::handle` panics on an unregistered singleton.
+fn terminate_language_servers_for_app_exit(ctx: &mut AppContext) {
+    if !ctx.has_singleton_model::<lsp::LspManagerModel>() {
+        return;
+    }
+    lsp::LspManagerModel::handle(ctx).update(ctx, |manager, ctx| {
+        manager.terminate_for_app_exit(LSP_APP_EXIT_SHUTDOWN_GRACE, ctx);
+    });
+}
+
 fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
     warpui::platform::AppCallbacks {
         on_internet_reachability_changed: Some(Box::new(move |reachable, ctx| {
@@ -2403,6 +2423,11 @@ fn app_callbacks(is_integration_test: bool) -> warpui::platform::AppCallbacks {
             PersistenceWriter::handle(ctx).update(ctx, |writer, _ctx| {
                 writer.terminate();
             });
+
+            // Shut down all LSP servers gracefully before app termination. Every quit path
+            // (last-window close, `workspace:terminate_app` / Ctrl+Shift+Q, menu Quit, the
+            // headless/TUI loop exit) converges on this hook.
+            terminate_language_servers_for_app_exit(ctx);
 
             // We want to tear down the terminal server before relaunching for
             // autoupdate, to ensure we're not running any extra Zap processes

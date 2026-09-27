@@ -448,6 +448,19 @@ impl LspServerModel {
 
     /// Different from stop -- on terminate, we won't update the server state and emit events based on server response.
     fn terminate(&mut self) {
+        self.terminate_with_completion(None);
+    }
+
+    /// [`Self::terminate`], additionally signalling `done` once the detached shutdown
+    /// (LSP `shutdown` request, `exit` notification, bounded process reap) has finished.
+    ///
+    /// Returns whether a shutdown was started: only an `Available` server has one to run.
+    /// The shutdown runs on the background executor, so a caller may block the main thread
+    /// on `done` without deadlocking it.
+    pub(crate) fn terminate_with_completion(
+        &mut self,
+        done: Option<std::sync::mpsc::Sender<()>>,
+    ) -> bool {
         match &self.server_state {
             LspState::Available {
                 service,
@@ -462,14 +475,19 @@ impl LspServerModel {
                 executor
                     .spawn(async move {
                         let _ = service.shutdown().await;
+                        if let Some(done) = done {
+                            let _ = done.send(());
+                        }
                     })
                     .detach();
+                true
             }
             _ => {
                 log::debug!(
                     "Unable to stop LSP server in state: {}",
                     self.server_state.name()
                 );
+                false
             }
         }
     }

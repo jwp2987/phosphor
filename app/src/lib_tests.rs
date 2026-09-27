@@ -100,3 +100,35 @@ fn launch_modes_select_expected_logging_frontend() {
         LogFrontend::Cli
     );
 }
+
+// jwp2987/phosphor#680: `on_will_terminate` shuts language servers down through
+// `terminate_language_servers_for_app_exit` (the pin calls
+// `LspManagerModel::terminate` from the same hook). The hook closure itself
+// reaches for a dozen app singletons, so these drive the LSP step it delegates to.
+
+#[test]
+fn will_terminate_lsp_step_terminates_every_language_server() {
+    App::test((), |mut app| async move {
+        app.update(lsp::init);
+
+        app.update(terminate_language_servers_for_app_exit);
+
+        app.read(|ctx| {
+            assert!(
+                lsp::LspManagerModel::as_ref(ctx).terminated_for_app_exit(),
+                "quitting must run LspManagerModel's app-exit termination"
+            );
+        });
+    });
+}
+
+#[test]
+fn will_terminate_lsp_step_is_a_noop_without_an_lsp_manager() {
+    // The remote-server daemon shares these callbacks but never calls
+    // `lsp::init`; `LspManagerModel::handle` would panic there.
+    App::test((), |mut app| async move {
+        app.update(terminate_language_servers_for_app_exit);
+
+        app.read(|ctx| assert!(!ctx.has_singleton_model::<lsp::LspManagerModel>()));
+    });
+}
