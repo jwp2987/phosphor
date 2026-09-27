@@ -2461,12 +2461,20 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 - [ ] `c6609ef2` — inner `Arc` + new `gitignore_cache` module + `parking_lot` dep.
       **Strictly ordered after `6e192572`**; taken out of order the type changes fight
       each other. Final shape at the pin is `Arc<Vec<Arc<Gitignore>>>`.
-- [ ] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
+- [x] `be11be65d` — **Profiles half only.** Fixes a bogus "(1)" settings-search count.
       Higher value here than upstream: the fork's gate is
       `!is_byo_api_key_enabled()`, so the single-widget branch is the DEFAULT path in
       a BYOP fork, not an edge case. Reshape onto `ai_page.rs` and **keep the fork's
       gate** — a byte-faithful port reintroduces `UsageBasedPricing`. The Code
       Indexing half does not apply (fork's `code_page.rs` builds 11 discrete widgets).
+      **Fixed 2026-09-27 (#732):** `build_page`'s `Some(AISubpage::Profiles)` arm now
+      returns `PageType::new_monolith(AgentsWidget::default(), None, true)` early when
+      `!should_show_usage_widget`, instead of falling into the shared
+      `new_uncategorized` wrap every other subpage uses. Tests drive
+      `PageType::update_filter` directly on both page shapes (no live
+      `AISettingsPageView` needed) and assert on `MatchData`'s rendered text: `" (1)"`
+      for the old `Uncategorized`-wrapping-one-widget shape, `""` for the new
+      `Monolith`.
 - [x] `3a7a4a5b3` — suppress empty category headers. Cheap hardening; the fork already
       filters empty index lists, so **do not sell this as a live bug** — no
       configuration was found where it is user-visible today.

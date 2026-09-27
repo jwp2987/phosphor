@@ -1757,9 +1757,23 @@ impl AISettingsPageView {
                 widgets.push(Box::new(AgentProvidersWidget::new(ctx)));
             }
             Some(AISubpage::Profiles) => {
-                if should_show_usage_widget {
-                    widgets.push(Box::new(UsageWidget::default()));
+                if !should_show_usage_widget {
+                    // Only `AgentsWidget` renders here (no master-switch widget on this
+                    // subpage either, see `subpage_shows_master_ai_switch`), so the page
+                    // cannot be partially filtered -- it's a genuine monolith, not a
+                    // multi-widget page that happens to have one widget right now.
+                    // Returning early instead of falling into the shared
+                    // `new_uncategorized` wrap below keeps settings search from showing
+                    // a misleading match count (e.g. "(1)") next to "Profiles" in the
+                    // sidebar. Ports upstream's `be11be65d`, adapted to this fork's own
+                    // gate: upstream branches on `FeatureFlag::UsageBasedPricing`, which
+                    // this fork doesn't have, so `should_show_usage_widget`
+                    // (`!is_byo_api_key_enabled()`) is used instead -- porting the
+                    // upstream flag verbatim would reintroduce a flag this fork
+                    // deliberately doesn't carry.
+                    return PageType::new_monolith(AgentsWidget::default(), None, true);
                 }
+                widgets.push(Box::new(UsageWidget::default()));
                 widgets.push(Box::new(AgentsWidget::default()));
             }
             Some(AISubpage::Knowledge) => {
@@ -8545,6 +8559,90 @@ mod master_ai_switch_tests {
                 "the settings page's master switch must be able to turn AI back on \
                  without hand-editing settings.toml"
             );
+        });
+    }
+}
+
+/// Guards the Profiles subpage's "(1)" search-match-count fix (upstream `be11be65d`,
+/// adapted to this fork's own gate -- see `build_page`'s `Some(AISubpage::Profiles)`
+/// arm for why it branches on `should_show_usage_widget`/BYOK rather than upstream's
+/// `FeatureFlag::UsageBasedPricing`).
+///
+/// These do not construct a live `AISettingsPageView` -- see
+/// `master_ai_switch_tests`'s module doc for why that needs thirteen singletons and
+/// is out of scope here. Instead they drive `PageType::update_filter` directly on a
+/// `PageType` built the same two ways `build_page` can build the Profiles subpage,
+/// which needs only a bare `AppContext`: `AgentsWidget::should_render` uses the
+/// trait's unconditional-`true` default and `search_terms()` reads only static
+/// feature flags, neither touching a settings singleton.
+#[cfg(test)]
+mod profiles_monolith_match_count_tests {
+    use super::*;
+    use warpui::App;
+
+    /// The bug this fixes: when only `AgentsWidget` renders (BYOK enabled, so the
+    /// usage widget is hidden), wrapping it in `new_uncategorized` -- a page that
+    /// claims to be independently filterable -- reports a numeric match count.
+    /// `MatchData::Display` renders that as literally `" (1)"` next to "Profiles" in
+    /// the settings-search sidebar, even though there is nothing to partially filter.
+    #[test]
+    fn a_single_widget_wrapped_as_uncategorized_reports_a_misleading_count() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_uncategorized(vec![Box::new(AgentsWidget::default())], None);
+                let match_data = page.update_filter("agent", ctx);
+                assert!(
+                    matches!(match_data, MatchData::Countable(1)),
+                    "expected a numeric match count from Uncategorized, got {match_data:?}"
+                );
+                assert_eq!(
+                    match_data.to_string(),
+                    " (1)",
+                    "this is the exact bogus sidebar text the fix removes"
+                );
+            });
+        });
+    }
+
+    /// The fix: `build_page` returns a `Monolith` instead in that same situation, and
+    /// a `Monolith` reports `Uncounted` -- no number renders next to "Profiles" at all,
+    /// matching every other genuinely single-widget settings page (About, Teams,
+    /// Referrals, MCP Servers, ...).
+    #[test]
+    fn the_same_single_widget_wrapped_as_a_monolith_reports_no_count() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_monolith(AgentsWidget::default(), None, true);
+                let match_data = page.update_filter("agent", ctx);
+                assert!(
+                    matches!(match_data, MatchData::Uncounted(true)),
+                    "expected an uncounted (but truthy) match from Monolith, got {match_data:?}"
+                );
+                assert_eq!(
+                    match_data.to_string(),
+                    "",
+                    "a monolith must never render a search-match count in the sidebar"
+                );
+            });
+        });
+    }
+
+    /// A non-matching query must still report no match either way -- the fix changes
+    /// how a match is *displayed*, not whether one is found.
+    #[test]
+    fn a_monolith_reports_no_match_for_a_non_matching_query() {
+        App::test((), |mut app| async move {
+            app.update(|ctx| {
+                let mut page: PageType<AISettingsPageView> =
+                    PageType::new_monolith(AgentsWidget::default(), None, true);
+                let match_data = page.update_filter("xyzzy-not-a-real-term", ctx);
+                assert!(
+                    !match_data.is_truthy(),
+                    "a query that matches nothing must not be truthy"
+                );
+            });
         });
     }
 }
