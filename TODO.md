@@ -2666,7 +2666,7 @@ separately rather than inflating the queue count.
       -> a directory split; four commits in this range already touch the new paths.**
       Until both are settled, Phase 6.5's "drop files absent from this fork" step will
       silently discard real work.
-- [ ] **`c5e4a02e3` — both halves.** (a) Delete the unreachable project onboarding step
+- [x] **`c5e4a02e3` — both halves.** (a) Delete the unreachable project onboarding step
       (-2587 lines; will need `script/check_large_deletions`). Reachability
       independently verified here: `OnboardingStep::Project` is only constructed in the
       `!ZapNewSettingsModes` branch (`crates/onboarding/src/model.rs:660`) and that
@@ -2675,6 +2675,27 @@ separately rather than inflating the queue count.
       (`code_page_tests.rs:237,261`) pin the legacy branch with `override_enabled(false)`;
       they assert action dispatch, not the widget list, so flipping them to `true`
       preserves what they assert — confirm that before deleting anything.
+      **Closed 2026-09-27:** ported verbatim from upstream `c5e4a02e3`. (a) deleted
+      `crates/onboarding/src/slides/project_slide.rs` and the whole `crates/onboarding/src/visuals/`
+      module (7 files), `ProjectOnboardingSettings`, `OnboardingTutorial::Project`/`InitProject`,
+      and the `agent_modality_enabled` param. (b) retired the flag across **17** fork files, not
+      the 10 this row named — the fork independently grew extra uses in `ai_page.rs`,
+      `code_page.rs`/`code_page_tests.rs` and `warp_drive_page.rs` since divergence; each collapsed
+      to its enabled branch the same way. **The row's own line numbers (`:237,261`) were stale**:
+      the real count was **three** `override_enabled(false)` tests, not two.
+      `code_page_action_writes_through_to_{codebase_context,auto_indexing}_setting` matched the
+      row's description (action dispatch, not widget list) and were fixed by deleting their
+      override line, same as the file's ten `override_enabled(true)` lines. The third,
+      `code_page_is_hidden_when_the_feature_flag_is_off`, asserted a state that no longer exists
+      once the flag is always-on (`should_render` is now unconditionally `true`) — deleted with an
+      explanatory comment rather than weakened (AGENTS.md 5.6). Also removed the now-dead legacy
+      duplicates this surfaced: `CodeReviewButtonWidget` (appearance_page.rs) and
+      `ExternalEditorWidget`/`AutoOpenCodeReviewPaneWidget` (features_page.rs), each already
+      superseded by the always-on widgets in `code_page.rs`. `script/check_cloud_boundary`,
+      `script/check_stub_coverage`, `script/check_declined_collisions` all green.
+      **Unverified: no cargo build/test in this round** — see the port's commit message and
+      handoff report for compile-risk hotspots (mainly: the many collapsed `if`/`else` branches
+      across onboarding slide files, none individually re-typechecked).
 - [ ] **`c9e5622943` — the settings-nav/search integration harness half only.** The
       Code-page IA split is declined below with the rest of that program. The harness is
       independently valuable: the fork has 5 helpers in
