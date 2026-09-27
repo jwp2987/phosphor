@@ -2462,12 +2462,34 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
 
 **Search / workspace / system (10)**
 
-- [ ] `36dd2cc2` **P0 — unbounded search channel.** `async_channel::unbounded()`
+- [x] `36dd2cc2` **P0 — unbounded search channel.** `async_channel::unbounded()`
       (`app/src/search/searcher.rs:1249`) with all three consumers doing
       clear-then-rebuild per event. ~300 lines + ~500 test lines; relocate from
       `crates/warp_search_core/`. **Upstream's revision 1 design was wrong** — a naive
       side-slot coalescer reorders an insert issued between two rebuilds; ship the
       sequence-number + per-commit-chunking design.
+      **Fixed 2026-09-27 (#744):** ported upstream's final (revision 3) design verbatim
+      onto `app/src/search/searcher.rs` (this fork never took the `crates/warp_search_core`
+      extraction, so it stayed in `app/src/search/`): `SearcherProducerState` (a
+      `next_sequence` counter + `Option<PendingRebuild>`) under one lock,
+      `AsyncSearcher::rebuild_index_async` coalescing a burst to at most one pending
+      rebuild and at most one `QueuedItem::RebuildMarker` wake-up, and `merge_with_rebuild`
+      splitting a drained batch into before/rebuild/after commit chunks so a rebuild's
+      clear always commits in isolation (Tantivy's `delete_all_documents` only removes
+      already-committed segments). The three callers
+      (`launch_config`/`new_session`/`warp_drive` `data_source.rs`) switched their
+      `clear_search_index_async` + `build_index_async` pairs to the single
+      `rebuild_index_async` call. Kept the fork's pre-existing `QueuedItem::Flush` barrier
+      (`wait_for_pending_writes`) working alongside the new `RebuildMarker` variant, and
+      kept `log::error!` (not upstream's `report_error!`, an unrelated pre-existing
+      divergence in this file, out of scope here). Ported all 4 of upstream's new tests
+      verbatim (`test_searcher_async_rebuild_coalesces_burst`,
+      `..._preserves_operation_order_with_interleaved_updates`,
+      `..._marker_stays_coalesced_across_supersession`,
+      `..._is_not_delayed_when_its_marker_is_never_sent`) into `searcher_test.rs`
+      (singular, this fork's existing convention), plus their shared test harness
+      (`async_searcher_without_background_writer`, `drain_pending_chunks`,
+      `apply_chunks`, `describe_events`/`document_name`, `poll_until`).
 - [x] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
       DIFFERENT keystroke.** Fork's `CustomAction::ToggleProjectExplorer` is
       `ctrl-2`/`ctrl-shift-2` (`util/bindings.rs:419`) where upstream is `ctrl-1`/`alt-1`.
