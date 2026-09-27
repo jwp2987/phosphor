@@ -422,22 +422,6 @@ pub fn init(app: &mut AppContext) {
         ]);
     }
 
-    app.register_fixed_bindings([
-        // Menu dispatch for the "Open File Picker" custom action.
-        FixedBinding::custom(
-            CustomAction::ToggleProjectExplorer,
-            WorkspaceAction::ToggleProjectExplorer,
-            BindingDescription::new(crate::t!(
-                "keybinding-desc-workspace-toggle-project-explorer"
-            ))
-            .with_custom_description(
-                bindings::MAC_MENUS_CONTEXT,
-                crate::t!("keybinding-desc-workspace-toggle-project-explorer-menu"),
-            ),
-            id!("Workspace") & id!(flags::SHOW_PROJECT_EXPLORER),
-        ),
-    ]);
-
     app.register_editable_bindings([
         EditableBinding::new(
             "workspace:show_theme_chooser",

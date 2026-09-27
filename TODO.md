@@ -2424,12 +2424,21 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `crates/warp_search_core/`. **Upstream's revision 1 design was wrong** — a naive
       side-slot coalescer reorders an insert issued between two rebuilds; ship the
       sequence-number + per-commit-chunking design.
-- [ ] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
+- [x] `90c2484d` **P0 — non-remappable shadowed keybinding, present here with a
       DIFFERENT keystroke.** Fork's `CustomAction::ToggleProjectExplorer` is
       `ctrl-2`/`ctrl-shift-2` (`util/bindings.rs:419`) where upstream is `ctrl-1`/`alt-1`.
       The 11-line deletion is keystroke-independent. **Upstream never built or tested
       this revision, and its "editable beats fixed" claim was code-inspection only** —
       re-derive against `warpui_core/src/keymap/matcher.rs` before landing.
+      **Fixed #741:** re-derived and confirmed against `matcher.rs` --
+      `register_fixed_bindings`/`register_editable_bindings` each independently bake a
+      `Trigger::Custom` -> `Trigger::Keystrokes` conversion into that binding alone, so
+      clearing the editable one never reaches a fixed binding sharing the same tag.
+      Deleted the redundant `FixedBinding::custom(CustomAction::ToggleProjectExplorer,
+      ...)` in `app/src/workspace/mod.rs`. Regression test:
+      `shadowing_fixed_binding_outlives_clearing_the_editable_one`
+      (`crates/warpui_core/src/keymap/matcher_test.rs`), pinning both the defect shape
+      and that the fix (no shadowing fixed binding) actually makes clearing work.
 - [x] `b4a2a8fa` **P0 — stdio MCP servers cannot start in TUI/SDK on a fresh profile.**
       Fork is behind even upstream's pre-fix state: `native.rs:741` hard-requires
       `mcp_execution_path`, whose only writer is the GUI bootstrap.
