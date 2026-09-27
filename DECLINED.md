@@ -930,10 +930,25 @@ upstream's behavior is actually a defect rather than a preference.
   ModelContext<Sessions>` and is called exactly once per session's lifetime, so it can
   `ctx.emit()` a new `SessionsEvent::LegacySshFallback` directly at its two log-only
   sites; `TerminalView` already subscribed to `SessionsEvent` and now shows the same
-  banner (a new `Legacy` kind) for it, at most once per session by construction. **Residue,
-  still tracked on #719:** `WarpifiedRemote{host_id: None}`'s file-tool refusal reaches
-  only the model, not the user, at its own call site (addressed indirectly by this
-  banner's shared body text, not directly); no-agent-conversation routing and
-  `agents.byop.last_used_model_id` provider-reachability both need a new capability (a
-  working classifier / an inline agent path, and a live reachability probe,
-  respectively), not a surfacing fix.
+  banner (a new `Legacy` kind) for it, at most once per session by construction.
+  **`agents.byop.last_used_model_id` provider reachability, also round 2, same day:**
+  fixed cheaply per explicit maintainer shape -- no background probing, only enrich the
+  existing error surface for a request that already failed. When a BYOP request's
+  open-stream attempt fails with a transport-level error
+  (`OpenAiCompatibleError::Stream`, matched only at the open-stream site so a genuine
+  mid-response interruption is never mistaken for an unreachable provider) and another
+  usable provider is configured, `generate_byop_output`'s error message now names it and
+  its endpoint, redacted to `scheme://host[:port]` (`app/src/ai/agent_providers/
+  chat_stream.rs`'s new `scheme_host_port`, deliberately not the existing
+  `redact_url_userinfo`, which keeps the path/query -- the opposite shape wanted here).
+  An HTTP status, auth, or decode failure (the provider WAS reached) never gets the hint.
+  **This is not a reachability probe** and does not contradict the "needs a new
+  capability" framing below -- it reacts to a request that already failed, at the one
+  point that already produces a user-visible error, rather than proactively checking.
+  **Residue, still tracked on #719:** `WarpifiedRemote{host_id: None}`'s file-tool
+  refusal reaches only the model, not the user, at its own call site (addressed
+  indirectly by this banner's shared body text, not directly); no-agent-conversation
+  routing needs a new capability (a working classifier / an inline agent path); a live,
+  proactive BYOP-provider-reachability probe (as opposed to reacting to an already-failed
+  request) also remains out of scope, and untested here since this environment has no
+  local model server to verify against.

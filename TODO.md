@@ -11335,16 +11335,50 @@ claim, which was wrong by four.
         seven-item surfacing list, not a notice addable at one call site. Left open on
         issue #719 rather than shipping a narrow, likely-misleading partial signal.
 
-      - **(7) `agents.byop.last_used_model_id` pointing at an unreachable provider — NOT
-        ADDRESSED; no internal signal exists to surface.** Unlike items 1-4, there is no
-        existing "provider unreachable" computation anywhere in the model-selection path
-        — `app/src/ai/llms.rs`'s `byop_last_used_base_model` only checks that the model id
+      - **(7) `agents.byop.last_used_model_id` pointing at an unreachable provider — FIXED
+        2026-09-27 (round 2), cheaply, per maintainer's explicit shape: enrich the
+        existing error surface for a failed request, no background probing.** No live
+        reachability signal was built (still true, and still correctly out of scope — see
+        the original note this replaces, kept below for context): instead, when a BYOP
+        request's *open-stream* attempt fails with a transport-level error
+        (`OpenAiCompatibleError::Stream` — `map_genai_error`'s mapping of
+        `genai::Error::WebStream`/`WebAdapterCall`/`WebModelCall`, i.e. reqwest
+        connection/DNS/TLS/timeout failures, matched only at the open-stream call site so
+        a genuine mid-response interruption is never mistaken for an unreachable
+        provider), and another usable BYOP provider is configured, the message now names
+        it: `"<message>\n\n<provider name> at <scheme://host:port> is unreachable; you
+        have other providers configured -- pick one with /model"`. An HTTP status, auth,
+        or decode failure (the provider WAS reached) never gets this hint, even with
+        another provider configured.
+        `AgentProvider::base_url` is redacted to `scheme://host[:port]` by a new small,
+        local `scheme_host_port` helper (`app/src/ai/agent_providers/chat_stream.rs`) —
+        deliberately not `chat_stream.rs`'s existing `redact_url_userinfo`, which keeps
+        the path/query and only strips `user:password@`, the opposite shape needed for a
+        user-facing message. The "is another provider configured" check and the redacted
+        hint are computed once at dispatch time
+        (`response_stream.rs::byop_dispatch_info`, which already has the active
+        `AgentProvider` and an `AppContext` in hand) via a new
+        `UnreachableProviderHint { provider_name, redacted_endpoint }`, threaded through
+        `ByopDispatch` → `ByopOutputInput` (two struct-field additions, three call sites)
+        into `generate_byop_output`'s existing open-stream error arm. The
+        decision/formatting itself (`describe_byop_open_stream_failure`) is a pure
+        function of `(mapped error, Option<hint>) -> String`, unit-tested for all four
+        cases (connection failure + hint, connection failure + no other provider, three
+        non-connection error kinds each confirmed to NOT get the hint) without any
+        network/view/ctx involved. Deliberately not routed through `crate::t!`: this
+        specific message is technical BYOP error text that was never localized before
+        this change either (it interpolates the raw upstream error string), unlike the
+        designed-UI banner text items 1/4 added.
+        **Original note, superseded but kept for context:** *no internal "provider
+        unreachable" computation existed anywhere in the model-selection path —
+        `app/src/ai/llms.rs`'s `byop_last_used_base_model` only checks that the model id
         is still a recognized choice, never that its provider endpoint answers, and
         `ai/blocklist/prompt/prompt_alert.rs` explicitly exempts BYOP/local providers from
-        the one reachability gate that exists. Building this needs a new live-
-        reachability capability, not a surfacing fix, and could not be responsibly built
-        and verified without a running local model server to test against (this
-        environment has none). Left open on issue #719 with this scoping.
+        the one reachability gate that exists.* That is still true — this fix does not
+        build one. A live, proactive "is the configured provider reachable" probe (as
+        opposed to reacting to a request that already failed) remains out of scope and
+        untested here, since this environment has no local model server to verify
+        against.
 
       **Files changed:** `app/src/terminal/view.rs`,
       `app/src/terminal/view/ssh_remote_server_failed_banner.rs` (+ new
