@@ -12791,6 +12791,42 @@ claim, which was wrong by four.
       which has no enabler anywhere in the tree, so they are inert in production; fixing them
       is out of scope for a test-coverage change. The original field lockup remains
       unexplained pending a fresh capture.
+      **Both correction follow-ups fixed 2026-09-27 (#770).** (1) The `CompletionsFinished` and
+      `SendCompletionsPrompt` handlers checked the variant of `in_flight_native_completions_state`
+      *after* an unconditional `.take()`; on a match failure the `else` branch warned and returned,
+      but `.take()` had already emptied the slot regardless -- so a late event for a superseded
+      request (its own watchdog fired, or the shell answered slowly) could destroy a *different*,
+      still-live request's state, including its `results_tx`, with nothing left to ever answer it.
+      Since `AwaitingPrompt` gates `can_write_to_pty` shut, that reproduces the exact "zsh stuck in
+      `read -d $'\4'`" lockup this entry describes. Fixed by checking the variant *before* taking:
+      a mismatched event is now ignored without touching whatever state is actually there. (2) The
+      2s prompt watchdog can abandon a request whose OSC reply was merely slow, not absent; when
+      that late reply then arrives, there was nothing to answer it with (the request, and its
+      `results_tx`, were already gone), so the shell's `read -d $'\4'` -- which the shell entered
+      the instant it sent that OSC reply -- hung forever. Fixed with a new
+      `has_pending_late_completions_prompt_reply` flag, set when the watchdog abandons an
+      `AwaitingPrompt` phase: if `SendCompletionsPrompt` later arrives with no matching live state
+      and this flag set, the handler now answers with a bare EOT terminator (no completion text,
+      no resurrected request) so the shell's `read` returns. Both fixes are covered by new tests
+      in `pty_controller_tests.rs`
+      (`late_completions_finished_does_not_destroy_a_newer_awaiting_prompt_request`,
+      `late_send_completions_prompt_after_watchdog_abandons_it_answers_with_eot_only`); the first
+      fails against the pre-fix take-before-match code. **Both fixes remain gated behind the same
+      unreachable `FeatureFlag::NativeShellCompletions`**, so neither can be what produced the
+      originally-reported field lockup -- they close real defects in the mechanism, not the
+      mystery. **Diagnostics also added** for the still-unexplained reported lockup: `can_write_to_pty`
+      has two gates (line editor inactive; awaiting a completions prompt), and neither previously
+      had any observability. `execute_next_queued_write` now tracks, via
+      `track_pty_write_gate_stall`, how long the gate has been continuously shut while writes are
+      queued, and logs once (throttled to one line per stall, not one per keystroke) past a 3s
+      threshold, naming which gate is shut, both gates' states, and the queue length -- no write
+      contents are ever logged, per #718. Covered by a new
+      `pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch` test that drives the
+      tracking directly (fast-forwarding the recorded start time past the threshold rather than
+      sleeping) and asserts it logs once per unbroken stretch and resets when the queue drains.
+      **Still open, unverified: nothing here was compiled**
+      (see HANDOFF.md's build-queue constraints for this round); the root cause of the reported
+      lockup itself remains unknown pending a fresh capture with these diagnostics in place.
 
 ## FIX ROUND 2026-09-26/27 — items with no earlier ledger row
 
