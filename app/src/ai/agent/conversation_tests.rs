@@ -13,7 +13,7 @@ use crate::ai::byop_readiness::{
     RepairStateStatus, ToolCallKey,
 };
 use crate::persistence::model::AgentConversationData;
-use crate::persistence::ModelEvent;
+use crate::persistence::{ModelEvent, PersistedTaskRetention};
 use crate::terminal::model::block::{
     AgentInteractionMetadata, AgentViewVisibility, SerializedAIMetadata, SerializedBlock,
 };
@@ -1321,4 +1321,41 @@ fn a_restored_non_cli_subagent_without_a_result_stays_active() {
         conversation.is_subagent_task_finished(&research_task_id),
         Ok(false)
     ));
+}
+
+fn persisted_task_retention(conversation: &AIConversation) -> PersistedTaskRetention {
+    let ModelEvent::UpdateMultiAgentConversation { task_retention, .. } =
+        conversation.updated_conversation_state_event()
+    else {
+        panic!("expected conversation update event");
+    };
+    task_retention
+}
+
+/// A conversation restored with no tasks has a synthesized root that knows nothing about
+/// what is persisted, so none of its saves may delete rows or replace the summary.
+#[test]
+fn conversation_restored_without_tasks_saves_with_keep_missing() {
+    let conversation =
+        AIConversation::new_restored_synthesizing_on_empty(AIConversationId::new(), vec![], None)
+            .expect("an empty task list synthesizes a root");
+
+    assert_eq!(
+        persisted_task_retention(&conversation),
+        PersistedTaskRetention::KeepMissing,
+    );
+}
+
+/// A conversation restored from real tasks, or created fresh, keeps replace semantics so
+/// pruned subtasks are still deleted.
+#[test]
+fn restored_and_new_conversations_save_with_delete_missing() {
+    assert_eq!(
+        persisted_task_retention(&restored_conversation(None)),
+        PersistedTaskRetention::DeleteMissing,
+    );
+    assert_eq!(
+        persisted_task_retention(&AIConversation::new(false)),
+        PersistedTaskRetention::DeleteMissing,
+    );
 }

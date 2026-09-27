@@ -37,7 +37,7 @@ use warpui::platform::FullscreenState;
 use warpui::windowing::{MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH};
 use warpui::{AppContext, SingletonEntity};
 
-use super::agent::{delete_agent_conversations, upsert_agent_conversation};
+use super::agent::{delete_agent_conversations, upsert_agent_conversation_with_retention};
 use super::block_list::{
     delete_ai_conversation, delete_blocks, save_block, update_block_agent_view_visibility,
     upsert_ai_query,
@@ -1290,11 +1290,13 @@ fn handle_model_event(event: ModelEvent, connection: &mut SqliteConnection) -> a
             conversation_id,
             updated_tasks,
             conversation_data,
-        } => upsert_agent_conversation(
+            task_retention,
+        } => upsert_agent_conversation_with_retention(
             connection,
             &conversation_id,
             &updated_tasks,
             conversation_data,
+            task_retention,
         )
         .map_err(anyhow::Error::from),
         ModelEvent::DeleteMultiAgentConversations { conversation_ids } => {

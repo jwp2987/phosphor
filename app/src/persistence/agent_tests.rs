@@ -398,3 +398,246 @@ fn metadata_read_heals_invalid_non_null_summaries() {
         read_agent_conversation_metadata(&mut conn).expect("metadata read should succeed");
     assert!(backfills.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Task-row retention: a save must never shrink persisted history by accident.
+
+fn task_ids_column(conn: &mut SqliteConnection, conversation: &str) -> Vec<String> {
+    use schema::agent_tasks::dsl::*;
+    let mut ids: Vec<String> = agent_tasks
+        .filter(conversation_id.eq(conversation))
+        .select(task_id)
+        .load::<String>(conn)
+        .expect("agent_tasks should be readable");
+    ids.sort();
+    ids
+}
+
+fn stored_initial_query(conn: &mut SqliteConnection, conversation: &str) -> String {
+    let summary_json =
+        summary_column(conn, conversation).expect("summary column should be written");
+    serde_json::from_str::<AgentConversationSummary>(&summary_json)
+        .expect("summary column should hold valid summary JSON")
+        .initial_query
+}
+
+/// An empty task snapshot, typed for `upsert_agent_conversation*`.
+fn no_tasks() -> Vec<&'static api::Task> {
+    Vec::new()
+}
+
+fn subtask_of(parent_id: &str, task_id: &str) -> api::Task {
+    let mut task = task_with_user_query(task_id, "sub query", "Subtask");
+    task.dependencies = Some(api::task::Dependencies {
+        parent_task_id: parent_id.to_string(),
+    });
+    task
+}
+
+/// The reported defect: a conversation whose in-memory tasks carry no source (a hollow,
+/// synthesized root) saves an EMPTY snapshot, and `ne_all(&[])` deleted every task row and
+/// rewrote the summary with an empty `initial_query`, dropping the conversation from the
+/// history list. An ordinary empty save must now leave both alone.
+#[test]
+fn empty_snapshot_keeps_task_rows_and_summary() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    upsert_agent_conversation(&mut conn, "conv-1", [&root], empty_conversation_data())
+        .expect("first upsert should succeed");
+
+    upsert_agent_conversation(&mut conn, "conv-1", no_tasks(), empty_conversation_data())
+        .expect("empty upsert should succeed");
+
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec!["root".to_string()],
+        "an empty snapshot must not delete the conversation's task rows",
+    );
+    assert_eq!(
+        stored_initial_query(&mut conn, "conv-1"),
+        "Initial query",
+        "an empty snapshot must not replace a summary that names a real initial query",
+    );
+}
+
+/// Replace semantics are still what keeps a removed subtask (e.g. one pruned by a rewind)
+/// from being resurrected on restore: a non-empty snapshot that drops a task deletes its row.
+#[test]
+fn non_empty_snapshot_still_deletes_a_removed_task() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    let sub = subtask_of("root", "sub");
+    upsert_agent_conversation(
+        &mut conn,
+        "conv-1",
+        [&root, &sub],
+        empty_conversation_data(),
+    )
+    .expect("first upsert should succeed");
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec!["root".to_string(), "sub".to_string()],
+    );
+
+    upsert_agent_conversation(&mut conn, "conv-1", [&root], empty_conversation_data())
+        .expect("second upsert should succeed");
+
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec!["root".to_string()],
+        "a task removed from a non-empty snapshot must be deleted",
+    );
+    assert_eq!(stored_initial_query(&mut conn, "conv-1"), "Initial query");
+}
+
+/// A rewind past the first exchange is the one deliberate empty snapshot: it asks for
+/// `DeleteMissingEvenIfEmpty`, and every row goes, or the rewound exchanges come back.
+#[test]
+fn explicit_empty_snapshot_clears_task_rows() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    let sub = subtask_of("root", "sub");
+    upsert_agent_conversation(
+        &mut conn,
+        "conv-1",
+        [&root, &sub],
+        empty_conversation_data(),
+    )
+    .expect("first upsert should succeed");
+
+    upsert_agent_conversation_with_retention(
+        &mut conn,
+        "conv-1",
+        no_tasks(),
+        empty_conversation_data(),
+        PersistedTaskRetention::DeleteMissingEvenIfEmpty,
+    )
+    .expect("explicit empty upsert should succeed");
+
+    assert!(task_ids_column(&mut conn, "conv-1").is_empty());
+    assert_eq!(
+        stored_initial_query(&mut conn, "conv-1"),
+        "",
+        "a deliberately emptied conversation's summary follows its (empty) task set",
+    );
+}
+
+/// A conversation restored with a synthesized root saves with `KeepMissing`: after a
+/// follow-up its snapshot holds only a NEW root, which must be added next to the persisted
+/// rows rather than replace them, and the stored summary must keep the original query.
+#[test]
+fn keep_missing_adds_rows_without_deleting_or_relabelling() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    let sub = subtask_of("root", "sub");
+    upsert_agent_conversation(
+        &mut conn,
+        "conv-1",
+        [&root, &sub],
+        empty_conversation_data(),
+    )
+    .expect("first upsert should succeed");
+
+    let fresh_root = task_with_user_query("fresh-root", "Follow-up", "Follow-up title");
+    upsert_agent_conversation_with_retention(
+        &mut conn,
+        "conv-1",
+        [&fresh_root],
+        empty_conversation_data(),
+        PersistedTaskRetention::KeepMissing,
+    )
+    .expect("keep-missing upsert should succeed");
+
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec![
+            "fresh-root".to_string(),
+            "root".to_string(),
+            "sub".to_string()
+        ],
+    );
+    assert_eq!(stored_initial_query(&mut conn, "conv-1"), "Initial query");
+}
+
+/// `KeepMissing` only protects a summary that describes something: a conversation whose
+/// stored summary has no initial query (e.g. a child persisted before its first response)
+/// still gets its summary written once real content arrives, or it would never be listed.
+#[test]
+fn keep_missing_writes_summary_when_none_names_a_query() {
+    let mut conn = test_connection();
+    upsert_agent_conversation(&mut conn, "conv-1", no_tasks(), empty_conversation_data())
+        .expect("empty upsert should succeed");
+    assert_eq!(stored_initial_query(&mut conn, "conv-1"), "");
+
+    let root = task_with_user_query("root", "First real query", "Root title");
+    upsert_agent_conversation_with_retention(
+        &mut conn,
+        "conv-1",
+        [&root],
+        empty_conversation_data(),
+        PersistedTaskRetention::KeepMissing,
+    )
+    .expect("keep-missing upsert should succeed");
+
+    assert_eq!(
+        stored_initial_query(&mut conn, "conv-1"),
+        "First real query"
+    );
+}
+
+/// Explicit deletion is a separate path and must still remove everything, whatever
+/// retention earlier saves used.
+#[test]
+fn explicit_conversation_deletion_still_removes_task_rows() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    upsert_agent_conversation(&mut conn, "conv-1", [&root], empty_conversation_data())
+        .expect("first upsert should succeed");
+    upsert_agent_conversation(&mut conn, "conv-1", no_tasks(), empty_conversation_data())
+        .expect("empty upsert should succeed");
+
+    delete_agent_conversations(&mut conn, vec!["conv-1".to_string()])
+        .expect("delete should succeed");
+
+    assert!(task_ids_column(&mut conn, "conv-1").is_empty());
+    use schema::agent_conversations::dsl::*;
+    let remaining: i64 = agent_conversations
+        .filter(conversation_id.eq("conv-1"))
+        .count()
+        .get_result(&mut conn)
+        .expect("count should succeed");
+    assert_eq!(remaining, 0);
+}
+
+/// A conversation with an undecodable task row is not handed out at all, rather than as a
+/// conversation silently missing that task (whose next save would prune the row).
+#[test]
+fn read_by_id_refuses_a_conversation_with_an_undecodable_task() {
+    let mut conn = test_connection();
+    let root = task_with_user_query("root", "Initial query", "Root title");
+    let sub = subtask_of("root", "sub");
+    upsert_agent_conversation(
+        &mut conn,
+        "conv-1",
+        [&root, &sub],
+        empty_conversation_data(),
+    )
+    .expect("upsert should succeed");
+    {
+        use schema::agent_tasks::dsl::*;
+        diesel::update(agent_tasks.filter(task_id.eq("sub")))
+            .set(task.eq(vec![0xffu8, 0xff, 0xff]))
+            .execute(&mut conn)
+            .expect("corrupting the row should succeed");
+    }
+
+    assert!(
+        read_agent_conversation_by_id(&mut conn, "conv-1").is_err(),
+        "a partially undecodable conversation must not be returned as if complete",
+    );
+    assert_eq!(
+        task_ids_column(&mut conn, "conv-1"),
+        vec!["root".to_string(), "sub".to_string()],
+        "refusing the read must leave every row in place",
+    );
+}

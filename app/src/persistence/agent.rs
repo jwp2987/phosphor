@@ -7,6 +7,7 @@ use warp_multi_agent_api as api;
 
 use super::ConversationSummaryBackfill;
 use super::model::{AgentConversation, AgentConversationData, AgentConversationSummary};
+use super::PersistedTaskRetention;
 use crate::persistence::model::{AgentConversationRecord, AgentTaskRecord};
 use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 
@@ -16,8 +17,8 @@ use crate::persistence::schema::{self, agent_conversations, agent_tasks};
 /// This is a write-side cap only, and the previous version of this comment said otherwise —
 /// it claimed tasks over the limit were "skipped on both write and read to prevent startup
 /// OOM when all task records are loaded at once". Neither half held. The constant has exactly
-/// one use, the `continue` in [`upsert_agent_conversation`]; both readers decode every blob
-/// they load unconditionally and never consult it (`:294`, `:402`). And the read that the
+/// one use, the `continue` in [`upsert_agent_conversation_with_retention`]; both readers
+/// decode every blob they load unconditionally and never consult it. And the read that the
 /// sentence describes no longer exists: since #431, startup goes through
 /// [`read_agent_conversation_metadata`], which reads the `summary` column and touches
 /// `agent_tasks` only for rows written before that column existed. So the protection was
@@ -72,13 +73,39 @@ pub(crate) enum UpsertConversationError {
 /// active orchestration session is never split even if it pushes past the cap.
 pub(super) const MAX_PERSISTED_CONVERSATION_COUNT: usize = 200;
 
+/// [`upsert_agent_conversation_with_retention`] with the default
+/// [`PersistedTaskRetention::DeleteMissing`]. Test-only: production writes go through the
+/// sqlite writer, which always passes the retention the conversation asked for.
+#[cfg(test)]
 pub(crate) fn upsert_agent_conversation<'a>(
     conn: &mut SqliteConnection,
     conversation_id_param: &str,
     tasks: impl IntoIterator<Item = &'a api::Task>,
     conversation_data_param: AgentConversationData,
 ) -> Result<(), UpsertConversationError> {
-    
+    upsert_agent_conversation_with_retention(
+        conn,
+        conversation_id_param,
+        tasks,
+        conversation_data_param,
+        PersistedTaskRetention::DeleteMissing,
+    )
+}
+
+/// Whether a stored `summary` column describes a conversation with real content, i.e. one
+/// that must not be replaced by a summary derived from a snapshot that does not hold it.
+fn stored_summary_names_initial_query(stored_summary: &str) -> bool {
+    serde_json::from_str::<AgentConversationSummary>(stored_summary)
+        .is_ok_and(|summary| !summary.initial_query.is_empty())
+}
+
+pub(crate) fn upsert_agent_conversation_with_retention<'a>(
+    conn: &mut SqliteConnection,
+    conversation_id_param: &str,
+    tasks: impl IntoIterator<Item = &'a api::Task>,
+    conversation_data_param: AgentConversationData,
+    retention: PersistedTaskRetention,
+) -> Result<(), UpsertConversationError> {
     use diesel::QueryDsl;
     use schema::agent_conversations::dsl::*;
     use schema::agent_tasks::dsl as tasks_dsl;
@@ -91,7 +118,26 @@ pub(crate) fn upsert_agent_conversation<'a>(
     // pruned subtasks (e.g. those dropped by a conversation rewind) from
     // lingering as orphan rows and being resurrected on restore — reads load
     // every row for the conversation, unfiltered.
+    //
+    // Except when the snapshot cannot be trusted to be complete (see
+    // `PersistedTaskRetention`): an empty snapshot under the default retention, or any
+    // snapshot under `KeepMissing`, deletes nothing. `ne_all` with an empty set matches
+    // every row, so without this an in-memory conversation that merely failed to load its
+    // tasks erased all of them on its next save.
     let tasks: Vec<&api::Task> = tasks.into_iter().collect();
+    let delete_missing_rows = match retention {
+        PersistedTaskRetention::DeleteMissing => !tasks.is_empty(),
+        PersistedTaskRetention::DeleteMissingEvenIfEmpty => true,
+        PersistedTaskRetention::KeepMissing => false,
+    };
+    // Same rule for the summary: a snapshot that may not hold the stored conversation must
+    // not replace a summary that names a real initial query, or the history list (which
+    // reads only this column at startup) drops or mislabels the conversation.
+    let may_keep_stored_summary = match retention {
+        PersistedTaskRetention::DeleteMissing => tasks.is_empty(),
+        PersistedTaskRetention::DeleteMissingEvenIfEmpty => false,
+        PersistedTaskRetention::KeepMissing => true,
+    };
     // Every id in the snapshot is kept, including one whose blob is skipped as
     // oversized below: we could not write its new version, so deleting the row
     // we already have would throw away the last copy of that task.
@@ -104,11 +150,26 @@ pub(crate) fn upsert_agent_conversation<'a>(
         serde_json::to_string(&AgentConversationSummary::from_tasks(tasks.iter().copied())).ok();
 
     conn.transaction::<_, Error, _>(|conn| {
+        let summary_to_write = if may_keep_stored_summary {
+            let stored_summary: Option<String> = agent_conversations
+                .filter(conversation_id.eq(conversation_id_param))
+                .select(summary)
+                .first::<Option<String>>(conn)
+                .optional()?
+                .flatten();
+            match stored_summary {
+                Some(stored) if stored_summary_names_initial_query(&stored) => Some(stored),
+                _ => serialized_summary,
+            }
+        } else {
+            serialized_summary
+        };
+
         // Upsert the conversation level metadata
         let new_conversation = NewAgentConversation {
             conversation_id: conversation_id_param.to_owned(),
             conversation_data: serialized_conversation_data,
-            summary: serialized_summary,
+            summary: summary_to_write,
         };
 
         diesel::insert_into(agent_conversations::table())
@@ -161,15 +222,18 @@ pub(crate) fn upsert_agent_conversation<'a>(
         }
 
         // Delete any tasks for this conversation that are no longer part of the
-        // snapshot (replace semantics). `ne_all` with an empty set matches every
-        // row, so a fully-rewound conversation (no persisted tasks) has all of
-        // its task rows cleared.
-        diesel::delete(
-            agent_tasks::table
-                .filter(tasks_dsl::conversation_id.eq(conversation_id_param))
-                .filter(tasks_dsl::task_id.ne_all(kept_task_ids)),
-        )
-        .execute(conn)?;
+        // snapshot (replace semantics), when the retention allows it. `ne_all`
+        // with an empty set matches every row, so an empty snapshot clears every
+        // row only under `DeleteMissingEvenIfEmpty` (a rewind past the first
+        // exchange); see `delete_missing_rows` above.
+        if delete_missing_rows {
+            diesel::delete(
+                agent_tasks::table
+                    .filter(tasks_dsl::conversation_id.eq(conversation_id_param))
+                    .filter(tasks_dsl::task_id.ne_all(kept_task_ids)),
+            )
+            .execute(conn)?;
+        }
 
         // Prune old conversations if we exceed MAX_PERSISTED_CONVERSATION_COUNT.
         //
@@ -411,6 +475,9 @@ pub(super) fn backfill_conversation_summaries(
 }
 
 /// Read a single agent conversation by its ID, including decoded tasks.
+///
+/// Returns `Err(DeserializationError)` when any of the conversation's task rows fails to
+/// decode, rather than a conversation that silently lacks that task.
 pub(crate) fn read_agent_conversation_by_id(
     conn: &mut SqliteConnection,
     conversation_id_str: &str,
@@ -433,12 +500,25 @@ pub(crate) fn read_agent_conversation_by_id(
         .select(AgentTaskRecord::as_select())
         .load(conn)?;
 
-    let mut decoded_tasks = Vec::new();
+    // Any undecodable row fails the whole read. The pin (`4111d08f9`) logs and skips the row
+    // instead, handing back a conversation that is missing that task — or, when no row
+    // decodes, one with no tasks at all, for which the local-DB restore synthesizes an empty
+    // optimistic root. Either way the caller gets an editable conversation that does not
+    // hold what is on disk, and its first save used to prune the rows it could not read.
+    // Refusing keeps the rows intact for a build that can decode them, and matches what
+    // `read_agent_conversation_metadata` already does for a legacy row with an undecodable
+    // task (drops it from the history list). See `DECLINED.md` → `IMPROVED`.
+    let mut decoded_tasks = Vec::with_capacity(task_records.len());
     for task_record in task_records.into_iter() {
         match api::Task::decode(&task_record.task[..]) {
             Ok(task) => decoded_tasks.push(task),
             Err(e) => {
-                log::error!("Failed to decode task protobuf: {e}");
+                log::error!(
+                    "Failed to decode task {} of conversation {conversation_id_str}: {e}; \
+                     not restoring the conversation, so its persisted tasks are left intact",
+                    task_record.task_id,
+                );
+                return Err(diesel::result::Error::DeserializationError(Box::new(e)));
             }
         }
     }
