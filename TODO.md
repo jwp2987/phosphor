@@ -2376,11 +2376,19 @@ Ordered by area. `P0` = live user-visible defect confirmed present in the fork.
       `layout_delta` takes `&self` and `LayoutTask` borrows its source block instead of
       owning it. `buffer.rs`/`core.rs`'s `styled_blocks_in_range` call sites wrap in
       `Arc::new`.
-- [ ] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
+- [x] `1c925e333` — layout chunking + line-length cap. **`730a4acc0`-shaped risk:
       `truncate_text_for_layout` silently drops text before shaping, and upstream's
       safety argument is an assertion about UPSTREAM's offset invariants.** Trace this
       fork's frame-offset clamping and `BlockMarker` 1-indexing first. The chunking
       half is coordinate-free and can be ported alone.
+      **Ported 2026-09-27 (#730):** traced the risk first — `LayOutArgs::layout_run`
+      (`content/edit.rs`) accumulates `content_length`/`frame_offset_from_block_start`
+      from buffer content, never the shaped frame; `OffsetMap::translate` already
+      clamps via `.min(run.length)`; `TextFrame::caret_index_for_x_unbounded`
+      (`warpui_core::text_layout`) already special-cases a truncated shaped line. All
+      three of upstream's safety invariants hold here, so both halves (chunking via
+      `chunk_layout_tasks` + line-length cap via `truncate_text_for_layout` /
+      `clamp_style_runs_for_layout`) were ported together.
 - [x] `12e455c56` — macOS Core Text style-run coalescing (~36 lines + 3 tests).
       Upstream attributes an ~11.98 GB spike to it. **Upstream never built or ran
       this** (no macOS CI) — needs a real macOS build here, not a rubber stamp.
