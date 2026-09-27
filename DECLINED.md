@@ -896,3 +896,38 @@ upstream's behavior is actually a defect rather than a preference.
   dictionary membership alone is trusted. **Residue:** an *uninstalled* command that also
   happens to be an ordinary English word still overrides to AI once the command index is
   loaded — the fail-safe direction, but a real (documented) false positive.
+
+- **`set_before_open_url` can refuse a URL outright, not only rewrite it**
+  (`93e3f4efa`, 2026-09-27, #716, `crates/warpui_core/src/core/app.rs`,
+  `app/src/lib.rs`). **Upstream, confirmed at the pin** (`4111d08f9:crates/
+  warpui_core/src/core/app.rs:586`): `BeforeOpenUrlCallback` is
+  `Fn(&str, &AppContext) -> String`, `open_url` calls `try_open_url`, which hands
+  whatever the callback returns straight to `platform_delegate.open_url` with no
+  check at all — not even for an empty string. **The defect:** the one global
+  pre-open hook cannot veto an open, only launder it into something else, so this
+  fork's own production hook (`app/src/lib.rs::set_before_open_url`, added ahead of
+  the pin for #681) could detect a disallowed scheme but could only log a warning
+  and pass the URL through unchanged — it had nothing else to return that would
+  not also break the call sites that intentionally use `ctx.open_url("")` as a
+  no-op placeholder (`app/src/app_menus.rs`, `app/src/resource_center/view.rs`).
+  **We do:** `BeforeOpenUrlCallback` now returns `OpenUrlDecision`
+  (`Open(String)` / `Refuse`); `AppContext::open_url` treats `Refuse` as a hard
+  veto and still treats an `Open("")` as the same no-op it always was, so the
+  placeholder call sites are unaffected. The production hook now refuses a
+  disallowed-scheme URL outright. Every narrower per-call-site guard this fork
+  already had (notebook links, terminal OSC 8 links, AI-block content, the #681
+  launchable-path reveal) is unchanged — they still refuse things, like the
+  app's own channel scheme, that this base backstop must allow through so that
+  the web-URL-to-intent rewrite can still reach it. **Also consolidated:**
+  `is_openable_url_scheme` moved from `app/src/notebooks/link.rs` to
+  `app/src/uri/link_policy.rs`, its natural home, so the three `app`-crate call
+  sites that depended on it (`lib.rs`, `terminal/view/link_detection.rs`,
+  `uri/link_policy.rs` itself) consume one definition. `crates/warpui`'s
+  wasm-only `browser::safe_browser_open_url` and its winit WSL-open guard could
+  **not** be folded into that same definition — `warpui`/`warpui_core` sit below
+  `warp_core`/`app` in the crate graph and cannot name `ChannelState` or anything
+  under `app::uri` — so they remain separately-maintained, narrower backstops,
+  now documented as such in place; `browser.rs`'s stale `warposs` scheme (never
+  real — `Channel::Oss` has always mapped to `phosphor`) was corrected to
+  `phosphor` along the way. A re-pin must not restore the pin's unguarded
+  `String`-returning callback or its unconditional `try_open_url`.

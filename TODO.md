@@ -9874,19 +9874,38 @@ Ordered by severity, not by area.
 
       **CORRECTION 2026-08-21 — the first fix was OVER-BROAD and broke a real feature.** `4f5e38690` refused `file:` outright for terminal content. **`crates/integration/src/test/osc8_hyperlinks.rs::test_osc8_file_scheme_opens_url` went red** — and it is right: `file:///tmp/osc8-test.txt` is a **local, hostname-less** URL, and a build tool or linter printing a clickable path to a local file is the feature OSC 8 exists for and why this fork ported it (`ccc1e3c84`, #11). **`precheck` does not run `-p integration`**, so this was invisible to every local run; only the separate 3-shard suite catches it. Now `file:` is allowed when the authority is local and refused when it is not — `file://host/share/x` is a UNC path on Windows, so the OS opens an SMB connection to a host the *link* chose, and terminal output can arrive from a remote machine over SSH. Same rule and same reasoning as `notebooks::link::file_url_is_local`. Two unit tests added on both sides of the line, one of them naming the integration test that caught this.
 
-- [ ] **`AppContext::set_before_open_url` cannot refuse a URL, only rewrite it.**
+- [x] **`AppContext::set_before_open_url` cannot refuse a URL, only rewrite it.**
       `warpui_core/src/core/app.rs:599` — `BeforeOpenUrlCallback` is
       `Fn(&str, &AppContext) -> String`, so the one global pre-open hook cannot enforce
       a scheme allow-list app-wide and every call site must guard itself. Fix: change it
       to `-> Option<String>` and treat `None` as "do not open". Would let the ~40
       `ctx.open_url` call sites be secured in one place instead of individually.
+      **Fixed 2026-09-27 (#716, `93e3f4efa`):** `BeforeOpenUrlCallback` now returns a
+      `OpenUrlDecision` enum (`Open(String)` / `Refuse`) instead of `String`, and
+      `AppContext::open_url` treats `Refuse` as a hard veto (no OS call). The production
+      hook in `app/src/lib.rs` now refuses a disallowed-scheme URL outright instead of
+      logging a warning and passing it through unchanged. `ctx.open_url("")` and a
+      rewrite to `""` are still a silent no-op, unchanged, for the call sites that rely
+      on that convention on purpose. Every narrower per-call-site guard (notebook links,
+      terminal OSC 8 links, AI-block content, the #681 launchable-path reveal) is
+      untouched — they still refuse things (like the app's own scheme) that this base
+      backstop must allow through.
 
-- [ ] **The scheme allow-list exists in three places and they disagree.**
+- [x] **The scheme allow-list exists in three places and they disagree.**
       `notebooks::link::is_openable_url_scheme` (new, reads `ChannelState::url_scheme()`),
       `crates/warpui/src/browser.rs:29` (hardcodes `warposs`/`zap` — stale, the OSS channel
       scheme is now `phosphor`, so the browser build's own deep links fail its check), and
       the WSL guard in `crates/warpui/src/windowing/winit/delegate.rs:110`. The policy's
       natural home is `app/src/uri/`; move it there and have all three consume one definition.
+      **Fixed 2026-09-27 (#716, `93e3f4efa`):** `is_openable_url_scheme` moved to
+      `app/src/uri/link_policy.rs`, its natural home; `notebooks::link` and the other two
+      `app`-crate consumers now import it from there. The other two lists could **not**
+      be consolidated as originally hoped: `crates/warpui`'s `browser::safe_browser_open_url`
+      (wasm) and the winit WSL-open guard sit in a crate that is *below* `warp_core`/`app`
+      in the dependency graph, so neither can see `ChannelState` or `app::uri` at all —
+      documented in both places rather than silently left disagreeing. Fixed
+      `browser.rs`'s stale `warposs` (never a real channel scheme; `Channel::Oss` has
+      always mapped to `phosphor`) to `phosphor`.
 
 - [ ] **Failed settings writes are invisible to the user.**
       `report_if_error!` is log-only since the Sentry sink was removed
