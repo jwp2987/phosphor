@@ -322,7 +322,19 @@ marker_pattern() {
     # identifiers -- a `path:` marker can contain `.` and `/`, both of which
     # are ERE-special (`.` matches any char) or would otherwise produce a
     # subtly wrong match.
-    printf '\\b%s\\b' "$(printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\\]/\\&/g')"
+    #
+    # Each side is anchored only when the marker's own edge character is a
+    # word character (#765). `\b` needs a word/non-word transition, so a value
+    # that already ends in a non-word char -- `path:app/.../init_project/` --
+    # followed by `"`, a space or EOL has no boundary there at all, and the
+    # anchored pattern silently missed a marker that was plainly present. A
+    # non-word edge delimits itself; only a word-char edge can run on into a
+    # longer identifier, which is the case the anchors exist for.
+    local body lead='' trail=''
+    body="$(printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|\\]/\\&/g')"
+    [[ "$1" =~ ^[A-Za-z0-9_] ]] && lead='\b'
+    [[ "$1" =~ [A-Za-z0-9_]$ ]] && trail='\b'
+    printf '%s%s%s' "$lead" "$body" "$trail"
 }
 
 collision_hits="$(mktemp)" unclassified="$(mktemp)" actionable="$(mktemp)"
