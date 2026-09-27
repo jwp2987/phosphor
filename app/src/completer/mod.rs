@@ -482,6 +482,10 @@ impl CompletionContext for SessionContext {
     fn shell_family(&self) -> Option<ShellFamily> {
         Some(self.session.shell_family())
     }
+
+    fn top_level_commands_fully_loaded(&self) -> bool {
+        self.session.has_finished_loading_external_commands()
+    }
 }
 
 impl SessionContext {
@@ -601,6 +605,15 @@ impl CompletionContext for EmptyCompletionContext {
 
     fn generator_context(&self) -> Option<&dyn GeneratorContext> {
         None
+    }
+
+    fn top_level_commands_fully_loaded(&self) -> bool {
+        // There is no session here to ever finish loading anything -- unlike a real session
+        // between bootstrap and its `$PATH` scan landing, this context will never gain more
+        // command knowledge, but callers that need to tell "definitely not a command" apart
+        // from "can't tell" (e.g. the Agent-input safety gate, #696) must treat this the same
+        // as an in-flight probe: absence from `top_level_commands()` here proves nothing.
+        false
     }
 }
 

@@ -44,6 +44,7 @@ fn test_input_detection() {
         let mut context = Context {
             current_input_type: InputType::AI,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         let token = mock_parsed_input_token("cargo --version".to_string()).await;
@@ -134,6 +135,7 @@ fn test_cjk_input_detection() {
         let context = Context {
             current_input_type: InputType::Shell,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         // A single CJK character also classifies as AI (default logic would classify it as Shell due to token count < 2).
@@ -187,6 +189,7 @@ fn test_input_detection_sources() {
         let context = Context {
             current_input_type: InputType::Shell,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         let token = mock_parsed_input_token_without_descriptions("echo hello");
@@ -230,6 +233,7 @@ fn test_real_shell_commands_still_classify_as_shell() {
         let context = Context {
             current_input_type: InputType::AI,
             is_agent_follow_up: false,
+            commands_fully_loaded: true,
         };
 
         for command in [

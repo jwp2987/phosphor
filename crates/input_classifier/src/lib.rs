@@ -41,9 +41,9 @@ pub enum InputClassifierDecisionSource {
     CjkHeuristic,
     /// Fork-original, not in the pin: a classifier (any of them — this is enforced centrally by
     /// [`SafetyGatedClassifier`], not per-classifier) scored the input as Shell, but the buffer's
-    /// effective first token has no command evidence and is itself an ordinary, capitalized
-    /// English word (e.g. "Run", "Then", "Please", "Delete"), so the result was overridden to AI.
-    /// See `util::first_token_forces_ai_override` and `safety_gate`.
+    /// effective first token has no command evidence and is itself an ordinary English word,
+    /// case-insensitively (e.g. "run", "Run", "then", "Please", "delete"), so the result was
+    /// overridden to AI. See `util::first_token_forces_ai_override` and `safety_gate`.
     NoFirstTokenCommandEvidence,
 }
 
@@ -135,4 +135,15 @@ pub struct Context {
     pub current_input_type: InputType,
     /// Whether or not the input is a follow-up to an agent query.
     pub is_agent_follow_up: bool,
+    /// Whether the completion context this buffer was parsed against has a *complete* view of
+    /// top-level commands right now, per
+    /// [`CompletionContext::top_level_commands_fully_loaded`](warp_completer::completer::CompletionContext::top_level_commands_fully_loaded).
+    ///
+    /// Consumed by [`safety_gate::SafetyGatedClassifier`] (via
+    /// `util::first_token_forces_ai_override`) to tell "this word really isn't a command" apart
+    /// from "we can't tell yet" when the buffer's effective first token has no
+    /// `token_description`: `true` means an unindexed dictionary word can be trusted as prose,
+    /// `false` means only a stronger prose *shape* (not dictionary membership alone) may
+    /// override a Shell result. See `util::first_token_forces_ai_override` for the full rule.
+    pub commands_fully_loaded: bool,
 }

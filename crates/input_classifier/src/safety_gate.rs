@@ -20,10 +20,10 @@ use crate::{
 
 /// Wraps any [`InputClassifier`] and enforces a hard safety invariant on its `detect_input_type`
 /// result: a `Shell` classification is overridden back to `AI` when the buffer's effective first
-/// token has no command evidence and is itself an ordinary, capitalized English word (see
-/// [`first_token_forces_ai_override`]). This holds regardless of which concrete classifier
-/// produced the result, since it inspects only the buffer and the final `InputType`, never the
-/// inner classifier's reasoning.
+/// token has no command evidence and is itself an ordinary English word, matched
+/// case-insensitively (see [`first_token_forces_ai_override`]). This holds regardless of which
+/// concrete classifier produced the result, since it inspects only the buffer, the `Context`, and
+/// the final `InputType`, never the inner classifier's reasoning.
 pub struct SafetyGatedClassifier<C> {
     inner: C,
 }
@@ -43,7 +43,9 @@ impl<C: InputClassifier> InputClassifier for SafetyGatedClassifier<C> {
         context: &Context,
     ) -> InputClassificationResult {
         let result = self.inner.detect_input_type(input.clone(), context).await;
-        if matches!(result.input_type, InputType::Shell) && first_token_forces_ai_override(&input) {
+        if matches!(result.input_type, InputType::Shell)
+            && first_token_forces_ai_override(&input, context.commands_fully_loaded)
+        {
             return InputClassificationResult::new(
                 InputType::AI,
                 InputClassifierDecisionSource::NoFirstTokenCommandEvidence,
