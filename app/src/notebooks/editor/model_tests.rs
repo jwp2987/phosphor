@@ -3339,12 +3339,20 @@ fn test_mermaid_offset_resync_streak_scales_with_diagram_count() {
             "the cap should scale up to the number of Mermaid blocks in the document"
         );
 
+        let starts_rendered = app.read(|ctx| {
+            matches!(
+                commands[0].as_ref(ctx).mermaid_display_mode,
+                MarkdownDisplayMode::Rendered
+            )
+        });
+
         model_handle.update(&mut app, |model, ctx| {
             // Flap every block's mode together each pass, forcing a "changed" result every time,
             // for 9 consecutive passes: one more than the unscaled base cap of 8 would allow, but
-            // still under the scaled cap of 10.
+            // still under the scaled cap of 10. The first pass must flip the blocks *away* from
+            // the mode they were laid out in, or it reports "unchanged" and resets the streak.
             for i in 0..9 {
-                let mode = if i % 2 == 0 {
+                let mode = if (i % 2 == 0) == starts_rendered {
                     MarkdownDisplayMode::Raw
                 } else {
                     MarkdownDisplayMode::Rendered
