@@ -948,12 +948,15 @@ fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
 
         // The line editor starts out inactive (this harness's default -- see the file-level
         // comment), so `can_write_to_pty` is already shut. Queue a write so there is something
-        // pending behind that gate.
+        // pending behind that gate, and use a short threshold (rather than the real
+        // multi-second `PTY_WRITE_GATE_STALL_LOG_THRESHOLD`) so this test does not need to sleep
+        // for it -- the same reason the watchdog tests above pass short timeouts explicitly.
+        let threshold = Duration::from_millis(20);
         controller.update(&mut app, |controller, ctx| {
             controller.pending_writes.push_back(PtyWrite::Bytes {
                 bytes: Cow::Owned(vec![b'x']),
             });
-            controller.execute_next_queued_write(ctx);
+            controller.track_pty_write_gate_stall(threshold, ctx);
         });
 
         controller.read(&app, |controller, _| {
@@ -967,15 +970,12 @@ fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
             );
         });
 
-        // Fast-forward the tracked start time past the log threshold, as if the stall had been
-        // running for a while, and drive the tracker again -- this is the same call
-        // `execute_next_queued_write` makes on every subsequent queued write or
+        // Long enough for the threshold to elapse; drive the tracker again -- this is the same
+        // call `execute_next_queued_write` makes on every subsequent queued write or
         // `LineEditorStatusEvent::Active`.
+        Timer::after(Duration::from_millis(100)).await;
         controller.update(&mut app, |controller, ctx| {
-            controller.pty_write_gate_blocked_since = Some(
-                Instant::now() - (PTY_WRITE_GATE_STALL_LOG_THRESHOLD + Duration::from_secs(1)),
-            );
-            controller.track_pty_write_gate_stall(ctx);
+            controller.track_pty_write_gate_stall(threshold, ctx);
         });
 
         controller.read(&app, |controller, _| {
@@ -993,7 +993,7 @@ fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
                 .expect("still stalled")
         });
         controller.update(&mut app, |controller, ctx| {
-            controller.track_pty_write_gate_stall(ctx);
+            controller.track_pty_write_gate_stall(threshold, ctx);
         });
         controller.read(&app, |controller, _| {
             assert_eq!(
@@ -1011,7 +1011,7 @@ fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
         // itself is still shut.
         controller.update(&mut app, |controller, ctx| {
             controller.pending_writes.clear();
-            controller.track_pty_write_gate_stall(ctx);
+            controller.track_pty_write_gate_stall(threshold, ctx);
         });
         controller.read(&app, |controller, _| {
             assert!(
@@ -1115,6 +1115,70 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
             a_results_rx.try_recv().is_ok(),
             "request A's own CompletionsFinished reply must still reach request A."
         );
+
+        drop(model_events_tx);
+    });
+}
+
+/// The stall log must fire on its own once the threshold elapses, even if nothing else ever
+/// drives `execute_next_queued_write` again -- e.g. the user stops typing entirely once the gate
+/// sticks, which is a very plausible reaction to a pane that stopped responding. Without a
+/// self-armed timer, the log line would depend on some future keystroke or `LineEditorStatus`
+/// transition that may never come.
+#[test]
+fn pty_write_gate_stall_logs_itself_without_further_input() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Start a stall (line editor inactive, a write queued behind it) with a short threshold
+        // -- rather than the real multi-second `PTY_WRITE_GATE_STALL_LOG_THRESHOLD` -- so this
+        // test does not need to sleep for it, the same reason the watchdog tests above pass short
+        // timeouts explicitly.
+        let threshold = Duration::from_millis(20);
+        controller.update(&mut app, |controller, ctx| {
+            controller.pending_writes.push_back(PtyWrite::Bytes {
+                bytes: Cow::Owned(vec![b'x']),
+            });
+            controller.track_pty_write_gate_stall(threshold, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                !controller.has_logged_current_pty_write_stall,
+                "must not have logged yet -- only the timer armed when the stall began should \
+                 do that, and it has not fired yet."
+            );
+        });
+
+        // Nothing further drives `execute_next_queued_write` or `track_pty_write_gate_stall` from
+        // here -- only the one-shot timer armed when the stall began should fire and log this.
+        Timer::after(Duration::from_millis(200)).await;
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                controller.has_logged_current_pty_write_stall,
+                "the self-armed timer must log the stall on its own, with no further input."
+            );
+        });
 
         drop(model_events_tx);
     });

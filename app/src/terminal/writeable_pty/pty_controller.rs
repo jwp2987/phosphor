@@ -600,7 +600,7 @@ impl<T: EventLoopSender> PtyController<T> {
     /// when the line editor becomes active.
     fn execute_next_queued_write(&mut self, ctx: &mut ModelContext<Self>) {
         if !self.can_write_to_pty(ctx) {
-            self.track_pty_write_gate_stall(ctx);
+            self.track_pty_write_gate_stall(PTY_WRITE_GATE_STALL_LOG_THRESHOLD, ctx);
             return;
         }
         self.pty_write_gate_blocked_since = None;
@@ -624,23 +624,51 @@ impl<T: EventLoopSender> PtyController<T> {
     /// then stay quiet until the stretch ends (a fresh keystroke reopening the gate, or the queue
     /// draining) so a stuck pane cannot spam the log once per keystroke.
     ///
+    /// Self-contained on purpose: it re-checks `can_write_to_pty` and re-derives everything else
+    /// from current state, so it is safe to call from anywhere, including the one-shot timer
+    /// below -- a stretch it was armed for that has since ended (or been superseded by a fresh
+    /// one) just resolves to a no-op or a fresh, correctly-short `stalled_for`, never a stale log.
+    ///
+    /// `threshold` is a parameter (rather than always reading `PTY_WRITE_GATE_STALL_LOG_THRESHOLD`
+    /// directly) purely so tests can drive it with a short duration instead of the real one, the
+    /// same reason `arm_native_completions_watchdog` takes an explicit `timeout`; every production
+    /// call site passes the real constant.
+    ///
     /// Never logs write contents, only counts and booleans -- see #718 on log redaction.
-    fn track_pty_write_gate_stall(&mut self, ctx: &mut ModelContext<Self>) {
-        if self.pending_writes.is_empty() {
+    fn track_pty_write_gate_stall(&mut self, threshold: Duration, ctx: &mut ModelContext<Self>) {
+        if self.can_write_to_pty(ctx) || self.pending_writes.is_empty() {
             self.pty_write_gate_blocked_since = None;
             self.has_logged_current_pty_write_stall = false;
             return;
         }
 
         let now = std::time::Instant::now();
+        let is_new_stall = self.pty_write_gate_blocked_since.is_none();
         let blocked_since = *self.pty_write_gate_blocked_since.get_or_insert(now);
+
+        if is_new_stall {
+            // `execute_next_queued_write` only re-checks the gate when something drives it --
+            // another queued write, or `LineEditorStatusEvent::Active`. If the user stops typing
+            // entirely once the gate sticks (a very plausible reaction to a pane that stopped
+            // responding), nothing would otherwise re-check until whatever input eventually comes
+            // next, which may be long after the threshold or may never come at all if the pane
+            // looks dead. Arm a one-shot timer, once per stall, so the log line fires on its own.
+            ctx.spawn(
+                async move {
+                    Timer::after(threshold).await;
+                },
+                move |me, _, ctx| {
+                    me.track_pty_write_gate_stall(threshold, ctx);
+                },
+            );
+        }
 
         if self.has_logged_current_pty_write_stall {
             return;
         }
 
         let stalled_for = now.saturating_duration_since(blocked_since);
-        if stalled_for < PTY_WRITE_GATE_STALL_LOG_THRESHOLD {
+        if stalled_for < threshold {
             return;
         }
 
