@@ -66,6 +66,7 @@ use serde_json::{Map, Value};
 use tempfile::NamedTempFile;
 use uuid::Uuid;
 use warp_cli::agent::Harness;
+use warp_core::safe_info;
 use warp_managed_secrets::ManagedSecretValue;
 use warpui::{ModelHandle, ModelSpawner, SingletonEntity};
 
@@ -488,7 +489,44 @@ fn prepare_codex_environment_config(
         third_party_harness_model_config,
         openai_base_url.as_deref(),
     )?;
+    publish_warp_skill_dirs_for_codex(working_dir);
     Ok(())
+}
+
+/// Publish the skills listed in `WARP_SKILL_DIRS`, under their own names, as
+/// symlinks under `<working_dir>/.agents/skills`, so an agent running on
+/// Codex sees the same skills the Oz harness loads from `WARP_SKILL_DIRS`.
+///
+/// Published into the task's own working directory rather than `$HOME` or
+/// `CODEX_HOME`: Codex discovers `.agents/skills` as a REPO-scoped root by
+/// walking up from its starting directory to the repository root (falling
+/// back to just the starting directory itself when no repository is found),
+/// so a task's own working directory is a skill root Codex already searches
+/// on its own. This keeps concurrent tasks (e.g. on a self-hosted
+/// direct-backend worker sharing one host) from publishing into the same
+/// shared home directory. A published skill never overrides a pre-existing
+/// conflicting entry with the same name (see `skill_dirs_publish::publish_skill`
+/// and its module docs' "Never rename aside" section — a Phosphor-specific
+/// divergence from upstream). A no-op when `WARP_SKILL_DIRS` is not
+/// configured for this run, or when `working_dir` fails
+/// `skill_dirs_publish`'s safety checks.
+fn publish_warp_skill_dirs_for_codex(working_dir: &Path) {
+    let source_dirs = super::skill_dirs_publish::warp_skill_source_dirs(working_dir);
+    if source_dirs.is_empty() {
+        return;
+    }
+    let skill_root = working_dir.join(".agents").join("skills");
+    let published =
+        super::skill_dirs_publish::publish_skill_dirs(&skill_root, &source_dirs, working_dir);
+    if published > 0 {
+        safe_info!(
+            safe: ("Published {published} WARP_SKILL_DIRS skill(s) to the Codex skill root"),
+            full: (
+                "Published {published} WARP_SKILL_DIRS skill(s) to Codex skill root {}",
+                skill_root.display()
+            )
+        );
+    }
 }
 
 fn codex_config_dir() -> Result<PathBuf> {
