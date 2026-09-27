@@ -1,14 +1,12 @@
 //! Tab grouping and pinning model operations, split out of `workspace/view.rs`.
 //! Ported from `warp/master`'s `app/src/workspace/view/tab_grouping.rs`.
 //!
-//! The inline rename editor, the tab-group right-click menu (which hangs off
-//! the vertical-tabs group header) and group-aware drag-and-drop reordering are
-//! not yet ported here (#108 follow-up); this module carries the core,
-//! test-covered model layer, the multi-selection helpers, the multi-tab
-//! right-click menu and the "Move to group" submenu item builder. Reachable
-//! entry points today are the keybindings registered in `workspace/mod.rs`, the
-//! per-tab Pin/Unpin plus tab-group entries in `TabData::menu_items`, the
-//! multi-tab selection menu, and shift/cmd-click on a tab.
+//! This module carries the core, test-covered model layer, the multi-selection
+//! helpers, the multi-tab right-click menu and the "Move to group" submenu item
+//! builder. The inline group rename editor, the tab-group right-click menu and
+//! the group header rendering live in `workspace/view.rs` (horizontal) and
+//! `workspace/view/vertical_tabs.rs` (vertical); every path that creates a new
+//! group here opens that rename editor, as the pin does.
 
 use std::collections::HashSet;
 
@@ -310,8 +308,7 @@ impl Workspace {
         ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();
 
-        // TODO(#108 follow-up): Warp opens the inline rename editor over the
-        // new group's header here. The rename-editor surface is not yet ported.
+        ctx.dispatch_typed_action_deferred(WorkspaceAction::RenameTabGroup(group_id));
     }
 
     /// "Move to group" menu action. The destination group's first-member

@@ -6208,3 +6208,281 @@ fn test_tab_group_rename_blur_does_not_commit_unfinished_name() {
         });
     });
 }
+
+/// Returns `(group being renamed?, rename editor focused?, editor buffer text)` for `group_id`.
+fn tab_group_rename_state(
+    workspace: &ViewHandle<Workspace>,
+    group_id: TabGroupId,
+    app: &App,
+) -> (bool, bool, String) {
+    workspace.read(app, |workspace, ctx| {
+        (
+            workspace
+                .current_workspace_state
+                .is_tab_group_being_renamed(group_id),
+            workspace.is_inline_rename_editor_focused(ctx),
+            workspace
+                .tab_group_rename_editor
+                .as_ref(ctx)
+                .buffer_text(ctx),
+        )
+    })
+}
+
+/// "New tab group" (the `+` new-session menu) must open the inline rename editor over the
+/// new group's header, focused and pre-filled with the default name selected — as the pin
+/// does. Before this was wired, nothing took focus from the new tab, so the name the user
+/// typed went into the new terminal's input and ran as a shell command.
+#[test]
+fn test_create_new_tab_group_opens_focused_rename_editor() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let group_id = workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            workspace.tabs[0]
+                .group_id
+                .expect("the new tab should belong to the new group")
+        });
+
+        // The rename is dispatched deferred, so it has run once the update's effects flush.
+        let (being_renamed, editor_focused, buffer) =
+            tab_group_rename_state(&workspace, group_id, &app);
+        assert!(being_renamed, "creating a group must start its rename");
+        assert!(editor_focused, "the group rename editor must hold focus");
+        assert_eq!(buffer, "New Group");
+        let selected = workspace.read(&app, |workspace, ctx| {
+            workspace
+                .tab_group_rename_editor
+                .as_ref(ctx)
+                .selected_text(ctx)
+        });
+        assert_eq!(
+            selected, "New Group",
+            "the seeded name is selected for replacement"
+        );
+
+        // Typing replaces the selected seed; Enter commits it.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| editor.user_insert("Build", ctx));
+            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Enter, ctx);
+        });
+
+        workspace.read(&app, |workspace, ctx| {
+            assert_eq!(
+                workspace.tab_groups[&group_id].name.as_deref(),
+                Some("Build")
+            );
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_any_tab_group_being_renamed()
+            );
+            assert!(!workspace.is_inline_rename_editor_focused(ctx));
+        });
+    });
+}
+
+/// Escape out of the rename a new group opened keeps the default (unset) name.
+#[test]
+fn test_create_new_tab_group_rename_escape_keeps_default_name() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let group_id = workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(
+                &WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+                ctx,
+            );
+            workspace.tabs[0]
+                .group_id
+                .expect("the new tab should belong to the new group")
+        });
+        assert!(tab_group_rename_state(&workspace, group_id, &app).1);
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| editor.user_insert("Bui", ctx));
+            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Escape, ctx);
+        });
+
+        let (being_renamed, editor_focused, _) = tab_group_rename_state(&workspace, group_id, &app);
+        assert!(!being_renamed);
+        assert!(!editor_focused, "Escape hands focus back to the active tab");
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(workspace.tab_groups[&group_id].name, None);
+        });
+    });
+}
+
+/// "New group from tab" and "New group from selected tabs" open the rename editor too,
+/// matching the pin's `dispatch_typed_action_deferred(RenameTabGroup)` in both.
+#[test]
+fn test_new_tab_group_from_tabs_opens_rename_editor() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let from_tab_group = workspace.update(&mut app, |workspace, ctx| {
+            workspace.add_terminal_tab(false, ctx);
+            workspace.add_terminal_tab(false, ctx);
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromTab(0), ctx);
+            workspace.tabs[workspace.active_tab_index]
+                .group_id
+                .expect("the tab should belong to the new group")
+        });
+        let (being_renamed, editor_focused, buffer) =
+            tab_group_rename_state(&workspace, from_tab_group, &app);
+        assert!(being_renamed);
+        assert!(editor_focused);
+        assert_eq!(buffer, "New Group");
+
+        // End that rename first, in its own update: the editor's `Blurred` is a queued
+        // event, and delivering it after the next group's rename has started would end
+        // that one instead.
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Escape, ctx);
+        });
+
+        let from_selection_group = workspace.update(&mut app, |workspace, ctx| {
+            workspace.activate_tab(1, ctx);
+            workspace.tabs[1].in_multi_selection = true;
+            workspace.tabs[2].in_multi_selection = true;
+            workspace.handle_action(&WorkspaceAction::NewTabGroupFromSelectedTabs, ctx);
+            workspace.tabs[workspace.active_tab_index]
+                .group_id
+                .expect("the active tab should belong to the new group")
+        });
+        assert_ne!(from_selection_group, from_tab_group);
+        let (being_renamed, editor_focused, _) =
+            tab_group_rename_state(&workspace, from_selection_group, &app);
+        assert!(being_renamed);
+        assert!(editor_focused);
+    });
+}
+
+/// The group header menu's "Rename" opens a focused editor whichever order the menu's
+/// Close and the item's action arrive in: a pointer click runs Close first (event actions
+/// are dispatched in reverse), Enter runs the action first. Enter then commits the name.
+#[test]
+fn test_tab_group_menu_rename_opens_focused_editor() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        let group_id = workspace.update(&mut app, |workspace, ctx| {
+            let mut group = TabGroup::new();
+            group.name = Some("Backend".to_string());
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+            group_id
+        });
+
+        for close_first in [true, false] {
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.toggle_tab_group_right_click_menu(
+                    group_id,
+                    TabContextMenuAnchor::Pointer(Vector2F::zero()),
+                    ctx,
+                );
+            });
+            let close = |workspace: &mut Workspace, ctx: &mut ViewContext<Workspace>| {
+                workspace.handle_tab_right_click_menu_event(
+                    &MenuEvent::Close {
+                        via_select_item: true,
+                    },
+                    ctx,
+                );
+            };
+            let rename = |workspace: &mut Workspace, ctx: &mut ViewContext<Workspace>| {
+                workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
+            };
+            if close_first {
+                workspace.update(&mut app, close);
+                workspace.update(&mut app, rename);
+            } else {
+                workspace.update(&mut app, rename);
+                workspace.update(&mut app, close);
+            }
+
+            let (being_renamed, editor_focused, buffer) =
+                tab_group_rename_state(&workspace, group_id, &app);
+            assert!(being_renamed, "close_first={close_first}");
+            assert!(editor_focused, "close_first={close_first}");
+            assert_eq!(buffer, "Backend", "close_first={close_first}");
+
+            workspace.update(&mut app, |workspace, ctx| {
+                workspace.handle_tab_group_rename_editor_event(&EditorEvent::Escape, ctx);
+            });
+        }
+
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace.handle_action(&WorkspaceAction::RenameTabGroup(group_id), ctx);
+        });
+        workspace.update(&mut app, |workspace, ctx| {
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| editor.user_insert("Frontend", ctx));
+            workspace.handle_tab_group_rename_editor_event(&EditorEvent::Enter, ctx);
+        });
+        workspace.read(&app, |workspace, _| {
+            assert_eq!(
+                workspace.tab_groups[&group_id].name.as_deref(),
+                Some("Frontend")
+            );
+        });
+    });
+}
+
+/// Clicking the vertical-tabs panel background (`CancelActiveRename`) ends a group rename
+/// without committing what was typed.
+#[test]
+fn test_cancel_active_rename_discards_tab_group_rename() {
+    let _grouped_tabs_guard = FeatureFlag::GroupedTabs.override_enabled(true);
+
+    App::test((), |mut app| async move {
+        initialize_app(&mut app);
+
+        let workspace = mock_workspace(&mut app);
+        workspace.update(&mut app, |workspace, ctx| {
+            let mut group = TabGroup::new();
+            group.name = Some("Backend".to_string());
+            let group_id = group.id;
+            workspace.tab_groups.insert(group_id, group);
+            workspace.tabs[0].group_id = Some(group_id);
+
+            workspace.rename_tab_group(group_id, ctx);
+            workspace
+                .tab_group_rename_editor
+                .update(ctx, |editor, ctx| editor.user_insert("Front", ctx));
+            workspace.handle_action(&WorkspaceAction::CancelActiveRename, ctx);
+
+            assert!(
+                !workspace
+                    .current_workspace_state
+                    .is_any_tab_group_being_renamed()
+            );
+            assert_eq!(
+                workspace.tab_groups[&group_id].name.as_deref(),
+                Some("Backend")
+            );
+        });
+    });
+}

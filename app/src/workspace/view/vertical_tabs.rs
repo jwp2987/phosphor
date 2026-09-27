@@ -1946,6 +1946,9 @@ fn render_vertical_tabs_panel(
             .with_background(internal_colors::fg_overlay_1(theme))
             .finish()
     })
+    .on_click(|ctx, _, _| {
+        ctx.dispatch_typed_action(WorkspaceAction::CancelActiveRename);
+    })
     .on_right_click(|ctx, _, position| {
         ctx.dispatch_typed_action(WorkspaceAction::OpenNewSessionMenu {
             anchor: NewSessionMenuAnchor::Pointer(position),
