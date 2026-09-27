@@ -1079,6 +1079,27 @@ impl<T: EventLoopSender> PtyController<T> {
         results_tx: async_channel::Sender<Vec<ShellCompletion>>,
         ctx: &mut ModelContext<Self>,
     ) {
+        // Never start a new native-completions request while one is already in flight, in
+        // *either* phase. `AwaitingResults` deliberately does not gate `can_write_to_pty` (typing
+        // should not block on completions results for up to
+        // `NATIVE_COMPLETIONS_RESULTS_TIMEOUT`), so without this check a newly queued request
+        // could be dequeued and dispatched immediately behind an `AwaitingResults` request that
+        // is still live -- e.g. from `CompletionsTrigger::AsYouType` firing again on the next
+        // keystroke. The dispatch arm below unconditionally overwrites
+        // `in_flight_native_completions_state`, so that would silently drop the current request's
+        // `results_tx` and hand its eventual, now-mismatched `CompletionsFinished` reply to the
+        // *new* request instead -- delivering one request's completions as if they were another
+        // request's answer. Neither event carries a request id to tell them apart after the fact,
+        // so the only structural fix is to make sure at most one request ever exists at a time.
+        //
+        // Dropping `results_tx` here (by simply not queuing anything) closes its channel
+        // immediately, so the caller's `results_rx.recv().await.ok()` resolves to `None` right
+        // away -- the same fallback shape an abandoned request already produces, and much better
+        // than either hanging or being handed some other request's results.
+        if self.in_flight_native_completions_state.is_some() {
+            return;
+        }
+
         // Make sure we only have a single pending native shell completions
         // request at a time by dropping any existing ones from the queue.
         self.pending_writes

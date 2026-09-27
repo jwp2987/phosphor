@@ -1027,3 +1027,95 @@ fn pty_write_gate_stall_is_tracked_and_logged_once_per_unbroken_stretch() {
         drop(model_events_tx);
     });
 }
+
+/// Regression test for phosphor#770 follow-up review, item 2: `run_native_shell_completions` must
+/// not start a new native-completions request while one is already in flight, in either phase.
+///
+/// `AwaitingResults` does not gate `can_write_to_pty` (typing must not block on completions
+/// results), so on the old code a second request -- e.g. from `CompletionsTrigger::AsYouType`
+/// firing again while the first request's results are still pending -- would be queued and could
+/// be dequeued and dispatched immediately, unconditionally overwriting
+/// `in_flight_native_completions_state`. That drops the first request's `results_tx` and, since
+/// neither event carries a request id, hands the first request's later, now-phase-matching
+/// `CompletionsFinished` reply to the *second* request instead.
+///
+/// This drives `run_native_shell_completions` directly with a request already in flight (rather
+/// than via `execute_next_queued_write`'s line-editor gate, which this harness's line editor
+/// never clears -- see the file-level comment) because the defect is in
+/// `run_native_shell_completions` itself queuing a second request at all, not in when queued
+/// writes get dispatched.
+#[test]
+fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_flight() {
+    App::test((), |mut app| async move {
+        let model = terminal_model();
+        let (model_events_tx, model_events_rx) = async_channel::unbounded();
+        let (_executor_command_tx, executor_command_rx) = async_channel::unbounded();
+        let sessions = app.add_model(|_| Sessions::new_for_test());
+        let model_events =
+            app.add_model(|ctx| ModelEventDispatcher::new(model_events_rx, sessions.clone(), ctx));
+        let line_editor_status =
+            app.add_model(|ctx| LineEditorStatus::new(model_events.clone(), sessions.clone(), ctx));
+        let sender = TestEventLoopSender::default();
+        let controller = app.add_model(|ctx| {
+            PtyController::new(
+                sender.clone(),
+                model_events,
+                line_editor_status,
+                sessions,
+                executor_command_rx,
+                model.clone(),
+                ctx,
+            )
+        });
+
+        // Request A is already in flight, past the prompt phase and waiting on results -- the
+        // phase that does not gate `can_write_to_pty`.
+        let (a_results_tx, a_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, _ctx| {
+            controller.in_flight_native_completions_state =
+                Some(NativeShellCompletionsState::AwaitingResults {
+                    results_tx: a_results_tx,
+                });
+        });
+
+        // Request B tries to start -- e.g. the next as-you-type keystroke -- while A is still
+        // live.
+        let (b_results_tx, b_results_rx) = async_channel::unbounded();
+        controller.update(&mut app, |controller, ctx| {
+            controller.run_native_shell_completions("request b".to_owned(), b_results_tx, ctx);
+        });
+
+        controller.read(&app, |controller, _| {
+            assert!(
+                matches!(
+                    controller.in_flight_native_completions_state,
+                    Some(NativeShellCompletionsState::AwaitingResults { .. })
+                ),
+                "starting request B while request A is in flight must not touch A's state at \
+                 all -- not even queue something that could later clobber it."
+            );
+            assert!(
+                controller.pending_writes.is_empty(),
+                "request B must not be queued while a request is already in flight -- queuing it \
+                 would let it be dequeued and dispatched behind A's back the moment the line \
+                 editor gate (which AwaitingResults does not touch) allows it."
+            );
+        });
+        assert!(
+            b_results_rx.try_recv().is_err(),
+            "request B must be dropped outright (its results_tx closed) rather than queued or \
+             silently kept waiting forever."
+        );
+
+        // Request A's own, later reply must still reach request A, not have been redirected to B.
+        model_events.update(&mut app, |_dispatcher, ctx| {
+            ctx.emit(ModelEvent::CompletionsFinished(vec![]));
+        });
+        assert!(
+            a_results_rx.try_recv().is_ok(),
+            "request A's own CompletionsFinished reply must still reach request A."
+        );
+
+        drop(model_events_tx);
+    });
+}
