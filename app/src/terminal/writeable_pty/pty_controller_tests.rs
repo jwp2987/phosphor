@@ -1059,7 +1059,7 @@ fn run_native_shell_completions_does_not_start_a_second_request_while_one_is_in_
         let controller = app.add_model(|ctx| {
             PtyController::new(
                 sender.clone(),
-                model_events,
+                model_events.clone(),
                 line_editor_status,
                 sessions,
                 executor_command_rx,
