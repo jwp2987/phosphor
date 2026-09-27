@@ -4280,7 +4280,7 @@ impl TerminalView {
         // Recompute the window-footer-bar color whenever the color rules or the
         // unknown-host color change -- the settings-change half of
         // `recompute_window_footer_bar_color`'s two triggers; the other half (the
-        // session's resolved host changing) is recomputed at preexec and at
+        // session's resolved host changing) is recomputed at preexec, precmd, and
         // bootstrap completion.
         let tab_settings_handle = TabSettings::handle(ctx);
         ctx.subscribe_to_model(&tab_settings_handle, |me, _, event, ctx| {
@@ -12451,8 +12451,13 @@ impl TerminalView {
         // a re-render triggers completions which fire another in-band
         // command. See also the complementary guard in
         // Input::set_active_block_metadata.
+        let previous_session_id = self.active_block_session_id();
         if is_after_in_band_command {
             self.active_block_metadata = Some(block_metadata.clone());
+            // See the recompute after the non-in-band assignment below (#650).
+            if self.active_block_session_id() != previous_session_id {
+                self.recompute_window_footer_bar_color(ctx);
+            }
             self.input.update(ctx, |view, ctx| {
                 view.set_active_block_metadata(
                     block_metadata.clone(),
@@ -12673,6 +12678,17 @@ impl TerminalView {
         }
 
         self.active_block_metadata = Some(block_metadata.clone());
+
+        // The window-footer-bar color is resolved from the *active block's* session,
+        // and this is the only place that session changes without a bootstrap: when a
+        // warpified remote shell exits (`exit`, a dropped connection, a killed `ssh`),
+        // the next precmd comes from the local shell and carries its session id. No
+        // `Session` ever turns from `WarpifiedRemote` back into `Local` in place, so
+        // without this the bar keeps the remote host's color until the next preexec
+        // (#650). Recomputed on every update, not just on a session-id change, so any
+        // other input that drifted since is also corrected at the latest by the next
+        // prompt; cheap, since this runs per prompt / OSC 7, never per frame.
+        self.recompute_window_footer_bar_color(ctx);
 
         if let Some(session) = block_metadata
             .session_id()
@@ -13291,7 +13307,9 @@ impl TerminalView {
     ///
     /// Must be called whenever any input can have changed: a preexec that starts,
     /// resolves, or clears a pending SSH target; a session finishing bootstrap
-    /// (`handle_session_bootstrapped`); or either settings changing (the
+    /// (`handle_session_bootstrapped`); the active block's metadata (and so its
+    /// session) changing (`apply_block_metadata_update` -- how a warpified remote
+    /// session's exit is observed, #650); or either settings changing (the
     /// `TabSettingsChangedEvent::HostFooterColorRuleList` /
     /// `TabSettingsChangedEvent::UnknownHostColor` subscription in `new`).
     /// Deliberately never called from `render`, which only reads the cached value
