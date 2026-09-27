@@ -13741,7 +13741,7 @@ dependencies = [
 [[package]]
 name = "tink-core"
 version = "0.3.0"
-source = "git+https://github.com/warpdotdev/tink-rust?branch=warpdotdev%2Fmain#0141035f04a5e262b955c450857b689cff877469"
+source = "git+https://github.com/warpdotdev/tink-rust?rev=0141035f04a5e262b955c450857b689cff877469#0141035f04a5e262b955c450857b689cff877469"
 dependencies = [
  "digest 0.10.7",
  "hkdf",
@@ -13770,7 +13770,7 @@ dependencies = [
 [[package]]
 name = "tink-hybrid"
 version = "0.3.0"
-source = "git+https://github.com/warpdotdev/tink-rust?branch=warpdotdev%2Fmain#0141035f04a5e262b955c450857b689cff877469"
+source = "git+https://github.com/warpdotdev/tink-rust?rev=0141035f04a5e262b955c450857b689cff877469#0141035f04a5e262b955c450857b689cff877469"
 dependencies = [
  "p256",
  "tink-aead",
@@ -13810,7 +13810,7 @@ dependencies = [
 [[package]]
 name = "tink-proto"
 version = "0.3.0"
-source = "git+https://github.com/warpdotdev/tink-rust?branch=warpdotdev%2Fmain#0141035f04a5e262b955c450857b689cff877469"
+source = "git+https://github.com/warpdotdev/tink-rust?rev=0141035f04a5e262b955c450857b689cff877469#0141035f04a5e262b955c450857b689cff877469"
 dependencies = [
  "base64 0.22.1",
  "prost",
